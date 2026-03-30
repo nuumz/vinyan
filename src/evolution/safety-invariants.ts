@@ -1,0 +1,112 @@
+/**
+ * Safety Invariants — 6 immutable constraints on evolution.
+ *
+ * Evolution Engine CAN modify: oracle configs, risk thresholds, worker configs, routing models.
+ * Evolution Engine CANNOT violate these 6 invariants:
+ *
+ * 1. Human escalation triggers cannot be disabled
+ * 2. Security policies cannot be relaxed
+ * 3. Budget hard limits cannot be increased
+ * 4. Test requirements cannot be waived
+ * 5. Rollback capability cannot be disabled
+ * 6. Routing hard floor cannot be lowered
+ *
+ * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
+ */
+import type { EvolutionaryRule } from "../orchestrator/types.ts";
+
+export interface SafetyCheckResult {
+  safe: boolean;
+  violations: string[];
+}
+
+/**
+ * Check if an evolutionary rule violates any immutable safety invariant.
+ */
+export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult {
+  const violations: string[] = [];
+
+  // Invariant 1: Human escalation triggers cannot be disabled
+  if (rule.action === "adjust-threshold" && rule.parameters.disableHumanEscalation) {
+    violations.push("I1: Cannot disable human escalation triggers");
+  }
+
+  // Invariant 2: Security policies cannot be relaxed
+  if (rule.action === "adjust-threshold" && rule.parameters.relaxSecurity) {
+    violations.push("I2: Cannot relax security policies");
+  }
+  if (rule.action === "require-oracle" && rule.parameters.disable === true) {
+    violations.push("I2: Cannot disable required security oracles");
+  }
+
+  // Invariant 3: Budget hard limits cannot be increased beyond ceiling
+  if (rule.action === "adjust-threshold") {
+    const maxTokens = rule.parameters.maxTokens as number | undefined;
+    const maxDuration = rule.parameters.maxDurationMs as number | undefined;
+    if (maxTokens !== undefined && maxTokens > BUDGET_CEILING.maxTokens) {
+      violations.push(`I3: maxTokens ${maxTokens} exceeds ceiling ${BUDGET_CEILING.maxTokens}`);
+    }
+    if (maxDuration !== undefined && maxDuration > BUDGET_CEILING.maxDurationMs) {
+      violations.push(`I3: maxDurationMs ${maxDuration} exceeds ceiling ${BUDGET_CEILING.maxDurationMs}`);
+    }
+  }
+
+  // Invariant 4: Test requirements cannot be waived
+  if (rule.action === "adjust-threshold" && rule.parameters.skipTests === true) {
+    violations.push("I4: Cannot waive test requirements");
+  }
+  if (rule.action === "require-oracle" && rule.parameters.oracleName === "test" && rule.parameters.disable === true) {
+    violations.push("I4: Cannot disable test oracle");
+  }
+
+  // Invariant 5: Rollback capability cannot be disabled
+  if (rule.action === "adjust-threshold" && rule.parameters.disableRollback === true) {
+    violations.push("I5: Cannot disable rollback capability");
+  }
+
+  // Invariant 6: Routing hard floor cannot be lowered
+  if (rule.action === "escalate") {
+    const toLevel = rule.parameters.toLevel as number | undefined;
+    if (toLevel !== undefined && toLevel < 0) {
+      violations.push("I6: Cannot set routing level below 0");
+    }
+  }
+  // Multi-file changes cannot be routed to L0
+  if (rule.action === "adjust-threshold" && rule.parameters.forceL0ForMultiFile === true) {
+    violations.push("I6: Cannot route multi-file changes to L0");
+  }
+
+  return {
+    safe: violations.length === 0,
+    violations,
+  };
+}
+
+/**
+ * Check a batch of rules against safety invariants.
+ * Returns only the safe rules and a list of all violations.
+ */
+export function filterSafeRules(
+  rules: EvolutionaryRule[],
+): { safe: EvolutionaryRule[]; violations: Array<{ ruleId: string; violations: string[] }> } {
+  const safe: EvolutionaryRule[] = [];
+  const allViolations: Array<{ ruleId: string; violations: string[] }> = [];
+
+  for (const rule of rules) {
+    const result = checkSafetyInvariants(rule);
+    if (result.safe) {
+      safe.push(rule);
+    } else {
+      allViolations.push({ ruleId: rule.id, violations: result.violations });
+    }
+  }
+
+  return { safe, violations: allViolations };
+}
+
+// ── Budget ceiling — hard limits that evolution cannot exceed ─────────────
+
+const BUDGET_CEILING = {
+  maxTokens: 500_000,
+  maxDurationMs: 600_000, // 10 minutes
+} as const;

@@ -1,0 +1,68 @@
+import { z } from "zod/v4";
+
+/** Zod schema for validating oracle input (HypothesisTuple). */
+export const HypothesisTupleSchema = z.object({
+  target: z.string(),
+  pattern: z.string(),
+  context: z.record(z.string(), z.unknown()).optional(),
+  workspace: z.string(),
+});
+
+/** Evidence item schema. */
+export const EvidenceSchema = z.object({
+  file: z.string(),
+  line: z.number(),
+  snippet: z.string(),
+  contentHash: z.string().optional(),
+});
+
+/** QualityScore schema — Phase 0 computes architecturalCompliance + efficiency only. */
+export const QualityScoreSchema = z.object({
+  architecturalCompliance: z.number(),
+  efficiency: z.number(),
+  simplificationGain: z.number().optional(),
+  testMutationScore: z.number().optional(),
+  composite: z.number(),
+  dimensions_available: z.number().default(2),
+  phase: z.enum(["phase0", "phase1", "phase2"]).default("phase0"),
+});
+
+/** Oracle error codes for programmatic handling. */
+export const OracleErrorCodeSchema = z.enum([
+  "TIMEOUT",
+  "PARSE_ERROR",
+  "TYPE_MISMATCH",
+  "SYMBOL_NOT_FOUND",
+  "ORACLE_CRASH",
+]);
+
+/** Zod schema for validating oracle output (OracleVerdict). */
+/** Deliberation request schema — Phase 1+ ECP extension. */
+const DeliberationRequestSchema = z.object({
+  reason: z.string(),
+  suggestedBudget: z.number(),
+});
+
+/** Temporal context schema — Phase 1+ ECP extension. */
+const TemporalContextSchema = z.object({
+  valid_from: z.number(),
+  valid_until: z.number(),
+  decay_model: z.enum(["linear", "step", "none"]),
+});
+
+/** Zod schema for validating oracle output (OracleVerdict). */
+export const OracleVerdictSchema = z.object({
+  verified: z.boolean(),
+  type: z.enum(["known", "unknown", "uncertain", "contradictory"]).default("known"),
+  confidence: z.number().min(0).max(1).default(1.0),
+  evidence: z.array(EvidenceSchema),
+  falsifiable_by: z.array(z.string()).optional(),
+  fileHashes: z.record(z.string(), z.string()),
+  reason: z.string().optional(),
+  errorCode: OracleErrorCodeSchema.optional(),
+  oracleName: z.string().optional(),
+  duration_ms: z.number(),
+  qualityScore: QualityScoreSchema.optional(),
+  deliberation_request: DeliberationRequestSchema.optional(),
+  temporal_context: TemporalContextSchema.optional(),
+});

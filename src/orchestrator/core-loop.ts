@@ -1,0 +1,393 @@
+/**
+ * Orchestrator Core Loop — the central nervous system of Vinyan Phase 1.
+ *
+ * 6-step lifecycle: Perceive → Predict → Plan → Generate → Verify → Learn
+ * Nested loops: outer = routing level escalation, inner = retry within level.
+ *
+ * Source of truth: vinyan-tdd.md §16.2
+ * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
+ *
+ * STATUS: Phase 1 complete — all dependencies implemented (CalibratedSelfModel,
+ * TaskDecomposerImpl, WorkerPoolImpl, OracleGateAdapter, TraceCollectorImpl).
+ */
+import type {
+  TaskInput,
+  TaskResult,
+  RoutingLevel,
+  RoutingDecision,
+  PerceptualHierarchy,
+  WorkingMemoryState,
+  ExecutionTrace,
+  TaskDAG,
+  SelfModelPrediction,
+} from "./types.ts";
+import { WorkingMemory } from "./working-memory.ts";
+import type { VinyanBus } from "../core/bus.ts";
+import { computeQualityScore } from "../gate/quality-score.ts";
+
+// ---------------------------------------------------------------------------
+// Dependency interfaces (injected — each implemented in its own module)
+// ---------------------------------------------------------------------------
+
+export interface PerceptionAssembler {
+  assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy>;
+}
+
+export interface RiskRouter {
+  assessInitialLevel(input: TaskInput): Promise<RoutingDecision>;
+}
+
+export interface SelfModel {
+  predict(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+  ): Promise<SelfModelPrediction>;
+  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): void;
+}
+
+export interface TaskDecomposer {
+  decompose(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+  ): Promise<TaskDAG>;
+}
+
+export interface WorkerPool {
+  dispatch(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+    plan: TaskDAG | undefined,
+    routing: RoutingDecision,
+  ): Promise<WorkerResult>;
+}
+
+export interface OracleGate {
+  verify(
+    mutations: Array<{ file: string; content: string }>,
+    workspace: string,
+  ): Promise<VerificationResult>;
+}
+
+export interface TraceCollector {
+  record(trace: ExecutionTrace): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Internal result types
+// ---------------------------------------------------------------------------
+
+interface WorkerResult {
+  mutations: Array<{
+    file: string;
+    content: string;
+    diff: string;
+    explanation: string;
+  }>;
+  tokensConsumed: number;
+  duration_ms: number;
+}
+
+interface VerificationResult {
+  passed: boolean;
+  verdicts: Record<string, import("../core/types.ts").OracleVerdict>;
+  reason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+export interface OrchestratorDeps {
+  perception: PerceptionAssembler;
+  riskRouter: RiskRouter;
+  selfModel: SelfModel;
+  decomposer: TaskDecomposer;
+  workerPool: WorkerPool;
+  oracleGate: OracleGate;
+  traceCollector: TraceCollector;
+  bus?: VinyanBus;
+  // Phase 2 — optional, activated by factory when DB is available
+  skillManager?: import("./skill-manager.ts").SkillManager;
+  shadowRunner?: import("./shadow-runner.ts").ShadowRunner;
+  ruleStore?: import("../db/rule-store.ts").RuleStore;
+}
+
+const MAX_ROUTING_LEVEL: RoutingLevel = 3;
+
+/**
+ * Execute a task through the full Orchestrator lifecycle.
+ *
+ * Outer loop: escalate routing level on repeated failure (L0 → L1 → L2 → L3 → human)
+ * Inner loop: retry within routing level (up to budget.maxRetries)
+ *
+ * This is the single function that transforms Vinyan from a verification library
+ * into an autonomous agent. Everything flows through here.
+ */
+export async function executeTask(
+  input: TaskInput,
+  deps: OrchestratorDeps,
+): Promise<TaskResult> {
+  const workingMemory = new WorkingMemory();
+  const startTime = Date.now();
+
+  // Outer loop: routing level escalation
+  let routing = await deps.riskRouter.assessInitialLevel(input);
+
+  // ── Evolution Rules (Phase 2.6) — apply before main loop ─────────
+  if (deps.ruleStore) {
+    const fp = (input.targetFiles ?? []).sort().join(",") || "*";
+    const matchingRules = deps.ruleStore.findMatching({ filePattern: fp });
+    if (matchingRules.length > 0) {
+      const { resolveRuleConflicts } = await import("../evolution/rule-resolver.ts");
+      const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
+      const winners = resolveRuleConflicts(matchingRules);
+      for (const rule of winners) {
+        if (!checkSafetyInvariants(rule).safe) continue;
+        if (rule.action === "escalate" && typeof rule.parameters.toLevel === "number") {
+          const newLevel = rule.parameters.toLevel as RoutingLevel;
+          if (newLevel > routing.level) routing = { ...routing, level: newLevel };
+        }
+      }
+      deps.bus?.emit("evolution:rules_applied", { taskId: input.id, rules: winners });
+    }
+  }
+
+  deps.bus?.emit("task:start", { input, routing });
+
+  while (routing.level <= MAX_ROUTING_LEVEL) {
+    // Inner loop: retry within current routing level
+    for (let retry = 0; retry < input.budget.maxRetries; retry++) {
+      // ── Wall-clock timeout check ──────────────────────────────────
+      if (Date.now() - startTime > input.budget.maxDurationMs) {
+        const timeoutTrace: ExecutionTrace = {
+          id: `trace-${input.id}-timeout`,
+          taskId: input.id,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: "wall-clock-timeout",
+          oracleVerdicts: {},
+          model_used: routing.model ?? "none",
+          tokens_consumed: 0,
+          duration_ms: Date.now() - startTime,
+          outcome: "timeout",
+          failure_reason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
+          affected_files: input.targetFiles ?? [],
+        };
+        await deps.traceCollector.record(timeoutTrace);
+        deps.bus?.emit("task:timeout", {
+          taskId: input.id,
+          elapsed_ms: Date.now() - startTime,
+          budget_ms: input.budget.maxDurationMs,
+        });
+        const timeoutResult: TaskResult = {
+          id: input.id,
+          status: "failed",
+          mutations: [],
+          trace: timeoutTrace,
+        };
+        deps.bus?.emit("task:complete", { result: timeoutResult });
+        return timeoutResult;
+      }
+
+      // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
+      if (deps.skillManager && routing.level <= 1) {
+        const fp = (input.targetFiles ?? []).sort().join(",") || "*";
+        const taskSig = `${input.goal.slice(0, 50)}::${fp}`;
+        const skill = deps.skillManager.match(taskSig);
+        if (skill) {
+          const check = deps.skillManager.verify(skill);
+          if (check.valid) {
+            deps.bus?.emit("skill:match", { taskId: input.id, skill });
+            // Skill provides cached approach; oracle gate still verifies (A6 zero-trust)
+          } else {
+            deps.bus?.emit("skill:miss", { taskId: input.id, taskSignature: taskSig });
+          }
+        }
+      }
+
+      // ── Step 1: PERCEIVE ──────────────────────────────────────────
+      const perception = await deps.perception.assemble(input, routing.level);
+
+      // ── Step 2: PREDICT (L2+ only) ───────────────────────────────
+      let prediction: SelfModelPrediction | undefined;
+      if (routing.level >= 2) {
+        prediction = await deps.selfModel.predict(input, perception);
+        deps.bus?.emit("selfmodel:predict", { prediction });
+
+        // S1: Cold-start safeguard — enforce minimum routing level
+        if (prediction.forceMinLevel != null && routing.level < prediction.forceMinLevel) {
+          routing = { ...routing, level: prediction.forceMinLevel as RoutingLevel };
+        }
+      }
+
+      // ── Step 3: PLAN (L2+ only) ──────────────────────────────────
+      let plan: TaskDAG | undefined;
+      if (routing.level >= 2) {
+        plan = await deps.decomposer.decompose(
+          input,
+          perception,
+          workingMemory.getSnapshot(),
+        );
+      }
+
+      // ── Step 4: GENERATE (dispatch to worker) ────────────────────
+      deps.bus?.emit("worker:dispatch", { taskId: input.id, routing });
+      const workerResult = await deps.workerPool.dispatch(
+        input,
+        perception,
+        workingMemory.getSnapshot(),
+        plan,
+        routing,
+      );
+
+      // ── Step 5: VERIFY (oracle gate) ─────────────────────────────
+      const verification = await deps.oracleGate.verify(
+        workerResult.mutations.map((m) => ({
+          file: m.file,
+          content: m.content,
+        })),
+        input.targetFiles?.[0] ?? ".",
+      );
+
+      // ── Emit per-oracle verdicts ──────────────────────────────────
+      for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
+        deps.bus?.emit("oracle:verdict", { taskId: input.id, oracleName, verdict });
+      }
+
+      // ── Compute QualityScore from available data (A7: gradient signal) ──
+      const testVerdictKey = Object.keys(verification.verdicts).find(k => k.startsWith("test"));
+      const testContext = testVerdictKey
+        ? { testsExist: true, testsPassed: verification.verdicts[testVerdictKey]!.verified }
+        : undefined;
+      const qualityScore = computeQualityScore(
+        verification.verdicts,
+        workerResult.duration_ms,
+        routing.latencyBudget_ms,
+        undefined, // complexityContext — not available in core loop (TODO: Phase 2)
+        testContext,
+      );
+
+      // ── Step 6: LEARN ────────────────────────────────────────────
+      // Compute task type signature for Sleep Cycle grouping
+      const filePattern = (input.targetFiles ?? []).sort().join(",") || "*";
+      const taskTypeSignature = `${input.goal.slice(0, 50)}::${filePattern}`;
+
+      const trace: ExecutionTrace = {
+        id: `trace-${input.id}-${routing.level}-${retry}`,
+        taskId: input.id,
+        timestamp: Date.now(),
+        routingLevel: routing.level,
+        task_type_signature: taskTypeSignature,
+        approach: workerResult.mutations
+          .map((m) => m.explanation)
+          .join("; "),
+        oracleVerdicts: Object.fromEntries(
+          Object.entries(verification.verdicts).map(([k, v]) => [
+            k,
+            v.verified,
+          ]),
+        ),
+        model_used: routing.model ?? "none",
+        tokens_consumed: workerResult.tokensConsumed,
+        duration_ms: workerResult.duration_ms,
+        outcome: verification.passed ? "success" : "failure",
+        failure_reason: verification.passed ? undefined : verification.reason,
+        affected_files: workerResult.mutations.map((m) => m.file),
+        qualityScore,
+        prediction,
+      };
+
+      await deps.traceCollector.record(trace);
+      deps.bus?.emit("trace:record", { trace });
+
+      // Calibrate self-model from prediction vs actual outcome
+      if (prediction && deps.selfModel.calibrate) {
+        try { deps.selfModel.calibrate(prediction, trace); } catch { /* best-effort */ }
+      }
+
+      // ── SUCCESS → return result ──────────────────────────────────
+      if (verification.passed) {
+        const successResult: TaskResult = {
+          id: input.id,
+          status: "completed",
+          mutations: workerResult.mutations.map((m) => ({
+            file: m.file,
+            diff: m.diff,
+            oracleVerdicts: verification.verdicts,
+          })),
+          trace,
+          qualityScore,
+        };
+        // ── Shadow Enqueue (Phase 2.2) — A6 crash-safety ──────────
+        if (deps.shadowRunner && routing.level >= 2) {
+          const job = deps.shadowRunner.enqueue(
+            input.id,
+            workerResult.mutations.map(m => ({ file: m.file, content: m.content })),
+          );
+          trace.validation_depth = "structural";
+          deps.bus?.emit("shadow:enqueue", { job });
+        }
+
+        deps.bus?.emit("task:complete", { result: successResult });
+        return successResult;
+      }
+
+      // ── FAILURE → record in working memory, retry ────────────────
+      workingMemory.recordFailedApproach(
+        trace.approach,
+        verification.reason ?? "unknown",
+      );
+    }
+
+    // ── RETRY EXHAUSTED → escalate routing level ─────────────────
+    const nextLevel = (routing.level + 1) as RoutingLevel;
+    if (nextLevel > MAX_ROUTING_LEVEL) break;
+
+    deps.bus?.emit("task:escalate", {
+      taskId: input.id,
+      fromLevel: routing.level,
+      toLevel: nextLevel,
+      reason: `Exhausted ${input.budget.maxRetries} retries at L${routing.level}`,
+    });
+
+    routing = await deps.riskRouter.assessInitialLevel({
+      ...input,
+      // Force minimum routing level to next level
+      constraints: [
+        ...(input.constraints ?? []),
+        `MIN_ROUTING_LEVEL:${nextLevel}`,
+      ],
+    });
+  }
+
+  // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
+  const escalationTrace: ExecutionTrace = {
+    id: `trace-${input.id}-escalation`,
+    taskId: input.id,
+    timestamp: Date.now(),
+    routingLevel: MAX_ROUTING_LEVEL,
+    approach: "all-levels-exhausted",
+    oracleVerdicts: {},
+    model_used: routing.model ?? "none",
+    tokens_consumed: 0,
+    duration_ms: Date.now() - startTime,
+    outcome: "escalated",
+    failure_reason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
+    affected_files: input.targetFiles ?? [],
+  };
+
+  await deps.traceCollector.record(escalationTrace);
+  deps.bus?.emit("trace:record", { trace: escalationTrace });
+
+  const escalationResult: TaskResult = {
+    id: input.id,
+    status: "escalated",
+    mutations: [],
+    trace: escalationTrace,
+    escalationReason: `Task could not be completed after exhausting all routing levels (L0-L3). ${workingMemory.getSnapshot().failedApproaches.length} failed approaches recorded.`,
+  };
+  deps.bus?.emit("task:complete", { result: escalationResult });
+  return escalationResult;
+}

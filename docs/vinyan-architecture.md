@@ -1,21 +1,23 @@
 # Vinyan — Architecture Design Decisions
 
 > **Document boundary**: This document owns the **concrete architecture, component design, and technology decisions** for building Vinyan.
-> For vision/philosophy, see [vinyan-concept.md](vinyan-concept.md). For gap analysis vs. competitors, see [vinyan-gap-analysis.md](vinyan-gap-analysis.md).
+> For vision/philosophy/protocol design, see [vinyan-concept.md](vinyan-concept.md). For theoretical foundations, see [vinyan-theory.md](vinyan-theory.md). For competitive landscape, see [vinyan-gap-analysis.md](vinyan-gap-analysis.md).
 
 ---
 
 ## 1. Architectural Thesis
 
-**Core Decision:** Vinyan is NOT another agent framework. It is a **Deterministic Governance Layer** that wraps existing LLM runtimes with epistemic validation, risk-based routing, and evolutionary telemetry.
+**Core Decision:** Vinyan is an **Epistemic Nervous System** — a rule-based, non-LLM-driven substrate that connects heterogeneous Reasoning Engines via the Epistemic Communication Protocol (ECP). LLMs are one component, not the brain. The Orchestrator's routing, verification, and commit decisions are rule-based and state-reproducible — no LLM is in the decision path for governance actions (see [concept.md A3](vinyan-concept.md) for the precise definition of "deterministic governance"). Stochastic components (LLMs) are used for generation and initial task decomposition, but operate within deterministic constraints. See [concept.md §1-3](vinyan-concept.md) for the full vision, ECP specification, and Reasoning Engine model. All architectural decisions below implement the 7 Core Axioms defined in [concept.md §1.1](vinyan-concept.md).
 
-This means:
-- Phase 0–1: Vinyan runs as plugins/hooks inside OpenClaw (reuse channels, tools, session management)
-- Phase 2+: Vinyan grows its own Orchestrator process that coordinates multiple runtimes
-- Never: Vinyan does NOT reinvent channel integration, tool protocols, or session persistence
+**Implementation strategy — Prove, then Build:**
+- Phase 0: Prove epistemic verification works by deploying Oracle Gate inside an existing agent host (Claude Code or compatible host). Claude Code is the **test host**, not Vinyan's identity — like testing a new engine in an existing car before building the vehicle around it.
+- Phase 1: **Vinyan as Autonomous Agent** — standalone rule-based Orchestrator + LLM-powered Generator Engines + Tool Execution layer + MCP External Interface. Vinyan receives tasks, plans, generates code via LLM, executes tools, and verifies results as a complete agent system. The Orchestrator is rule-based, non-LLM code — LLMs are Generator Engines that propose; Oracles verify; the Orchestrator decides. See Decisions 7, 9, 12, 13, 14.
+- Phase 2: Multi-worker isolation + pattern-based optimization (Sleep Cycle extracts failure patterns → threshold adjustments + skill cache). Not self-evolving — frequency-based pattern detection with probation/promotion lifecycle.
+- Phase 3+: Full self-improvement (research-grade pattern mining + counterfactual generation + trace-calibrated Self-Model)
+- Phase 5: Complete ENS with no dependency on external agent frameworks
 
 **Rationale from source code analysis:**
-- OpenClaw's `runEmbeddedPiAgent()` is a 1,800-line function with deeply integrated retry, compaction, failover, and hook systems. Replacing it is a multi-year effort with diminishing returns.
+- Claude Code's `runEmbeddedPiAgent()` is a 1,800-line function with deeply integrated retry, compaction, failover, and hook systems. Replacing it is a multi-year effort with diminishing returns.
 - HiClaw proved that a governance layer (Manager) on top of OpenClaw agents works in production.
 - Claude Code's hooks system proves deterministic scripts can intercept LLM decisions without modifying the runtime.
 - Claude Cowork proves the **"same agentic SDK, different UX surface"** pattern — built in ~1.5 weeks on top of Claude Code's SDK, serving knowledge workers instead of developers. This validates that Vinyan's orchestrator core can power multiple frontends (CLI, VS Code extension, web dashboard) without architectural changes.
@@ -27,58 +29,79 @@ This means:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Human Interface Layer                        │
-│   OpenClaw Channels (20+) │ Matrix (multi-agent) │ API/CLI      │
+│   CLI │ API │ VS Code Extension │ Web Dashboard                  │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                  Vinyan Governance Layer                          │
-│  ┌──────────┐  ┌──────────────┐  ┌────────────┐  ┌───────────┐ │
-│  │ Epistemic│  │ Risk Router  │  │ World Graph│  │ Evolution │ │
-│  │ Oracle   │  │ (Sys1/Sys2)  │  │ (Truth DB) │  │ Engine    │ │
-│  │ Gateway  │  │              │  │            │  │           │ │
-│  └─────┬────┘  └──────┬───────┘  └─────┬──────┘  └─────┬─────┘ │
-│        │              │                │                │       │
-│  ┌─────▼──────────────▼────────────────▼────────────────▼─────┐ │
-│  │              Orchestrator Core (Event Bus)                  │ │
-│  └─────────────────────┬───────────────────────────────────────┘ │
-└─────────────────────────┼───────────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────────┐
-│                   Execution Substrate                            │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐  │
-│  │ Worker 1 │  │ Worker 2 │  │ Worker N │  │ Shadow Sandbox │  │
-│  │ (process)│  │ (process)│  │ (process)│  │ (Docker/microVM)│  │
-│  └──────────┘  └──────────┘  └──────────┘  └────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────▼──────────────────────────────────────────────────┐
+│              Vinyan Orchestrator (rule-based, non-LLM)                 │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ Core Loop: Perceive → Predict → Plan → Generate → Verify → Learn │  │
+│  └─────────┬───────────┬─────────────┬────────────┬─────────────────┘  │
+│            │           │             │            │                    │
+│  ┌─────────▼─┐  ┌──────▼─────┐  ┌────▼────┐  ┌────▼─────┐              │
+│  │ Risk      │  │ Task       │  │ Self-   │  │ Tool     │              │
+│  │ Router    │  │ Decomposer │  │ Model   │  │ Executor │              │
+│  │ (4-level) │  │ (iter DAG) │  │ (pred)  │  │ (perm)   │              │
+│  └───────────┘  └────────────┘  └─────────┘  └──────────┘              │
+│                                                                        │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ Verification Gate (Reasoning Engines / Oracles)            │        │
+│  │ ast-oracle │ type-oracle │ dep-oracle │ test-oracle │ lint │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                        │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ World Graph (SQLite + file watcher)                        │        │
+│  └────────────────────────────────────────────────────────────┘        │
+└─────────────────────────┬───────────────┬──────────────────────────────┘
+                          │               │
+┌─────────────────────────▼───┐    ┌──────▼─────────────────┐
+│  Execution Layer            │    │ External Interface     │
+│  (Worker child processes)   │    │ (MCP Bridge, Phase 1B) │
+│  ┌─────────────────────┐    │    │ ┌────────────────────┐ │
+│  │ Worker 1 (LLM Gen.) │    │    │ │ MCP Client         │ │
+│  │ Worker 2 (LLM Gen.) │    │    │ │ (consume tools)    │ │
+│  │ Shadow Sandbox      │    │    │ ├────────────────────┤ │
+│  └─────────────────────┘    │    │ │ MCP Server         │ │
+│           │                 │    │ │ (expose Oracles)   │ │
+└───────────┼─────────────────┘    │ └────────────────────┘ │
+            │                      └────────────────────────┘
+  ┌─────────▼───────────────┐
+  │   LLM Providers         │
+  │ Claude │ GPT │ Local    │
+  └─────────────────────────┘
 ```
 
 ---
 
 ## 3. Key Design Decisions
 
-### Decision 1: OpenClaw as Foundation, Not Fork
+### Decision 1: Phase 0 Host Strategy — Prove ENS in Production
 
-**Choice:** Build Vinyan as OpenClaw plugins (Phase 0–1), then as a sidecar governance process (Phase 2+).
+> **Axioms: A1, A3** — Epistemic Separation (verify the epistemic approach in production before building the full platform) + Deterministic Governance (plugin hooks = deterministic intercept points for proof-of-concept)
 
-**Alternatives considered:**
+**Choice:** Use Claude Code (or compatible host) as a **test host** for Phase 0 to prove epistemic verification works. Phase 0 Vinyan is a **verification library** (not an agent or a nervous system); Claude Code is the first environment where verification components are validated. The ENS label describes the architectural vision (Phase 1+), not Phase 0's deliverable.
+
+**Alternatives considered for Phase 0 validation:**
 | Option | Pros | Cons | Verdict |
-|--------|------|------|---------|
-| Fork OpenClaw | Full control | 336k-star maintenance burden, divergence | ❌ Rejected |
-| Build from scratch | Clean design | Years to reach channel/tool parity | ❌ Rejected |
-| **Plugin + sidecar** | Instant production use, incremental migration | Constrained by hook points | ✅ Chosen |
+|--------|------|------|----------|
+| Fork Claude Code | Full control | 336k-star maintenance burden, divergence | ❌ Rejected |
+| Build full ENS from day 1 | Clean design, no identity confusion | Years to prove core thesis works in production | ❌ Rejected |
+| **Test host (plugin) → standalone** | Prove epistemic verification fast, then build independently | Phase 0 constrained by host's hook points | ✅ Chosen |
 
 **Implementation:**
 - `before_tool_call` hook → Epistemic Oracle Gateway (validate hypothesis before execution)
 - `after_tool_call` hook → World Graph update (record verified facts)
 - `before_model_resolve` hook → Risk Router (select model tier based on task risk)
-- `before_prompt_build` hook → Context injection (inject StateVector from World Graph)
+- `before_prompt_build` hook → Context injection (inject PerceptualHierarchy + WorkingMemory)
 - Separate process → Orchestrator Core (manages workers, tracks evolution)
 
-**Source code evidence:** OpenClaw's hook system is production-hardened. `createHookRunner()` supports priority ordering, `block=true` terminal semantics, and sequential chaining. The `before_tool_call` hook can modify params OR block execution — exactly what Oracles need.
+**Source code evidence:** Claude Code's hook system is production-hardened. `createHookRunner()` supports priority ordering, `block=true` terminal semantics, and sequential chaining. The `before_tool_call` hook can modify params OR block execution — exactly what Oracles need.
 
 ---
 
 ### Decision 2: World Graph — SQLite + File Hash Binding
+
+> **Axioms: A4, A5** — Content-Addressed Truth (file hash binding) + Tiered Trust (deterministic > heuristic > probabilistic evidence)
 
 **Choice:** SQLite database with content-addressed facts, not a vector DB.
 
@@ -125,15 +148,20 @@ END;
 
 ---
 
-### Decision 3: Epistemic Oracle — Pluggable Child Process Architecture
+### Decision 3: Reasoning Engine Gateway — ECP-Based Pluggable Architecture
 
-**Choice:** Each Oracle is a standalone executable that receives a HypothesisTuple on stdin and returns an OracleVerdict on stdout.
+> **Axioms: A1, A2, A5** — Epistemic Separation (pluggable engines ≠ self-evaluation) + First-Class Uncertainty (ECP carries confidence) + Tiered Trust (engine registry ranked by evidence tier)
+
+**Choice:** Each Reasoning Engine communicates with the Orchestrator via the Epistemic Communication Protocol (ECP). Phase 0 transport: JSON-RPC over stdio (same as MCP local). Engines are standalone executables that receive a HypothesisTuple and return an OracleVerdict with epistemic metadata (confidence, evidence chain, falsifiability). See [concept.md §2-3](vinyan-concept.md) for the full ECP specification and Reasoning Engine model. For ECP vs MCP capability comparison, see [concept.md §2.3](vinyan-concept.md) — ECP is a semantic extension of JSON-RPC that adds epistemic state as first-class data; MCP is used only for the External Interface channel (Decision 14).
 
 **Rationale:**
-- Oracles must be deterministic — they MUST NOT call LLMs
-- Child process isolation prevents a crashing oracle from taking down the orchestrator
-- Any language can implement an oracle (TypeScript, Python, Rust, shell script)
-- Timeout enforcement per oracle (kill child process after N seconds)
+- Deterministic Reasoning Engines (Verifiers) MUST NOT call LLMs — they are the epistemic ground truth
+- Heuristic/Probabilistic engines (Predictors, Critics) may use LLMs but declare confidence < 1.0
+- Process isolation prevents a crashing engine from taking down the orchestrator
+- Any language can implement a Reasoning Engine (TypeScript, Python, Rust, shell script)
+- ECP carries epistemic metadata (confidence, evidence chains) that plain stdio JSON lacks
+- For external tool integration, MCP Servers bridge into the ecosystem via the External Interface channel
+- Timeout enforcement per engine (kill child process after N seconds)
 
 **Interface:**
 
@@ -147,16 +175,21 @@ interface HypothesisTuple {
 }
 
 // Output: read from oracle's stdout as JSON
+// Aligns with concept.md §2.2 ECPResponse — epistemic metadata is first-class
 interface OracleVerdict {
   verified: boolean;
-  evidence: Array<{
+  confidence: number;           // 1.0 for deterministic oracles, <1.0 for heuristic (maps to ECPResponse.confidence)
+  evidence: Array<{              // provenance chain (maps to ECPResponse.evidence)
     file: string;
     line: number;
     snippet: string;
+    contentHash: string;        // SHA-256 of source file — A4 compliance
   }>;
+  falsifiable_by: string[];     // conditions that would invalidate this verdict (maps to ECPResponse.falsifiable_by)
   fileHashes: Record<string, string>;  // path → SHA-256
-  reason?: string;          // human-readable explanation when !verified
+  reason?: string;              // human-readable explanation when !verified
   duration_ms: number;
+  qualityScore?: QualityScore;  // multi-dimensional quality signal (see Decision 10)
 }
 ```
 
@@ -190,7 +223,9 @@ If any fail → reject with evidence, return to worker
 
 ### Decision 4: Risk Router — Static Analysis Score, Not ML
 
-**Choice:** Numeric risk score from static analysis, with threshold-based routing to System 1 or System 2.
+> **Axiom: A3** — Deterministic Governance (risk routing uses rule-based heuristics, not ML models)
+
+**Choice:** Numeric risk score from static analysis, with threshold-based routing to a 4-level continuum: L0 Reflex, L1 Heuristic, L2 Analytical, L3 Deliberative (see [concept.md §8](vinyan-concept.md)).
 
 **Rationale:**
 - ML-based risk scoring needs training data we don't have yet
@@ -205,46 +240,75 @@ interface RiskFactors {
   dependencyDepth: number;  // max depth in import chain
   testCoverage: number;     // 0.0–1.0, % of affected code with tests
   fileVolatility: number;   // git commits in last 30 days for affected files
-  reversibility: number;    // 0.0–1.0 (additive=1.0, destructive=0.0)
+  irreversibility: number;  // 0.0–1.0 (DB writes, external API calls, deployments that can't git-revert)
   hasSecurityImplication: boolean;  // touches auth/crypto/env files
+  environmentType: 'development' | 'staging' | 'production';  // deployment target
 }
 
 function calculateRiskScore(factors: RiskFactors): number {
   const base =
     (factors.blastRadius * 0.25) +
-    (factors.dependencyDepth * 0.15) +
-    ((1 - factors.testCoverage) * 0.20) +
+    (factors.dependencyDepth * 0.10) +
+    ((1 - factors.testCoverage) * 0.15) +
     (factors.fileVolatility * 0.10) +
-    ((1 - factors.reversibility) * 0.20) +
-    (factors.hasSecurityImplication ? 0.10 : 0);
+    (factors.irreversibility * 0.20) +
+    (factors.hasSecurityImplication ? 0.10 : 0) +
+    (factors.environmentType === 'production' ? 0.10 : 0);
+  // Weights sum to 1.0: 0.25 + 0.10 + 0.15 + 0.10 + 0.20 + 0.10 + 0.10
+
+  // Operational Guardrail (A6): production + non-reversible → force Level 3 + human approval
+  if (factors.environmentType === 'production' && factors.irreversibility > 0.5) {
+    return Math.max(0.9, base);
+  }
 
   return Math.min(1.0, base);
 }
 
-// Routing thresholds (configurable per project)
-const SYSTEM_1_THRESHOLD = 0.4;   // below → System 1 (fast, cheap)
-const SYSTEM_2_THRESHOLD = 0.7;   // above → System 2 (MCTS, expensive)
-// between → System 1 with human notification
+// 4-Level routing thresholds (configurable per project)
+// Maps risk score → routing level per concept.md §8
+const ROUTING_THRESHOLDS = {
+  L0_MAX: 0.2,    // ≤ 0.2 → Level 0 (Reflex): cached/trivial, < 100ms budget
+  L1_MAX: 0.4,    // ≤ 0.4 → Level 1 (Heuristic): single worker, < 2s budget
+  L2_MAX: 0.7,    // ≤ 0.7 → Level 2 (Analytical): full verification, < 10s budget
+  // > 0.7 → Level 3 (Deliberative): parallel hypothesis, shadow exec, < 60s budget
+};
 ```
 
-**System 1 (Linear Execution):**
-- Single worker, sequential tool calls
-- Fast model (e.g., Claude Haiku, GPT-4o-mini)
-- No shadow execution — direct commit after Oracle validation
-- Budget cap: 10K tokens per task
+**Latency budgets are design constraints, not aspirations** (per [concept.md §7](vinyan-concept.md)). If Oracle verification cannot meet the budget for a routing level, the Oracle is either optimized, made asynchronous (non-blocking with rollback capability), or excluded from that level's pipeline.
 
-**System 2 (Branching Execution):**
-- Multiple workers explore in parallel (MCTS-inspired)
-- Powerful model (e.g., Claude Opus, o3)
-- Shadow execution in Docker sandbox before commit
-- Budget cap: 100K tokens per task, with early termination on Oracle pass
-- Selection: choose the branch where ALL Oracles pass with highest test coverage
+**Operational Guardrails (A6) — Prompt Injection + Production Boundary:**
 
-**System 2 is NOT traditional MCTS.** Classical MCTS requires a simulation function and reward signal. For code mutations, the "simulation" is shadow execution and the "reward" is Oracle pass rate. The tree is shallow (typically 2–3 levels: approach selection → implementation → validation).
+| Guardrail | Mechanism | Phase |
+|-----------|-----------|-------|
+| Input sanitization | Content entering worker prompts stripped of instruction-like patterns at perception boundary | Phase 0 |
+| Oracle independence | Oracles verify actual code artifacts, never worker claims about code | Phase 0 |
+| Auto-reject bypass | Worker output referencing "skip Oracle" / "bypass validation" rejected by Orchestrator | Phase 0 |
+| Production escalation | `environmentType: 'production'` AND `irreversibility > 0.5` → auto-escalate to Level 3 + human approval | Phase 0 |
+| Non-reversible gate | `irreversibility > 0.8` requires separate approval regardless of environment | Phase 1 |
+
+**Routing Level Execution Profiles:**
+
+| Level | Workers | Model Tier | Shadow Exec | Token Budget | Mutation Phases (concept.md §7) |
+|:------|:--------|:-----------|:------------|:-------------|:-------------------------------|
+| **L0 (Reflex)** | Cached/skip | — | ❌ | — | Intent → Commit (skip blast radius + shadow) |
+| **L1 (Heuristic)** | Single worker | fast (Haiku) | ❌ | 10K | Intent → Blast Radius (lightweight) → Commit |
+| **L2 (Analytical)** | Single worker | balanced | Conditional* | 50K | Intent → Blast Radius (full) → Conditional Shadow → Commit |
+| **L3 (Deliberative)** | Parallel (PHE) | powerful (Opus) | ✅ mandatory | 100K per branch | All 4 phases mandatory |
+
+*L2 Shadow Execution triggers only when blast radius exceeds a configurable threshold (default: 5 affected files or risk score > 0.7).
+
+**Parallel Hypothesis Evaluation (L3 — PHE):**
+- Multiple workers explore in parallel
+- Early termination on Reasoning Engine pass
+- Selection: choose the branch where ALL engines pass with highest composite quality score
+
+**PHE is NOT traditional MCTS.** Software engineering search spaces are combinatorially explosive without clean reward signals (unlike game playing). PHE uses **parallel hypothesis generation with structured selection** (closer to beam search). The "simulation" is shadow execution; the "reward" is composite quality score from Reasoning Engines (§3.1 tiered registry). The tree is shallow (typically 2–3 levels: approach selection → implementation → validation).
 
 ---
 
 ### Decision 5: Worker Isolation — Progressive Levels
+
+> **Axiom: A6** — Zero-Trust Execution (workers propose, orchestrator disposes; progressive isolation matches trust level)
 
 **Choice:** Three isolation levels based on risk score, not one-size-fits-all.
 
@@ -254,7 +318,7 @@ const SYSTEM_2_THRESHOLD = 0.7;   // above → System 2 (MCTS, expensive)
 | **L1: Child process** | Risk 0.2–0.7 (standard mutations) | `child_process.fork()`, IPC via stdio | ~50ms |
 | **L2: VM / Container** | Risk > 0.7 (destructive/security-sensitive) | VM (Apple VZVirtualMachine) or Docker container with mounted workspace copy | ~2–5s |
 
-**Rationale:** HiClaw uses containers for everything (500ms+ startup per worker). OpenClaw uses in-process with optional sandbox. Claude Cowork validates that **full VM isolation** (via Apple Virtualization Framework's `VZVirtualMachine`) is production-viable for agent workloads — giving a hard OS boundary rather than Docker's shared kernel. Vinyan's progressive model matches isolation cost to actual risk: Docker for standard high-risk tasks, VM for security-critical operations where kernel-level isolation is required.
+**Rationale:** HiClaw uses containers for everything (500ms+ startup per worker). Claude Code uses in-process with optional sandbox. Claude Cowork validates that **full VM isolation** (via Apple Virtualization Framework's `VZVirtualMachine`) is production-viable for agent workloads — giving a hard OS boundary rather than Docker's shared kernel. Vinyan's progressive model matches isolation cost to actual risk: Docker for standard high-risk tasks, VM for security-critical operations where kernel-level isolation is required.
 
 **Worker lifecycle (L1 — the common case):**
 
@@ -270,7 +334,7 @@ Orchestrator                           Worker (child process)
     ├── read result.json ◄──────────────    │ (process dead)
     ├── Oracle validation
     ├── if pass → commit to canonical
-    └── if fail → log, route to System 2 or escalate
+    └── if fail → log, escalate routing level or escalate to human
 ```
 
 **Filesystem contract (replaces shared memory):**
@@ -290,6 +354,8 @@ workspace/
 ---
 
 ### Decision 6: Evolutionary Engine — Trace-Based Pattern Mining
+
+> **Axiom: A7** — Prediction Error as Learning Signal (trace deltas drive rule generation, not task success/failure alone)
 
 **Choice:** Structured failure traces → periodic batch analysis → rule generation.
 
@@ -317,6 +383,11 @@ interface ExecutionTrace {
   outcome: "success" | "failure" | "timeout" | "escalated";
   failure_reason?: string;
   affected_files: string[];
+  // QualityScore + Skill Formation infrastructure (A4, A7)
+  approach_description: string;       // natural-language summary of what was attempted
+  quality_score?: QualityScore;       // multi-dimensional quality signal (see Decision 10)
+  success_pattern_tag?: string;       // set by Evolution Engine during Sleep Cycle
+  prediction_error?: PredictionError; // Self-Model prediction vs actual outcome (see Decision 11)
 }
 ```
 
@@ -325,7 +396,7 @@ interface ExecutionTrace {
 1. **Trigger:** Every N sessions or on idle (cron-like)
 2. **Analysis:** Query traces for recurring failure patterns:
    - Same oracle failing >3x on similar file patterns → generate rule
-   - System 2 consistently succeeding where System 1 fails → adjust threshold
+   - Level 2-3 consistently succeeding where Level 0-1 fails → adjust routing thresholds
    - Specific model failing >50% on certain file types → route away
 3. **Rule generation:** Produce candidate rules as structured JSON (not prose)
 4. **Validation:** Each candidate rule is tested against historical traces — only rules that would have prevented past failures AND wouldn't have blocked past successes are promoted
@@ -355,7 +426,9 @@ interface EvolutionaryRule {
 
 ### Decision 7: Multi-Agent Coordination — Two-Tier Model
 
-**Choice:** Vinyan Orchestrator (deterministic, non-LLM) coordinates LLM workers. NOT an LLM managing other LLMs.
+> **Axioms: A3, A6** — Deterministic Governance (orchestrator coordinates deterministically) + Zero-Trust Execution (workers have zero execution privileges)
+
+**Choice:** Vinyan Orchestrator (rule-based, non-LLM-driven — see [concept.md A3](vinyan-concept.md)) coordinates LLM workers. NOT an LLM managing other LLMs.
 
 **HiClaw's flaw:** Manager is an LLM. It can hallucinate task assignments, forget to @mention workers, misjudge task complexity. The whole multi-agent system inherits the Manager's cognitive failures.
 
@@ -364,8 +437,8 @@ interface EvolutionaryRule {
 ```
 Human (or API)
     ↓
-Vinyan Orchestrator (deterministic TypeScript process)
-    ├── Task decomposition: uses dep-oracle to identify affected subsystems
+Vinyan Orchestrator (rule-based TypeScript process, non-LLM governance)
+    ├── Task decomposition: LLM-assisted with Oracle validation at each level (see concept.md §8)
     ├── Risk assessment: calculates per-subtask risk scores
     ├── Worker assignment: matches subtask to worker profile (capability registry)
     ├── Execution: dispatches to workers (parallel where independent)
@@ -373,56 +446,77 @@ Vinyan Orchestrator (deterministic TypeScript process)
     └── Aggregation: merges results, runs integration oracles
 ```
 
-**Why NOT LLM-as-orchestrator:**
-- Deterministic orchestration is reproducible — same input → same dispatch plan
-- No token cost for coordination logic
-- No hallucinated task decomposition
-- Can be tested with unit tests (deterministic code, not prompt engineering)
+**Why NOT LLM-as-orchestrator (for governance):**
+- Rule-based orchestration is reproducible — same input state → same routing/verification/commit decision
+- No token cost for governance logic (routing, verification gating, commit decisions)
+- Task decomposition IS LLM-assisted (see below), but the Orchestrator validates decomposition output through Oracles — the governance of decomposition is rule-based, even when inputs come from probabilistic sources
+- Can be tested with unit tests (rule-based code, not prompt engineering)
 
-**When LLM IS needed for task decomposition:**
-- For ambiguous human requests, use a single "Planner" LLM call to produce a structured task DAG
-- The Planner output is validated against the dependency oracle before execution
-- This is a one-shot call, not an ongoing LLM process managing workers
+**Iterative Task Decomposition (replaces one-shot planning):**
+
+**Decomposition is LLM-assisted, not deterministic** (see [concept.md §8](vinyan-concept.md)). The initial task decomposition — breaking a user request into a high-level DAG — uses an LLM in its Generator Engine role (Decision 12). The Orchestrator does not decompose tasks through rules alone — natural language understanding requires an LLM. However, the Orchestrator's **governance** of decomposition is rule-based: it validates each decomposition level through Oracles, enforces structural constraints, and rejects invalid DAGs. **LLMs generate candidate decompositions; the Orchestrator validates and commits them.** This is consistent with A3 — governance decisions are rule-based, even when inputs come from probabilistic sources.
+
+Planning loop: `Planner LLM (Generator Engine) → dep-oracle (structural) → coverage-validator (rule-based) → accept or replan (max 3 iterations)`
+
+**Machine-checkable acceptance criteria** (all deterministic):
+1. **No orphan leaf nodes** — every leaf in the task DAG has a parent
+2. **No scope overlap** — subtask file sets don't intersect (or intersection is explicitly annotated as shared dependency)
+3. **Coverage** — union of subtask targets ⊇ blast radius of original request
+4. **Valid dependency order** — topological sort of the DAG succeeds
+5. **Verification specified** — every leaf node specifies which oracle(s) will validate its output
+
+**Two-tier validation** (preserves A5 Tiered Trust):
+- **Deterministic tier**: dep-oracle, coverage-validator — MUST pass, has veto power
+- **Heuristic tier**: Critic (LLM-as-judge) — advisory only, confidence < 1.0, logged but cannot override a deterministic pass. Active at Level 3 only.
+
+**Planning depth scales with routing level:**
+- Level 0-1 (Reflex/Heuristic): no planning — single task, direct execution
+- Level 2 (Analytical): single-pass plan + deterministic validation (no Critic)
+- Level 3 (Deliberative): iterative plan + Critic + full validation loop (max 3 iterations, then escalate to human)
 
 ---
 
-### Decision 8: Ambient Sensor Matrix — StateVector Assembly
+### Decision 8: Perceptual Hierarchy + Working Memory
 
-**Choice:** Deterministic script that assembles a StateVector before every worker dispatch.
+> **Axioms: A2, A4** — First-Class Uncertainty (Working Memory tracks failed approaches, active hypotheses, unresolved uncertainties) + Content-Addressed Truth (PerceptualHierarchy assembled from content-hashed sources)
 
-**Implementation:**
+**Choice:** Replace the flat StateVector with two distinct constructs: a **PerceptualHierarchy** (what the worker sees) and a **WorkingMemory** (what the Orchestrator tracks across retries).
+
+**Why not keep StateVector?** StateVector assembles everything indiscriminately. A 50-file blast radius dumps 50 files of context regardless of what matters. PerceptualHierarchy filters by deterministic salience — dep-oracle traverses the dependency cone from task target, filtered by routing level depth.
+
+**PerceptualHierarchy** — replaces StateVector. Salience is **deterministic** (preserving A3):
+- Level 0-1 (Reflex/Heuristic): shallow — direct imports + diagnostics only
+- Level 2-3 (Analytical/Deliberative): deep — transitive deps + World Graph facts + historical failure patterns
 
 ```typescript
-interface StateVector {
-  // Git state
-  git: {
-    branch: string;
-    uncommittedFiles: string[];
-    recentCommits: Array<{ hash: string; message: string; files: string[] }>;
+interface PerceptualHierarchy {
+  taskTarget: {
+    file: string;
+    symbol?: string;
+    description: string;
   };
 
-  // Dependency graph (relevant to task)
-  dependencies: {
-    directImporters: string[];    // files that import the target
-    directImportees: string[];    // files the target imports
-    transitiveBlastRadius: number; // total files in dependency cone
+  dependencyCone: {
+    directImporters: string[];
+    directImportees: string[];
+    transitiveBlastRadius: number;
+    transitiveImporters?: string[];     // Level 2-3 only
+    affectedTestFiles?: string[];       // Level 2-3 only
   };
 
-  // Code health
   diagnostics: {
-    lintWarnings: number;
-    typeErrors: number;
+    lintWarnings: Array<{ file: string; line: number; message: string }>;
+    typeErrors: Array<{ file: string; line: number; message: string }>;
     failingTests: string[];
   };
 
-  // World Graph summary (relevant verified facts)
   verifiedFacts: Array<{
     target: string;
     pattern: string;
     verified_at: number;
+    hash: string;
   }>;
 
-  // Runtime context
   runtime: {
     nodeVersion: string;
     os: string;
@@ -431,11 +525,461 @@ interface StateVector {
 }
 ```
 
-**Assembly cost:** StateVector is assembled ONCE per worker dispatch, using cached results where possible:
-- Git state: `git status` + `git log -5` (~50ms)
-- Dependencies: Cached import graph, invalidated on file change (~10ms cache hit, ~500ms cold)
-- Diagnostics: Last lint/type-check results from World Graph (~5ms)
-- Facts: SQLite query filtered by task target (~10ms)
+**WorkingMemory** — maintained by Orchestrator (not worker). Workers are stateless; they receive a snapshot and produce output. Working Memory turns "retry" into "replan with evidence":
+
+```typescript
+interface WorkingMemory {
+  // Failed approaches — injected as hard constraints ("do NOT try X again")
+  failedApproaches: Array<{
+    approach: string;           // natural-language description
+    oracleVerdict: string;      // which oracle rejected, with evidence
+    timestamp: number;
+  }>;
+
+  // What the current plan is testing (for tracking and post-hoc analysis)
+  activeHypotheses: Array<{
+    hypothesis: string;         // "adding timeout parameter will fix race condition"
+    confidence: number;         // Self-Model's predicted success probability
+    source: string;             // which Reasoning Engine proposed this
+  }>;
+
+  // Things Self-Model flagged as low-confidence predictions
+  unresolvedUncertainties: Array<{
+    area: string;               // "test coverage for async paths"
+    selfModelConfidence: number; // how confident Self-Model is in its own prediction
+    suggestedAction: string;    // "run full test suite before commit"
+  }>;
+
+  // Verified facts from World Graph, scoped to current task's dependency cone
+  scopedFacts: Array<{
+    target: string;
+    pattern: string;
+    verified: boolean;
+    hash: string;
+  }>;
+}
+```
+
+**Strategy escalation trigger:** After N failures on same task (configurable, default 3) → auto-escalate routing level. Level 1 → Level 2, Level 2 → Level 3, Level 3 → human escalation. Failed approaches from Working Memory are preserved across escalation.
+
+**Assembly cost comparison:**
+
+| Metric | Old StateVector | New PerceptualHierarchy |
+|--------|----------------|------------------------|
+| Git state | Always (~50ms) | Always (~50ms) |
+| Dependency cone | Full blast radius | Filtered by routing level (~10-500ms) |
+| Diagnostics | All warnings/errors | Cone-filtered only (~5ms) |
+| Facts | All relevant facts | Cone-filtered + hash-verified (~10ms) |
+| Working Memory | N/A | Orchestrator lookup (~1ms) |
+
+---
+
+### Decision 9: Adaptive Execution Lifecycle
+
+> **Axioms: A3, A7** — Deterministic Governance (lifecycle steps are rule-based and fixed per routing level) + Prediction Error as Learning Signal (execution outcomes feed back into Self-Model calibration)
+
+**Choice:** Replace the implicit generate→verify→retry flow with an **adaptive execution lifecycle** that scales with routing level. This is NOT one-size-fits-all — Level 0 tasks skip prediction/planning entirely; Level 3 tasks run the full cognitive pipeline.
+
+**Lifecycle per routing level:**
+
+| Step | Level 0 (Reflex) | Level 1 (Heuristic) | Level 2 (Analytical) | Level 3 (Deliberative) |
+|------|----------|------------|-------------|---------------|
+| **Perceive** | Cached skill lookup | PerceptualHierarchy (shallow) | PerceptualHierarchy (deep) | PerceptualHierarchy (deep) |
+| **Predict** | — | — | Self-Model prediction | Self-Model prediction |
+| **Plan** | — | — | Single-pass + deterministic validation | Iterative + Critic + full validation |
+| **Generate** | Return cached result | Single worker | Single worker | Parallel workers (PHE) |
+| **Verify** | Hash check only | Oracle validation | Oracle validation + QualityScore | Oracle + QualityScore + shadow execution |
+| **Learn** | — | Trace recording | Trace + PredictionError | Trace + PredictionError + approach tagging |
+
+**"Retry" is demoted to "replan with evidence":**
+
+On Oracle rejection → record failure in `WorkingMemory.failedApproaches` → re-enter lifecycle at **Plan** step (not Generate) with blacklisted approach → re-generate with new plan. After N replans (configurable, default 3) → escalate routing level. This means:
+- Level 1 failure (no planning) → escalate to Level 2 (adds planning + prediction)
+- Level 2 failure after 3 replans → escalate to Level 3 (adds Critic + PHE)
+- Level 3 failure after 3 replans → escalate to human
+
+**Lifecycle state machine:**
+
+```
+START → Perceive → [Level ≥ 2?] → Predict → Plan → Validate Plan
+                     │                                    │
+                     │ no                          [pass?] │
+                     ↓                              yes ↓  no → replan (max N)
+                  Generate → Verify → [pass?] → Learn → DONE
+                     ↑                   │
+                     │                   no
+                     └── replan with evidence (update WorkingMemory)
+```
+
+**Key invariant:** The Orchestrator controls lifecycle progression — workers never decide their own routing level, retry strategy, or escalation. Workers receive a `PerceptualHierarchy` + `WorkingMemory` snapshot and produce output. All governance state transitions are rule-based and state-reproducible (A3).
+
+---
+
+### Decision 10: Quality Signal — QualityScore as First-Class Contract
+
+> **Axioms: A2, A7** — First-Class Uncertainty (quality is multi-dimensional, not binary) + Prediction Error as Learning Signal (QualityScore enables Self-Model calibration and Evolution Engine learning)
+
+**Choice:** Extend Oracle verdicts from binary pass/fail to multi-dimensional quality signals. QualityScore is the prerequisite for Self-Model prediction, Evolution Engine learning, and future Skill Formation.
+
+**Why this matters:** Binary pass/fail tells you "it works" but not "it's good." A function that passes all tests but doubles cyclomatic complexity is technically correct but architecturally harmful. Without quality signal, the Evolution Engine can only learn "what fails" — never "what succeeds well."
+
+```typescript
+interface QualityScore {
+  architecturalCompliance: number;  // import depth, circular deps, layer violations (0.0–1.0)
+  efficiency: number;               // tokens consumed / quality achieved (0.0–1.0)
+  simplificationGain?: number;      // reduction in cyclomatic complexity (0.0–1.0). Phase 1+.
+  testMutationScore?: number;       // % of injected faults caught by tests. Phase 1+.
+
+  composite: number;                // weighted combination → single scalar for ranking
+  dimensions_available: number;     // how many dimensions were actually computed
+  phase: 'phase0' | 'phase1' | 'phase2';  // which dimensions are trustworthy
+}
+```
+
+**Phase-gated rollout:**
+
+| Dimension | Phase 0 | Phase 1 | Phase 2+ |
+|-----------|---------|---------|----------|
+| `architecturalCompliance` | ✅ (import analysis via dep-oracle) | ✅ | ✅ |
+| `efficiency` | ✅ (tokens / task outcome) | ✅ | ✅ |
+| `simplificationGain` | ❌ | ✅ (AST diff via tree-sitter) | ✅ |
+| `testMutationScore` | ❌ | ✅ (mutation testing infra) | ✅ |
+| `composite` reliability | Low (2 dimensions) | Medium (4 dimensions) | High (+ user feedback) |
+
+**Impact on existing components:**
+- **OracleVerdict** (Decision 3): optional `qualityScore` field added
+- **ExecutionTrace** (Decision 6): `quality_score` field added for Evolution Engine consumption
+- **Level 3 PHE** (Decision 4): multiple passing branches → select by highest `composite`
+- **Self-Model** (Decision 11): predicts expected `composite`; PredictionError = |predicted - actual|
+- **Skill Formation** (Phase 2): promotion criteria require minimum `composite` across N traces
+
+---
+
+### Decision 11: Self-Model — Forward Prediction + Calibration Loop
+
+> **Axioms: A2, A7** — First-Class Uncertainty (Self-Model predictions carry explicit confidence) + Prediction Error as Learning Signal (PredictionError is the primary calibration signal)
+
+**Choice:** Promote Self-Model from theoretical construct to Phase 1 implementation contract. The Self-Model predicts outcomes BEFORE execution; PredictionError after execution drives calibration.
+
+**Cold-start honesty:** Phase 1 prediction accuracy will be **~50-60%** with static heuristic rules. This is acceptable — the value is in starting the calibration loop early, not in accurate Phase 1 predictions. Architecture consumers MUST NOT treat Self-Model predictions as reliable until Phase 2 calibration data exists.
+
+**Cold-start safeguards** (per [concept.md §9.2](vinyan-concept.md)) to prevent bad predictions from poisoning the calibration loop:
+
+| Safeguard | Mechanism | Configuration |
+|:----------|:----------|:-------------|
+| **Conservative override period** | During first N tasks, Self-Model routing is advisory only — Orchestrator defaults to L2 (Analytical) minimum regardless of prediction | `coldStart.overridePeriod: 50` |
+| **Meta-uncertainty** | Self-Model outputs confidence-in-prediction based on sample size. With < 10 observations for a task pattern, meta-confidence forced to < 0.3, triggering conservative fallback | Automatic |
+| **Human audit sampling** | During calibration (first 100 tasks), 10% of routing decisions flagged for optional human review — provides ground truth for miscalibration cases | `coldStart.auditSampleRate: 0.1` |
+| **Monotonic trust ramp** | Self-Model's influence on routing increases monotonically as calibration error decreases — cannot gain authority faster than accuracy improves | `coldStart.trustRampEnabled: true` |
+| **Hard routing floor** | Self-Model cannot route below L1 for any task with blast radius > 1 file | Immutable invariant |
+
+**Self-Model specification:**
+
+```typescript
+interface SelfModelPrediction {
+  taskId: string;
+  timestamp: number;
+
+  // Prediction targets
+  expectedTestResults: 'pass' | 'fail' | 'partial';  // will tests pass?
+  expectedBlastRadius: number;                        // how many files affected?
+  expectedDuration: number;                           // ms
+  expectedQualityScore: number;                       // predicted composite QualityScore
+  uncertainAreas: string[];                            // what Self-Model is least confident about
+
+  // Confidence metadata
+  confidence: number;           // 0.0–1.0, how confident Self-Model is in these predictions
+  basis: 'static-heuristic' | 'trace-calibrated' | 'hybrid';  // what generated this prediction
+  calibrationDataPoints: number; // how many historical traces informed this prediction
+}
+
+interface PredictionError {
+  taskId: string;
+  predicted: SelfModelPrediction;
+  actual: {
+    testResults: 'pass' | 'fail' | 'partial';
+    blastRadius: number;
+    duration: number;
+    qualityScore: number;
+  };
+  error: {
+    testResultMatch: boolean;
+    blastRadiusDelta: number;    // actual - predicted
+    durationDelta: number;       // actual - predicted
+    qualityScoreDelta: number;   // actual - predicted
+    composite: number;           // normalized aggregate error
+  };
+}
+```
+
+**Cold-start heuristics (Phase 1):**
+
+| Prediction Target | Heuristic Rule | Expected Accuracy |
+|-------------------|---------------|-------------------|
+| Test results | File has ≥3 tests + test coverage >70% → predict 'pass' | ~60% |
+| Blast radius | dep-oracle transitive count | ~80% (deterministic) |
+| Duration | Historical mean for similar file count | ~40% |
+| Quality score | Baseline from project's last 20 traces | ~50% |
+
+**Integration points:**
+- **Before worker dispatch** (Level 2-3): Self-Model predicts outcomes → injected into `WorkingMemory.unresolvedUncertainties`
+- **After Oracle verification**: PredictionError computed → stored in `ExecutionTrace.prediction_error`
+- **Evolution Engine**: consumes PredictionError to calibrate routing thresholds and refine heuristics
+- **Routing escalation**: if Self-Model confidence < 0.3 for a Level 1 task → auto-escalate to Level 2
+
+---
+
+### Decision 12: LLM Runtime Integration — Generator Engine
+
+> **Axioms: A1, A2** — Epistemic Separation (LLM generates, separate engines verify — LLM never evaluates its own output) + First-Class Uncertainty (LLM outputs are wrapped with confidence as ECPResponse, never treated as verified facts)
+
+**Choice:** LLMs are integrated as **Generator-class Reasoning Engines** via a provider-agnostic registry. The Orchestrator constructs prompts, dispatches to the appropriate provider, and wraps responses as ECP payloads. LLMs NEVER act as the brain — they are one source of hypotheses among many.
+
+**Provider Registry:**
+
+```typescript
+interface LLMProvider {
+  id: string;                           // "claude-opus", "gpt-4o", "ollama-llama3"
+  type: 'cloud' | 'local';
+  tier: 'fast' | 'balanced' | 'powerful';
+  capabilities: string[];               // ["code-generation", "planning", "critique"]
+  costPerMToken: number;                // normalized Vinyan Credits
+  maxContextTokens: number;
+  supportsStreaming: boolean;
+
+  // Core API — all providers implement this
+  generate(request: LLMRequest): Promise<LLMResponse>;
+}
+
+interface LLMRequest {
+  systemPrompt: string;                 // Orchestrator-assembled (PerceptualHierarchy + constraints)
+  userPrompt: string;                   // Task intent + WorkingMemory context
+  maxTokens: number;
+  temperature: number;                  // Lower for Level 0-1, higher for Level 3 exploration
+  stopSequences?: string[];
+  tools?: ToolDefinition[];             // Available tools for this task (see D13)
+}
+
+interface LLMResponse {
+  content: string;
+  toolCalls?: ToolCall[];               // Proposed tool calls (validated by Orchestrator before execution)
+  tokensUsed: { input: number; output: number };
+  model: string;
+  stopReason: 'end_turn' | 'max_tokens' | 'tool_use';  // Anthropic API naming convention
+}
+```
+
+**Prompt Construction Pipeline:**
+
+```
+1. PerceptualHierarchy assembly (→ D8)
+   ├── Dependency cone (from dep-oracle)
+   ├── Diagnostics (lint, type errors)
+   ├── Verified facts (from World Graph)
+   └── Runtime context
+
+2. WorkingMemory injection (→ D8)
+   ├── failedApproaches → "Do NOT try these again: [...]"
+   ├── activeHypotheses → "Current plan: [...]"
+   └── unresolvedUncertainties → "Caution areas: [...]"
+
+3. Task intent
+   ├── What to accomplish
+   ├── Allowed file scope (from D5 permission model)
+   └── Available tools (from D13 tool set)
+
+4. System constraints
+   ├── Output format requirements (structured JSON / diff)
+   ├── Token budget
+   └── Safety invariants (immutable rules)
+```
+
+**ECP Wrapping:** LLM responses are NEVER committed directly. They are wrapped as:
+
+```typescript
+// LLM output → ECPResponse wrapping
+const ecpResponse: ECPResponse = {
+  type: 'uncertain',                    // LLM output is ALWAYS uncertain until verified
+  confidence: selfModel.predictedConfidence,  // Self-Model's prediction, NOT LLM's self-assessment
+  evidence: [],                          // Empty — LLM provides no verified evidence
+  falsifiable_by: plan.verificationCriteria,  // What oracles will check this against
+};
+```
+
+**Provider Routing by Risk Level:**
+
+| Risk Level | Default Provider Tier | Temperature | Budget |
+|:-----------|:---------------------:|:-----------:|:------:|
+| Level 0-1 (Reflex/Heuristic) | fast | 0.0-0.1 | 10K tokens |
+| Level 2 (Analytical) | balanced | 0.2-0.4 | 50K tokens |
+| Level 3 (Deliberative) | powerful | 0.3-0.7 | 100K tokens |
+| Level 3 PHE (exploration) | powerful | 0.5-0.8 | 100K per branch |
+
+**What this enables:** Vinyan can now generate code, plans, and solutions autonomously — while maintaining the core A1 invariant that the Generator never verifies its own work. Every LLM output flows through the Verification Gate (Oracles) before any state mutation occurs.
+
+---
+
+### Decision 13: Tool Execution Model — Orchestrator-Mediated Environment Interaction
+
+> **Axiom: A6** — Zero-Trust Execution (workers propose tool calls, Orchestrator validates and executes. Workers NEVER interact with the environment directly.)
+
+**Choice:** The Orchestrator provides a sandboxed tool execution layer. Workers propose tool calls as structured requests; the Orchestrator validates permissions per risk level, executes the tool, and returns results as ECP evidence.
+
+**Tool Categories & Permission Model:**
+
+| Tool | Permission | L0 (in-process) | L1 (child proc) | L2 (container) |
+|:-----|:-----------|:---:|:---:|:---:|
+| `file_read` | Read file contents | ✅ | ✅ | ✅ |
+| `file_write` | Create/edit file | ❌ | ✅ allowedPaths only | ✅ copy-on-write |
+| `directory_list` | List directory | ✅ | ✅ | ✅ |
+| `search_grep` | Text search in workspace | ✅ | ✅ | ✅ |
+| `search_semantic` | Semantic code search | ✅ | ✅ | ✅ |
+| `shell_exec` | Execute shell command | ❌ | ✅ allowlist only | ✅ sandboxed |
+| `git_read` | Git status/log/diff/show | ✅ | ✅ | ✅ |
+| `git_write` | Git add/commit/push | ❌ | ❌ | ❌ (human only) |
+| `http_get` | Read-only HTTP | ❌ | ✅ allowlist | ✅ allowlist |
+
+**Tool Call Flow:**
+
+```
+Worker proposes:   { tool: "file_write", path: "src/auth.ts", content: "..." }
+        ↓
+Orchestrator validates:
+  1. Is file_write allowed for this risk level? (L1+ only)
+  2. Is src/auth.ts in worker's allowedPaths? (D5 filesystem contract)
+  3. Does content contain bypass/injection patterns? (D4 guardrails)
+        ↓
+If valid → Execute tool → Return result as ECP evidence:
+  { type: 'known', confidence: 1.0, evidence: [{ file: "src/auth.ts", ... }] }
+        ↓
+If invalid → Reject with reason → Worker receives ECP denial:
+  { type: 'unknown', confidence: 0.0, reason: "file_write not permitted at L0" }
+```
+
+**Tool Interface:**
+
+```typescript
+interface ToolDefinition {
+  name: string;                         // "file_read", "shell_exec", etc.
+  description: string;
+  parameters: Record<string, { type: string; description: string; required: boolean }>;
+  minIsolationLevel: 0 | 1 | 2;        // Minimum worker isolation level required
+  requiresApproval: boolean;            // Human approval needed? (git_write = always)
+}
+
+interface ToolCall {
+  id: string;                           // Unique call identifier
+  tool: string;
+  parameters: Record<string, unknown>;  // Standardized with code (was 'arguments')
+}
+
+interface ToolResult {
+  callId: string;                       // References ToolCall.id
+  tool: string;                         // Tool name that was executed
+  status: 'success' | 'error' | 'denied'; // Denied = permission/isolation rejection
+  output?: unknown;                     // Tool-specific output
+  error?: string;
+  evidence?: Evidence;                  // A4 compliance — file tools produce content hashes
+  duration_ms: number;
+}
+```
+
+**Shell Execution Allowlist (L1):**
+
+```typescript
+const SHELL_ALLOWLIST = [
+  'tsc --noEmit',           // Type checking
+  'bun test',               // Test execution
+  'ruff check',             // Linting
+  'eslint',                 // Linting
+  'prettier --check',       // Formatting check
+  'git status', 'git log', 'git diff', 'git show',  // Read-only git
+];
+// Any command not in allowlist → requires L2 (container) or human approval
+```
+
+**Rationale:** This is the missing piece that turns Vinyan from "verification engine" to "autonomous agent." Workers can now read files, write code, run tests, search the codebase — but always through the Orchestrator's permission layer, never directly. Combined with D12 (LLM Generator), Vinyan has the complete Generate→Tool→Verify loop.
+
+---
+
+### Decision 14: MCP External Interface — Tool Consumption & Oracle Exposure
+
+> **Axiom: A2** — First-Class Uncertainty (MCP tool results lack epistemic metadata — the bridge must add confidence, evidence provenance, and uncertainty markers before MCP results enter Vinyan's ECP world)
+
+**Choice:** Phase 1B extension. Vinyan acts as both **MCP client** (consume external tools) and **MCP server** (expose Oracles to other agents). The ECP↔MCP bridge translates between epistemic and non-epistemic protocols.
+
+**Phase 1A vs 1B split:**
+- **Phase 1A (core agent):** Built-in tools only (file I/O, shell, search per D13). No MCP dependency. Vinyan is a functional autonomous agent.
+- **Phase 1B (interoperability):** MCP client + server. Extends Vinyan's tool ecosystem and makes Oracles consumable by Claude Code, HiClaw, etc.
+
+**MCP Client — Consume External Tools:**
+
+```typescript
+interface MCPToolBridge {
+  // Discover tools from connected MCP servers
+  discoverTools(): Promise<ToolDefinition[]>;
+
+  // Execute an MCP tool, wrapping result in ECP
+  executeTool(call: ToolCall): Promise<ECPResponse>;
+}
+
+// Bridge: MCP result → ECP wrapping
+function wrapMCPResult(mcpResult: MCPToolResult): ECPResponse {
+  return {
+    type: 'uncertain',                  // MCP tools have no epistemic guarantees
+    confidence: 0.5,                    // Default — unknown reliability until calibrated
+    evidence: [{
+      source: `mcp://${mcpResult.server}/${mcpResult.tool}`,
+      raw: mcpResult.content,
+      timestamp: Date.now(),
+    }],
+    falsifiable_by: ['oracle-verification'],  // Must be verified before trusted
+  };
+}
+```
+
+**MCP Server — Expose Oracles:**
+
+```typescript
+// Vinyan exposes its Oracles as MCP tools for other agents to consume
+const VinyanMCPServer = {
+  tools: [
+    {
+      name: "vinyan_ast_verify",
+      description: "Verify symbol existence, function signatures, import relationships via AST",
+      inputSchema: HypothesisTupleSchema,
+      handler: (input) => astOracle.verify(input),
+    },
+    {
+      name: "vinyan_type_check",
+      description: "Run type checker (tsc/pyright) on workspace",
+      inputSchema: HypothesisTupleSchema,
+      handler: (input) => typeOracle.verify(input),
+    },
+    {
+      name: "vinyan_blast_radius",
+      description: "Calculate which files are affected by a change",
+      inputSchema: { target: "string" },
+      handler: (input) => depOracle.analyze(input),
+    },
+    {
+      name: "vinyan_world_query",
+      description: "Query verified facts from World Graph",
+      inputSchema: { target: "string", pattern: "string" },
+      handler: (input) => worldGraph.query(input),
+    },
+  ],
+};
+```
+
+**ECP↔MCP Bridge Design:**
+
+| Direction | What flows | Translation |
+|:----------|:-----------|:------------|
+| MCP → ECP (consuming tools) | Raw tool result | Wrap with `confidence: 0.5`, mark `type: 'uncertain'`, require Oracle verification before trust |
+| ECP → MCP (exposing Oracles) | OracleVerdict | Flatten to MCP tool result format, embed `confidence` and `evidence` as JSON in result content |
+
+**Research question (deferred):** MCP has no concept of "I don't know." When an Oracle returns `type: 'unknown'`, what should the MCP server respond? Options: (a) return empty result with metadata, (b) MCP error code, (c) propose MCP protocol extension for epistemic states. This is tracked in the Open Questions.
 
 ---
 
@@ -443,7 +987,7 @@ interface StateVector {
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| **Language** | TypeScript (Bun runtime) | Same as OpenClaw → plugin compatibility, Bun = fast startup for workers |
+| **Language** | TypeScript (Bun runtime) | Bun = fast startup for workers, broad ecosystem for Reasoning Engines |
 | **World Graph** | SQLite (via `better-sqlite3`) | Zero-dependency, WAL mode for read concurrency |
 | **AST parsing** | tree-sitter (via `node-tree-sitter`) | Multi-language, proven in every major IDE |
 | **Type checking** | `tsc` CLI / Pyright CLI | Existing tools, deterministic |
@@ -451,7 +995,10 @@ interface StateVector {
 | **File watching** | `chokidar` | Proven, handles macOS FSEvents |
 | **IPC** | JSON over stdio (child process) / mounted volume (Docker) | Crash-only design |
 | **Configuration** | `vinyan.json` in workspace root | Per-project config (thresholds, oracle selection) |
-| **OpenClaw integration** | Plugin hooks + custom extension | Non-invasive, upgradeable |
+| **Phase 0 host bridge** | Plugin hooks (Phase 0 only) | Proves ENS thesis before standalone orchestrator |
+| **LLM providers** | Anthropic/OpenAI SDK, ollama | Multi-provider Generator Engine (D12) |
+| **Tool execution** | Bun built-ins + child_process | File I/O, shell, search via Orchestrator-mediated permission model (D13) |
+| **MCP bridge** | `@modelcontextprotocol/sdk` | External Interface — consume tools + expose Oracles (D14, Phase 1B) |
 
 ---
 
@@ -471,14 +1018,19 @@ interface StateVector {
     "dep":  { "enabled": true }
   },
 
-  // Risk routing thresholds
+  // 4-level routing thresholds (concept.md §8)
   "routing": {
-    "system1_max_risk": 0.4,
-    "system2_min_risk": 0.7,
-    "system1_model": "claude-haiku",
-    "system2_model": "claude-opus",
-    "system1_budget_tokens": 10000,
-    "system2_budget_tokens": 100000
+    "l0_max_risk": 0.2,
+    "l1_max_risk": 0.4,
+    "l2_max_risk": 0.7,
+    // > l2_max_risk → Level 3 (Deliberative)
+    "l0_l1_model": "claude-haiku",
+    "l2_model": "claude-sonnet",
+    "l3_model": "claude-opus",
+    "l1_budget_tokens": 10000,
+    "l2_budget_tokens": 50000,
+    "l3_budget_tokens": 100000,
+    "latency_budgets_ms": { "l0": 100, "l1": 2000, "l2": 10000, "l3": 60000 }
   },
 
   // Worker isolation
@@ -508,25 +1060,36 @@ interface StateVector {
 
 ---
 
-## 6. Phase 0 Implementation — Vinyan as OpenClaw Plugin
+## 6. Phase 0 Implementation — Proving Epistemic Verification
 
-**Goal:** Prove that deterministic Oracle validation reduces hallucinated execution in production.
+**Goal:** Prove the verification thesis — rule-based Oracle validation reduces **structural** hallucination (hallucinated symbols, wrong types, broken imports) in LLM-generated code. Phase 0 is a **verification library** inside a host agent, not an autonomous system. It proves A1 (epistemic separation) and A4 (content-addressed truth). See [concept.md §12.1](vinyan-concept.md) for the pre-registered experimental protocol. Claude Code (or compatible host) serves as the test host.
 
 **Deliverables:**
-1. OpenClaw plugin: `vinyan-oracle-gate` — intercepts `before_tool_call` and `after_tool_call`
+1. Host bridge: `vinyan-oracle-gate` — deployed as Claude Code plugin, intercepts `before_tool_call` and `after_tool_call`
 2. Oracle framework: `@vinyan/oracle` — pluggable oracle interface with built-in AST + type oracles
 3. World Graph: `@vinyan/world-graph` — SQLite fact store with file hash invalidation
-4. CLI: `vinyan init` — generates `vinyan.json` for a project
+4. Operational guardrails: prompt injection defense + production boundary enforcement (A6)
+5. CLI: `vinyan init` — generates `vinyan.json` for a project
 
 **Plugin hook integration:**
 
 ```typescript
-// OpenClaw plugin entry point
+// Claude Code plugin entry point
 export default {
   id: "vinyan-oracle-gate",
-  register(api: OpenClawPluginApi) {
-    // Before any tool call: validate hypothesis if mutation is proposed
+  register(api: HostPluginApi) {    // HostPluginApi = Claude Code or compatible host SDK
+    // Before any tool call: sanitize + validate hypothesis (A6 Operational Guardrails)
     api.on("before_tool_call", async (event) => {
+      // Guardrail: reject prompt injection patterns in tool parameters
+      if (detectPromptInjection(event.params)) {
+        return { block: true, blockReason: "Prompt injection pattern detected in tool parameters" };
+      }
+
+      // Guardrail: auto-reject worker attempts to bypass Oracle validation
+      if (containsBypassAttempt(event.params)) {
+        return { block: true, blockReason: "Worker attempted to bypass Oracle validation" };
+      }
+
       if (!isMutatingTool(event.toolName)) return {};  // read-only → pass through
 
       const riskScore = await assessRisk(event);
@@ -552,24 +1115,29 @@ export default {
       await updateWorldGraph(event.toolName, event.params, event.result);
     });
 
-    // Before prompt: inject StateVector
+    // Before prompt: sanitize inputs + inject PerceptualHierarchy + WorkingMemory
     api.on("before_prompt_build", async (event) => {
-      const stateVector = await assembleStateVector(event);
+      const sanitizedEvent = sanitizeInputPatterns(event);  // strip instruction-like patterns (A6)
+      const perception = await assemblePerceptualHierarchy(sanitizedEvent);
+      const workingMemory = await getWorkingMemory(event.taskId);
       return {
-        systemPromptSuffix: formatStateVector(stateVector),
+        systemPromptSuffix: formatPerception(perception, workingMemory),
       };
     });
 
-    // Before model selection: route based on risk
+    // Before model selection: route based on 4-level risk continuum (concept.md §8)
     api.on("before_model_resolve", async (event) => {
       const risk = await estimateTaskRisk(event.prompt);
-      if (risk > config.routing.system2_min_risk) {
-        return { modelOverride: config.routing.system2_model };
+      if (risk <= config.routing.l0_max_risk) {
+        return { modelOverride: config.routing.l0_l1_model };  // L0 Reflex
       }
-      if (risk < config.routing.system1_max_risk) {
-        return { modelOverride: config.routing.system1_model };
+      if (risk <= config.routing.l1_max_risk) {
+        return { modelOverride: config.routing.l0_l1_model };  // L1 Heuristic
       }
-      return {};
+      if (risk <= config.routing.l2_max_risk) {
+        return { modelOverride: config.routing.l2_model };     // L2 Analytical
+      }
+      return { modelOverride: config.routing.l3_model };       // L3 Deliberative
     });
   }
 };
@@ -579,34 +1147,49 @@ export default {
 - Does Oracle validation catch errors that LLM self-evaluation misses?
 - Does risk-based model routing reduce cost without reducing quality?
 - Does the World Graph reduce context window degradation?
+- Do operational guardrails (prompt injection defense, production boundary) prevent unsafe execution?
 
 **What this does NOT solve (deferred to Phase 1+):**
 - Multi-worker coordination (single agent in Phase 0)
-- Full shadow execution (uses OpenClaw's existing sandbox)
+- Full shadow execution (uses Claude Code's existing sandbox)
 - Evolutionary governance (traces collected but not analyzed in Phase 0)
 
 ---
 
-## 7. Phase 1 Implementation — Vinyan Orchestrator
+## 7. Phase 1 Implementation — Vinyan as Autonomous Agent
 
-**Goal:** Standalone orchestrator process that coordinates multiple workers with risk routing.
+**Goal:** Vinyan becomes a complete AI agent that receives tasks, plans, generates code, executes tools, and verifies results — all coordinated by a rule-based, non-LLM Orchestrator. No host agent dependency.
 
 **New components:**
-- `vinyan-orchestrator` — long-running TypeScript process
-- Worker pool management (fork/kill child processes)
-- System 1/System 2 routing with budget tracking
-- Task DAG decomposition (single LLM call → validated by dep-oracle)
-- Telemetry collection for Evolution Engine
+- `vinyan-orchestrator` — long-running TypeScript process with core Perceive→Plan→Generate→Verify→Learn loop
+- LLM Generator Engine — multi-provider registry, prompt construction from PerceptualHierarchy + WorkingMemory, response parsing + ECP wrapping (Decision 12)
+- Tool Execution layer — file I/O, shell, search with Orchestrator-mediated permission model (Decision 13)
+- Worker pool management (fork/kill child processes) with budget enforcement (Decision 5)
+- 4-level adaptive routing (Reflex/Heuristic/Analytical/Deliberative) with budget tracking (Decision 4)
+- Iterative task DAG decomposition with machine-checkable validation (Decision 7)
+- PerceptualHierarchy assembly + WorkingMemory management (Decision 8)
+- Self-Model prediction + PredictionError calibration loop (Decision 11)
+- QualityScore computation: `architecturalCompliance` + `efficiency` + `simplificationGain` + `testMutationScore` (Decision 10)
+- Telemetry collection for Evolution Engine (Decision 6)
+
+**Phase 1B extension:**
+- MCP External Interface — client for consuming external tools + server for exposing Oracles (Decision 14)
 
 **Architecture change from Phase 0:**
 
 ```
-Phase 0:                          Phase 1:
-OpenClaw → Vinyan plugin          Vinyan Orchestrator (standalone)
-    ↓                                 ↓                    ↓
-Single agent                      Worker 1 (process)   Worker 2 (process)
-                                  (OpenClaw runtime)   (OpenClaw runtime)
+Phase 0 (proof-of-concept):       Phase 1 (autonomous agent):
+Claude Code (test host)           Vinyan Orchestrator (rule-based, non-LLM)
+    ↓                                 ├── Perceive (World Graph + PerceptualHierarchy)
+Vinyan Oracle Gate (host bridge)      ├── Predict (Self-Model)
+    ↓                                 ├── Plan (Task Decomposer + dep-oracle)
+Single agent w/ verification          ├── Generate (LLM Workers via D12)
+                                      │   └── Tool Execution (D13)
+                                      ├── Verify (Oracle Gate — AST, Type, Dep, Test)
+                                      └── Learn (Trace + PredictionError + WorkingMemory)
 ```
+
+**The critical shift:** Phase 0 deploys Vinyan's epistemic verification components inside Claude Code (test host to prove the thesis). Phase 1 makes Vinyan the complete agent loop — the Orchestrator owns the entire Perceive→Learn cycle. Oracle verification, World Graph, and Risk Routing (proven in Phase 0) are wired into the loop as first-class steps, not hooks.
 
 ---
 
@@ -614,10 +1197,11 @@ Single agent                      Worker 1 (process)   Worker 2 (process)
 
 | Phase | Milestone | Key Capability |
 |-------|-----------|---------------|
-| Phase 2 | VM / Container isolation | L2 workers in VM (VZVirtualMachine) or Docker, Shadow Execution for System 2 |
-| Phase 3 | Evolution Engine | Sleep Cycle, automated rule generation, probation → promotion |
+| Phase 1B | MCP External Interface | MCP client (consume external tools) + MCP server (expose Oracles). Extends Phase 1A tool ecosystem. (Decision 14) |
+| Phase 2 | Container Isolation + Pattern-Based Optimization | L2 workers in Docker, Shadow Execution for L3, **pattern detection** (Sleep Cycle extracts failure patterns → threshold adjustments + skill cache with probation/promotion). Realistic: 2–3 anti-patterns per 200 tasks. |
+| Phase 3 | Full Self-Improvement (Research) | Full pattern mining + counterfactual generation, trace-calibrated Self-Model (replaces static heuristics), bounded rule modification |
 | Phase 4 | Fleet Governance | Meritocratic worker profiles, capability-based routing |
-| Phase 5 | Self-hosted Orchestrator | No dependency on OpenClaw runtime |
+| Phase 5 | Complete ENS | Standalone system, multi-instance coordination, cross-language support |
 
 ---
 
@@ -625,7 +1209,7 @@ Single agent                      Worker 1 (process)   Worker 2 (process)
 
 | Framework | What we take | What we avoid |
 |-----------|-------------|---------------|
-| **OpenClaw** | Plugin hooks, channel layer, session JSONL, tool definitions, prompt caching | Monolithic agent loop, self-evaluation, no risk routing |
+| **Claude Code (host)** | Plugin hooks, channel layer, session JSONL, tool definitions, prompt caching | Monolithic agent loop, self-evaluation, no risk routing |
 | **HiClaw** | Credential isolation pattern, MinIO-like file IPC, task directory convention | LLM-as-orchestrator, chat-based coordination, Manager hallucinations |
 | **Claude Code** | Hooks as deterministic scripts, permission model, subagent parallelism | Human-authored rules only (no self-evolution), no blast radius |
 | **Claude Cowork** | VM-first isolation (VZVirtualMachine validates L2 VM approach), file-based auditable plugin system (inspiration for user-defined Oracles), sub-agent parallel decomposition with progress visibility, scheduled recurring task automation (validates Sleep Cycle concept), folder-scoped 3-tier permission model | LLM-only orchestration (no deterministic validation), no cross-session World Graph, desktop-must-stay-awake constraint, no risk routing or blast radius calculation, no self-evolution |
@@ -635,20 +1219,41 @@ Single agent                      Worker 1 (process)   Worker 2 (process)
 
 ## 10. Success Criteria
 
-### Phase 0 (Vinyan Oracle Gate plugin)
-- Oracle validation catches ≥30% of mutations that would have failed (measured against baseline without plugin)
+> **Axiom Validation Gate:** Each phase's success criteria map to proving specific Core Axioms ([concept.md §1.1](vinyan-concept.md)). A phase is not complete until its axiom-mapped metrics pass.
+
+### Phase 0 (Verification Library) — *Proves A1, A4; partially validates A5, A6*
+
+Per the pre-registered experimental protocol in [concept.md §12.1](vinyan-concept.md):
+
+- **Primary metric:** ≥25% reduction in structural error rate (broken imports, type errors, wrong signatures, non-existent symbol references) — treatment (agent + oracle gate) vs baseline (agent without oracle gate), measured over ≥30 TypeScript mutation tasks stratified by complexity
+- **False positive rate:** Oracle rejects correct code < 10% of the time
+- **Latency overhead:** < 3s per mutation (L1 budget)
+- **Statistical test:** Paired comparison, Wilcoxon signed-rank test, α = 0.05
 - Risk-based routing reduces token cost by ≥20% without reducing task success rate
-- Zero false positives from Oracle blocking in first 100 sessions (tune thresholds)
+- Operational guardrails block 100% of prompt injection test cases and production boundary violations
+- **Go/No-Go:** Primary metric met AND false positive rate acceptable → proceed to Phase 1. Otherwise → analyze failure modes, iterate oracle design, or stop.
 
-### Phase 1 (Orchestrator)
+### Phase 1 (Autonomous Agent) — *Proves A1, A2, A3, A6, A7*
+- Vinyan completes coding tasks end-to-end without host agent dependency
 - Multi-worker tasks complete ≥2x faster than single-worker equivalent
-- System 2 (MCTS branching) succeeds on tasks where System 1 fails ≥50% of the time
+- Level 2-3 (PHE parallel hypothesis) succeeds on tasks where Level 0-1 fails ≥50% of the time
 - World Graph reduces redundant tool calls by ≥25% (agent reads verified facts instead of re-exploring)
+- Iterative planning produces valid DAGs (passes all 5 machine-checkable criteria) in ≤2 iterations for >80% of tasks
+- Self-Model PredictionError decreases by ≥20% over first 100 sessions (calibration loop working)
+- QualityScore `composite` correlates with human quality judgment at r≥0.6
+- LLM Generator Engine successfully wraps ≥3 providers (Claude, GPT, local) with identical ECP interface
+- Tool Execution layer handles ≥10 tool types with zero permission violations over 100 sessions
 
-### Phase 2+ (Full vision)
-- Evolution Engine generates ≥5 useful rules per 1000 sessions
-- Meritocratic fleet governance demotes underperforming configurations within 20 sessions
-- Human escalation rate drops below 10% of total tasks
+### Phase 2 (Pattern-Based Optimization) — *Hardens A3, A6*
+- Sleep Cycle detects ≥2 actionable anti-patterns from first 200 tasks
+- Skill cache hit rate ≥30% for recurring task types after 100+ cached skills
+- Container isolation blocks ≥99% of unauthorized state mutations
+- Human escalation rate drops below 15% of total tasks
+
+### Phase 3+ (Research) — *Validates A7 at scale*
+- Full pattern mining produces rules that outperform random threshold adjustment (measured via backtesting)
+- Trace-calibrated Self-Model prediction accuracy ≥75% (up from ~55% cold-start)
+- Fleet governance demotes underperforming configurations within 20 sessions
 
 ---
 
@@ -656,10 +1261,27 @@ Single agent                      Worker 1 (process)   Worker 2 (process)
 
 | Question | Current Assumption | When to Resolve |
 |----------|-------------------|-----------------|
-| How to decompose ambiguous tasks into a DAG? | Single LLM "Planner" call, validated by dep-oracle | Phase 1 prototype |
+| ~~How to decompose ambiguous tasks into a DAG?~~ | **Resolved**: Iterative planning loop with 5 machine-checkable criteria (Decision 7) | — |
 | How to handle Oracle disagreements? (ast-oracle passes, type-oracle fails) | Any-fail = block. May need weighted voting later. | Phase 0 data collection |
 | How to share World Graph across workers without race conditions? | Read-only copy per worker, merge on return. Orchestrator is single writer. | Phase 1 implementation |
-| What's the right MCTS depth for System 2? | 2–3 levels (approach → implementation → validation). Deeper exploration unlikely to help for code. | Phase 2 experiments |
-| When does the Orchestrator itself need an LLM? | Task decomposition only. All other coordination is deterministic. | Phase 1 — validate this assumption |
-| Should L2 use VM (VZVirtualMachine-style) or Docker? | Docker for Phase 2 MVP. VM for security-critical ops (Cowork proves VM overhead is acceptable for agent workloads). | Phase 2 — benchmark overhead vs. isolation guarantees |
-| Should Vinyan support scheduled recurring tasks (like Cowork's `/schedule`)? | Yes — maps to Evolution Engine's Sleep Cycle. But Vinyan's version is self-directed (pattern mining + rule generation), not human-scheduled. | Phase 3 — when Evolution Engine is implemented |
+| What's the right PHE depth for Level 3? | 2–3 levels (approach → implementation → validation). | Phase 2 experiments |
+| When does the Orchestrator itself need an LLM? | Task decomposition (all levels) + Critic (Level 3 only). All governance (routing, verification gating, commit) is rule-based. See Decision 7 and [concept.md §8](vinyan-concept.md). | Phase 1 — validate this assumption |
+| Should L2 use VM (VZVirtualMachine-style) or Docker? | Docker for Phase 2 MVP. VM for security-critical ops. | Phase 2 — benchmark overhead vs. isolation guarantees |
+| How fast does Self-Model calibrate from static heuristics? | ~50-60% initial accuracy, improving with PredictionError feedback. Target: >75% by 200 sessions. | Phase 1 — track calibration curve |
+| What's the minimum QualityScore dimensions needed for useful Skill Formation? | Hypothesis: 3 dimensions (architectural + efficiency + simplificationGain). | Phase 2 — when Skill Formation cache activates |
+
+---
+
+## 12. Failure Modes & Recovery Strategies
+
+For the complete failure mode analysis (F1–F5), see [concept.md §14](vinyan-concept.md). Key failure scenarios and their architectural mitigations:
+
+| Failure Mode | Architecture Mitigation |
+|:-------------|:-----------------------|
+| **Oracle false negative** (rejects correct code) | Configurable human override with audit trail. Oracle accuracy tracked — systematic false negatives trigger Evolution Engine review (Decision 6). Phase 0 metric: false positive rate < 10%. |
+| **Oracle false positive** (accepts incorrect code) | Tiered verification (A5) — no single Oracle is sole gate. Multi-dimensional QualityScore (Decision 10) provides additional signal. Semantic errors explicitly out of scope for deterministic Oracles — require test coverage or human review. |
+| **World Graph inconsistency** | SQLite WAL mode + write-ahead journaling (Decision 2). On inconsistency: invalidate entire dependency cone and rebuild from source. Content-hash binding (A4) ensures inconsistency is always detectable. |
+| **Self-Model miscalibration cascade** | Cold-start safeguards (Decision 11): conservative override period, meta-uncertainty, monotonic trust ramp. Hard floor: cannot route below L1 for blast radius > 1 file. |
+| **Risk scoring miscalibration** | Evolution Engine (Decision 6) adjusts risk weights based on prediction error (A7). Immutable safety floor: production mutations always ≥ L3 regardless of risk score. |
+
+**Design principle:** detect (content hashes, prediction error, accuracy tracking) → contain (invalidate affected scope) → recover (rebuild from source of truth) → learn (feed failure into Evolution Engine).

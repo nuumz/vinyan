@@ -1,4 +1,19 @@
-# Vinyan v2 — Evolutionary Cognitive AGI/ASI Orchestrator
+---
+type: concept-theory
+audience: architects, researchers
+single-source-of-truth-for: theoretical foundations, academic citations, cognitive science basis
+related:
+  - vinyan-concept.md (unified concept — start here)
+  - vinyan-architecture.md (concrete implementation decisions)
+---
+
+# Vinyan — Theoretical Foundations & Deep Analysis
+
+> **Relationship to concept.md:** This document (formerly `vinyan-concept-v2.md`, renamed to avoid version confusion) provides the deep theoretical underpinnings for the Vinyan concept defined in [vinyan-concept.md](vinyan-concept.md). Concept.md is the canonical concept document; this file contains the academic citations, cognitive science foundations, v1 critique, and the detailed 8-layer cognitive architecture that justify the design decisions in concept.md. The two documents describe **one unified concept** — concept.md for the "what" and "why", this document for the "evidence" and "theoretical depth".
+>
+> **Axiom Foundation:** All theoretical claims in this document trace back to the 7 Core Axioms (A1–A7) defined in [concept.md §1.1](vinyan-concept.md). Each layer, critique resolution, and phase milestone below is tagged with the axiom(s) it implements or validates.
+>
+> **Scope note:** Some constructs in this document (hippocampal replay, hierarchical skill composition, Affect Engine, Episodic Stream, predictive causal model) are theoretical extensions explored here for academic rigor. Concept.md uses more conservative framing: pattern mining instead of neural replay, cached solution patterns instead of skill formation, dependency edges instead of predictive causal model. This document is the research frontier; concept.md is the implementation contract.
 
 ## สารบัญ
 
@@ -52,6 +67,7 @@
 | **Temporal consciousness** | Sleep Cycle เป็น batch process | **Episodic Stream** — continuous narrative ข้าม sessions |
 | **Global Workspace** | ไม่มี — components คุยผ่าน event bus แบบ fire-and-forget | **Cognitive Broadcast** — attention-gated shared workspace |
 | **Evolution** | Meritocratic fleet governance | **Autopoietic Self-Modification** — system แก้ไข/สร้าง rules ของตัวเอง + formal safety bounds |
+| **Axiom Foundation** | ไม่มี — implicit principles | **7 Core Axioms (A1–A7)** เป็น DNA ที่ทุก layer ต้อง justify ตัวเอง ([concept.md §1.1](vinyan-concept.md)) |
 
 ---
 
@@ -452,9 +468,9 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - Multi-Modal Deterministic QA — ดีมาก "Agents ห้ามประเมินตัวเอง" เป็น key insight ที่ไม่มี framework อื่นมี
 
 **Incomplete**:
-- ❌ **ไม่มี Perceptual Hierarchy** — StateVector เป็น flat injection ไม่มี levels of abstraction (raw file → function-level → module-level → architectural-level)
-- ❌ **ไม่มี Attention Mechanism** — agent ได้ทุกอย่างใน StateVector เท่าๆ กัน ไม่มี salience filtering → context bloat ใน complex projects
-- ❌ **ไม่มี Predictive Component** — inject state แต่ไม่ predict "อะไรน่าจะเป็นปัญหา" ก่อน agent เริ่มทำงาน
+- ✅ ~~**ไม่มี Perceptual Hierarchy**~~ — **[Resolved]** PerceptualHierarchy replaces flat StateVector with deterministic salience filtering. See [architecture.md Decision 8](vinyan-architecture.md).
+- ✅ ~~**ไม่มี Attention Mechanism**~~ — **[Resolved]** Salience is deterministic: dep-oracle traverses dependency cone from task target. Depth controlled by routing level (L0-1 shallow, L2-3 deep). See [architecture.md Decision 8](vinyan-architecture.md).
+- ✅ ~~**ไม่มี Predictive Component**~~ — **[Resolved]** Self-Model predicts outcomes before execution (Phase 1). See [architecture.md Decision 11](vinyan-architecture.md).
 
 #### Layer 1: Execution Substrate (Unix Philosophy) — ✅ SOUND
 
@@ -480,7 +496,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - ❌ **Oracle ตรวจได้แค่ structural properties** — "function has 3 params" verifiable, "this approach scales well" ไม่ verifiable ด้วย AST
 - ❌ **ไม่มี Semantic Oracle** — verifying logic correctness, not just syntax
 - ❌ **ไม่มี Oracle สำหรับ runtime behavior** — property-based testing, fuzzing ฯลฯ
-- ❌ **ไม่มี Oracle confidence spectrum** — binary verified/not verified แต่ real-world มี degrees of confidence
+- ✅ ~~**ไม่มี Oracle confidence spectrum**~~ — **[Resolved]** Tiered Registry (concept.md §3.1) with 4 tiers: Deterministic ≥ 0.95, Heuristic 0.5–0.95, Probabilistic 0.1–0.9, Speculative < 0.5. Verification Scope & Limitations section (concept.md §6) now explicitly distinguishes structural vs semantic verification boundaries.
 - ❌ **ไม่มี Oracle learning** — Oracle set คงที่ ไม่สร้าง Oracle ใหม่จากประสบการณ์
 
 #### Layer 4: Asymmetric Mutation Protocol — ✅ SOUND
@@ -498,10 +514,10 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - Vinyan Credits (pegged to USD) — pragmatic
 
 **Incomplete** (ดู Section 3.8):
-- ❌ Binary System 1/2 แทนที่ continuum
-- ❌ ไม่มี "compiled expertise" — System 1 ไม่เก่งขึ้น
-- ❌ **ไม่มี metacognitive router** ที่เรียนรู้ว่า task type ไหนต้อง routing level ไหน
-- ❌ Risk Score Formula (ใน architecture doc) เป็น static formula ไม่ adaptive
+- ✅ ~~Binary System 1/2 แทนที่ continuum~~ — **[Resolved]** 4-level adaptive continuum implemented. See [architecture.md Decision 9](vinyan-architecture.md).
+- ⚠️ ~~ไม่มี "compiled expertise"~~ — **[Partially resolved]** Skill Formation infrastructure in Phase 1 (trace schema + templates table). Actual caching in Phase 2. See [architecture.md Phase 2+ roadmap](vinyan-architecture.md).
+- ⚠️ ~~**ไม่มี metacognitive router**~~ — **[Partially resolved]** Self-Model provides forward prediction for routing decisions. Full metacognitive learning deferred to Phase 2+. See [architecture.md Decision 11](vinyan-architecture.md).
+- ✅ ~~Risk Score Formula (ใน architecture doc) เป็น static formula ไม่ adaptive~~ — **[Resolved]** Updated with environmentType, irreversibility, production boundary. See [architecture.md Decision 4](vinyan-architecture.md).
 
 #### Layer 6: Evolutionary Governance & Telemetry — ⚠️ SOUND concept, IMPLEMENTATION UNDERSPECIFIED
 
@@ -519,7 +535,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 
 | Missing Layer | ทำไมต้องมี | Theoretical Basis |
 |---|---|---|
-| **Self-Model / Metacognition** | Agents ไม่มี internal model ของตัวเอง ไม่ predict ผลก่อน execute ไม่รู้ว่ากำลังทำอะไร | Forward models (Wolpert, 1997); Predictive Processing (Clark, 2013) |
+| **Self-Model / Metacognition** | Agents ไม่มี internal model ของตัวเอง ไม่ predict ผลก่อน execute ไม่รู้ว่ากำลังทำอะไร | Forward models (Wolpert, 1997); Predictive Processing (Clark, 2013) | **[Resolved → Phase 1]** Promoted to Phase 1 deliverable with concrete interfaces. See [architecture.md Decision 11](vinyan-architecture.md), [concept.md §9](vinyan-concept.md). |
 | **Global Workspace** | ไม่มี attention-gated broadcast ระหว่าง subsystems ทำให้ information fragmented | GWT (Baars, 1988; Dehaene, 2014); Butlin et al. (2023) top indicator |
 | **Affective / Motivational System** | ไม่มี intrinsic motivation, curiosity ไม่มี mechanism สำหรับ exploration vs exploitation | Active Inference (Friston, 2010); Expected Free Energy |
 | **Theory of Mind** | ไม่ model user intent, other agents' beliefs ทำให้ collaborate ได้แย่ | Premack & Woodruff (1978); Mutual ToM (IBM Research, CHI 2024) |
@@ -527,13 +543,13 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 
 ### 4.3 Concepts ที่เป็น Illusion — ดูก้าวหน้าแต่ไม่ contribute จริง
 
-1. **"Trustless Cognitive Operating System"** — Buzzword ที่ misleading Vinyan ไม่ได้ "trustless" แบบ blockchain — ยังต้อง trust invariants ที่มนุษย์ set ยังต้อง trust Oracle implementations คำว่า "trustless" สร้างความคาดหวังที่ผิด ควรเปลี่ยนเป็น **"Zero-Trust Execution Policy"** ที่แม่นยำกว่า
+1. **"Trustless Cognitive Operating System"** — Buzzword ที่ misleading Vinyan ไม่ได้ "trustless" แบบ blockchain — ยังต้อง trust invariants ที่มนุษย์ set ยังต้อง trust Oracle implementations คำว่า "trustless" สร้างความคาดหวังที่ผิด ควรเปลี่ยนเป็น **"Zero-Trust Execution Policy"** ที่แม่นยำกว่า **[Resolved — A1+A6]** — "Cognitive Operating System" framing ถูก rebrand เป็น **"Epistemic Nervous System"** ใน concept.md v3 (มีนาคม 2026) เพื่อสะท้อน metaphor ที่แม่นยำกว่า: Vinyan เป็น connective substrate ระหว่าง generation ↔ verification ↔ memory ↔ action ไม่ใช่ OS ที่ replace ทุกอย่าง Axiom A1 (Epistemic Separation) + A6 (Zero-Trust Execution) เป็น formal replacement ของ "trustless" claim
 
-2. **"Deterministic Orchestration of Non-Deterministic Compute"** — ฟังดีดี แต่เป็น **over-simplification**: orchestration ที่ pure deterministic ไม่สามารถ handle ปัญหาที่ต้อง adaptive decision-making (เลือก approach ไหน? retry หรือ escalate? explore หรือ exploit?) Reality: orchestration ต้องเป็น **mostly-deterministic with principled stochasticity** — deterministic สำหรับ safety-critical paths, stochastic สำหรับ strategy selection
+2. **"Deterministic Orchestration of Non-Deterministic Compute"** — ฟังดีดี แต่เป็น **over-simplification**: orchestration ที่ pure deterministic ไม่สามารถ handle ปัญหาที่ต้อง adaptive decision-making (เลือก approach ไหน? retry หรือ escalate? explore หรือ exploit?) Reality: orchestration ต้องเป็น **mostly-deterministic with principled stochasticity** — deterministic สำหรับ safety-critical paths, stochastic สำหรับ strategy selection **[Resolved — A3, March 2026]** — Axiom A3 (Deterministic Governance) now defines "deterministic" precisely: **"non-LLM-driven and state-reproducible"**, not "free of all heuristics." The Orchestrator's routing, verification, and commit decisions are rule-based. LLMs are used for generation and task decomposition (probabilistic inputs), but governance of those outputs is deterministic. See concept.md §1.1 A3 and §8 for the explicit acknowledgment that task decomposition is LLM-assisted.
 
-3. **MCTS ใน System 2** — Monte Carlo Tree Search ฟังดี impressive แต่ search space ของ software engineering tasks เป็น **combinatorially explosive** ไม่มี clean reward signal เหมือน game playing ควรใช้ **parallel hypotheses + selection** (ใกล้กับ beam search) มากกว่า MCTS จริงๆ
+3. **MCTS ใน System 2** — Monte Carlo Tree Search ฟังดี impressive แต่ search space ของ software engineering tasks เป็น **combinatorially explosive** ไม่มี clean reward signal เหมือน game playing ควรใช้ **parallel hypotheses + selection** (ใกล้กับ beam search) มากกว่า MCTS จริงๆ **[Resolved]** — concept.md §8 now uses "parallel hypothesis generation with structured selection" framing instead of MCTS.
 
-4. **"Cryptographically tied to file's hash"** — Technical term ที่ misleading Hash binding ดี แต่ "cryptographically" imply security guarantees ที่ไม่จำเป็น SHA-256 hash comparison เพียงพอ ไม่จำเป็นต้อง crypto formality
+4. **"Cryptographically tied to file's hash"** — Technical term ที่ misleading Hash binding ดี แต่ "cryptographically" imply security guarantees ที่ไม่จำเป็น SHA-256 hash comparison เพียงพอ ไม่จำเป็นต้อง crypto formality **[Resolved — A4]** — Axiom A4 (Content-Addressed Truth) formalizes this: facts bind to content hash for invalidation, not for cryptographic security
 
 ---
 
@@ -600,7 +616,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 
 ### 5.3 Layer Specifications
 
-#### L0: Perception & Grounding Baseline
+#### L0: Perception & Grounding Baseline — `[Planned Phase 1]`
 
 **Purpose**: Transform raw environment into structured, prioritized perception
 
@@ -634,7 +650,7 @@ interface StateVector {
 
 **Adversarial Input Defense**: Workers receive external content (code comments, API responses, file contents) that may contain **prompt injection** designed to manipulate worker behavior. L0 enforces input sanitization at the perception boundary: (1) content entering worker prompts is stripped of instruction-like patterns, (2) StateVector construction uses only Oracle-verified structural data—never raw text claims, (3) any worker output referencing "skip Oracle" or "bypass validation" is rejected by the Orchestrator before reaching L1. This extends Zero-Trust from mutations to **perception itself**.
 
-#### L1: Execution Substrate
+#### L1: Execution Substrate — `[Implemented Phase 0]`
 
 **Purpose**: Process isolation + crash-only IPC (retained from v1)
 
@@ -655,7 +671,7 @@ interface WorkerBudget {
 }
 ```
 
-#### L2: Risk-Adaptive Router (ปรับจาก v1 System 1/2)
+#### L2: Risk-Adaptive Router (ปรับจาก v1 System 1/2) — `[Implemented Phase 0 (binary), Planned Phase 1 (continuum)]`
 
 **Purpose**: Route tasks to appropriate execution profile based on assessed risk — continuum ไม่ใช่ binary
 
@@ -692,7 +708,7 @@ interface MetacognitiveRouter {
 
 **Open Problems**: ต้อง bootstrap MetacognitiveRouter — เริ่มจาก static thresholds (v1 approach) แล้ว gradually learn จาก experience
 
-#### L3: Epistemic Oracle Gateway (ขยายจาก v1)
+#### L3: Epistemic Oracle Gateway (ขยายจาก v1) — `[Implemented Phase 0, Extended Phase 1 (QualityScore)]`
 
 **Purpose**: Deterministic verification ของ agent claims + confidence calibration
 
@@ -755,7 +771,7 @@ Oracles ควร expose เป็น **MCP Servers** — แต่ละ Oracle
 
 **Open Problems**: Heuristic oracles ยังมี LLM bias — ต้อง calibrate ด้วย ground truth data sets
 
-#### L4: Episodic Stream (NEW — Temporal Consciousness)
+#### L4: Episodic Stream (NEW — Temporal Consciousness) — `[Research Phase 3+]`
 
 **Purpose**: Maintain narrative continuity ข้าม sessions + provide temporal context สำหรับ current decisions
 
@@ -816,7 +832,7 @@ interface SleepCycle {
 
 **In-Session Online Learning**: แก้ปัญหา Frozen Weights Paradox โดยไม่ต้องรอ Sleep Cycle: เมื่อ worker fails, approach + Oracle feedback ถูกบันทึกใน `approachBlacklist` ทันที → subsequent attempts receive "don't repeat" constraints in their prompts. หลัง N failures ใน approach เดิม, Risk Router ต้อง **escalate routing level** (ไม่ใช่แค่ retry) หรือ Affect Engine signals pivot เมื่อ frustration สูง. นี่คือ **runtime adaptation** ที่ v1 ขาดไป—ไม่ต้อง update weights แต่เปลี่ยน behavior ใน session เดียวกันได้.
 
-#### L5: Affective / Motivational Engine (NEW)
+#### L5: Affective / Motivational Engine (NEW) — `[Research Phase 3+]`
 
 **Purpose**: Provide intrinsic motivation (curiosity, risk-aversion) + balance exploration vs exploitation
 
@@ -862,7 +878,7 @@ interface MotivationalEngine {
 
 **[Speculative Extension]**: ไม่ claim ว่านี่เป็น "emotions" — เป็น **functional analogs** ที่ serve similar roles ใน decision-making: urgency = "fear of deadline", curiosity = "interest in unknown", frustration = "pain from repeated failure"
 
-#### L6: Intent Model — Theory of Mind (NEW)
+#### L6: Intent Model — Theory of Mind (NEW) — `[Research Phase 3+]`
 
 **Purpose**: Model user goals, beliefs, context + model other agents' beliefs ใน multi-agent scenarios
 
@@ -904,7 +920,7 @@ interface AgentBeliefModel {
 - User intent inference จาก sparse signals (text messages, code reviews) เป็นปัญหายาก
 - ต้องระวัง "mind-reading" bias — inferred intent อาจผิด → ต้อง verify กับ user เมื่อ uncertainty สูง
 
-#### L7: Self-Model / Metacognition (NEW — Critical Layer)
+#### L7: Self-Model / Metacognition (NEW — Critical Layer) — `[Planned Phase 1]`
 
 **Purpose**: Internal forward model ที่ predict ผลลัพธ์ก่อน execute + monitor own performance + act as **World Model** for the operational environment
 
@@ -966,7 +982,7 @@ interface SelfAssessment {
 
 **World Model Integration**: L7 bridges the gap between World Graph (verified facts) and World Model (predictive causal model). World Graph stores "what IS true" (backward-looking); Self-Model's forward predictor uses World Graph's **causal edges** to predict "what WILL happen if I do X" (forward-looking). Prediction errors from actual Oracle results feed back to refine both the forward model and the World Graph's causal relationships. This implements the DreamerV3/MuZero pattern (predict-then-act) without requiring a separate learned latent-space model—leveraging Vinyan's unique strength of **deterministic Oracle feedback** as ground truth for prediction calibration.
 
-#### L8: Evolution Engine (ขยายจาก v1 Sleep Cycle)
+#### L8: Evolution Engine (ขยายจาก v1 Sleep Cycle) — `[Planned Phase 2-3]`
 
 **Purpose**: Self-improvement ภายใน formal safety bounds
 
@@ -1114,17 +1130,17 @@ interface BroadcastItem {
 
 ### 6.1 Phase 0 → v2 Implementation Roadmap
 
-| Phase | What | Prerequisites | Falsifiability Criteria |
+| Phase | What | Prerequisites | Falsifiability Criteria | Axioms Proven |
 |---|---|---|---|
-| **Phase 0**: Validation Hooks | Vinyan as Claude Code/OpenClaw hooks: Oracle Gateway + World Graph | Working Claude Code/OpenClaw setup | Measurable: hallucination rate ลดลง (A/B test hook enabled vs disabled) |
-| **Phase 1A**: Self-Model MVP | Forward model ที่ predict Oracle outcome ก่อน actual verification | Phase 0 + sufficient trace data | Measurable: prediction accuracy > 70% after 100 tasks |
-| **Phase 1B**: Episodic Buffer MVP | Working memory + session-level episodic recording | Phase 0 + database for episodes | Measurable: same-session mistake repetition rate ลดลง |
-| **Phase 2A**: Risk-Adaptive Router | Replace binary System 1/2 with 4-level continuum + basic metacognitive learning | Phase 1A (Self-Model predictions feed router) | Measurable: average cost per task ลดลง while quality ≥ same |
-| **Phase 2B**: Cognitive Broadcast | Attention-gated shared workspace replacing Event Bus | Phase 2A + L3/L7 producing publishable items | Measurable: context relevance score (human eval) เพิ่มขึ้น |
-| **Phase 3A**: Affect Engine | Active Inference-inspired motivation (curiosity, frustration) | Phase 2A (router must understand explore/exploit signals) | Measurable: strategy pivot ก่อน budget exhaust (vs v1 which retries until timeout) |
-| **Phase 3B**: Intent Model | Basic user intent modeling from conversation + project context | Phase 2B (broadcast needed for intent propagation) | Measurable: user "ไม่ใช่ที่ต้องการ" rate ลดลง |
-| **Phase 4**: Evolution Engine v2 | DGM-inspired self-improvement with safety bounds | All previous + sufficient trace data (months) | Measurable: system autonomously improves rules ที่ pass safety checks |
-| **Phase 5**: Full Sleep Cycle v2 | Replay + Recombination + Counterfactual generation | Phase 4 + Phase 1B episodic data | Measurable: patterns extracted ≠ just "this failed" but "this alternative would have worked" |
+| **Phase 0**: Validation Hooks | Vinyan as Claude Code/OpenClaw hooks: Oracle Gateway + World Graph | Working Claude Code/OpenClaw setup | Measurable: hallucination rate ลดลง (A/B test hook enabled vs disabled) | **A1, A3, A4, A5, A6** |
+| **Phase 1A**: Self-Model MVP | Forward model ที่ predict Oracle outcome ก่อน actual verification | Phase 0 + sufficient trace data | Measurable: prediction accuracy > 70% after 100 tasks | **A7** |
+| **Phase 1B**: Episodic Buffer MVP | Working memory + session-level episodic recording | Phase 0 + database for episodes | Measurable: same-session mistake repetition rate ลดลง | **A4, A7** |
+| **Phase 2A**: Risk-Adaptive Router | Replace binary System 1/2 with 4-level continuum + basic metacognitive learning | Phase 1A (Self-Model predictions feed router) | Measurable: average cost per task ลดลง while quality ≥ same | **A2, A3** |
+| **Phase 2B**: Cognitive Broadcast | Attention-gated shared workspace replacing Event Bus | Phase 2A + L3/L7 producing publishable items | Measurable: context relevance score (human eval) เพิ่มขึ้น | **A2, A5** |
+| **Phase 3A**: Affect Engine | Active Inference-inspired motivation (curiosity, frustration) | Phase 2A (router must understand explore/exploit signals) | Measurable: strategy pivot ก่อน budget exhaust (vs v1 which retries until timeout) | **A2, A7** |
+| **Phase 3B**: Intent Model | Basic user intent modeling from conversation + project context | Phase 2B (broadcast needed for intent propagation) | Measurable: user "ไม่ใช่ที่ต้องการ" rate ลดลง | **A2** |
+| **Phase 4**: Evolution Engine v2 | DGM-inspired self-improvement with safety bounds | All previous + sufficient trace data (months) | Measurable: system autonomously improves rules ที่ pass safety checks | **A3, A7** |
+| **Phase 5**: Full Sleep Cycle v2 | Replay + Recombination + Counterfactual generation | Phase 4 + Phase 1B episodic data | Measurable: patterns extracted ≠ just "this failed" but "this alternative would have worked" | **A4, A7** |
 
 ### 6.2 Critical Dependencies
 

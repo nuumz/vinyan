@@ -48,7 +48,7 @@ export interface VinyanBusEvents {
   "evolution:rules_applied": { taskId: string; rules: EvolutionaryRule[] };
 
   // Sleep Cycle (Phase 2.4)
-  "sleep:cycle_complete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number };
+  "sleep:cycle_complete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number; rulesPromoted: number };
 
   // Self-Model (Phase 1C.1)
   "selfmodel:predict": { prediction: SelfModelPrediction };

@@ -883,16 +883,415 @@ P3.0 (Audit, 1d)
 
 ---
 
-## Phase 3+: Outline (Detail When Phase 2 Completes)
+## Phase 3: Full Evolution Engine + Self-Model
 
-### Phase 3 — Full Evolution Engine + Self-Model
+> **Goal:** Prove that Vinyan can improve itself from its own execution data — trace-calibrated predictions, pattern-mined rules, and measured quality improvement.
+> **Type:** Research + Engineering. Negative results are valid — they narrow the design space for Phase 4.
+> **Prerequisite:** Pre-Phase 3 complete (P3.0–P3.8). All data gates satisfied: ≥200 real traces, ≥10 task types, ≥3 sleep cycles, ≥1 active skill, ≥1 active rule, Self-Model metaConfidence >0.3 for ≥3 signatures.
 
-| Component | Type | Description |
-|:----------|:-----|:------------|
-| Full pattern mining | Research | Cross-task-type pattern analysis beyond frequency. Requires hundreds of traces. |
-| Counterfactual generation | Research | "What if we used approach B?" Requires replay infrastructure + historical codebase snapshots. |
-| Trace-calibrated Self-Model | Engineering + Research | Replace static heuristics with learned weights. EMA over prediction errors. Target: >75% accuracy by 200 sessions. |
-| Evaluation methodology | Research | How to measure Evolution Engine effectiveness? Metrics: success rate, QualityScore improvement, routing efficiency. |
+### Dependency Graph
+
+```
+PH3.1 (Self-Model Foundation) ──────────────────────────────────────
+  │                                                                  │
+  ├── PH3.2 (Adaptive EMA) ──── PH3.5 (Pattern Mining v2) ── PH3.6 (Counterfactual Lite)
+  │                            │                                     │
+  │                            └── PH3.7 (Eval Framework) ──────────┘
+  │                                                                  │
+  └── PH3.3 (Evolution Pipeline) ── PH3.4 (Skill Integration) ─────┘
+                                                                     │
+                                                              PH3.8 (Validation)
+```
+
+**Parallel streams:**
+- Stream A: PH3.1 → PH3.2 → PH3.5 → PH3.6
+- Stream B: PH3.1 → PH3.3 → PH3.4
+- Stream C: PH3.2 + PH3.3 → PH3.7
+- Merge: PH3.8 (requires all streams)
+
+---
+
+#### PH3.1 — Self-Model Foundation `[L]` — Engineering
+
+**What:** Fix 4 structural defects that prevent the Self-Model from calibrating. Without this, every downstream Phase 3 component consumes garbage data.
+
+**Key issues in current code:**
+
+| Issue | Location | Problem |
+|:------|:---------|:--------|
+| PredictionError discarded | `core-loop.ts:306-307` | `calibrate()` return value not stored → `trace.predictionError` always null |
+| No failure prediction | `self-model.ts:166-169` | Returns only `"pass"` or `"partial"`, never `"fail"` → systematic prediction bias |
+| Coarse task signature | `self-model.ts:171-176` | Directory-only grouping → unrelated tasks pooled together |
+| Premature basis transition | `self-model.ts:108` | Transitions at 10 obs regardless of accuracy → false "trace-calibrated" claim |
+
+**Implementation:**
+
+1. **PredictionError persistence:** Capture `calibrate()` return → assign to `trace.predictionError`. This is a 3-line fix but unlocks the entire calibration data pipeline.
+
+2. **Failure prediction:** Track pass/fail/partial distribution per task type signature. If >50% of observed outcomes are `"fail"`, predict `"fail"`. If >30% `"partial"`, predict `"partial"`. Else predict `"pass"`.
+
+3. **Improved task signature:** Replace directory-stripping with composite key:
+   ```
+   {action_verb}::{file_extensions}::{blast_radius_bucket}
+   ```
+   Example: `"refactor::ts::medium"`. Provides meaningful grouping without making each task unique.
+
+4. **Basis field honesty:**
+   - `"static-heuristic"`: observationCount < 10 OR predictionAccuracy < 0.4
+   - `"hybrid"`: 10 ≤ observationCount < 50 AND predictionAccuracy ≥ 0.4
+   - `"trace-calibrated"`: observationCount ≥ 50 AND predictionAccuracy ≥ 0.6
+
+**Files:** `src/orchestrator/self-model.ts`, `src/orchestrator/core-loop.ts`
+
+**Tests:**
+- After 50 tasks: `predictionError` non-null on >95% of L2+ traces
+- Self-Model predicts `"fail"` ≥10% of the time on task types with >30% actual failure rate
+- `basis` transitions correctly through `static-heuristic` → `hybrid` → `trace-calibrated`
+- Task signatures group similar tasks (no more than 3x variation in group size vs directory-based)
+
+---
+
+#### PH3.2 — Adaptive EMA + Parameter Storage `[L]` — Engineering + Research
+
+**What:** Replace the global fixed EMA (alpha=0.1) with per-task-type parameter sets and an adaptive learning rate. This is the core "trace-calibrated Self-Model" deliverable.
+
+**Research question resolved:** EMA with adaptive alpha is sufficient at this data scale. Gradient descent requires loss function design and is overkill for 200–1000 observations — deferred.
+
+**Implementation:**
+
+1. **Per-task-type parameter storage.** New SQLite table replacing the single JSON blob:
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS self_model_params (
+     task_type_signature   TEXT PRIMARY KEY,
+     observation_count     INTEGER NOT NULL DEFAULT 0,
+     avg_quality_score     REAL NOT NULL DEFAULT 0.5,
+     avg_duration_per_file REAL NOT NULL DEFAULT 2000,
+     prediction_accuracy   REAL NOT NULL DEFAULT 0.5,
+     fail_rate             REAL NOT NULL DEFAULT 0.0,
+     partial_rate          REAL NOT NULL DEFAULT 0.1,
+     last_updated          INTEGER NOT NULL,
+     basis                 TEXT NOT NULL DEFAULT 'static-heuristic'
+   );
+   ```
+
+2. **Adaptive alpha.** Learning rate varies by observation count:
+   ```
+   alpha = max(0.05, min(0.3, 1 / (1 + observationCount * 0.1)))
+   ```
+   - Early observations (count < 10): α ≈ 0.3 (fast adaptation)
+   - After 30+ observations: α ≈ 0.05 (slow drift tracking)
+   - Solves the fixed α=0.1 problem (~23 obs to react to a shift)
+
+3. **Global fallback.** For unseen task types, use project-wide average as prior (weighted by total observation count). New types start with the project average, not hardcoded 0.5.
+
+4. **Parameter migration.** On startup, if old `model_parameters` table exists with single-blob data, decompose into per-task-type rows using existing `taskTypeObservations` counts.
+
+**Files:** `src/orchestrator/self-model.ts` (major rewrite), `src/db/trace-schema.ts`, `src/db/vinyan-db.ts`
+
+**Tests:**
+- Per-task-type prediction accuracy >60% for task types with 20+ observations
+- Global prediction accuracy >65% by 100 tasks, >75% by 200 tasks
+- New task types converge within 5 observations (not 23)
+- `basis` transitions to `"trace-calibrated"` for ≥3 task types by 200 tasks
+- Parameters survive process restart (persisted to SQLite)
+
+**Risks:** If adaptive alpha causes oscillation, cap at 0.15 and increase observation threshold. Fallback: revert to fixed alpha=0.1 with per-task-type storage only.
+
+---
+
+#### PH3.3 — Evolution Pipeline Fix `[XL]` — Engineering
+
+**What:** Make the Evolution Engine work end-to-end. Currently: patterns extracted → rules generated → rules stored. But rules are never validated, never promoted, and 3 of 4 action types are dead code.
+
+**7 fixes:**
+
+1. **Wire backtester into Sleep Cycle.** After `generateRule()` in `sleep-cycle.ts`, call `backtestRule(rule, relevantTraces)`. Only store rules that pass. Emit `evolution:rule_backtested` bus event.
+
+2. **Rule promotion loop.** New `promoteRules()` called during each Sleep Cycle:
+   - Query all `status = "probation"` rules older than `PROBATION_SESSIONS * interval` time
+   - Re-run backtest against latest traces
+   - Pass → `ruleStore.activate(rule.id)` + update effectiveness
+   - Fail → `ruleStore.retire(rule.id)`
+
+3. **All 4 action types in core loop.** Extend `core-loop.ts:138-155`:
+   - `escalate`: already works ✅
+   - `require-oracle`: add specific oracles to the verification step (pass oracle names to `oracleGate.verify()`)
+   - `prefer-model`: override `routing.model` if preferred model available in provider registry
+   - `adjust-threshold`: modify risk params for this task (e.g., `maxRetries`, latency budget)
+
+4. **Fix toLevel proportionality.** `rule-generator.ts` hardcodes `toLevel: 2`. Change to `min(3, failedAtLevel + 1)`. Requires adding `routingLevel` to `ExtractedPattern`.
+
+5. **Fix success-pattern Wilson LB.** `sleep-cycle.ts:249-251` is broken (always 0 or `totalPairs`). Replace with real pairwise comparison: for each pair of traces (one from winner, one from loser), count how many times winner's quality exceeds loser's. Apply Wilson LB to `(actualWins, totalPairs)`.
+
+6. **Fix activeSkills hardcode.** `sleep-cycle.ts:335` returns `activeSkills: 0`. Wire to `skillStore.count()` filtered by `status = 'active'`.
+
+7. **Multi-condition rule generation.** Extend `generateEscalationRule()` and `generatePreferenceRule()` to populate `oracle_name`, `risk_above`, `model_pattern` conditions when pattern data provides them. Currently only `file_pattern` is ever set.
+
+**Files:** `src/sleep-cycle/sleep-cycle.ts`, `src/evolution/rule-generator.ts`, `src/orchestrator/core-loop.ts`, `src/orchestrator/skill-manager.ts`, `src/orchestrator/types.ts`, `src/db/rule-store.ts`
+
+**Tests:**
+- 0 rules bypass backtester (every generated rule goes through backtest)
+- ≥1 rule transitions `probation → active` within 60 sessions
+- All 4 action types exercised in integration test (stored, applied, observed to affect execution)
+- Success-pattern Wilson LB correctly rejects patterns where quality difference is not statistically significant (synthetic data test with overlapping distributions)
+- Evolution data gate no longer permanently blocked (`activeSkills` reports real count)
+
+---
+
+#### PH3.4 — Skill Integration `[M]` — Engineering
+
+**What:** Close the Skill Formation feedback loop so skills actually affect task execution.
+
+**Implementation:**
+
+1. **Wire `recordOutcome()` in core loop.** After oracle verification, if a skill was matched earlier in the iteration, call `skillManager.recordOutcome(skill, verification.passed)`. Track matched skill in a local variable set during the L0 Skill Shortcut block.
+
+2. **Inject skill approach into worker prompt.** When a skill matches and passes verification, add the cached approach to `WorkingMemoryState.activeHypotheses` with `source: "cached-skill"` and high confidence. The `PromptAssembler` already includes hypotheses in the prompt — this is a wiring fix, not new functionality.
+
+3. **Cross-task fuzzy matching (research-lite).** When no exact skill match exists, attempt fuzzy matching: same action verb + overlapping file extensions. If a fuzzy match has `successRate > 0.8`, inject it as a lower-confidence hypothesis (`confidence: 0.4`). This is the minimal viable version of GAP-C "cross-task generalization."
+
+**Files:** `src/orchestrator/core-loop.ts`, `src/orchestrator/skill-manager.ts`, `src/orchestrator/working-memory.ts`
+
+**Tests:**
+- ≥1 skill transitions `probation → active` (through 10+ successful uses)
+- Active skills inject approach: when skill matches, worker prompt includes cached approach
+- Fuzzy skill match triggers at least once in integration test
+- Demoted skills are not offered (verify via bus events after demotion)
+
+---
+
+#### PH3.5 — Pattern Mining v2 `[XL]` — Research + Engineering
+
+**What:** Move beyond single-task-type frequency analysis to cross-task-type pattern correlation. This is the primary research component of Phase 3.
+
+**Research questions addressed:**
+- Can we find patterns that span task types? (e.g., "all refactoring tasks on files with >5 dependencies fail at L1")
+- Does power-law decay outperform exponential?
+
+**Implementation:**
+
+1. **Time-windowed trace analysis.** Replace `queryRecentTraces(10000)` with time-bounded query: only analyze traces from the last 5 sleep cycle windows. Uses existing `TraceStore.queryByTimeRange()`.
+
+2. **Cross-task-type correlation.** New `src/sleep-cycle/cross-task-analyzer.ts`:
+   - Group traces by shared attributes (model, routing level, blast radius bucket, oracle verdict pattern) instead of just task type signature
+   - Identify attribute combinations correlated with failure: e.g., `{model: "gpt-4o-mini", blast_radius: ">5", oracle: "type"} → 70% failure`
+   - Generate rules with multi-condition matching from these correlations
+   - Minimum viable: identify at least 1 cross-task pattern in the burn-in dataset
+
+3. **Pattern decay experiment.** Implement both decay models, run side-by-side:
+   - Exponential (existing): `weight = 0.5 ^ (ageCycles / halfLife)`
+   - Power-law (new): `weight = 1 / (1 + ageCycles / halfLife)`
+   - After 5 cycles, compare: which model's surviving patterns have better backtest scores?
+   - Auto-select winner. New `src/sleep-cycle/decay-experiment.ts`.
+
+4. **Pattern provenance chain.** Add `derivedFrom?: string` to `ExtractedPattern`. When a pattern refines an earlier one, track lineage. Enables pattern evolution analysis.
+
+**New files:** `src/sleep-cycle/cross-task-analyzer.ts`, `src/sleep-cycle/decay-experiment.ts`
+
+**Files modified:** `src/sleep-cycle/sleep-cycle.ts`, `src/orchestrator/types.ts`, `src/db/pattern-store.ts`
+
+**Tests:**
+- Time-windowed analysis produces different (more recent) patterns than unbounded analysis
+- ≥1 cross-task-type pattern identified that single-task analysis would miss
+- Cross-task rules pass backtesting at comparable rate to single-task rules (within 20%)
+- Decay experiment produces a measurable winner after 5 sleep cycles
+
+**Risks:** **Highest research risk.** If cross-task correlation finds nothing with 200 traces, the output is still valuable: "200 traces insufficient for cross-task mining, minimum N estimated." Fall back to improved single-task mining with multi-condition rules from PH3.3.
+
+---
+
+#### PH3.6 — Counterfactual Lite `[L]` — Research
+
+**What:** Answer "what would have happened if we used approach B?" without building full replay infrastructure. Scoped down from the original spec's "historical codebase snapshots" requirement.
+
+**Key insight:** We do not need codebase snapshots if we reframe the question. Instead of replaying tasks against historical code, use **retrospective routing analysis**: "given what we know now, would a different routing decision have produced better results?"
+
+**Implementation:**
+
+1. **Retrospective routing analyzer.** New `src/evolution/counterfactual.ts`:
+   - For each completed trace, compute: "if this task had been routed to level N instead of level M, what is the expected quality score?" using Self-Model's per-task-type parameters
+   - Compare actual quality score with counterfactual expected score
+   - If counterfactual routing consistently outperforms actual routing for a task type, generate an `adjust-threshold` rule
+
+2. **Epsilon-greedy exploration.** During the core loop's routing decision, with probability ε (default: 0.05), route to a random level instead of the calculated one.
+   - **Safety constraint:** exploration only routes UP (sideways or higher), never down. If random level < calculated level, skip exploration for this task.
+   - Track exploration traces with `trace.exploration = true`
+   - Provides natural variation data for counterfactual analysis without requiring replay
+
+3. **What-if analysis for rules.** Before applying a rule, compute: "if this rule had been active during the last 50 traces, what would the aggregate quality score have been?" Extends backtester from binary pass/fail to expected quality impact.
+
+**New files:** `src/evolution/counterfactual.ts`
+
+**Files modified:** `src/orchestrator/core-loop.ts`, `src/orchestrator/types.ts`, `src/evolution/backtester.ts`
+
+**Tests:**
+- Retrospective analyzer identifies ≥1 task type where different routing would improve quality by >10%
+- Epsilon exploration produces ≥10 exploration traces per 200 tasks (5% rate)
+- No safety invariant violated during exploration (exploration never lowers routing level)
+- What-if quality predictions correlate (r > 0.3) with actual outcomes when rules are applied
+
+**Risks:** If retrospective analysis is inconclusive (possible with homogeneous routing), the A/B exploration data remains useful for future analysis. If epsilon exploration is too disruptive, reduce to 0.02 or disable. Fallback: counterfactual analysis becomes a monitoring report rather than a rule generator.
+
+---
+
+#### PH3.7 — Evaluation Framework `[M]` — Engineering
+
+**What:** Answer the meta-question: "Is the Evolution Engine actually making Vinyan better?" Without this, Phase 3 has no way to measure its own success.
+
+**Implementation:**
+
+1. **Metrics data layer.** New `src/observability/metrics.ts`:
+
+   ```typescript
+   interface EvolutionMetrics {
+     // Self-Model
+     predictionAccuracyGlobal: number;
+     predictionAccuracyByTaskType: Record<string, number>;
+     basisDistribution: Record<string, number>;
+     calibrationVelocity: number;  // sessions to reach 75% accuracy
+
+     // Evolution Engine
+     rulesGenerated: number;
+     rulesPromoted: number;
+     rulesRetired: number;
+     ruleEffectivenessAvg: number;
+     backtestPassRate: number;
+
+     // Skill Formation
+     skillsCreated: number;
+     skillsPromoted: number;
+     skillsDemoted: number;
+     skillHitRate: number;  // tasks matching a skill / total tasks
+
+     // Overall
+     qualityScoreTrend: number[];  // rolling average over last N sessions
+     routingEfficiency: number;    // tasks completed at initial routing level
+     escalationRate: number;       // tasks that escalate / total tasks
+   }
+   ```
+
+2. **Rule effectiveness scoring.** After a rule is activated, track its impact:
+   - For each trace where the rule applied: compare quality with pre-rule average for that task type
+   - `effectiveness = (avg_quality_with_rule - avg_quality_before) / avg_quality_before`
+   - Update `rule.effectiveness` after each Sleep Cycle
+   - Rules with effectiveness < 0 for 3 consecutive cycles → auto-retire
+
+3. **Self-Model accuracy dashboard.** Computed during each Sleep Cycle:
+   - Per-task-type: `(predicted quality - actual quality)` over last N traces
+   - Overall: fraction of traces where composite error < 0.3
+   - Trend: compare last 50 traces vs previous 50 — is accuracy improving?
+
+4. **Phase 4 readiness signal.** Composite gate:
+   - metaConfidence > 0.5 for ≥ 5 task types
+   - ≥ 3 active rules with effectiveness > 0.3
+   - ≥ 2 active skills with successRate > 0.7
+   - Self-Model global accuracy > 70%
+
+**New files:** `src/observability/metrics.ts`, `src/observability/phase3-report.ts`
+
+**Files modified:** `src/sleep-cycle/sleep-cycle.ts`, `src/db/rule-store.ts`
+
+**Tests:** Metrics computed after every Sleep Cycle; quality trend trackable as time series; rule effectiveness reflects actual impact (positive for helpful rules, negative for harmful ones).
+
+---
+
+#### PH3.8 — Integration Validation `[L]` — Engineering
+
+**What:** Demonstrate that all Phase 3 components work together and produce measurable improvement over Phase 2 baseline.
+
+**Approach:**
+
+1. **End-to-end demonstration.** Run 200+ additional tasks (on top of Pre-Phase 3 burn-in) with all Phase 3 components active. Track PH3.7 metrics throughout.
+
+2. **Before/after comparison:**
+   - Quality score composite: first 100 tasks (Phase 2 baseline) vs last 100 tasks (Phase 3 active)
+   - Escalation rate: should decrease as Self-Model improves routing
+   - Task completion rate: should increase as skills provide shortcuts
+   - Rule count and effectiveness: should show growing, effective rule set
+
+3. **Graceful degradation test.** Disable Phase 3 components one at a time:
+   - Without PH3.2 (adaptive EMA): falls back to fixed EMA, accuracy degrades but system functions
+   - Without PH3.3 (evolution pipeline): no rules promoted, Sleep Cycle still extracts patterns
+   - Without PH3.5 (pattern mining v2): falls back to single-task-type analysis
+   - Without PH3.6 (counterfactual): no exploration, system operates normally
+
+4. **Phase 4 readiness gate.** Using PH3.7 metrics, assess fleet governance entry criteria.
+
+**Phase 3 acceptance criteria (overall):**
+
+| Criterion | Target |
+|:----------|:-------|
+| Self-Model accuracy | >75% for ≥3 task types |
+| `basis` transitions | `"trace-calibrated"` for ≥3 task types |
+| Rule promotion | ≥3 rules `probation → active` |
+| Rule effectiveness | ≥1 rule with measured positive effectiveness (>0.1) |
+| Skill usage | ≥1 active skill used in task execution |
+| Quality trend | Upward slope over 200 sessions |
+| Safety invariant violations | Zero |
+| Graceful degradation | Disabling any single component doesn't crash the system |
+
+---
+
+### Safety & Failure Mode Guards
+
+**F4 — Self-Model Miscalibration Cascade** (bad predictions → wrong routing → poor outcomes → reinforces bad model):
+
+| Layer | Defense |
+|:------|:--------|
+| Detection | Prediction accuracy drops < 0.4 for 3 consecutive Sleep Cycles → emit `selfmodel:degradation` event |
+| Containment | Freeze `calibrate()` calls. Predictions continue using last-known-good parameters. |
+| Recovery | Re-initialize affected task types from last 50 traces, reset observation count to re-engage S1 safeguard. |
+| Prevention | S4 monotonic trust ramp. Adaptive alpha bounded [0.05, 0.3]. `basis` honesty from PH3.1. |
+
+**F5 — Risk Scoring Miscalibration:** `adjust-threshold` rules (PH3.3) + retrospective analysis (PH3.6) auto-correct. I6 safety invariant prevents worst case (high-risk tasks cannot be routed below L1).
+
+**Max active rules cap:** 20. New rule displaces lowest-effectiveness rule if at cap.
+
+### Research Questions Resolved
+
+| # | Question (from TDD §12) | Phase 3 Answer |
+|:--|:------------------------|:---------------|
+| 1 | Calibration algorithm: gradient descent vs EMA? | **EMA with adaptive alpha (PH3.2).** Gradient deferred — insufficient data scale. |
+| 2 | Dedicated storage schema for Self-Model? | **`self_model_params` table** with per-task-type rows (PH3.2). |
+| 4 | Pattern decay model: exponential vs power-law? | **Experimentally determined (PH3.5).** Run both, auto-select winner after 5 cycles. |
+| 5 | Counterfactual generation interfaces? | **Scoped to retrospective routing + epsilon exploration (PH3.6).** Full replay deferred indefinitely. |
+| 6 | Evaluation methodology for mined rules? | **Effectiveness tracking + auto-retirement (PH3.7).** |
+| 7 | How fast does Self-Model calibrate? | **Measured in PH3.8.** Target: >75% by 200 sessions. Calibration velocity metric tracks sessions-to-threshold. |
+| 3 | Cross-project transfer learning? | **Deferred to Phase 4.** Phase 3 focuses on single-project calibration. |
+
+### Phase 3 Critical Path
+
+```
+PH3.1 (Self-Model Foundation, ~3d)
+  │
+  ├── PH3.2 (Adaptive EMA, ~4d) ── PH3.5 (Pattern Mining, ~5d) ── PH3.6 (Counterfactual, ~4d) ─┐
+  │                                │                                                                │
+  │                                └── PH3.7 (Eval Framework, ~3d) ────────────────────────────────┤
+  │                                                                                                 │
+  └── PH3.3 (Evolution Pipeline, ~5d) ── PH3.4 (Skill Integration, ~2d) ──────────────────────────┘
+                                                                                                    │
+                                                                                             PH3.8 (Validation, ~5-7d)
+```
+
+**Critical path:** PH3.1 → PH3.3 → PH3.4 → PH3.8 (parallel with PH3.2 → PH3.5 → PH3.6)
+
+**Estimated total:** ~4-5 weeks (engineering phase ~3 weeks with parallelism, validation ~1.5 weeks)
+
+### Phase 3 Risk Assessment
+
+| Component | Risk Type | Level | Mitigation | Fallback |
+|:----------|:----------|:-----:|:-----------|:---------|
+| Adaptive EMA (PH3.2) | Engineering | Low | Bounded alpha [0.05, 0.3]. Monitor for oscillation. | Revert to fixed alpha=0.1 with per-task-type storage. |
+| Evolution pipeline (PH3.3) | Engineering | Medium | Each of 7 fixes is independently testable. | Ship fixes incrementally. |
+| Cross-task mining (PH3.5) | Research | **High** | 200+ trace minimum. Design experiments that produce results even with limited data. | Report "N insufficient, estimate minimum." Fall back to single-task mining. |
+| Counterfactual lite (PH3.6) | Research | Medium | Epsilon exploration never routes DOWN. Conservative ε=0.05. | Disable exploration. Counterfactual becomes monitoring report. |
+| Miscalibration cascade (F4) | System | **High** | Layered defense: detection → containment → recovery → prevention. S1-S4 safeguards remain active. | Freeze Self-Model, revert to Phase 2 static heuristics. |
+| Rule positive feedback loop | System | Medium | Rules re-backtested before promotion. Effectiveness tracking auto-retires bad rules. Cap at 20 active. | Manual review gate for first 10 promotions. |
+
+---
+
+### Phase 4+: Outline (Detail When Phase 3 Completes)
 
 ### Phase 4 — Fleet Governance
 
@@ -927,9 +1326,11 @@ Phase 0 Gaps (P0-1..P0-5)
                                                                                │
                                                            Phase 2 (Isolation + Skills)
                                                                                │
-                                                           Pre-Phase 3 (Hardening + Burn-in)
+                                                           Pre-Phase 3 (Hardening + Burn-in, ~3 wk)
                                                                                │
-                                                           Phase 3+ (Research)
+                                                           Phase 3 (Evolution + Self-Model, ~4-5 wk)
+                                                                               │
+                                                           Phase 4+ (Fleet Governance)
 ```
 
 **Single biggest blocker:** 1A.7 (Orchestrator Core Loop) — everything flows through it. However, it can start with L0-L1 scope and expand.
@@ -956,3 +1357,7 @@ Phase 0 Gaps (P0-1..P0-5)
 | LLM Provider integration (1A.5) | Engineering | Low | Well-documented SDKs. Abstraction layer insulates from API changes. |
 | Container isolation (2.1) | Engineering | Low-Med | Docker well-understood. macOS-specific risks (Docker Desktop vs Orbstack). |
 | Shadow validation latency (2.2) | Engineering | Medium | Mitigated by online/offline split — 60s budget applies to online path only. Shadow validation async with 300s budget. |
+| Cross-task pattern mining (PH3.5) | Research | **High** | 200+ trace minimum. Experiments designed to produce results even with limited data. Fall back to single-task mining. |
+| Self-Model miscalibration cascade (PH3.2) | System | **High** | Layered defense: detection → containment → recovery → prevention. S1-S4 safeguards. Freeze + revert on degradation. |
+| Counterfactual exploration (PH3.6) | Research | Medium | Epsilon exploration never routes DOWN. Conservative ε=0.05. Disable if disruptive. |
+| Rule feedback loop (PH3.3) | System | Medium | Re-backtest before promotion. Auto-retire bad rules. Cap at 20 active rules. |

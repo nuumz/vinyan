@@ -39,6 +39,11 @@ export class SkillManager {
     this.probationSessions = config.probationSessions ?? 10;
   }
 
+  /** Count active (promoted) skills. */
+  countActive(): number {
+    return this.store.countActive();
+  }
+
   /**
    * Try to match a task to a cached active skill.
    * Returns null if no matching active skill found.

@@ -62,7 +62,7 @@ function insertTraces(
 }
 
 describe("SleepCycleRunner", () => {
-  test("returns empty when data gate not satisfied", () => {
+  test("returns empty when data gate not satisfied", async () => {
     const { traceStore, patternStore } = createStores();
     // Only 10 traces (need 100)
     insertTraces(traceStore, 10, {});
@@ -72,12 +72,12 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 100 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     expect(result.patterns).toHaveLength(0);
     expect(result.tracesAnalyzed).toBe(0);
   });
 
-  test("detects anti-pattern: approach fails ≥80% of the time", () => {
+  test("detects anti-pattern: approach fails ≥80% of the time", async () => {
     const { traceStore, patternStore } = createStores();
 
     // Insert 80 failures + 20 successes for "bad-approach"
@@ -104,14 +104,14 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 50, pattern_min_frequency: 5 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     const antiPatterns = result.patterns.filter(p => p.type === "anti-pattern");
     expect(antiPatterns.length).toBeGreaterThanOrEqual(1);
     expect(antiPatterns[0]!.approach).toBe("bad-approach");
     expect(antiPatterns[0]!.confidence).toBeGreaterThanOrEqual(0.6);
   });
 
-  test("does NOT detect anti-pattern when fail rate < 80%", () => {
+  test("does NOT detect anti-pattern when fail rate < 80%", async () => {
     const { traceStore, patternStore } = createStores();
 
     // 60% failure rate — below threshold
@@ -126,12 +126,12 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 50, pattern_min_frequency: 5 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     const antiPatterns = result.patterns.filter(p => p.type === "anti-pattern");
     expect(antiPatterns).toHaveLength(0);
   });
 
-  test("detects success pattern: approach A outperforms B by ≥25%", () => {
+  test("detects success pattern: approach A outperforms B by ≥25%", async () => {
     const { traceStore, patternStore } = createStores();
 
     // Approach A: high quality (0.9)
@@ -158,14 +158,14 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 50, pattern_min_frequency: 5 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     const successPatterns = result.patterns.filter(p => p.type === "success-pattern");
     expect(successPatterns.length).toBeGreaterThanOrEqual(1);
     expect(successPatterns[0]!.approach).toBe("good-approach");
     expect(successPatterns[0]!.qualityDelta).toBeGreaterThanOrEqual(0.25);
   });
 
-  test("minimum frequency filter rejects small samples", () => {
+  test("minimum frequency filter rejects small samples", async () => {
     const { traceStore, patternStore } = createStores();
 
     // Only 3 traces for "rare-bad" (below min frequency of 5)
@@ -181,13 +181,13 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 50, pattern_min_frequency: 5 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     // "rare-bad" has only 3 samples — should be filtered out
     const rarePatterns = result.patterns.filter(p => p.approach === "rare-bad");
     expect(rarePatterns).toHaveLength(0);
   });
 
-  test("records cycle run in pattern store", () => {
+  test("records cycle run in pattern store", async () => {
     const { traceStore, patternStore } = createStores();
 
     insertTraces(traceStore, 100, {});
@@ -201,11 +201,11 @@ describe("SleepCycleRunner", () => {
     });
 
     expect(patternStore.countCycleRuns()).toBe(0);
-    runner.run();
+    await runner.run();
     expect(patternStore.countCycleRuns()).toBe(1);
   });
 
-  test("result includes correct counts", () => {
+  test("result includes correct counts", async () => {
     const { traceStore, patternStore } = createStores();
 
     insertTraces(traceStore, 100, { approach: "test", outcome: "success" });
@@ -218,7 +218,7 @@ describe("SleepCycleRunner", () => {
       config: { min_traces_for_analysis: 50 },
     });
 
-    const result = runner.run();
+    const result = await runner.run();
     expect(result.cycleId).toContain("cycle-");
     expect(result.tracesAnalyzed).toBeGreaterThanOrEqual(100);
     expect(typeof result.antiPatterns).toBe("number");

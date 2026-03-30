@@ -52,6 +52,7 @@ export interface Orchestrator {
   shadowRunner?: ShadowRunner;
   skillManager?: SkillManager;
   sleepCycleRunner?: SleepCycleRunner;
+  getSessionCount(): number;
   close(): void;
 }
 
@@ -150,14 +151,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, ".vinyan", "audit.jsonl"));
 
+  // Shadow validation listener — update trace store when shadow processing completes (H3)
+  if (shadowRunner && traceStore) {
+    bus.on("shadow:complete", ({ result }) => {
+      traceStore.updateShadowValidation(result.taskId, result);
+    });
+  }
+
+  // Session counter — triggers sleep cycle at interval (H1)
+  let sessionCount = 0;
+
   return {
-    executeTask: (input: TaskInput) => executeTask(input, deps),
+    executeTask: async (input: TaskInput) => {
+      const result = await executeTask(input, deps);
+      sessionCount++;
+
+      // Trigger sleep cycle at interval (best-effort, never blocks main flow)
+      if (sleepCycleRunner && sessionCount >= sleepCycleRunner.getInterval()) {
+        sleepCycleRunner.run().catch(() => { /* best-effort */ });
+        sessionCount = 0;
+      }
+
+      return result;
+    },
     traceCollector,
     traceListener: traceListenerHandle,
     bus,
     shadowRunner,
     skillManager,
     sleepCycleRunner,
+    getSessionCount: () => sessionCount,
     close: () => {
       traceListenerHandle.detach();
       detachAudit();

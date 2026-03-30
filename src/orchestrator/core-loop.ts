@@ -20,6 +20,7 @@ import type {
   ExecutionTrace,
   TaskDAG,
   SelfModelPrediction,
+  CachedSkill,
 } from "./types.ts";
 import { WorkingMemory } from "./working-memory.ts";
 import type { VinyanBus } from "../core/bus.ts";
@@ -157,6 +158,9 @@ export async function executeTask(
   deps.bus?.emit("task:start", { input, routing });
 
   while (routing.level <= MAX_ROUTING_LEVEL) {
+    // Track matched skill for feedback loop (H4) — resets on level escalation
+    let matchedSkill: CachedSkill | null = null;
+
     // Inner loop: retry within current routing level
     for (let retry = 0; retry < input.budget.maxRetries; retry++) {
       // ── Wall-clock timeout check ──────────────────────────────────
@@ -199,8 +203,15 @@ export async function executeTask(
         if (skill) {
           const check = deps.skillManager.verify(skill);
           if (check.valid) {
+            matchedSkill = skill;
+            // Inject proven approach as hypothesis — influences LLM generation
+            // while still going through full oracle verification (A6 zero-trust)
+            workingMemory.addHypothesis(
+              `Proven approach: ${skill.approach}`,
+              skill.successRate,
+              "cached-skill",
+            );
             deps.bus?.emit("skill:match", { taskId: input.id, skill });
-            // Skill provides cached approach; oracle gate still verifies (A6 zero-trust)
           } else {
             deps.bus?.emit("skill:miss", { taskId: input.id, taskSignature: taskSig });
           }
@@ -328,6 +339,20 @@ export async function executeTask(
           );
           trace.validation_depth = "structural";
           deps.bus?.emit("shadow:enqueue", { job });
+          // Fire-and-forget: process shadow job in background
+          deps.shadowRunner.processNext().then(result => {
+            if (result) {
+              deps.bus?.emit("shadow:complete", { job, result });
+            }
+          }).catch(err => {
+            deps.bus?.emit("shadow:fail", { job, error: String(err) });
+          });
+        }
+
+        // ── Skill outcome: success (H4) ──────────────────────────────
+        if (matchedSkill && deps.skillManager) {
+          deps.skillManager.recordOutcome(matchedSkill, true);
+          deps.bus?.emit("skill:outcome", { taskId: input.id, skill: matchedSkill, success: true });
         }
 
         deps.bus?.emit("task:complete", { result: successResult });
@@ -339,6 +364,13 @@ export async function executeTask(
         trace.approach,
         verification.reason ?? "unknown",
       );
+
+      // ── Skill outcome: failure (H4) ──────────────────────────────
+      if (matchedSkill && deps.skillManager) {
+        deps.skillManager.recordOutcome(matchedSkill, false);
+        deps.bus?.emit("skill:outcome", { taskId: input.id, skill: matchedSkill, success: false });
+        matchedSkill = null; // don't record again on retry
+      }
     }
 
     // ── RETRY EXHAUSTED → escalate routing level ─────────────────

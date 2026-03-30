@@ -23,6 +23,7 @@ import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../o
 import type { SkillManager } from "../orchestrator/skill-manager.ts";
 import type { RuleStore } from "../db/rule-store.ts";
 import type { VinyanBus } from "../core/bus.ts";
+import type { EvolutionaryRule } from "../orchestrator/types.ts";
 import { generateRule } from "../evolution/rule-generator.ts";
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
@@ -40,6 +41,7 @@ export interface SleepCycleResult {
   antiPatterns: number;
   successPatterns: number;
   decayedPatterns: number;
+  rulesPromoted: number;
 }
 
 export class SleepCycleRunner {
@@ -66,11 +68,16 @@ export class SleepCycleRunner {
     this.bus = options.bus;
   }
 
+  /** Returns the configured session interval for triggering sleep cycles. */
+  getInterval(): number {
+    return this.config.interval_sessions;
+  }
+
   /**
    * Run one sleep cycle. Returns extracted patterns.
    * Checks data gate before proceeding.
    */
-  run(): SleepCycleResult {
+  async run(): Promise<SleepCycleResult> {
     const cycleId = `cycle-${Date.now().toString(36)}`;
 
     // Check data gate
@@ -84,6 +91,7 @@ export class SleepCycleRunner {
         antiPatterns: 0,
         successPatterns: 0,
         decayedPatterns: 0,
+        rulesPromoted: 0,
       };
     }
 
@@ -93,7 +101,7 @@ export class SleepCycleRunner {
     const traces = this.traceStore.queryRecentTraces(10000);
     if (traces.length < this.config.min_traces_for_analysis) {
       this.patternStore.recordCycleComplete(cycleId, traces.length, 0);
-      return { cycleId, patterns: [], tracesAnalyzed: traces.length, antiPatterns: 0, successPatterns: 0, decayedPatterns: 0 };
+      return { cycleId, patterns: [], tracesAnalyzed: traces.length, antiPatterns: 0, successPatterns: 0, decayedPatterns: 0, rulesPromoted: 0 };
     }
 
     // Group by task type signature
@@ -135,6 +143,30 @@ export class SleepCycleRunner {
       }
     }
 
+    // Phase 2.6: Backtest probation rules and promote passing ones
+    let rulesPromoted = 0;
+    if (this.ruleStore) {
+      const { backtestRule } = await import("../evolution/backtester.ts");
+      const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
+      const probationRules = this.ruleStore.findByStatus("probation");
+
+      for (const rule of probationRules) {
+        const backtestTraces = this.getTracesForBacktest(rule);
+        if (backtestTraces.length < 5) continue; // backtester requires ≥5
+
+        const result = backtestRule(rule, backtestTraces);
+        this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
+
+        if (result.pass) {
+          const safety = checkSafetyInvariants(rule);
+          if (safety.safe) {
+            this.ruleStore.activate(rule.id);
+            rulesPromoted++;
+          }
+        }
+      }
+    }
+
     // Apply decay to existing patterns
     const decayedCount = this.applyDecay();
 
@@ -147,6 +179,7 @@ export class SleepCycleRunner {
       patternsFound: newPatterns.length,
       rulesGenerated,
       skillsCreated,
+      rulesPromoted,
     });
 
     return {
@@ -156,6 +189,7 @@ export class SleepCycleRunner {
       antiPatterns: newPatterns.filter(p => p.type === "anti-pattern").length,
       successPatterns: newPatterns.filter(p => p.type === "success-pattern").length,
       decayedPatterns: decayedCount,
+      rulesPromoted,
     };
   }
 
@@ -327,12 +361,17 @@ export class SleepCycleRunner {
     return groups;
   }
 
+  /** Get traces relevant for backtesting a rule. */
+  private getTracesForBacktest(_rule: EvolutionaryRule): ExecutionTrace[] {
+    return this.traceStore.queryRecentTraces(1000);
+  }
+
   private gatherStats(): DataGateStats {
     return {
       traceCount: this.traceStore.count(),
       distinctTaskTypes: this.traceStore.countDistinctTaskTypes(),
       patternsExtracted: this.patternStore.count(),
-      activeSkills: 0,    // Phase 2.5
+      activeSkills: this.skillManager?.countActive() ?? 0,
       sleepCyclesRun: this.patternStore.countCycleRuns(),
     };
   }

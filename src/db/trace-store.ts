@@ -5,7 +5,7 @@
  * JSON-serializes complex fields (oracle_verdicts, affected_files, prediction_error).
  */
 import type { Database } from "bun:sqlite";
-import type { ExecutionTrace } from "../orchestrator/types.ts";
+import type { ExecutionTrace, ShadowValidationResult } from "../orchestrator/types.ts";
 
 export class TraceStore {
   private db: Database;
@@ -103,6 +103,14 @@ export class TraceStore {
       `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL`,
     ).get() as { cnt: number };
     return row.cnt;
+  }
+
+  /** Update a trace's shadow validation result (called after async shadow processing). */
+  updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
+    this.db.prepare(
+      `UPDATE execution_traces SET shadow_validation = ?, validation_depth = 'structural_and_tests'
+       WHERE task_id = ?`,
+    ).run(JSON.stringify(result), taskId);
   }
 }
 

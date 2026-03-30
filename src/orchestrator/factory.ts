@@ -33,6 +33,7 @@ import { RuleStore } from "../db/rule-store.ts";
 import { ShadowRunner } from "./shadow-runner.ts";
 import { SkillManager } from "./skill-manager.ts";
 import { SleepCycleRunner } from "../sleep-cycle/sleep-cycle.ts";
+import { ToolExecutor } from "./tools/tool-executor.ts";
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -132,6 +133,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   });
   const oracleGate = new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
+  const toolExecutor = new ToolExecutor();
+
+  // Startup logging — confirm active components (P3.0 Gap 7)
+  const components = [
+    `self-model: ${selfModel.constructor.name}`,
+    `decomposer: ${decomposer.constructor.name}`,
+    `skills: ${skillManager ? "enabled" : "disabled"}`,
+    `shadow: ${shadowRunner ? "enabled" : "disabled"}`,
+    `sleep-cycle: ${sleepCycleRunner ? "enabled" : "disabled"}`,
+    `rules: ${ruleStore ? "enabled" : "disabled"}`,
+  ];
+  console.log(`[vinyan] Orchestrator initialized — ${components.join(", ")}`);
 
   const deps: OrchestratorDeps = {
     perception,
@@ -145,6 +158,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillManager,
     shadowRunner,
     ruleStore,
+    toolExecutor,
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)
@@ -160,6 +174,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Session counter — triggers sleep cycle at interval (H1)
   let sessionCount = 0;
+
+  // Shadow background loop — safety net for missed fire-and-forget calls (P3.2)
+  let shadowInterval: ReturnType<typeof setInterval> | undefined;
+  if (shadowRunner) {
+    shadowInterval = setInterval(async () => {
+      try {
+        const result = await shadowRunner.processNext();
+        if (result) {
+          bus.emit("shadow:complete", {
+            job: { id: "", taskId: result.taskId, status: "done" as const, enqueuedAt: 0, retryCount: 0, maxRetries: 1 },
+            result,
+          });
+        }
+      } catch { /* best-effort background processing */ }
+    }, 10_000);
+  }
 
   return {
     executeTask: async (input: TaskInput) => {
@@ -182,6 +212,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     sleepCycleRunner,
     getSessionCount: () => sessionCount,
     close: () => {
+      if (shadowInterval) clearInterval(shadowInterval);
       traceListenerHandle.detach();
       detachAudit();
       worldGraph?.close();

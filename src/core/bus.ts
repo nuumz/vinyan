@@ -18,6 +18,7 @@ import type {
   ShadowValidationResult,
   CachedSkill,
   EvolutionaryRule,
+  ToolResult,
 } from "../orchestrator/types.ts";
 
 // ── Event Map ────────────────────────────────────────────────────────
@@ -59,6 +60,9 @@ export interface VinyanBusEvents {
   // Circuit breaker
   "circuit:open": { oracleName: string; failureCount: number };
   "circuit:close": { oracleName: string };
+
+  // Tool execution (Phase 2 — G1)
+  "tools:executed": { taskId: string; results: ToolResult[] };
 
   // Task lifecycle extensions
   "task:escalate": { taskId: string; fromLevel: number; toLevel: number; reason: string };

@@ -7,6 +7,8 @@
  * Composite weights adapt to available dimensions.
  * Source of truth: vinyan-tdd.md §10 D10
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { QualityScore, OracleVerdict } from "../core/types.ts";
 import { computeCyclomaticComplexity } from "./complexity.ts";
 
@@ -96,5 +98,33 @@ export function computeQualityScore(
     composite,
     dimensions_available: dims,
     phase,
+  };
+}
+
+/**
+ * Build ComplexityContext from worker mutations by reading original files.
+ * Returns undefined if no mutations or files are unreadable.
+ */
+export function buildComplexityContext(
+  mutations: Array<{ file: string; content: string }>,
+  workspace: string,
+): ComplexityContext | undefined {
+  if (mutations.length === 0) return undefined;
+
+  const originals: string[] = [];
+  const mutated: string[] = [];
+
+  for (const m of mutations) {
+    mutated.push(m.content);
+    try {
+      originals.push(readFileSync(join(workspace, m.file), "utf-8"));
+    } catch {
+      originals.push(""); // new file — neutral
+    }
+  }
+
+  return {
+    originalSource: originals.join("\n"),
+    mutatedSource: mutated.join("\n"),
   };
 }

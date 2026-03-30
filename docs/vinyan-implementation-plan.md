@@ -612,13 +612,11 @@ P3.0 (Audit) ──┬── P3.1 (Container Real) ── P3.2 (Shadow Real) ─
 | Area | Spec | Current Code | Gap |
 |:-----|:-----|:-------------|:----|
 | Core loop `complexityContext` | QualityScore should include `simplificationGain` (1C.3) | `computeQualityScore()` called with `undefined` complexityContext (core-loop.ts:268) | No AST complexity diff computed |
-| Skill match → outcome | Skill match should feed back into `recordOutcome()` | Core loop matches skill (L195-208) but never calls `skillManager.recordOutcome()` on task success/failure | Skills never promote or demote |
 | Shadow processNext | Shadow jobs enqueued but never processed in main loop | `shadowRunner.processNext()` never called after enqueue | Shadow validation never executes |
 | Sleep Cycle trigger | Should run every N sessions (default: 20) | `sleepCycleRunner.run()` never called from core loop or CLI | Pattern extraction never fires |
-| Evolution rule types | Spec: `escalate`, `require-oracle`, `prefer-model`, `adjust-threshold` | Core loop only handles `escalate` action (L148) | 3 of 4 rule types ignored |
+| Evolution rule types | Spec: `escalate`, `require-oracle`, `prefer-model`, `adjust-threshold` | Core loop only handles `escalate` action (core-loop.ts:139-155) | 3 of 4 rule types ignored |
 | Skill dep cone hashes | `createFromPattern()` should receive real dep cone hashes | Called with empty `{}` (sleep-cycle.ts:124) | Skills created without dep tracking |
-| `activeSkills` in stats | Sleep Cycle gatherStats should query real skill count | Hardcoded `activeSkills: 0` (sleep-cycle.ts:335) | Data gate for evolution never opens |
-| Backtester integration | Rules should be backtested before activation | `ruleStore.insert()` directly after `generateRule()` — no `backtestRule()` call | Rules enter probation without validation |
+| Backtester integration | Rules should be backtested before activation | `ruleStore.insert()` directly after `generateRule()` (sleep-cycle.ts:138-140) — no `backtestRule()` call | Rules enter probation without validation |
 | Factory stubs | CalibratedSelfModel and TaskDecomposerImpl available | Factory falls back to stubs when no LLM/DB (acceptable), but never verifies which is active at startup | Silent degradation |
 
 **Deliverable:** All deltas above fixed + regression tests added for each. Track via checklist.
@@ -734,28 +732,22 @@ P3.0 (Audit) ──┬── P3.1 (Container Real) ── P3.2 (Shadow Real) ─
    ```
    Or: add CLI command `vinyan sleep-cycle` for manual trigger during development.
 
-2. **Skill outcome tracking:** After oracle verification in core loop:
-   - On skill match + success: `skillManager.recordOutcome(skill, true)`
-   - On skill match + failure: `skillManager.recordOutcome(skill, false)`
-   - Demoted skill → fall through to normal routing (already designed, just unwired)
-
-3. **Real dep cone hashes:** When Sleep Cycle creates skill from pattern:
+2. **Real dep cone hashes:** When Sleep Cycle creates skill from pattern:
    - Extract `affected_files` from source traces
    - Compute current hashes via `skillManager.computeCurrentHashes(files)`
    - Pass real hashes to `createFromPattern()`
 
-4. **Backtest before insert:** In Sleep Cycle, after `generateRule()`:
+3. **Backtest before insert:** In Sleep Cycle, after `generateRule()` (sleep-cycle.ts:138-140):
    - Fetch relevant traces from `traceStore`
    - Call `backtestRule(rule, traces)`
    - Only `ruleStore.insert()` if backtest passes
 
-5. **All rule action types in core loop:**
-   - `escalate`: already implemented ✅
+4. **All rule action types in core loop** (core-loop.ts:139-155 currently only handles `escalate`):
    - `require-oracle`: add specific oracle to verification requirements
    - `prefer-model`: override routing model selection
    - `adjust-threshold`: modify risk thresholds for this task
 
-6. **Fix `activeSkills: 0` hardcode:** Query `skillStore.count()` filtered by `status = 'active'`
+> **Note (2026-03-31 audit):** Items previously listed here — skill outcome tracking (`recordOutcome()`) and `activeSkills` hardcode fix — have been verified as already implemented in the current codebase (`core-loop.ts:354,370` and `sleep-cycle.ts:374` respectively).
 
 **Dependencies:** P3.0 (audit), P3.3 (quality enrichment for meaningful patterns)
 
@@ -892,21 +884,24 @@ P3.0 (Audit, 1d)
 ### Dependency Graph
 
 ```
-PH3.1 (Self-Model Foundation) ──────────────────────────────────────
-  │                                                                  │
+PH3.1 (Self-Model Foundation) ─────────────────────────────────────────────────
+  │                                                                             │
   ├── PH3.2 (Adaptive EMA) ──── PH3.5 (Pattern Mining v2) ── PH3.6 (Counterfactual Lite)
-  │                            │                                     │
-  │                            └── PH3.7 (Eval Framework) ──────────┘
-  │                                                                  │
-  └── PH3.3 (Evolution Pipeline) ── PH3.4 (Skill Integration) ─────┘
-                                                                     │
-                                                              PH3.8 (Validation)
+  │                            │                                                │
+  │                            └── PH3.7 (Eval Framework) ─────────────────────┘
+  │                                                                             │
+  ├── PH3.3 (Evolution Enhancement) ──────────────────────────────────────────┘
+  │                                                                             │
+  └── PH3.4 (Skill Generalization) ── independent, only needs PH3.1 ─────────┘
+                                                                                │
+                                                                         PH3.8 (Validation)
 ```
 
 **Parallel streams:**
-- Stream A: PH3.1 → PH3.2 → PH3.5 → PH3.6
-- Stream B: PH3.1 → PH3.3 → PH3.4
-- Stream C: PH3.2 + PH3.3 → PH3.7
+- Stream A (critical path): PH3.1 → PH3.2 → PH3.5 → PH3.6 → PH3.8
+- Stream B: PH3.1 → PH3.3 (runs in parallel with Stream A)
+- Stream C: PH3.1 → PH3.4 (runs in parallel with Stream A)
+- Stream D: PH3.2 + PH3.3 → PH3.7
 - Merge: PH3.8 (requires all streams)
 
 ---
@@ -919,7 +914,7 @@ PH3.1 (Self-Model Foundation) ────────────────�
 
 | Issue | Location | Problem |
 |:------|:---------|:--------|
-| PredictionError discarded | `core-loop.ts:306-307` | `calibrate()` return value not stored → `trace.predictionError` always null |
+| PredictionError discarded | `core-loop.ts:317-319` | `calibrate()` return value not stored → `trace.predictionError` always null |
 | No failure prediction | `self-model.ts:166-169` | Returns only `"pass"` or `"partial"`, never `"fail"` → systematic prediction bias |
 | Coarse task signature | `self-model.ts:171-176` | Directory-only grouping → unrelated tasks pooled together |
 | Premature basis transition | `self-model.ts:108` | Transitions at 10 obs regardless of accuracy → false "trace-calibrated" claim |
@@ -941,7 +936,7 @@ PH3.1 (Self-Model Foundation) ────────────────�
    - `"hybrid"`: 10 ≤ observationCount < 50 AND predictionAccuracy ≥ 0.4
    - `"trace-calibrated"`: observationCount ≥ 50 AND predictionAccuracy ≥ 0.6
 
-**Files:** `src/orchestrator/self-model.ts`, `src/orchestrator/core-loop.ts`
+**Files:** `src/orchestrator/self-model.ts`, `src/orchestrator/core-loop.ts:~317`
 
 **Tests:**
 - After 50 tasks: `predictionError` non-null on >95% of L2+ traces
@@ -1000,64 +995,52 @@ PH3.1 (Self-Model Foundation) ────────────────�
 
 ---
 
-#### PH3.3 — Evolution Pipeline Fix `[XL]` — Engineering
+#### PH3.3 — Evolution Pipeline Enhancement `[L]` — Engineering
 
-**What:** Make the Evolution Engine work end-to-end. Currently: patterns extracted → rules generated → rules stored. But rules are never validated, never promoted, and 3 of 4 action types are dead code.
+**What:** Enhance the Evolution Engine beyond the baseline fixes done in Pre-Phase 3. Pre-Phase 3 P3.5 handles backtester wiring and action type expansion. This phase adds rule lifecycle management, proportional escalation, statistical rigor, and richer rule conditions.
 
-**7 fixes:**
+> **Note (2026-03-31 audit):** 3 items originally listed here were moved to Pre-Phase 3 P3.5 (backtest wiring, 4 action types) or confirmed already done in code (`activeSkills` query). See audit notes in P3.5.
 
-1. **Wire backtester into Sleep Cycle.** After `generateRule()` in `sleep-cycle.ts`, call `backtestRule(rule, relevantTraces)`. Only store rules that pass. Emit `evolution:rule_backtested` bus event.
+**4 enhancements:**
 
-2. **Rule promotion loop.** New `promoteRules()` called during each Sleep Cycle:
+1. **Rule promotion loop.** New `promoteRules()` called during each Sleep Cycle:
    - Query all `status = "probation"` rules older than `PROBATION_SESSIONS * interval` time
    - Re-run backtest against latest traces
    - Pass → `ruleStore.activate(rule.id)` + update effectiveness
    - Fail → `ruleStore.retire(rule.id)`
+   - Emit `evolution:rule_promoted` or `evolution:rule_retired` bus events
 
-3. **All 4 action types in core loop.** Extend `core-loop.ts:138-155`:
-   - `escalate`: already works ✅
-   - `require-oracle`: add specific oracles to the verification step (pass oracle names to `oracleGate.verify()`)
-   - `prefer-model`: override `routing.model` if preferred model available in provider registry
-   - `adjust-threshold`: modify risk params for this task (e.g., `maxRetries`, latency budget)
+2. **Fix toLevel proportionality.** `rule-generator.ts:62` hardcodes `toLevel: 2`. Change to `min(3, failedAtLevel + 1)`. Requires adding `routingLevel` to `ExtractedPattern`.
 
-4. **Fix toLevel proportionality.** `rule-generator.ts` hardcodes `toLevel: 2`. Change to `min(3, failedAtLevel + 1)`. Requires adding `routingLevel` to `ExtractedPattern`.
+3. **Fix success-pattern Wilson LB.** `sleep-cycle.ts:283-285` is broken — `wins` always equals `totalPairs` because winner is structurally always the higher-quality approach. Replace with real pairwise comparison: for each pair of traces (one from winner, one from loser), count how many times winner's quality exceeds loser's. Apply Wilson LB to `(actualWins, totalPairs)`.
 
-5. **Fix success-pattern Wilson LB.** `sleep-cycle.ts:249-251` is broken (always 0 or `totalPairs`). Replace with real pairwise comparison: for each pair of traces (one from winner, one from loser), count how many times winner's quality exceeds loser's. Apply Wilson LB to `(actualWins, totalPairs)`.
+4. **Multi-condition rule generation.** Extend `generateEscalationRule()` and `generatePreferenceRule()` to populate `oracle_name`, `risk_above`, `model_pattern` conditions when pattern data provides them. Currently only `file_pattern` is ever set.
 
-6. **Fix activeSkills hardcode.** `sleep-cycle.ts:335` returns `activeSkills: 0`. Wire to `skillStore.count()` filtered by `status = 'active'`.
-
-7. **Multi-condition rule generation.** Extend `generateEscalationRule()` and `generatePreferenceRule()` to populate `oracle_name`, `risk_above`, `model_pattern` conditions when pattern data provides them. Currently only `file_pattern` is ever set.
-
-**Files:** `src/sleep-cycle/sleep-cycle.ts`, `src/evolution/rule-generator.ts`, `src/orchestrator/core-loop.ts`, `src/orchestrator/skill-manager.ts`, `src/orchestrator/types.ts`, `src/db/rule-store.ts`
+**Files:** `src/sleep-cycle/sleep-cycle.ts`, `src/evolution/rule-generator.ts`, `src/orchestrator/types.ts`, `src/db/rule-store.ts`
 
 **Tests:**
-- 0 rules bypass backtester (every generated rule goes through backtest)
 - ≥1 rule transitions `probation → active` within 60 sessions
-- All 4 action types exercised in integration test (stored, applied, observed to affect execution)
 - Success-pattern Wilson LB correctly rejects patterns where quality difference is not statistically significant (synthetic data test with overlapping distributions)
-- Evolution data gate no longer permanently blocked (`activeSkills` reports real count)
+- Multi-condition rules are generated when pattern data includes oracle/risk/model info
 
 ---
 
-#### PH3.4 — Skill Integration `[M]` — Engineering
+#### PH3.4 — Cross-Task Skill Generalization `[S]` — Research-lite
 
-**What:** Close the Skill Formation feedback loop so skills actually affect task execution.
+**What:** Extend Skill Formation with fuzzy matching across task types. The basic feedback loop (outcome tracking + approach injection) is already implemented — `recordOutcome()` at `core-loop.ts:354,370` and `workingMemory.addHypothesis()` at `core-loop.ts:207-213`.
+
+> **Note (2026-03-31 audit):** Items 1 and 2 originally listed here (wire `recordOutcome`, inject skill approach) were verified as already implemented in the current codebase.
 
 **Implementation:**
 
-1. **Wire `recordOutcome()` in core loop.** After oracle verification, if a skill was matched earlier in the iteration, call `skillManager.recordOutcome(skill, verification.passed)`. Track matched skill in a local variable set during the L0 Skill Shortcut block.
+1. **Cross-task fuzzy matching.** When no exact skill match exists, attempt fuzzy matching: same action verb + overlapping file extensions. If a fuzzy match has `successRate > 0.8`, inject it as a lower-confidence hypothesis (`confidence: 0.4`). This is the minimal viable version of GAP-C "cross-task generalization."
 
-2. **Inject skill approach into worker prompt.** When a skill matches and passes verification, add the cached approach to `WorkingMemoryState.activeHypotheses` with `source: "cached-skill"` and high confidence. The `PromptAssembler` already includes hypotheses in the prompt — this is a wiring fix, not new functionality.
-
-3. **Cross-task fuzzy matching (research-lite).** When no exact skill match exists, attempt fuzzy matching: same action verb + overlapping file extensions. If a fuzzy match has `successRate > 0.8`, inject it as a lower-confidence hypothesis (`confidence: 0.4`). This is the minimal viable version of GAP-C "cross-task generalization."
-
-**Files:** `src/orchestrator/core-loop.ts`, `src/orchestrator/skill-manager.ts`, `src/orchestrator/working-memory.ts`
+**Files:** `src/orchestrator/skill-manager.ts`
 
 **Tests:**
-- ≥1 skill transitions `probation → active` (through 10+ successful uses)
-- Active skills inject approach: when skill matches, worker prompt includes cached approach
-- Fuzzy skill match triggers at least once in integration test
-- Demoted skills are not offered (verify via bus events after demotion)
+- Fuzzy skill match triggers at least once in integration test (e.g., `"refactor::ts::small"` matches skill from `"refactor::ts::medium"`)
+- Fuzzy match injected as lower confidence (0.4) vs exact match (skill.successRate)
+- No false fuzzy matches across unrelated task types (e.g., `"bugfix::py"` does not match `"refactor::ts"`)
 
 ---
 
@@ -1269,21 +1252,24 @@ PH3.1 (Self-Model Foundation, ~3d)
   │                                │                                                                │
   │                                └── PH3.7 (Eval Framework, ~3d) ────────────────────────────────┤
   │                                                                                                 │
-  └── PH3.3 (Evolution Pipeline, ~5d) ── PH3.4 (Skill Integration, ~2d) ──────────────────────────┘
+  ├── PH3.3 (Evolution Enhancement, ~3d) ──────────────────────────────────────────────────────────┤
+  │                                                                                                 │
+  └── PH3.4 (Skill Generalization, ~1d) ──────────────────────────────────────────────────────────┘
                                                                                                     │
                                                                                              PH3.8 (Validation, ~5-7d)
 ```
 
-**Critical path:** PH3.1 → PH3.3 → PH3.4 → PH3.8 (parallel with PH3.2 → PH3.5 → PH3.6)
+**Critical path:** PH3.1 → PH3.2 → PH3.5 → PH3.6 → PH3.8 (Stream A, ~3+4+5+4+6 = ~22d)
+Stream B (PH3.3, ~3d) and Stream C (PH3.4, ~1d) run in parallel — not on critical path.
 
-**Estimated total:** ~4-5 weeks (engineering phase ~3 weeks with parallelism, validation ~1.5 weeks)
+**Estimated total:** ~3.5-4 weeks (engineering phase ~2.5 weeks with parallelism, validation ~1-1.5 weeks)
 
 ### Phase 3 Risk Assessment
 
 | Component | Risk Type | Level | Mitigation | Fallback |
 |:----------|:----------|:-----:|:-----------|:---------|
 | Adaptive EMA (PH3.2) | Engineering | Low | Bounded alpha [0.05, 0.3]. Monitor for oscillation. | Revert to fixed alpha=0.1 with per-task-type storage. |
-| Evolution pipeline (PH3.3) | Engineering | Medium | Each of 7 fixes is independently testable. | Ship fixes incrementally. |
+| Evolution enhancement (PH3.3) | Engineering | Low | Each of 4 enhancements is independently testable. | Ship incrementally. |
 | Cross-task mining (PH3.5) | Research | **High** | 200+ trace minimum. Design experiments that produce results even with limited data. | Report "N insufficient, estimate minimum." Fall back to single-task mining. |
 | Counterfactual lite (PH3.6) | Research | Medium | Epsilon exploration never routes DOWN. Conservative ε=0.05. | Disable exploration. Counterfactual becomes monitoring report. |
 | Miscalibration cascade (F4) | System | **High** | Layered defense: detection → containment → recovery → prevention. S1-S4 safeguards remain active. | Freeze Self-Model, revert to Phase 2 static heuristics. |
@@ -1293,13 +1279,193 @@ PH3.1 (Self-Model Foundation, ~3d)
 
 ### Phase 4+: Outline (Detail When Phase 3 Completes)
 
-### Phase 4 — Fleet Governance
+### Phase 4 — Fleet Governance (DRAFT Guideline)
 
-| Component | Description |
-|:----------|:------------|
-| Meritocratic worker profiles | Each worker config (model + temp + tool set) tracked with empirical stats. Probation → promotion. |
-| Capability-based routing | Match task characteristics to worker capabilities. "React task → React-skilled worker." |
-| Cross-project pattern transfer | Abstract patterns from project-specific details. |
+> **Status:** Draft brief. Detail after Phase 3 results are in.
+> **Prerequisite:** Phase 3 complete + PH3.7 readiness gate passed.
+> **Type:** Engineering-heavy, with one high-risk research component (PH4.6).
+
+#### Vision
+
+Phase 3 proves Vinyan can learn from its own data: trace-calibrated predictions, pattern-mined rules, effectiveness-scored skills. But Phase 3 treats the worker fleet as a fixed, static mapping: `RoutingLevel -> tier ("fast"|"balanced"|"powerful") -> single provider`. The Orchestrator has no concept of a worker's *empirical track record* or *domain capability* — it selects by tier alone.
+
+Phase 4 introduces **empirical worker identity**. Each worker configuration (model + temperature + tool set + system prompt variant) becomes a first-class entity with an observed performance profile. The Orchestrator stops routing by tier and starts routing by *measured capability against task characteristics*. Workers earn their workload through deterministic quality gates — not by label or default position.
+
+What changes: the `LLMProviderRegistry.selectForRoutingLevel()` call in `worker-pool.ts:115` becomes a multi-factor capability match. The `RoutingDecision.model` field becomes a `workerId` pointing to a tracked configuration. The `ExecutionTrace.model_used` field becomes the primary input to worker evaluation.
+
+#### Sub-Components
+
+##### PH4.1 — Worker Profile Registry `[M]`
+
+**Purpose:** Define the `WorkerProfile` as a first-class entity — a specific configuration (model ID, temperature, tool allowlist, system prompt template) paired with empirical statistics computed from `ExecutionTrace` data.
+
+**Key concepts to design:**
+- `WorkerProfile` interface: `{ id, config: WorkerConfig, stats: WorkerStats, status: "probation"|"active"|"demoted", createdAt, promotedAt? }`
+- `WorkerConfig`: `{ modelId, temperature, toolAllowlist, systemPromptTemplate?, maxContextTokens }`
+- `WorkerStats`: aggregated from traces — `{ totalTasks, successRate, avgQualityScore, avgDuration, avgTokenCost, taskTypeBreakdown: Record<taskSig, { count, successRate, avgQuality }> }`
+- `WorkerProfileStore` (SQLite table) for persistence
+- Registration API: create profile, initial stats = zero, status = probation
+
+**Dependencies on Phase 3:** `ExecutionTrace` schema already carries `model_used` (PH3.1 improves task signatures). Self-Model per-task-type parameters (PH3.2) provide the baseline to compare worker performance against.
+
+**Open questions:**
+- What constitutes a "different worker"? Whether temperature alone (e.g., `claude-sonnet@0.3` vs `claude-sonnet@0.7`) warrants separate profiles, or only model-level granularity.
+- How to handle model version changes (e.g., `claude-sonnet-4-20250514` vs a future version)? Version-aware identity or reset stats?
+- Should profiles be global (across projects) or project-scoped? Phase 4 scope says single-project, but the data model should not block Phase 5 multi-project.
+
+##### PH4.2 — Worker Lifecycle (Probation/Promotion/Demotion) `[M]`
+
+**Purpose:** Deterministic state machine governing worker status transitions. New configurations start on probation (logging-only, shadowed). Promotion requires statistically significant quality. Demotion is automatic on sustained underperformance.
+
+**Key concepts to design:**
+- State machine: `probation -> active -> demoted` (and `demoted -> probation` for re-evaluation)
+- Promotion gate: minimum N tasks on probation (explore: 20? 50?), Wilson score lower bound on success rate > threshold, average quality score >= project baseline
+- Demotion trigger: rolling window (explore: last 30 tasks) where success rate drops below threshold OR quality score drops below active-worker median by > K sigma
+- Probation behavior: worker is dispatched alongside the "incumbent" worker for the same task. Only the incumbent's output is committed. Probation worker's output is scored but not applied. Reuses the existing `ShadowValidationResult.pheAlternatives` pattern from `orchestrator/types.ts`.
+- Safety invariant extension: a promoted worker cannot bypass oracle verification. Extend `checkSafetyInvariants()` to cover worker lifecycle rules.
+
+**Dependencies on Phase 3:** Wilson score lower bound (PH3.3 fix). `EvolutionMetrics` framework (PH3.7) provides the scoring infrastructure.
+
+**Open questions:**
+- Minimum task count before promotion decisions are statistically meaningful? Depends on variance observed in Phase 3 data.
+- Should demotion be permanent or time-boxed (e.g., re-evaluate after 50 sessions)?
+- How does the probation shadow interact with Phase 2's existing shadow execution? Avoid doubling compute cost.
+
+##### PH4.3 — Capability Tagging & Task Fingerprinting `[L]`
+
+**Purpose:** Build a matching system between task characteristics and worker demonstrated strengths. "This worker empirically succeeds at React refactoring tasks" — derived from trace data, not declared.
+
+**Key concepts to design:**
+- Task fingerprint: extends PH3.1's `task_type_signature` with additional dimensions — framework markers (detected from imports/deps), oracle failure patterns, code complexity bucket
+- Worker capability vector: per-task-fingerprint-dimension success rates, built from `WorkerStats.taskTypeBreakdown`
+- Capability inference: after N traces per worker per task fingerprint dimension, compute a capability score. Explore: simple success rate, or quality-weighted score?
+- Negative capabilities: "this worker consistently fails at test-writing tasks" — equally valuable for routing exclusion
+
+**Dependencies on Phase 3:** Task signature quality (PH3.1), cross-task pattern correlation (PH3.5) — if PH3.5 finds meaningful cross-task patterns, those become candidate capability dimensions.
+
+**Open questions:**
+- How many task fingerprint dimensions are meaningful? Too few = no differentiation. Too many = insufficient data per cell.
+- Should capability be binary (can/cannot) or continuous (score 0-1)?
+- Cold-start for new task fingerprint dimensions? Fall back to tier-based routing until data accumulates.
+
+##### PH4.4 — Capability-Based Router `[L]`
+
+**Purpose:** Replace the current `RoutingLevel -> tier -> provider` mapping with a multi-factor worker selection. The core architectural change — empirically-grounded worker assignment decisions.
+
+**Key concepts to design:**
+- New interface replacing `LLMProviderRegistry.selectForRoutingLevel()`: `selectWorker(taskFingerprint, routingLevel, budget) -> WorkerProfile`
+- Selection algorithm (must be deterministic per A3):
+  1. Filter: only `status: "active"` workers at or above required routing level
+  2. Filter: worker's tool allowlist covers task requirements
+  3. Score: capability match (PH4.3) × quality track record (PH4.1) × cost efficiency
+  4. Tiebreak: lowest token cost (or deterministic ordering)
+- Fallback: if no worker has sufficient capability data for this task fingerprint, fall back to tier-based selection (backward compatible with Phase 3)
+- Integration point: `core-loop.ts` — after `riskRouter.assessInitialLevel()`, before `workerPool.dispatch()`. The `RoutingDecision` gains a `workerId` field.
+
+**Dependencies on Phase 3:** PH3.6 counterfactual analysis feeds "would a different worker have done better?" analysis.
+
+**Open questions:**
+- Scoring formula: weighted sum vs priority-based filter chain? Must be deterministic and auditable.
+- Exploration vs exploitation: extend PH3.6's epsilon-greedy to worker selection?
+- Token cost as first-class factor or tiebreak only?
+- Transition period: gradual rollout starting with 1 task fingerprint dimension, expand as data accumulates.
+
+##### PH4.5 — Fleet Evaluation & Evolution Integration `[M]`
+
+**Purpose:** Extend Sleep Cycle and Evolution Engine to reason about worker performance. Generate rules like "for React refactoring, prefer worker X over worker Y."
+
+**Key concepts to design:**
+- New pattern type: `"worker-performance"` added to `ExtractedPattern.type`
+- Worker comparison during Sleep Cycle: for each task fingerprint with sufficient data across multiple workers, compare quality distributions. If one worker is statistically better (Wilson LB), generate a `prefer-model` rule.
+- New evolution rule action: `"assign-worker"` — directly maps a task fingerprint to a worker ID. Subject to all existing safety invariants.
+- Fleet-level metrics extension to `EvolutionMetrics` (PH3.7): worker utilization distribution, capability coverage, fleet diversity score
+
+**Dependencies on Phase 3:** Evolution pipeline (PH3.3), evaluation framework (PH3.7), pattern mining (PH3.5).
+
+**Open questions:**
+- Should worker-preference rules go through the same probation pipeline as other evolution rules?
+- How to prevent the fleet from collapsing to a single "best" worker? Diversity incentives or minimum allocation floors.
+
+##### PH4.6 — Cross-Project Pattern Transfer `[L/XL]` (Research)
+
+**Purpose:** Abstract patterns learned in one project so they can seed behavior in a new project. "React refactoring patterns learned in Project A apply to Project B."
+
+**Key concepts to design:**
+- Pattern abstraction layer: strip project-specific details (file paths, symbol names) from `ExtractedPattern` and `CachedSkill`, retain structural characteristics (framework, task type, complexity class)
+- Portable pattern format: `AbstractPattern { taskFingerprint, approach, qualityRange, sourceProjectCount, confidence }`
+- Import/export mechanism: serialize patterns to a transferable format, import into a new project's pattern store with `status: "probation"` and reduced confidence
+- Similarity metric for cross-project applicability: whether two projects are "similar enough" for transfer
+
+**Open questions (many — highest uncertainty component):**
+- Is cross-project transfer even feasible with the data available? Depends entirely on Phase 3 findings.
+- How to measure whether a transferred pattern is helping vs introducing noise?
+- Minimum project similarity threshold: hand-crafted heuristic or learned?
+- Should transfer be manual (human selects) or automatic?
+- Explore whether this should be deferred to Phase 5 (multi-instance coordination).
+
+**Size:** L/XL — highest research risk. May be descoped to "design the abstraction layer, defer actual transfer" based on Phase 3 findings.
+
+#### Dependency Graph
+
+```
+PH4.1 (Worker Profiles) ──┬── PH4.2 (Lifecycle)
+                           │
+                           ├── PH4.3 (Capability Tagging) ── PH4.4 (Capability Router)
+                           │                                        │
+                           └── PH4.5 (Fleet Evolution) ────────────┘
+                                                                    │
+                                                            PH4.6 (Cross-Project) [independent, research]
+```
+
+**Parallel streams:**
+- Stream A (critical path): PH4.1 → PH4.3 → PH4.4
+- Stream B: PH4.1 → PH4.2 (parallel with Stream A)
+- Stream C: PH4.4 + PH4.2 → PH4.5
+- Stream D: PH4.6 (independent, can start after PH4.1, may be descoped)
+
+#### Data Prerequisites
+
+Phase 4 decisions are only as good as the trace data they consume. Before starting:
+
+| Prerequisite | Minimum | Ideal | Source |
+|:-------------|:--------|:------|:-------|
+| Total execution traces | 500 | 1000+ | Phase 3 burn-in + validation |
+| Distinct task type signatures | 10 | 20+ | PH3.1 improved signatures |
+| Traces with >1 distinct `model_used` | 100 | 300+ | Need multi-model data for worker comparison |
+| Active evolution rules | 3 | 10+ | PH3.3 promotion pipeline |
+| Self-Model per-type accuracy >75% | 5 task types | 10+ | PH3.2 adaptive EMA |
+| Sleep cycles completed | 10 | 25+ | PH3.5 pattern mining maturity |
+
+**Critical gap:** Current system uses a single model per tier. Phase 4 needs traces from *multiple worker configurations per routing level* to compare. Phase 3 validation (PH3.8) should deliberately run with 2-3 model configs to seed this data.
+
+#### Key Design Decisions (Open)
+
+1. **Worker identity granularity.** Is `(modelId, temperature)` sufficient, or does `(modelId, temperature, systemPromptVariant, toolAllowlist)` define a distinct worker?
+2. **Routing integration point.** Options: (a) extend `RoutingDecision` with `workerId`, (b) add `workerSelector` dependency between risk router and worker pool, (c) make worker selection internal to `WorkerPoolImpl`.
+3. **Probation compute budget.** Probation workers run in shadow mode. Explore: run on random subset (e.g., 20%) rather than all tasks to limit cost.
+4. **Capability vector representation.** Dense (one score per dimension per worker) vs sparse (only store dimensions with sufficient data).
+5. **Fleet size governance.** Cap on active worker configurations? Dynamic cap tied to trace volume.
+6. **Backward compatibility.** Must degrade gracefully to Phase 3 tier-based behavior when worker data is insufficient.
+
+#### Risk Assessment
+
+| Component | Risk Type | Level | Notes |
+|:----------|:----------|:-----:|:------|
+| PH4.1 Worker Profiles | Engineering | Low | Data modeling. Follows existing store patterns. |
+| PH4.2 Lifecycle | Engineering | Low-Med | State machine straightforward. Thresholds need tuning from Phase 3 data. |
+| PH4.3 Capability Tagging | Eng + Research | Medium | Depends on Phase 3 finding meaningful task fingerprint dimensions. |
+| PH4.4 Capability Router | Engineering | Medium | Core loop integration is highest-risk engineering change. |
+| PH4.5 Fleet Evolution | Engineering | Low-Med | Extends existing evolution infrastructure. |
+| PH4.6 Cross-Project Transfer | Research | **High** | May be infeasible. Depends on Phase 3 abstractable patterns. |
+
+**Biggest unknown:** Whether single-project trace data provides enough statistical power for meaningful worker differentiation. Phase 3 should measure trace-per-task-type distribution to inform this.
+
+#### Critical Files for Implementation
+- `src/orchestrator/types.ts` — WorkerProfile, WorkerConfig, WorkerStats interfaces
+- `src/orchestrator/worker/worker-pool.ts` — Primary integration point: `selectForRoutingLevel()` becomes capability-based
+- `src/orchestrator/llm/provider-registry.ts` — Current tier-based selection becomes fallback path
+- `src/evolution/safety-invariants.ts` — Extend with fleet governance invariants
+- `src/orchestrator/core-loop.ts` — RoutingDecision gains `workerId`, worker selection step added
 
 ### Phase 5 — Self-Hosted ENS
 
@@ -1330,7 +1496,9 @@ Phase 0 Gaps (P0-1..P0-5)
                                                                                │
                                                            Phase 3 (Evolution + Self-Model, ~4-5 wk)
                                                                                │
-                                                           Phase 4+ (Fleet Governance)
+                                                           Phase 4 (Fleet Governance, ~6-8 wk)
+                                                                               │
+                                                           Phase 5 (Self-Hosted ENS)
 ```
 
 **Single biggest blocker:** 1A.7 (Orchestrator Core Loop) — everything flows through it. However, it can start with L0-L1 scope and expand.
@@ -1343,6 +1511,7 @@ Phase 0 Gaps (P0-1..P0-5)
 - **Vinyan 2.0** — Phase 2 → hardened execution + self-improvement
 - **Vinyan 2.1** — Pre-Phase 3 → integration hardening + burn-in validation (≥200 real traces)
 - **Vinyan 3.0** — Phase 3 → full evolution engine + trace-calibrated self-model
+- **Vinyan 4.0** — Phase 4 → empirical worker identity + capability-based routing
 
 ---
 
@@ -1361,3 +1530,6 @@ Phase 0 Gaps (P0-1..P0-5)
 | Self-Model miscalibration cascade (PH3.2) | System | **High** | Layered defense: detection → containment → recovery → prevention. S1-S4 safeguards. Freeze + revert on degradation. |
 | Counterfactual exploration (PH3.6) | Research | Medium | Epsilon exploration never routes DOWN. Conservative ε=0.05. Disable if disruptive. |
 | Rule feedback loop (PH3.3) | System | Medium | Re-backtest before promotion. Auto-retire bad rules. Cap at 20 active rules. |
+| Capability-based routing (PH4.4) | Engineering | Medium | Core loop integration risk. Tier-based fallback ensures backward compatibility. |
+| Worker differentiation data (PH4.3) | Research | Medium | Depends on trace volume per worker-task-type cell. Phase 3 should seed multi-model traces. |
+| Cross-project transfer (PH4.6) | Research | **High** | May be infeasible. Depends on Phase 3 finding abstractable patterns. Descope to design-only if data insufficient. |

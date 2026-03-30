@@ -63,6 +63,7 @@ export class WorkerPoolImpl implements WorkerPool {
     if (routing.level === 0) {
       return {
         mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
+        proposedToolCalls: [] as import("../types.ts").ToolCall[],
         tokensConsumed: 0,
         duration_ms: Math.round(performance.now() - startTime),
       };
@@ -288,6 +289,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
     return {
       mutations,
+      proposedToolCalls: output.proposedToolCalls,
       tokensConsumed: output.tokensConsumed,
       duration_ms: Math.round(performance.now() - startTime),
     };

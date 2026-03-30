@@ -129,7 +129,10 @@ export class SleepCycleRunner {
 
       // Phase 2.5: Create skills from success patterns
       if (pattern.type === "success-pattern" && pattern.approach && this.skillManager) {
-        this.skillManager.createFromPattern(pattern, 0.2, {});
+        const affectedFiles = this.extractAffectedFilesFromPattern(pattern, traces);
+        const depConeHashes = this.skillManager.computeCurrentHashes(affectedFiles);
+        const riskScore = this.estimatePatternRisk(pattern, traces);
+        this.skillManager.createFromPattern(pattern, riskScore, depConeHashes);
         skillsCreated++;
       }
 
@@ -386,5 +389,46 @@ export class SleepCycleRunner {
       evolution_min_active_skills: 1,
       evolution_min_sleep_cycles: 3,
     };
+  }
+
+  /**
+   * Extract unique affected files from traces that sourced a pattern.
+   */
+  private extractAffectedFilesFromPattern(
+    pattern: ExtractedPattern,
+    allTraces: ExecutionTrace[],
+  ): string[] {
+    const traceIdSet = new Set(pattern.sourceTraceIds);
+    const files = new Set<string>();
+    for (const trace of allTraces) {
+      if (traceIdSet.has(trace.id)) {
+        for (const f of trace.affected_files) files.add(f);
+      }
+    }
+    return [...files];
+  }
+
+  /**
+   * Estimate risk score for a pattern from its source traces.
+   * Uses average risk_score from traces, falls back to routing-level proxy.
+   */
+  private estimatePatternRisk(
+    pattern: ExtractedPattern,
+    allTraces: ExecutionTrace[],
+  ): number {
+    const traceIdSet = new Set(pattern.sourceTraceIds);
+    const risks: number[] = [];
+    for (const trace of allTraces) {
+      if (traceIdSet.has(trace.id)) {
+        if (trace.risk_score != null) {
+          risks.push(trace.risk_score);
+        } else {
+          // Proxy: routing level / 3
+          risks.push(trace.routingLevel / 3);
+        }
+      }
+    }
+    if (risks.length === 0) return 0.2;
+    return risks.reduce((a, b) => a + b, 0) / risks.length;
   }
 }

@@ -30,6 +30,8 @@ export interface RoutingDecision {
   model: string | null; // null for L0 (cached/skip)
   budgetTokens: number;
   latencyBudget_ms: number;
+  mandatoryOracles?: string[];       // Phase 2.6: require-oracle rules add entries here
+  riskThresholdOverride?: number;    // Phase 2.6: adjust-threshold rules set this
 }
 
 /** Input factors for risk scoring (→ TDD §6) */

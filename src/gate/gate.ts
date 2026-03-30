@@ -18,6 +18,8 @@ import type { HypothesisTuple, OracleVerdict, QualityScore } from "../core/types
 import { buildVerdict } from "../core/index.ts";
 import { logDecision, type SessionLogEntry } from "./logger.ts";
 import { isMutatingTool } from "./tool-classifier.ts";
+import { calculateRiskScore, getIrreversibilityScore, detectEnvironment } from "./risk-router.ts";
+import type { RiskFactors } from "../orchestrator/types.ts";
 import { computeQualityScore } from "./quality-score.ts";
 import type { ComplexityContext, TestContext } from "./quality-score.ts";
 import { OracleCircuitBreaker } from "../oracle/circuit-breaker.ts";
@@ -42,6 +44,8 @@ export interface GateRequest {
   };
   /** Session identifier for log grouping — auto-generated if omitted */
   session_id?: string;
+  /** Optional — when provided, enables risk-tiered oracle selection (TDD §8). */
+  riskScore?: number;
 }
 
 export type GateDecision = "allow" | "block";
@@ -52,6 +56,8 @@ export interface GateVerdict {
   oracle_results: Record<string, OracleVerdict>;
   duration_ms: number;
   qualityScore?: QualityScore;
+  /** Risk score used for oracle tier selection (0.0-1.0). Present when risk-tiered mode is active. */
+  riskScore?: number;
 }
 
 // ── Oracle dispatch map ─────────────────────────────────────────
@@ -76,6 +82,15 @@ const ORACLE_ENTRIES: Record<string, OracleEntry> = {
 
 /** Oracles that are informational-only — never block the gate. */
 const INFORMATIONAL_ORACLES = new Set(["dep"]);
+
+/** Oracle tier classification for risk-tiered verification (TDD §8). */
+const ORACLE_TIERS: Record<string, "structural" | "full"> = {
+  ast: "structural",
+  type: "structural",
+  dep: "structural",
+  lint: "structural",
+  test: "full",
+};
 
 // ── Gate logic ──────────────────────────────────────────────────
 
@@ -118,7 +133,26 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     return verdict;
   }
 
-  // ② Load config to determine which oracles are enabled
+  // ② Risk assessment — determines oracle tier when riskScore provided (TDD §8)
+  let riskScore: number | undefined;
+  if (request.riskScore != null) {
+    riskScore = request.riskScore;
+  } else {
+    // Compute lightweight risk score from tool name for observability
+    const irreversibility = getIrreversibilityScore(request.tool);
+    const riskFactors: RiskFactors = {
+      blastRadius: 1,
+      dependencyDepth: 0,
+      testCoverage: 0.5,
+      fileVolatility: 0,
+      irreversibility,
+      hasSecurityImplication: false,
+      environmentType: detectEnvironment(),
+    };
+    riskScore = calculateRiskScore(riskFactors);
+  }
+
+  // ②½ Load config to determine which oracles are enabled
   const config = loadConfig(request.params.workspace);
 
   // ③ Build hypotheses and run enabled oracles
@@ -126,13 +160,20 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     ([name, conf]) => conf.enabled && ORACLE_ENTRIES[name],
   );
 
-  // Run all enabled oracles concurrently (skip context-dependent and circuit-open oracles)
+  // Run all enabled oracles concurrently (skip context-dependent, circuit-open, and risk-excluded oracles)
+  const riskTieringActive = request.riskScore != null;
   const results = await Promise.all(
     oracleEntries
       .filter(([name]) => {
         const entry = ORACLE_ENTRIES[name]!;
         if (entry.requiresContext && !request.params.content) return false;
         if (circuitBreaker.shouldSkip(name)) return false; // circuit open → exclude
+        // Risk-tiered filtering (TDD §8) — only when explicitly opted in
+        if (riskTieringActive && riskScore != null) {
+          const tier = ORACLE_TIERS[name] ?? "structural";
+          if (riskScore < 0.2) return false;                        // hash-only → skip all oracles
+          if (riskScore < 0.4 && tier === "full") return false;     // structural → skip test oracle
+        }
         return true;
       })
       .map(async ([name]) => {
@@ -233,6 +274,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     oracle_results: oracleResults,
     duration_ms,
     qualityScore: computeQualityScore(oracleResults, duration_ms, undefined, complexityContext, testContext),
+    riskScore,
   };
 
   await safeLog(request, verdict);

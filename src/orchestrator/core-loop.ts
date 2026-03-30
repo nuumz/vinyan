@@ -20,11 +20,13 @@ import type {
   ExecutionTrace,
   TaskDAG,
   SelfModelPrediction,
+  PredictionError,
   CachedSkill,
+  ToolCall,
 } from "./types.ts";
 import { WorkingMemory } from "./working-memory.ts";
 import type { VinyanBus } from "../core/bus.ts";
-import { computeQualityScore } from "../gate/quality-score.ts";
+import { computeQualityScore, buildComplexityContext } from "../gate/quality-score.ts";
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -43,7 +45,7 @@ export interface SelfModel {
     input: TaskInput,
     perception: PerceptualHierarchy,
   ): Promise<SelfModelPrediction>;
-  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): void;
+  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError | void;
 }
 
 export interface TaskDecomposer {
@@ -86,6 +88,7 @@ interface WorkerResult {
     diff: string;
     explanation: string;
   }>;
+  proposedToolCalls: ToolCall[];
   tokensConsumed: number;
   duration_ms: number;
 }
@@ -113,6 +116,7 @@ export interface OrchestratorDeps {
   skillManager?: import("./skill-manager.ts").SkillManager;
   shadowRunner?: import("./shadow-runner.ts").ShadowRunner;
   ruleStore?: import("../db/rule-store.ts").RuleStore;
+  toolExecutor?: import("./tools/tool-executor.ts").ToolExecutor;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -149,6 +153,15 @@ export async function executeTask(
         if (rule.action === "escalate" && typeof rule.parameters.toLevel === "number") {
           const newLevel = rule.parameters.toLevel as RoutingLevel;
           if (newLevel > routing.level) routing = { ...routing, level: newLevel };
+        }
+        if (rule.action === "require-oracle" && typeof rule.parameters.oracleName === "string") {
+          routing = { ...routing, mandatoryOracles: [...(routing.mandatoryOracles ?? []), rule.parameters.oracleName] };
+        }
+        if (rule.action === "prefer-model" && typeof rule.parameters.preferredModel === "string") {
+          routing = { ...routing, model: rule.parameters.preferredModel };
+        }
+        if (rule.action === "adjust-threshold" && typeof rule.parameters.riskThreshold === "number") {
+          routing = { ...routing, riskThresholdOverride: rule.parameters.riskThreshold };
         }
       }
       deps.bus?.emit("evolution:rules_applied", { taskId: input.id, rules: winners });
@@ -253,6 +266,40 @@ export async function executeTask(
         routing,
       );
 
+      // ── Step 4½: EXECUTE proposed tool calls ─────────────────────
+      if (deps.toolExecutor && workerResult.proposedToolCalls.length > 0) {
+        const toolContext = {
+          workspace: process.cwd(),
+          allowedPaths: input.targetFiles ?? [],
+          routingLevel: routing.level,
+        } as import("./tools/tool-interface.ts").ToolContext;
+
+        const toolResults = await deps.toolExecutor.executeProposedTools(
+          workerResult.proposedToolCalls,
+          toolContext,
+        );
+
+        deps.bus?.emit("tools:executed", { taskId: input.id, results: toolResults });
+
+        // Merge file-write tool results back into mutations
+        for (const tr of toolResults) {
+          if (tr.status === "success" && tr.output && typeof tr.output === "object") {
+            const out = tr.output as { file?: string; content?: string };
+            if (out.file && out.content) {
+              const existing = workerResult.mutations.find(m => m.file === out.file);
+              if (!existing) {
+                workerResult.mutations.push({
+                  file: out.file,
+                  content: out.content,
+                  diff: "",
+                  explanation: `Tool ${tr.tool} output`,
+                });
+              }
+            }
+          }
+        }
+      }
+
       // ── Step 5: VERIFY (oracle gate) ─────────────────────────────
       const verification = await deps.oracleGate.verify(
         workerResult.mutations.map((m) => ({
@@ -272,11 +319,15 @@ export async function executeTask(
       const testContext = testVerdictKey
         ? { testsExist: true, testsPassed: verification.verdicts[testVerdictKey]!.verified }
         : undefined;
+      const complexityCtx = buildComplexityContext(
+        workerResult.mutations.map(m => ({ file: m.file, content: m.content })),
+        process.cwd(),
+      );
       const qualityScore = computeQualityScore(
         verification.verdicts,
         workerResult.duration_ms,
         routing.latencyBudget_ms,
-        undefined, // complexityContext — not available in core loop (TODO: Phase 2)
+        complexityCtx,
         testContext,
       );
 
@@ -313,9 +364,15 @@ export async function executeTask(
       await deps.traceCollector.record(trace);
       deps.bus?.emit("trace:record", { trace });
 
-      // Calibrate self-model from prediction vs actual outcome
+      // Calibrate self-model from prediction vs actual outcome (PH3.1 — persist PredictionError)
       if (prediction && deps.selfModel.calibrate) {
-        try { deps.selfModel.calibrate(prediction, trace); } catch { /* best-effort */ }
+        try {
+          const predictionError = deps.selfModel.calibrate(prediction, trace);
+          if (predictionError) {
+            trace.predictionError = predictionError;
+            await deps.traceCollector.record(trace);
+          }
+        } catch { /* best-effort */ }
       }
 
       // ── SUCCESS → return result ──────────────────────────────────

@@ -37,11 +37,15 @@ export interface AbstractPattern {
 }
 
 export interface AbstractPatternExport {
-  version: 1;
+  version: number;
   projectId: string;
   exportedAt: number;
   patterns: AbstractPattern[];
 }
+
+/** Supported export versions and their migration transforms. */
+const CURRENT_EXPORT_VERSION = 1;
+const SUPPORTED_VERSIONS = new Set([1]);
 
 /**
  * Abstract an ExtractedPattern for cross-project transfer.
@@ -186,7 +190,7 @@ export function exportPatterns(
   }
 
   return {
-    version: 1,
+    version: CURRENT_EXPORT_VERSION,
     projectId,
     exportedAt: Date.now(),
     patterns: abstracted,
@@ -202,6 +206,13 @@ export function importPatterns(
   targetMarkers: { frameworks: string[]; languages: string[] },
   similarityThreshold = 0.5,
 ): ExtractedPattern[] {
+  // Version validation — reject unknown versions (PH5.0)
+  if (!SUPPORTED_VERSIONS.has(exported.version)) {
+    throw new Error(
+      `Unsupported pattern export version: ${exported.version}. Supported: ${[...SUPPORTED_VERSIONS].join(", ")}`,
+    );
+  }
+
   const imported: ExtractedPattern[] = [];
 
   for (const ap of exported.patterns) {

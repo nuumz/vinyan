@@ -1,0 +1,19 @@
+/**
+ * Migration Index — ordered list of all database migrations.
+ *
+ * Add new migrations here in version order.
+ */
+export { MigrationRunner } from "./migration-runner.ts";
+export type { Migration, MigrateResult } from "./migration-runner.ts";
+
+import { migration001 } from "./001_initial_schema.ts";
+import { migration002 } from "./002_add_session_tables.ts";
+import { migration003 } from "./003_add_instance_registry.ts";
+import type { Migration } from "./migration-runner.ts";
+
+/** All migrations in version order. */
+export const ALL_MIGRATIONS: Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+];

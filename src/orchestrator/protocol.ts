@@ -187,7 +187,7 @@ const TaskBudgetSchema = z.object({
 
 export const TaskInputSchema = z.object({
   id: z.string(),
-  source: z.enum(["cli", "api", "mcp"]),
+  source: z.enum(["cli", "api", "mcp", "a2a"]),
   goal: z.string(),
   targetFiles: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),

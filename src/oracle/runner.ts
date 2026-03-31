@@ -1,12 +1,14 @@
 import type { HypothesisTuple, OracleVerdict } from "../core/types.ts";
 import { buildVerdict } from "../core/index.ts";
 import { OracleVerdictSchema } from "./protocol.ts";
-import { getOraclePath } from "./registry.ts";
+import { getOraclePath, getOracleEntry } from "./registry.ts";
 
 export interface RunOracleOptions {
   timeout_ms?: number;
   /** Override oracle path (for testing or custom oracles). */
   oraclePath?: string;
+  /** Override command (for polyglot oracles — PH5.10). */
+  command?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -21,8 +23,12 @@ export async function runOracle(
   hypothesis: HypothesisTuple,
   options: RunOracleOptions = {},
 ): Promise<OracleVerdict> {
+  // Resolve command: explicit option > registry entry > fallback to path
+  const entry = getOracleEntry(oracleName);
+  const customCommand = options.command ?? entry?.command;
   const oraclePath = options.oraclePath ?? getOraclePath(oracleName);
-  if (!oraclePath) {
+
+  if (!customCommand && !oraclePath) {
     return buildVerdict({
       verified: false,
       type: "unknown",
@@ -35,10 +41,15 @@ export async function runOracle(
     });
   }
 
-  const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeout_ms ?? entry?.timeout_ms ?? DEFAULT_TIMEOUT_MS;
   const startTime = performance.now();
 
-  const proc = Bun.spawn(["bun", "run", oraclePath], {
+  // PH5.10: Use custom command if available, otherwise default to `bun run <path>`
+  const spawnArgs = customCommand
+    ? customCommand.split(/\s+/)
+    : ["bun", "run", oraclePath!];
+
+  const proc = Bun.spawn(spawnArgs, {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

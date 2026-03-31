@@ -8,6 +8,7 @@
  */
 import type { WorkerStore } from "../db/worker-store.ts";
 import type { CapabilityModel } from "./capability-model.ts";
+import type { VinyanBus } from "../core/bus.ts";
 
 export interface FleetMetrics {
   activeWorkers: number;
@@ -121,4 +122,39 @@ export function evaluateFleet(
     avgWorkerSpecialization: avgSpecialization,
     workerUtilization: utilization,
   };
+}
+
+/** Convergence warning threshold — Gini above this indicates monoculture risk. */
+const CONVERGENCE_GINI_THRESHOLD = 0.7;
+
+/**
+ * Check fleet diversity and emit convergence warning if Gini exceeds threshold.
+ * Call after task completion or during sleep cycle.
+ */
+export function checkFleetConvergence(
+  workerStore: WorkerStore,
+  bus: VinyanBus,
+  capabilityModel?: CapabilityModel,
+): FleetMetrics {
+  const metrics = evaluateFleet(workerStore, capabilityModel);
+
+  if (metrics.diversityScore > CONVERGENCE_GINI_THRESHOLD && metrics.activeWorkers > 1) {
+    // Find dominant worker (highest utilization)
+    let dominantWorkerId = "";
+    let maxAllocation = 0;
+    for (const [id, allocation] of Object.entries(metrics.workerUtilization)) {
+      if (allocation > maxAllocation) {
+        maxAllocation = allocation;
+        dominantWorkerId = id;
+      }
+    }
+
+    bus.emit("fleet:convergence_warning", {
+      giniScore: metrics.diversityScore,
+      dominantWorkerId,
+      allocation: maxAllocation,
+    });
+  }
+
+  return metrics;
 }

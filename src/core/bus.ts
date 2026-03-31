@@ -111,6 +111,18 @@ export interface VinyanBusEvents {
 
   // Artifact commit (Phase 1 — A6: orchestrator disposes)
   "commit:rejected": { taskId: string; rejected: Array<{ path: string; reason: string }> };
+
+  // Observability — GAP-H failure mode detection (Phase 5.15)
+  "memory:eviction_warning": { taskId: string; evictionCount: number; memoryPressure: number };
+  "context:verdict_omitted": { taskId: string; oracleName: string; reason: string };
+  "selfmodel:systematic_miscalibration": { taskId: string; biasDirection: "over" | "under"; magnitude: number; windowSize: number };
+  "observability:alert": { detector: string; severity: "warning" | "critical"; message: string; metadata?: Record<string, unknown> };
+
+  // API & Session events (Phase 5.1)
+  "api:request": { method: string; path: string; taskId?: string };
+  "api:response": { method: string; path: string; status: number; duration_ms: number };
+  "session:created": { sessionId: string; source: string };
+  "session:compacted": { sessionId: string; taskCount: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

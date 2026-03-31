@@ -54,7 +54,7 @@ export interface RiskFactors {
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
   id: string;
-  source: "cli" | "api" | "mcp";
+  source: "cli" | "api" | "mcp" | "a2a";
   goal: string; // Natural language task description
   targetFiles?: string[]; // Optional explicit scope
   constraints?: string[]; // User-specified constraints
@@ -373,6 +373,8 @@ export interface ExecutionTrace {
   oracleFailurePattern?: string;           // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
   framework_markers?: string[];            // PH4: detected framework markers (e.g., 'react', 'express')
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
+  correlationId?: string;                  // WP-5: cross-instance request tracing
+  sourceInstanceId?: string;               // WP-5: originating instance ID
 }
 
 // ---------------------------------------------------------------------------

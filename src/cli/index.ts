@@ -103,9 +103,15 @@ switch (command) {
     break;
   }
 
+  case "serve": {
+    const { serve } = await import("./serve.ts");
+    await serve(workspacePath);
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills\n  serve            Start the API server (Phase 5)`,
     );
     process.exit(1);
 }

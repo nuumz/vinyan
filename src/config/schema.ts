@@ -106,6 +106,49 @@ const Phase4ConfigSchema = z.object({
   staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
 });
 
+// ─── Phase 5 schema (Self-Hosted ENS) ────────────────────────────────
+
+const Phase5APIConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().positive().default(3927),
+  bind: z.string().default("127.0.0.1"),
+  auth_required: z.boolean().default(true),
+  session_compaction_threshold: z.number().positive().default(20),
+  rate_limit_enabled: z.boolean().default(true),
+});
+
+const Phase5InstancesConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  listen_port: z.number().positive().default(3928),
+  heartbeat_interval_ms: z.number().positive().default(15_000),
+  heartbeat_timeout_ms: z.number().positive().default(45_000),
+  peers: z.array(z.object({
+    url: z.string(),
+    trust_level: z.enum(["untrusted", "semi-trusted", "trusted"]).default("untrusted"),
+  })).default([]),
+});
+
+const Phase5PolyglotConfigSchema = z.object({
+  enabled_languages: z.array(z.string()).default(["typescript"]),
+  language_detection: z.enum(["auto", "config"]).default("auto"),
+});
+
+const Phase5MCPConfigSchema = z.object({
+  server_enabled: z.boolean().default(false),
+  client_servers: z.array(z.object({
+    name: z.string(),
+    command: z.string(),
+    trust_level: z.enum(["untrusted", "semi-trusted", "trusted"]).default("untrusted"),
+  })).default([]),
+});
+
+const Phase5ConfigSchema = z.object({
+  api: Phase5APIConfigSchema.optional(),
+  instances: Phase5InstancesConfigSchema.optional(),
+  polyglot: Phase5PolyglotConfigSchema.optional(),
+  mcp: Phase5MCPConfigSchema.optional(),
+});
+
 // ─── Helper ──────────────────────────────────────────────────────────
 
 /** Helper: parse an empty object to get all defaults from a schema with defaulted fields. */
@@ -128,6 +171,8 @@ export const VinyanConfigSchema = z.object({
   phase1: Phase1ConfigSchema.optional(),
   /** Phase 4 config — Fleet Governance parameters. */
   phase4: Phase4ConfigSchema.optional(),
+  /** Phase 5 config — Self-Hosted ENS parameters. */
+  phase5: Phase5ConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

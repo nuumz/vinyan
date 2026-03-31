@@ -499,6 +499,33 @@ When remote evidence contradicts local evidence, the 5-step Deterministic Contra
 5. **Historical Accuracy** — Engine with better track record wins
 6. **Escalation** — Present full evidence from both sides to human
 
+### 11.7 World Graph Federation
+
+In multi-instance mode, each Vinyan instance maintains its **own local World Graph** (SQLite). There is no shared database — SQLite's single-writer limitation makes a centralized multi-instance World Graph impractical.
+
+**Architecture:**
+```
+Instance A                          Instance B
+┌───────────────────┐               ┌───────────────────┐
+│ Local World Graph │               │ Local World Graph │
+│ (authoritative)   │◄──facts via──►│ (authoritative)   │
+│ - local facts     │   ECP §2.4    │ - local facts     │
+│ - remote facts    │               │ - remote facts    │
+│   (provenance-    │               │   (provenance-    │
+│    tagged)        │               │    tagged)        │
+└───────────────────┘               └───────────────────┘
+```
+
+**Rules:**
+1. **Local facts are authoritative.** Each instance's oracle verdicts produce facts bound to local file hashes (A4). These are the ground truth for that instance.
+2. **Remote facts enter as supplementary.** Facts received via knowledge sharing (§11.4) are stored with `source_instance_id` provenance and `confidence × 0.8` (reduced trust, A5).
+3. **No shared writes.** Instances never write to each other's World Graph. Knowledge transfer is a copy operation, not a synchronization.
+4. **File hash invalidation is local-only.** When Instance A's file watcher detects a change, only Instance A's facts are invalidated. Instance B's copy of the same fact remains valid until Instance B independently detects the file change.
+5. **Conflicting facts.** If local and remote facts for the same target disagree, the local fact takes precedence. Remote fact is marked `stale` and re-requested on next interaction.
+6. **Dependency edges are local.** Each instance builds its own dependency graph from its local workspace. Cross-instance dependency queries are best-effort enrichment, not authoritative.
+
+**Why not CRDT/merge:** World Graph facts are content-addressed (A4) — their validity depends on local file state. Merging remote facts without access to the remote filesystem would produce facts that cannot be verified locally, violating A1 (epistemic separation). The federation model preserves local verification integrity.
+
 ---
 
 ## 12. Evolution Pathway

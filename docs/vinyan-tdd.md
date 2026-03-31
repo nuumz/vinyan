@@ -1926,6 +1926,49 @@ function allCriteriaMet(v: DagValidationCriteria): boolean {
 }
 ```
 
+### 10.4 Parallel DAG Execution `[Phase 5]`
+
+When a validated DAG contains subtasks with no unmet dependencies, they execute in parallel via a bounded executor pool.
+
+**Execution model:**
+
+```typescript
+interface ParallelExecutorConfig {
+  maxParallelSubtasks: number;        // default: 4 — limits concurrent subtask dispatch
+  failureStrategy: 'fail-fast' | 'fail-independent';
+}
+
+// Default strategy selection (rule-based, A3-compliant):
+// - Subtasks with sideEffect: false → 'fail-independent' (continue siblings)
+// - Subtasks with sideEffect: true  → 'fail-fast' (cancel siblings on first failure)
+```
+
+**Algorithm:**
+
+1. Build a ready-queue of subtasks whose `dependencies` are all resolved
+2. Dispatch up to `maxParallelSubtasks` concurrently via `WorkerPool`
+3. On subtask completion:
+   - Mark resolved → re-scan DAG for newly unblocked subtasks → enqueue
+   - On failure + `fail-fast`: cancel all in-flight siblings, propagate error
+   - On failure + `fail-independent`: record failure, continue remaining subtasks
+4. DAG completes when all subtasks resolved (success or independent-failure)
+
+**Failure output:**
+
+```typescript
+interface DAGExecutionResult {
+  status: 'success' | 'partial_failure' | 'aborted';
+  subtask_results: Map<string, TaskResult>;     // keyed by subtask ID
+  failed_subtasks: string[];                     // IDs of failed subtasks
+  cancelled_subtasks: string[];                  // IDs cancelled by fail-fast
+}
+```
+
+**Constraints:**
+- `maxParallelSubtasks` ≤ `WorkerPool.maxWorkers` — executor pool cannot exceed worker capacity
+- Each parallel subtask gets its own `ExecutionTrace` entry, linked to the parent task via `parent_task_id`
+- Deterministic ordering: when multiple subtasks become ready simultaneously, dispatch in DAG declaration order (stable, reproducible)
+
 ---
 
 ## §11. Orchestrator Architecture `[Phase 1]`
@@ -2493,13 +2536,13 @@ vinyan-agent/
 |---|----------|-------------------|-----------------|--------|
 | 1 | Oracle disagreements (ast pass, type fail)? | ~~Any-fail = block~~ 5-step contradiction resolution | Over-blocking valid changes | ✅ **Resolved** — Phase 4.5 WP-1 `conflict-resolver.ts` implements concept §3.2 |
 | 2 | World Graph concurrent access? | Single writer (Orchestrator), read-only copies per worker | Race conditions if multiple writers | ⚠️ **Phase 5** — multi-instance requires local World Graph per instance + async merge (concept §11.5) |
-| 3 | PHE depth for Level 3? | 2–3 levels of dependency analysis | Over/under-investment in perception | ⚠️ Open — experiment with real workloads |
+| 3 | PHE depth for Level 3? | 2–3 levels of dependency analysis | Over/under-investment in perception | ✅ **Resolved** — depth tied to routing level: L0=0 (skip), L1=1 (direct deps), L2=2 (transitive), L3=2 + World Graph enrichment. Implemented in `perception-assembler.ts` |
 | 4 | When does Orchestrator need LLM? | Task decomposition + Critic (Level 2+) | Wasted LLM calls or insufficient planning | ✅ **Resolved** — Phase 4.5 WP-2 LLM-as-Critic activates at L2+ |
 | 5 | MCP "I don't know" representation? | Return empty result with epistemic metadata in JSON | Other agents can't parse epistemic state | ⚠️ Phase 5 PH5.5 — §19 specifies translation |
-| 6 | Tool call batching / parallel execution? | Sequential by default, parallel for independent reads | Performance bottleneck on I/O-heavy tasks | ⚠️ Open — profile real workloads |
-| 7 | L2 isolation: VM or Docker? | Docker for MVP | Insufficient isolation for security-critical | ⚠️ Open — benchmark overhead vs isolation |
-| 8 | Self-Model calibration speed? | ~50–60% initial → >75% by 200 sessions | Slow calibration → Self-Model is overhead | ⚠️ Open — track calibration curve |
-| 9 | Minimum QualityScore dims for Skill Formation? | 3 dimensions (arch + efficiency + complexity) | Premature skill formation from thin data | ⚠️ Open — when Skill Formation activates |
+| 6 | Tool call batching / parallel execution? | Sequential by default, parallel for independent reads | Performance bottleneck on I/O-heavy tasks | ✅ **Resolved** — §10.4 specifies parallel DAG execution (bounded pool, `maxParallelSubtasks: 4`). Tool calls within a single subtask remain sequential (worker isolation), subtasks execute in parallel |
+| 7 | L2 isolation: VM or Docker? | Docker for MVP | Insufficient isolation for security-critical | ⚠️ **Deferred** — L0-L2 use subprocess isolation (`Bun.spawn`), sufficient for current Phase 1-4 scope. L3 container isolation (Docker/microVM) deferred to Phase 5+ implementation. Decision: benchmark at L3 implementation time, not pre-decided |
+| 8 | Self-Model calibration speed? | ~50–60% initial → >75% by 200 sessions | Slow calibration → Self-Model is overhead | ✅ **Resolved** — Phase 3 Self-Model implements 4 cold-start safeguards: (1) Bayesian prior (0.5 base), (2) sample size gate (≥5 traces before prediction), (3) EMA decay (α=0.3), (4) cross-task transfer. Calibration tracked via `PredictionError` in traces — systematic miscalibration triggers `selfmodel:recalibrate` event |
+| 9 | Minimum QualityScore dims for Skill Formation? | 3 dimensions (arch + efficiency + complexity) | Premature skill formation from thin data | ✅ **Resolved** — Skill formation requires Wilson CI lower bound ≥ 0.6 on success rate with ≥10 matching traces. QualityScore dimensions are oracle-derived (not fixed count) — skill forms when pattern has sufficient statistical evidence regardless of dimension count. DataGate (`sleep_cycle_ready`) enforces ≥100 traces before any pattern mining |
 
 ---
 
@@ -3438,9 +3481,12 @@ interface MigrationRunner {
   getCurrentVersion(db: Database): number;
 
   /** Apply all pending migrations in order. Idempotent. */
-  migrate(db: Database, migrations: Migration[]): {
-    applied: number[];             // versions applied in this run
-    current: number;               // final version after migration
+  migrate(db: Database, migrations: Migration[], options?: {
+    dryRun?: boolean;              // default: false — if true, return pending migrations without applying
+  }): {
+    applied: number[];             // versions applied in this run (empty if dryRun)
+    current: number;               // final version after migration (unchanged if dryRun)
+    pending: number[];             // versions that would be applied (always populated)
   };
 }
 ```
@@ -3692,7 +3738,53 @@ CREATE TABLE IF NOT EXISTS session_tasks (
 );
 ```
 
-### 22.6 Acceptance Criteria
+### 22.6 Rate Limiting `[Phase 5]`
+
+Token-bucket rate limiting protects the API server from abuse and ensures fair resource sharing.
+
+```typescript
+interface RateLimitConfig {
+  defaultBucketSize: number;          // default: 100 tokens
+  defaultRefillRate: number;          // default: 10 tokens/second
+  endpointOverrides: Record<string, {
+    bucketSize: number;
+    refillRate: number;
+  }>;
+  // Per-endpoint category defaults:
+  // task_submit:   bucketSize=20,  refillRate=2/s   (expensive — LLM + oracle execution)
+  // task_query:    bucketSize=100, refillRate=20/s   (cheap reads)
+  // session_mgmt:  bucketSize=50,  refillRate=5/s
+  // health_status: unlimited (no rate limit)
+}
+```
+
+**Behavior:**
+- Rate limiting keyed by API key (from `Authorization: Bearer <key>`)
+- When bucket exhausted → `429 Too Many Requests` with `Retry-After` header (seconds until next token)
+- Unauthenticated endpoints (`/health`, `/metrics`) are not rate-limited
+- Rate limit state is in-memory only — resets on server restart (acceptable for single-instance)
+
+### 22.7 Graceful Shutdown Protocol `[Phase 5]`
+
+```typescript
+interface ShutdownProtocol {
+  /** Initiate graceful shutdown. Returns when all cleanup complete or deadline exceeded. */
+  stop(deadlineMs?: number): Promise<void>;   // default: 30_000ms
+}
+```
+
+**Shutdown sequence:**
+
+1. **Stop accepting** — HTTP server stops accepting new connections, returns `503 Service Unavailable` for new requests
+2. **Drain in-flight** — Wait for all in-flight task executions to complete (up to `deadlineMs`)
+3. **Persist sessions** — Flush all active sessions to SQLite (`session_store.status = 'suspended'`)
+4. **Disconnect peers** — Send `disconnect` message to all VIIP peers (A2A protocol §3)
+5. **Close resources** — Close SQLite connections, EventBus, file watchers
+6. **Force terminate** — If deadline exceeded, cancel remaining tasks with `TaskResult.status = 'error'`, log warning
+
+**Signals:** `SIGTERM` and `SIGINT` trigger `stop()`. Second signal forces immediate exit.
+
+### 22.8 Acceptance Criteria
 
 | # | Criterion | Test |
 |:--|:----------|:-----|
@@ -3813,7 +3905,63 @@ Trust level determines allowed operations (see [vinyan-a2a-protocol.md](vinyan-a
 | I16 | Session audit preservation | Delegation audit trail logged locally (never depends on remote audit) |
 | I17 | Speculative sandbox mandatory | Remote speculative-tier results treated as L2+ isolation required |
 
-### 23.5 Acceptance Criteria
+### 23.5 Distributed Tracing — correlationId Propagation `[Phase 5]`
+
+All cross-instance operations carry a `correlationId` that links traces across instances for end-to-end debugging.
+
+```typescript
+// Extended ExecutionTrace (addition to existing trace schema)
+interface ExecutionTrace {
+  // ... existing fields ...
+  correlationId?: string;             // UUIDv7 — set by originating instance, propagated through delegation chain
+  sourceInstanceId?: string;          // instance that created this trace entry
+}
+```
+
+**Propagation rules:**
+
+1. **Origin:** When Orchestrator starts a task with no existing `correlationId`, generate a new UUIDv7
+2. **Delegation:** `task_delegate` message includes `correlationId` in `VIIPEnvelope.correlation_id` (A2A protocol §2.2). The receiving instance MUST use the same `correlationId` for all traces generated from the delegated task
+3. **Oracle requests:** `oracle_request` message propagates `correlationId`. Response `oracle_verdict` echoes it
+4. **Knowledge sharing:** Not correlated (knowledge transfer is not task-scoped)
+5. **Trace query:** `TraceStore.queryByCorrelationId(id)` returns all local traces for a given correlation chain
+
+**Cross-instance trace assembly:**
+- Each instance stores traces locally with `correlationId` + `sourceInstanceId`
+- Full distributed trace is assembled by querying each participating instance (no centralized trace store)
+- Observability endpoint: `GET /api/v1/traces/:correlationId` returns local traces for that correlation
+
+### 23.6 World Graph Federation `[Phase 5]`
+
+Each instance maintains its own local World Graph (SQLite). Remote facts are advisory, not authoritative.
+
+```typescript
+interface WorldGraphFederation {
+  /** Query facts from connected peer instances. Best-effort, non-blocking. */
+  queryRemoteFacts(
+    query: FactQuery,
+    timeoutMs?: number               // default: 3_000ms
+  ): Promise<RemoteFact[]>;
+}
+
+interface RemoteFact {
+  fact: Fact;                         // standard Fact with confidence × 0.8 degradation
+  sourceInstanceId: string;
+  sourceTimestamp: number;
+  staleness: 'fresh' | 'stale';      // stale if > 5 minutes old
+}
+```
+
+**Federation rules** (see also concept.md §11.7):
+
+1. **Local facts are authoritative** — remote facts supplement but never override
+2. **Confidence degradation** — remote fact confidence multiplied by 0.8 on receipt
+3. **No shared writes** — instances never write to each other's World Graph
+4. **File hash invalidation is local-only** — `chokidar` watches are per-instance; remote instances cannot invalidate local facts
+5. **Conflict resolution** — if local and remote facts contradict, local takes precedence. Remote conflicting fact is logged but discarded
+6. **Usage pattern** — `queryRemoteFacts()` is called during `Perceive` phase as optional enrichment. Timeout failure → proceed with local facts only (fail-open)
+
+### 23.7 Acceptance Criteria
 
 | # | Criterion | Test |
 |:--|:----------|:-----|

@@ -2191,6 +2191,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Session management with compaction.** Group multiple `TaskInput` submissions under a session. Session state includes shared `WorkingMemory`, cumulative trace history, and a **compaction pipeline**: after N tasks or M minutes, summarize the session transcript into a condensed episode (approach sequences, key failures, successful patterns). Compacted sessions feed Sleep Cycle as first-class input. [Closes GAP-3: session management]
 - **Checkpoint recovery.** Persist session state and in-progress task state to SQLite (new `session_store` table following `WorkerStore` pattern from `db/worker-store.ts`). On restart, recover pending tasks and resume from last checkpoint. [Closes GAP-H FC6: "restarted randomly"]
 - **Health and metrics.** Expose `SystemMetrics` (from `observability/metrics.ts`) and `FleetMetrics` (from `fleet-evaluator.ts`) via read-only HTTP endpoints.
+- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects VIIP peers, then closes resources. See [vinyan-tdd.md §22.7](vinyan-tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
 
 **Extends:** `TaskInput.source: 'api'` (types.ts:56), `Orchestrator` interface (factory.ts), `WorkingMemory` (working-memory.ts)
 **New files:** `src/api/server.ts`, `src/api/routes.ts`, `src/api/session-manager.ts`, `src/db/session-schema.ts`, `src/db/session-store.ts`
@@ -2424,6 +2425,19 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - Multi-language projects: parallel oracle invocation strategy
 - P99 latency targets per language oracle
 
+**CI test strategy for cross-language oracles:**
+- Each language oracle ships with a `test/` directory containing ≥30 test cases per language (type errors, valid code, edge cases)
+- CI matrix: install language runtimes via GitHub Actions setup actions (`setup-python`, `setup-go`, `actions-rs/toolchain`)
+- Oracle tests run in isolation via `oracle/runner.ts` — same stdin/stdout JSON contract, no framework-specific test harness needed
+- Smoke test: each language oracle must pass `HypothesisTuple → OracleVerdict` round-trip in < 5s on CI runner
+- Fallback: if a language runtime is unavailable in CI, skip that oracle's tests with clear warning (not a hard failure)
+
+**Benchmark harness:**
+- Benchmark suite in `tests/benchmarks/` — measures oracle latency, task throughput, Sleep Cycle duration
+- Key benchmarks: (1) oracle round-trip per language (p50, p95, p99), (2) full task cycle (perceive → verify → learn), (3) DAG parallel execution throughput
+- Run via `bun test tests/benchmarks/ --timeout 120000` — not part of default `bun test` (opt-in via CI flag)
+- Baseline results committed to `tests/benchmarks/baseline.json` — CI compares against baseline, warns on >20% regression
+
 ##### PH5.11 — Python Oracle (Pyright) `[M]`
 
 **Purpose:** First non-TypeScript oracle. Proves polyglot framework works.
@@ -2521,10 +2535,17 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 **Extends:** `ExecutionTrace` (types.ts), `MetricsCollector` (metrics.ts), `VinyanBusEvents` (bus.ts)
 **Dependencies:** PH5.1 (API metrics), PH5.8 (Instance Coordinator)
 
-**Open questions:**
-- OpenTelemetry integration or custom format
-- Metrics export: Prometheus, JSON, or both
-- Alert delivery: webhook, bus event, log
+**Telemetry export format:**
+- **Primary:** Prometheus-compatible `/metrics` endpoint (text exposition format) — industry standard, zero-dependency scraping
+- **Metrics exposed:** `vinyan_tasks_total` (counter), `vinyan_task_duration_seconds` (histogram), `vinyan_oracle_latency_seconds` (histogram by oracle type), `vinyan_rules_active` (gauge), `vinyan_skills_active` (gauge), `vinyan_sleep_cycles_total` (counter), `vinyan_self_model_calibration` (gauge per task type), `vinyan_fleet_workers` (gauge by status)
+- **Labels:** `instance_id`, `task_type`, `oracle_type`, `worker_id` (where applicable)
+- **Endpoint:** `GET /api/v1/metrics` — no auth required (read-only, non-sensitive counters)
+- **Alternative:** JSON format available at `GET /api/v1/metrics?format=json` for programmatic consumption
+
+**Open questions resolved:**
+- ✅ OpenTelemetry vs custom: Prometheus exposition format (lightweight, no OTEL dependency). OTEL export can be added later via adapter
+- ✅ Metrics export: Prometheus primary, JSON secondary (same endpoint, format query param)
+- ✅ Alert delivery: bus event (`observability:alert`) — subscribers (webhook, log, CLI) handle delivery. No built-in webhook client
 
 ##### PH5.16 — Data Migration & Backward Compatibility `[S]` — **TIER 0 PREREQUISITE**
 
@@ -2535,7 +2556,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 **Key concepts (fully specified in TDD §20):**
 
 - **SQLite migration framework.** Replace `VinyanDB` constructor's `CREATE TABLE IF NOT EXISTS` pattern (`db/vinyan-db.ts`) with versioned migrations. New `schema_version` table tracks applied migrations. `ALTER TABLE ADD COLUMN` for new fields (additive only).
-- **Configuration migration.** `vinyan.json` gains `phase5` namespace. Existing configs without `phase5` work unchanged.
+- **Configuration migration.** `vinyan.json` gains `phase5` namespace. Existing configs without `phase5` work unchanged. Migration strategy: **additive namespaces** — new Phase 5 keys are nested under `phase5.*`, old flat keys preserved as-is for backward compatibility. Config loader reads both old and new paths with new path taking precedence (e.g., `oracle.timeout` still works, `phase5.oracle.timeout` overrides). No automated config rewrite — users migrate at their own pace.
 - **Feature activation.** Phase 5 features activate through existing `DataGate` (`data-gate.ts`). New gates: `multi_instance` (requires `instance_registry.count >= 2`), `polyglot_oracle` (requires language enabled). No silent activation.
 - **API server opt-in.** Not started by default. Activates when `phase5.api.enabled = true`. CLI-only remains default.
 

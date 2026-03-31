@@ -42,7 +42,7 @@ interface VIIPEnvelope {
   target_instance_id?: string;       // null = broadcast to all peers
   timestamp: number;                 // sender wall-clock, ms since epoch
   ttl_ms: number;                    // message lifetime (default: 30_000)
-  correlation_id?: string;           // links request → response pairs
+  correlation_id?: string;           // links request → response pairs (see §2.4 propagation rules)
 
   // Payload
   payload: Record<string, unknown>;  // type-specific, see §3
@@ -93,6 +93,24 @@ On WebSocket connect, initiator sends `handshake`:
 ```
 
 Handshake must complete within 5 seconds. On timeout → close connection, retry with backoff.
+
+### 2.4 correlationId Propagation Rules
+
+The `correlation_id` field enables distributed tracing across instances (see also [vinyan-tdd.md](vinyan-tdd.md) §23.5).
+
+**Rules:**
+
+1. **Task delegation chain:** `task_delegate` MUST set `correlation_id`. The receiving instance MUST echo the same `correlation_id` in the corresponding `task_result` or `task_cancel` response. If the receiver sub-delegates to a third instance, it MUST propagate the same `correlation_id`.
+
+2. **Oracle verification:** `oracle_request` MUST include `correlation_id` from the originating task. `oracle_verdict` MUST echo it.
+
+3. **Knowledge sharing:** `knowledge_offer`, `knowledge_accept`, and `knowledge_transfer` do NOT require `correlation_id` (knowledge transfer is not task-scoped).
+
+4. **Event forwarding:** `event_forward` MAY include `correlation_id` if the event originated from a correlated task. Otherwise omit.
+
+5. **Origin:** The instance that first creates a task generates a UUIDv7 `correlation_id`. All downstream messages for that task propagate it unchanged.
+
+6. **Missing correlationId:** If a `task_delegate` arrives without `correlation_id`, the receiver generates one locally and uses it for all downstream traces. This ensures traceability even with older protocol versions.
 
 ---
 

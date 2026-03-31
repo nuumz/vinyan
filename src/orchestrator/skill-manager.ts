@@ -122,6 +122,10 @@ export class SkillManager {
   /**
    * Verify a skill is still fresh based on its risk-tiered profile.
    * Returns { valid: true } if verification passes.
+   *
+   * Note: verificationProfile governs this freshness check only.
+   * The oracle gate selects and runs oracles independently (core-loop Step 5).
+   * Dep-cone is frozen at skill creation; stale hashes trigger demotion via reVerifyStaleSkills().
    */
   verify(skill: CachedSkill): { valid: boolean; reason?: string } {
     // All profiles check dep cone hashes

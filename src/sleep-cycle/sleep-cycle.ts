@@ -60,6 +60,8 @@ export class SleepCycleRunner {
   private ruleStore?: RuleStore;
   private bus?: VinyanBus;
   private decayExperiment: DecayExperimentState;
+  /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
+   * after environmental changes that may make previously ineffective rules effective again. */
   private ineffectiveCycles: Map<string, number> = new Map();
 
   constructor(options: {

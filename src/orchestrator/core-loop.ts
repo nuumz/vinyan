@@ -264,6 +264,9 @@ export async function executeTask(
           perception,
           workingMemory.getSnapshot(),
         );
+        if (plan.isFallback) {
+          deps.bus?.emit("decomposer:fallback", { taskId: input.id });
+        }
       }
 
       // ── Step 4: GENERATE (dispatch to worker) ────────────────────
@@ -323,8 +326,20 @@ export async function executeTask(
       );
 
       // ── Emit per-oracle verdicts ──────────────────────────────────
+      const passedOracles: string[] = [];
+      const failedOracles: string[] = [];
       for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
         deps.bus?.emit("oracle:verdict", { taskId: input.id, oracleName, verdict });
+        if (verdict.verified) passedOracles.push(oracleName);
+        else failedOracles.push(oracleName);
+      }
+      // ── Contradiction detection (A1: surface epistemic disagreements) ──
+      if (passedOracles.length > 0 && failedOracles.length > 0) {
+        deps.bus?.emit("oracle:contradiction", {
+          taskId: input.id,
+          passed: passedOracles,
+          failed: failedOracles,
+        });
       }
 
       // ── Compute QualityScore from available data (A7: gradient signal) ──
@@ -350,7 +365,7 @@ export async function executeTask(
       const taskTypeSignature = `${input.goal.slice(0, 50)}::${filePattern}`;
 
       const trace: ExecutionTrace = {
-        id: `trace-${input.id}-${routing.level}-${retry}`,
+        id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
         taskId: input.id,
         timestamp: Date.now(),
         routingLevel: routing.level,

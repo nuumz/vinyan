@@ -146,6 +146,7 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
         dependencies: [],
         assignedOracles: ["type", "dep"],
       }],
+      isFallback: true,
     };
   }
 }

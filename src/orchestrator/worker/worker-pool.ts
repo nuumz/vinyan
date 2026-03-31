@@ -256,19 +256,8 @@ export class WorkerPoolImpl implements WorkerPool {
       const raw = JSON.parse(readFileSync(resultPath, "utf-8"));
       const output = WorkerOutputSchema.parse(raw);
 
-      // Apply artifacts to workspace using Artifact Commit Protocol
-      if (output.proposedMutations.length > 0) {
-        const artifacts = output.proposedMutations.map(m => ({
-          path: m.file,
-          content: m.content,
-        }));
-        const commitResult = commitArtifacts(this.workspace, artifacts);
-        // Filter out rejected mutations
-        output.proposedMutations = output.proposedMutations.filter(m =>
-          commitResult.applied.includes(m.file),
-        );
-      }
-
+      // A6: Do NOT commit artifacts here — return them as proposed mutations.
+      // The core-loop will commit only AFTER oracle verification passes.
       return output;
     } finally {
       // Cleanup temp dirs — zero-cost rollback

@@ -14,7 +14,7 @@ export class TraceStore {
   constructor(db: Database) {
     this.db = db;
     this.insertStmt = db.prepare(`
-      INSERT OR REPLACE INTO execution_traces (
+      INSERT OR IGNORE INTO execution_traces (
         id, task_id, session_id, worker_id, timestamp, routing_level,
         task_type_signature, approach, approach_description, risk_score,
         quality_composite, quality_arch, quality_efficiency,

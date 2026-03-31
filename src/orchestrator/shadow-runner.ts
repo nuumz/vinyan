@@ -97,7 +97,7 @@ export class ShadowRunner {
    * Returns number of recovered jobs.
    */
   recover(): number {
-    const stale = this.store.queryByStatus("running");
+    const stale = this.store.findByStatus("running");
     for (const job of stale) {
       this.store.updateStatus(job.id, "pending");
     }

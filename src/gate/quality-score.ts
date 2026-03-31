@@ -22,17 +22,41 @@ export interface TestContext {
   testsPassed?: boolean;
 }
 
+/** A5: Tiered trust weights — deterministic evidence outweighs heuristic/probabilistic. */
+const TIER_WEIGHTS: Record<string, number> = {
+  deterministic: 1.0,
+  heuristic: 0.7,
+  probabilistic: 0.4,
+  speculative: 0.2,
+};
+
 export function computeQualityScore(
   oracleResults: Record<string, OracleVerdict>,
   gateDuration_ms: number,
   latencyBudget_ms: number = 2000,
   complexityContext?: ComplexityContext,
   testContext?: TestContext,
+  /** Map oracle name → tier string for A5 weighted scoring. */
+  oracleTiers?: Record<string, string>,
 ): QualityScore {
-  // Dimension 1: architecturalCompliance (oracle pass ratio)
-  const entries = Object.values(oracleResults);
-  const architecturalCompliance =
-    entries.length > 0 ? entries.filter((v) => v.verified).length / entries.length : 1.0;
+  // Dimension 1: architecturalCompliance (A5 tier-weighted oracle pass ratio)
+  const entries = Object.entries(oracleResults);
+  let architecturalCompliance: number;
+  if (entries.length === 0) {
+    architecturalCompliance = 1.0;
+  } else if (oracleTiers) {
+    let weightedSum = 0;
+    let totalWeight = 0;
+    for (const [name, verdict] of entries) {
+      const tier = oracleTiers[name] ?? "deterministic";
+      const weight = TIER_WEIGHTS[tier] ?? 1.0;
+      weightedSum += (verdict.verified ? 1 : 0) * weight;
+      totalWeight += weight;
+    }
+    architecturalCompliance = totalWeight > 0 ? weightedSum / totalWeight : 1.0;
+  } else {
+    architecturalCompliance = entries.filter(([, v]) => v.verified).length / entries.length;
+  }
 
   // Dimension 2: efficiency (latency vs budget)
   const efficiency = Math.max(0, Math.min(1, 1 - gateDuration_ms / latencyBudget_ms));

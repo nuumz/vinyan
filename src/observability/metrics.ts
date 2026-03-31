@@ -13,6 +13,7 @@ import type { PatternStore } from "../db/pattern-store.ts";
 import type { ShadowStore } from "../db/shadow-store.ts";
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
 import { generatePhase3Report, type EvolutionMetrics } from "./phase3-report.ts";
+import type { VinyanBus } from "../core/bus.ts";
 
 export interface MetricsDeps {
   traceStore: TraceStore;
@@ -150,4 +151,43 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
     },
     evolution: generatePhase3Report({ traceStore, ruleStore, skillStore, patternStore }),
   };
+}
+
+// ── Real-time event counter metrics (A7: learning signal) ───────────────
+
+/**
+ * MetricsCollector — listens to bus events and maintains real-time counters.
+ * Complementary to getSystemMetrics() which queries stores for aggregate data.
+ */
+export class MetricsCollector {
+  private counters = new Map<string, number>();
+
+  /** Attach to a bus and start counting events. Returns detach function. */
+  attach(bus: VinyanBus): () => void {
+    const unsubs = [
+      bus.on("guardrail:injection_detected", () => this.inc("guardrail.injection")),
+      bus.on("guardrail:bypass_detected", () => this.inc("guardrail.bypass")),
+      bus.on("circuit:open", () => this.inc("circuit.open")),
+      bus.on("selfmodel:calibration_error", () => this.inc("selfmodel.calibration_error")),
+      bus.on("oracle:contradiction", () => this.inc("oracle.contradiction")),
+      bus.on("decomposer:fallback", () => this.inc("decomposer.fallback")),
+    ];
+    return () => unsubs.forEach(fn => fn());
+  }
+
+  inc(key: string): void {
+    this.counters.set(key, (this.counters.get(key) ?? 0) + 1);
+  }
+
+  get(key: string): number {
+    return this.counters.get(key) ?? 0;
+  }
+
+  getCounters(): Record<string, number> {
+    return Object.fromEntries(this.counters);
+  }
+
+  reset(): void {
+    this.counters.clear();
+  }
 }

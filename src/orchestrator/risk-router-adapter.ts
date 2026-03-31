@@ -7,17 +7,23 @@
  * Source of truth: vinyan-tdd.md §6, §16.2
  */
 import type { HypothesisTuple } from "../core/types.ts";
-import { calculateRiskScore, routeByRisk, detectEnvironment } from "../gate/risk-router.ts";
+import { calculateRiskScore, routeByRisk, detectEnvironment, type RoutingThresholds } from "../gate/risk-router.ts";
 import type { RiskFactors, RoutingLevel, RoutingDecision, TaskInput } from "./types.ts";
 import type { RiskRouter } from "./core-loop.ts";
 
 type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: string }[] }>;
 
 export class RiskRouterImpl implements RiskRouter {
+  private thresholds?: RoutingThresholds;
+
   constructor(
     private depVerify: DepVerify,
     private workspace: string = process.cwd(),
-  ) {}
+    /** Pass config-sourced thresholds to unify with gate's routing (Gap #14). */
+    thresholds?: RoutingThresholds,
+  ) {
+    this.thresholds = thresholds;
+  }
 
   async assessInitialLevel(input: TaskInput): Promise<RoutingDecision> {
     // Compute blast radius via dep-oracle
@@ -48,7 +54,7 @@ export class RiskRouterImpl implements RiskRouter {
     };
 
     const score = calculateRiskScore(factors);
-    const decision = routeByRisk(score, blastRadius);
+    const decision = routeByRisk(score, blastRadius, this.thresholds);
 
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)
     const minLevel = parseMinRoutingLevel(input.constraints);

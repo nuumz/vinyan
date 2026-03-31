@@ -68,9 +68,18 @@ export class WorldGraph {
     return { ...fact, id };
   }
 
-  /** Query all facts for a given target (file path or symbol). */
+  /**
+   * Query all facts for a given target (file path or symbol).
+   * A4: Excludes stale facts whose source file hash no longer matches.
+   */
   queryFacts(target: string): Fact[] {
-    const rows = this.db.query("SELECT * FROM facts WHERE target = ?").all(target) as Array<Record<string, unknown>>;
+    // LEFT JOIN: facts without a tracked file hash are preserved (system-provided facts).
+    // Facts whose file hash mismatches current_hash are excluded (stale).
+    const rows = this.db.query(`
+      SELECT f.* FROM facts f
+      LEFT JOIN file_hashes fh ON f.source_file = fh.path
+      WHERE f.target = ? AND (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
+    `).all(target) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: row.id as string,
       target: row.target as string,

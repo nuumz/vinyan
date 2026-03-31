@@ -82,7 +82,7 @@ export class ShadowStore {
     return row ? rowToShadowJob(row) : null;
   }
 
-  queryByStatus(status: ShadowJob["status"]): ShadowJobWithMutations[] {
+  findByStatus(status: ShadowJob["status"]): ShadowJobWithMutations[] {
     const rows = this.db.prepare(
       `SELECT * FROM shadow_jobs WHERE status = ? ORDER BY enqueued_at ASC`,
     ).all(status);

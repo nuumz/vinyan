@@ -268,12 +268,18 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     testContext = { testsExist: true, testsPassed: oracleResults["test"].verified };
   }
 
+  // Build oracle tier map from config for A5 tier-weighted quality scoring
+  const oracleTiers: Record<string, string> = {};
+  for (const [name, conf] of Object.entries(config.oracles)) {
+    oracleTiers[name] = conf.tier ?? "deterministic";
+  }
+
   const verdict: GateVerdict = {
     decision,
     reasons,
     oracle_results: oracleResults,
     duration_ms,
-    qualityScore: computeQualityScore(oracleResults, duration_ms, undefined, complexityContext, testContext),
+    qualityScore: computeQualityScore(oracleResults, duration_ms, undefined, complexityContext, testContext, oracleTiers),
     riskScore,
   };
 

@@ -192,6 +192,13 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     const content = readFileSync(targetAbsolute);
     const fileHash = createHash("sha256").update(content).digest("hex");
 
+    // A2: Check for unresolvable imports — emit "uncertain" if evidence is inconclusive
+    const targetImports = extractImports(targetAbsolute);
+    const pathAliases = loadPathAliases(workspace);
+    const unresolved = targetImports.filter(spec =>
+      !spec.startsWith(".") ? false : resolveImport(spec, targetAbsolute, workspace, pathAliases) === null,
+    );
+
     const evidence: Evidence[] = dependents.map((dep) => ({
       file: relative(workspace, dep),
       line: 1,
@@ -199,10 +206,22 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     }));
 
     const blastRadius = dependents.length;
-    const verified = true; // dep-oracle always "verifies" — it reports blast radius, not pass/fail
+
+    // A2: "uncertain" when some relative imports can't be resolved (missing file, dynamic path)
+    if (unresolved.length > 0) {
+      return buildVerdict({
+        verified: true,
+        type: "uncertain",
+        confidence: 0.5,
+        evidence,
+        fileHashes: { [target]: fileHash },
+        reason: `Blast radius: ${blastRadius} file(s), but ${unresolved.length} import(s) unresolvable: ${unresolved.join(", ")}`,
+        duration_ms: performance.now() - startTime,
+      });
+    }
 
     return buildVerdict({
-      verified,
+      verified: true,
       evidence,
       fileHashes: { [target]: fileHash },
       reason: `Blast radius: ${blastRadius} file(s) depend on ${target}`,

@@ -32,6 +32,7 @@ export interface RoutingDecision {
   latencyBudget_ms: number;
   mandatoryOracles?: string[];       // Phase 2.6: require-oracle rules add entries here
   riskThresholdOverride?: number;    // Phase 2.6: adjust-threshold rules set this
+  workerId?: string;                 // Phase 4.4: selected worker profile ID
 }
 
 /** Input factors for risk scoring (→ TDD §6) */
@@ -238,7 +239,9 @@ export type DataGateMetric =
   | "distinct_task_types"
   | "patterns_extracted"
   | "active_skills"
-  | "sleep_cycles_run";
+  | "sleep_cycles_run"
+  | "active_workers"              // Phase 4: registered active worker profiles
+  | "worker_trace_diversity";     // Phase 4: traces with >1 distinct model_used
 
 /** Data sufficiency gate — checked before Phase 2 sub-feature activation */
 export interface DataGate {
@@ -375,6 +378,8 @@ export interface TaskDAG {
     dependencies: string[]; // IDs of nodes this depends on
     assignedOracles: string[];
   }>;
+  /** True when decomposition failed and a single-node fallback was used. */
+  isFallback?: boolean;
 }
 
 /** 5 machine-checkable criteria for DAG validation */

@@ -79,6 +79,12 @@ export interface VinyanBusEvents {
 
   // Self-model calibration
   "selfmodel:calibration_error": { taskId: string; error: string };
+
+  // Oracle contradiction detection (A1: epistemic separation surfaces disagreements)
+  "oracle:contradiction": { taskId: string; passed: string[]; failed: string[] };
+
+  // DAG decomposition fallback (A3: deterministic governance transparency)
+  "decomposer:fallback": { taskId: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────
@@ -132,9 +138,14 @@ export class EventBus<Events extends {}> {
     if (!set) return;
     for (const handler of set) {
       try {
+        const start = performance.now();
         (handler as Handler<Events[K]>)(payload);
+        const elapsed = performance.now() - start;
+        if (elapsed > 100) {
+          console.warn(`[vinyan-bus] Slow handler on "${String(event)}": ${elapsed.toFixed(0)}ms`);
+        }
       } catch (err) {
-        console.error(`[vinyan-bus] Handler error on "${event}":`, err);
+        console.error(`[vinyan-bus] Handler error on "${String(event)}":`, err);
       }
     }
   }

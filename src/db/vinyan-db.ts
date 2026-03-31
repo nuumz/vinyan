@@ -36,7 +36,17 @@ export class VinyanDB {
     return this.db;
   }
 
+  /** Flush WAL file to prevent unbounded growth in long-running sessions. */
+  checkpoint(): void {
+    try {
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch (err) {
+      console.warn("[vinyan] WAL checkpoint failed:", err);
+    }
+  }
+
   close(): void {
+    this.checkpoint();
     this.db.close();
   }
 }

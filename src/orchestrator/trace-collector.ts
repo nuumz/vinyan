@@ -29,8 +29,8 @@ export class TraceCollectorImpl implements TraceCollector {
     if (this.traceStore) {
       try {
         this.traceStore.insert(trace);
-      } catch {
-        // SQLite persistence is best-effort — don't block the core loop
+      } catch (err) {
+        console.warn("[vinyan] Trace INSERT failed:", err);
       }
     }
 

@@ -27,7 +27,10 @@ const LatencyBudgetsSchema = z.object({
   l1: z.number().positive().default(2000),
   l2: z.number().positive().default(10000),
   l3: z.number().positive().default(60000),
-});
+}).refine(
+  data => data.l0 < data.l1 && data.l1 < data.l2 && data.l2 < data.l3,
+  { message: "Latency budgets must be strictly ordered: l0 < l1 < l2 < l3" },
+);
 
 const RoutingConfigSchema = z.object({
   l0_max_risk: z.number().min(0).max(1).default(0.2),

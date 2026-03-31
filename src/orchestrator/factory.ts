@@ -10,6 +10,7 @@ import type { TaskInput, TaskResult } from "./types.ts";
 import { createBus, type VinyanBus } from "../core/bus.ts";
 import { PerceptionAssemblerImpl } from "./perception.ts";
 import { RiskRouterImpl } from "./risk-router-adapter.ts";
+import { loadConfig } from "../config/loader.ts";
 import { SelfModelStub } from "./self-model-stub.ts";
 import { CalibratedSelfModel } from "./self-model.ts";
 import { TaskDecomposerStub } from "./task-decomposer-stub.ts";
@@ -34,12 +35,13 @@ import { ShadowRunner } from "./shadow-runner.ts";
 import { SkillManager } from "./skill-manager.ts";
 import { SleepCycleRunner } from "../sleep-cycle/sleep-cycle.ts";
 import { ToolExecutor } from "./tools/tool-executor.ts";
+import { MetricsCollector } from "../observability/metrics.ts";
 
 export interface OrchestratorConfig {
   workspace: string;
   /** Override the LLM provider registry (useful for testing with mock providers). */
   registry?: LLMProviderRegistry;
-  /** Use subprocess for worker dispatch (default: false). */
+  /** Use subprocess for worker dispatch (default: true for A1/A6 isolation). */
   useSubprocess?: boolean;
   /** Provide an existing bus instance (one is created if omitted). */
   bus?: VinyanBus;
@@ -112,8 +114,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
 
   // Wire all dependencies
+  // Load config to unify routing thresholds between config and gate (Gap #14)
+  let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    if (vinyanConfig.phase1) {
+      const r = vinyanConfig.phase1.routing;
+      routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
+    }
+  } catch { /* config loading is best-effort */ }
+
   const perception = new PerceptionAssemblerImpl({ workspace });
-  const riskRouter = new RiskRouterImpl(depVerify);
+  const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb() })
     : (() => {
@@ -129,7 +141,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const workerPool = new WorkerPoolImpl({
     registry,
     workspace,
-    useSubprocess: config.useSubprocess,
+    useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
   });
   const oracleGate = new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
@@ -162,6 +174,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)
+  const metricsCollector = new MetricsCollector();
+  const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, ".vinyan", "audit.jsonl"));
 
@@ -213,6 +227,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);
+      detachMetrics();
       traceListenerHandle.detach();
       detachAudit();
       worldGraph?.close();

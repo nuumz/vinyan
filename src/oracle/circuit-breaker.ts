@@ -26,6 +26,12 @@ const DEFAULT_CONFIG: CircuitBreakerConfig = {
   resetTimeout_ms: 60_000,
 };
 
+/**
+ * Thread-safety: Safe under Bun's single-threaded event loop. Read-modify-write
+ * patterns (failureCount++) complete within a single synchronous block.
+ * If Bun Workers (threads) are introduced in Phase 3, move to per-worker
+ * instances or use Atomics.
+ */
 export class OracleCircuitBreaker {
   private circuits = new Map<string, CircuitEntry>();
   private config: CircuitBreakerConfig;

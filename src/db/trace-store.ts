@@ -21,7 +21,7 @@ export class TraceStore {
         quality_simplification, quality_testmutation,
         model_used, tokens_consumed, duration_ms,
         outcome, failure_reason, oracle_verdicts, affected_files,
-        prediction_error, validation_depth, shadow_validation
+        prediction_error, validation_depth, shadow_validation, exploration
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -29,7 +29,7 @@ export class TraceStore {
         $quality_simplification, $quality_testmutation,
         $model_used, $tokens_consumed, $duration_ms,
         $outcome, $failure_reason, $oracle_verdicts, $affected_files,
-        $prediction_error, $validation_depth, $shadow_validation
+        $prediction_error, $validation_depth, $shadow_validation, $exploration
       )
     `);
   }
@@ -62,6 +62,7 @@ export class TraceStore {
       $prediction_error: trace.predictionError ? JSON.stringify(trace.predictionError) : null,
       $validation_depth: trace.validation_depth ?? null,
       $shadow_validation: trace.shadow_validation ? JSON.stringify(trace.shadow_validation) : null,
+      $exploration: trace.exploration ? 1 : null,
     });
   }
 
@@ -149,5 +150,6 @@ function rowToTrace(row: any): ExecutionTrace {
     predictionError: row.prediction_error ? JSON.parse(row.prediction_error) : undefined,
     validation_depth: row.validation_depth ?? undefined,
     shadow_validation: row.shadow_validation ? JSON.parse(row.shadow_validation) : undefined,
+    exploration: row.exploration === 1 ? true : undefined,
   };
 }

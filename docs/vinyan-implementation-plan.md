@@ -603,25 +603,26 @@ P3.0 (Audit) ──┬── P3.1 (Container Real) ── P3.2 (Shadow Real) ─
 
 ---
 
-### P3.0 — Spec-vs-Implementation Audit `[M]`
+### P3.0 — Spec-vs-Implementation Audit `[M]` ✅
 
 **What:** Systematic delta between TDD spec and current code. Fix discrepancies before building on top.
 
 **Known deltas from code review (2026-03-30):**
 
-| Area | Spec | Current Code | Gap |
-|:-----|:-----|:-------------|:----|
-| Core loop `complexityContext` | QualityScore should include `simplificationGain` (1C.3) | `computeQualityScore()` called with `undefined` complexityContext (core-loop.ts:268) | No AST complexity diff computed |
-| Shadow processNext | Shadow jobs enqueued but never processed in main loop | `shadowRunner.processNext()` never called after enqueue | Shadow validation never executes |
-| Sleep Cycle trigger | Should run every N sessions (default: 20) | `sleepCycleRunner.run()` never called from core loop or CLI | Pattern extraction never fires |
-| Evolution rule types | Spec: `escalate`, `require-oracle`, `prefer-model`, `adjust-threshold` | Core loop only handles `escalate` action (core-loop.ts:139-155) | 3 of 4 rule types ignored |
-| Skill dep cone hashes | `createFromPattern()` should receive real dep cone hashes | Called with empty `{}` (sleep-cycle.ts:124) | Skills created without dep tracking |
-| Backtester integration | Rules should be backtested before activation | `ruleStore.insert()` directly after `generateRule()` (sleep-cycle.ts:138-140) — no `backtestRule()` call | Rules enter probation without validation |
-| Factory stubs | CalibratedSelfModel and TaskDecomposerImpl available | Factory falls back to stubs when no LLM/DB (acceptable), but never verifies which is active at startup | Silent degradation |
+| Area | Spec | Current Code | Status |
+|:-----|:-----|:-------------|:-------|
+| Core loop `complexityContext` | QualityScore should include `simplificationGain` (1C.3) | `buildComplexityContext()` wired into core-loop.ts | ✅ Fixed (WU-2/WU-3) |
+| Shadow processNext | Shadow jobs enqueued but never processed in main loop | Fire-and-forget in core-loop.ts + setInterval in factory.ts | ✅ Fixed (WU-5) |
+| Sleep Cycle trigger | Should run every N sessions (default: 20) | Session counter in factory.ts triggers run | ✅ Fixed (prior commit) |
+| Evolution rule types | Spec: `escalate`, `require-oracle`, `prefer-model`, `adjust-threshold` | All 4 action types handled in core-loop.ts | ✅ Fixed (WU-1) |
+| Skill dep cone hashes | `createFromPattern()` should receive real dep cone hashes | Real hashes computed from affected files in sleep-cycle.ts | ✅ Fixed (WU-4) |
+| Backtester integration | Rules should be backtested before activation | Two-phase: insert as probation → backtest → activate in sleep-cycle.ts | ✅ Fixed (prior commit) |
+| Factory stubs | CalibratedSelfModel and TaskDecomposerImpl available | Startup log confirms active components | ✅ Fixed (WU-MISC) |
+| PredictionError capture | calibrate() return should populate trace | Return value captured and trace re-recorded | ✅ Fixed (WU-7) |
 
-**Deliverable:** All deltas above fixed + regression tests added for each. Track via checklist.
+**Deliverable:** All deltas fixed + regression tests added. Track via checklist.
 
-**Tests:** One integration test per delta: "given trace data, sleep cycle fires → skill created with real hashes → rule backtested → core loop applies non-escalate rules."
+**Tests:** `tests/orchestrator/rule-action-types.test.ts` (6 tests), `tests/gate/complexity-context.test.ts` (5 tests), `tests/sleep-cycle/dep-cone-hashes.test.ts` (2 tests), `tests/observability/metrics.test.ts` (4 tests).
 
 ---
 
@@ -906,7 +907,7 @@ PH3.1 (Self-Model Foundation) ────────────────�
 
 ---
 
-#### PH3.1 — Self-Model Foundation `[L]` — Engineering
+#### PH3.1 — Self-Model Foundation `[L]` — Engineering ✅
 
 **What:** Fix 4 structural defects that prevent the Self-Model from calibrating. Without this, every downstream Phase 3 component consumes garbage data.
 

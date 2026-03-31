@@ -53,13 +53,21 @@ function generateEscalationRule(pattern: ExtractedPattern): EvolutionaryRule {
     specificity++;
   }
 
+  // PH3.3: Multi-condition rules — populate when pattern has oracle/risk/model data
+  if (pattern.oracleName) { condition.oracle_name = pattern.oracleName; specificity++; }
+  if (pattern.riskAbove != null) { condition.risk_above = pattern.riskAbove; specificity++; }
+  if (pattern.modelPattern) { condition.model_pattern = pattern.modelPattern; specificity++; }
+
+  // PH3.3: Proportional toLevel — escalate one level above failure, capped at 3
+  const toLevel = Math.min(3, (pattern.routingLevel ?? 1) + 1);
+
   return {
     id: `rule-esc-${pattern.id}`,
     source: "sleep-cycle",
     condition,
     action: "escalate",
     parameters: {
-      toLevel: 2,
+      toLevel,
       reason: `Anti-pattern detected: ${pattern.description}`,
       sourcePatternId: pattern.id,
       failingApproach: pattern.approach,
@@ -81,6 +89,11 @@ function generatePreferenceRule(pattern: ExtractedPattern): EvolutionaryRule {
     condition.file_pattern = filePattern;
     specificity++;
   }
+
+  // PH3.3: Multi-condition rules
+  if (pattern.oracleName) { condition.oracle_name = pattern.oracleName; specificity++; }
+  if (pattern.riskAbove != null) { condition.risk_above = pattern.riskAbove; specificity++; }
+  if (pattern.modelPattern) { condition.model_pattern = pattern.modelPattern; specificity++; }
 
   return {
     id: `rule-pref-${pattern.id}`,

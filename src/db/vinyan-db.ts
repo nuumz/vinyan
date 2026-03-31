@@ -7,7 +7,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
-import { TRACE_SCHEMA_SQL, MODEL_PARAMS_SCHEMA_SQL } from "./trace-schema.ts";
+import { TRACE_SCHEMA_SQL, MODEL_PARAMS_SCHEMA_SQL, SELF_MODEL_PARAMS_SCHEMA_SQL } from "./trace-schema.ts";
 import { PATTERN_SCHEMA_SQL } from "./pattern-schema.ts";
 import { SHADOW_SCHEMA_SQL } from "./shadow-schema.ts";
 import { SKILL_SCHEMA_SQL } from "./skill-schema.ts";
@@ -25,6 +25,7 @@ export class VinyanDB {
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec(TRACE_SCHEMA_SQL);
     this.db.exec(MODEL_PARAMS_SCHEMA_SQL);
+    this.db.exec(SELF_MODEL_PARAMS_SCHEMA_SQL);
     this.db.exec(PATTERN_SCHEMA_SQL);
     this.db.exec(SHADOW_SCHEMA_SQL);
     this.db.exec(SKILL_SCHEMA_SQL);

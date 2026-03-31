@@ -18,8 +18,8 @@ export class PatternStore {
       `INSERT OR REPLACE INTO extracted_patterns
        (id, type, description, frequency, confidence, task_type_signature,
         approach, compared_approach, quality_delta, source_trace_ids,
-        created_at, expires_at, decay_weight)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, expires_at, decay_weight, derived_from)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         pattern.id,
         pattern.type,
@@ -34,6 +34,7 @@ export class PatternStore {
         pattern.createdAt,
         pattern.expiresAt ?? null,
         pattern.decayWeight,
+        pattern.derivedFrom ?? null,
       ],
     );
   }
@@ -100,6 +101,35 @@ export class PatternStore {
     ).get() as { cnt: number };
     return row.cnt;
   }
+
+  /** PH3.5: Get the started_at timestamps of the last N completed sleep cycles. */
+  getRecentCycleTimestamps(count: number): number[] {
+    const rows = this.db.prepare(
+      `SELECT started_at FROM sleep_cycle_runs WHERE status = 'completed'
+       ORDER BY started_at DESC LIMIT ?`,
+    ).all(count) as { started_at: number }[];
+    return rows.map(r => r.started_at);
+  }
+
+  /** PH3.5: Follow derivedFrom chain for pattern lineage. */
+  queryLineage(patternId: string): ExtractedPattern[] {
+    const chain: ExtractedPattern[] = [];
+    let currentId: string | undefined = patternId;
+    const visited = new Set<string>();
+
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const row = this.db.prepare(
+        `SELECT * FROM extracted_patterns WHERE id = ?`,
+      ).get(currentId) as PatternRow | null;
+      if (!row) break;
+      const pattern = rowToPattern(row);
+      chain.push(pattern);
+      currentId = pattern.derivedFrom;
+    }
+
+    return chain;
+  }
 }
 
 // ── Row mapping ────────────────────────────────────────────────────────
@@ -118,6 +148,7 @@ interface PatternRow {
   created_at: number;
   expires_at: number | null;
   decay_weight: number;
+  derived_from: string | null;
 }
 
 function rowToPattern(row: PatternRow): ExtractedPattern {
@@ -135,5 +166,6 @@ function rowToPattern(row: PatternRow): ExtractedPattern {
     createdAt: row.created_at,
     expiresAt: row.expires_at ?? undefined,
     decayWeight: row.decay_weight,
+    derivedFrom: row.derived_from ?? undefined,
   };
 }

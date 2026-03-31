@@ -132,6 +132,50 @@ function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean 
   return true;
 }
 
+/**
+ * PH3.6: Compute expected quality impact of a rule on a set of traces.
+ * Returns average quality before, estimated quality after, and the delta.
+ */
+export function computeQualityImpact(
+  rule: EvolutionaryRule,
+  traces: ExecutionTrace[],
+): { avgQualityBefore: number; estimatedQualityAfter: number; impact: number } {
+  const matching: number[] = [];
+  const nonMatchingAtTarget: number[] = [];
+
+  // Determine target level from rule parameters
+  const targetLevel = typeof rule.parameters.toLevel === "number"
+    ? rule.parameters.toLevel
+    : undefined;
+
+  for (const trace of traces) {
+    const quality = trace.qualityScore?.composite;
+    if (quality == null) continue;
+
+    if (wouldRuleApply(rule, trace)) {
+      matching.push(quality);
+    } else if (targetLevel != null && trace.routingLevel === targetLevel) {
+      nonMatchingAtTarget.push(quality);
+    }
+  }
+
+  if (matching.length === 0) {
+    return { avgQualityBefore: 0, estimatedQualityAfter: 0, impact: 0 };
+  }
+
+  const avgBefore = matching.reduce((a, b) => a + b, 0) / matching.length;
+  // Estimate "after" from traces at target level, or use avgBefore if no data
+  const avgAfter = nonMatchingAtTarget.length > 0
+    ? nonMatchingAtTarget.reduce((a, b) => a + b, 0) / nonMatchingAtTarget.length
+    : avgBefore;
+
+  return {
+    avgQualityBefore: avgBefore,
+    estimatedQualityAfter: avgAfter,
+    impact: avgAfter - avgBefore,
+  };
+}
+
 function simpleGlobMatch(pattern: string, value: string): boolean {
   const regex = new RegExp(
     pattern.replace(/\./g, "\\.").replace(/\*/g, ".*"),

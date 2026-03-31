@@ -270,6 +270,11 @@ export interface ExtractedPattern {
   createdAt: number;
   expiresAt?: number;                    // decay TTL
   decayWeight: number;                   // current weight after exponential decay
+  routingLevel?: number;                 // PH3.3: level at which failure occurred (for proportional escalation)
+  oracleName?: string;                   // PH3.3: oracle that flagged the issue (multi-condition rules)
+  riskAbove?: number;                    // PH3.3: risk threshold context
+  modelPattern?: string;                 // PH3.3: model that exhibited the pattern
+  derivedFrom?: string;                  // PH3.5: parent pattern ID (lineage tracking)
 }
 
 /** Sleep Cycle configuration */
@@ -297,6 +302,7 @@ export interface CachedSkill {
   depConeHashes: Record<string, string>; // file → hash at skill creation time
   lastVerifiedAt: number;                // timestamp of last full re-verification
   verificationProfile: "hash-only" | "structural" | "full";
+  confidence?: number;                   // PH3.4: fuzzy match confidence (omitted = exact match)
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +359,7 @@ export interface ExecutionTrace {
   // Phase 2.2 — shadow validation (async, post-commit)
   shadow_validation?: ShadowValidationResult;
   validation_depth?: "structural" | "structural_and_tests" | "full_shadow";
+  exploration?: boolean;                   // PH3.6: true if epsilon-greedy exploration was used
 }
 
 // ---------------------------------------------------------------------------

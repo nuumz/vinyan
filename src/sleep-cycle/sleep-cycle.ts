@@ -25,6 +25,14 @@ import type { RuleStore } from "../db/rule-store.ts";
 import type { VinyanBus } from "../core/bus.ts";
 import type { EvolutionaryRule } from "../orchestrator/types.ts";
 import { generateRule } from "../evolution/rule-generator.ts";
+import { findFailureCorrelations, correlationToPattern } from "./cross-task-analyzer.ts";
+import {
+  computeDecay,
+  createExperimentState,
+  recordCycleScore,
+  getActiveDecayFunction,
+  type DecayExperimentState,
+} from "./decay-experiment.ts";
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
   interval_sessions: 20,
@@ -51,6 +59,8 @@ export class SleepCycleRunner {
   private skillManager?: SkillManager;
   private ruleStore?: RuleStore;
   private bus?: VinyanBus;
+  private decayExperiment: DecayExperimentState;
+  private ineffectiveCycles: Map<string, number> = new Map();
 
   constructor(options: {
     traceStore: TraceStore;
@@ -66,6 +76,7 @@ export class SleepCycleRunner {
     this.skillManager = options.skillManager;
     this.ruleStore = options.ruleStore;
     this.bus = options.bus;
+    this.decayExperiment = createExperimentState();
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */
@@ -97,11 +108,15 @@ export class SleepCycleRunner {
 
     this.patternStore.recordCycleStart(cycleId);
 
-    // Collect all traces
-    const traces = this.traceStore.queryRecentTraces(10000);
-    if (traces.length < this.config.min_traces_for_analysis) {
+    // PH3.5: Time-windowed trace analysis — use last 5 cycle windows
+    const traces = this.queryTracesTimeWindowed();
+    const hasEnoughTraces = traces.length >= this.config.min_traces_for_analysis;
+
+    // Even if not enough traces for new pattern extraction, still backtest existing rules
+    if (!hasEnoughTraces) {
+      const rulesPromoted = await this.backtestProbationRules(new Set());
       this.patternStore.recordCycleComplete(cycleId, traces.length, 0);
-      return { cycleId, patterns: [], tracesAnalyzed: traces.length, antiPatterns: 0, successPatterns: 0, decayedPatterns: 0, rulesPromoted: 0 };
+      return { cycleId, patterns: [], tracesAnalyzed: traces.length, antiPatterns: 0, successPatterns: 0, decayedPatterns: 0, rulesPromoted };
     }
 
     // Group by task type signature
@@ -120,9 +135,20 @@ export class SleepCycleRunner {
       newPatterns.push(...successPatterns);
     }
 
+    // PH3.5: Cross-task-type correlation analysis
+    const crossTaskCorrelations = findFailureCorrelations(
+      traces,
+      this.config.pattern_min_frequency,
+      this.config.pattern_min_confidence,
+    );
+    for (const corr of crossTaskCorrelations) {
+      newPatterns.push(correlationToPattern(corr));
+    }
+
     // Store new patterns + feed into Skill Formation (2.5) and Evolution (2.6)
     let skillsCreated = 0;
     let rulesGenerated = 0;
+    const newRuleIds = new Set<string>();
 
     for (const pattern of newPatterns) {
       this.patternStore.insert(pattern);
@@ -141,31 +167,39 @@ export class SleepCycleRunner {
         const rule = generateRule(pattern);
         if (rule) {
           this.ruleStore.insert(rule);
+          newRuleIds.add(rule.id);
           rulesGenerated++;
         }
       }
     }
 
-    // Phase 2.6: Backtest probation rules and promote passing ones
-    let rulesPromoted = 0;
+    // Phase 2.6 + PH3.3: Backtest probation rules — promote or retire
+    // Skip rules generated in this cycle — they need fresh data to validate
+    const rulesPromoted = await this.backtestProbationRules(newRuleIds);
+    let rulesRetired = 0;
+
+    // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
       const { backtestRule } = await import("../evolution/backtester.ts");
-      const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
-      const probationRules = this.ruleStore.findByStatus("probation");
-
-      for (const rule of probationRules) {
-        const backtestTraces = this.getTracesForBacktest(rule);
-        if (backtestTraces.length < 5) continue; // backtester requires ≥5
-
-        const result = backtestRule(rule, backtestTraces);
+      const activeRules = this.ruleStore.findActive();
+      for (const rule of activeRules) {
+        const bt = this.getTracesForBacktest(rule);
+        if (bt.length < 5) continue;
+        const result = backtestRule(rule, bt);
         this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
 
-        if (result.pass) {
-          const safety = checkSafetyInvariants(rule);
-          if (safety.safe) {
-            this.ruleStore.activate(rule.id);
-            rulesPromoted++;
+        if (result.effectiveness <= 0) {
+          const count = this.trackIneffectiveCycle(rule.id);
+          if (count >= 3) {
+            this.ruleStore.retire(rule.id);
+            rulesRetired++;
+            this.bus?.emit("evolution:rule_retired", {
+              ruleId: rule.id,
+              reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
+            });
           }
+        } else {
+          this.resetIneffectiveCycle(rule.id);
         }
       }
     }
@@ -222,6 +256,17 @@ export class SleepCycleRunner {
       const wilsonLB = wilsonLowerBound(failures, total);
       if (wilsonLB < this.config.pattern_min_confidence) continue;
 
+      // PH3.3: Capture routing level + model for proportional escalation and multi-condition rules
+      const failingTraces = approachTraces.filter(t => t.outcome === "failure");
+      const avgRoutingLevel = failingTraces.length > 0
+        ? Math.round(failingTraces.reduce((s, t) => s + t.routingLevel, 0) / failingTraces.length)
+        : 1;
+      const modelCounts = new Map<string, number>();
+      for (const t of failingTraces) {
+        modelCounts.set(t.model_used, (modelCounts.get(t.model_used) ?? 0) + 1);
+      }
+      const dominantModel = [...modelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
       patterns.push({
         id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         type: "anti-pattern",
@@ -233,6 +278,8 @@ export class SleepCycleRunner {
         sourceTraceIds: approachTraces.map(t => t.id),
         createdAt: Date.now(),
         decayWeight: 1.0,
+        routingLevel: avgRoutingLevel,
+        modelPattern: dominantModel,
       });
     }
 
@@ -281,11 +328,18 @@ export class SleepCycleRunner {
         const winnerSessions = new Set(winner.traces.map(t => t.session_id ?? t.taskId));
         if (winnerSessions.size < 3) continue;
 
-        // Wilson LB of improvement ≥ 0.15
-        // Model as: winner "wins" in head-to-head comparison
-        const totalPairs = Math.min(winner.count, loser.count);
-        const wins = Math.round(totalPairs * (winner.avgQuality > loser.avgQuality ? 1 : 0));
-        const wilsonLB = wilsonLowerBound(wins, totalPairs);
+        // PH3.3: Real pairwise Wilson LB — compare individual trace pairs
+        let actualWins = 0;
+        const winnerTraces = winner.traces.filter(t => t.qualityScore?.composite != null);
+        const loserTraces = loser.traces.filter(t => t.qualityScore?.composite != null);
+        for (const w of winnerTraces) {
+          for (const l of loserTraces) {
+            if ((w.qualityScore?.composite ?? 0) > (l.qualityScore?.composite ?? 0)) actualWins++;
+          }
+        }
+        const totalPairs = winnerTraces.length * loserTraces.length;
+        if (totalPairs === 0) continue;
+        const wilsonLB = wilsonLowerBound(actualWins, totalPairs);
         if (wilsonLB < 0.15) continue;
 
         patterns.push({
@@ -314,21 +368,41 @@ export class SleepCycleRunner {
     const existingPatterns = this.patternStore.queryActive(0.01);
     let decayedCount = 0;
 
-    const cyclesRun = this.patternStore.countCycleRuns();
     const halfLife = this.config.decay_half_life_sessions;
+    const activeFn = getActiveDecayFunction(this.decayExperiment);
+
+    // Track scores for both functions this cycle
+    let expTotal = 0, plTotal = 0, scoreCount = 0;
 
     for (const pattern of existingPatterns) {
-      // Age in "cycles" since pattern creation
       const ageMs = Date.now() - pattern.createdAt;
-      const ageCycles = ageMs / (this.config.interval_sessions * 60_000); // approximate
+      const ageCycles = ageMs / (this.config.interval_sessions * 60_000);
 
-      // Exponential decay: weight = 0.5 ^ (age / half_life)
-      const newWeight = Math.pow(0.5, ageCycles / halfLife);
+      // PH3.5: Compute both decay weights for experiment
+      const expWeight = computeDecay("exponential", ageCycles, halfLife);
+      const plWeight = computeDecay("power-law", ageCycles, halfLife);
+
+      // Use the active function's weight
+      const newWeight = activeFn === "exponential" ? expWeight : plWeight;
+
+      // Track scores: surviving patterns (weight > 0.1) score by confidence
+      if (expWeight > 0.1) expTotal += pattern.confidence;
+      if (plWeight > 0.1) plTotal += pattern.confidence;
+      scoreCount++;
 
       if (Math.abs(newWeight - pattern.decayWeight) > 0.01) {
         this.patternStore.updateDecayWeight(pattern.id, newWeight);
         decayedCount++;
       }
+    }
+
+    // Update experiment with this cycle's scores
+    if (scoreCount > 0 && !this.decayExperiment.locked) {
+      this.decayExperiment = recordCycleScore(
+        this.decayExperiment,
+        expTotal / scoreCount,
+        plTotal / scoreCount,
+      );
     }
 
     return decayedCount;
@@ -362,6 +436,75 @@ export class SleepCycleRunner {
       }
     }
     return groups;
+  }
+
+  /**
+   * PH3.5: Query traces using a time window based on recent sleep cycle timestamps.
+   * Falls back to count-bounded query if no cycles have run yet.
+   */
+  private queryTracesTimeWindowed(): ExecutionTrace[] {
+    const cycleTimestamps = this.patternStore.getRecentCycleTimestamps(5);
+
+    if (cycleTimestamps.length === 0) {
+      // No cycles yet — fall back to count-bounded
+      return this.traceStore.queryRecentTraces(10000);
+    }
+
+    // Use the oldest of the last 5 cycle starts as the window start
+    const oldestCycleStart = cycleTimestamps[cycleTimestamps.length - 1]!;
+    return this.traceStore.queryByTimeRange(oldestCycleStart, Date.now());
+  }
+
+  /** PH3.7: Track consecutive ineffective cycles for a rule. Returns new count. */
+  private trackIneffectiveCycle(ruleId: string): number {
+    const current = this.ineffectiveCycles.get(ruleId) ?? 0;
+    const next = current + 1;
+    this.ineffectiveCycles.set(ruleId, next);
+    return next;
+  }
+
+  /** PH3.7: Reset ineffective cycle counter when a rule becomes effective again. */
+  private resetIneffectiveCycle(ruleId: string): void {
+    this.ineffectiveCycles.delete(ruleId);
+  }
+
+  /**
+   * Backtest probation rules — promote passing rules, retire failing ones.
+   * Skips rules in the excludeIds set (newly created this cycle).
+   */
+  private async backtestProbationRules(excludeIds: Set<string>): Promise<number> {
+    if (!this.ruleStore) return 0;
+
+    const { backtestRule } = await import("../evolution/backtester.ts");
+    const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
+    const probationRules = this.ruleStore.findByStatus("probation")
+      .filter(r => !excludeIds.has(r.id));
+
+    let promoted = 0;
+    for (const rule of probationRules) {
+      const backtestTraces = this.getTracesForBacktest(rule);
+      if (backtestTraces.length < 5) continue;
+
+      const result = backtestRule(rule, backtestTraces);
+      this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
+
+      if (result.pass) {
+        const safety = checkSafetyInvariants(rule);
+        if (safety.safe) {
+          this.ruleStore.activate(rule.id);
+          promoted++;
+          this.bus?.emit("evolution:rule_promoted", {
+            ruleId: rule.id, taskSig: rule.condition.file_pattern ?? "*",
+          });
+        }
+      } else {
+        this.ruleStore.retire(rule.id);
+        this.bus?.emit("evolution:rule_retired", {
+          ruleId: rule.id, reason: `Failed backtest (effectiveness: ${result.effectiveness.toFixed(2)})`,
+        });
+      }
+    }
+    return promoted;
   }
 
   /** Get traces relevant for backtesting a rule. */

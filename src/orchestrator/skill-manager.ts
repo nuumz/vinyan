@@ -46,12 +46,52 @@ export class SkillManager {
 
   /**
    * Try to match a task to a cached active skill.
-   * Returns null if no matching active skill found.
+   * First attempts exact match, then falls back to fuzzy matching (PH3.4).
+   * Fuzzy matches return with confidence: 0.4; exact matches omit confidence field.
    */
   match(taskSignature: string): CachedSkill | null {
     const skill = this.store.findBySignature(taskSignature);
-    if (!skill || skill.status !== "active") return null;
-    return skill;
+    if (skill && skill.status === "active") return skill;
+
+    // PH3.4: fuzzy fallback — same verb + overlapping file extensions
+    const fuzzy = this.fuzzyMatch(taskSignature);
+    if (fuzzy) return { ...fuzzy, confidence: 0.4 };
+    return null;
+  }
+
+  /**
+   * PH3.4: Cross-Task Skill Generalization — fuzzy matching.
+   * Matches on same action verb and overlapping file extensions.
+   * Only considers active skills with successRate >= 0.8.
+   */
+  fuzzyMatch(taskSignature: string): CachedSkill | null {
+    const parts = taskSignature.split("::");
+    const verb = parts[0];
+    const exts = parts[1];
+    if (!verb || !exts) return null;
+
+    const targetExts = new Set(exts.split(","));
+    const candidates = this.store.findActive();
+
+    let best: CachedSkill | null = null;
+    for (const skill of candidates) {
+      // Skip exact match (already checked above)
+      if (skill.taskSignature === taskSignature) continue;
+
+      const sParts = skill.taskSignature.split("::");
+      const sVerb = sParts[0];
+      const sExts = sParts[1];
+      if (sVerb !== verb || !sExts) continue;
+
+      const overlap = sExts.split(",").some(e => targetExts.has(e));
+      if (!overlap) continue;
+
+      // Require high success rate for fuzzy matches
+      if (skill.successRate < 0.8) continue;
+
+      if (!best || skill.successRate > best.successRate) best = skill;
+    }
+    return best;
   }
 
   /**

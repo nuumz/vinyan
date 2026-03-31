@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS extracted_patterns (
   source_trace_ids    TEXT NOT NULL,
   created_at          INTEGER NOT NULL,
   expires_at          INTEGER,
-  decay_weight        REAL NOT NULL DEFAULT 1.0
+  decay_weight        REAL NOT NULL DEFAULT 1.0,
+  derived_from        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_patterns_type ON extracted_patterns(type);

@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   affected_files         TEXT NOT NULL,
   prediction_error       TEXT,
   validation_depth       TEXT,
-  shadow_validation      TEXT
+  shadow_validation      TEXT,
+  exploration            INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -46,5 +47,20 @@ CREATE TABLE IF NOT EXISTS model_parameters (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+`;
+
+/** PH3.2: Per-task-type Self-Model parameter storage. */
+export const SELF_MODEL_PARAMS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS self_model_params (
+  task_type_signature   TEXT PRIMARY KEY,
+  observation_count     INTEGER NOT NULL DEFAULT 0,
+  avg_quality_score     REAL NOT NULL DEFAULT 0.5,
+  avg_duration_per_file REAL NOT NULL DEFAULT 2000,
+  prediction_accuracy   REAL NOT NULL DEFAULT 0.5,
+  fail_rate             REAL NOT NULL DEFAULT 0.0,
+  partial_rate          REAL NOT NULL DEFAULT 0.1,
+  last_updated          INTEGER NOT NULL,
+  basis                 TEXT NOT NULL DEFAULT 'static-heuristic'
 );
 `;

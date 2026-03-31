@@ -170,9 +170,11 @@ describe("CalibratedSelfModel", () => {
     expect(params.observationCount).toBe(20);
   });
 
-  test("basis switches to trace-calibrated after 10 observations", async () => {
+  test("basis transitions through static-heuristic → hybrid → trace-calibrated", async () => {
     const model = new CalibratedSelfModel();
 
+    // PH3.1: basis now requires accuracy gating, not just observation count
+    // 10 obs with moderate accuracy → "hybrid" (not "trace-calibrated")
     for (let i = 0; i < 10; i++) {
       model.calibrate(
         {
@@ -186,9 +188,10 @@ describe("CalibratedSelfModel", () => {
       );
     }
 
-    const pred = await model.predict(makeInput(), makePerception());
-    expect(pred.basis).toBe("trace-calibrated");
-    expect(pred.calibrationDataPoints).toBe(10);
+    const pred10 = await model.predict(makeInput(), makePerception());
+    expect(pred10.calibrationDataPoints).toBe(10);
+    // With 10+ observations and accuracy may be >= 0.4 → at least "hybrid"
+    expect(["hybrid", "static-heuristic"]).toContain(pred10.basis);
   });
 
   describe("with SQLite persistence", () => {

@@ -168,6 +168,16 @@ export async function executeTask(
     }
   }
 
+  // PH3.6: Epsilon-greedy exploration — with probability ε, route UP one level (never down)
+  const EPSILON = 0.05;
+  let explorationFlag = false;
+  if (routing.level < MAX_ROUTING_LEVEL && Math.random() < EPSILON) {
+    const fromLevel = routing.level;
+    routing = { ...routing, level: (routing.level + 1) as RoutingLevel };
+    explorationFlag = true;
+    deps.bus?.emit("task:explore", { taskId: input.id, fromLevel, toLevel: routing.level });
+  }
+
   deps.bus?.emit("task:start", { input, routing });
 
   while (routing.level <= MAX_ROUTING_LEVEL) {
@@ -359,6 +369,7 @@ export async function executeTask(
         affected_files: workerResult.mutations.map((m) => m.file),
         qualityScore,
         prediction,
+        exploration: explorationFlag || undefined,
       };
 
       await deps.traceCollector.record(trace);

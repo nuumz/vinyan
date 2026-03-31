@@ -47,6 +47,8 @@ export interface VinyanBusEvents {
 
   // Evolution Engine (Phase 2.6)
   "evolution:rules_applied": { taskId: string; rules: EvolutionaryRule[] };
+  "evolution:rule_promoted": { ruleId: string; taskSig: string };
+  "evolution:rule_retired": { ruleId: string; reason: string };
 
   // Sleep Cycle (Phase 2.4)
   "sleep:cycle_complete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number; rulesPromoted: number };
@@ -67,6 +69,9 @@ export interface VinyanBusEvents {
   // Task lifecycle extensions
   "task:escalate": { taskId: string; fromLevel: number; toLevel: number; reason: string };
   "task:timeout": { taskId: string; elapsed_ms: number; budget_ms: number };
+
+  // PH3.6: Epsilon-greedy exploration
+  "task:explore": { taskId: string; fromLevel: number; toLevel: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

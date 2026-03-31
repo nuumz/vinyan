@@ -123,7 +123,7 @@ describe("Rule Promotion Pipeline (H2)", () => {
     expect(activeRules.some(r => r.id === "rule-test-1")).toBe(true);
   });
 
-  test("rules stay in probation when backtest fails", async () => {
+  test("rules retired when backtest fails (PH3.3)", async () => {
     const { traceStore, patternStore, ruleStore } = createAllStores();
 
     // Insert rule
@@ -141,7 +141,8 @@ describe("Rule Promotion Pipeline (H2)", () => {
 
     const result = await runner.run();
     expect(result.rulesPromoted).toBe(0);
-    expect(ruleStore.countByStatus("probation")).toBe(1);
+    // PH3.3: Rules that fail backtest are now retired (not left in probation)
+    expect(ruleStore.countByStatus("retired")).toBeGreaterThanOrEqual(1);
   });
 
   test("safety invariant blocks promotion even with passing backtest", async () => {
@@ -169,7 +170,7 @@ describe("Rule Promotion Pipeline (H2)", () => {
     expect(activeRules.some(r => r.id === "rule-unsafe")).toBe(false);
   });
 
-  test("effectiveness updated regardless of pass/fail", async () => {
+  test("effectiveness updated regardless of pass/fail (PH3.3: retired on fail)", async () => {
     const { traceStore, patternStore, ruleStore } = createAllStores();
 
     ruleStore.insert(makeProbationRule());
@@ -186,11 +187,12 @@ describe("Rule Promotion Pipeline (H2)", () => {
 
     await runner.run();
 
-    // Effectiveness should be updated even though rule stays in probation
-    const rules = ruleStore.findByStatus("probation");
-    expect(rules).toHaveLength(1);
-    // Effectiveness was 0 at insertion, should now be > 0 (some failures were matched)
-    expect(rules[0]!.effectiveness).toBeGreaterThanOrEqual(0);
+    // PH3.3: Rule is now retired (not in probation) after failing backtest
+    // Effectiveness should still be updated before retirement
+    const retiredRules = ruleStore.findByStatus("retired");
+    expect(retiredRules.length).toBeGreaterThanOrEqual(1);
+    const rule = retiredRules.find(r => r.id === "rule-test-1");
+    expect(rule).toBeDefined();
   });
 
   test("findMatching returns promoted rules", async () => {

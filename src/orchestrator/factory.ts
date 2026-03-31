@@ -37,7 +37,10 @@ import { SleepCycleRunner } from "../sleep-cycle/sleep-cycle.ts";
 import { ToolExecutor } from "./tools/tool-executor.ts";
 import { MetricsCollector } from "../observability/metrics.ts";
 import { WorkerStore } from "../db/worker-store.ts";
+import { WorkerSelector } from "./worker-selector.ts";
+import { CapabilityModel } from "./capability-model.ts";
 import type { WorkerProfile } from "./types.ts";
+import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -167,6 +170,44 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   ];
   console.log(`[vinyan] Orchestrator initialized — ${components.join(", ")}`);
 
+  // Phase 4: Capability-based worker selector
+  let workerSelector: WorkerSelector | undefined;
+  if (workerStore && db) {
+    const capabilityModel = new CapabilityModel({
+      db: db.getDb(),
+      minTraces: 5,
+      negativeCapabilityThreshold: 0.6,
+    });
+    const defaultGateThresholds: DataGateThresholds = {
+      sleep_cycle_min_traces: 100,
+      sleep_cycle_min_task_types: 5,
+      skill_min_patterns: 1,
+      skill_min_sleep_cycles: 1,
+      evolution_min_traces: 200,
+      evolution_min_active_skills: 1,
+      evolution_min_sleep_cycles: 3,
+      fleet_min_active_workers: 2,
+      fleet_min_worker_trace_diversity: 2,
+    };
+    workerSelector = new WorkerSelector({
+      workerStore,
+      capabilityModel,
+      bus,
+      epsilonWorker: 0.10,
+      diversityFloorPct: 0.15,
+      gateStats: () => ({
+        traceCount: traceStore?.count() ?? 0,
+        distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,
+        patternsExtracted: patternStore?.count() ?? 0,
+        activeSkills: skillStore?.countActive() ?? 0,
+        sleepCyclesRun: patternStore?.countCycleRuns() ?? 0,
+        activeWorkers: workerStore.countActive(),
+        workerTraceDiversity: workerStore.countDistinctWorkerIds(),
+      }),
+      gateThresholds: defaultGateThresholds,
+    });
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -180,6 +221,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     shadowRunner,
     ruleStore,
     toolExecutor,
+    workerSelector,
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)

@@ -1,0 +1,290 @@
+/**
+ * Worker Lifecycle — deterministic state machine for worker status transitions.
+ *
+ * Probation → Active → Demoted → Retired
+ *
+ * Promotion: 30+ tasks, Wilson LB success > median active, quality >= baseline.
+ * Demotion: rolling 30 tasks, success < median-0.10 OR quality < median-2σ.
+ * Retired: 3 demotions = permanent (no return).
+ *
+ * Source of truth: vinyan-implementation-plan.md §Phase 4.2
+ */
+import type { WorkerProfile } from "./types.ts";
+import type { WorkerStore } from "../db/worker-store.ts";
+import type { VinyanBus } from "../core/bus.ts";
+
+export interface WorkerLifecycleConfig {
+  workerStore: WorkerStore;
+  bus?: VinyanBus;
+  probationMinTasks: number;        // default: 30
+  demotionWindowTasks: number;      // default: 30
+  demotionMaxReentries: number;     // default: 3
+  reentryCooldownSessions: number;  // default: 50
+}
+
+export interface PromotionResult {
+  promoted: boolean;
+  reason: string;
+}
+
+export interface DemotionResult {
+  demoted: boolean;
+  permanent: boolean;
+  reason: string;
+}
+
+/**
+ * Wilson lower bound at α=0.05 (z=1.96).
+ * Returns the lower bound of the 95% confidence interval for a proportion.
+ */
+function wilsonLowerBound(successes: number, total: number): number {
+  if (total === 0) return 0;
+  const z = 1.96;
+  const p = successes / total;
+  const denominator = 1 + z * z / total;
+  const centre = p + z * z / (2 * total);
+  const spread = z * Math.sqrt((p * (1 - p) + z * z / (4 * total)) / total);
+  return (centre - spread) / denominator;
+}
+
+export class WorkerLifecycle {
+  private store: WorkerStore;
+  private bus?: VinyanBus;
+  private config: WorkerLifecycleConfig;
+
+  constructor(config: WorkerLifecycleConfig) {
+    this.store = config.workerStore;
+    this.bus = config.bus;
+    this.config = config;
+  }
+
+  /**
+   * Evaluate whether a probation worker should be promoted.
+   * Called during Sleep Cycle.
+   */
+  evaluatePromotion(workerId: string): PromotionResult {
+    const profile = this.store.findById(workerId);
+    if (!profile || profile.status !== "probation") {
+      return { promoted: false, reason: "not on probation" };
+    }
+
+    const stats = this.store.getStats(workerId);
+
+    // Gate 1: minimum observations
+    if (stats.totalTasks < this.config.probationMinTasks) {
+      return { promoted: false, reason: `insufficient tasks: ${stats.totalTasks}/${this.config.probationMinTasks}` };
+    }
+
+    // Gate 2: Wilson LB of success rate > active worker median
+    const activeMedian = this.getActiveWorkerMedianSuccessRate();
+    const successCount = Math.round(stats.successRate * stats.totalTasks);
+    const wilsonLB = wilsonLowerBound(successCount, stats.totalTasks);
+    if (wilsonLB <= activeMedian) {
+      return { promoted: false, reason: `Wilson LB ${wilsonLB.toFixed(3)} <= active median ${activeMedian.toFixed(3)}` };
+    }
+
+    // Gate 3: quality >= baseline
+    const baselineQuality = this.getActiveWorkerBaselineQuality();
+    if (stats.avgQualityScore < baselineQuality) {
+      return { promoted: false, reason: `quality ${stats.avgQualityScore.toFixed(3)} < baseline ${baselineQuality.toFixed(3)}` };
+    }
+
+    // All gates passed — promote
+    this.store.updateStatus(workerId, "active");
+    this.bus?.emit("worker:promoted", {
+      workerId,
+      afterTasks: stats.totalTasks,
+      successRate: stats.successRate,
+    });
+
+    return { promoted: true, reason: "all promotion gates passed" };
+  }
+
+  /**
+   * Check all active workers for demotion.
+   * Called during Sleep Cycle — NOT per-task.
+   */
+  checkDemotions(): DemotionResult[] {
+    const activeWorkers = this.store.findActive();
+    const results: DemotionResult[] = [];
+
+    if (activeWorkers.length <= 1) {
+      // I8: cannot demote the last active worker
+      return results;
+    }
+
+    const medianSuccess = this.getActiveWorkerMedianSuccessRate();
+    const { medianQuality, stddevQuality } = this.getActiveWorkerQualityStats();
+
+    for (const worker of activeWorkers) {
+      const stats = this.store.getStats(worker.id);
+
+      // Need minimum observations in the demotion window
+      if (stats.totalTasks < this.config.demotionWindowTasks) continue;
+
+      let shouldDemote = false;
+      let reason = "";
+
+      // Trigger 1: success rate drops below median - 0.10
+      if (stats.successRate < medianSuccess - 0.10) {
+        shouldDemote = true;
+        reason = `success rate ${stats.successRate.toFixed(3)} < threshold ${(medianSuccess - 0.10).toFixed(3)}`;
+      }
+
+      // Trigger 2: quality below median - 2σ
+      if (!shouldDemote && stats.avgQualityScore < medianQuality - 2 * stddevQuality) {
+        shouldDemote = true;
+        reason = `quality ${stats.avgQualityScore.toFixed(3)} < threshold ${(medianQuality - 2 * stddevQuality).toFixed(3)}`;
+      }
+
+      if (!shouldDemote) continue;
+
+      // I8: don't demote if this would leave 0 active workers
+      if (activeWorkers.length - results.filter(r => r.demoted).length <= 1) {
+        results.push({ demoted: false, permanent: false, reason: "I8: would leave 0 active workers" });
+        continue;
+      }
+
+      // Check for permanent retirement (3 demotions)
+      const newDemotionCount = worker.demotionCount + 1;
+      const permanent = newDemotionCount >= this.config.demotionMaxReentries;
+
+      if (permanent) {
+        this.store.updateStatus(worker.id, "retired", reason);
+      } else {
+        this.store.updateStatus(worker.id, "demoted", reason);
+      }
+
+      this.bus?.emit("worker:demoted", {
+        workerId: worker.id,
+        reason,
+        permanent,
+      });
+
+      results.push({ demoted: true, permanent, reason });
+    }
+
+    return results;
+  }
+
+  /**
+   * Re-enroll expired demoted workers (after cooldown period).
+   * Returns list of re-enrolled worker IDs.
+   */
+  reEnrollExpired(currentSessionCount: number): string[] {
+    const demotedWorkers = this.store.findByStatus("demoted");
+    const reEnrolled: string[] = [];
+
+    for (const worker of demotedWorkers) {
+      // Skip if already at max re-entries
+      if (worker.demotionCount >= this.config.demotionMaxReentries) {
+        // Should be RETIRED, fix state
+        this.store.updateStatus(worker.id, "retired", "max re-entries reached");
+        continue;
+      }
+
+      // Check cooldown: demotedAt + cooldownSessions elapsed
+      if (!worker.demotedAt) continue;
+      const sessionsSinceDemotion = currentSessionCount; // simplified: use total session count
+      // In a real implementation, we'd track per-worker session count since demotion.
+      // For now, use wall-clock time as proxy: demotion happened > cooldown * avgSessionDuration ago.
+      // Simplified: if demotedAt + cooldown_sessions * 60_000 (1min/session estimate) < now, re-enroll.
+      const cooldownMs = this.config.reentryCooldownSessions * 60_000;
+      if (Date.now() - worker.demotedAt < cooldownMs) continue;
+
+      this.store.reEnroll(worker.id);
+      this.bus?.emit("worker:reactivated", {
+        workerId: worker.id,
+        previousDemotionCount: worker.demotionCount,
+      });
+      reEnrolled.push(worker.id);
+    }
+
+    return reEnrolled;
+  }
+
+  /**
+   * Check if a probation worker should be dispatched for shadow validation.
+   * 20% dispatch rate for probation workers.
+   */
+  shouldShadowForProbation(_taskId: string, _workerId: string): boolean {
+    return Math.random() < 0.20;
+  }
+
+  /**
+   * Emergency reactivation: if no active workers remain, reactivate the best demoted worker.
+   * Called as safety net — I8 should prevent this from being needed.
+   */
+  emergencyReactivation(): string | null {
+    const active = this.store.findActive();
+    if (active.length > 0) return null;
+
+    const demoted = this.store.findByStatus("demoted");
+    if (demoted.length === 0) return null;
+
+    // Pick the one with best stats
+    let best: WorkerProfile | null = null;
+    let bestQuality = -1;
+    for (const w of demoted) {
+      const stats = this.store.getStats(w.id);
+      if (stats.avgQualityScore > bestQuality) {
+        bestQuality = stats.avgQualityScore;
+        best = w;
+      }
+    }
+
+    if (!best) return null;
+
+    this.store.reEnroll(best.id);
+    this.store.updateStatus(best.id, "active");
+    this.bus?.emit("fleet:emergency_reactivation", {
+      workerId: best.id,
+      reason: "no active workers remaining",
+    });
+    return best.id;
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────
+
+  private getActiveWorkerMedianSuccessRate(): number {
+    const activeWorkers = this.store.findActive();
+    if (activeWorkers.length === 0) return 0;
+
+    const rates = activeWorkers
+      .map(w => this.store.getStats(w.id).successRate)
+      .sort((a, b) => a - b);
+
+    const mid = Math.floor(rates.length / 2);
+    return rates.length % 2 === 0
+      ? (rates[mid - 1]! + rates[mid]!) / 2
+      : rates[mid]!;
+  }
+
+  private getActiveWorkerBaselineQuality(): number {
+    const activeWorkers = this.store.findActive();
+    if (activeWorkers.length === 0) return 0;
+
+    const qualities = activeWorkers.map(w => this.store.getStats(w.id).avgQualityScore);
+    return qualities.reduce((a, b) => a + b, 0) / qualities.length;
+  }
+
+  private getActiveWorkerQualityStats(): { medianQuality: number; stddevQuality: number } {
+    const activeWorkers = this.store.findActive();
+    if (activeWorkers.length === 0) return { medianQuality: 0, stddevQuality: 0 };
+
+    const qualities = activeWorkers
+      .map(w => this.store.getStats(w.id).avgQualityScore)
+      .sort((a, b) => a - b);
+
+    const mid = Math.floor(qualities.length / 2);
+    const medianQuality = qualities.length % 2 === 0
+      ? (qualities[mid - 1]! + qualities[mid]!) / 2
+      : qualities[mid]!;
+
+    const mean = qualities.reduce((a, b) => a + b, 0) / qualities.length;
+    const variance = qualities.reduce((sum, q) => sum + (q - mean) ** 2, 0) / qualities.length;
+    const stddevQuality = Math.sqrt(variance);
+
+    return { medianQuality, stddevQuality };
+  }
+}

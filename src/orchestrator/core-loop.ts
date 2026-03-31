@@ -117,6 +117,8 @@ export interface OrchestratorDeps {
   shadowRunner?: import("./shadow-runner.ts").ShadowRunner;
   ruleStore?: import("../db/rule-store.ts").RuleStore;
   toolExecutor?: import("./tools/tool-executor.ts").ToolExecutor;
+  // Phase 4 — optional, activated by factory when worker profiles are available
+  workerSelector?: import("./worker-selector.ts").WorkerSelector;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -162,6 +164,9 @@ export async function executeTask(
         }
         if (rule.action === "adjust-threshold" && typeof rule.parameters.riskThreshold === "number") {
           routing = { ...routing, riskThresholdOverride: rule.parameters.riskThreshold };
+        }
+        if (rule.action === "assign-worker" && typeof rule.parameters.workerId === "string") {
+          routing = { ...routing, workerId: rule.parameters.workerId };
         }
       }
       deps.bus?.emit("evolution:rulesApplied", { taskId: input.id, rules: winners });
@@ -254,6 +259,19 @@ export async function executeTask(
         // S1: Cold-start safeguard — enforce minimum routing level
         if (prediction.forceMinLevel != null && routing.level < prediction.forceMinLevel) {
           routing = { ...routing, level: prediction.forceMinLevel as RoutingLevel };
+        }
+      }
+
+      // ── Step 2½: SELECT WORKER (Phase 4) ──────────────────────────
+      if (deps.workerSelector && !routing.workerId) {
+        const { computeFingerprint } = await import("./task-fingerprint.ts");
+        const fingerprint = computeFingerprint(input, perception);
+        const selection = deps.workerSelector.selectWorker(
+          fingerprint, routing.level,
+          { maxTokens: input.budget.maxTokens, timeoutMs: input.budget.maxDurationMs },
+        );
+        if (selection.selectedWorkerId) {
+          routing = { ...routing, workerId: selection.selectedWorkerId };
         }
       }
 

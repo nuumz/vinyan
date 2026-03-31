@@ -113,7 +113,10 @@ export class WorkerPoolImpl implements WorkerPool {
     workerInput: WorkerInput,
     routing: RoutingDecision,
   ): Promise<WorkerOutput> {
-    const provider = this.registry.selectForRoutingLevel(routing.level);
+    // PH4.4: Use workerId to select provider if available, fallback to tier-based
+    const provider = routing.workerId
+      ? (this.registry.selectById(routing.workerId) ?? this.registry.selectForRoutingLevel(routing.level))
+      : this.registry.selectForRoutingLevel(routing.level);
     if (!provider) {
       return emptyOutput(workerInput.taskId);
     }

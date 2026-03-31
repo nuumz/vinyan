@@ -14,7 +14,7 @@
 - Phase 1: **Vinyan as Autonomous Agent** — standalone rule-based Orchestrator + LLM-powered Generator Engines + Tool Execution layer + MCP External Interface. Vinyan receives tasks, plans, generates code via LLM, executes tools, and verifies results as a complete agent system. The Orchestrator is rule-based, non-LLM code — LLMs are Generator Engines that propose; Oracles verify; the Orchestrator decides. See Decisions 7, 9, 12, 13, 14.
 - Phase 2: Multi-worker isolation + pattern-based optimization (Sleep Cycle extracts failure patterns → threshold adjustments + skill cache). Not self-evolving — frequency-based pattern detection with probation/promotion lifecycle.
 - Phase 3+: Full self-improvement (research-grade pattern mining + counterfactual generation + trace-calibrated Self-Model)
-- Phase 5: Complete ENS with no dependency on external agent frameworks
+- Phase 5: Complete ENS — standalone platform (API + TUI + Web + VS Code), multi-instance coordination (ECP/network, advisory peer mesh), cross-language oracles (Python/Go/Rust), plugin system, schema migrations. See Decisions 15–18.
 
 **Rationale from source code analysis:**
 - Claude Code's `runEmbeddedPiAgent()` is a 1,800-line function with deeply integrated retry, compaction, failover, and hook systems. Replacing it is a multi-year effort with diminishing returns.
@@ -980,6 +980,145 @@ const VinyanMCPServer = {
 | ECP → MCP (exposing Oracles) | OracleVerdict | Flatten to MCP tool result format, embed `confidence` and `evidence` as JSON in result content |
 
 **Research question (deferred):** MCP has no concept of "I don't know." When an Oracle returns `type: 'unknown'`, what should the MCP server respond? Options: (a) return empty result with metadata, (b) MCP error code, (c) propose MCP protocol extension for epistemic states. This is tracked in the Open Questions.
+
+---
+
+### Decision 15: Cross-Language Oracle Process Model `[Phase 5]`
+
+> **Axioms: A1, A4** — Epistemic Separation (cross-language verification maintains generation ≠ verification) + Content-Addressed Truth (file hashes work regardless of language)
+
+**Choice:** Cross-language oracles run as external processes communicating via **stdin/stdout JSON-RPC** (same contract as existing oracles). `OracleConfig.command` (already declared in `config/schema.ts:14`) activates polyglot oracles.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Language-specific oracles as native processes | Natural toolchain per language, fastest execution | Each needs own stdin/stdout JSON mapping | ✅ Chosen |
+| All oracles in TypeScript (shelling out) | Single toolchain, consistent | Double process overhead, harder to maintain language-specific logic | ❌ Rejected |
+| LSP integration (gopls, pyright, rust-analyzer) | Rich diagnostics, incremental | Complex lifecycle management, LSP is stateful | ❌ Deferred (Phase 5+) |
+
+**Oracle contract (unchanged):**
+```
+stdin: HypothesisTuple (JSON) → oracle process → stdout: OracleVerdict (JSON)
+```
+
+**Implementation:**
+- `oracle/runner.ts:41` currently hardcodes `Bun.spawn(["bun", "run", oraclePath])`. When `OracleConfig.command` is set, spawn that command instead
+- `oracle/registry.ts` gains `registerOracle(name, config)` for runtime registration
+- Language detection: `package.json` → TypeScript, `pyproject.toml` → Python, `go.mod` → Go, `Cargo.toml` → Rust
+- All language oracles share: circuit breaker, timeout handling, Zod validation (`oracle/protocol.ts`)
+- **Concurrency:** Replace `Promise.all()` in `oracle/runner.ts` with bounded concurrency (semaphore, configurable `maxConcurrency`). Heavier cross-language oracles need throttling
+
+**Per-language commands:**
+| Language | Command | Tool | Tier |
+|----------|---------|------|------|
+| TypeScript | `bun run` (default) | tsc, tree-sitter | deterministic |
+| Python | `python -m vinyan_pyright_oracle` | pyright | deterministic |
+| Go | `vinyan-go-oracle` | `go vet` + `go build` | deterministic |
+| Rust | `vinyan-rust-oracle` | `cargo check --message-format=json` | deterministic |
+
+---
+
+### Decision 16: Plugin System Architecture `[Phase 5]`
+
+> **Axiom: A3** — Deterministic Governance (plugins cannot bypass oracle verification or inject governance decisions)
+
+**Choice:** Plugins are **declarative manifests** that register additional oracles, tools, and LLM providers at startup. No plugin code executes inside the Orchestrator process.
+
+**Plugin manifest schema:**
+```typescript
+interface PluginManifest {
+  name: string;                           // unique identifier
+  version: string;                        // semver
+  vinyan_version: string;                 // minimum compatible Vinyan version
+  provides: {
+    oracles?: Array<{
+      name: string;
+      command: string;                    // process to spawn
+      languages: string[];
+      patterns: string[];                 // hypothesis patterns supported
+      tier: "deterministic" | "heuristic" | "probabilistic";
+    }>;
+    tools?: Array<{
+      name: string;
+      command: string;
+      category: "file" | "shell" | "search" | "network";
+      sideEffect: boolean;
+      minIsolationLevel: number;
+    }>;
+    providers?: Array<{
+      id: string;
+      tier: "fast" | "balanced" | "powerful";
+      loader: string;                     // module path to dynamic import
+    }>;
+  };
+}
+```
+
+**Loading:** `LLMProviderRegistry` gains `loadFromConfig(manifestPath)` for dynamic provider registration. `OracleRegistry` gains `registerFromManifest(manifest)`. `ToolClassifier` gains extension point for plugin-provided tools.
+
+**Safety constraints:**
+- Plugin oracles enter as `heuristic` tier maximum (never `deterministic` without explicit admin promotion)
+- Plugin tools inherit the existing permission model (D13: Orchestrator-mediated)
+- Plugin providers are treated as any other LLM provider (A6: zero-trust execution)
+- Plugins cannot modify immutable invariants (I1–I17)
+
+---
+
+### Decision 17: Async EventBus for Multi-Instance `[Phase 5]`
+
+> **Axiom: A3** — Deterministic Governance (local bus remains synchronous; async is additive for remote)
+
+**Choice:** Dual-mode EventBus — local delivery remains synchronous FIFO (current behavior); cross-instance delivery uses async queued transport.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Replace bus with fully async | Uniform behavior | Breaks all existing subscribers, non-trivial migration | ❌ Rejected |
+| **Dual-mode: sync local + async remote** | Zero breaking changes, incremental | Two code paths | ✅ Chosen |
+| Separate remote event service | Clean separation | Different API for local vs remote events | ❌ Rejected |
+
+**Implementation:**
+- `src/core/bus.ts` interface unchanged. `VinyanBus.emit()` remains synchronous
+- New `src/core/remote-bus.ts`: `RemoteBusAdapter` subscribes to local bus events, forwards configured subset to peers via ECP network transport (§2.4)
+- Remote event delivery: at-least-once with idempotency (per [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) §6)
+- Configurable event filter: only `sleep:cycleComplete`, `evolution:rulePromoted`, `evolution:ruleRetired`, `skill:outcome`, `fleet:convergence_warning` forwarded by default
+- Bus event types extensible for plugins: `VinyanBus.registerEventType(name, schema)` for plugin-defined events
+
+---
+
+### Decision 18: Schema Migration Framework `[Phase 5]`
+
+> **Axiom: A4** — Content-Addressed Truth (migration must preserve fact integrity and hash bindings)
+
+**Choice:** Versioned forward-only migrations with a `schema_version` table. Replaces `CREATE TABLE IF NOT EXISTS` pattern.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Continue with CREATE IF NOT EXISTS | Zero migration code | Cannot alter columns, no rollback, no version tracking | ❌ Rejected |
+| **Versioned migrations with schema_version table** | Track applied versions, ALTER TABLE support, auditable | Must implement migration runner | ✅ Chosen |
+| ORM migration tool (Drizzle, Prisma) | Auto-generated migrations | Heavy dependency, Bun compatibility uncertain | ❌ Rejected |
+
+**Implementation:**
+```sql
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  description TEXT NOT NULL
+);
+```
+
+- Migration runner in `src/db/migration-runner.ts`: reads `schema_version`, applies pending migrations in order
+- Migrations are TypeScript files in `src/db/migrations/`: `001_initial.ts`, `002_add_dependency_edges.ts`, etc.
+- Each migration exports `{ version: number, description: string, up(db: Database): void }`
+- **Forward-only:** No down migrations. Rollback = restore from backup
+- **Additive-only for Phase 5:** `ALTER TABLE ADD COLUMN` only. No column drops or renames
+- Run at startup before any database access. Idempotent (skip already-applied versions)
+
+**Critical constraint:** Migration must preserve World Graph fact integrity. File hashes, evidence chains, and hash-invalidation triggers must survive migration unchanged (A4).
 
 ---
 

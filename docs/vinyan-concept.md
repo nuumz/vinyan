@@ -123,6 +123,45 @@ Phase 0 transport: JSON-RPC over stdio (same transport layer as MCP local). Evol
 | Temporal validity | ❌ no expiry model | ✅ `temporal_context` with TTL |
 
 ECP is not a "fundamentally different wire protocol" — it is a **semantic extension** of JSON-RPC that adds epistemic state as first-class data. The innovation is in the schema and the Orchestrator behaviors it enables, not the transport. MCP could theoretically be extended with these fields, but doing so would overload a protocol designed for tool invocation with epistemic semantics it was not designed to carry. ECP keeps these concerns separate.
+
+### 2.4 Network-Aware ECP (Phase 5)
+
+Phase 0–4 ECP operates over local stdio (same-machine, zero-latency). Phase 5 multi-instance coordination (§11) requires ECP over network boundaries. Network transport introduces failure modes that local ECP never encounters:
+
+**Message Framing:**
+```typescript
+interface ECPNetworkEnvelope {
+  protocol_version: number;        // negotiated during handshake
+  message_id: string;              // UUID — idempotency key
+  source_instance_id: string;      // sender identity
+  target_instance_id?: string;     // null = broadcast
+  timestamp: number;               // sender wall-clock (ms since epoch)
+  ttl_ms: number;                  // message expires after this duration
+  payload: ECPResponse;            // standard ECP message
+  signature?: string;              // Ed25519 signature for mTLS-verified instances
+}
+```
+
+**Delivery Guarantees:**
+
+| Property | Guarantee | Rationale |
+|:---------|:----------|:----------|
+| Ordering | Causal per-instance (not global) | Global ordering requires consensus — too expensive for advisory coordination |
+| Delivery | At-least-once with idempotency | `message_id` deduplication at receiver. Lost messages retry with exponential backoff (100ms → 5s, max 3 attempts) |
+| Freshness | TTL-bounded | Receiver drops messages where `now - timestamp > ttl_ms`. Prevents acting on stale evidence |
+| Partial failure | Fail-open to single-instance | If network transport fails, Orchestrator continues with local-only oracles. No governance action depends on remote availability |
+
+**Idempotency:** Every cross-instance ECP message carries a `message_id`. Receivers maintain a bounded deduplication window (last 10,000 message IDs, ~1MB memory). Duplicate messages are acknowledged but not re-processed.
+
+**Circuit Breaker Integration:** Each remote instance connection uses the same circuit-breaker pattern as local oracles (`oracle/circuit-breaker.ts`): 3 failures → open, 60s reset, half-open probe. A partitioned instance is treated as an unavailable oracle — the local Orchestrator continues without it (A2: uncertainty is a valid state, not an error).
+
+**Confidence Degradation:** Remote ECP responses always carry reduced confidence:
+- Local deterministic oracle: confidence as-reported (up to 1.0)
+- Remote deterministic oracle: confidence capped at 0.95 (I13 safety invariant)
+- Remote heuristic/probabilistic: confidence × 0.8
+
+This ensures A5 (Tiered Trust) holds across network boundaries — local evidence always outranks remote evidence of the same tier.
+
 ---
 
 ## 3. Reasoning Engine Model
@@ -355,11 +394,110 @@ Evolution in Vinyan operates at **two speeds**: (1) **Fast loop** — real-time 
 > **Honest mechanism assessment:** The Phase 2 Evolution Engine is a **batch analytics job** that extracts failure patterns and adjusts operational thresholds — not a self-evolving system. The term “evolution” describes the *direction* (the system improves over time) not the *mechanism* (which is frequency-based pattern detection with probation/promotion lifecycle). True generative self-modification (producing novel strategies, not just avoiding failed ones) is a Phase 3+ research problem requiring counterfactual generation and sufficient data volume (hundreds of tasks minimum). Phase 2 should realistically detect 2–3 high-frequency anti-patterns from its first 200 tasks.
 ---
 
-## 11. Multi-Instance Coordination (Research Direction)
+## 11. Multi-Instance Coordination
 
-> **Status: Not planned for Phase 0–2.** Documented here as a natural architectural extension, not a near-term deliverable.
+> **Status: Phase 5 design.** Prerequisite: Phase 4 complete, sufficient single-instance maturity (≥2000 traces, ≥30 sleep cycles).
 
-ECP’s design allows multiple Vinyan instances to communicate as peer Reasoning Engines. Each instance registers capabilities in the tiered registry (§3.1); inter-instance communication uses the same ECP semantics as internal communication. Potential applications include domain specialization (frontend vs. backend instances) and cross-validation. This is deferred until single-instance Vinyan proves its value in production.
+ECP’s design allows multiple Vinyan instances to communicate as peer Reasoning Engines. Each instance registers capabilities in the tiered registry (§3.1); inter-instance communication uses the same ECP semantics as internal communication via the network-aware ECP transport (§2.4). The full inter-instance protocol is specified in [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md).
+
+### 11.1 Coordination Topology
+
+Vinyan uses a **flat peer mesh** — no super-orchestrator, no leader election. Each instance’s Orchestrator remains sovereign over its own task lifecycle (A3: deterministic local governance). Coordination is **advisory**: shared knowledge, optional delegation, cross-instance verification requests. No remote instance can override local governance decisions (safety invariant I12).
+
+```
+Instance A (frontend specialist)          Instance B (backend specialist)
+┌──────────────────────────┐              ┌──────────────────────────┐
+│ Local Orchestrator       │◄────ECP────►│ Local Orchestrator       │
+│ Local Oracles            │  Network     │ Local Oracles            │
+│ Local World Graph        │  Transport   │ Local World Graph        │
+│ Local Self-Model         │  (§2.4)      │ Local Self-Model         │
+└──────────────────────────┘              └──────────────────────────┘
+```
+
+**Why no leader:** Leader election introduces a single point of failure and requires consensus protocols (Raft, Paxos) that add latency and complexity. Vinyan’s advisory model means partition tolerance is trivial — a partitioned instance simply continues with local-only resources. The cost is potential duplicate work (two instances may process the same task type independently), which is acceptable given the advisory model.
+
+### 11.2 Instance Discovery & Identity
+
+Each instance publishes a capability descriptor via `.well-known/vinyan.json`:
+
+```typescript
+interface InstanceDescriptor {
+  instance_id: string;               // stable UUID, generated on first run
+  protocol_version: number;          // ECP version for compatibility check
+  capabilities: {
+    oracle_types: string[];          // ["ast", "type", "dep", "test", "lint"]
+    languages: string[];             // ["typescript", "python", "go"]
+    domain_tags: string[];           // ["frontend", "backend", "infra"]
+    active_workers: number;
+  };
+  health: {
+    status: "healthy" | "degraded" | "draining";
+    uptime_ms: number;
+    current_load: number;            // 0.0–1.0
+  };
+  endpoint: string;                  // WebSocket/HTTP URL for ECP network transport
+  public_key: string;                // Ed25519 public key for message verification
+}
+```
+
+Discovery modes:
+1. **Static config** (Phase 5 default): Peers listed in `vinyan.json` under `phase5.instances.peers`
+2. **Descriptor polling**: Periodically fetch `/.well-known/vinyan.json` from configured peer URLs
+3. **Dynamic discovery** (future): mDNS/DNS-SD for local network, registry service for cloud
+
+### 11.3 Task Delegation
+
+When an instance encounters a task outside its capability (e.g., Python verification on a TypeScript-only instance), it may delegate to a peer:
+
+1. **Capability check**: Query known peers’ `InstanceDescriptor.capabilities` for matching oracle types / languages
+2. **Delegation**: Send `TaskInput` + `PerceptualHierarchy` + `TaskFingerprint` via ECP network transport
+3. **Re-verification**: Delegating instance **always** re-verifies the result locally with whatever oracles it has (A6: zero-trust). Remote results enter with confidence cap (§2.4)
+4. **Timeout**: Delegation has a hard timeout (configurable, default 60s). On timeout, the task falls back to local processing or escalation
+
+Delegation is **never mandatory** — it is an optimization. A partitioned instance processes tasks with degraded capability rather than blocking.
+
+### 11.4 Cross-Instance Knowledge Sharing
+
+Sharing follows Phase 4’s `AbstractPatternExport` format with additional provenance:
+
+- **Rules**: Effectiveness-proven rules shared during Sleep Cycle. Enters remote instance at `status: ‘probation’` (I14)
+- **Skills**: High-success-rate cached skills shared. Confidence reduced 50% on import
+- **Self-Model parameters**: Calibrated EMA parameters warm-start peer instances (enters `basis: ‘hybrid’`)
+- **Worker profiles**: When instances share `WorkerConfig.modelId`, capability scores bootstrap peer selection
+
+All shared knowledge carries a provenance chain: `source_instance_id → original_ids → transformation_history → local_probation_status`.
+
+### 11.5 Partition Tolerance
+
+Network partitions are inevitable in distributed systems. Vinyan’s partition strategy follows the advisory coordination model:
+
+**During partition:**
+- Each instance operates independently with local-only resources (full capability, reduced knowledge sharing)
+- No write to shared state — all writes are local
+- Delegated tasks in-flight at partition time: timeout → fallback to local processing
+- No split-brain risk because there is no shared mutable state requiring consensus
+
+**On partition heal:**
+- Instances exchange Sleep Cycle summaries accumulated during partition
+- Knowledge sharing resumes: new rules/skills enter probation on the receiving side
+- No automatic state merge — each instance’s local state is authoritative for its own operations
+- Conflicting rules (promoted on A, retired on B) resolve by: the local instance’s decision takes precedence locally
+
+**CAP theorem position:** Vinyan chooses **AP (Availability + Partition tolerance)** over Consistency. Each instance is always available and processes tasks independently. Cross-instance knowledge is eventually consistent (shared during Sleep Cycle, enters probation). This is appropriate because:
+1. No governance action depends on remote state (A3)
+2. Knowledge sharing is advisory, not authoritative (I14: always enters probation)
+3. The cost of unavailability (blocked tasks) exceeds the cost of temporary knowledge divergence
+
+### 11.6 Cross-Instance Contradiction Resolution
+
+When remote evidence contradicts local evidence, the 5-step Deterministic Contradiction Resolution (§3.2) extends with an additional precedence rule:
+
+1. **Domain Separation** — Are the engines evaluating different aspects?
+2. **Local vs Remote** — **Local evidence takes precedence over remote evidence of the same tier** (A5 + §2.4 confidence degradation)
+3. **Confidence Comparison** — Higher-tier engine wins (deterministic > heuristic > probabilistic)
+4. **Evidence Weight** — More concrete, verifiable evidence wins
+5. **Historical Accuracy** — Engine with better track record wins
+6. **Escalation** — Present full evidence from both sides to human
 
 ---
 
@@ -372,7 +510,7 @@ ECP’s design allows multiple Vinyan instances to communicate as peer Reasoning
 | **2** | Multi-Worker Isolation + Skill Formation | OS-level processes / containers + Shadow Execution + **Pattern-based optimization** (Sleep Cycle extracts failure patterns from traces → threshold adjustments + Level 0 skill cache with probation/promotion). Realistic expectation: 2–3 high-frequency anti-patterns from first 200 tasks. | A3, A6 (hardened) |
 | **3** | Full Self-Improvement | Sleep Cycle (full pattern mining + counterfactual generation) + trace-calibrated Self-Model (replaces static heuristics) + bounded rule modification. **Research-grade** — depends on data volume and evaluation methodology. | A7 (full loop) |
 | **4** | Fleet Governance | Meritocratic worker profiles + capability-based routing | All axioms at scale |
-| **5** | Complete ENS | Full Epistemic Nervous System: standalone system, multi-instance coordination, cross-language support | Complete ENS |
+| **5** | Complete ENS | Full Epistemic Nervous System: standalone platform (API server, terminal UI, web dashboard, VS Code extension), multi-instance coordination via ECP network transport (§2.4, §11), cross-language oracle support (Python/Go/Rust), A2A + MCP protocol bridges. See [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md). | All axioms at platform scale |
 
 ### 12.1 Phase 0 — Oracle Gate MVP (Concrete Specification)
 

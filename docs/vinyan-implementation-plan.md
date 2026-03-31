@@ -1,6 +1,6 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-03-31 | Branch: `feature/main`
+> Generated: 2026-03-29 | Updated: 2026-03-31 (Phase 5 gap closure) | Branch: `feature/main`
 > Source of truth: [vinyan-concept.md](vinyan-concept.md) §12, [vinyan-tdd.md](vinyan-tdd.md) §4–§19, [vinyan-architecture.md](vinyan-architecture.md)
 
 ---
@@ -61,13 +61,13 @@
 
 ### Items Still Deferred
 
-- `uncertain`/`contradictory` verdict types in actual oracle output
-- 5-step Contradiction Resolution
-- `deliberation_request` and `temporal_context` ECP extensions
-- Bounded cascade invalidation (`cascadeInvalidation` with `maxDepth`)
-- MCP External Interface (Client Bridge + Server)
-- `before_prompt_build` with `PerceptualHierarchy`
-- `before_model_resolve` with Self-Model routing
+- ~~`uncertain`/`contradictory` verdict types in actual oracle output~~ ✅ Resolved by Phase 4.5 WP-4 (oracles now emit `type: 'uncertain'` for degraded conditions)
+- ~~5-step Contradiction Resolution~~ ✅ Resolved by Phase 4.5 WP-1 (`src/gate/conflict-resolver.ts`)
+- `deliberation_request` and `temporal_context` ECP extensions → Phase 5 PH5.7
+- ~~Bounded cascade invalidation (`cascadeInvalidation` with `maxDepth`)~~ ✅ Resolved by Phase 4.5 WP-3 (`queryDependents(file, maxDepth=3)`)
+- MCP External Interface (Client Bridge + Server) → Phase 5 PH5.5
+- `before_prompt_build` with `PerceptualHierarchy` → Phase 1 (already implemented via `perception.ts`)
+- `before_model_resolve` with Self-Model routing → Phase 1 (already implemented via `self-model.ts` + `risk-router-adapter.ts`)
 
 ---
 
@@ -2166,10 +2166,10 @@ Phase 5 Architecture Extension:
 
 Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 foundations:
 
-1. **Wire `fleet:convergence_warning` emission.** Event declared in `bus.ts` but never emitted. Add in `fleet-evaluator.ts` or `sleep-cycle.ts` when `diversityScore > 0.7` (Gini threshold). [A3: governance transparency]
-2. **Complete audit listener event coverage.** `ALL_EVENTS` in `audit-listener.ts` is missing Phase 4 fleet/commit events (`commit:rejected`, `fleet:convergence_warning`, `fleet:emergency_reactivation`, `fleet:diversity_enforced`, `worker:registered/promoted/demoted/reactivated`, `worker:selected/exploration`, `task:uncertain`). Add all. [A3: complete audit trail]
-3. **Wire `oracleFailurePattern` fingerprint dimension.** `core-loop.ts` passes `{ traceCount }` to `computeFingerprint()` but omits `oracleFailurePattern`. When `traceCount >= 500`, compute via `computeOracleFailurePattern()` from `task-fingerprint.ts`. [A7: richer capability signal]
-4. **Add `AbstractPatternExport.version` migration support.** Currently hardcoded `version: 1` in `pattern-abstraction.ts`. Add version validation + migration hook in `importPatterns()` for format evolution required by PH5.9. [Forward compatibility]
+1. **Wire `fleet:convergence_warning` emission.** Event declared in `bus.ts` but never emitted. Add in `fleet-evaluator.ts` or `sleep-cycle.ts` when `diversityScore > 0.7` (Gini threshold). [A3: governance transparency] **Status: OPEN**
+2. ~~**Complete audit listener event coverage.**~~ ✅ **Resolved by Phase 4.5 WP-5** — `ALL_EVENTS` in `audit-listener.ts` now covers all 62 events including Phase 4 fleet/commit events.
+3. ~~**Wire `oracleFailurePattern` fingerprint dimension.**~~ ✅ **Resolved by Phase 4.5 WP-5** — `core-loop.ts:424` computes oracle failure pattern from failed oracle names. `task-fingerprint.ts` wired.
+4. **Add `AbstractPatternExport.version` migration support.** Currently hardcoded `version: 1` in `pattern-abstraction.ts`. Add version validation + migration hook in `importPatterns()` for format evolution required by PH5.9. [Forward compatibility] **Status: OPEN**
 
 ---
 
@@ -2178,6 +2178,8 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 > **Goal:** Vinyan operates as a fully independent platform. Multiple human interfaces converge on the same Orchestrator core loop.
 
 ##### PH5.1 — API Server `[L]`
+
+> **Interface contracts:** [vinyan-tdd.md §22](vinyan-tdd.md) specifies API endpoints, session manager interface, compaction algorithm, checkpoint recovery, and acceptance criteria.
 
 **Purpose:** HTTP API accepting tasks, streaming progress, returning results. Foundation for all external interfaces. Includes session management with compaction and checkpoint recovery.
 
@@ -2317,29 +2319,33 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.7 — ECP Network Transport `[L]`
 
+> **Design prerequisite:** [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) specifies the full wire protocol (VIIP), message envelope, delivery guarantees, and failure modes. [vinyan-concept.md §2.4](vinyan-concept.md) specifies network-aware ECP semantics and confidence degradation.
+
 **Purpose:** Extend ECP from stdio (local process) to network boundaries. Preserves epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol does this natively.
 
 **Axiom justification:** A2 (`temporal_context` mandatory for all cross-instance messages), A5 (remote verdicts always lower tier than local)
 
-**Key concepts to design:**
+**Key concepts (now fully specified):**
 
 - **Transport abstraction.** New `ECPTransport` interface: `send(message: ECPMessage): Promise<void>`, `onMessage(handler): void`. Implementations: `StdioTransport` (existing runner behavior), `NetworkTransport` (new). Oracle runner (`oracle/runner.ts`) becomes transport-agnostic.
 - **Temporal context enforcement.** `temporal_context` (concept §13.2) becomes required on all cross-instance ECP messages. Receiving Orchestrator checks `valid_until` before trusting remote evidence. Stale evidence auto-degrades to `type: 'unknown'`.
 - **`deliberation_request` support.** Implement concept §13.1: engines signal insufficient reasoning depth and request additional compute. Maps to routing level escalation in the receiving instance.
-- **Instance discovery.** Static config (Phase 5 default) + `.well-known/vinyan.json` endpoint (reuses A2A Agent Card pattern from PH5.6). Declares oracle set, language coverage, domain tags, health, capacity.
-- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake. Required for `AbstractPatternExport.version` evolution.
+- **Instance discovery.** Static config (Phase 5 default) + `.well-known/vinyan.json` endpoint (concept §11.2). Declares oracle set, language coverage, domain tags, health, capacity.
+- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake per VIIP §2.3.
 
 **Extends:** `oracle/runner.ts` (transport abstraction), `OracleConfig.command` (config/schema.ts:14), `ECP_PROTOCOL_VERSION` (types.ts:24)
-**Dependencies:** PH5.1 (shares HTTP/WebSocket infra), PH5.6 (shares discovery pattern)
+**Dependencies:** PH5.14 (Security — mTLS/signing), PH5.1 (shares HTTP/WebSocket infra)
 
-**Open questions:**
-- Wire protocol: WebSocket, gRPC, or HTTP/2 SSE
-- Serialization: JSON (readable) vs. MessagePack (efficient)
-- TLS/mTLS for instance auth
-- Message ordering: FIFO per-instance or causal
-- Maximum peer count
+**Design decisions resolved (from gap analysis):**
+- Wire protocol: **WebSocket** (persistent, bidirectional) with HTTP/2 SSE fallback (VIIP §2.1)
+- Serialization: **JSON** (readable, debuggable) — optimize to MessagePack only if profiling shows bottleneck
+- Auth: **Ed25519 message signatures** + optional mTLS (VIIP §4)
+- Message ordering: **Causal per-instance** (UUIDv7 time-sortable), no global ordering (VIIP §6.2)
+- Delivery: **At-least-once with idempotency** — 10K message dedup window (VIIP §6.1)
 
 ##### PH5.8 — Instance Coordinator `[XL]` (Research)
+
+> **Design prerequisites:** [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) (wire protocol), [vinyan-concept.md §11](vinyan-concept.md) (coordination topology, partition tolerance), [vinyan-tdd.md §23](vinyan-tdd.md) (coordinator interface, state machine, acceptance criteria).
 
 **Purpose:** Multiple Vinyan instances coordinate as peers. Each instance's Orchestrator remains sovereign. Includes Oracle/Verifier lifecycle governance (concept §13.4) and Creativity Protection Zone (concept §13.5).
 
@@ -2473,7 +2479,9 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 #### Cross-Cutting Concerns
 
-##### PH5.14 — Security Model `[M]`
+##### PH5.14 — Security Model `[M]` — **TIER 0 PREREQUISITE**
+
+> **HIGH (G5-012):** This component is now Tier 0 — must precede any network exposure (PH5.1 API, PH5.6 A2A, PH5.7 ECP Network). See [vinyan-a2a-protocol.md §4](vinyan-a2a-protocol.md) for inter-instance authentication.
 
 **Purpose:** Security model for API server, multi-instance communication, remote oracle invocation.
 
@@ -2482,19 +2490,18 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 **Key concepts to design:**
 
 - **API authentication.** Local-only: bearer token in `~/.vinyan/api-token`. Multi-instance: mTLS.
-- **Instance identity.** Keypair per instance for signing cross-instance messages. Cryptographic provenance verification.
-- **Trust bootstrapping.** New remote instances start untrusted. Trust earned empirically (Wilson LB on remote verdict accuracy) — same mechanism as `WorkerLifecycle` (`worker-lifecycle.ts`).
+- **Instance identity.** Ed25519 keypair per instance for signing cross-instance messages (generated on first run, stored in `~/.vinyan/instance-key.pem`). Cryptographic provenance verification.
+- **Trust bootstrapping.** New remote instances start `untrusted`. Trust earned empirically (Wilson LB on remote verdict accuracy) — same mechanism as `WorkerLifecycle` (`worker-lifecycle.ts`). See [vinyan-a2a-protocol.md §4.4](vinyan-a2a-protocol.md) for trust levels and allowed operations.
 - **Authorization scoping.** Granular: read-only (facts, metrics), task submission, admin (config, instance management). Extensible via config.
 - **Guardrails extension.** Existing `src/guardrails/` (injection/bypass detection) applies to API inputs identically.
 
 **Extends:** `src/guardrails/`, `WorkerLifecycle` trust pattern
-**Dependencies:** PH5.1 (API Server), PH5.7 (Network Transport)
+**Dependencies:** Phase 0-4 (all existing infrastructure). **PH5.1 and PH5.7 depend on this.**
 
-**Open questions:**
-- Token format (JWT, opaque, API key)
-- Key management for mTLS
-- OAuth2 for enterprise integration
-- Audit logging format
+**Design decisions resolved:**
+- Token format: opaque bearer token (simple, no JWT dependency). Generated via `crypto.randomBytes(32).toString('hex')`
+- Instance identity: Ed25519 keypair (per vinyan-a2a-protocol.md §4.1)
+- Audit logging: extends existing JSONL audit trail (`audit-listener.ts` format)
 
 ##### PH5.15 — Observability Extension `[M]`
 
@@ -2519,11 +2526,13 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - Metrics export: Prometheus, JSON, or both
 - Alert delivery: webhook, bus event, log
 
-##### PH5.16 — Data Migration & Backward Compatibility `[S]`
+##### PH5.16 — Data Migration & Backward Compatibility `[S]` — **TIER 0 PREREQUISITE**
+
+> **CRITICAL (G5-019):** This component is now Tier 0 — execute FIRST before any other Phase 5 work. All schema changes depend on versioned migrations. See [vinyan-tdd.md §20](vinyan-tdd.md) for full interface contracts and [vinyan-architecture.md D18](vinyan-architecture.md) for design rationale.
 
 **Purpose:** Phase 0-4 installations upgrade without data loss or behavioral changes.
 
-**Key concepts to design:**
+**Key concepts (fully specified in TDD §20):**
 
 - **SQLite migration framework.** Replace `VinyanDB` constructor's `CREATE TABLE IF NOT EXISTS` pattern (`db/vinyan-db.ts`) with versioned migrations. New `schema_version` table tracks applied migrations. `ALTER TABLE ADD COLUMN` for new fields (additive only).
 - **Configuration migration.** `vinyan.json` gains `phase5` namespace. Existing configs without `phase5` work unchanged.
@@ -2533,10 +2542,10 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 **Extends:** `VinyanDB` (db/vinyan-db.ts), `VinyanConfigSchema` (config/schema.ts), `DataGateStats` + `FEATURE_CONDITIONS` (data-gate.ts)
 **Dependencies:** Phase 0-4 (all existing infrastructure)
 
-**Open questions:**
-- Migration strategy (in-place ALTER TABLE vs. copy-and-swap)
-- Downgrade support (Phase 5 → Phase 4 rollback)
-- Schema versioning approach
+**Design decisions resolved:**
+- Migration strategy: in-place ALTER TABLE (additive-only, per D18)
+- Downgrade support: forward-only — no down migrations. Rollback = restore from backup
+- Schema versioning approach: `schema_version` table with integer version + description (TDD §20.1)
 
 ---
 
@@ -2556,39 +2565,45 @@ The 7 existing immutable invariants (I1-I7) plus 4 Phase 4 fleet invariants (I8-
 #### Dependency Graph
 
 ```
-PH5.0 (Pre-Phase Cleanup) ─── prerequisite for all Phase 5 components
+Tier 0 — Prerequisites (execute first):
+  PH5.16 (Migration Framework) ─── prerequisite for ALL Phase 5 schema changes
+           │
+  PH5.0  (Pre-Phase Cleanup) ───── prerequisite for all Phase 5 components
+           │
+  PH5.14 (Security Model) ──────── prerequisite for any network exposure
+           │
+           ▼
+Tier 1 — Standalone Foundation:
+  PH5.1 (API Server + Session) ─┬── PH5.2 (Terminal UI)
+                                 ├── PH5.3 (Web Dashboard)
+                                 ├── PH5.4 (VS Code Extension)
+                                 ├── PH5.5 (MCP Bridge)
+                                 └── PH5.6 (A2A Bridge)
 
-PH5.1 (API Server) ─────────┬── PH5.2 (Terminal UI)
-                             │
-                             ├── PH5.3 (Web Dashboard)
-                             │
-                             ├── PH5.4 (VS Code Extension)
-                             │
-                             ├── PH5.5 (MCP Bridge)
-                             │
-                             ├── PH5.6 (A2A Bridge) ── PH5.14 (Security)
-                             │
-                             └── PH5.7 (ECP Network Transport)
-                                         │
-                                         ├── PH5.8 (Instance Coordinator)
-                                         │        │
-                                         │        └── PH5.9 (Knowledge Sharing)
-                                         │
-                                         └── PH5.14 (Security Model)
+Tier 2 — Multi-Instance (requires A2A protocol spec — vinyan-a2a-protocol.md):
+  PH5.7 (ECP Network Transport) ── PH5.8 (Instance Coordinator)
+                                            │
+                                            └── PH5.9 (Knowledge Sharing)
 
-PH5.10 (Polyglot Framework) ─┬── PH5.11 (Python/Pyright)
-                              ├── PH5.12 (Go/gopls)
-                              └── PH5.13 (Rust/rust-analyzer)
+Tier 3 — Cross-Language (independent of Tier 1/2):
+  PH5.10 (Polyglot Framework) ─┬── PH5.11 (Python/Pyright)
+                                ├── PH5.12 (Go/gopls)
+                                └── PH5.13 (Rust/rust-analyzer)
 
-PH5.15 (Observability Extension) — parallel with any component
-PH5.16 (Data Migration) — prerequisite for deployment, parallel with dev
+Cross-Cutting:
+  PH5.15 (Observability Extension) — parallel with any component
 ```
 
-**Parallel streams:**
-- **Stream A (Standalone UI):** PH5.0 → PH5.1 → PH5.2 + PH5.3 + PH5.4 (parallel)
-- **Stream B (Protocol Bridges):** PH5.0 → PH5.1 → PH5.5 + PH5.6 (parallel, independent)
-- **Stream C (Multi-Instance — critical path):** PH5.0 → PH5.1 → PH5.7 → PH5.8 → PH5.9 (longest path)
-- **Stream D (Cross-Language):** PH5.0 → PH5.10 → PH5.11 + PH5.12 + PH5.13 (fully independent)
+**Execution order (dependency DAG):**
+1. **PH5.16** → PH5.0 → PH5.14 (sequential — migration before cleanup before security)
+2. **PH5.1** (requires PH5.14 for auth) → PH5.2 + PH5.3 + PH5.4 + PH5.5 + PH5.6 (parallel)
+3. **PH5.7** (requires PH5.1 for HTTP infra) → PH5.8 → PH5.9 (sequential — critical path)
+4. **PH5.10** → PH5.11 + PH5.12 + PH5.13 (parallel, fully independent of streams 1-3)
+
+**Key ordering fixes (from gap analysis):**
+- PH5.16 (Migration) moved from last to **first** — all schema changes depend on versioned migrations (G5-019 CRITICAL)
+- PH5.14 (Security) moved from cross-cutting to **Tier 0** — must precede any network exposure (G5-012 HIGH)
+- PH5.7/PH5.8 now reference [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) as design prerequisite (G5-001 CRITICAL)
 
 #### Data Prerequisites
 
@@ -2782,6 +2797,24 @@ New events added to `VinyanBusEvents`:
 
 **Biggest unknown:** Whether multi-instance coordination provides enough value over single-instance to justify the distributed systems complexity. Phase 4 trace data (especially PH4.6 cross-project transfer results) should inform this before investing heavily in Pillar 2.
 
+#### Performance Budgets (Phase 5)
+
+Phase 5 introduces network latency. These budgets ensure Phase 0-4 performance targets are not violated:
+
+| Component | Target | Notes |
+|:----------|:-------|:------|
+| L0 Reflex (local) | < 100ms | **Unchanged.** L0 never touches network. No Phase 5 regression |
+| L1 Heuristic (local) | < 2s | **Unchanged.** Local oracles only |
+| L2 Analytical (local + remote) | < 10s | Remote oracle adds ≤ 5s. Local oracles proceed in parallel |
+| L3 Deliberative (local + remote) | < 60s | Remote delegation timeout = 60s. Shadow execution unchanged |
+| API request → response (sync) | < L-level budget + 500ms | HTTP overhead adds ≤ 500ms over CLI |
+| Cross-instance oracle request | < 5s | Network RTT + remote execution + confidence cap |
+| Task delegation → result | < 60s | Configurable per-task timeout |
+| Session compaction | < 5s | Rule-based extraction, no LLM |
+| Knowledge transfer (batch) | < 10s | Up to 100 items per batch |
+| Heartbeat interval | 15s | Configurable |
+| Plugin oracle P99 | Language-specific | Python (pyright): < 10s. Go: < 5s. Rust (cargo check): < 15s |
+
 #### Critical Files for Implementation
 
 - `src/oracle/runner.ts` — Core change for polyglot oracles: switch from hardcoded `bun run` to `config.command` (PH5.10)
@@ -2836,8 +2869,9 @@ Phase 0 Gaps (P0-1..P0-5)
 - **Vinyan 2.1** — Pre-Phase 3 → integration hardening + burn-in validation (≥200 real traces)
 - **Vinyan 3.0** — Phase 3 → full evolution engine + trace-calibrated self-model
 - **Vinyan 4.0** — Phase 4 → empirical worker identity + capability-based routing + fleet governance + pattern abstraction
-- **Vinyan 5.0** — Phase 5 Pillar 1+3 → standalone platform (API server, terminal UI, VS Code extension) + polyglot oracles (Python, Go, Rust)
-- **Vinyan 5.1** — Phase 5 Pillar 2 → multi-instance coordination + cross-instance knowledge sharing
+- **Vinyan 5.0** — Phase 5 Tier 0 (PH5.16 migration + PH5.0 cleanup + PH5.14 security) + Tier 1 (PH5.1 API server + PH5.2-PH5.4 UIs) + PH5.5-PH5.6 protocol bridges
+- **Vinyan 5.1** — Phase 5 Tier 3 (PH5.10-PH5.13 polyglot oracles — Python, Go, Rust)
+- **Vinyan 5.2** — Phase 5 Tier 2 (PH5.7-PH5.9 multi-instance coordination + cross-instance knowledge sharing)
 
 ---
 

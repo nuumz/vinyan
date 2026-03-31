@@ -1,6 +1,6 @@
 # Vinyan ENS — Technical Design Document
 
-> **Version**: 2.0 | **Phase**: 0–4 | **Audience**: AI Agent (Copilot/Claude)
+> **Version**: 3.0 | **Phase**: 0–5 | **Audience**: AI Agent (Copilot/Claude)
 >
 > **This document owns**: Implementation contracts, interface definitions, schemas, algorithms, test criteria.
 > **Concept docs own**: Vision, axioms rationale, theoretical foundations, academic citations.
@@ -18,7 +18,7 @@
 | `→ concept §X` | Cross-reference to concept.md section X |
 | `→ arch DX` | Cross-reference to architecture.md Decision X |
 
-**Section dependency order**: §1 → §2 (interfaces) → §3 (transport) → §4–§9 (Phase 0 components) → §10–§12 (Phase 1 lifecycle/model) → §12B (Evolution Engine) → §12C (Failure Modes) → §13 (testing) → §14 (project structure) → §15 (open questions) → **§16–§19 (Phase 1 Core Agent spec)**
+**Section dependency order**: §1 → §2 (interfaces) → §3 (transport) → §4–§9 (Phase 0 components) → §10–§12 (Phase 1 lifecycle/model) → §12B (Evolution Engine) → §12C (Failure Modes) → §13 (testing) → §14 (project structure) → §15 (open questions) → **§16–§19 (Phase 1 Core Agent spec)** → **§20–§23 (Phase 5 Self-Hosted ENS spec)**
 
 ---
 
@@ -2489,17 +2489,17 @@ vinyan-agent/
 
 ## §15. Open Questions
 
-| # | Question | Current Assumption | Impact if Wrong | Resolve When |
-|---|----------|-------------------|-----------------|-------------|
-| 1 | Oracle disagreements (ast pass, type fail)? | Any-fail = block | Over-blocking valid changes | Phase 0 — collect data on false positives |
-| 2 | World Graph concurrent access? | Single writer (Orchestrator), read-only copies per worker | Race conditions if multiple writers | Phase 1 — when Orchestrator manages workers |
-| 3 | PHE depth for Level 3? | 2–3 levels of dependency analysis | Over/under-investment in perception | Phase 2 — experiment with real workloads |
-| 4 | When does Orchestrator need LLM? | Task decomposition + Critic (Level 3 only) | Wasted LLM calls or insufficient planning | Phase 1 — validate assumption |
-| 5 | MCP "I don't know" representation? | Return empty result with epistemic metadata in JSON | Other agents can't parse epistemic state | Phase 1B — when MCP server goes live |
-| 6 | Tool call batching / parallel execution? | Sequential by default, parallel for independent reads | Performance bottleneck on I/O-heavy tasks | Phase 1 — profile real workloads |
-| 7 | L2 isolation: VM or Docker? | Docker for MVP | Insufficient isolation for security-critical | Phase 2 — benchmark overhead vs isolation |
-| 8 | Self-Model calibration speed? | ~50–60% initial → >75% by 200 sessions | Slow calibration → Self-Model is overhead | Phase 1 — track calibration curve |
-| 9 | Minimum QualityScore dims for Skill Formation? | 3 dimensions (arch + efficiency + complexity) | Premature skill formation from thin data | Phase 2 — when Skill Formation activates |
+| # | Question | Current Assumption | Impact if Wrong | Status |
+|---|----------|-------------------|-----------------|--------|
+| 1 | Oracle disagreements (ast pass, type fail)? | ~~Any-fail = block~~ 5-step contradiction resolution | Over-blocking valid changes | ✅ **Resolved** — Phase 4.5 WP-1 `conflict-resolver.ts` implements concept §3.2 |
+| 2 | World Graph concurrent access? | Single writer (Orchestrator), read-only copies per worker | Race conditions if multiple writers | ⚠️ **Phase 5** — multi-instance requires local World Graph per instance + async merge (concept §11.5) |
+| 3 | PHE depth for Level 3? | 2–3 levels of dependency analysis | Over/under-investment in perception | ⚠️ Open — experiment with real workloads |
+| 4 | When does Orchestrator need LLM? | Task decomposition + Critic (Level 2+) | Wasted LLM calls or insufficient planning | ✅ **Resolved** — Phase 4.5 WP-2 LLM-as-Critic activates at L2+ |
+| 5 | MCP "I don't know" representation? | Return empty result with epistemic metadata in JSON | Other agents can't parse epistemic state | ⚠️ Phase 5 PH5.5 — §19 specifies translation |
+| 6 | Tool call batching / parallel execution? | Sequential by default, parallel for independent reads | Performance bottleneck on I/O-heavy tasks | ⚠️ Open — profile real workloads |
+| 7 | L2 isolation: VM or Docker? | Docker for MVP | Insufficient isolation for security-critical | ⚠️ Open — benchmark overhead vs isolation |
+| 8 | Self-Model calibration speed? | ~50–60% initial → >75% by 200 sessions | Slow calibration → Self-Model is overhead | ⚠️ Open — track calibration curve |
+| 9 | Minimum QualityScore dims for Skill Formation? | 3 dimensions (arch + efficiency + complexity) | Premature skill formation from thin data | ⚠️ Open — when Skill Formation activates |
 
 ---
 
@@ -3398,7 +3398,438 @@ const VINYAN_MCP_TOOLS = [
 
 ---
 
-## Architecture Decisions Summary (D1–D14)
+---
+
+# Phase 5 — Self-Hosted ENS Specification
+
+> **Context:** Phases 0–4 proved the Vinyan thesis: verification works, the Orchestrator drives autonomous tasks, pattern mining compresses experience, and fleet governance selects workers. Sections §20–§23 specify what transforms Vinyan from a CLI agent into a **standalone platform** with multi-instance coordination and cross-language support. These sections are implementation contracts with interfaces, algorithms, and test criteria.
+>
+> **Dependency:** §20 (Migration) ← all Phase 5 components. §21 (Plugin System) ← §20. §22 (API + Session) ← §20. §23 (Coordinator) ← §22 + [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md).
+
+---
+
+## §20. Schema Migration Framework `[Phase 5]`
+
+> → arch D18 | Axiom: A4 (content-addressed truth must survive migration)
+
+**Prerequisite for all Phase 5 components.** Replaces `CREATE TABLE IF NOT EXISTS` pattern with versioned forward-only migrations.
+
+### 20.1 Schema Version Table
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_version (
+  version    INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  description TEXT NOT NULL
+);
+```
+
+### 20.2 Migration Runner Interface
+
+```typescript
+interface Migration {
+  version: number;
+  description: string;
+  up(db: Database): void;         // forward-only — no down()
+}
+
+interface MigrationRunner {
+  /** Get current schema version. Returns 0 if no migrations applied. */
+  getCurrentVersion(db: Database): number;
+
+  /** Apply all pending migrations in order. Idempotent. */
+  migrate(db: Database, migrations: Migration[]): {
+    applied: number[];             // versions applied in this run
+    current: number;               // final version after migration
+  };
+}
+```
+
+### 20.3 Migration Directory Structure
+
+```
+src/db/migrations/
+  001_initial_schema.ts           // Phase 0-4 baseline (CREATE TABLE IF NOT EXISTS → versioned)
+  002_add_dependency_edges.ts     // World Graph edges (WP-3)
+  003_add_session_tables.ts       // Phase 5: session_store, session_task
+  004_add_instance_registry.ts    // Phase 5: multi-instance identity
+```
+
+### 20.4 Migration Constraints
+
+- **Forward-only:** No `down()` method. Rollback = restore from backup
+- **Additive-only:** `ALTER TABLE ADD COLUMN` permitted. No column drops, renames, or type changes
+- **Atomic per-migration:** Each migration runs in a transaction. On failure → rollback that migration, stop
+- **Startup execution:** Run before any database access in `VinyanDB` constructor
+- **A4 preservation:** File hashes, evidence chains, fact_evidence_files, and cascade invalidation triggers must survive all migrations unchanged
+
+### 20.5 Acceptance Criteria
+
+| # | Criterion | Test |
+|:--|:----------|:-----|
+| 1 | Fresh install applies all migrations | Empty DB → `migrate()` → all tables exist, schema_version tracks applied |
+| 2 | Existing Phase 4 DB upgrades without data loss | Pre-populated DB → `migrate()` → all existing facts, traces, rules intact |
+| 3 | Idempotent re-run | Run `migrate()` twice → second run applies 0 migrations |
+| 4 | Failed migration rolls back | Migration 3 throws → DB has migrations 1-2 only, schema_version = 2 |
+| 5 | World Graph integrity preserved | Existing facts with file hashes → migration → queryFacts returns same results |
+
+---
+
+## §21. Plugin System `[Phase 5]`
+
+> → arch D16 | Axiom: A3 (plugins cannot bypass governance), A6 (plugin code never runs in Orchestrator process)
+
+### 21.1 Plugin Manifest Schema
+
+```typescript
+interface PluginManifest {
+  name: string;                    // unique identifier, e.g., "vinyan-python-oracle"
+  version: string;                 // semver, e.g., "1.0.0"
+  vinyan_version: string;          // minimum compatible Vinyan version
+  provides: {
+    oracles?: PluginOracleConfig[];
+    tools?: PluginToolConfig[];
+    providers?: PluginProviderConfig[];
+  };
+}
+
+interface PluginOracleConfig {
+  name: string;                    // oracle name, e.g., "pyright"
+  command: string;                 // spawn command, e.g., "python -m vinyan_pyright_oracle"
+  languages: string[];             // ["python"]
+  patterns: string[];              // hypothesis patterns: ["type-check", "import-exists"]
+  tier: "deterministic" | "heuristic" | "probabilistic";
+  timeout_ms?: number;             // default: 30_000
+}
+
+interface PluginToolConfig {
+  name: string;                    // tool name, e.g., "lint_python"
+  command: string;                 // spawn command
+  category: "file" | "shell" | "search" | "network";
+  sideEffect: boolean;
+  minIsolationLevel: 0 | 1 | 2 | 3;
+  description: string;
+  parameters: Record<string, { type: string; description: string; required?: boolean }>;
+}
+
+interface PluginProviderConfig {
+  id: string;                      // provider ID, e.g., "plugin/local-llm"
+  tier: "fast" | "balanced" | "powerful";
+  loader: string;                  // module path for dynamic import
+}
+```
+
+### 21.2 Plugin Loading
+
+```typescript
+interface PluginLoader {
+  /** Discover plugins from config directory (~/.vinyan/plugins/) */
+  discover(): PluginManifest[];
+
+  /** Register plugin's oracles, tools, and providers with existing registries */
+  register(manifest: PluginManifest, deps: {
+    oracleRegistry: OracleRegistry;
+    toolClassifier: ToolClassifier;
+    providerRegistry: LLMProviderRegistry;
+  }): void;
+
+  /** Validate manifest against schema. Returns errors. */
+  validate(manifest: PluginManifest): string[];
+}
+```
+
+**Safety constraints:**
+- Plugin oracles enter as `heuristic` tier maximum — admin must promote to `deterministic`
+- Plugin tools inherit Orchestrator permission model (D13)
+- Plugin providers are zero-trust (A6) — same as any LLM provider
+- No plugin can modify immutable invariants (I1–I17)
+
+### 21.3 Acceptance Criteria
+
+| # | Criterion | Test |
+|:--|:----------|:-----|
+| 1 | Valid manifest loads and registers | Plugin with 1 oracle → `oracleRegistry` contains it |
+| 2 | Invalid manifest rejected | Missing `name` field → `validate()` returns error |
+| 3 | Plugin oracle invokable | Registered plugin oracle → `runner.runOracle()` spawns configured command |
+| 4 | Plugin oracle tier ceiling | Plugin declares `deterministic` → registered as `heuristic` |
+| 5 | Plugin tool respects permissions | Plugin tool with `sideEffect: true` → requires L1+ isolation |
+
+---
+
+## §22. API Server & Session Manager `[Phase 5]`
+
+> → implementation-plan PH5.1 | Axiom: A3 (API is thin adapter), A6 (API tasks have zero-trust constraints), A7 (session compaction feeds Sleep Cycle)
+
+### 22.1 API Server Interface
+
+```typescript
+interface VinyanAPIServer {
+  /** Start HTTP server on configured port. */
+  start(config: APIConfig): Promise<void>;
+
+  /** Graceful shutdown — drain in-flight requests, close connections. */
+  stop(): Promise<void>;
+}
+
+interface APIConfig {
+  port: number;                    // default: 3927
+  bindAddress: string;             // default: "127.0.0.1"
+  authRequired: boolean;           // default: true for mutations
+  corsOrigins?: string[];          // for web dashboard
+}
+```
+
+### 22.2 HTTP Endpoints
+
+| Method | Path | Auth | Description |
+|:-------|:-----|:----:|:-----------|
+| POST | `/api/v1/tasks` | Yes | Submit task (sync: wait for result) |
+| POST | `/api/v1/tasks/async` | Yes | Submit task (async: returns task ID) |
+| GET | `/api/v1/tasks/:id` | No | Poll task status and result |
+| DELETE | `/api/v1/tasks/:id` | Yes | Cancel in-flight task |
+| GET | `/api/v1/tasks/:id/events` | No | SSE stream of bus events for task |
+| POST | `/api/v1/sessions` | Yes | Create session |
+| GET | `/api/v1/sessions/:id` | No | Get session state |
+| POST | `/api/v1/sessions/:id/compact` | Yes | Trigger session compaction |
+| GET | `/api/v1/health` | No | Health check + system metrics |
+| GET | `/api/v1/metrics` | No | Detailed metrics (fleet, oracle, self-model) |
+| GET | `/api/v1/facts/:target` | No | Query World Graph facts |
+| GET | `/api/v1/workers` | No | List worker profiles |
+| GET | `/api/v1/rules` | No | List active evolution rules |
+
+### 22.3 Session Manager Interface
+
+```typescript
+interface SessionManager {
+  /** Create a new session. */
+  create(source: string): Session;
+
+  /** Get session by ID. */
+  get(sessionId: string): Session | undefined;
+
+  /** Add task to session. Links WorkingMemory. */
+  addTask(sessionId: string, taskInput: TaskInput): void;
+
+  /** Trigger compaction for a session. */
+  compact(sessionId: string): CompactionResult;
+
+  /** Recover pending sessions on restart. */
+  recover(): Session[];
+}
+
+interface Session {
+  id: string;
+  source: string;                  // "cli" | "api" | "a2a"
+  created_at: number;
+  task_ids: string[];
+  working_memory: WorkingMemory;   // shared across session tasks
+  status: "active" | "compacted" | "archived";
+}
+```
+
+### 22.4 Session Compaction Algorithm
+
+Compaction produces a **supplementary summary** — the full audit trail is never deleted (I16).
+
+**Trigger conditions** (any one):
+1. Task count exceeds threshold (default: 20 tasks per session)
+2. Session age exceeds threshold (default: 60 minutes)
+3. Token budget: total tokens consumed exceeds 500K
+
+**Compaction algorithm (rule-based, A3-compliant):**
+```
+1. Collect all traces for session tasks
+2. Extract:
+   a. Approach sequences (what was tried, in order)
+   b. Failed approaches with oracle evidence (why each failed)
+   c. Successful patterns (what worked, which oracles passed)
+   d. Files modified (union of all mutations)
+   e. Routing level distribution (how many L0/L1/L2/L3)
+3. Produce CompactionResult:
+   - episode_summary: structured JSON (not LLM-generated)
+   - key_failures: top-5 failures by frequency
+   - successful_patterns: patterns that led to completion
+   - statistics: { taskCount, completedCount, escalatedCount, avgDuration }
+4. Store CompactionResult in session_store
+5. Feed CompactionResult to Sleep Cycle as first-class input
+6. Mark session status = "compacted"
+```
+
+**Why rule-based, not LLM-generated:** Compaction summaries feed the Evolution Engine. LLM-generated summaries would violate A3 (non-deterministic governance input) and introduce hallucination risk in the learning pipeline. Rule-based extraction from structured traces is deterministic and auditable.
+
+### 22.5 Checkpoint Recovery
+
+```typescript
+interface CheckpointManager {
+  /** Persist session + in-progress task state. Called after each task completion. */
+  checkpoint(session: Session): void;
+
+  /** Recover all sessions with pending tasks. Called on startup. */
+  recover(): Array<{ session: Session; pendingTasks: TaskInput[] }>;
+}
+```
+
+**Schema (new table in `session-schema.ts`):**
+```sql
+CREATE TABLE IF NOT EXISTS session_store (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  working_memory_json TEXT,
+  compaction_json TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_tasks (
+  session_id TEXT NOT NULL REFERENCES session_store(id),
+  task_id TEXT NOT NULL,
+  task_input_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  result_json TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, task_id)
+);
+```
+
+### 22.6 Acceptance Criteria
+
+| # | Criterion | Test |
+|:--|:----------|:-----|
+| 1 | Sync task submission | POST /api/v1/tasks → 200 with TaskResult |
+| 2 | Async task submission | POST /api/v1/tasks/async → 202 with task ID → GET → result |
+| 3 | SSE event stream | Subscribe to /tasks/:id/events → receive bus events as SSE |
+| 4 | Session compaction | 25 tasks in session → compact → CompactionResult produced |
+| 5 | Audit preservation (I16) | After compaction → original JSONL audit file unchanged |
+| 6 | Checkpoint recovery | Kill server mid-session → restart → pending tasks resumed |
+| 7 | Auth enforcement (I15) | POST /tasks without token → 401. GET /health → 200 (no auth) |
+| 8 | API = CLI equivalence | Same 50 tasks via CLI vs API → identical TaskResult |
+
+---
+
+## §23. Instance Coordinator `[Phase 5]`
+
+> → implementation-plan PH5.8, [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) | Axiom: A3 (advisory coordination), A1 (cross-instance: A generates, B verifies), A6 (delegated results re-verified locally)
+
+### 23.1 Coordinator Interface
+
+```typescript
+interface InstanceCoordinator {
+  /** Register with configured peers. Exchanges InstanceDescriptors. */
+  connect(): Promise<void>;
+
+  /** Graceful disconnect from all peers. */
+  disconnect(): Promise<void>;
+
+  /** Find peer with matching capability for task delegation. */
+  findPeerForTask(fingerprint: TaskFingerprint, requiredCapabilities: string[]): PeerInstance | undefined;
+
+  /** Delegate task to peer. Returns result or undefined on timeout. */
+  delegateTask(peerId: string, input: TaskInput, perception: PerceptualHierarchy, timeout_ms: number): Promise<TaskResult | undefined>;
+
+  /** Request remote oracle verification. */
+  requestRemoteVerification(peerId: string, hypothesis: HypothesisTuple, oracleTypes: string[]): Promise<Record<string, OracleVerdict>>;
+
+  /** Share knowledge with peers during Sleep Cycle. */
+  shareKnowledge(items: AbstractPatternExport[]): Promise<void>;
+
+  /** Get connected peers. */
+  getPeers(): PeerInstance[];
+}
+
+interface PeerInstance {
+  id: string;
+  descriptor: InstanceDescriptor;  // from concept §11.2
+  trust_level: "untrusted" | "semi-trusted" | "trusted";
+  connection_state: "connected" | "disconnected" | "circuit_open";
+  stats: {
+    delegations_sent: number;
+    delegations_success: number;
+    verdicts_requested: number;
+    verdicts_accurate: number;     // for trust scoring (Wilson LB)
+    knowledge_imported: number;
+    last_seen: number;
+  };
+}
+```
+
+### 23.2 Coordinator State Machine
+
+```
+                    ┌──────────────────┐
+                    │    Isolated      │  ← startup default
+                    │ (no peers)       │
+                    └────────┬─────────┘
+                             │ connect()
+                    ┌────────▼─────────┐
+              ┌────►│   Discovering    │◄───────────────┐
+              │     │ (handshake peers)│                 │
+              │     └────────┬─────────┘                 │
+              │              │ ≥1 peer connected          │
+              │     ┌────────▼─────────┐                 │
+              │     │   Coordinating   │  ← normal mode  │
+              │     │ (active peers)   │                 │
+              │     └────────┬─────────┘                 │
+              │              │ all peers lost             │
+              │     ┌────────▼─────────┐                 │
+              └─────┤   Degraded       │─────────────────┘
+                    │ (retry connect)  │  reconnect success
+                    └──────────────────┘
+```
+
+**State transitions:**
+- `Isolated → Discovering`: On `connect()` call (startup if `instances.enabled`)
+- `Discovering → Coordinating`: At least 1 peer handshake succeeds
+- `Coordinating → Degraded`: All peers disconnected or circuit-open
+- `Degraded → Discovering`: Retry timer fires (exponential backoff, 5s → 30s max)
+- Any state: `disconnect()` → `Isolated`
+
+**In all states:** The local Orchestrator continues processing tasks. Coordination is additive, never blocking.
+
+### 23.3 Trust Scoring
+
+Remote instances earn trust empirically, using the same Wilson Lower Bound mechanism as `WorkerLifecycle`:
+
+```typescript
+// Trust scoring for remote instance
+trustScore = wilsonLowerBound(stats.verdicts_accurate, stats.verdicts_requested, alpha=0.05)
+
+// Trust level thresholds
+if (trustScore >= 0.7) trust_level = "trusted"
+else if (trustScore >= 0.4) trust_level = "semi-trusted"
+else trust_level = "untrusted"
+```
+
+Trust level determines allowed operations (see [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) §4.4).
+
+### 23.4 Safety Invariants (I12–I17)
+
+| # | Invariant | Enforcement in Coordinator |
+|:--|:----------|:--------------------------|
+| I12 | No remote governance bypass | `delegateTask()` result always passes through local oracle verification |
+| I13 | Remote verdict confidence ceiling | `requestRemoteVerification()` caps all verdicts at confidence < 0.95 |
+| I14 | Cross-instance knowledge enters probation | `shareKnowledge()` receiver sets `status: 'probation'` regardless of source status |
+| I15 | API auth for mutations | Coordinator uses authenticated WebSocket (mTLS or signed messages) |
+| I16 | Session audit preservation | Delegation audit trail logged locally (never depends on remote audit) |
+| I17 | Speculative sandbox mandatory | Remote speculative-tier results treated as L2+ isolation required |
+
+### 23.5 Acceptance Criteria
+
+| # | Criterion | Test |
+|:--|:----------|:-----|
+| 1 | Peer discovery | 2 instances → handshake → both see each other in `getPeers()` |
+| 2 | Task delegation | Instance A delegates Python task to Instance B → receives verified result |
+| 3 | Re-verification (A6) | Delegated result from B → Instance A re-verifies with local oracles |
+| 4 | Confidence cap (I13) | Remote oracle returns confidence 1.0 → local receives ≤ 0.95 |
+| 5 | Knowledge probation (I14) | Rule `active` on A → shared to B → enters B as `probation` |
+| 6 | Partition tolerance | Kill network between A and B → both continue processing independently |
+| 7 | Partition recovery | Restore network → instances reconnect, exchange Sleep Cycle summaries |
+| 8 | Trust scoring | Remote instance provides 10 accurate verdicts → trust_level upgrades |
+| 9 | Graceful degradation | All peers lost → Coordinator enters `Degraded`, Orchestrator unaffected |
+
+---
+
+## Architecture Decisions Summary (D1–D18)
 
 Quick reference linking each decision to its TDD section:
 
@@ -3418,3 +3849,7 @@ Quick reference linking each decision to its TDD section:
 | D12 | Four-Phase Commit Mapping per Routing Level | §6 | 0–1 |
 | D13 | Failure Modes & Recovery Strategies (F1–F5) | §12C | 0+ |
 | D14 | Bounded Self-Modification (Immutable Invariants) | §12B | 2+ |
+| D15 | Cross-Language Oracle Process Model | §21 | 5 |
+| D16 | Plugin System Architecture | §21 | 5 |
+| D17 | Async EventBus for Multi-Instance | §23 | 5 |
+| D18 | Schema Migration Framework | §20 | 5 |

@@ -19,6 +19,7 @@ import type {
   CachedSkill,
   EvolutionaryRule,
   ToolResult,
+  WorkerProfile,
 } from "../orchestrator/types.ts";
 
 // ── Event Map ────────────────────────────────────────────────────────
@@ -85,6 +86,24 @@ export interface VinyanBusEvents {
 
   // DAG decomposition fallback (A3: deterministic governance transparency)
   "decomposer:fallback": { taskId: string };
+
+  // Worker lifecycle (Phase 4.2)
+  "worker:registered": { profile: WorkerProfile };
+  "worker:promoted": { workerId: string; afterTasks: number; successRate: number };
+  "worker:demoted": { workerId: string; reason: string; permanent: boolean };
+  "worker:reactivated": { workerId: string; previousDemotionCount: number };
+
+  // Worker selection (Phase 4.4)
+  "worker:selected": { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
+  "worker:exploration": { taskId: string; selectedWorkerId: string; defaultWorkerId: string };
+
+  // Fleet governance (Phase 4.5)
+  "fleet:convergence_warning": { giniScore: number; dominantWorkerId: string; allocation: number };
+  "fleet:emergency_reactivation": { workerId: string; reason: string };
+  "fleet:diversity_enforced": { workerId: string; boostAmount: number };
+
+  // Fleet-level uncertainty — GAP-H UC-7 (Phase 4.4)
+  "task:uncertain": { taskId: string; reason: string; maxCapability: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

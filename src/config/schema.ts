@@ -90,6 +90,22 @@ const Phase1ConfigSchema = z.object({
   escalation: EscalationConfigSchema.default(() => defaults(EscalationConfigSchema)),
 });
 
+// ─── Phase 4 schema (Fleet Governance) ──────────────────────────────
+
+const Phase4ConfigSchema = z.object({
+  worker_identity_granularity: z.enum(["model", "model+temp", "full"]).default("full"),
+  probation_min_tasks: z.number().positive().default(30),
+  demotion_window_tasks: z.number().positive().default(30),
+  demotion_max_reentries: z.number().min(0).default(3),
+  reentry_cooldown_sessions: z.number().positive().default(50),
+  epsilon_worker: z.number().min(0.03).max(0.30).default(0.10),
+  diversity_floor_pct: z.number().min(0.05).max(0.50).default(0.15),
+  max_active_workers: z.number().positive().default(10),
+  capability_min_traces: z.number().positive().default(5),
+  negative_capability_threshold: z.number().min(0).max(1).default(0.6),
+  staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
+});
+
 // ─── Helper ──────────────────────────────────────────────────────────
 
 /** Helper: parse an empty object to get all defaults from a schema with defaulted fields. */
@@ -110,6 +126,8 @@ export const VinyanConfigSchema = z.object({
   }),
   /** Phase 1+ config — accepted for forward-compat, not used in Phase 0. */
   phase1: Phase1ConfigSchema.optional(),
+  /** Phase 4 config — Fleet Governance parameters. */
+  phase4: Phase4ConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

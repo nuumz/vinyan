@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   prediction_error       TEXT,
   validation_depth       TEXT,
   shadow_validation      TEXT,
-  exploration            INTEGER
+  exploration            INTEGER,
+  framework_markers      TEXT,
+  worker_selection_audit TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -40,6 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_et_outcome ON execution_traces(outcome);
 CREATE INDEX IF NOT EXISTS idx_et_timestamp ON execution_traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite);
 CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
+CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
 `;
 
 export const MODEL_PARAMS_SCHEMA_SQL = `

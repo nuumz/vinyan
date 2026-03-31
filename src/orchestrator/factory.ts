@@ -36,6 +36,8 @@ import { SkillManager } from "./skill-manager.ts";
 import { SleepCycleRunner } from "../sleep-cycle/sleep-cycle.ts";
 import { ToolExecutor } from "./tools/tool-executor.ts";
 import { MetricsCollector } from "../observability/metrics.ts";
+import { WorkerStore } from "../db/worker-store.ts";
+import type { WorkerProfile } from "./types.ts";
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -81,11 +83,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let shadowStore: ShadowStore | undefined;
   let skillStore: SkillStore | undefined;
   let ruleStore: RuleStore | undefined;
+  let workerStore: WorkerStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
     skillStore = new SkillStore(db.getDb());
     ruleStore = new RuleStore(db.getDb());
+    workerStore = new WorkerStore(db.getDb());
+  }
+
+  // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
+  if (workerStore) {
+    autoRegisterWorkers(registry, workerStore, bus);
   }
 
   // Set up WorldGraph for fact invalidation (A4: content-addressed truth)
@@ -234,6 +243,37 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       db?.close();
     },
   };
+}
+
+/**
+ * Auto-register existing LLM providers as WorkerProfiles.
+ * Grandfathered as "active" — these are proven models from Phase 3.
+ */
+function autoRegisterWorkers(
+  registry: LLMProviderRegistry,
+  workerStore: WorkerStore,
+  bus: VinyanBus,
+): void {
+  for (const provider of registry.listProviders()) {
+    const workerId = `worker-${provider.id}`;
+    const existing = workerStore.findById(workerId);
+    if (existing) continue;
+
+    const profile: WorkerProfile = {
+      id: workerId,
+      config: {
+        modelId: provider.id,
+        temperature: 0.7,
+        systemPromptTemplate: "default",
+        maxContextTokens: provider.maxContextTokens,
+      },
+      status: "active", // grandfathered — proven from Phase 3
+      createdAt: Date.now(),
+      demotionCount: 0,
+    };
+    workerStore.insert(profile);
+    bus.emit("worker:registered", { profile });
+  }
 }
 
 function createDefaultRegistry(): LLMProviderRegistry {

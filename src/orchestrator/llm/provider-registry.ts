@@ -31,6 +31,25 @@ export class LLMProviderRegistry {
     return this.selectByTier(tier);
   }
 
+  /**
+   * Select a provider by worker ID.
+   * Resolution: match against provider ID prefix (e.g., "claude-sonnet" matches "claude-sonnet-4").
+   * Falls back to exact match, then prefix match on modelId.
+   */
+  selectById(workerId: string): LLMProvider | undefined {
+    // Exact match first
+    const exact = this.providers.get(workerId);
+    if (exact) return exact;
+
+    // Prefix match: workerId starts with provider.id or provider.id starts with workerId
+    for (const provider of this.providers.values()) {
+      if (workerId.startsWith(provider.id) || provider.id.startsWith(workerId)) {
+        return provider;
+      }
+    }
+    return undefined;
+  }
+
   listProviders(): LLMProvider[] {
     return Array.from(this.providers.values());
   }

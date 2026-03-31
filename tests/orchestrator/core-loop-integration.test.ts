@@ -64,7 +64,7 @@ function makeRegistry(responseContent?: string) {
 
 describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   test("1. L0 task completes without LLM call", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     // No targetFiles → L0 routing → no LLM needed
     const result = await orchestrator.executeTask(makeInput());
     // L0 produces empty mutations → goes through gate → either completes or escalates
@@ -73,7 +73,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("2. L1 task uses fast provider and returns mutations", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const result = await orchestrator.executeTask(
       makeInput({ targetFiles: ["src/foo.ts"] }),
     );
@@ -84,7 +84,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("3. executeTask returns valid TaskResult shape", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const result = await orchestrator.executeTask(makeInput());
     expect(result).toHaveProperty("id");
     expect(result).toHaveProperty("status");
@@ -94,7 +94,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("4. traces are collected for each attempt", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
@@ -112,6 +112,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
     const orchestrator = createOrchestrator({
       workspace: tempDir,
       registry: makeRegistry(emptyContent),
+      useSubprocess: false,
     });
     const result = await orchestrator.executeTask(
       makeInput({ targetFiles: ["src/foo.ts"], budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 } }),
@@ -121,7 +122,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("6. working memory tracks failed approaches across retries", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const result = await orchestrator.executeTask(
       makeInput({ targetFiles: ["src/foo.ts"] }),
     );
@@ -135,20 +136,20 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("7. factory creates working orchestrator with default config", () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir });
+    const orchestrator = createOrchestrator({ workspace: tempDir, useSubprocess: false });
     expect(orchestrator).toHaveProperty("executeTask");
     expect(orchestrator).toHaveProperty("traceCollector");
     expect(typeof orchestrator.executeTask).toBe("function");
   });
 
   test("8. task ID preserved in result", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const result = await orchestrator.executeTask(makeInput({ id: "custom-id-42" }));
     expect(result.id).toBe("custom-id-42");
   });
 
   test("9. trace includes model_used and tokens_consumed", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
     const traces = orchestrator.traceCollector.getTraces();
     const trace = traces[0]!;
@@ -158,7 +159,7 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   });
 
   test("10. multiple tasks run independently", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const r1 = await orchestrator.executeTask(makeInput({ id: "task-1" }));
     const r2 = await orchestrator.executeTask(makeInput({ id: "task-2" }));
     expect(r1.id).toBe("task-1");

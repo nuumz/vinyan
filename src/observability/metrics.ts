@@ -66,6 +66,8 @@ const DEFAULT_GATE_THRESHOLDS: DataGateThresholds = {
   evolution_min_traces: 200,
   evolution_min_active_skills: 1,
   evolution_min_sleep_cycles: 3,
+  fleet_min_active_workers: 2,
+  fleet_min_worker_trace_diversity: 2,
 };
 
 export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
@@ -115,6 +117,8 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
     patternsExtracted: totalPatterns,
     activeSkills: activeSkills.length,
     sleepCyclesRun,
+    activeWorkers: 0,              // Phase 4: populated when WorkerStore is wired
+    workerTraceDiversity: 0,       // Phase 4: populated when WorkerStore is wired
   };
 
   return {

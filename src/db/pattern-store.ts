@@ -18,8 +18,9 @@ export class PatternStore {
       `INSERT OR REPLACE INTO extracted_patterns
        (id, type, description, frequency, confidence, task_type_signature,
         approach, compared_approach, quality_delta, source_trace_ids,
-        created_at, expires_at, decay_weight, derived_from)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, expires_at, decay_weight, derived_from,
+        worker_id, compared_worker_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         pattern.id,
         pattern.type,
@@ -35,11 +36,13 @@ export class PatternStore {
         pattern.expiresAt ?? null,
         pattern.decayWeight,
         pattern.derivedFrom ?? null,
+        pattern.workerId ?? null,
+        pattern.comparedWorkerId ?? null,
       ],
     );
   }
 
-  queryByType(type: "anti-pattern" | "success-pattern", limit = 100): ExtractedPattern[] {
+  queryByType(type: ExtractedPattern["type"], limit = 100): ExtractedPattern[] {
     const rows = this.db.prepare(
       `SELECT * FROM extracted_patterns WHERE type = ? ORDER BY created_at DESC LIMIT ?`,
     ).all(type, limit) as PatternRow[];
@@ -149,6 +152,8 @@ interface PatternRow {
   expires_at: number | null;
   decay_weight: number;
   derived_from: string | null;
+  worker_id: string | null;
+  compared_worker_id: string | null;
 }
 
 function rowToPattern(row: PatternRow): ExtractedPattern {
@@ -167,5 +172,7 @@ function rowToPattern(row: PatternRow): ExtractedPattern {
     expiresAt: row.expires_at ?? undefined,
     decayWeight: row.decay_weight,
     derivedFrom: row.derived_from ?? undefined,
+    workerId: row.worker_id ?? undefined,
+    comparedWorkerId: row.compared_worker_id ?? undefined,
   };
 }

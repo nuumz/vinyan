@@ -526,6 +526,8 @@ export class SleepCycleRunner {
       patternsExtracted: this.patternStore.count(),
       activeSkills: this.skillManager?.countActive() ?? 0,
       sleepCyclesRun: this.patternStore.countCycleRuns(),
+      activeWorkers: 0,              // Phase 4: populated when WorkerStore is wired
+      workerTraceDiversity: 0,       // Phase 4: populated when WorkerStore is wired
     };
   }
 
@@ -538,6 +540,8 @@ export class SleepCycleRunner {
       evolution_min_traces: 200,
       evolution_min_active_skills: 1,
       evolution_min_sleep_cycles: 3,
+      fleet_min_active_workers: 2,
+      fleet_min_worker_trace_diversity: 2,
     };
   }
 

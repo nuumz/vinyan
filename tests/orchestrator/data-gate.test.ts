@@ -10,6 +10,8 @@ const DEFAULT_THRESHOLDS: DataGateThresholds = {
   evolution_min_traces: 200,
   evolution_min_active_skills: 1,
   evolution_min_sleep_cycles: 3,
+  fleet_min_active_workers: 2,
+  fleet_min_worker_trace_diversity: 2,
 };
 
 function makeStats(overrides?: Partial<DataGateStats>): DataGateStats {
@@ -19,6 +21,8 @@ function makeStats(overrides?: Partial<DataGateStats>): DataGateStats {
     patternsExtracted: 0,
     activeSkills: 0,
     sleepCyclesRun: 0,
+    activeWorkers: 0,
+    workerTraceDiversity: 0,
     ...overrides,
   };
 }
@@ -89,13 +93,17 @@ describe("checkDataGate", () => {
 describe("checkAllDataGates", () => {
   test("returns gates for all known features", () => {
     const gates = checkAllDataGates(makeStats(), DEFAULT_THRESHOLDS);
-    expect(gates).toHaveLength(3);
-    expect(gates.map(g => g.feature).sort()).toEqual(["evolution_engine", "skill_formation", "sleep_cycle"]);
+    expect(gates).toHaveLength(4);
+    expect(gates.map(g => g.feature).sort()).toEqual(["evolution_engine", "fleet_routing", "skill_formation", "sleep_cycle"]);
   });
 
   test("all gates satisfied with enough data", () => {
     const gates = checkAllDataGates(
-      makeStats({ traceCount: 200, distinctTaskTypes: 5, patternsExtracted: 1, activeSkills: 1, sleepCyclesRun: 3 }),
+      makeStats({
+        traceCount: 200, distinctTaskTypes: 5, patternsExtracted: 1,
+        activeSkills: 1, sleepCyclesRun: 3,
+        activeWorkers: 2, workerTraceDiversity: 2,
+      }),
       DEFAULT_THRESHOLDS,
     );
     expect(gates.every(g => g.satisfied)).toBe(true);

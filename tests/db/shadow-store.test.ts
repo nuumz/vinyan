@@ -97,11 +97,11 @@ describe("ShadowStore", () => {
     expect(store.count()).toBe(3);
   });
 
-  test("queryByStatus filters correctly", () => {
+  test("findByStatus filters correctly", () => {
     store.insert(makeJob({ id: "s1", status: "pending" }));
     store.insert(makeJob({ id: "s2", status: "done", taskId: "task-2" }));
 
-    const pending = store.queryByStatus("pending");
+    const pending = store.findByStatus("pending");
     expect(pending).toHaveLength(1);
     expect(pending[0]!.id).toBe("s1");
   });

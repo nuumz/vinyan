@@ -64,7 +64,7 @@ function makeRegistry() {
 
 describe("Core Loop QualityScore — A7 Gradient Signal", () => {
   test("trace includes qualityScore after task execution", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
     const traces = orchestrator.traceCollector.getTraces();
@@ -77,7 +77,7 @@ describe("Core Loop QualityScore — A7 Gradient Signal", () => {
   });
 
   test("qualityScore has architecturalCompliance and efficiency dimensions", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
     const trace = orchestrator.traceCollector.getTraces()[0]!;
@@ -88,7 +88,7 @@ describe("Core Loop QualityScore — A7 Gradient Signal", () => {
   });
 
   test("qualityScore.phase reflects available dimensions", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
     const trace = orchestrator.traceCollector.getTraces()[0]!;
@@ -98,7 +98,7 @@ describe("Core Loop QualityScore — A7 Gradient Signal", () => {
   });
 
   test("successful task result includes qualityScore", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     const result = await orchestrator.executeTask(makeInput());
 
     if (result.status === "completed") {
@@ -109,7 +109,7 @@ describe("Core Loop QualityScore — A7 Gradient Signal", () => {
 
   test("qualityScore with all oracles disabled has high architecturalCompliance", async () => {
     // All oracles disabled → no rejections → 100% pass rate → high compliance
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry() });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
     const trace = orchestrator.traceCollector.getTraces()[0]!;

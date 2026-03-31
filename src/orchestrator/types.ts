@@ -261,7 +261,7 @@ export interface DataGate {
 /** Pattern extracted by Sleep Cycle analysis */
 export interface ExtractedPattern {
   id: string;
-  type: "anti-pattern" | "success-pattern";
+  type: "anti-pattern" | "success-pattern" | "worker-performance";
   description: string;
   frequency: number;                     // occurrence count in traces
   confidence: number;                    // Wilson score lower bound
@@ -278,6 +278,8 @@ export interface ExtractedPattern {
   riskAbove?: number;                    // PH3.3: risk threshold context
   modelPattern?: string;                 // PH3.3: model that exhibited the pattern
   derivedFrom?: string;                  // PH3.5: parent pattern ID (lineage tracking)
+  workerId?: string;                     // PH4: worker that exhibited the pattern
+  comparedWorkerId?: string;             // PH4: worker compared against (for worker-performance)
 }
 
 /** Sleep Cycle configuration */
@@ -322,7 +324,7 @@ export interface EvolutionaryRule {
     risk_above?: number;
     model_pattern?: string;
   };
-  action: "escalate" | "require-oracle" | "prefer-model" | "adjust-threshold";
+  action: "escalate" | "require-oracle" | "prefer-model" | "adjust-threshold" | "assign-worker";
   parameters: Record<string, unknown>;
   status: "probation" | "active" | "retired";
   created_at: number;
@@ -363,6 +365,8 @@ export interface ExecutionTrace {
   shadow_validation?: ShadowValidationResult;
   validation_depth?: "structural" | "structural_and_tests" | "full_shadow";
   exploration?: boolean;                   // PH3.6: true if epsilon-greedy exploration was used
+  framework_markers?: string[];            // PH4: detected framework markers (e.g., 'react', 'express')
+  workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
 }
 
 // ---------------------------------------------------------------------------
@@ -481,4 +485,79 @@ export interface LLMResponse {
   tokensUsed: { input: number; output: number };
   model: string;
   stopReason: "end_turn" | "tool_use" | "max_tokens";
+}
+
+// ---------------------------------------------------------------------------
+// Worker Profiles — Fleet Governance (→ Phase 4)
+// ---------------------------------------------------------------------------
+
+/** Worker profile status lifecycle: probation → active → demoted → retired */
+export type WorkerProfileStatus = "probation" | "active" | "demoted" | "retired";
+
+/** First-class worker identity — pairs config with empirical performance data */
+export interface WorkerProfile {
+  id: string;                              // "worker-{modelBase}-{tempBucket}-{hash(config)}"
+  config: WorkerConfig;
+  status: WorkerProfileStatus;
+  createdAt: number;
+  promotedAt?: number;
+  demotedAt?: number;
+  demotionReason?: string;
+  demotionCount: number;                   // 3 demotions = permanent retirement
+}
+
+/** Worker configuration — identity dimensions */
+export interface WorkerConfig {
+  modelId: string;                         // base model name, e.g., "claude-sonnet"
+  modelVersion?: string;                   // specific version for audit trail
+  temperature: number;                     // quantized to 0.1 increments
+  toolAllowlist?: string[];                // if empty/undefined, all tools allowed
+  systemPromptTemplate?: string;           // template ID or "default"
+  maxContextTokens?: number;
+}
+
+/** Worker stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
+export interface WorkerStats {
+  totalTasks: number;
+  successRate: number;
+  avgQualityScore: number;
+  avgDuration_ms: number;
+  avgTokenCost: number;
+  taskTypeBreakdown: Record<string, {
+    count: number;
+    successRate: number;
+    avgQuality: number;
+    avgTokens: number;
+  }>;
+  lastActiveAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Task Fingerprinting (→ Phase 4.3)
+// ---------------------------------------------------------------------------
+
+/** 5-dimension task fingerprint for capability matching */
+export interface TaskFingerprint {
+  actionVerb: string;                      // e.g., "refactor", "fix", "add", "test"
+  fileExtensions: string[];                // e.g., [".ts", ".tsx"]
+  blastRadiusBucket: "single" | "small" | "medium" | "large"; // 1, 2-5, 6-20, 21+
+  frameworkMarkers?: string[];             // e.g., ["react", "express", "zod"]
+  oracleFailurePattern?: string;           // e.g., "type-fails", "test-fails"
+}
+
+// ---------------------------------------------------------------------------
+// Worker Selection (→ Phase 4.4)
+// ---------------------------------------------------------------------------
+
+/** Result of capability-based worker selection — audit trail */
+export interface WorkerSelectionResult {
+  selectedWorkerId: string;
+  reason: "capability-score" | "exploration" | "tier-fallback" | "assign-worker-rule";
+  score: number;
+  alternatives: Array<{
+    workerId: string;
+    score: number;
+  }>;
+  explorationTriggered: boolean;
+  dataGateMet: boolean;
 }

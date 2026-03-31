@@ -12,6 +12,7 @@ import { PATTERN_SCHEMA_SQL } from "./pattern-schema.ts";
 import { SHADOW_SCHEMA_SQL } from "./shadow-schema.ts";
 import { SKILL_SCHEMA_SQL } from "./skill-schema.ts";
 import { RULE_SCHEMA_SQL } from "./rule-schema.ts";
+import { WORKER_SCHEMA_SQL } from "./worker-schema.ts";
 
 export class VinyanDB {
   private db: Database;
@@ -30,6 +31,7 @@ export class VinyanDB {
     this.db.exec(SHADOW_SCHEMA_SQL);
     this.db.exec(SKILL_SCHEMA_SQL);
     this.db.exec(RULE_SCHEMA_SQL);
+    this.db.exec(WORKER_SCHEMA_SQL);
   }
 
   getDb(): Database {

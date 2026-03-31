@@ -64,6 +64,8 @@ function stricterAction(rule: EvolutionaryRule): number {
       return 80;
     case "adjust-threshold":
       return 60;
+    case "assign-worker":
+      return 50;
     case "prefer-model":
       return 40;
     default:

@@ -191,6 +191,7 @@ export async function executeTask(
         const timeoutTrace: ExecutionTrace = {
           id: `trace-${input.id}-timeout`,
           taskId: input.id,
+          worker_id: routing.workerId ?? routing.model ?? "unknown",
           timestamp: Date.now(),
           routingLevel: routing.level,
           approach: "wall-clock-timeout",
@@ -367,6 +368,7 @@ export async function executeTask(
       const trace: ExecutionTrace = {
         id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
         taskId: input.id,
+        worker_id: routing.workerId ?? routing.model ?? "unknown",
         timestamp: Date.now(),
         routingLevel: routing.level,
         task_type_signature: taskTypeSignature,
@@ -519,6 +521,7 @@ export async function executeTask(
   const escalationTrace: ExecutionTrace = {
     id: `trace-${input.id}-escalation`,
     taskId: input.id,
+    worker_id: routing.workerId ?? routing.model ?? "unknown",
     timestamp: Date.now(),
     routingLevel: MAX_ROUTING_LEVEL,
     approach: "all-levels-exhausted",

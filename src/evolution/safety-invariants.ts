@@ -94,6 +94,29 @@ export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult
     }
   }
 
+  // ── Phase 4 Fleet Governance Invariants ──────────────────────────────
+
+  // Invariant 9: Oracle verification bypass prohibition
+  if (rule.action === "assign-worker" && rule.parameters.skipOracles === true) {
+    violations.push("I9: assign-worker rules cannot bypass oracle verification");
+  }
+
+  // Invariant 10: Probation workers cannot commit
+  if (rule.action === "assign-worker") {
+    const workerStatus = rule.parameters.workerStatus;
+    if (workerStatus === "probation" && rule.parameters.allowCommit === true) {
+      violations.push("I10: Probation workers cannot commit — output is shadow-only");
+    }
+  }
+
+  // Invariant 11: Worker diversity floor — no single worker can receive > 70% of tasks
+  if (rule.action === "assign-worker") {
+    const exclusiveAllocation = rule.parameters.exclusiveAllocation as number | undefined;
+    if (exclusiveAllocation !== undefined && exclusiveAllocation > WORKER_DIVERSITY_CAP) {
+      violations.push(`I11: exclusiveAllocation ${exclusiveAllocation} exceeds diversity cap ${WORKER_DIVERSITY_CAP}`);
+    }
+  }
+
   return {
     safe: violations.length === 0,
     violations,
@@ -134,3 +157,6 @@ const RISK_THRESHOLD_FLOOR = 0.05;
 
 /** Allowed model name prefixes for prefer-model rules. */
 const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/"];
+
+/** I11: Maximum allocation for a single worker (Phase 4 fleet diversity). */
+const WORKER_DIVERSITY_CAP = 0.70;

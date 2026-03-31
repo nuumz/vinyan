@@ -128,6 +128,10 @@ export interface OrchestratorDeps {
   workerLifecycle?: import("./worker-lifecycle.ts").WorkerLifecycle;
   /** WorldGraph for committing verified facts (A4: content-addressed truth). */
   worldGraph?: import("../world-graph/world-graph.ts").WorldGraph;
+  /** CriticEngine — L2+ semantic verification (§17.6). Skip gracefully if absent. */
+  criticEngine?: import("./critic/critic-engine.ts").CriticEngine;
+  /** TestGenerator — L2+ generative verification (§17.7). Skip gracefully if absent. */
+  testGenerator?: import("./test-gen/test-generator.ts").TestGenerator;
   /** Epsilon-greedy exploration rate (default 0.05). Set to 0 in tests for determinism. */
   explorationEpsilon?: number;
 }

@@ -1,6 +1,6 @@
 # Vinyan ENS — Technical Design Document
 
-> **Version**: 1.0 | **Phase**: 0–1 | **Audience**: AI Agent (Copilot/Claude)
+> **Version**: 2.0 | **Phase**: 0–4 | **Audience**: AI Agent (Copilot/Claude)
 >
 > **This document owns**: Implementation contracts, interface definitions, schemas, algorithms, test criteria.
 > **Concept docs own**: Vision, axioms rationale, theoretical foundations, academic citations.
@@ -78,19 +78,22 @@ Phase 0 (host bridge — proven, 253 tests):
 | Host Adapter (Oracle Gate) | `@vinyan/oracle-gate` | 0 | ✅ Proven | A1, A6 |
 | AST Oracle | `@vinyan/oracle` | 0 | ✅ Proven | A1, A5 |
 | Type Oracle | `@vinyan/oracle` | 0 | ✅ Proven | A1, A5 |
-| Test Oracle | `@vinyan/oracle` | 0 | Spec (§4) | A1, A5 |
-| Lint Oracle | `@vinyan/oracle` | 0 | Spec (§4) | A1, A5 |
+| Test Oracle | `@vinyan/oracle` | 0 | ✅ Proven | A1, A5 |
+| Lint Oracle | `@vinyan/oracle` | 0 | ✅ Proven | A1, A5 |
 | Dep Oracle | `@vinyan/oracle` | 0 | ✅ Proven | A1, A4 |
 | World Graph | `@vinyan/world-graph` | 0 | ✅ Proven | A4 |
-| Risk Router | `@vinyan/oracle-gate` | 0 | Spec (§6) | A3, A6 |
+| Risk Router | `@vinyan/oracle-gate` | 0 | ✅ Proven | A3, A6 |
 | Guardrails | `@vinyan/oracle-gate` | 0 | ✅ Proven | A6 |
 | CLI | `@vinyan/cli` | 0 | ✅ Proven | — |
-| **Orchestrator Core Loop** | `@vinyan/orchestrator` | 1 | Spec (§16) | A3, A6 |
-| **LLM Generator Engine** | `@vinyan/orchestrator` | 1 | Spec (§17) | A1, A2 |
-| **Tool Execution Layer** | `@vinyan/orchestrator` | 1 | Spec (§18) | A6 |
-| Self-Model | `@vinyan/self-model` | 1 | Design (§12) | A7 |
+| **Orchestrator Core Loop** | `@vinyan/orchestrator` | 1 | ✅ Implemented | A3, A6 |
+| **LLM Generator Engine** | `@vinyan/orchestrator` | 1 | ✅ Implemented | A1, A2 |
+| **Tool Execution Layer** | `@vinyan/orchestrator` | 1 | ✅ Implemented | A6 |
+| Self-Model | `@vinyan/self-model` | 1 | ✅ Implemented | A7 |
 | MCP External Interface | `@vinyan/mcp-bridge` | 1B | Design (§19) | A2 |
-| Evolution Engine | `@vinyan/evolution` | 2+ | Design (§12B) | A7 |
+| Evolution Engine | `@vinyan/evolution` | 2–3 | ✅ Implemented | A7 |
+| **Fleet Governance** | `@vinyan/orchestrator` | 4 | ✅ Implemented | A3, A6 |
+| Critic Engine | `@vinyan/orchestrator` | 1B | Stub (§17.6) | A1 |
+| Test Generator | `@vinyan/orchestrator` | 1B | Stub (§17.7) | A1 |
 
 > **Status key**: ✅ Proven = implemented + tested. Spec = TDD section exists, not yet implemented. Design = design-level description only.
 
@@ -241,28 +244,40 @@ interface QualityScore {
 
 > **Phase 0 collection responsibility**: The oracle pipeline MUST populate `architecturalCompliance` (from dep-oracle blast radius + ast-oracle structural checks) and `efficiency` (tokens consumed / verification passes) on every `OracleVerdict.qualityScore`. This data seeds Phase 1 Self-Model calibration — without it, Phase 1 cold-starts with zero signal. Phase 0 computation: `composite = (architecturalCompliance * 0.6) + (efficiency * 0.4)`.
 
-#### ExecutionTrace (→ arch D6) `[Phase 1]`
+#### ExecutionTrace (→ arch D6) `[Phase 1–4]`
 
 ```typescript
-/** Recorded by Orchestrator — not populated in Phase 0 (no Orchestrator) */
+/** Recorded after each task for Self-Model calibration and Evolution Engine.
+ *  Source of truth: src/orchestrator/types.ts — this is the canonical definition.
+ *  See §12B for Evolution Engine usage context. */
 interface ExecutionTrace {
-  session_id: string;
-  task_id: string;
+  id: string;
+  taskId: string;
+  session_id?: string;                       // Session grouping for multi-step tasks
+  worker_id?: string;                        // Which worker executed this step
   timestamp: number;
-  worker_id: string;
-  action: 'propose' | 'validate' | 'commit' | 'reject' | 'retry' | 'escalate';
-  risk_score: number;
-  oracle_verdicts: Record<string, boolean>;  // oracle_name → pass/fail
+  routingLevel: RoutingLevel;
+  action?: string;                           // Specific action taken (e.g., 'file_write', 'refactor')
+  approach: string;                          // Brief description of the approach
+  approach_description?: string;             // Detailed explanation for Evolution Engine
+  risk_score?: number;                       // Risk score at time of execution
+  task_type_signature?: string;              // [Phase 2] Sleep Cycle grouping key
+  oracleVerdicts: Record<string, boolean>;   // oracle_name → pass/fail
+  qualityScore?: QualityScore;
+  prediction?: SelfModelPrediction;
+  predictionError?: PredictionError;         // [Phase 1] Full prediction error (A7)
+  success_pattern_tag?: string;              // Tag for pattern extraction
   model_used: string;
   tokens_consumed: number;
   duration_ms: number;
   outcome: 'success' | 'failure' | 'timeout' | 'escalated';
   failure_reason?: string;
   affected_files: string[];
-  approach_description: string;
-  quality_score?: QualityScore;
-  success_pattern_tag?: string;
-  prediction_error?: PredictionError;        // → L3
+  shadow_validation?: ShadowValidationResult;  // [Phase 2] async, post-commit
+  validation_depth?: 'structural' | 'structural_and_tests' | 'full_shadow';
+  exploration?: boolean;                     // [Phase 3] epsilon-greedy exploration flag
+  framework_markers?: string[];              // [Phase 4] detected frameworks
+  workerSelectionAudit?: WorkerSelectionResult; // [Phase 4] worker selection audit trail
 }
 ```
 
@@ -279,7 +294,7 @@ interface EvolutionaryRule {
     risk_above?: number;
     model_pattern?: string;
   };
-  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold';
+  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker';  // [Phase 4] assign-worker for fleet routing
   parameters: Record<string, unknown>;
   status: 'probation' | 'active' | 'retired';
   created_at: number;
@@ -327,11 +342,11 @@ interface PerceptualHierarchy {
 }
 ```
 
-#### WorkingMemory (→ arch D8)
+#### WorkingMemoryState (→ arch D8)
 
 ```typescript
 /** Orchestrator-maintained — 4 components */
-interface WorkingMemory {
+interface WorkingMemoryState {
   failedApproaches: Array<{
     approach: string;
     oracleVerdict: string;      // which oracle rejected + evidence
@@ -443,6 +458,9 @@ interface RoutingDecision {
   model: string | null;       // null for L0 (cached/skip)
   budgetTokens: number;
   latencyBudget_ms: number;
+  mandatoryOracles?: string[];       // [Phase 2] require-oracle rules add entries here
+  riskThresholdOverride?: number;    // [Phase 2] adjust-threshold rules set this
+  workerId?: string;                 // [Phase 4] selected worker profile ID
 }
 ```
 
@@ -580,9 +598,9 @@ If oracle stdout is not valid JSON or doesn't match `OracleVerdict` schema:
 |------|---------------------|----------|
 | `known` | `verified: true` — deterministic pass | ast-oracle confirms function exists |
 | `unknown` | Oracle cannot run (missing parser, binary file) | dep-oracle can't parse binary file |
-| `contradictory` | Multiple oracles disagree on same hypothesis | type-oracle pass + test-oracle fail |
+| `contradictory` | Multiple oracles disagree on same hypothesis `[Phase 1+]` | type-oracle pass + test-oracle fail |
 
-**Phase 1+** adds `uncertain` type (probabilistic confidence 0.5–0.95) for heuristic oracles.
+**Phase 1+** adds `uncertain` (probabilistic confidence 0.5–0.95) and `contradictory` (oracle conflict resolution) types. No Phase 0 mechanism produces `contradictory` — it requires the multi-oracle conflict resolution pipeline (§5 Conflict Resolution).
 
 #### Timeout Semantics
 
@@ -1932,29 +1950,40 @@ Vinyan Orchestrator (standalone TypeScript/Bun process)
 
 ### Worker IPC: JSON via stdio `[Phase 1]`
 
+> **Note:** These interfaces are superseded by §16 `WorkerInput`/`WorkerOutput` in `src/orchestrator/types.ts`.
+> The canonical definitions include `routingLevel`, `workingMemory: WorkingMemoryState`, `allowedPaths`,
+> `isolationLevel`, and `proposedMutations`/`proposedToolCalls`/`uncertainties` on output.
+> Zod schemas for IPC validation are in `src/orchestrator/protocol.ts`.
+
 ```typescript
-// Orchestrator → Worker (stdin)
+// Orchestrator → Worker (stdin) — see src/orchestrator/types.ts WorkerInput
 interface WorkerInput {
   taskId: string;
-  hypothesis: HypothesisTuple;
+  goal: string;
+  routingLevel: RoutingLevel;
   perception: PerceptualHierarchy;
-  memory: WorkingMemory;
+  workingMemory: WorkingMemoryState;
+  plan?: TaskDAG;
   budget: {
     maxTokens: number;
     timeoutMs: number;
   };
+  allowedPaths: string[];
+  isolationLevel: IsolationLevel;
 }
 
-// Worker → Orchestrator (stdout)
+// Worker → Orchestrator (stdout) — see src/orchestrator/types.ts WorkerOutput
 interface WorkerOutput {
   taskId: string;
-  proposal: {
-    action: string;
-    files: Array<{ path: string; diff: string }>;
+  proposedMutations: Array<{
+    file: string;
+    content: string;
     explanation: string;
-  };
-  tokensUsed: number;
-  durationMs: number;
+  }>;
+  proposedToolCalls: ToolCall[];
+  uncertainties: string[];
+  tokensConsumed: number;
+  duration_ms: number;
 }
 ```
 
@@ -2094,34 +2123,31 @@ The Evolution Engine transforms accumulated execution traces into operational im
 
 ### Interfaces
 
-```typescript
-/** Execution trace stored after each task completion */
-interface ExecutionTrace {
-  id: string;
-  taskId: string;
-  timestamp: number;
-  routingLevel: RoutingLevel;
-  approach: string;                      // strategy description
-  oracleVerdicts: OracleVerdict[];
-  qualityScore: QualityScore;
-  prediction?: SelfModelPrediction;
-  predictionError?: number;              // Δ predicted vs actual composite
-  duration_ms: number;
-  tokenCount: number;
-  outcome: 'success' | 'failure' | 'escalated';
-}
+> **Note:** `ExecutionTrace` is defined in §2 (canonical definition). See `src/orchestrator/types.ts`.
 
+```typescript
 /** Pattern extracted by Sleep Cycle analysis */
 interface ExtractedPattern {
   id: string;
-  type: 'anti-pattern' | 'success-pattern';
+  type: 'anti-pattern' | 'success-pattern' | 'worker-performance';  // [Phase 4] worker-performance type
   description: string;
   frequency: number;                     // occurrence count in traces
-  confidence: number;                    // statistical significance
-  taskTypeSignature: string;             // task pattern hash for matching
+  confidence: number;                    // Wilson score lower bound
+  taskTypeSignature: string;             // task pattern for matching
+  approach?: string;                     // for success patterns: the winning approach
+  comparedApproach?: string;             // for success patterns: the losing approach
+  qualityDelta?: number;                 // composite improvement
   sourceTraceIds: string[];              // provenance
   createdAt: number;
   expiresAt?: number;                    // decay TTL
+  decayWeight: number;                   // current weight after exponential decay
+  routingLevel?: number;                 // [Phase 3] level at which failure occurred
+  oracleName?: string;                   // [Phase 3] oracle that flagged the issue
+  riskAbove?: number;                    // [Phase 3] risk threshold context
+  modelPattern?: string;                 // [Phase 3] model that exhibited the pattern
+  derivedFrom?: string;                  // [Phase 3] parent pattern ID (lineage tracking)
+  workerId?: string;                     // [Phase 4] worker that exhibited the pattern
+  comparedWorkerId?: string;             // [Phase 4] worker compared against
 }
 
 /** Sleep Cycle configuration */
@@ -2129,7 +2155,7 @@ interface SleepCycleConfig {
   interval_sessions: number;             // default: 20 (from vinyan.json)
   min_traces_for_analysis: number;       // minimum traces before analysis runs
   pattern_min_frequency: number;         // minimum occurrences to extract pattern
-  pattern_min_confidence: number;        // statistical threshold
+  pattern_min_confidence: number;        // statistical threshold (Wilson LB)
   decay_half_life_sessions: number;      // pattern relevance decay
 }
 ```
@@ -2366,96 +2392,77 @@ const MUTATION_SUITE: MutationTest[] = [
 
 ## §14. Project Structure
 
-### Monorepo Directory Layout
+### Flat `src/` Directory Layout
 
-> **Note**: This is the target monorepo layout. Current development may start with a flat `src/` structure and migrate to `packages/*` when package boundaries are validated. The key constraint is maintaining the dependency direction: `oracle-gate` → `oracle` + `world-graph`, never the reverse.
+> **Note**: The project uses a flat `src/` structure (not the originally planned monorepo `packages/` layout).
+> The key constraint is maintaining dependency direction: gate/orchestrator → oracle + world-graph, never the reverse.
 
 ```
 vinyan-agent/
-├── packages/
-│   ├── oracle/                    # @vinyan/oracle
-│   │   ├── src/
-│   │   │   ├── oracles/
-│   │   │   │   ├── ast-oracle.ts
-│   │   │   │   ├── type-oracle.ts
-│   │   │   │   ├── test-oracle.ts
-│   │   │   │   ├── lint-oracle.ts
-│   │   │   │   └── dep-oracle.ts
-│   │   │   ├── blast-radius.ts    # import graph + BFS algorithm
-│   │   │   ├── conflict.ts        # oracle conflict resolution
-│   │   │   ├── runner.ts          # oracle execution + timeout
-│   │   │   └── index.ts
-│   │   ├── tests/
-│   │   └── package.json
-│   │
-│   ├── world-graph/               # @vinyan/world-graph
-│   │   ├── src/
-│   │   │   ├── schema.ts          # DDL + migrations
-│   │   │   ├── facts.ts           # CRUD for facts table
-│   │   │   ├── invalidation.ts    # cascade invalidation
-│   │   │   ├── watcher.ts         # chokidar file watcher
-│   │   │   └── index.ts
-│   │   ├── tests/
-│   │   └── package.json
-│   │
-│   ├── oracle-gate/               # @vinyan/oracle-gate
-│   │   ├── src/
-│   │   │   ├── bridge.ts          # Host agent bridge entry (Phase 0)
-│   │   │   ├── hooks/
-│   │   │   │   ├── before-tool-call.ts
-│   │   │   │   ├── after-tool-call.ts
-│   │   │   │   ├── before-prompt-build.ts
-│   │   │   │   └── before-model-resolve.ts
-│   │   │   ├── risk-router.ts     # calculateRiskScore + routing
-│   │   │   ├── guardrails.ts      # injection detection + bypass defense
-│   │   │   ├── perception.ts      # PerceptualHierarchy assembly
-│   │   │   └── index.ts
-│   │   ├── tests/
-│   │   └── package.json
-│   │
-│   └── cli/                       # @vinyan/cli
-│       ├── src/
-│       │   ├── commands/
-│       │   │   └── init.ts
-│       │   ├── detect.ts          # project type detection
-│       │   └── index.ts
-│       ├── tests/
-│       └── package.json
+├── src/
+│   ├── core/                      # EventBus, core types (HypothesisTuple, OracleVerdict, Evidence, Fact)
+│   ├── oracle/                    # Reasoning Engine infrastructure
+│   │   ├── ast/                   # AST oracle (tree-sitter: symbol-exists, function-signature)
+│   │   ├── type/                  # Type oracle (tsc --noEmit)
+│   │   ├── dep/                   # Dependency oracle (import graph, blast radius)
+│   │   ├── test/                  # Test oracle (auto-detect runner: bun/vitest/pytest)
+│   │   └── lint/                  # Lint oracle (ESLint/Ruff)
+│   ├── gate/                      # Verification pipeline (risk-router, quality-score, tool-classifier)
+│   ├── guardrails/                # Prompt injection + bypass detection (regex-based)
+│   ├── orchestrator/              # Phase 1 Core Loop
+│   │   ├── llm/                   # LLM provider abstraction (registry, OpenRouter, Anthropic, mock)
+│   │   ├── tools/                 # Tool execution layer (file, shell, search, validation)
+│   │   └── worker/                # Worker process management (subprocess isolation, artifact commit)
+│   ├── world-graph/               # Content-addressed fact store (SQLite + file watcher + cascade)
+│   ├── evolution/                  # Rule generator, backtester, safety invariants [Phase 2+]
+│   ├── sleep-cycle/               # Pattern mining (Wilson CI, exponential decay, backtest) [Phase 2+]
+│   ├── db/                        # SQLite stores (pattern, shadow, skill, rule, trace, worker)
+│   ├── bus/                       # Event listeners (audit, cli-progress, trace)
+│   ├── config/                    # Configuration loader + schema
+│   ├── cli/                       # CLI entry points (vinyan gate, vinyan analyze, vinyan run)
+│   └── observability/             # Health checks, system metrics [Phase 3+]
 │
-├── docs/                          # design docs (existing)
+├── tests/                         # Mirrors src/ structure
+│   ├── core/
+│   ├── oracle/
+│   ├── gate/
+│   ├── orchestrator/
+│   ├── world-graph/
+│   ├── evolution/
+│   ├── sleep-cycle/
+│   └── db/
+│
+├── docs/                          # Design documents
 │   ├── vinyan-concept.md
-│   ├── vinyan-theory.md
 │   ├── vinyan-architecture.md
-│   ├── vinyan-gap-analysis.md
-│   └── vinyan-tdd.md             # ← this document
+│   ├── vinyan-tdd.md             # ← this document
+│   ├── vinyan-implementation-plan.md
+│   └── vinyan-gap-analysis.md
 │
-├── vinyan.json                    # project config (generated by CLI)
-├── package.json                   # workspace root
+├── vinyan.json                    # Project config (generated by CLI)
+├── package.json
 ├── tsconfig.json
 └── bunfig.toml
 ```
 
-### Package Boundaries
+### Dependency Inventory
 
-| Package | Depends On | Exports |
-|---------|-----------|---------|
-| `@vinyan/oracle` | tree-sitter | Oracle runner, HypothesisTuple, OracleVerdict |
-| `@vinyan/world-graph` | better-sqlite3, chokidar | WorldGraph class, Fact, FileHash |
-| `@vinyan/oracle-gate` | `@vinyan/oracle`, `@vinyan/world-graph` | Host adapter (Phase 0), Orchestrator entry (Phase 1+) |
-| `@vinyan/cli` | `@vinyan/world-graph` | CLI commands |
+| Dependency | Purpose | Phase |
+|-----------|---------|:-----:|
+| `bun:sqlite` | SQLite persistence (zero-dependency, built-in) | 0+ |
+| `zod` | Schema validation (IPC, config, oracle I/O) | 0+ |
+| `chokidar` | File watching (World Graph invalidation) | 0+ |
 
 ### Build Configuration
 
 ```jsonc
-// package.json (workspace root)
+// package.json
 {
   "name": "vinyan-agent",
   "private": true,
-  "workspaces": ["packages/*"],
   "scripts": {
-    "build": "bun build packages/*/src/index.ts --outdir dist",
     "test": "bun test",
-    "lint": "tsc --noEmit && eslint packages/"
+    "lint": "tsc --noEmit"
   }
 }
 ```
@@ -2471,23 +2478,11 @@ vinyan-agent/
     "noEmit": true,
     "esModuleInterop": true,
     "paths": {
-      "@vinyan/*": ["packages/*/src"]
+      "@vinyan/*": ["./src/*"]
     }
   },
-  "include": ["packages/*/src"]
+  "include": ["src"]
 }
-```
-
-### Dependency Inventory
-
-| Dependency | Version | Package | Purpose |
-|-----------|---------|---------|---------|
-| `better-sqlite3` | ^11.x | world-graph | SQLite driver, WAL mode |
-| `tree-sitter` | ^0.22.x | oracle | Multi-language AST parsing |
-| `tree-sitter-typescript` | ^0.22.x | oracle | TypeScript grammar |
-| `tree-sitter-python` | ^0.22.x | oracle | Python grammar |
-| `chokidar` | ^4.x | world-graph | File system watcher |
-| `bun` | ^1.x | all | Runtime + test runner + bundler |
 
 ---
 
@@ -2541,7 +2536,7 @@ interface TaskInput {
 
 interface TaskResult {
   id: string;
-  status: 'completed' | 'failed' | 'escalated';
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain';  // A2: 'uncertain' when all workers below capability threshold
   mutations: Array<{
     file: string;
     diff: string;                         // Unified diff
@@ -2550,6 +2545,7 @@ interface TaskResult {
   trace: ExecutionTrace;
   qualityScore?: QualityScore;
   escalationReason?: string;              // If status === 'escalated'
+  notes?: string[];                       // [Phase 4] audit notes (e.g., probation-shadow-only, uncertain)
 }
 ```
 
@@ -2557,7 +2553,7 @@ interface TaskResult {
 
 ```typescript
 async function executeTask(input: TaskInput): Promise<TaskResult> {
-  const workingMemory = WorkingMemory.create(input.id);
+  const workingMemory = WorkingMemoryState.create(input.id);
   let routingLevel = await riskRouter.assessInitialLevel(input);
 
   for (let escalation = 0; escalation < 4; escalation++) {   // L0 → L1 → L2 → L3 → human
@@ -3178,8 +3174,8 @@ function validateToolCall(
   }
 
   // 2. Check path permissions (for file operations)
-  if (tool.category === 'write' && call.arguments.path) {
-    const path = call.arguments.path as string;
+  if (tool.category === 'write' && call.parameters.path) {
+    const path = call.parameters.path as string;
     if (!allowedPaths.some(p => path.startsWith(p))) {
       return { allowed: false, reason: `Path ${path} not in allowed paths` };
     }
@@ -3187,14 +3183,14 @@ function validateToolCall(
 
   // 3. Check shell command allowlist (L1 only — L2 has full sandbox)
   if (tool.name === 'shell_exec' && isolationLevel === 1) {
-    const cmd = call.arguments.command as string;
+    const cmd = call.parameters.command as string;
     if (!SHELL_ALLOWLIST.some(allowed => cmd.startsWith(allowed))) {
       return { allowed: false, reason: `Command '${cmd}' not in L1 shell allowlist` };
     }
   }
 
   // 4. Check for bypass/injection patterns (A6 guardrail)
-  if (containsBypassPattern(JSON.stringify(call.arguments))) {
+  if (containsBypassPattern(JSON.stringify(call.parameters))) {
     return { allowed: false, reason: 'Tool call contains bypass/injection pattern' };
   }
 

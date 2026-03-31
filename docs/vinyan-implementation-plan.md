@@ -2101,48 +2101,42 @@ A systematic review of the implementation against this design document identifie
 
 ---
 
-### Phase 5 — Self-Hosted ENS (DRAFT Guideline)
+### Phase 5 — Self-Hosted ENS
 
-> **Status:** Design document. Detail after Phase 4 results are in.
-> **Prerequisite:** Phase 4 complete + Phase 4 acceptance criteria met.
-> **Type:** Mixed engineering (Pillar 1, Pillar 3) and research (Pillar 2).
+> **Status:** Final design. Prerequisite: Phase 4 complete + acceptance criteria met.
+> **Type:** Mixed engineering (Pillar 1, Pillar 3), research (Pillar 2), and infrastructure (cross-cutting).
 
 #### Vision
 
-Phases 0-4 prove the Vinyan thesis incrementally: verification works (Phase 0), the Orchestrator drives an autonomous agent (Phase 1), pattern mining and skill formation compress experience (Phase 2-3), and empirical fleet governance selects the right worker for the right task (Phase 4). But through all these phases, Vinyan remains a **programmatic library invoked from a CLI** (`vinyan run`). It has no API server for external integration, no interactive UI for human oversight, no way for multiple instances to share knowledge, and its oracle framework is locked to TypeScript despite being transport-agnostic by design.
+Phases 0-4 prove the Vinyan thesis incrementally: verification works (Phase 0), the Orchestrator drives autonomous tasks (Phase 1), pattern mining and skill formation compress experience (Phase 2-3), and empirical fleet governance — `WorkerProfile` state machines, `CapabilityModel` Wilson LB scoring, `TaskFingerprint`-based routing — selects the right worker for the right task (Phase 4). Through all these phases, Vinyan remains a **programmatic library invoked from a CLI**. It has no API server, no interactive UI, no way for multiple instances to share knowledge, and its oracle framework is locked to TypeScript despite transport-agnostic design.
 
-Phase 5 is the transition from **agent** to **platform**. The Orchestrator, EventBus, World Graph, and Evolution Engine become services accessible through multiple interfaces (terminal, HTTP API, VS Code extension), coordinated across instances (peer ECP over network), and extended to new languages (polyglot oracle binaries).
+Phase 5 transitions from **agent** to **platform**. Three pillars:
 
-The key architectural insight: **every Phase 5 component is an extension of an existing Phase 0-4 abstraction, not a replacement**. The API server is a new `TaskInput.source` variant (`'api'` — already declared in `orchestrator/types.ts` but never wired). Multi-instance coordination is ECP over network instead of stdio. Cross-language oracles are `OracleConfig.command` pointing to a non-Bun binary. Phase 5 fills gaps; it does not redesign.
+1. **Standalone System** — API server, terminal UI, web dashboard, VS Code extension, MCP bridge, A2A bridge, session management with compaction
+2. **Multi-Instance Coordination** — ECP over network, instance coordination, cross-instance knowledge sharing
+3. **Cross-Language Support** — Polyglot oracle framework, Python/Go/Rust oracle implementations
 
-What changes architecturally:
-
-- `TaskInput.source: 'api'` activates with an HTTP server that accepts tasks and returns results
-- `EventBus` gains a network transport layer for cross-instance event forwarding
-- `OracleConfig.command` (already in `config/schema.ts`, currently unused by runner) invokes language-specific oracle binaries
-- `VinyanDB` gains an optional `instance_id` column for provenance in multi-instance scenarios
-- MCP bridge (TDD §19, currently unimplemented) is implemented as the transport substrate for external-facing ECP
+The architectural insight: **every Phase 5 component extends an existing Phase 0-4 abstraction**. The API server activates `TaskInput.source: 'api'` (declared in `types.ts:56`, never wired). Cross-language oracles consume `OracleConfig.command` (in `config/schema.ts:14`, unused by runner). Multi-instance coordination is ECP over network instead of stdio. Phase 4's `AbstractPatternExport` becomes the serialization format for cross-instance knowledge sharing. Phase 5 fills gaps; it does not redesign.
 
 ```
 Phase 5 Architecture Extension:
 
-┌─────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────┐
 │               Human Interface Layer (NEW)                    │
-│   Terminal UI │ HTTP API │ VS Code Extension                 │
-└───────────────────┬──────────────────────────────────────────┘
-                    │
-┌───────────────────▼──────────────────────────────────────────┐
-│          Vinyan Orchestrator (unchanged core loop)            │
+│  Terminal UI │ HTTP API │ Web Dashboard │ VS Code Extension  │
+└──────────────────┬───────────────────────────────────────────┘
+                   │
+┌──────────────────▼───────────────────────────────────────────┐
+│          Vinyan Orchestrator (unchanged core loop)           │
 │  ┌──────────────────────────────────────────────────────┐    │
-│  │ Perceive → Predict → Plan → Generate → Verify → Learn │    │
+│  │ Perceive → Predict → Plan → Generate → Verify → Learn│    │
 │  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐  │
-│  │ Polyglot     │  │ Instance     │  │ ECP Network        │  │
-│  │ Oracle       │  │ Coordinator  │  │ Transport          │  │
-│  │ Framework    │  │ (Pillar 2)   │  │ (Pillar 2)         │  │
-│  │ (Pillar 3)   │  │              │  │                    │  │
-│  └──────────────┘  └──────────────┘  └────────────────────┘  │
+│  ┌────────────┐ ┌──────────────┐ ┌──────────────────────┐    │
+│  │ Polyglot   │ │ Instance     │ │ Protocol Bridges     │    │
+│  │ Oracle     │ │ Coordinator  │ │ MCP + A2A + ECP/Net  │    │
+│  │ Framework  │ │ (Pillar 2)   │ │ (Pillar 1 + 2)       │    │
+│  │ (Pillar 3) │ │              │ │                      │    │
+│  └────────────┘ └──────────────┘ └──────────────────────┘    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -2150,320 +2144,399 @@ Phase 5 Architecture Extension:
 
 | Axiom | Phase 5 Relevance |
 |:------|:-----------------|
-| A1 (Epistemic Separation) | Multi-instance coordination enforces A1 at fleet level: Instance A generates, Instance B verifies. Cross-instance oracle invocation prevents self-evaluation across domain boundaries. |
-| A2 (First-Class Uncertainty) | Network transport introduces new uncertainty sources (latency, partition, stale data). ECP's `type: 'unknown'` and `temporal_context` become operationally critical. |
-| A3 (Deterministic Governance) | API server and VS Code extension are thin input adapters — all routing, verification, and commit decisions remain in the rule-based Orchestrator. No UI-driven governance bypass. |
-| A4 (Content-Addressed Truth) | Cross-instance fact sharing requires project-scoped content hashes. World Graph gains `instance_id` provenance without changing the hash-invalidation model. |
-| A5 (Tiered Trust) | Remote oracle verdicts from peer instances carry lower trust than local deterministic oracles. The tiered registry naturally handles this via confidence scoring. |
-| A6 (Zero-Trust Execution) | API server tasks have the same zero-trust constraints as CLI tasks. No API endpoint can bypass oracle verification. |
-| A7 (Prediction Error as Learning) | Cross-instance trace sharing enables richer prediction error signals. Instance A's experience calibrates Instance B's Self-Model for shared task fingerprints. |
+| A1 | Multi-instance: Instance A generates, Instance B verifies. Creativity Protection Zone: speculative-tier workers generate freely but never self-verify. |
+| A2 | Network transport introduces new uncertainty (latency, partition). ECP `temporal_context` and `type: 'unknown'` become operationally critical. Worker abstention (GAP-H FC7) gains explicit cross-instance delegation protocol. |
+| A3 | API server, web dashboard, VS Code extension are thin input adapters. All routing/verification/commit decisions remain in the rule-based Orchestrator. No UI-driven governance bypass. |
+| A4 | Cross-instance fact sharing requires project-scoped content hashes. World Graph gains `instance_id` provenance without changing hash-invalidation. |
+| A5 | Remote oracle verdicts carry lower trust than local deterministic oracles. Speculative-tier engine outputs carry lowest confidence. |
+| A6 | API tasks have identical zero-trust constraints as CLI tasks. Session compaction preserves audit trail (I16). |
+| A7 | Cross-instance trace sharing enables richer prediction error. Session-level compaction feeds Sleep Cycle with compressed episode summaries. |
 
-#### Phase 5 Readiness Gate
+#### Readiness Gate
 
 | Gate | Threshold | Source |
 |:-----|:----------|:-------|
-| Phase 4 acceptance criteria met | All criteria | Phase 4 validation |
-| Worker differentiation proven | ≥ 2 workers with statistically different profiles | Wilson LB comparison |
-| Pattern abstraction functional | ≥ 5 patterns successfully abstracted (PH4.6) | PatternStore query |
-| Total traces | ≥ 2000 | TraceStore.count() |
-| Sleep cycles completed | ≥ 30 | PatternStore.countCycleRuns() |
+| Phase 4 acceptance criteria | All met | Phase 4 validation |
+| Worker differentiation | ≥ 2 workers with statistically different Wilson LB profiles | `WorkerStore.findActive()` + `CapabilityModel` |
+| Pattern abstraction functional | ≥ 5 `AbstractPattern` exported | `PatternStore` query |
+| Total traces | ≥ 2000 | `TraceStore.count()` |
+| Sleep cycles completed | ≥ 30 | `PatternStore.countCycleRuns()` |
+
+#### Pre-Phase Cleanup (PH5.0) `[S]`
+
+Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 foundations:
+
+1. **Wire `fleet:convergence_warning` emission.** Event declared in `bus.ts` but never emitted. Add in `fleet-evaluator.ts` or `sleep-cycle.ts` when `diversityScore > 0.7` (Gini threshold). [A3: governance transparency]
+2. **Complete audit listener event coverage.** `ALL_EVENTS` in `audit-listener.ts` is missing Phase 4 fleet/commit events (`commit:rejected`, `fleet:convergence_warning`, `fleet:emergency_reactivation`, `fleet:diversity_enforced`, `worker:registered/promoted/demoted/reactivated`, `worker:selected/exploration`, `task:uncertain`). Add all. [A3: complete audit trail]
+3. **Wire `oracleFailurePattern` fingerprint dimension.** `core-loop.ts` passes `{ traceCount }` to `computeFingerprint()` but omits `oracleFailurePattern`. When `traceCount >= 500`, compute via `computeOracleFailurePattern()` from `task-fingerprint.ts`. [A7: richer capability signal]
+4. **Add `AbstractPatternExport.version` migration support.** Currently hardcoded `version: 1` in `pattern-abstraction.ts`. Add version validation + migration hook in `importPatterns()` for format evolution required by PH5.9. [Forward compatibility]
 
 ---
 
 #### Pillar 1: Standalone System
 
-> **Goal:** Vinyan operates as a fully independent platform with no external framework dependency. Multiple human interfaces (terminal, API, editor) converge on the same Orchestrator core.
+> **Goal:** Vinyan operates as a fully independent platform. Multiple human interfaces converge on the same Orchestrator core loop.
 
 ##### PH5.1 — API Server `[L]`
 
-**Purpose:** Provide an HTTP API that accepts tasks, streams progress, and returns results. This is the foundational service layer that all other interfaces (VS Code extension, web dashboard, CI/CD integration, multi-instance coordination) depend on.
+**Purpose:** HTTP API accepting tasks, streaming progress, returning results. Foundation for all external interfaces. Includes session management with compaction and checkpoint recovery.
+
+**Axiom justification:** A3 (API is thin adapter, Orchestrator governs), A6 (API tasks have zero-trust constraints), A7 (session compaction feeds Sleep Cycle)
 
 **Key concepts to design:**
 
-- **Task lifecycle over HTTP.** The existing `executeTask()` returns a `Promise<TaskResult>` — synchronous for the caller. The API server needs: (1) synchronous task execution (POST, wait for result), (2) async task submission (POST, get task ID, poll or subscribe for result), (3) progress streaming (SSE or WebSocket for bus events during execution).
-- **EventBus projection.** The audit listener (`src/bus/audit-listener.ts`) already serializes every bus event as `{ ts, event, payload }` JSONL. The API server should project this same stream over SSE/WebSocket per-task, filtered by `taskId`. Reuses the existing event architecture.
-- **Authentication and authorization.** Since Vinyan runs locally (same machine as workspace), the default can be simple (bearer token, local-only binding). Production deployments need more. The auth model should be extensible without changing the Orchestrator.
-- **Session management.** `TaskInput.source` already includes `'api'`. The API server should maintain a session concept (grouping multiple tasks with shared Working Memory state) that maps to existing session handling.
-- **Health and metrics endpoints.** Expose `HealthCheck` and `SystemMetrics` (from `src/observability/`) via HTTP. Read-only status endpoints.
+- **Task lifecycle over HTTP.** `executeTask()` (in `core-loop.ts`) returns `Promise<TaskResult>`. API needs: (1) sync execution (POST, wait), (2) async submission (POST → task ID → poll/subscribe), (3) progress streaming via SSE filtered by `taskId`. Reuses audit listener's `{ ts, event, payload }` JSONL format (`bus/audit-listener.ts`).
+- **Session management with compaction.** Group multiple `TaskInput` submissions under a session. Session state includes shared `WorkingMemory`, cumulative trace history, and a **compaction pipeline**: after N tasks or M minutes, summarize the session transcript into a condensed episode (approach sequences, key failures, successful patterns). Compacted sessions feed Sleep Cycle as first-class input. [Closes GAP-3: session management]
+- **Checkpoint recovery.** Persist session state and in-progress task state to SQLite (new `session_store` table following `WorkerStore` pattern from `db/worker-store.ts`). On restart, recover pending tasks and resume from last checkpoint. [Closes GAP-H FC6: "restarted randomly"]
+- **Health and metrics.** Expose `SystemMetrics` (from `observability/metrics.ts`) and `FleetMetrics` (from `fleet-evaluator.ts`) via read-only HTTP endpoints.
 
-**Dependencies:** Phase 1 (Orchestrator core loop), Phase 2 (EventBus with all event types)
+**Extends:** `TaskInput.source: 'api'` (types.ts:56), `Orchestrator` interface (factory.ts), `WorkingMemory` (working-memory.ts)
+**New files:** `src/api/server.ts`, `src/api/routes.ts`, `src/api/session-manager.ts`, `src/db/session-schema.ts`, `src/db/session-store.ts`
+**Dependencies:** Phase 1 (core loop), Phase 2 (EventBus)
 
 **Open questions:**
-- HTTP framework choice (Bun's built-in `Bun.serve()` vs. lightweight framework like Hono)
-- WebSocket vs SSE for event streaming — tradeoffs in reconnection handling
-- Whether session state is persisted (SQLite) or in-memory only
-- API versioning strategy (URL prefix vs. header)
-- Rate limiting approach for multi-tenant deployments
+- Bun.serve() (zero-dep) vs. Hono (routing + middleware)
+- WebSocket vs SSE for event streaming — reconnection tradeoffs
+- Session compaction trigger: task count, time, or token budget
+- Whether compacted summaries are LLM-generated or rule-based extraction
+- API versioning (URL prefix vs. header)
 
 ##### PH5.2 — Terminal UI `[M]`
 
-**Purpose:** Replace the minimal `vinyan run` CLI with an interactive terminal interface that provides real-time visibility into Orchestrator state, bus events, worker progress, and verification results. The developer's primary window into what Vinyan is doing and why.
+**Purpose:** Interactive terminal interface replacing minimal `vinyan run`. Real-time visibility into Orchestrator state, bus events, worker progress.
+
+**Axiom justification:** A3 (read-only projection — no governance bypass)
 
 **Key concepts to design:**
 
-- **Bus event rendering.** The terminal UI subscribes to the EventBus and renders 27+ event types in real time: task lifecycle (progress bar), worker dispatch/complete (status line), oracle verdicts (pass/fail indicators), escalation (warning), evolution (rule promotion/retirement). Read-only projection of existing bus events.
-- **Observability dashboard.** Render `SystemMetrics` (traces, rules, skills, patterns, shadow queue, data gates) and `EvolutionMetrics` in structured panel layout. Include fleet metrics from Phase 4 (worker utilization, diversity score, capability coverage).
-- **Interactive commands.** Support commands within the TUI: submit new task, cancel running task, inspect trace, view worker profiles, trigger sleep cycle, export patterns.
-- **JSONL transcript replay.** Replay audit JSONL files for debugging — render historical events in the same format as live events.
+- **Bus event rendering.** Subscribe to `VinyanBus` and render all 39+ event types: task lifecycle (progress), worker dispatch/complete (status), oracle verdicts (pass/fail), fleet events (convergence warnings, demotions), evolution (rule promotion). Same event stream as API SSE endpoint.
+- **JSONL audit replay.** Parse audit JSONL files (`audit-listener.ts` format) for post-mortem debugging. Same rendering pipeline as live events. [Partial observability replay — GAP-5]
+- **Observability dashboard.** Render `SystemMetrics`, `EvolutionMetrics`, `FleetMetrics` in structured panels.
+- **Interactive commands.** Submit task, cancel task, inspect trace, view worker profiles, trigger sleep cycle, export patterns.
 
-**Dependencies:** PH5.1 (API Server — shares session and task management), Phase 2+ (EventBus events)
+**Extends:** `VinyanBusEvents` (bus.ts), audit JSONL format (audit-listener.ts)
+**Dependencies:** PH5.1 (shared session/task management)
 
 **Open questions:**
-- TUI framework choice (Ink/React for terminal vs. raw ANSI escape codes vs. blessed-like library)
-- Whether TUI runs as a separate process connecting to the API server, or in-process with the Orchestrator
-- Level of interactivity (read-only dashboard vs. full interactive task management)
-- Layout design (panels, tabs, or scrolling log)
+- TUI framework (Ink/React-terminal vs. blessed-like vs. raw ANSI)
+- Separate process connecting to API vs. in-process with Orchestrator
+- Layout (panels vs. scrolling log)
 
-##### PH5.3 — VS Code Extension `[L]`
+##### PH5.3 — Web Dashboard `[M]`
 
-**Purpose:** Integrate Vinyan directly into the developer's editor. Contextual integration (file-aware task submission, inline oracle verdicts, diagnostic overlays) reduces friction to near-zero.
+**Purpose:** Browser-based monitoring and task management interface. Covers "Web Dashboard" declared in architecture.md's Human Interface Layer diagram.
+
+**Axiom justification:** A3 (pure client of API server — no direct Orchestrator access), A6 (dashboard proposes, Orchestrator disposes)
 
 **Key concepts to design:**
 
-- **API client architecture.** The extension communicates with the Vinyan API server (PH5.1) via HTTP/WebSocket. It is a thin client — no Orchestrator logic, no oracle execution, no SQLite access. This enforces A6 (the extension proposes; the Orchestrator disposes).
-- **Contextual task submission.** The extension knows the current file, cursor position, selection, and active diagnostics. It constructs `TaskInput` with pre-populated `targetFiles` and contextual `constraints` from editor state.
-- **Oracle verdict overlay.** After verification, display oracle verdicts as editor decorations (inline annotations, gutter icons, diagnostic markers). Map `OracleVerdict.evidence` (file + line + snippet) to VS Code `Diagnostic` positions.
-- **World Graph integration.** Show verified facts for the current file in a sidebar panel. Highlight stale facts (file modified since last verification). Makes A4 (content-addressed truth) tangible to the developer.
-- **Event stream panel.** Render the same bus event stream as the Terminal UI (PH5.2) in a VS Code output channel or webview panel.
+- **API client.** Communicates exclusively with PH5.1 API server. Zero Orchestrator logic, zero SQLite access.
+- **Real-time event stream.** SSE/WebSocket from PH5.1 renders bus events as live feed. Filterable by category (task, worker, oracle, fleet, evolution).
+- **Fleet visualization.** Worker profiles, capability heatmap (from `CapabilityModel`), Gini diversity gauge (from `FleetMetrics`), worker lifecycle state machine view.
+- **Trace explorer.** Browse `ExecutionTrace` history with filters (task type, worker, outcome, routing level). Drill into `PredictionError` (A7 visualization).
+- **Session history.** View compacted session summaries from PH5.1 session manager. Replay session events.
 
-**Dependencies:** PH5.1 (API Server — the extension is a pure client)
+**Extends:** API endpoints from PH5.1, `SystemMetrics` and `FleetMetrics` types
+**Dependencies:** PH5.1 (API Server)
 
 **Open questions:**
-- VS Code extension API version target and minimum VS Code version
-- Whether to use webview panels (rich HTML) or native VS Code tree views for the sidebar
-- Whether the extension bundles a Vinyan server (auto-start) or requires an external running instance
-- Language Server Protocol (LSP) integration — whether to implement Vinyan as a language server for deeper editor integration
-- Marketplace publication strategy (public vs. internal)
+- Frontend framework (vanilla + SSE, or React/Preact for richer UX)
+- Whether bundled with Vinyan or deployed separately
+- Authentication model alignment with PH5.14
 
-##### PH5.4 — MCP External Interface Implementation `[M]`
+##### PH5.4 — VS Code Extension `[L]`
 
-**Purpose:** Implement the MCP Client Bridge and MCP Server specified in TDD §19 but never built. Enables Vinyan to consume external MCP tools (GitHub, databases, etc.) and expose its oracles to other agents (Claude Code, other Vinyan instances, any MCP-compatible client).
+**Purpose:** Editor integration with contextual task submission, inline oracle verdicts, diagnostic overlays.
+
+**Axiom justification:** A6 (extension proposes; Orchestrator disposes), A4 (inline fact validity via content hash)
 
 **Key concepts to design:**
 
-- **MCPClientBridge implementation.** Follow the interface defined in TDD §19.1. Bridge connects to external MCP servers (stdio or HTTP transport), discovers tools, executes tools, wraps results in ECP responses with confidence levels based on `MCPServerConfig.trustLevel`.
-- **MCPServer implementation.** Expose the 4 oracle tools defined in TDD §19.2 (`vinyan_ast_verify`, `vinyan_type_check`, `vinyan_blast_radius`, `vinyan_query_facts`) as an MCP server. Lets external agents invoke Vinyan's verification capabilities.
-- **ECP-to-MCP translation.** Implement the bidirectional translation table from TDD §19.3. The protocol bridge that preserves epistemic semantics across the MCP boundary.
+- **API client.** Communicates with PH5.1 via HTTP/WebSocket. Thin client — no Orchestrator logic, no SQLite access.
+- **Contextual `TaskInput`.** Pre-populates `targetFiles` from editor file, `constraints` from active diagnostics, `source: 'api'`.
+- **Oracle verdict overlay.** Map `OracleVerdict.evidence` (file + line + snippet) to VS Code `Diagnostic` positions. Display as inline annotations and gutter icons.
+- **World Graph sidebar.** Verified facts for current file. Highlight stale facts (content hash mismatch). Makes A4 tangible.
+- **Event stream panel.** Bus events in VS Code output channel, same format as TUI (PH5.2).
 
-**Dependencies:** Phase 0 (oracle framework), Phase 1 (tool execution layer)
+**Extends:** `TaskInput` (types.ts), `OracleVerdict` (core/types.ts), `Fact` (core/types.ts)
+**Dependencies:** PH5.1 (API Server)
 
 **Open questions:**
-- MCP SDK choice (@modelcontextprotocol/sdk or custom implementation)
-- Server lifecycle management (auto-start/stop for stdio servers, connection pooling for HTTP)
-- Trust level calibration method (static config vs. empirical track record)
-- Whether MCP server exposes additional tools beyond the 4 defined in TDD (e.g., pattern query, skill lookup)
+- Minimum VS Code version target
+- Webview panels vs. native tree views
+- Auto-start bundled server vs. connect to running instance
+- LSP integration depth
+
+##### PH5.5 — MCP Bridge `[M]`
+
+**Purpose:** Implement MCP Client Bridge and MCP Server from TDD §19 (specified but never built). Vinyan consumes external MCP tools and exposes oracles to other agents.
+
+**Axiom justification:** A5 (MCP tool results enter as `probabilistic` tier), A1 (external tools generate, local oracles verify)
+
+**Key concepts to design:**
+
+- **MCPClientBridge.** Connects to external MCP servers (stdio/HTTP per `MCPServerConfig.transport`), discovers tools, executes, wraps results as ECP evidence with confidence from `trustLevel` (`untrusted: 0.3`, `semi-trusted: 0.5`, `trusted: 0.7` — TDD §19.1).
+- **MCPServer.** Exposes 4 oracle tools: `vinyan_ast_verify`, `vinyan_type_check`, `vinyan_blast_radius`, `vinyan_query_facts` (TDD §19.2). Other agents invoke Vinyan verification.
+- **ECP-to-MCP translation.** Bidirectional mapping per TDD §19.3. `type: 'unknown'` → MCP: `{ verified: null, reason: "insufficient evidence" }`.
+
+**Extends:** Oracle runner (`oracle/runner.ts`), tool execution layer (`orchestrator/tools/`)
+**Dependencies:** Phase 0 oracle framework
+
+**Open questions:**
+- MCP SDK choice (@modelcontextprotocol/sdk vs. custom)
+- Server lifecycle management
+- Whether MCP server exposes additional tools beyond TDD's 4
+
+##### PH5.6 — A2A Protocol Bridge `[M]`
+
+**Purpose:** Implement the A2A (Agent-to-Agent) external interface channel declared in concept.md §2.1 and TDD §3. Enables interoperability with A2A-compatible agents (Google, Salesforce ecosystem).
+
+**Axiom justification:** A2 (A2A lacks epistemic semantics — bridge injects uncertainty for all A2A-sourced inputs), A5 (A2A results enter as `probabilistic` tier, never `deterministic`)
+
+**Key concepts to design:**
+
+- **Agent Card.** Serve `.well-known/agent.json` declaring Vinyan capabilities: oracle types, supported languages, domain specialization, capacity. Maps from `listOracles()` (`oracle/registry.ts`) and `WorkerStore.countActive()`.
+- **Task lifecycle mapping.** Map A2A `tasks/send` + `tasks/get` to `TaskInput` → `executeTask()` → `TaskResult`. A2A artifacts map to `TaskResult.mutations`. A2A streaming maps to bus event SSE projection.
+- **Confidence injection.** All A2A-sourced task results enter with `confidence: 0.5` ceiling and `basis: 'probabilistic'`. A2A cannot trigger `type: 'deterministic'` evidence.
+- **Discovery consumer.** Query remote agents' `.well-known/agent.json` for capability discovery. Used by PH5.8 Instance Coordinator for peer discovery.
+
+**Extends:** `TaskInput.source` (add `'a2a'` variant in types.ts:56), API server (PH5.1)
+**Dependencies:** PH5.1 (API Server), PH5.14 (Security Model)
+
+**Open questions:**
+- A2A SDK vs. custom HTTP/JSON-RPC implementation
+- Scope: minimal bridge (task submit/receive) vs. full A2A v1.0 spec compliance
+- Whether A2A bridge runs as separate process or integrated with API server
+- Push notification support vs. poll-only
 
 ---
 
 #### Pillar 2: Multi-Instance Coordination
 
-> **Goal:** Multiple Vinyan instances communicate as peer Reasoning Engines via ECP over network boundaries. Each instance can specialize in a domain (frontend, backend, infrastructure) while sharing verified knowledge and coordinating on cross-domain tasks.
+> **Goal:** Multiple Vinyan instances act as peer Reasoning Engines via ECP over network, sharing verified knowledge and coordinating on cross-domain tasks.
 
-##### PH5.5 — ECP Network Transport `[L]`
+##### PH5.7 — ECP Network Transport `[L]`
 
-**Purpose:** Extend the Epistemic Communication Protocol from stdio (local process) to network boundaries. The substrate that enables multi-instance coordination. Must preserve ECP's epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol (MCP, A2A, HTTP/JSON-RPC) does this natively.
+**Purpose:** Extend ECP from stdio (local process) to network boundaries. Preserves epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol does this natively.
 
-**Key concepts to design:**
-
-- **Transport abstraction.** Currently, ECP uses stdin/stdout JSON. Phase 5 needs a transport abstraction supporting: (1) local stdio (existing), (2) network (new). The Orchestrator should be transport-agnostic — it sends/receives ECP messages regardless of whether the peer is a local child process or a remote instance.
-- **Network transport requirements.** Bidirectional, low-latency, supports streaming (for long-running oracle verification), reconnection-resilient. The transport carries `ECPResponse` payloads with full epistemic metadata.
-- **Instance discovery.** Peer instances need to find each other. Options range from simple static configuration (known instance addresses) to dynamic discovery (multicast, registry service, `.well-known/vinyan.json` à la A2A's Agent Card pattern). Discovery declares each instance's capabilities (which oracles, which languages, domain specialization).
-- **Instance capability declaration.** Each instance advertises: oracle set + language coverage, domain specialization tags, current health status, capacity (available worker slots). Maps naturally to existing `OracleConfig` registry — just made discoverable over the network.
-- **Temporal context enforcement.** Over a network, evidence ages. The `temporal_context` ECP extension becomes mandatory for all cross-instance messages. The receiving Orchestrator must check `valid_until` before trusting remote evidence.
-
-**Dependencies:** PH5.1 (API Server — shares HTTP/WebSocket infrastructure), PH5.4 (MCP bridge — shares transport patterns)
-
-**Open questions:**
-- Wire protocol choice (WebSocket, gRPC, HTTP/2 SSE, raw TCP with length-prefix framing)
-- Serialization format (JSON vs. MessagePack vs. Protocol Buffers) — tradeoffs in human readability vs. efficiency
-- Discovery mechanism (static config, mDNS, registry service, `.well-known`)
-- TLS/mTLS for cross-instance authentication
-- Message ordering guarantees (FIFO per-instance or causal ordering)
-
-##### PH5.6 — Instance Coordinator `[XL]` (Research)
-
-**Purpose:** Enable multiple Vinyan instances to act as a coordinated ensemble while preserving A3 (no LLM in governance decisions between instances). The most architecturally significant Phase 5 component — transforms Vinyan from a single-instance agent into a distributed epistemic system.
+**Axiom justification:** A2 (`temporal_context` mandatory for all cross-instance messages), A5 (remote verdicts always lower tier than local)
 
 **Key concepts to design:**
 
-- **Coordination topology.** Instances are peers, not master-worker. There is no "super-orchestrator" — each instance's Orchestrator remains sovereign over its own workspace. Coordination is advisory (shared knowledge, optional delegation) not mandatory. Preserves A3 at the inter-instance level.
-- **Task delegation protocol.** An instance encountering a task outside its domain specialization can delegate to a peer via ECP. The delegating instance's Orchestrator remains responsible for final verification (A6 — zero-trust delegation). The delegation message carries the full `TaskInput` plus the delegating instance's `PerceptualHierarchy`.
-- **Cross-instance verification.** Highest-value coordination pattern: Instance A sends a `HypothesisTuple` to Instance B for verification by an oracle that Instance A does not have (e.g., Instance A is TypeScript-focused, Instance B has the Python type oracle). Remote `OracleVerdict` is received with confidence reduced by a network penalty factor and `temporal_context` enforced. Natural extension of the oracle runner — instead of `Bun.spawn()`, the runner sends the hypothesis over ECP network transport to a remote instance.
-- **Shared knowledge bus.** A subset of EventBus events forwarded to peer instances for shared learning. Candidate events: `sleep:cycleComplete` (share pattern discoveries), `evolution:rulePromoted` (share effective rules), `skill:outcome` (share skill effectiveness). NOT all events — `worker:dispatch` and `trace:record` are local. Forwarding filter is configurable.
-- **Conflict resolution across instances.** When two instances produce contradictory verdicts for the same hypothesis, the existing 5-step contradiction resolution (concept §3.2) applies, with an additional step: domain authority. The instance whose oracle specialization covers the hypothesis domain has higher authority. Deterministic rule, not LLM arbitration (A3).
-- **Data sovereignty.** Each instance owns its own `VinyanDB`. Cross-instance data sharing is opt-in. Shared data (rules, patterns, skills) enters the receiving instance with `status: 'probation'` and reduced confidence — identical to PH4.6 pattern import but automated via the coordination protocol.
+- **Transport abstraction.** New `ECPTransport` interface: `send(message: ECPMessage): Promise<void>`, `onMessage(handler): void`. Implementations: `StdioTransport` (existing runner behavior), `NetworkTransport` (new). Oracle runner (`oracle/runner.ts`) becomes transport-agnostic.
+- **Temporal context enforcement.** `temporal_context` (concept §13.2) becomes required on all cross-instance ECP messages. Receiving Orchestrator checks `valid_until` before trusting remote evidence. Stale evidence auto-degrades to `type: 'unknown'`.
+- **`deliberation_request` support.** Implement concept §13.1: engines signal insufficient reasoning depth and request additional compute. Maps to routing level escalation in the receiving instance.
+- **Instance discovery.** Static config (Phase 5 default) + `.well-known/vinyan.json` endpoint (reuses A2A Agent Card pattern from PH5.6). Declares oracle set, language coverage, domain tags, health, capacity.
+- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake. Required for `AbstractPatternExport.version` evolution.
 
-**Dependencies:** PH5.5 (ECP Network Transport), PH5.1 (API Server), Phase 4 (worker profiles, capability-based routing — extends to instance-level capability routing)
+**Extends:** `oracle/runner.ts` (transport abstraction), `OracleConfig.command` (config/schema.ts:14), `ECP_PROTOCOL_VERSION` (types.ts:24)
+**Dependencies:** PH5.1 (shares HTTP/WebSocket infra), PH5.6 (shares discovery pattern)
 
 **Open questions:**
-- Maximum number of peer instances per coordination group
-- Whether delegation is "fire and forget" or requires the delegating instance to block until completion
-- How instance specialization is declared (manual config vs. inferred from oracle registry + trace history)
-- Conflict resolution tie-breaking when instances have equivalent domain authority
-- Whether cross-instance traces count toward local data gates (e.g., does a delegated task's trace count toward local Phase 4 metrics?)
-- Consensus mechanism for shared rule promotion (does a rule need to prove effective on multiple instances before cross-promotion?)
+- Wire protocol: WebSocket, gRPC, or HTTP/2 SSE
+- Serialization: JSON (readable) vs. MessagePack (efficient)
+- TLS/mTLS for instance auth
+- Message ordering: FIFO per-instance or causal
+- Maximum peer count
 
-##### PH5.7 — Cross-Instance Knowledge Sharing `[M]` (Research)
+##### PH5.8 — Instance Coordinator `[XL]` (Research)
 
-**Purpose:** Enable instances to share learned knowledge (rules, patterns, skills, Self-Model parameters) while maintaining epistemic integrity. The distributed extension of PH4.6's pattern abstraction — automated rather than manual, continuous rather than one-shot.
+**Purpose:** Multiple Vinyan instances coordinate as peers. Each instance's Orchestrator remains sovereign. Includes Oracle/Verifier lifecycle governance (concept §13.4) and Creativity Protection Zone (concept §13.5).
+
+**Axiom justification:** A3 (coordination is advisory, not mandatory), A1 (cross-instance: A generates, B verifies), A6 (delegated results re-verified locally)
 
 **Key concepts to design:**
 
-- **Knowledge export protocol.** Each instance periodically (during Sleep Cycle) identifies knowledge candidates for sharing: rules with effectiveness > threshold, skills with high success rate, patterns with broad applicability (low project-specificity score from PH4.6 abstraction). Export uses the `AbstractPattern` format from PH4.6.
-- **Knowledge import pipeline.** Incoming shared knowledge enters the local instance's probation pipeline. Confidence is reduced (PH4.6 uses 50% reduction). The local backtester validates against local traces before promotion. Shared knowledge must prove itself locally before influencing governance.
-- **Self-Model parameter sharing.** The most valuable cross-instance signal: prediction parameters for task fingerprints. If Instance A has calibrated Self-Model parameters for "React refactoring" tasks over 500 traces, Instance B (newly encountering React tasks) can import those parameters as a warm start instead of cold-starting from static heuristics. Import enters as `basis: 'hybrid'` until local traces corroborate.
-- **Provenance chain.** Every piece of shared knowledge carries a full provenance chain: originating instance ID, original pattern/rule/skill IDs, transformation history (abstraction, confidence reduction), receiving instance ID, local probation status. Enables audit and rollback if shared knowledge proves harmful.
+- **Peer topology.** No super-orchestrator. Coordination advisory: shared knowledge, optional delegation. `OrchestratorDeps` (core-loop.ts) gains optional `instanceCoordinator` field.
+- **Task delegation.** Instance encountering out-of-domain task delegates via ECP. Delegating instance re-verifies result locally (A6). Message carries `TaskInput` + `PerceptualHierarchy` + `TaskFingerprint`.
+- **Cross-instance verification.** Instance A sends `HypothesisTuple` to Instance B for oracle Instance A lacks. Remote `OracleVerdict` carries confidence capped at 0.95 (I13). Runner dispatches via `NetworkTransport` instead of `Bun.spawn()`.
+- **Oracle/Verifier lifecycle governance.** Concept §13.4 deferred to Phase 5. Implement using Phase 4's `WorkerLifecycle` pattern (`worker-lifecycle.ts`): oracle instances get `OracleProfile` records with `probation → active → demoted → retired` state machine. Demotion triggers: false positive rate > threshold, systematic timeout, contradiction rate > threshold.
+- **Creativity Protection Zone.** Concept §13.5: reserve exploration budget for speculative-tier workers. Extend Phase 4's epsilon-greedy (`explorationEpsilon` in core-loop.ts) with `speculative` tier (already in `OracleConfig.tier` at config/schema.ts:17). Speculative workers execute only in sandbox (L2+ isolation), require full verification before commit, feed Sleep Cycle. [Safety invariant I17]
+- **Shared event forwarding.** Subset of bus events forwarded to peers: `sleep:cycleComplete`, `evolution:rulePromoted`, `skill:outcome`. NOT `worker:dispatch` or `trace:record`. Configurable filter.
+- **Conflict resolution.** Cross-instance contradictions resolved by: (1) domain authority, (2) evidence tier (A5), (3) recency (`temporal_context`). Deterministic rules (A3).
 
-**Dependencies:** PH5.5 (ECP Network Transport), PH5.6 (Instance Coordinator), Phase 4 (PH4.6 pattern abstraction)
+**Extends:** `OrchestratorDeps` (core-loop.ts), `WorkerLifecycle` pattern (worker-lifecycle.ts), `OracleConfig.tier` (config/schema.ts:17)
+**New files:** `src/orchestrator/instance-coordinator.ts`, `src/db/oracle-profile-schema.ts`, `src/db/oracle-profile-store.ts`
+**Dependencies:** PH5.7 (ECP Network Transport), PH5.1 (API Server)
 
 **Open questions:**
-- Frequency of knowledge export (every Sleep Cycle, or demand-driven by peer requests?)
-- Push model (instance broadcasts discoveries) vs. pull model (instance requests knowledge for specific task fingerprints)
-- How to handle divergence (Instance A's rule promotes while the same rule retires on Instance B)
-- Privacy boundaries — can instances opt out of specific knowledge categories (e.g., share patterns but not Self-Model parameters)?
-- Data volume management — how to prevent knowledge accumulation from overwhelming local probation pipelines
+- Maximum peer instance count
+- Delegation: fire-and-forget vs. blocking
+- Instance specialization: manual config vs. inferred from registry + traces
+- Cross-instance traces counting toward local data gates
+- Consensus for shared rule promotion
+
+##### PH5.9 — Cross-Instance Knowledge Sharing `[M]` (Research)
+
+**Purpose:** Automated sharing of rules, patterns, skills, Self-Model parameters across instances. Distributed extension of PH4.6 pattern abstraction.
+
+**Axiom justification:** A7 (cross-instance prediction error accelerates learning), A5 (imported knowledge enters probation — lower trust until locally validated)
+
+**Key concepts to design:**
+
+- **Knowledge export.** During Sleep Cycle, identify sharing candidates: rules (effectiveness > threshold), skills (high success rate), patterns (low project-specificity from `projectSimilarity()` Jaccard score in `pattern-abstraction.ts`). Format: `AbstractPatternExport` with protocol version negotiation (PH5.7).
+- **Knowledge import pipeline.** Enters local probation. Confidence reduced 50% (same as PH4.6 `importPatterns()`). `AbstractPatternExport.version` checked; migration applied if mismatch.
+- **Self-Model parameter sharing.** Instance A's calibrated EMA parameters warm-start Instance B (`basis: 'hybrid'`). Enters hybrid state until local traces corroborate.
+- **Multi-instance `WorkerProfile` sharing.** When instances share the same `WorkerConfig.modelId`, capability scores from one bootstrap another's `WorkerSelector`. Shared profiles enter with reduced Wilson LB confidence.
+- **Provenance chain.** Source `instance_id`, original IDs, transformation history, local probation status. Enables audit and rollback.
+
+**Extends:** `AbstractPatternExport` (pattern-abstraction.ts), `importPatterns()` (pattern-abstraction.ts), `WorkerStore` (db/worker-store.ts), `CalibratedSelfModel` (self-model.ts)
+**Dependencies:** PH5.7 (ECP Network Transport), PH5.8 (Instance Coordinator)
+
+**Open questions:**
+- Export frequency: every Sleep Cycle or demand-driven
+- Push (broadcast) vs. pull (request) vs. hybrid
+- Handling divergence: rule promotes on A, retires on B
+- Privacy boundaries: opt-out per knowledge category
+- Volume management: cap on incoming probation pipeline
 
 ---
 
 #### Pillar 3: Cross-Language Support
 
-> **Goal:** Extend Vinyan's oracle framework from TypeScript-only to Python, Go, and Rust. The oracle runner is already language-agnostic by design (stdin/stdout JSON); only the oracle implementations are language-specific.
+> **Goal:** Extend oracle framework from TypeScript-only to Python, Go, Rust. Oracle runner is already transport-agnostic by design (stdin/stdout JSON); only implementations are language-specific.
 
-##### PH5.8 — Polyglot Oracle Framework `[M]`
+##### PH5.10 — Polyglot Oracle Framework `[M]`
 
-**Purpose:** Formalize the oracle runner's language-agnostic design so that adding a new language oracle is a well-documented, repeatable process. The runner (`src/oracle/runner.ts`) currently spawns `Bun.spawn(["bun", "run", oraclePath])` — hardcodes Bun as the oracle runtime. The `OracleConfig.command` field exists in `config/schema.ts` but is not consumed by the runner. Making the runner use `config.command` (when present) unlocks polyglot oracles.
+**Purpose:** Generalize oracle runner so `OracleConfig.command` (exists in `config/schema.ts:14`, unused by runner) activates polyglot oracles.
 
-**Key concepts to design:**
-
-- **Oracle runner generalization.** When `OracleConfig.command` is present, use that command instead of `bun run`. For example: `{ command: "python -m vinyan_pyright_oracle" }` or `{ command: "vinyan-go-oracle" }`. The runner's contract is unchanged: write `HypothesisTuple` JSON to stdin, read `OracleVerdict` JSON from stdout.
-- **Oracle implementation contract.** Formalize the "oracle binary" contract as documentation: (1) read JSON from stdin matching `HypothesisTupleSchema`, (2) write JSON to stdout matching `OracleVerdictSchema`, (3) exit with code 0 on success or non-zero on crash. This contract is already implicit; making it explicit enables third-party oracle development.
-- **Language detection.** The Orchestrator needs to know which language a project uses to route hypotheses to the correct oracle. Options: (1) file extension mapping, (2) config-declared language per project, (3) auto-detection from project files (package.json = TypeScript, pyproject.toml = Python, go.mod = Go, Cargo.toml = Rust).
-- **Oracle configuration per language.** Extend `vinyan.json` to support language-keyed oracle configuration. `oracles.type.languages: ["typescript"]` already exists in the schema; generalize to `oracles.type_python: { command: "pyright-oracle", languages: ["python"], tier: "deterministic" }`.
-- **Shared oracle infrastructure.** All language-specific oracles share: circuit breaker (`src/oracle/circuit-breaker.ts`), timeout handling (existing in runner), Zod validation (existing schemas). No per-language infrastructure changes needed.
-
-**Dependencies:** Phase 0 (oracle framework, runner, circuit breaker)
-
-**Open questions:**
-- Whether language detection is automatic or config-only
-- Oracle distribution format (standalone binary, pip package, npm package, Docker image)
-- How to handle multi-language projects (e.g., TypeScript frontend + Python backend) — parallel oracle invocation?
-- Whether oracle binaries are bundled with Vinyan or installed separately
-- Performance benchmarks per language oracle (P99 latency targets)
-
-##### PH5.9 — Python Oracle (Pyright) `[M]`
-
-**Purpose:** Implement a Python-specific oracle that verifies type correctness, symbol existence, and import relationships using Pyright. The first non-TypeScript oracle, proving the polyglot framework works.
+**Axiom justification:** A1 (cross-language verification maintains generation ≠ verification), A4 (content-addressed truth regardless of language)
 
 **Key concepts to design:**
 
-- **Oracle scope.** Mirror the existing TypeScript type oracle's capabilities for Python: (1) type checking (`pyright --outputjson`), (2) symbol existence verification, (3) import validation. Map Pyright JSON output to `OracleVerdict` format.
-- **Pyright integration.** CLI mode (`pyright --outputjson`) is simpler and matches the existing subprocess model. The oracle binary reads `HypothesisTuple` from stdin, invokes `pyright` on the workspace, filters results to the target file/symbol, produces an `OracleVerdict`.
-- **Python-specific `HypothesisTuple` patterns.** Define the `pattern` vocabulary for Python: `"function-signature"`, `"import-exists"`, `"type-check"`, `"class-inherits"`, etc. Parallel to TypeScript oracle's patterns but account for Python-specific constructs (decorators, metaclasses, dynamic attributes).
-- **Virtual environment handling.** The oracle needs to respect the project's Python interpreter and type stubs, typically configured via `pyrightconfig.json` or `pyproject.toml`.
+- **Runner generalization.** `oracle/runner.ts:41` hardcodes `Bun.spawn(["bun", "run", oraclePath])`. When `OracleConfig.command` is set, use that command instead. Example: `{ command: "python -m vinyan_pyright_oracle" }`. Contract unchanged: stdin `HypothesisTuple` → stdout `OracleVerdict`.
+- **Dynamic oracle registration.** `oracle/registry.ts` has static `ORACLE_PATHS` (5 entries). Add `registerOracle(name, config)` for runtime registration with `command`, `languages`, `tier`.
+- **Language detection.** Auto-detect from project files: `package.json` = TypeScript, `pyproject.toml` = Python, `go.mod` = Go, `Cargo.toml` = Rust. Maps to `OracleConfig.languages` (config/schema.ts:13).
+- **Shared infrastructure.** All language oracles share circuit breaker (`oracle/circuit-breaker.ts`), timeout handling, Zod validation (`oracle/protocol.ts`). No per-language changes.
 
-**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+**Extends:** `oracle/runner.ts` (line 41), `oracle/registry.ts` (add dynamic registration), `OracleConfig` (config/schema.ts)
+**Dependencies:** Phase 0 oracle framework
 
 **Open questions:**
-- Whether to implement the oracle binary in Python (natural) or TypeScript (consistent with codebase)
-- Pyright version pinning strategy
-- How to handle Python projects without type annotations (strict vs. basic mode)
-- Whether to include a Python AST oracle (using Python's `ast` module) in addition to Pyright
+- Language detection: automatic vs. config-only
+- Oracle distribution format: standalone binary, pip package, Docker image
+- Multi-language projects: parallel oracle invocation strategy
+- P99 latency targets per language oracle
 
-##### PH5.10 — Go Oracle (gopls) `[M]`
+##### PH5.11 — Python Oracle (Pyright) `[M]`
 
-**Purpose:** Implement a Go-specific oracle using gopls (the official Go language server) for type checking, symbol resolution, and import verification.
+**Purpose:** First non-TypeScript oracle. Proves polyglot framework works.
 
 **Key concepts to design:**
 
-- **Oracle scope.** Go type checking (`go vet`, `go build` dry run), symbol existence, import validation, interface satisfaction checking. Go's strict type system makes it well-suited for deterministic verification.
-- **gopls integration.** The oracle can either: (1) invoke `go vet` / `go build` as a CLI (simpler, matches subprocess model), or (2) communicate with gopls via LSP (richer diagnostics). Implementor should evaluate both.
-- **Go-specific patterns.** Interface satisfaction (`does type X implement interface Y?`), goroutine safety (race detector), module dependency resolution (`go mod tidy` validation).
+- **Oracle scope.** Mirror TypeScript type oracle: type checking (`pyright --outputjson`), symbol existence, import validation. Map Pyright JSON output to `OracleVerdict` format.
+- **Python-specific patterns.** `"function-signature"`, `"import-exists"`, `"type-check"`, `"class-inherits"`. Account for decorators, metaclasses, dynamic attributes.
+- **Virtual environment handling.** Respect `pyrightconfig.json` or `pyproject.toml` for Python interpreter and type stubs.
 
-**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+**Extends:** PH5.10 framework, `HypothesisTuple.pattern` vocabulary
+**Dependencies:** PH5.10
 
 **Open questions:**
-- CLI (`go vet` + `go build`) vs. LSP (gopls) approach
-- Whether to implement the oracle binary in Go (natural, single binary, fast startup) or TypeScript
-- Go module proxy and dependency caching considerations
-- Race detector integration (deterministic or heuristic tier?)
+- Oracle binary in Python (natural) or TypeScript (consistent)
+- Pyright version pinning
+- Handling unannotated code (strict vs. basic mode)
 
-##### PH5.11 — Rust Oracle (rust-analyzer) `[M]`
+##### PH5.12 — Go Oracle (gopls) `[M]`
 
-**Purpose:** Implement a Rust-specific oracle using rust-analyzer for type checking, borrow checker verification, and trait implementation validation.
+**Purpose:** Go-specific oracle for type checking, interface satisfaction, import verification.
 
 **Key concepts to design:**
 
-- **Oracle scope.** Rust compilation check (`cargo check --message-format=json`), borrow checker verification, trait implementation validation, lifetime correctness. Rust's compiler output is structured JSON — ideal for oracle verdict extraction.
-- **Cargo integration.** The oracle invokes `cargo check` with JSON output, parses diagnostics, maps to `OracleVerdict` format. Cargo's incremental compilation makes repeated checks fast.
-- **Rust-specific patterns.** Borrow checker errors, lifetime mismatches, trait bound failures, unsafe block auditing. Rust-unique verification capabilities that no other language oracle provides.
+- **Oracle scope.** `go vet` + `go build -o /dev/null` for type checking. Go-specific patterns: `"interface-satisfies"`, `"goroutine-safety"`, `"module-tidy"`.
+- **CLI vs. LSP.** CLI (`go vet` + `go build`) is simpler, matches subprocess model. gopls (LSP) provides richer diagnostics. Implementor evaluates both.
 
-**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+**Extends:** PH5.10 framework
+**Dependencies:** PH5.10
 
 **Open questions:**
-- `cargo check` (simple, fast) vs. rust-analyzer LSP (richer diagnostics) approach
-- Whether to implement the oracle binary in Rust (natural, zero-dependency) or TypeScript
-- How to handle Rust edition differences and feature flags
-- Whether to expose unsafe block detection as a separate oracle or integrated into the type oracle
+- CLI vs. LSP approach
+- Oracle binary in Go (single binary, fast startup) or TypeScript
+- Race detector: deterministic or heuristic tier?
+
+##### PH5.13 — Rust Oracle (rust-analyzer) `[M]`
+
+**Purpose:** Rust-specific oracle for type checking, borrow checker, trait validation.
+
+**Key concepts to design:**
+
+- **Oracle scope.** `cargo check --message-format=json` maps directly to `OracleVerdict`. Patterns: `"borrow-check"`, `"lifetime-valid"`, `"trait-satisfies"`, `"unsafe-audit"`. Incremental compilation makes repeated checks fast.
+
+**Extends:** PH5.10 framework
+**Dependencies:** PH5.10
+
+**Open questions:**
+- `cargo check` (simple) vs. rust-analyzer LSP (richer)
+- Oracle binary in Rust (zero-dep) or TypeScript
+- Unsafe block detection as separate oracle or integrated
 
 ---
 
 #### Cross-Cutting Concerns
 
-##### PH5.12 — Security Model `[M]`
+##### PH5.14 — Security Model `[M]`
 
-**Purpose:** Define the security model for the API server (PH5.1), multi-instance communication (PH5.5-5.6), and remote oracle invocation (PH5.8). Vinyan moves from a local-only CLI tool to a networked service — fundamentally changes the threat model.
+**Purpose:** Security model for API server, multi-instance communication, remote oracle invocation.
+
+**Axiom justification:** A6 (no API bypass of oracle verification), A3 (auth decisions are rule-based)
 
 **Key concepts to design:**
 
-- **API authentication.** For local-only use: simple bearer token (generated on first run, stored in `~/.vinyan/api-token`). For multi-instance use: mTLS (mutual TLS) for instance-to-instance communication.
-- **Instance identity.** Each Vinyan instance has a unique identity (generated keypair) used for signing cross-instance messages. Enables provenance verification — "this verdict was produced by Instance X" is cryptographically verifiable.
-- **Trust bootstrapping.** New instances start as untrusted. Trust is earned through the same empirical mechanism as worker profiles (Phase 4): the receiving instance tracks the remote instance's verdict accuracy over time. Wilson lower bound on remote verdict accuracy determines the remote instance's effective trust tier.
-- **Authorization scoping.** API endpoints and cross-instance operations need granular permission controls: read-only access (query facts, view metrics), task submission access, admin access (configuration, instance management). Extensible permission model.
-- **Existing guardrails extension.** The existing `src/guardrails/` (injection detection, bypass detection) applies to API inputs with the same rigor as CLI inputs.
+- **API authentication.** Local-only: bearer token in `~/.vinyan/api-token`. Multi-instance: mTLS.
+- **Instance identity.** Keypair per instance for signing cross-instance messages. Cryptographic provenance verification.
+- **Trust bootstrapping.** New remote instances start untrusted. Trust earned empirically (Wilson LB on remote verdict accuracy) — same mechanism as `WorkerLifecycle` (`worker-lifecycle.ts`).
+- **Authorization scoping.** Granular: read-only (facts, metrics), task submission, admin (config, instance management). Extensible via config.
+- **Guardrails extension.** Existing `src/guardrails/` (injection/bypass detection) applies to API inputs identically.
 
-**Dependencies:** PH5.1 (API Server), PH5.5 (Network Transport)
+**Extends:** `src/guardrails/`, `WorkerLifecycle` trust pattern
+**Dependencies:** PH5.1 (API Server), PH5.7 (Network Transport)
 
 **Open questions:**
 - Token format (JWT, opaque, API key)
-- Key management for mTLS (automated via ACME or manual)
-- Whether to support OAuth2 for enterprise integration
-- Audit logging format for security events
+- Key management for mTLS
+- OAuth2 for enterprise integration
+- Audit logging format
 
-##### PH5.13 — Observability Extension `[S]`
+##### PH5.15 — Observability Extension `[M]`
 
-**Purpose:** Extend the existing observability infrastructure (health checks, system metrics, event bus) for the multi-interface, multi-instance Phase 5 context.
+**Purpose:** Extend observability for multi-interface, multi-instance context. Includes audit replay and GAP-H failure mode detection.
+
+**Axiom justification:** A7 (distributed prediction error), A3 (observability is read-only)
 
 **Key concepts to design:**
 
-- **Distributed tracing.** When a task spans multiple instances (delegated verification, cross-instance oracle invocation), trace IDs must propagate across instance boundaries. Extend `ExecutionTrace` with `parentInstanceId` and `delegatedFrom` fields.
-- **Fleet-level metrics.** Aggregate metrics across instances: total fleet throughput, per-instance health, cross-instance delegation success rate, shared knowledge adoption rate. Computed from Instance Coordinator (PH5.6) data.
-- **API metrics.** Request rate, latency distribution, error rate for the API server.
-- **Alert thresholds.** Define alert conditions: instance unreachable, cross-instance latency > threshold, delegation failure rate > threshold, shared knowledge rejection rate > threshold.
+- **Distributed tracing.** Extend `ExecutionTrace` with `parentInstanceId?` and `delegatedFrom?`. Trace IDs propagate across instances.
+- **Audit replay.** Formal replay: parse JSONL audit files, reconstruct event timeline, render in TUI or web dashboard. Cross-instance event correlation. [GAP-5: observability/debugging UI]
+- **Fleet-level metrics.** Cross-instance aggregation: fleet throughput, per-instance health, delegation success rate, knowledge adoption rate.
+- **FC4 "Forgot earlier context" detection.** Monitor Working Memory eviction rate (from `working-memory.ts`). Emit `memory:eviction_warning` when repeated evictions correlate with task failure.
+- **FC9 "Withheld information" detection.** Track oracle verdict propagation to workers. If oracle results available but not in worker context, emit `context:verdict_omitted`.
+- **FC11 "Mismatch think vs do" detection.** Compare Self-Model predictions against actual outcomes (`PredictionError` in types.ts). Surface systematic miscalibration via `selfmodel:systematic_miscalibration` event.
 
-**Dependencies:** PH5.1 (API Server), PH5.6 (Instance Coordinator), Phase 3 (PH3.7 Evaluation Framework)
+**Extends:** `ExecutionTrace` (types.ts), `MetricsCollector` (metrics.ts), `VinyanBusEvents` (bus.ts)
+**Dependencies:** PH5.1 (API metrics), PH5.8 (Instance Coordinator)
 
 **Open questions:**
-- OpenTelemetry integration (structured tracing standard) or custom format
-- Metrics export format (Prometheus, JSON, or both)
-- Alert delivery mechanism (webhook, bus event, log)
+- OpenTelemetry integration or custom format
+- Metrics export: Prometheus, JSON, or both
+- Alert delivery: webhook, bus event, log
 
-##### PH5.14 — Data Migration & Backward Compatibility `[S]`
+##### PH5.16 — Data Migration & Backward Compatibility `[S]`
 
-**Purpose:** Ensure existing Phase 0-4 installations can upgrade to Phase 5 without data loss or behavioral changes. Phase 5 adds new columns, new tables, and new configuration — all must be backward-compatible.
+**Purpose:** Phase 0-4 installations upgrade without data loss or behavioral changes.
 
 **Key concepts to design:**
 
-- **SQLite schema migration.** `VinyanDB` constructor currently runs `CREATE TABLE IF NOT EXISTS`. Phase 5 adds new columns to existing tables (`execution_traces.parent_instance_id`, `execution_traces.delegated_from`) and new tables (instance registry, cross-instance knowledge). Migrations must be additive (no column removal, no type changes).
-- **Configuration migration.** `vinyan.json` gains a `phase5` namespace. Existing configs without `phase5` work unchanged. New config fields have sensible defaults.
-- **Feature activation via data gates.** Phase 5 features activate through the existing `DataGate` mechanism. Multi-instance features require `instance_registry.count >= 2`. Cross-language oracles require `oracle_config[language].enabled = true`. No feature activates silently.
-- **API server opt-in.** The API server is not started by default. Activates when `phase5.api.enabled = true` in config. CLI-only operation remains the default.
+- **SQLite migration framework.** Replace `VinyanDB` constructor's `CREATE TABLE IF NOT EXISTS` pattern (`db/vinyan-db.ts`) with versioned migrations. New `schema_version` table tracks applied migrations. `ALTER TABLE ADD COLUMN` for new fields (additive only).
+- **Configuration migration.** `vinyan.json` gains `phase5` namespace. Existing configs without `phase5` work unchanged.
+- **Feature activation.** Phase 5 features activate through existing `DataGate` (`data-gate.ts`). New gates: `multi_instance` (requires `instance_registry.count >= 2`), `polyglot_oracle` (requires language enabled). No silent activation.
+- **API server opt-in.** Not started by default. Activates when `phase5.api.enabled = true`. CLI-only remains default.
 
+**Extends:** `VinyanDB` (db/vinyan-db.ts), `VinyanConfigSchema` (config/schema.ts), `DataGateStats` + `FEATURE_CONDITIONS` (data-gate.ts)
 **Dependencies:** Phase 0-4 (all existing infrastructure)
 
 **Open questions:**
 - Migration strategy (in-place ALTER TABLE vs. copy-and-swap)
-- Whether to support downgrade (Phase 5 → Phase 4 rollback)
-- Schema versioning approach (version number in config vs. migration table)
+- Downgrade support (Phase 5 → Phase 4 rollback)
+- Schema versioning approach
 
 ---
 
@@ -2473,41 +2546,49 @@ The 7 existing immutable invariants (I1-I7) plus 4 Phase 4 fleet invariants (I8-
 
 | # | Invariant | Enforcement |
 |:--|:----------|:-----------|
-| I12 | **No remote governance bypass.** No cross-instance message can bypass local oracle verification. A remote instance cannot instruct the local Orchestrator to skip verification, commit without checking, or override safety invariants. | `InstanceCoordinator` message validation |
-| I13 | **Remote verdict confidence ceiling.** Remote oracle verdicts always carry confidence < 0.95, regardless of the remote oracle's declared confidence. Only local deterministic oracles can produce confidence ≥ 0.95. | ECP Network Transport confidence adjustment |
-| I14 | **Cross-instance knowledge enters probation.** Shared rules, patterns, and skills always start at `status: 'probation'` regardless of their status on the source instance. No shortcut to `active` via cross-instance sharing. | Knowledge import pipeline |
-| I15 | **API authentication mandatory for mutations.** Read-only API endpoints (health, metrics, fact queries) may operate without authentication. Any endpoint that creates tasks, modifies configuration, or triggers actions requires authentication. | API server middleware |
+| I12 | **No remote governance bypass.** No cross-instance message can bypass local oracle verification. A remote instance cannot instruct the local Orchestrator to skip verification, commit without checking, or override safety invariants. | `InstanceCoordinator` message validation (PH5.8) |
+| I13 | **Remote verdict confidence ceiling.** Remote oracle verdicts always carry confidence < 0.95, regardless of the remote oracle's declared confidence. Only local deterministic oracles can produce confidence ≥ 0.95. | ECP Network Transport confidence adjustment (PH5.7) |
+| I14 | **Cross-instance knowledge enters probation.** Shared rules, patterns, and skills always start at `status: 'probation'` regardless of their status on the source instance. No shortcut to `active` via cross-instance sharing. | Knowledge import pipeline (PH5.9) |
+| I15 | **API authentication mandatory for mutations.** Read-only API endpoints (health, metrics, fact queries) may operate without authentication. Any endpoint that creates tasks, modifies configuration, or triggers actions requires authentication. | API server middleware (PH5.1, PH5.14) |
+| I16 | **Session audit preservation.** Session compaction produces supplementary summaries only. The full JSONL audit trail for every task is never deleted or overwritten by compaction. Compacted summaries reference original audit file offsets. | Session manager write path (PH5.1) |
+| I17 | **Speculative sandbox mandatory.** Speculative-tier worker outputs (`OracleConfig.tier: 'speculative'`) execute only in L2+ isolation. Full oracle verification required before any commit action. Speculative results never bypass the verification pipeline. | Creativity Protection Zone gate (PH5.8) |
 
 #### Dependency Graph
 
 ```
+PH5.0 (Pre-Phase Cleanup) ─── prerequisite for all Phase 5 components
+
 PH5.1 (API Server) ─────────┬── PH5.2 (Terminal UI)
-                              │
-                              ├── PH5.3 (VS Code Extension)
-                              │
-                              ├── PH5.4 (MCP Bridge)
-                              │
-                              └── PH5.5 (ECP Network Transport)
-                                          │
-                                          ├── PH5.6 (Instance Coordinator)
-                                          │        │
-                                          │        └── PH5.7 (Knowledge Sharing)
-                                          │
-                                          └── PH5.12 (Security Model)
+                             │
+                             ├── PH5.3 (Web Dashboard)
+                             │
+                             ├── PH5.4 (VS Code Extension)
+                             │
+                             ├── PH5.5 (MCP Bridge)
+                             │
+                             ├── PH5.6 (A2A Bridge) ── PH5.14 (Security)
+                             │
+                             └── PH5.7 (ECP Network Transport)
+                                         │
+                                         ├── PH5.8 (Instance Coordinator)
+                                         │        │
+                                         │        └── PH5.9 (Knowledge Sharing)
+                                         │
+                                         └── PH5.14 (Security Model)
 
-PH5.8 (Polyglot Framework) ─┬── PH5.9 (Python/Pyright)
-                              ├── PH5.10 (Go/gopls)
-                              └── PH5.11 (Rust/rust-analyzer)
+PH5.10 (Polyglot Framework) ─┬── PH5.11 (Python/Pyright)
+                              ├── PH5.12 (Go/gopls)
+                              └── PH5.13 (Rust/rust-analyzer)
 
-PH5.13 (Observability Extension) — parallel with any component
-PH5.14 (Data Migration) — prerequisite for deployment, parallel with dev
+PH5.15 (Observability Extension) — parallel with any component
+PH5.16 (Data Migration) — prerequisite for deployment, parallel with dev
 ```
 
 **Parallel streams:**
-- **Stream A (critical path — Standalone):** PH5.1 → PH5.3
-- **Stream B (Multi-Instance):** PH5.1 → PH5.5 → PH5.6 → PH5.7 (longest path)
-- **Stream C (Cross-Language):** PH5.8 → PH5.9 + PH5.10 + PH5.11 (parallel, fully independent)
-- **Stream D (UI):** PH5.1 → PH5.2 (parallel with Stream A/B)
+- **Stream A (Standalone UI):** PH5.0 → PH5.1 → PH5.2 + PH5.3 + PH5.4 (parallel)
+- **Stream B (Protocol Bridges):** PH5.0 → PH5.1 → PH5.5 + PH5.6 (parallel, independent)
+- **Stream C (Multi-Instance — critical path):** PH5.0 → PH5.1 → PH5.7 → PH5.8 → PH5.9 (longest path)
+- **Stream D (Cross-Language):** PH5.0 → PH5.10 → PH5.11 + PH5.12 + PH5.13 (fully independent)
 
 #### Data Prerequisites
 
@@ -2527,30 +2608,51 @@ Phase 5 multi-instance features are only valuable with sufficient single-instanc
 
 #### Phase 5 Acceptance Criteria
 
-| Criterion | Target | Measurement |
-|:----------|:-------|:-----------|
-| API server operational | Tasks submitted via HTTP produce identical results to CLI | Comparison test: same 50 tasks via CLI vs API |
-| Terminal UI renders all event types | All 27+ bus event types rendered without crash | Manual review during 100-task run |
-| VS Code extension functional | Task submission, verdict overlay, fact display working | Extension integration test suite |
-| MCP bridge bidirectional | Vinyan consumes external MCP tool AND exposes oracles to external client | Integration test with reference MCP server/client |
-| Cross-instance delegation | Instance A delegates task to Instance B, receives verified result | End-to-end test with 2 instances |
-| Cross-instance knowledge sharing | Rule promoted on Instance A enters probation on Instance B | Automated test across instance boundary |
-| Python oracle verification | Pyright-based oracle catches type errors in Python code | 30 Python hypothesis test cases |
-| Go oracle verification | Go oracle catches type/import errors | 30 Go hypothesis test cases |
-| Rust oracle verification | Rust oracle catches borrow/type errors | 30 Rust hypothesis test cases |
-| Security: no unauthenticated mutations | API mutation endpoints reject unauthenticated requests | Security test suite |
-| Backward compatibility | Phase 4 installation upgrades to Phase 5 with zero data loss | Migration test on existing `.vinyan/vinyan.db` |
-| Safety invariant violations | Zero across all Phase 5 components | Audit log review |
+| # | Criterion | Target | Measurement |
+|:--|:----------|:-------|:-----------|
+| AC1 | PH5.0 cleanup complete | All 4 wiring gaps resolved, zero regression | `bun test` pass + `tsc --noEmit` clean |
+| AC2 | API server operational | Tasks submitted via HTTP produce identical results to CLI | Comparison test: same 50 tasks via CLI vs API |
+| AC3 | Session compaction functional | Compacted summaries produced, full audit preserved (I16) | Session with 20+ tasks compacts without audit data loss |
+| AC4 | Terminal UI renders all event types | All 39+ bus event types rendered without crash | Manual review during 100-task run |
+| AC5 | Web dashboard operational | Fleet visualization, trace explorer, session replay functional | Browser test against running API server |
+| AC6 | VS Code extension functional | Task submission, verdict overlay, fact display working | Extension integration test suite |
+| AC7 | MCP bridge bidirectional | Vinyan consumes external MCP tool AND exposes oracles to external client | Integration test with reference MCP server/client |
+| AC8 | A2A bridge operational | Agent Card served, task submit/receive works, confidence ceiling enforced | A2A interop test with reference agent |
+| AC9 | Cross-instance delegation | Instance A delegates task to Instance B, receives verified result | End-to-end test with 2 instances |
+| AC10 | Cross-instance knowledge sharing | Rule promoted on Instance A enters probation on Instance B (I14) | Automated test across instance boundary |
+| AC11 | Python oracle verification | Pyright-based oracle catches type errors in Python code | 30 Python hypothesis test cases |
+| AC12 | Go oracle verification | Go oracle catches type/import errors | 30 Go hypothesis test cases |
+| AC13 | Rust oracle verification | Rust oracle catches borrow/type errors | 30 Rust hypothesis test cases |
+| AC14 | Security: no unauthenticated mutations | API mutation endpoints reject unauthenticated requests (I15) | Security test suite |
+| AC15 | Backward compatibility | Phase 4 installation upgrades to Phase 5 with zero data loss | Migration test on existing `.vinyan/vinyan.db` |
+| AC16 | Safety invariant violations | Zero I12-I17 violations across all Phase 5 components | Audit log review + invariant test suite |
+
+#### GAP-H Failure Mode Coverage
+
+Phase 5 addresses 5 of the 14 failure modes identified in the GAP-H analysis (gap-analysis.md):
+
+| Failure Mode | Component | Detection Mechanism |
+|:-------------|:----------|:-------------------|
+| FC4 "Forgot earlier context" | PH5.15 | `memory:eviction_warning` event when Working Memory eviction correlates with task failure |
+| FC6 "Restarted randomly" | PH5.1 | Checkpoint recovery: session + task state persisted to SQLite, resumed on restart |
+| FC7 "Abstained from answering" | PH5.8 | Cross-instance delegation protocol: worker abstention triggers delegation to peer with matching capability |
+| FC9 "Withheld information" | PH5.15 | `context:verdict_omitted` event when oracle results available but not propagated to worker context |
+| FC11 "Mismatch think vs do" | PH5.15 | `selfmodel:systematic_miscalibration` event when PredictionError shows systematic bias over sliding window |
+
+**Not addressed in Phase 5:** FC1 (hallucination — requires LLM-level intervention), FC2 (sycophancy), FC3 (wrong but confident — partially mitigated by A2/A5), FC5 (ignored instructions), FC8 (perseverated), FC10 (premature disengagement), FC12 (inconsistency over time), FC13 (wrong self-assessment — partially by A7), FC14 (planning failure — deferred beyond Phase 5).
 
 #### Key Design Decisions (Open)
 
 1. **API framework.** Bun.serve() (zero-dependency) vs. Hono (routing + middleware). Affects PH5.1.
-2. **ECP network wire format.** JSON-RPC 2.0 + epistemic headers vs. custom binary protocol. Affects PH5.5.
-3. **Instance discovery.** Static config (simple, requires manual setup) vs. dynamic discovery (complex, zero-config). Affects PH5.5-5.6.
-4. **Oracle binary language.** Each language oracle implemented in its own language (natural, diverse toolchain) vs. all in TypeScript (consistent, single toolchain). Affects PH5.9-5.11.
-5. **VS Code extension bundling.** Standalone (requires running server) vs. self-contained (bundles server, auto-starts). Affects PH5.3.
-6. **Multi-instance topology.** Flat peer mesh vs. hierarchical (domain coordinators). Affects PH5.6.
-7. **Knowledge sharing model.** Push (broadcast) vs. pull (request) vs. hybrid. Affects PH5.7.
+2. **ECP network wire format.** JSON-RPC 2.0 + epistemic headers vs. custom binary protocol. Affects PH5.7.
+3. **Instance discovery.** Static config (simple, requires manual setup) vs. dynamic discovery (complex, zero-config). Affects PH5.7-PH5.8.
+4. **Oracle binary language.** Each language oracle implemented in its own language (natural, diverse toolchain) vs. all in TypeScript (consistent, single toolchain). Affects PH5.11-PH5.13.
+5. **VS Code extension bundling.** Standalone (requires running server) vs. self-contained (bundles server, auto-starts). Affects PH5.4.
+6. **Multi-instance topology.** Flat peer mesh vs. hierarchical (domain coordinators). Affects PH5.8.
+7. **Knowledge sharing model.** Push (broadcast) vs. pull (request) vs. hybrid. Affects PH5.9.
+8. **A2A scope.** Minimal bridge (task submit/receive only) vs. full A2A v1.0 spec compliance. Affects PH5.6.
+9. **Web dashboard tech.** Vanilla HTML + SSE (zero-dep) vs. React/Preact (richer UX). Affects PH5.3.
+10. **Session compaction method.** LLM-generated summaries (richer) vs. rule-based extraction (deterministic, A3-compliant). Affects PH5.1.
 
 #### Configuration Schema Extension
 
@@ -2563,16 +2665,23 @@ phase5:
     port: number                  // default: 3927
     bind_address: string          // default: "127.0.0.1" (local only)
     auth_required: boolean        // default: true for mutation endpoints
+    session_compaction_threshold: number  // default: 20 (tasks per session before compaction)
 
   instances:
     enabled: boolean              // default: false
     instance_id: string           // auto-generated UUID on first run
+    discovery_endpoint: string    // default: "" (static config only)
     peers: Array<{
       url: string
       trust_level: string         // "untrusted" | "semi-trusted" | "trusted"
     }>
     knowledge_sharing: boolean    // default: false
     delegation_enabled: boolean   // default: false
+
+  creativity:
+    speculative_budget_pct: number  // default: 0.10 (10% of tasks)
+    min_isolation_level: number     // default: 2 (L2+)
+    sandbox_timeout_ms: number      // default: 120000
 
   polyglot:
     language_detection: string    // "auto" | "config"
@@ -2585,44 +2694,59 @@ New events added to `VinyanBusEvents`:
 
 ```
 // API server (PH5.1)
-"api:request"              — { method, path, taskId? }
-"api:response"             — { taskId, status, duration_ms }
+"api:request"                  — { method, path, taskId?, sessionId? }
+"api:response"                 — { taskId, status, duration_ms }
+"session:created"              — { sessionId, source }
+"session:compacted"            — { sessionId, taskCount, compactedSize }
+"session:recovered"            — { sessionId, pendingTasks }
 
-// Instance coordination (PH5.6)
-"instance:connected"       — { peerId, capabilities[] }
-"instance:disconnected"    — { peerId, reason }
-"instance:delegated"       — { taskId, toPeerId, reason }
+// A2A bridge (PH5.6)
+"a2a:agent_discovered"         — { agentUrl, capabilities[] }
+"a2a:task_received"            — { taskId, fromAgent }
+"a2a:task_delegated"           — { taskId, toAgent }
+"a2a:confidence_capped"        — { taskId, originalConfidence, cappedConfidence }
+
+// Instance coordination (PH5.8)
+"instance:connected"           — { peerId, capabilities[] }
+"instance:disconnected"        — { peerId, reason }
+"instance:delegated"           — { taskId, toPeerId, reason }
 "instance:delegation_complete" — { taskId, fromPeerId, success }
 
-// Knowledge sharing (PH5.7)
-"knowledge:exported"       — { type, count, toPeerId }
-"knowledge:imported"       — { type, count, fromPeerId }
-"knowledge:rejected"       — { type, fromPeerId, reason }
+// Knowledge sharing (PH5.9)
+"knowledge:exported"           — { type, count, toPeerId }
+"knowledge:imported"           — { type, count, fromPeerId }
+"knowledge:rejected"           — { type, fromPeerId, reason }
 
-// Polyglot (PH5.8-5.11)
-"oracle:language_detected" — { file, language }
-"oracle:remote_invoked"    — { oracleName, peerId, duration_ms }
+// Polyglot (PH5.10-PH5.13)
+"oracle:language_detected"     — { file, language }
+"oracle:remote_invoked"        — { oracleName, peerId, duration_ms }
+
+// GAP-H failure mode detection (PH5.15)
+"memory:eviction_warning"      — { sessionId, evictionCount, correlatedFailures }
+"context:verdict_omitted"      — { taskId, oracleName, available: true }
+"selfmodel:systematic_miscalibration" — { taskType, errorDirection, windowSize }
 ```
 
 #### Gap Closure Analysis
 
 | Gap | Status | How |
 |:----|:-------|:----|
-| GAP-1 (No Channel/Integration Layer) | **Fully addressed** | API server (HTTP), VS Code extension (editor), Terminal UI (interactive CLI). External channels (Slack, Matrix) achievable via API server. |
-| GAP-2 (No Concrete Tool Protocol) | **Fully addressed** | PH5.4 implements MCP bridge (TDD §19). Vinyan becomes both MCP client + server. |
-| GAP-3 (No Session Management) | **Partially addressed** | API server introduces session concepts. Full transcript/compaction is a Phase 5 extension. |
-| GAP-5 (No Observability/Debugging UI) | **Fully addressed** | Terminal UI, VS Code extension, API metrics endpoints, extended observability. |
-| GAP-G (Cross-Domain Limitation) | **Partially addressed** | Pillar 3 extends to Python, Go, Rust. True cross-domain (legal, financial) deferred. Polyglot framework (PH5.8) establishes extension pattern. |
-| GAP-H UC-6 (Restarted Randomly) | **Addressed** | API server session persistence + cross-instance state delegation. |
+| GAP-1 (No Channel/Integration Layer) | **Fully addressed** | API server (HTTP), VS Code extension (editor), Terminal UI (interactive CLI), Web Dashboard (browser), A2A bridge (agent interop). External channels (Slack, Matrix) achievable via API server. |
+| GAP-2 (No Concrete Tool Protocol) | **Fully addressed** | PH5.5 implements MCP bridge (TDD §19). PH5.6 implements A2A bridge (concept §2.1). Vinyan becomes MCP client + server + A2A participant. |
+| GAP-3 (No Session Management) | **Fully addressed** | PH5.1 session manager with compaction pipeline, checkpoint recovery, session-scoped Working Memory. Compacted summaries feed Sleep Cycle. |
+| GAP-5 (No Observability/Debugging UI) | **Fully addressed** | Terminal UI, Web Dashboard, VS Code extension, API metrics endpoints, audit replay, GAP-H detection events. |
+| GAP-G (Cross-Domain Limitation) | **Partially addressed** | Pillar 3 extends to Python, Go, Rust. True cross-domain (legal, financial) deferred. Polyglot framework (PH5.10) establishes extension pattern. |
+| GAP-H (Failure Modes) | **Partially addressed** | 5 of 14 failure modes covered (FC4, FC6, FC7, FC9, FC11). Detection events surface via PH5.15 observability. Remaining modes require LLM-level or planning-level intervention. |
+| GAP-H UC-6 (Restarted Randomly) | **Fully addressed** | API server checkpoint recovery (PH5.1) + cross-instance state delegation (PH5.8). |
 
 #### Items Deferred from Phase 4 to Phase 5
 
-- Automatic cross-project pattern transfer (PH4.6 implements abstraction layer only) → **PH5.7**
-- Oracle/Verifier-class Reasoning Engine lifecycle governance (concept §13.4) → **PH5.6**
-- Multi-instance WorkerProfile sharing via ECP (concept §11) → **PH5.7**
-- ECP `temporal_context` for capability evidence aging (concept §13.2) → **PH5.5**
-- ECP `deliberation_request` as capability signal input (concept §13.1) → **PH5.5**
-- Cross-domain oracle framework (GAP-G) → **PH5.8**
+- Automatic cross-project pattern transfer (PH4.6 implements abstraction layer only) → **PH5.9**
+- Oracle/Verifier-class Reasoning Engine lifecycle governance (concept §13.4) → **PH5.8**
+- Multi-instance `WorkerProfile` sharing via ECP (concept §11) → **PH5.9**
+- ECP `temporal_context` for capability evidence aging (concept §13.2) → **PH5.7**
+- ECP `deliberation_request` as capability signal input (concept §13.1) → **PH5.7**
+- Cross-domain oracle framework (GAP-G) → **PH5.10**
 - Checkpoint recovery for "restarted randomly" failure mode (GAP-H UC-6) → **PH5.1**
 
 #### Items Remaining Beyond Phase 5
@@ -2632,36 +2756,48 @@ New events added to `VinyanBusEvents`:
 - True cross-domain support beyond programming languages (legal, financial, scientific verification)
 - Proactive Background Cognition (concept §13.3 — persistent background agents, resource model unresolved)
 - Fleet-level consensus governance (beyond advisory peer coordination)
+- L3 container isolation for full sandboxing (Phase 2 design, not implemented)
+- FC14 "Planning failure" detection and mitigation (requires Task Decomposer + Self-Model integration)
 
 #### Risk Assessment
 
 | Component | Risk Type | Level | Notes |
 |:----------|:----------|:-----:|:------|
-| PH5.1 API Server | Engineering | Low | Well-understood HTTP server pattern. Bun has built-in HTTP server. |
+| PH5.0 Pre-Phase Cleanup | Engineering | Low | 4 targeted wiring fixes in known locations. Low blast radius. |
+| PH5.1 API Server | Engineering | Low | Well-understood HTTP server pattern. Bun has built-in HTTP server. Session compaction is the riskiest sub-feature. |
 | PH5.2 Terminal UI | Engineering | Low | Rendering bus events is read-only. No complex state management. |
-| PH5.3 VS Code Extension | Engineering | Medium | VS Code extension API is stable but verbose. Must work across versions. |
-| PH5.4 MCP Bridge | Engineering | Low-Med | TDD §19 fully specifies the interface. MCP SDK exists. |
-| PH5.5 ECP Network Transport | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Must design carefully. |
-| PH5.6 Instance Coordinator | Research | **High** | Distributed coordination is inherently complex. Consensus, ordering, partition tolerance. |
-| PH5.7 Knowledge Sharing | Research | Medium | Builds on PH4.6 abstraction. Main risk: shared knowledge harmful locally. |
-| PH5.8 Polyglot Framework | Engineering | Low | Runner generalization is a small change (use `config.command`). |
-| PH5.9-5.11 Language Oracles | Engineering | Low-Med | Each language tool has structured JSON output. |
-| PH5.12 Security Model | Engineering | Medium | Security is easy to get wrong. Must not block legitimate use. |
-| PH5.14 Migration | Engineering | Low | Additive-only schema changes. SQLite handles this well. |
+| PH5.3 Web Dashboard | Engineering | Medium | Frontend framework choice affects maintenance burden. Must align auth with PH5.14. |
+| PH5.4 VS Code Extension | Engineering | Medium | VS Code extension API is stable but verbose. Must work across versions. |
+| PH5.5 MCP Bridge | Engineering | Low-Med | TDD §19 fully specifies the interface. MCP SDK exists. |
+| PH5.6 A2A Bridge | Engineering | Medium | A2A spec is newer; ecosystem maturity uncertain. Confidence ceiling logic is novel. |
+| PH5.7 ECP Network Transport | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Must design carefully. |
+| PH5.8 Instance Coordinator | Research | **High** | Distributed coordination is inherently complex. Consensus, ordering, partition tolerance. Creativity Protection Zone is novel. |
+| PH5.9 Knowledge Sharing | Research | Medium | Builds on PH4.6 abstraction. Main risk: shared knowledge harmful locally. |
+| PH5.10 Polyglot Framework | Engineering | Low | Runner generalization is a small change (use `config.command`). |
+| PH5.11-PH5.13 Language Oracles | Engineering | Low-Med | Each language tool has structured JSON output. |
+| PH5.14 Security Model | Engineering | Medium | Security is easy to get wrong. Must not block legitimate use. |
+| PH5.15 Observability Extension | Engineering | Low-Med | GAP-H detection events are novel but read-only. No governance impact. |
+| PH5.16 Migration | Engineering | Low | Additive-only schema changes. SQLite handles this well. |
 | Network partition handling | System | **High** | Distributed system fundamental challenge. All multi-instance features must degrade gracefully to single-instance mode. |
 
 **Biggest unknown:** Whether multi-instance coordination provides enough value over single-instance to justify the distributed systems complexity. Phase 4 trace data (especially PH4.6 cross-project transfer results) should inform this before investing heavily in Pillar 2.
 
 #### Critical Files for Implementation
 
-- `src/oracle/runner.ts` — Core change for polyglot oracles: switch from hardcoded `bun run` to `config.command`
-- `src/orchestrator/factory.ts` — Wiring point for all new Phase 5 dependencies (API server, instance coordinator, polyglot oracles)
-- `src/core/bus.ts` — EventBus must gain network transport capability for cross-instance event forwarding
-- `src/orchestrator/types.ts` — All new interfaces (instance identity, cross-instance delegation, polyglot oracle config)
-- `src/config/schema.ts` — `phase5` config namespace
-- `src/observability/metrics.ts` — Fleet and API metrics extensions
-- `src/bus/audit-listener.ts` — JSONL format is the natural serialization for cross-instance events
-- `docs/vinyan-tdd.md` §19 — MCP bridge specification that PH5.4 implements directly
+- `src/oracle/runner.ts` — Core change for polyglot oracles: switch from hardcoded `bun run` to `config.command` (PH5.10)
+- `src/oracle/registry.ts` — Static `ORACLE_PATHS` → dynamic registration with `registerOracle()` (PH5.10)
+- `src/orchestrator/factory.ts` — Wiring point for all new Phase 5 dependencies (API server, instance coordinator, polyglot oracles, A2A bridge)
+- `src/orchestrator/core-loop.ts` — Wire `oracleFailurePattern` fingerprint dimension (PH5.0), optional `instanceCoordinator` (PH5.8)
+- `src/core/bus.ts` — EventBus must gain network transport capability for cross-instance event forwarding (PH5.7)
+- `src/orchestrator/types.ts` — All new interfaces (instance identity, cross-instance delegation, polyglot oracle config, session management)
+- `src/config/schema.ts` — `phase5` config namespace with `api`, `instances`, `creativity`, `polyglot` sections
+- `src/bus/audit-listener.ts` — Complete `ALL_EVENTS` coverage (PH5.0) + JSONL as cross-instance serialization format
+- `src/observability/metrics.ts` — Fleet, API, and GAP-H detection metrics extensions (PH5.15)
+- `src/orchestrator/worker-lifecycle.ts` — State machine pattern reused for `OracleProfile` lifecycle (PH5.8)
+- `src/evolution/pattern-abstraction.ts` — `AbstractPatternExport.version` migration support (PH5.0) + cross-instance sharing format (PH5.9)
+- `src/db/vinyan-db.ts` — Migration framework replacing `CREATE TABLE IF NOT EXISTS` (PH5.16)
+- `docs/vinyan-tdd.md` §19 — MCP bridge specification that PH5.5 implements directly
+- `docs/vinyan-concept.md` §2.1 — A2A protocol specification that PH5.6 implements
 
 ---
 
@@ -2725,7 +2861,8 @@ Phase 0 Gaps (P0-1..P0-5)
 | Cross-project transfer (PH4.6) | Research | Medium | Scoped down to abstraction layer + manual export/import only. Automatic transfer deferred to Phase 5. |
 | Fleet collapse to monoculture (PH4.5) | System | **High** | 3-layer defense: diversity floor (15% minimum) + exploration budget (10% minimum) + staleness penalty. Safety invariant I11 caps single-worker allocation at 70%. |
 | Multi-model data bootstrapping (PH4.0) | Data | Medium | PH4.0 auto-registers existing models + epsilon-worker exploration (10%) seeds diversity. Data gates block PH4.3+ until sufficient. |
-| ECP Network Transport (PH5.5) | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Start with HTTP/JSON-RPC + ECP headers, optimize later. |
-| Instance Coordinator (PH5.6) | Research | **High** | Distributed coordination inherently complex. Start with 2-instance static topology. All features degrade to single-instance. |
-| Polyglot oracle framework (PH5.8) | Engineering | Low | Runner generalization is a small change. Oracle binary contract already implicit. |
-| Network partition handling (PH5.6) | System | **High** | All multi-instance features must degrade gracefully to single-instance mode. Advisory-only coordination minimizes partition damage. |
+| ECP Network Transport (PH5.7) | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Start with HTTP/JSON-RPC + ECP headers, optimize later. |
+| Instance Coordinator (PH5.8) | Research | **High** | Distributed coordination inherently complex. Creativity Protection Zone is novel. Start with 2-instance static topology. All features degrade to single-instance. |
+| A2A Protocol Bridge (PH5.6) | Engineering | Medium | A2A spec is newer; ecosystem maturity uncertain. Confidence ceiling logic is novel. |
+| Polyglot oracle framework (PH5.10) | Engineering | Low | Runner generalization is a small change. Oracle binary contract already implicit. |
+| Network partition handling (PH5.8) | System | **High** | All multi-instance features must degrade gracefully to single-instance mode. Advisory-only coordination minimizes partition damage. |

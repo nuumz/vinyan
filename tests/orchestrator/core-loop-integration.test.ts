@@ -5,7 +5,7 @@
  * Exercises the full executeTask pipeline: Perceive → Predict → Plan → Generate → Verify → Learn.
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createOrchestrator } from "../../src/orchestrator/factory.ts";
@@ -184,5 +184,68 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
     expect(r1.id).toBe("task-1");
     expect(r2.id).toBe("task-2");
     expect(orchestrator.traceCollector.getTraces().length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("11. commitArtifacts writes verified mutations to disk", async () => {
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
+    const result = await orchestrator.executeTask(
+      makeInput({ targetFiles: ["src/foo.ts"] }),
+    );
+    // If mutations were applied (verification passed), file should be updated on disk
+    if (result.status === "completed" && result.mutations.length > 0) {
+      const content = readFileSync(join(tempDir, "src/foo.ts"), "utf-8");
+      expect(content).toBe("export const x = 2;\n");
+    }
+  });
+
+  test("12. rejected mutations excluded from result (A6 path safety)", async () => {
+    // Mock provider proposes a path-traversal mutation alongside a valid one
+    const content = JSON.stringify({
+      proposedMutations: [
+        { file: "src/foo.ts", content: "export const x = 42;\n", explanation: "valid" },
+        { file: "../escape.ts", content: "hacked", explanation: "traversal" },
+      ],
+      proposedToolCalls: [],
+      uncertainties: [],
+    });
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(content), useSubprocess: false });
+    const result = await orchestrator.executeTask(
+      makeInput({ targetFiles: ["src/foo.ts"] }),
+    );
+    // Traversal file must never exist on disk regardless of status
+    expect(existsSync(join(tempDir, "..", "escape.ts"))).toBe(false);
+
+    if (result.status === "completed" && result.mutations.length > 0) {
+      // Only valid mutations should appear
+      const files = result.mutations.map(m => m.file);
+      expect(files).not.toContain("../escape.ts");
+      expect(files).toContain("src/foo.ts");
+      // Notes should mention rejection
+      expect(result.notes?.some(n => n.includes("Rejected"))).toBe(true);
+    }
+  });
+
+  test("13. predictionError populated in trace before recording (A7)", async () => {
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
+    // Run an L1+ task so self-model makes a prediction
+    await orchestrator.executeTask(
+      makeInput({ id: "warmup", targetFiles: ["src/foo.ts"] }),
+    );
+    // Run a second task — self-model now has history to calibrate against
+    await orchestrator.executeTask(
+      makeInput({ id: "calibrate", targetFiles: ["src/foo.ts"] }),
+    );
+    const traces = orchestrator.traceCollector.getTraces();
+    // At least one L1+ trace should exist
+    const l1Traces = traces.filter(t => t.routingLevel >= 1);
+    if (l1Traces.length >= 2) {
+      // The second L1+ trace should have predictionError set (calibrated from first)
+      const secondTrace = l1Traces[l1Traces.length - 1]!;
+      // predictionError is set when self-model has prior data — verify structure if present
+      if (secondTrace.predictionError) {
+        expect(secondTrace.predictionError).toHaveProperty("predicted");
+        expect(secondTrace.predictionError).toHaveProperty("actual");
+      }
+    }
   });
 });

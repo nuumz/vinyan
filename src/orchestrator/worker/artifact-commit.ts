@@ -103,5 +103,17 @@ export function validateArtifactPath(
     // File doesn't exist yet — that's fine for new files
   }
 
+  // Step 5: Verify parent directory resolves within workspace (symlink-in-parent escape)
+  try {
+    const parentDir = dirname(absPath);
+    const realParent = realpathSync(parentDir);
+    const normalizedParent = realParent.endsWith("/") ? realParent : realParent + "/";
+    if (!normalizedParent.startsWith(normalizedWorkspace) && realParent !== realWorkspace) {
+      return { valid: false, reason: `Parent directory of '${artifactPath}' resolves outside workspace` };
+    }
+  } catch {
+    // Parent doesn't exist yet — mkdirSync will create it within workspace (Step 3 already validated lexical containment)
+  }
+
   return { valid: true };
 }

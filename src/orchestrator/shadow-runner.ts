@@ -64,11 +64,8 @@ export class ShadowRunner {
    * Returns the validation result, or null if no pending jobs.
    */
   async processNext(): Promise<ShadowValidationResult | null> {
-    const pending = this.store.findPending();
-    if (pending.length === 0) return null;
-
-    const job = pending[0]!;
-    this.store.updateStatus(job.id, "running");
+    const job = this.store.claimNextPending();
+    if (!job) return null;
 
     try {
       const result = await this.runValidation(job);

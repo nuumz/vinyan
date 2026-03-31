@@ -14,9 +14,20 @@ import type { ToolCall, IsolationLevel } from "../types.ts";
 import type { Tool, ToolContext, ToolValidationResult } from "./tool-interface.ts";
 
 const SHELL_ALLOWLIST = new Set([
-  "tsc", "bun", "eslint", "prettier", "git", "node", "python",
+  "tsc", "bun", "eslint", "prettier", "git",
   "cat", "head", "tail", "wc", "grep", "find", "ruff",
 ]);
+
+/**
+ * Interpreters that can execute arbitrary files.
+ * These are NOT in SHELL_ALLOWLIST — a worker cannot run `python script.py` or `node file.js`.
+ * Only safe sub-commands are allowed via INTERPRETER_SAFE_PATTERNS.
+ */
+const INTERPRETER_SAFE_PATTERNS: Record<string, RegExp> = {
+  bun: /^bun\s+(test|run\s+(test|lint|check|build|typecheck))\b/,
+  node: /^node\s+--version$/,
+  python: /^python\s+--version$/,
+};
 
 const DANGEROUS_SHELL_CHARS = /[;|&`$(){}><\n\\]/;
 
@@ -39,8 +50,8 @@ export function validateToolCall(
     return { valid: false, reason: `Tool '${tool.name}' requires isolation level ${tool.minIsolationLevel}, current routing level is ${context.routingLevel}` };
   }
 
-  // 2. Path permission check (for file tools)
-  if (tool.category === "file_read" || tool.category === "file_write") {
+  // 2. Path permission check (for file and search tools)
+  if (tool.category === "file_read" || tool.category === "file_write" || tool.category === "search") {
     const filePath = call.parameters.file_path as string | undefined
       ?? call.parameters.path as string | undefined;
     if (filePath) {
@@ -72,8 +83,24 @@ export function validateToolCall(
   if (tool.name === "shell_exec") {
     const command = call.parameters.command as string | undefined;
     if (command) {
-      const words = command.trim().split(/\s+/);
+      const trimmed = command.trim();
+      const words = trimmed.split(/\s+/);
       const firstWord = words[0]!;
+
+      // 3a. Check interpreters first — only safe patterns allowed
+      const safePattern = INTERPRETER_SAFE_PATTERNS[firstWord];
+      if (safePattern) {
+        if (!safePattern.test(trimmed)) {
+          return { valid: false, reason: `'${firstWord}' is only allowed with safe sub-commands (e.g., 'bun test')` };
+        }
+        // Safe pattern matched — still check metacharacters
+        if (DANGEROUS_SHELL_CHARS.test(trimmed)) {
+          return { valid: false, reason: `Shell command contains dangerous metacharacter` };
+        }
+        return { valid: true };
+      }
+
+      // 3b. General allowlist check
       if (!SHELL_ALLOWLIST.has(firstWord)) {
         return { valid: false, reason: `Shell command '${firstWord}' is not in allowlist` };
       }
@@ -88,13 +115,6 @@ export function validateToolCall(
           if (subcommand === "push" || subcommand === "remote" || hasDangerousFlag) {
             return { valid: false, reason: `Dangerous git operation: 'git ${words.slice(1).join(" ")}'` };
           }
-        }
-      }
-      // Runtime executor validation — block --eval and similar code execution
-      if ((firstWord === "bun" || firstWord === "node" || firstWord === "python") && words.length > 1) {
-        const hasEval = words.slice(1).some(w => RUNTIME_DANGEROUS_ARGS.has(w));
-        if (hasEval) {
-          return { valid: false, reason: `'${firstWord}' with eval flag is not allowed` };
         }
       }
     }

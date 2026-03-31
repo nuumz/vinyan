@@ -8,6 +8,7 @@
  * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
  */
 import type { EvolutionaryRule, ExecutionTrace } from "../orchestrator/types.ts";
+import { simpleGlobMatch } from "../core/glob.ts";
 
 export interface BacktestResult {
   pass: boolean;
@@ -271,9 +272,3 @@ function avgQuality(traces: ExecutionTrace[]): number {
   return qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length;
 }
 
-function simpleGlobMatch(pattern: string, value: string): boolean {
-  const regex = new RegExp(
-    "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$",
-  );
-  return regex.test(value);
-}

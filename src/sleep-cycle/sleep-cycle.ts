@@ -19,6 +19,7 @@ import type { TraceStore } from "../db/trace-store.ts";
 import type { PatternStore } from "../db/pattern-store.ts";
 import type { ExtractedPattern, SleepCycleConfig, ExecutionTrace } from "../orchestrator/types.ts";
 import { wilsonLowerBound } from "./wilson.ts";
+import { simpleGlobMatch } from "../core/glob.ts";
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
 import type { SkillManager } from "../orchestrator/skill-manager.ts";
 import type { RuleStore } from "../db/rule-store.ts";
@@ -562,8 +563,7 @@ export class SleepCycleRunner {
     const filtered = allTraces.filter(trace => {
       if (condition.file_pattern) {
         const pattern = condition.file_pattern;
-        const regex = new RegExp("^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
-        const matches = trace.affected_files.some(f => regex.test(f));
+        const matches = trace.affected_files.some(f => simpleGlobMatch(pattern, f));
         if (!matches) return false;
       }
       if (condition.oracle_name) {

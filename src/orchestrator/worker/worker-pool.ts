@@ -44,7 +44,10 @@ export class WorkerPoolImpl implements WorkerPool {
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry;
     this.workspace = config.workspace;
-    this.useSubprocess = config.useSubprocess ?? false;
+    this.useSubprocess = config.useSubprocess ?? true;
+    if (!this.useSubprocess) {
+      console.warn("[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.");
+    }
     this.workerEntryPath =
       config.workerEntryPath ?? resolve(import.meta.dir, "worker-entry.ts");
   }
@@ -158,11 +161,7 @@ export class WorkerPoolImpl implements WorkerPool {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: {
-        ...process.env,
-        // PH4.4: Pass workerId to subprocess so it can select the right provider
-        ...(routing.workerId ? { VINYAN_WORKER_ID: routing.workerId } : {}),
-      },
+      env: buildWorkerEnv(routing),
     });
 
     const validated = WorkerInputSchema.parse(workerInput);
@@ -303,6 +302,32 @@ export class WorkerPoolImpl implements WorkerPool {
       return createUnifiedDiff(file, "", newContent);
     }
   }
+}
+
+// ── Environment ─────────────────────────────────────────────────────────
+
+/** Minimal env allowlist for worker subprocesses — prevents leaking credentials. */
+const WORKER_ENV_KEYS = ["PATH", "HOME", "TMPDIR", "LANG", "TERM", "BUN_INSTALL"];
+
+/** Known provider env var names — only the relevant key is forwarded. */
+const PROVIDER_ENV_KEYS = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+function buildWorkerEnv(routing: RoutingDecision): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const key of WORKER_ENV_KEYS) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  // Forward all provider keys — the worker's provider registry decides which to use
+  for (const key of PROVIDER_ENV_KEYS) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  if (routing.workerId) {
+    env.VINYAN_WORKER_ID = routing.workerId;
+  }
+  return env;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

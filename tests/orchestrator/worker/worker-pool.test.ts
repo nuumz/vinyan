@@ -72,7 +72,7 @@ function makeRegistry(options?: { shouldFail?: boolean; latencyMs?: number; resp
 
 describe("WorkerPoolImpl", () => {
   test("L0 dispatch returns empty result — no LLM call", async () => {
-    const pool = new WorkerPoolImpl({ registry: makeRegistry(), workspace: tempDir });
+    const pool = new WorkerPoolImpl({ registry: makeRegistry(), workspace: tempDir, useSubprocess: false });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(0));
     expect(result.mutations).toHaveLength(0);
     expect(result.tokensConsumed).toBe(0);
@@ -88,6 +88,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ responseContent: content }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations).toHaveLength(1);
@@ -106,6 +107,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ responseContent: content }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations[0]!.diff).toContain("--- a/src/foo.ts");
@@ -123,6 +125,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ responseContent: content }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations[0]!.diff).toContain("@@ -0,0 +1,");
@@ -133,6 +136,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ latencyMs: 5000 }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const routing = makeRouting(1);
     routing.latencyBudget_ms = 50; // Very short timeout
@@ -144,6 +148,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ shouldFail: true }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations).toHaveLength(0);
@@ -154,6 +159,7 @@ describe("WorkerPoolImpl", () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ responseContent: "I cannot help with that." }),
       workspace: tempDir,
+      useSubprocess: false,
     });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations).toHaveLength(0);
@@ -162,7 +168,7 @@ describe("WorkerPoolImpl", () => {
 
   test("no provider for routing level returns empty result", async () => {
     const registry = new LLMProviderRegistry(); // empty registry
-    const pool = new WorkerPoolImpl({ registry, workspace: tempDir });
+    const pool = new WorkerPoolImpl({ registry, workspace: tempDir, useSubprocess: false });
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations).toHaveLength(0);
     expect(result.tokensConsumed).toBe(0);

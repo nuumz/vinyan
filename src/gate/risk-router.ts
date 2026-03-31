@@ -62,6 +62,12 @@ export function detectEnvironment(): "development" | "staging" | "production" {
   return "development";
 }
 
+/**
+ * Sealed environment — read once at module init, immutable for the process lifetime.
+ * Prevents runtime manipulation of NODE_ENV from downgrading production guardrails.
+ */
+export const SEALED_ENVIRONMENT = detectEnvironment();
+
 // ── Core risk scoring ────────────────────────────────────────────
 
 export function calculateRiskScore(factors: RiskFactors): number {

@@ -7,7 +7,7 @@
  * Source of truth: vinyan-tdd.md §6, §16.2
  */
 import type { HypothesisTuple } from "../core/types.ts";
-import { calculateRiskScore, routeByRisk, detectEnvironment, type RoutingThresholds } from "../gate/risk-router.ts";
+import { calculateRiskScore, routeByRisk, SEALED_ENVIRONMENT, type RoutingThresholds } from "../gate/risk-router.ts";
 import type { RiskFactors, RoutingLevel, RoutingDecision, TaskInput } from "./types.ts";
 import type { RiskRouter } from "./core-loop.ts";
 
@@ -50,7 +50,7 @@ export class RiskRouterImpl implements RiskRouter {
       fileVolatility: 0,
       irreversibility: 0.5,
       hasSecurityImplication: false,
-      environmentType: detectEnvironment(),
+      environmentType: SEALED_ENVIRONMENT,
     };
 
     const score = calculateRiskScore(factors);

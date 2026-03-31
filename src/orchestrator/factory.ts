@@ -242,6 +242,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerSelector,
     workerStore,
     workerLifecycle,
+    worldGraph,
     // Disable exploration in test mode for deterministic routing (A3)
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
   };

@@ -6,6 +6,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { ExecutionTrace, ShadowValidationResult } from "../orchestrator/types.ts";
+import { ExecutionTraceRowSchema } from "./schemas.ts";
 
 export class TraceStore {
   private db: Database;
@@ -122,6 +123,11 @@ export class TraceStore {
 // ── Row → ExecutionTrace deserialization ────────────────────────────────
 
 function rowToTrace(row: any): ExecutionTrace {
+  const validated = ExecutionTraceRowSchema.safeParse(row);
+  if (!validated.success) {
+    console.warn("[vinyan] TraceStore: row failed Zod validation, using fallback", validated.error.message);
+  }
+  const r = row;
   return {
     id: row.id,
     taskId: row.task_id,

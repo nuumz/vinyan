@@ -8,6 +8,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { WorkerProfile, WorkerProfileStatus, WorkerStats, WorkerConfig } from "../orchestrator/types.ts";
+import { WorkerProfileRowSchema } from "./schemas.ts";
 
 export class WorkerStore {
   private db: Database;
@@ -318,24 +319,30 @@ export class WorkerStore {
 
 // ── Row deserialization ───────────────────────────────────────────────────
 
-function rowToProfile(row: any): WorkerProfile {
+function rowToProfile(row: unknown): WorkerProfile {
+  const parsed = WorkerProfileRowSchema.safeParse(row);
+  const r = parsed.success ? parsed.data : (row as any);
+  if (!parsed.success) {
+    console.warn("[vinyan] WorkerStore: row failed Zod validation, using fallback", parsed.error.message);
+  }
+
   const config: WorkerConfig = {
-    modelId: row.model_id,
-    modelVersion: row.model_version ?? undefined,
-    temperature: row.temperature,
-    toolAllowlist: row.tool_allowlist ? JSON.parse(row.tool_allowlist) : undefined,
-    systemPromptTemplate: row.system_prompt_tpl ?? undefined,
-    maxContextTokens: row.max_context_tokens ?? undefined,
+    modelId: r.model_id,
+    modelVersion: r.model_version ?? undefined,
+    temperature: r.temperature,
+    toolAllowlist: parsed.success ? r.tool_allowlist : (r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined),
+    systemPromptTemplate: r.system_prompt_tpl ?? undefined,
+    maxContextTokens: r.max_context_tokens ?? undefined,
   };
 
   return {
-    id: row.id,
+    id: r.id,
     config,
-    status: row.status,
-    createdAt: row.created_at,
-    promotedAt: row.promoted_at ?? undefined,
-    demotedAt: row.demoted_at ?? undefined,
-    demotionReason: row.demotion_reason ?? undefined,
-    demotionCount: row.demotion_count,
+    status: r.status,
+    createdAt: r.created_at,
+    promotedAt: r.promoted_at ?? undefined,
+    demotedAt: r.demoted_at ?? undefined,
+    demotionReason: r.demotion_reason ?? undefined,
+    demotionCount: r.demotion_count,
   };
 }

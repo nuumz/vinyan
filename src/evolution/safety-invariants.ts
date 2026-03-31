@@ -87,9 +87,10 @@ export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult
   if (rule.action === "prefer-model") {
     const preferredModel = rule.parameters.preferredModel;
     if (typeof preferredModel === "string") {
-      const allowed = MODEL_ALLOWLIST_PREFIXES.some(p => preferredModel.startsWith(p));
-      if (!allowed) {
-        violations.push(`I7: preferredModel '${preferredModel}' does not match any allowed prefix (${MODEL_ALLOWLIST_PREFIXES.join(", ")})`);
+      const allowedByPrefix = MODEL_ALLOWLIST_PREFIXES.some(p => preferredModel.startsWith(p));
+      const allowedByExplicit = OPENROUTER_MODEL_ALLOWLIST.has(preferredModel);
+      if (!allowedByPrefix && !allowedByExplicit) {
+        violations.push(`I7: preferredModel '${preferredModel}' does not match any allowed model`);
       }
     }
   }
@@ -165,7 +166,18 @@ const BUDGET_CEILING = {
 const RISK_THRESHOLD_FLOOR = 0.05;
 
 /** Allowed model name prefixes for prefer-model rules. */
-const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/", "openrouter/"];
+const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/"];
+
+/**
+ * Explicit OpenRouter model allowlist — only curated, safety-trained models.
+ * Generic "openrouter/" prefix was removed to prevent routing to arbitrary/uncensored models.
+ */
+const OPENROUTER_MODEL_ALLOWLIST = new Set([
+  "openrouter/anthropic/claude-3.5-sonnet",
+  "openrouter/anthropic/claude-3-opus",
+  "openrouter/openai/gpt-4o",
+  "openrouter/google/gemini-pro",
+]);
 
 /** I11: Maximum allocation for a single worker (Phase 4 fleet diversity). */
 const WORKER_DIVERSITY_CAP = 0.70;

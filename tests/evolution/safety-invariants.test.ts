@@ -222,4 +222,22 @@ describe("checkSafetyInvariants — I7 model allowlist", () => {
     expect(result.safe).toBe(true);
     expect(result.violations).toHaveLength(0);
   });
+
+  test("prefer-model with preferredModel: 'openrouter/uncensored-model' is rejected (I7)", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "prefer-model",
+      parameters: { preferredModel: "openrouter/uncensored-model" },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I7"))).toBe(true);
+  });
+
+  test("prefer-model with preferredModel: 'openrouter/anthropic/claude-3.5-sonnet' is allowed (explicit allowlist)", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "prefer-model",
+      parameters: { preferredModel: "openrouter/anthropic/claude-3.5-sonnet" },
+    }));
+    expect(result.safe).toBe(true);
+    expect(result.violations).toHaveLength(0);
+  });
 });

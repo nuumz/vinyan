@@ -3,7 +3,7 @@
  *
  * Syntax: vinyan run "task description" --file src/foo.ts --budget 50000 [--retries 3] [--timeout 60000]
  * Output: TaskResult as JSON to stdout, progress to stderr
- * Exit:   0=completed, 1=failed, 2=escalated
+ * Exit:   0=completed, 1=failed, 2=escalated, 3=uncertain
  *
  * CLI is a bus consumer — it observes the core loop via event listeners
  * without modifying execution behavior (A3 compliance).
@@ -95,6 +95,9 @@ export async function runAgentTask(argv: string[]): Promise<void> {
       case "escalated":
         process.exit(2);
         break;
+      case "uncertain":
+        process.exit(3);
+        break;
     }
   } catch (err) {
     detachProgress?.();
@@ -111,7 +114,8 @@ function printSummary(
 ): void {
   const status =
     result.status === "completed" ? "OK" :
-    result.status === "escalated" ? "ESCALATED" : "FAILED";
+    result.status === "escalated" ? "ESCALATED" :
+    result.status === "uncertain" ? "UNCERTAIN" : "FAILED";
 
   const qs = result.qualityScore
     ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensions_available}D)`

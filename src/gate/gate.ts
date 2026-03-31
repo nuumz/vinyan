@@ -18,10 +18,11 @@ import type { HypothesisTuple, OracleVerdict, QualityScore } from "../core/types
 import { buildVerdict } from "../core/index.ts";
 import { logDecision, type SessionLogEntry } from "./logger.ts";
 import { isMutatingTool } from "./tool-classifier.ts";
-import { calculateRiskScore, getIrreversibilityScore, detectEnvironment } from "./risk-router.ts";
+import { calculateRiskScore, getIrreversibilityScore, SEALED_ENVIRONMENT } from "./risk-router.ts";
 import type { RiskFactors } from "../orchestrator/types.ts";
 import { computeQualityScore } from "./quality-score.ts";
 import type { ComplexityContext, TestContext } from "./quality-score.ts";
+import { resolveConflicts } from "./conflict-resolver.ts";
 import { OracleCircuitBreaker } from "../oracle/circuit-breaker.ts";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
@@ -147,7 +148,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
       fileVolatility: 0,
       irreversibility,
       hasSecurityImplication: false,
-      environmentType: detectEnvironment(),
+      environmentType: SEALED_ENVIRONMENT,
     };
     riskScore = calculateRiskScore(riskFactors);
   }
@@ -237,15 +238,20 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
       }),
   );
 
-  // ④ Aggregate results (skip null — oracle was excluded via timeout_behavior: "warn")
+  // ④ Collect results (skip null — oracle was excluded via timeout_behavior: "warn")
   for (const { name, result } of results) {
     if (!result) continue;
     oracleResults[name] = result;
-
-    if (!result.verified && !INFORMATIONAL_ORACLES.has(name)) {
-      reasons.push(`Oracle "${name}" rejected: ${result.reason ?? "no reason given"}`);
-    }
   }
+
+  // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
+  const resolved = resolveConflicts(oracleResults, {
+    oracleTiers: Object.fromEntries(
+      Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? "deterministic"]),
+    ),
+    informationalOracles: INFORMATIONAL_ORACLES,
+  });
+  reasons.push(...resolved.reasons);
 
   const decision: GateDecision = reasons.length > 0 ? "block" : "allow";
   const duration_ms = performance.now() - start;

@@ -7,6 +7,8 @@
  */
 import type { Database } from "bun:sqlite";
 import type { EvolutionaryRule } from "../orchestrator/types.ts";
+import { simpleGlobMatch } from "../core/glob.ts";
+import { EvolutionaryRuleRowSchema } from "./schemas.ts";
 
 export interface RuleMatchContext {
   filePattern?: string;
@@ -109,7 +111,7 @@ function matchesContext(rule: EvolutionaryRule, context: RuleMatchContext): bool
   const c = rule.condition;
 
   if (c.file_pattern && context.filePattern) {
-    if (!matchGlob(c.file_pattern, context.filePattern)) return false;
+    if (!simpleGlobMatch(c.file_pattern, context.filePattern)) return false;
   } else if (c.file_pattern && !context.filePattern) {
     return false;
   }
@@ -135,27 +137,26 @@ function matchesContext(rule: EvolutionaryRule, context: RuleMatchContext): bool
   return true;
 }
 
-/** Simple glob matching — supports * wildcard only. */
-function matchGlob(pattern: string, value: string): boolean {
-  const regex = new RegExp(
-    "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$",
-  );
-  return regex.test(value);
-}
-
 // ── Row deserialization ──────────────────────────────────────────────────
 
-function rowToRule(row: any): EvolutionaryRule {
+function rowToRule(row: unknown): EvolutionaryRule {
+  const parsed = EvolutionaryRuleRowSchema.safeParse(row);
+  if (parsed.success) {
+    return parsed.data as EvolutionaryRule;
+  }
+  // Fallback: best-effort deserialization (log warning for observability)
+  console.warn("[vinyan] RuleStore: row failed Zod validation, using fallback", parsed.error.message);
+  const r = row as any;
   return {
-    id: row.id,
-    source: row.source,
-    condition: JSON.parse(row.condition),
-    action: row.action,
-    parameters: JSON.parse(row.parameters),
-    status: row.status,
-    created_at: row.created_at,
-    effectiveness: row.effectiveness,
-    specificity: row.specificity,
-    superseded_by: row.superseded_by ?? undefined,
+    id: r.id,
+    source: r.source,
+    condition: JSON.parse(r.condition),
+    action: r.action,
+    parameters: JSON.parse(r.parameters),
+    status: r.status,
+    created_at: r.created_at,
+    effectiveness: r.effectiveness,
+    specificity: r.specificity,
+    superseded_by: r.superseded_by ?? undefined,
   };
 }

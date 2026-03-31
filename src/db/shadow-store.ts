@@ -75,6 +75,26 @@ export class ShadowStore {
     return rows.map(rowToShadowJob);
   }
 
+  /**
+   * Atomically claim the next pending shadow job for processing.
+   * Uses a transaction to SELECT + UPDATE in one step, preventing
+   * race conditions when multiple runners compete for jobs.
+   */
+  claimNextPending(): ShadowJobWithMutations | null {
+    const txn = this.db.transaction(() => {
+      const row = this.db.prepare(
+        `SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC LIMIT 1`,
+      ).get();
+      if (!row) return null;
+      const updated = this.db.prepare(
+        `UPDATE shadow_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'`,
+      ).run(Date.now(), (row as any).id);
+      if (updated.changes === 0) return null;
+      return rowToShadowJob(row);
+    });
+    return txn();
+  }
+
   findByTaskId(taskId: string): ShadowJobWithMutations | null {
     const row = this.db.prepare(
       `SELECT * FROM shadow_jobs WHERE task_id = ? ORDER BY enqueued_at DESC LIMIT 1`,

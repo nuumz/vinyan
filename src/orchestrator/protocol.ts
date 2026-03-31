@@ -89,6 +89,7 @@ export const PerceptualHierarchySchema = z.object({
   diagnostics: DiagnosticsSchema,
   verifiedFacts: z.array(VerifiedFactRefSchema),
   runtime: RuntimeInfoSchema,
+  frameworkMarkers: z.array(z.string()).optional(),
 });
 
 // ── WorkingMemoryState ───────────────────────────────────────────────
@@ -137,6 +138,7 @@ const TaskDAGNodeSchema = z.object({
 
 export const TaskDAGSchema = z.object({
   nodes: z.array(TaskDAGNodeSchema),
+  isFallback: z.boolean().optional(),
 });
 
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────

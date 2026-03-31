@@ -126,6 +126,8 @@ export interface OrchestratorDeps {
   workerSelector?: import("./worker-selector.ts").WorkerSelector;
   workerStore?: import("../db/worker-store.ts").WorkerStore;
   workerLifecycle?: import("./worker-lifecycle.ts").WorkerLifecycle;
+  /** WorldGraph for committing verified facts (A4: content-addressed truth). */
+  worldGraph?: import("../world-graph/world-graph.ts").WorldGraph;
   /** Epsilon-greedy exploration rate (default 0.05). Set to 0 in tests for determinism. */
   explorationEpsilon?: number;
 }
@@ -222,6 +224,7 @@ export async function executeTask(
           workerSelectionAudit: lastWorkerSelection,
         };
         await deps.traceCollector.record(timeoutTrace);
+        deps.bus?.emit("trace:record", { trace: timeoutTrace });
         deps.bus?.emit("task:timeout", {
           taskId: input.id,
           elapsed_ms: Date.now() - startTime,
@@ -309,6 +312,7 @@ export async function executeTask(
             workerSelectionAudit: selection,
           };
           await deps.traceCollector.record(uncertainTrace);
+          deps.bus?.emit("trace:record", { trace: uncertainTrace });
           const uncertainResult: TaskResult = {
             id: input.id,
             status: "uncertain",
@@ -368,7 +372,7 @@ export async function executeTask(
       let mutatingToolCalls: import("./types.ts").ToolCall[] = [];
       if (deps.toolExecutor && workerResult.proposedToolCalls.length > 0) {
         const toolContext = {
-          workspace: process.cwd(),
+          workspace: deps.workspace ?? process.cwd(),
           allowedPaths: input.targetFiles ?? [],
           routingLevel: routing.level,
         } as import("./tools/tool-interface.ts").ToolContext;
@@ -418,7 +422,7 @@ export async function executeTask(
         : undefined;
       const complexityCtx = buildComplexityContext(
         workerResult.mutations.map(m => ({ file: m.file, content: m.content })),
-        process.cwd(),
+        deps.workspace ?? process.cwd(),
       );
       const qualityScore = computeQualityScore(
         verification.verdicts,
@@ -483,7 +487,7 @@ export async function executeTask(
       // ── Step 5½: EXECUTE mutating tools ONLY after verification ──
       if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
         const toolContext = {
-          workspace: process.cwd(),
+          workspace: deps.workspace ?? process.cwd(),
           allowedPaths: input.targetFiles ?? [],
           routingLevel: routing.level,
         } as import("./tools/tool-interface.ts").ToolContext;
@@ -565,16 +569,53 @@ export async function executeTask(
           }
         }
 
+        // ── A4: Commit verified oracle verdicts as World Graph facts ────
+        if (deps.worldGraph && deps.workspace && commitResult && commitResult.applied.length > 0) {
+          try {
+            for (const file of commitResult.applied) {
+              const absPath = require("path").resolve(deps.workspace, file);
+              const hash = deps.worldGraph.computeFileHash(absPath);
+              deps.worldGraph.storeFact({
+                target: file,
+                pattern: "oracle-verified",
+                evidence: Object.entries(verification.verdicts).map(([oracle, passed]) => ({
+                  file,
+                  line: 0,
+                  snippet: `${oracle}: ${passed ? "pass" : "fail"}`,
+                })),
+                oracle_name: "orchestrator",
+                source_file: file,
+                file_hash: hash,
+                verified_at: Date.now(),
+                session_id: input.id,
+                confidence: 1.0,
+              });
+            }
+          } catch {
+            // WorldGraph fact commitment is best-effort — does not block task completion
+          }
+        }
+
+        // Filter mutations to only those actually committed (A6: rejected paths excluded)
+        const appliedSet = commitResult
+          ? new Set(commitResult.applied)
+          : new Set(workerResult.mutations.map(m => m.file));
+        const appliedMutations = workerResult.mutations.filter(m => appliedSet.has(m.file));
+        const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
+
         const successResult: TaskResult = {
           id: input.id,
-          status: "completed",
-          mutations: workerResult.mutations.map((m) => ({
+          status: allRejected ? "failed" : "completed",
+          mutations: appliedMutations.map((m) => ({
             file: m.file,
             diff: m.diff,
             oracleVerdicts: verification.verdicts,
           })),
           trace,
           qualityScore,
+          notes: commitResult?.rejected.length
+            ? [`Rejected files: ${commitResult.rejected.map(r => `${r.path} (${r.reason})`).join(", ")}`]
+            : undefined,
         };
         // ── Shadow Enqueue (Phase 2.2) — A6 crash-safety ──────────
         if (deps.shadowRunner && routing.level >= 2) {

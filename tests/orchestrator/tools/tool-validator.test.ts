@@ -68,18 +68,17 @@ describe("validateToolCall — dangerous git subcommands", () => {
   });
 });
 
-describe("validateToolCall — runtime eval rejection", () => {
-  test("bun --eval is rejected (dangerous eval flag)", () => {
-    // Use a simple string without shell metacharacters to isolate the eval check
+describe("validateToolCall — interpreter safe patterns", () => {
+  test("bun --eval is rejected", () => {
     const result = validateToolCall(makeShellCall("bun --eval script"), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain("eval flag is not allowed");
+    expect(result.reason).toContain("only allowed with safe sub-commands");
   });
 
-  test("node -e is rejected (dangerous eval flag)", () => {
+  test("node -e is rejected", () => {
     const result = validateToolCall(makeShellCall("node -e script"), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain("eval flag is not allowed");
+    expect(result.reason).toContain("only allowed with safe sub-commands");
   });
 
   test("bun test is allowed", () => {
@@ -87,8 +86,35 @@ describe("validateToolCall — runtime eval rejection", () => {
     expect(result.valid).toBe(true);
   });
 
-  test("python script.py is allowed (no eval flag)", () => {
+  test("bun run test is allowed", () => {
+    const result = validateToolCall(makeShellCall("bun run test"), shellExecTool, ctx);
+    expect(result.valid).toBe(true);
+  });
+
+  test("bun run lint is allowed", () => {
+    const result = validateToolCall(makeShellCall("bun run lint"), shellExecTool, ctx);
+    expect(result.valid).toBe(true);
+  });
+
+  test("python script.py is rejected (sandbox escape)", () => {
     const result = validateToolCall(makeShellCall("python script.py"), shellExecTool, ctx);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain("only allowed with safe sub-commands");
+  });
+
+  test("python --version is allowed", () => {
+    const result = validateToolCall(makeShellCall("python --version"), shellExecTool, ctx);
+    expect(result.valid).toBe(true);
+  });
+
+  test("node file.js is rejected (sandbox escape)", () => {
+    const result = validateToolCall(makeShellCall("node file.js"), shellExecTool, ctx);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain("only allowed with safe sub-commands");
+  });
+
+  test("node --version is allowed", () => {
+    const result = validateToolCall(makeShellCall("node --version"), shellExecTool, ctx);
     expect(result.valid).toBe(true);
   });
 });

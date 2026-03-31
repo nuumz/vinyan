@@ -143,6 +143,14 @@ export const searchGrep: Tool = {
   async execute(params, context) {
     const pattern = params.pattern as string;
     const path = (params.path ?? ".") as string;
+    // Path containment — reject traversal outside workspace
+    const absPath = resolve(context.workspace, path);
+    if (!absPath.startsWith(context.workspace + "/") && absPath !== context.workspace) {
+      return makeResult(params._callId as string ?? "", "search_grep", {
+        status: "error",
+        error: `Path '${path}' escapes workspace`,
+      });
+    }
     try {
       const proc = Bun.spawn(["grep", "-rn", pattern, path], {
         cwd: context.workspace,
@@ -181,9 +189,18 @@ export const shellExec: Tool = {
   sideEffect: true,
   async execute(params, context) {
     const command = params.command as string;
+    // Validate cwd if provided — must stay within workspace
+    const cwd = params.cwd as string | undefined;
+    const effectiveCwd = cwd ? resolve(context.workspace, cwd) : context.workspace;
+    if (!effectiveCwd.startsWith(context.workspace + "/") && effectiveCwd !== context.workspace) {
+      return makeResult(params._callId as string ?? "", "shell_exec", {
+        status: "error",
+        error: `cwd '${cwd}' escapes workspace`,
+      });
+    }
     try {
       const proc = Bun.spawn(["sh", "-c", command], {
-        cwd: context.workspace,
+        cwd: effectiveCwd,
         stdout: "pipe",
         stderr: "pipe",
       });

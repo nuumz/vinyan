@@ -18,6 +18,9 @@ import type { TraceStore } from "../db/trace-store.ts";
 import type { RuleStore } from "../db/rule-store.ts";
 import type { WorkerStore } from "../db/worker-store.ts";
 import type { WorldGraph } from "../world-graph/world-graph.ts";
+import type { MetricsCollector } from "../observability/metrics.ts";
+import { getSystemMetrics } from "../observability/metrics.ts";
+import { renderPrometheus } from "../observability/prometheus.ts";
 import { A2ABridge } from "../a2a/bridge.ts";
 
 export interface APIServerConfig {
@@ -36,6 +39,7 @@ export interface APIServerDeps {
   ruleStore?: RuleStore;
   workerStore?: WorkerStore;
   worldGraph?: WorldGraph;
+  metricsCollector?: MetricsCollector;
 }
 
 export class VinyanAPIServer {
@@ -46,6 +50,7 @@ export class VinyanAPIServer {
   private asyncResults = new Map<string, TaskResult>();
   private shuttingDown = false;
   private a2aBridge: A2ABridge;
+  private defaultSessionId: string | null = null;
 
   constructor(
     private config: APIServerConfig,
@@ -108,8 +113,19 @@ export class VinyanAPIServer {
       }
     }
 
+    // G2: Emit bus events for API request/response
+    const startTime = performance.now();
+    this.deps.bus.emit("api:request", { method, path, taskId: extractTaskId(path) });
+
     try {
-      return await this.route(method, path, req);
+      const response = await this.route(method, path, req);
+      this.deps.bus.emit("api:response", {
+        method,
+        path,
+        status: response.status,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      return response;
     } catch (err) {
       console.error("[vinyan-api] Unhandled error:", err);
       return jsonResponse({ error: "Internal server error" }, 500);
@@ -122,8 +138,9 @@ export class VinyanAPIServer {
       return jsonResponse({ status: "ok", uptime_ms: process.uptime() * 1000 });
     }
 
+    // G1: Wire real Prometheus metrics
     if (method === "GET" && path === "/api/v1/metrics") {
-      return jsonResponse({ tasks_in_flight: this.inFlightTasks.size });
+      return this.handleMetrics(req);
     }
 
     // ── Tasks ─────────────────────────────────────────────
@@ -192,6 +209,34 @@ export class VinyanAPIServer {
     return jsonResponse({ error: "Not found" }, 404);
   }
 
+  // ── Metrics Handler (G1: real Prometheus metrics) ────────────
+
+  private handleMetrics(req: Request): Response {
+    const url = new URL(req.url);
+    const format = url.searchParams.get("format");
+    const counters = this.deps.metricsCollector?.getCounters() ?? {};
+
+    // Without traceStore, return basic counters
+    if (!this.deps.traceStore) {
+      return jsonResponse({ tasks_in_flight: this.inFlightTasks.size, counters });
+    }
+
+    const metrics = getSystemMetrics({
+      traceStore: this.deps.traceStore,
+      ruleStore: this.deps.ruleStore,
+      workerStore: this.deps.workerStore,
+    });
+
+    if (format === "json") {
+      return jsonResponse({ ...metrics, counters, tasks_in_flight: this.inFlightTasks.size });
+    }
+
+    // Default: Prometheus text exposition format
+    return new Response(renderPrometheus(metrics, counters), {
+      headers: { "Content-Type": "text/plain; version=0.0.4" },
+    });
+  }
+
   // ── A2A Handler ──────────────────────────────────────────
 
   private async handleA2ARequest(req: Request): Promise<Response> {
@@ -202,11 +247,17 @@ export class VinyanAPIServer {
 
   // ── Task Handlers ───────────────────────────────────────
 
+  // G4: Track tasks in sessions
   private async handleSyncTask(req: Request): Promise<Response> {
     const body = await req.json() as Partial<TaskInput>;
     const input = buildTaskInput(body);
 
+    const session = this.getOrCreateDefaultSession();
+    this.deps.sessionManager.addTask(session.id, input);
+
     const result = await this.deps.executeTask(input);
+
+    this.deps.sessionManager.completeTask(session.id, input.id, result);
     return jsonResponse({ result });
   }
 
@@ -214,10 +265,14 @@ export class VinyanAPIServer {
     const body = await req.json() as Partial<TaskInput>;
     const input = buildTaskInput(body);
 
+    const session = this.getOrCreateDefaultSession();
+    this.deps.sessionManager.addTask(session.id, input);
+
     const promise = this.deps.executeTask(input);
     this.inFlightTasks.set(input.id, { promise });
 
     promise.then((result) => {
+      this.deps.sessionManager.completeTask(session.id, input.id, result);
       this.asyncResults.set(input.id, result);
       this.inFlightTasks.delete(input.id);
     }).catch(() => {
@@ -272,6 +327,8 @@ export class VinyanAPIServer {
   private async handleCreateSession(req: Request): Promise<Response> {
     const body = await req.json() as { source?: string };
     const session = this.deps.sessionManager.create(body.source ?? "api");
+    // G2: Emit session bus event
+    this.deps.bus.emit("session:created", { sessionId: session.id, source: body.source ?? "api" });
     return jsonResponse({ session }, 201);
   }
 
@@ -286,7 +343,21 @@ export class VinyanAPIServer {
     if (!session) return jsonResponse({ error: "Session not found" }, 404);
 
     const result = this.deps.sessionManager.compact(sessionId);
+    // G2: Emit session compacted bus event
+    this.deps.bus.emit("session:compacted", { sessionId, taskCount: result.statistics.totalTasks });
     return jsonResponse({ compaction: result });
+  }
+
+  // ── Default session helper (G4) ────────────────────────
+
+  private getOrCreateDefaultSession(): Session {
+    if (this.defaultSessionId) {
+      const existing = this.deps.sessionManager.get(this.defaultSessionId);
+      if (existing) return existing;
+    }
+    const session = this.deps.sessionManager.create("api");
+    this.defaultSessionId = session.id;
+    return session;
   }
 
   // ── Graceful Shutdown (TDD §22.7) ──────────────────────
@@ -359,4 +430,10 @@ function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
     },
     acceptanceCriteria: partial.acceptanceCriteria,
   };
+}
+
+/** Extract taskId from API path like /api/v1/tasks/:id */
+function extractTaskId(path: string): string | undefined {
+  const match = path.match(/^\/api\/v1\/tasks\/([^/]+)/);
+  return match?.[1];
 }

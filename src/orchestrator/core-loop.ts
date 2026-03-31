@@ -152,7 +152,7 @@ export async function executeTask(
   input: TaskInput,
   deps: OrchestratorDeps,
 ): Promise<TaskResult> {
-  const workingMemory = new WorkingMemory();
+  const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id });
   const startTime = Date.now();
 
   // Outer loop: routing level escalation
@@ -694,6 +694,16 @@ export async function executeTask(
         trace.approach,
         verification.reason ?? "unknown",
       );
+
+      // G3: Emit context:verdict_omitted for failed oracle verdicts
+      // These verdicts won't be in the worker's next context unless explicitly propagated
+      for (const oracleName of failedOracles) {
+        deps.bus?.emit("context:verdict_omitted", {
+          taskId: input.id,
+          oracleName,
+          reason: "Oracle verdict available but not propagated to worker context on retry",
+        });
+      }
 
       // ── Skill outcome: failure (H4) ──────────────────────────────
       if (matchedSkill && deps.skillManager) {

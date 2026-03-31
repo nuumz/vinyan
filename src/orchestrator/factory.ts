@@ -41,6 +41,7 @@ import { WorkerSelector } from "./worker-selector.ts";
 import { WorkerLifecycle } from "./worker-lifecycle.ts";
 import { CapabilityModel } from "./capability-model.ts";
 import { LLMCriticImpl } from "./critic/llm-critic-impl.ts";
+import { GapHDetector } from "../observability/gap-h-detector.ts";
 import type { WorkerProfile } from "./types.ts";
 import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
 
@@ -65,6 +66,15 @@ export interface Orchestrator {
   skillManager?: SkillManager;
   sleepCycleRunner?: SleepCycleRunner;
   workerLifecycle?: WorkerLifecycle;
+  // Exposed stores for API server (G7)
+  traceStore?: TraceStore;
+  ruleStore?: RuleStore;
+  skillStore?: SkillStore;
+  patternStore?: PatternStore;
+  shadowStore?: ShadowStore;
+  workerStore?: WorkerStore;
+  worldGraph?: WorldGraph;
+  metricsCollector?: MetricsCollector;
   getSessionCount(): number;
   close(): void;
 }
@@ -157,7 +167,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const perception = new PerceptionAssemblerImpl({ workspace });
   const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
   const selfModel = db
-    ? new CalibratedSelfModel({ traceStore, db: db.getDb() })
+    ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {
         console.warn("[vinyan] SQLite unavailable — using static self-model (no calibration)");
         return new SelfModelStub();
@@ -259,6 +269,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, ".vinyan", "audit.jsonl"));
 
+  // GAP-H failure mode detection (G5: was dead code, now live)
+  const gapHDetector = new GapHDetector(bus);
+  const detachGapH = gapHDetector.attach();
+
   // Shadow validation listener — update trace store when shadow processing completes (H3)
   if (shadowRunner && traceStore) {
     bus.on("shadow:complete", ({ result }) => {
@@ -305,9 +319,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillManager,
     sleepCycleRunner,
     workerLifecycle,
+    // Exposed stores for API server wiring (G7)
+    traceStore,
+    ruleStore,
+    skillStore,
+    patternStore,
+    shadowStore,
+    workerStore,
+    worldGraph,
+    metricsCollector,
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);
+      detachGapH();
       detachMetrics();
       traceListenerHandle.detach();
       detachAudit();

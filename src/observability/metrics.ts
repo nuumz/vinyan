@@ -203,6 +203,14 @@ export class MetricsCollector {
       bus.on("selfmodel:calibration_error", () => this.inc("selfmodel.calibration_error")),
       bus.on("oracle:contradiction", () => this.inc("oracle.contradiction")),
       bus.on("decomposer:fallback", () => this.inc("decomposer.fallback")),
+      // Phase 5: Observability, API, and GAP-H events (G3)
+      bus.on("observability:alert", () => this.inc("observability.alert")),
+      bus.on("memory:eviction_warning", () => this.inc("memory.eviction")),
+      bus.on("context:verdict_omitted", () => this.inc("context.verdict_omitted")),
+      bus.on("selfmodel:systematic_miscalibration", () => this.inc("selfmodel.miscalibration")),
+      bus.on("api:request", () => this.inc("api.request")),
+      bus.on("session:created", () => this.inc("session.created")),
+      bus.on("oracle:verdict", () => this.inc("oracle.verdict")),
     ];
     return () => unsubs.forEach(fn => fn());
   }

@@ -8,23 +8,43 @@
  * Source of truth: vinyan-tdd.md §16.2 (Learn step)
  */
 import type { WorkingMemoryState } from "./types.ts";
+import type { VinyanBus } from "../core/bus.ts";
 
 export const MAX_FAILED_APPROACHES = 20;
 export const MAX_HYPOTHESES = 10;
 export const MAX_UNCERTAINTIES = 10;
 export const MAX_SCOPED_FACTS = 50;
 
+/** Threshold at which memory pressure is considered high enough to warn. */
+const EVICTION_WARNING_THRESHOLD = 10;
+
 export class WorkingMemory {
   private failedApproaches: WorkingMemoryState["failedApproaches"] = [];
   private activeHypotheses: WorkingMemoryState["activeHypotheses"] = [];
   private unresolvedUncertainties: WorkingMemoryState["unresolvedUncertainties"] = [];
   private scopedFacts: WorkingMemoryState["scopedFacts"] = [];
+  private bus?: VinyanBus;
+  private taskId?: string;
+
+  constructor(options?: { bus?: VinyanBus; taskId?: string }) {
+    this.bus = options?.bus;
+    this.taskId = options?.taskId;
+  }
 
   recordFailedApproach(approach: string, oracleVerdict: string): void {
     if (this.failedApproaches.length >= MAX_FAILED_APPROACHES) {
       this.failedApproaches.shift(); // evict oldest
     }
     this.failedApproaches.push({ approach, oracleVerdict, timestamp: Date.now() });
+
+    // G3: Emit memory pressure warning for GAP-H FC4 detection
+    if (this.bus && this.taskId && this.failedApproaches.length >= EVICTION_WARNING_THRESHOLD) {
+      this.bus.emit("memory:eviction_warning", {
+        taskId: this.taskId,
+        evictionCount: this.failedApproaches.length,
+        memoryPressure: this.failedApproaches.length / MAX_FAILED_APPROACHES,
+      });
+    }
   }
 
   addHypothesis(hypothesis: string, confidence: number, source: string): void {

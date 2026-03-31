@@ -1,0 +1,19 @@
+Vinyan — Epistemic Nervous System for AI Systems
+Copyright (c) 2026 Vinyan
+
+Licensed under the Apache License, Version 2.0.
+
+This product includes software developed by third parties:
+
+Direct Dependencies:
+  chokidar (MIT) — https://github.com/paulmillr/chokidar
+  zod (MIT) — https://github.com/colinhacks/zod
+  typescript (Apache-2.0) — https://github.com/microsoft/TypeScript
+
+Dev Dependencies:
+  fast-check (MIT) — https://github.com/dubzzz/fast-check
+  @types/bun (MIT) — https://github.com/oven-sh/bun
+
+Notable Transitive Dependencies:
+  ieee754 (BSD-3-Clause) — https://github.com/feross/ieee754
+  rc (BSD-2-Clause OR MIT OR Apache-2.0) — https://github.com/dominictarr/rc

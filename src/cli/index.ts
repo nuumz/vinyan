@@ -109,9 +109,15 @@ switch (command) {
     break;
   }
 
+  case "mcp": {
+    const { startMCPServer } = await import("./mcp.ts");
+    await startMCPServer(workspacePath);
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills\n  serve            Start the API server (Phase 5)`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills\n  serve            Start the API server (Phase 5)\n  mcp              Start MCP server over stdio (Phase 5)`,
     );
     process.exit(1);
 }

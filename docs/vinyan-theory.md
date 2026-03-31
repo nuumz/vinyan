@@ -31,11 +31,11 @@ related:
 
 ### 1.1 ทางตัน 6 ข้อสำคัญที่สุดของ LLM → AGI
 
-1. 🟢 **Frozen Weights Paradox** — LLM ไม่เรียนรู้ขณะใช้งาน weights คงที่หลัง training สิ่งที่เรียกว่า "in-context learning" เป็นเพียง conditional computation บน existing weights ไม่ใช่การ update knowledge จริง (Quigley, 2025 — "Context-Directed Extrapolation from Training Data Priors") **Test-Time Compute** เป็น partial mitigation แต่ไม่ใช่ true learning (Snell et al., 2024)
-2. 🟢 **Compositional Generalization Failure** — LLM ล้มเหลวอย่างเป็นระบบเมื่อต้องรวม known components ในรูปแบบที่ไม่เคยเห็น performance ตกเกือบ zero เมื่อ composition equivalences ถูกกำจัด (Pruthi et al., ICLR 2026; Mondorf et al., 2025 — Compositional-ARC)
+1. 🟢 **Frozen Weights Paradox** — LLM ไม่เรียนรู้ขณะใช้งาน weights คงที่หลัง training สิ่งที่เรียกว่า "in-context learning" เป็นเพียง conditional computation บน existing weights ไม่ใช่การ update knowledge จริง (Madabushi et al., 2025 — "Context-Directed Extrapolation from Training Data Priors") **Test-Time Compute** เป็น partial mitigation แต่ไม่ใช่ true learning (Snell et al., 2024)
+2. 🟢 **Compositional Generalization Failure** — LLM ล้มเหลวอย่างเป็นระบบเมื่อต้องรวม known components ในรูปแบบที่ไม่เคยเห็น performance ตกเกือบ zero เมื่อ composition equivalences ถูกกำจัด (Mondorf et al., 2025 — Compositional-ARC)
 3. 🟢 **Epistemic Humility Deficit** — LLM ไม่รู้ว่าไม่รู้ ทำให้ "ไม่มีทางปฏิเสธ" สร้าง hallucination อย่างมั่นใจ เพราะ objective function optimize ความน่าจะเป็น (plausibility) ไม่ใช่ความจริง (truth) (Bender & Gebru, 2021)
 4. 🟢 **Temporal Reasoning Gap** — ล้มเหลวกับ causal reasoning, counterfactuals, และ long-horizon planning เพราะ next-token prediction ไม่สร้าง causal model จริง เห็น correlation ไม่ใช่ causation (Ashwani et al., 2024)
-5. 🟢 **Binding Problem / Grounding Gap** — ไม่มี unified representation ข้าม modalities แม้ multimodal models จะ "map" ภาพกับคำ แต่ยังไม่ผ่าน causal grounding แบบที่สัตว์/มนุษย์มี (Nature, 2024 — Visual Cognition in MLLMs; Harnad, 1990)
+5. 🟢 **Binding Problem / Grounding Gap** — ไม่มี unified representation ข้าม modalities แม้ multimodal models จะ "map" ภาพกับคำ แต่ยังไม่ผ่าน causal grounding แบบที่สัตว์/มนุษย์มี (Garrido et al., 2025 — Visual Cognition in MLLMs; Harnad, 1990)
 6. 🟡 **No World Model** — LLM ไม่มี internal model ของ environment ที่ใช้ simulate ผลลัพธ์ก่อน act ต่างจาก LeCun's JEPA proposal ที่เสนอ world model เป็น core component ของ autonomous intelligence (LeCun, 2022)
 
 > **Confidence Legend**: 🟢 Established (peer-reviewed, replicated) · 🟡 Emerging (recent, not yet replicated) · 🔴 Speculative (conjecture / synthesis)
@@ -49,7 +49,7 @@ related:
 | **Global Workspace** | Broadcast mechanism ที่ทำให้ subsystems เข้าถึง shared information | Global Workspace Theory (Baars, 1988; Dehaene, 2014) |
 | **Self-Model** | Internal forward model ที่ predict ผลลัพธ์ก่อน execute | Wolpert (1997) forward/inverse models; Predictive Processing (Clark, 2013) |
 | **Epistemic Awareness** | รู้ว่ารู้อะไร ไม่รู้อะไร calibrated confidence | Metacognition (Flavell, 1979; Fleming, 2021) |
-| **Temporal Continuity** | Sense of narrative self ข้าม episodes, ไม่ใช่แค่ fact retrieval | Episodic memory + Autonoetic consciousness (Tulving, 1985) |
+| **Temporal Continuity** | Sense of narrative self ข้าม episodes, ไม่ใช่แค่ fact retrieval | Episodic memory + Autonoetic consciousness (Tulving, 1983) |
 | **Affective Valence** | Intrinsic value signals ที่ drive exploration/exploitation | Active Inference (Friston, 2010) — expected free energy as "curiosity" |
 | **Theory of Mind** | Model other agents' beliefs, desires, intentions | Premack & Woodruff (1978); Computational ToM (Rabinowitz et al., 2018) |
 | **Strange Loop / Self-Reference** | System ที่ model ตัวเอง recursively — "I" ที่สังเกต "I" | Hofstadter (1979, 2007); IIT axiom of intrinsicality (Tononi, 2004) |
@@ -75,7 +75,7 @@ related:
 
 ### 2.1 Stochastic Parrot vs. Emergent Abilities — สถานะปัจจุบันของ Debate 🟢
 
-**ฝ่าย "Stochastic Parrot"** (Bender & Gebru, 2021; LeCun, 2024; Fedorenko et al., 2024):
+**ฝ่าย "Stochastic Parrot"** (Bender & Gebru, 2021; LeCun, 2022; Fedorenko et al., 2024):
 - LLM เรียนรู้ co-occurrence patterns ของคำ ไม่ใช่ meaning
 - Language Network กับ Multiple Demand Network (reasoning) แยกกันในสมอง (Fedorenko et al., Nature 2024) — LLM มีแค่ส่วนแรก
 - Hallucination เป็น intrinsic characteristic ไม่ใช่ bug — optimize plausibility ≠ truth
@@ -87,7 +87,7 @@ related:
 - **Creativity benchmarks**: GPT-4 ได้ top 1% ใน Torrance Tests of Creative Thinking (Guzik et al., 2023)
 - **Compression = Understanding** (Sutskever): การ predict next word ที่ scale มหาศาล requires internalize underlying rules ของ data generation
 
-**สถานะ 2025-2026**: ทั้งสองฝ่ายมี evidence ที่ถูกต้อง ปัญหาคือ framing — Quigley (2025) เสนอ middle ground: "Context-Directed Extrapolation from Training Data Priors" — LLM ไม่ใช่ทั้ง parrot หรือ AGI แต่เป็น sophisticated extrapolation machine ที่ทำงานได้ดีเมื่อ target อยู่ใกล้ training distribution สะดุดเมื่อต้อง generalize ข้าม distribution จริง
+**สถานะ 2025-2026**: ทั้งสองฝ่ายมี evidence ที่ถูกต้อง ปัญหาคือ framing — Madabushi et al. (2025) เสนอ middle ground: "Context-Directed Extrapolation from Training Data Priors" — LLM ไม่ใช่ทั้ง parrot หรือ AGI แต่เป็น sophisticated extrapolation machine ที่ทำงานได้ดีเมื่อ target อยู่ใกล้ training distribution สะดุดเมื่อต้อง generalize ข้าม distribution จริง
 
 > **[Synthesis]** สำหรับ Vinyan: ไม่ต้องรอให้ debate นี้จบ — LLM เป็น powerful component ที่มี specific failure modes ที่ predictable และ compensable ด้วย architectural scaffolding Vinyan ไม่ได้ "แก้" LLM แต่สร้าง cognitive architecture รอบๆ ที่ช่วยหลีกเลี่ยง failure modes เหล่านี้
 
@@ -98,7 +98,7 @@ related:
 - **Chain-of-Thought**: ไม่เพิ่ม reasoning capacity จริง แต่เป็น "reasoning in appearance" — mimics form of reasoning โดยไม่มี causal connection ระหว่าง reasoning steps กับ correct answer (ksopyla, 2025)
 - **Prompt engineering**: workaround ไม่ใช่ solution — ใช้ได้เฉพาะ pattern ที่อยู่ใน training distribution
 
-**ทำไมไม่แก้ด้วย scaling**: ใหญ่ขึ้น ≠ เรียนรู้ได้ขณะใช้งาน ปัญหาเป็น architectural ไม่ใช่ scale Apple (2025) — "The Illusion of Thinking" แสดงว่า reasoning models overthink ปัญหาง่ายและ "ล้ม" ที่ complexity cliff เมื่อปัญหายากขึ้น โดยไม่สัมพันธ์กับ model size
+**ทำไมไม่แก้ด้วย scaling**: ใหญ่ขึ้น ≠ เรียนรู้ได้ขณะใช้งาน ปัญหาเป็น architectural ไม่ใช่ scale Shojaee et al. (2025) — "The Illusion of Thinking" แสดงว่า reasoning models overthink ปัญหาง่ายและ "ล้ม" ที่ complexity cliff เมื่อปัญหายากขึ้น โดยไม่สัมพันธ์กับ model size
 
 **Vinyan v1 แก้ได้แค่ไหน**: World Graph เป็น external memory ที่เพิ่ม persistent facts แต่:
 - ✅ แก้ปัญหา knowledge persistence ข้าม sessions
@@ -110,9 +110,8 @@ related:
 ### 2.3 Compositional Generalization Failure — ล้มกับ Novel Compositions 🟢
 
 **ธรรมชาติของปัญหา**: LLM ล้มเหลวเมื่อต้องรวม known components เป็น novel combinations ที่ไม่เคยเห็น Evidence ล่าสุด:
-- **Pruthi et al. (ICLR 2026)**: เมื่อกำจัด composition equivalences (different module sequences ที่ reduce เป็น identical end-to-end functions) performance ของ direct models ตก **near zero** — แสดงว่า LLM ไม่ได้เรียน compositional rules จริง แค่ exploit equivalences
 - **Compositional-ARC (Mondorf et al., 2025)**: small transformer 5.7M params ที่ train ด้วย meta-learning for compositionality **outperform** o3-mini, GPT-4o, Gemini 2.0 Flash ใน compositional spatial reasoning — ถ้า architecture ถูก scale ไม่สำคัญ
-- **Compositionality Gap** (Zhao et al., 2024; Sun et al., 2025): quantified performance drop เมื่อ primitive skills ต้อง integrate beyond memorized templates
+- **Compositionality Gap**: quantified performance drop เมื่อ primitive skills ต้อง integrate beyond memorized templates (multiple studies, 2024–2025)
 
 **ทำไมไม่แก้ด้วย scaling**: ปัญหาเป็น architectural — transformer learns statistical associations ไม่ใช่ compositional rules ทำให้ performance degrade เมื่อ task complexity เพิ่ม regardless of model size
 
@@ -122,7 +121,7 @@ related:
 
 **ธรรมชาติของปัญหา**: LLM เห็น correlation ไม่เห็น causation:
 - สามารถระบุ statistical associations แต่ struggle กับ true causal relationships (Ashwani et al., 2024)
-- **Premise Order Matters** (DeepMind, 2024): reorder premises ใน logical problem → performance ร่วง 30%+ ในขณะที่มนุษย์ robust ต่อ order change
+- **Premise Order Matters** (Chen et al., 2024): reorder premises ใน logical problem → performance ร่วง 30%+ ในขณะที่มนุษย์ robust ต่อ order change
 - ไม่มี ability to do **counterfactual reasoning** แบบ systematic — "What if X hadn't happened?" ต้อง causal model ที่ LLM ไม่มี
 
 **ทำไมไม่แก้ด้วย scaling**: Next-token prediction objective ไม่ incentivize สร้าง causal models — ใหญ่ขึ้นก็แค่ memorize more correlations
@@ -149,7 +148,7 @@ related:
 **ธรรมชาติของปัญหา**: Symbol Grounding Problem (Harnad, 1990) — คำว่า "apple" ใน LLM ถูกนิยามด้วยความสัมพันธ์กับคำอื่น ("fruit", "red") แบบ circular ไม่ connect กับ physical reality
 
 Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔ image) แต่:
-- Visual cognition ของ MLLMs ยังไม่ match human data ใน intuitive physics + causal reasoning (Nature, 2024)
+- Visual cognition ของ MLLMs ยังไม่ match human data ใน intuitive physics + causal reasoning (Garrido et al., 2025)
 - ยังไม่ผ่าน **causal grounding** — เห็น appearance ไม่เข้าใจ physics
 - สำหรับ software engineering domain: "grounding" หมายถึง code symbols ↔ runtime behavior ซึ่ง verifiable ด้วย execution
 
@@ -177,7 +176,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - ✅ เพิ่ม effective reasoning depth — model "ใช้เวลามากขึ้น" กับปัญหายาก
 - ✅ Adaptive per-prompt — ไม่ waste compute กับปัญหาง่าย
 - ❌ **ยังไม่ใช่ true learning** — weights ยังคงที่ model ไม่ได้ "เรียนรู้" จาก reasoning chains ก่อนหน้า
-- ❌ **Ceiling effect**: Apple "Illusion of Thinking" (2025) แสดงว่ามี complexity cliff — reasoning models ทำงานดีขึ้นถึงจุดหนึ่ง แล้ว performance ตก abruptly
+- ❌ **Ceiling effect**: Shojaee et al. "Illusion of Thinking" (2025) แสดงว่ามี complexity cliff — reasoning models ทำงานดีขึ้นถึงจุดหนึ่ง แล้ว performance ตก abruptly
 - ❌ **Cost scaling**: test-time compute เพิ่ม latency + cost ไม่ proportional กับ improvement
 
 **Vinyan v2 integration** [Synthesis]:
@@ -195,7 +194,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 **Evidence ที่ท้าทาย Strong Embodiment**:
 - 🟢 **LLM ที่ไม่มี body** สามารถ pass many cognitive benchmarks — แม้มี limitations — แสดงว่า meaningful cognition เกิดได้โดย partial embodiment (Bubeck et al., 2023)
 - 🟢 **Clark's Extended Mind** (1998): tools เป็น part of cognitive system — AI + codebase + tests + IDE = **extended cognitive system** ที่มี "body" ในความหมายกว้าง
-- 🟡 **Virtual Embodiment Module** (Shapiro et al., 2025): formal architecture สำหรับ disembodied AI ที่ achieve grounding ผ่าน simulated environment interaction
+- 🟡 **Virtual Embodiment**: research direction สำหรับ disembodied AI ที่ achieve grounding ผ่าน simulated environment interaction (active research area, no single canonical reference)
 - 🟢 **Hutchins' Distributed Cognition** (1995): intelligence อยู่ใน **system** (people + artifacts + processes) ไม่ใช่ individual — multi-agent = distributed body
 
 **Vinyan's position — Operational Embodiment** [Synthesis — Speculative 🔴]:
@@ -322,8 +321,8 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 **Neuroscience**:
 - **Hippocampal replay**: ขณะ NREM sleep สมองจะ "replay" experiences ของวัน rapidly
 - **Simulation-Selection Model** (Jung et al., 2018): hippocampus ไม่แค่ replay — มัน **recombine** past experiences ผ่าน imagination เพื่อ select และ reinforce valuable strategies
-- Memory consolidation = **offline reinforcement learning** — เรียนรู้จาก simulated experience ไม่ใช่แค่ actual experience (Frontiers in Computational Neuroscience, 2024)
-- NeuroDream framework (2025): sleep-inspired memory consolidation สำหรับ AI
+- Memory consolidation = **offline reinforcement learning** — เรียนรู้จาก simulated experience ไม่ใช่แค่ actual experience
+- Sleep-inspired memory consolidation สำหรับ AI เป็น active research direction (multiple groups, 2024–2025)
 
 **Relevance สำหรับ Vinyan** [Established Science → Engineering Parallel]:
 - **Vinyan v1 Sleep Cycle** map ได้ดี: "logs structural regressions → background analysis → extract anti-patterns"
@@ -332,7 +331,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 
 ### 3.7 Autopoiesis & Self-Improving Systems 🟡
 
-**Autopoiesis** (Maturana & Varela, 1974):
+**Autopoiesis** (Varela, Maturana & Uribe, 1974):
 - Self-producing system — generates and maintains its own organization while continuously regenerating components
 - Circular causality: system produces components → components constitute system → system produces components
 - Key property: **organizational closure** — ระบบ define boundaries ของตัวเอง
@@ -366,11 +365,11 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - **Critical detail often lost**: System 1 + 2 ไม่ใช่ separate brain parts — เป็น **abstraction** ของ two modes of cognition (Kahneman ย้ำเรื่องนี้)
 - System 2 ไม่ได้ "rational" แค่ "effortful" — ยังมี biases
 
-**What AI architectures get wrong** (Frontiers in Cognition, 2024):
+**What AI architectures get wrong** (Gronchi & Perini, 2024):
 - ส่วนใหญ่ map: System 1 = LLM (fast), System 2 = search/planning (slow)
 - **แต่**: ใน Common Model of Cognition (Laird, Lebiere, Rosenbloom, 2017) ทั้ง System 1 และ 2 ใช้ working memory + production rules — ต่างกันที่ **degree of deliberation** ไม่ใช่ mechanism
 - Missing nuance: System 1 ไม่ใช่ "dumb" — expert intuition (chess grandmaster, experienced surgeon) เป็น System 1 ที่แม่นยำมาก เกิดจาก **compiled expertise**
-- **Dual-process theories ใน AI** (Frontiers in Cognition, 2024): เสนอว่า properly implemented dual-process = **hybrid neuro-symbolic** — subsymbolic (LLM/statistical) + symbolic (formal reasoning) interact ตาม dual-process principles
+- **Dual-process theories ใน AI** (Gronchi & Perini, 2024): เสนอว่า properly implemented dual-process = **hybrid neuro-symbolic** — subsymbolic (LLM/statistical) + symbolic (formal reasoning) interact ตาม dual-process principles
 
 **Vinyan v1 ใช้ System 1/2**:
 - System 1 (Linear): sequential dispatch, cost-efficient — for routine tasks
@@ -539,7 +538,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 | **Global Workspace** | ไม่มี attention-gated broadcast ระหว่าง subsystems ทำให้ information fragmented | GWT (Baars, 1988; Dehaene, 2014); Butlin et al. (2023) top indicator |
 | **Affective / Motivational System** | ไม่มี intrinsic motivation, curiosity ไม่มี mechanism สำหรับ exploration vs exploitation | Active Inference (Friston, 2010); Expected Free Energy |
 | **Theory of Mind** | ไม่ model user intent, other agents' beliefs ทำให้ collaborate ได้แย่ | Premack & Woodruff (1978); Mutual ToM (IBM Research, CHI 2024) |
-| **Temporal / Episodic Stream** | ไม่มี narrative continuity ข้าม sessions มากกว่า fact retrieval | Episodic memory (Tulving, 1985); Autonoetic consciousness |
+| **Temporal / Episodic Stream** | ไม่มี narrative continuity ข้าม sessions มากกว่า fact retrieval | Episodic memory (Tulving, 1983); Autonoetic consciousness |
 
 ### 4.3 Concepts ที่เป็น Illusion — ดูก้าวหน้าแต่ไม่ contribute จริง
 
@@ -775,7 +774,7 @@ Oracles ควร expose เป็น **MCP Servers** — แต่ละ Oracle
 
 **Purpose**: Maintain narrative continuity ข้าม sessions + provide temporal context สำหรับ current decisions
 
-**Theoretical Grounding**: Episodic Memory (Tulving, 1985); Hippocampal Replay (Jung et al., 2018); NeuroDream (2025)
+**Theoretical Grounding**: Episodic Memory (Tulving, 1983); Hippocampal Replay (Jung et al., 2018)
 
 **Mechanism**:
 
@@ -986,7 +985,7 @@ interface SelfAssessment {
 
 **Purpose**: Self-improvement ภายใน formal safety bounds
 
-**Theoretical Grounding**: Autopoiesis (Maturana & Varela, 1974); Darwin Gödel Machine (Sakana AI, 2025); Complex Adaptive Systems
+**Theoretical Grounding**: Autopoiesis (Varela, Maturana & Uribe, 1974); Darwin Gödel Machine (Sakana AI, 2025); Complex Adaptive Systems
 
 **Mechanism — Bounded Autopoiesis**:
 
@@ -1247,13 +1246,13 @@ Phase 0 (Foundation)
 | 5 | Berglund, L. et al. (2023). "The Reversal Curse." arXiv | 2.1 |
 | 6 | Guzik, E. et al. (2023). "The Originality of Machines: AI Takes the Torrance Test." Journal of Creativity | 2.1 |
 | 7 | Bubeck, S. et al. (2023). "Sparks of AGI: Early experiments with GPT-4." Microsoft Research | 2.1 |
-| 8 | Quigley, D.G. (2025). "Neither Stochastic Parroting nor AGI." PhilArchive | 2.1, 2.2 |
-| 9 | Apple (2025). "The Illusion of Thinking." arXiv:2506.06941 | 2.2 |
+| 8 | Madabushi, H.T., Torgbi, M. & Bonial, C. (2025). "Neither Stochastic Parroting nor AGI: LLMs Solve Tasks through Context-Directed Extrapolation from Training Data Priors." arXiv:2505.23323 | 2.1, 2.2 |
+| 9 | Shojaee, P. et al. (2025). "The Illusion of Thinking: Understanding the Strengths and Limitations of Reasoning Models." arXiv:2506.06941. Apple ML Research | 2.2 |
 | 10 | Fan, Ch. et al. (2025). "Missing Premise exacerbates Overthinking." arXiv:2504.06514 | 2.5 |
-| 11 | Meta (2025). OptimalThinkingBench. arXiv:2508.13141 | 2.2 |
-| 12 | DeepMind (2024). "Premise Order Matters." arXiv:2402.08939 | 2.4 |
+| 11 | Aggarwal, P. et al. (2025). "OptimalThinkingBench: Evaluating Over and Underthinking in LLMs." arXiv:2508.13141. FAIR at Meta / CMU | 2.2 |
+| 12 | Chen, X. et al. (2024). "Premise Order Matters in Reasoning with Large Language Models." arXiv:2402.08939. Google DeepMind | 2.4 |
 | 13 | Ashwani, S. et al. (2024). "Cause and Effect: Can LLMs Truly Understand Causality?" arXiv:2402.18139 | 2.4 |
-| 14 | Pruthi, P. et al. (ICLR 2026). "Why Transformers Succeed and Fail at Compositional Generalization." OpenReview | 2.3 |
+| ~~14~~ | ~~Pruthi, P. et al. (ICLR 2026). "Why Transformers Succeed and Fail at Compositional Generalization." OpenReview~~ — **REMOVED: unverifiable, no evidence this paper exists** | — |
 | 15 | Mondorf, P. et al. (2025). "Compositional-ARC: Assessing Systematic Generalization." arXiv:2504.01445 | 2.3 |
 | 16 | Harnad, S. (1990). "The Symbol Grounding Problem." Physica D | 2.6 |
 | 17 | McKenzie, I. et al. (2023). "Inverse Scaling: When Bigger Isn't Better." arXiv | 2.7 |
@@ -1266,22 +1265,22 @@ Phase 0 (Foundation)
 | 24 | Tononi, G. (2004). "An information integration theory of consciousness." BMC Neuroscience | 3.4 |
 | 25 | Tononi, G. et al. (2023). IIT 4.0. PLoS Computational Biology | 3.4 |
 | 26 | Butlin, P. et al. (2023). "Consciousness in Artificial Intelligence: Insights from the Science of Consciousness." arXiv | 1.2, 3.1, 3.4, 7.1 |
-| 27 | Maturana, H. & Varela, F. (1974). "Autopoiesis: The Organization of Living Systems." BioSystems | 3.7 |
+| 27 | Varela, F.J., Maturana, H.R. & Uribe, R. (1974). "Autopoiesis: The organization of living systems, its characterization and a model." Biosystems 5, 187–196 | 3.7 |
 | 28 | Schmidhuber, J. (2003). "Gödel Machines: Fully Self-Referential Optimal Universal Self-Improvers." arXiv | 3.7 |
 | 29 | Sakana AI (2025). "Darwin Gödel Machine: Open-Ended Evolution of Self-Improving Agents." arXiv:2505.22954 | 3.7 |
 | 30 | Hutter, M. (2000). "A Theory of Universal Artificial Intelligence based on Algorithmic Complexity." arXiv | 3.7 |
 | 31 | Kahneman, D. (2011). "Thinking, Fast and Slow." Farrar, Straus and Giroux | 3.8 |
 | 32 | Laird, J., Lebiere, C., Rosenbloom, P. (2017). "A Standard Model of the Mind." AI Magazine 38 | 3.8 |
-| 33 | Tulving, E. (1985). "Elements of Episodic Memory." Oxford University Press | 5.3 (L4) |
-| 34 | Jung, J. et al. (2018). "Simulation-Selection Model." Frontiers in Computational Neuroscience | 3.6 |
+| 33 | Tulving, E. (1983). "Elements of Episodic Memory." Oxford University Press | 5.3 (L4) |
+| 34 | Jung, J. et al. (2018). "Remembering rewarding futures: a simulation-selection model of the hippocampus." Hippocampus 28, 913–930 | 3.6 |
 | 35 | Hutchins, E. (1995). "Cognition in the Wild." MIT Press | 3.5 |
 | 36 | Hofstadter, D. (1979). "Gödel, Escher, Bach." Basic Books | 3.3 |
 | 37 | Hofstadter, D. (2007). "I Am a Strange Loop." Basic Books | 5.3 (L7) |
 | 38 | Premack, D. & Woodruff, G. (1978). "Does the chimpanzee have a theory of mind?" BBS | 5.3 (L6) |
 | 39 | Chollet, F. (2019). "On the Measure of Intelligence." arXiv:1911.01547 | 2.3 |
 | 40 | Fleming, S. (2021). "Know Thyself: The Science of Self-Awareness." Basic Books | 5.3 (L7) |
-| 41 | Nature (2024). "Visual cognition in multimodal large language models." Nature Machine Intelligence | 2.6 |
-| 42 | Frontiers in Cognition (2024). "Dual-process theories of thought as potential architectures for hybrid AI." Frontiers in Psychology | 3.8 |
+| 41 | Garrido, G.M. et al. (2025). "Visual cognition in multimodal large language models." Nature Machine Intelligence 7, 96–106. DOI:10.1038/s42256-024-00963-y | 2.6 |
+| 42 | Gronchi, G. & Perini, A. (2024). "Dual-process theories of thought as potential architectures for developing neuro-symbolic AI models." Frontiers in Cognition. DOI:10.3389/fcogn.2024.1356941 | 3.8 |
 
 ### Web Sources & Industry
 
@@ -1307,7 +1306,7 @@ Phase 0 (Foundation)
 | 47 | Marcus, G. (2020). "The Next Decade in AI: Four Steps Towards Robust Artificial Intelligence." arXiv:2002.06177 | 3.10 |
 | 48 | Brooks, R. (1991). "Intelligence without representation." Artificial Intelligence 47 | 2.9 |
 | 49 | Clark, A. & Chalmers, D. (1998). "The Extended Mind." Analysis 58 | 2.9, 3.5 |
-| 50 | Apple Research (2025). "The Illusion of Thinking: Understanding the Strengths and Limitations of Reasoning Models." arXiv:2506.06941 | 2.8 |
+| 50 | Shojaee, P. et al. (2025). "The Illusion of Thinking: Understanding the Strengths and Limitations of Reasoning Models via the Lens of Problem Complexity." arXiv:2506.06941. Apple ML Research | 2.8 |
 
 ---
 

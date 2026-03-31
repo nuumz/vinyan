@@ -31,6 +31,11 @@ export async function serve(workspace: string): Promise<void> {
       bus: orchestrator.bus,
       executeTask: (input) => orchestrator.executeTask(input),
       sessionManager,
+      traceStore: orchestrator.traceStore,
+      ruleStore: orchestrator.ruleStore,
+      workerStore: orchestrator.workerStore,
+      worldGraph: orchestrator.worldGraph,
+      metricsCollector: orchestrator.metricsCollector,
     },
   );
 

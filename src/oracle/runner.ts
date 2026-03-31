@@ -106,6 +106,14 @@ export async function runOracle(
   try {
     const raw = JSON.parse(result.stdout.trim());
     const verdict = OracleVerdictSchema.parse(raw);
+
+    // A2: Distinguish genuine epistemic uncertainty from errors.
+    // If oracle reports low confidence, use 'uncertain' (valid epistemic state)
+    // rather than treating it as an error path.
+    if (!verdict.verified && verdict.confidence > 0 && verdict.confidence < 0.5 && verdict.type === "unknown") {
+      return { ...verdict, type: "uncertain" as const, oracleName, duration_ms };
+    }
+
     return { ...verdict, oracleName, duration_ms };
   } catch (err) {
     return buildVerdict({

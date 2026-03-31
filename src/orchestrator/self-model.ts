@@ -16,8 +16,14 @@ import type {
   ExecutionTrace,
 } from "./types.ts";
 import type { TraceStore } from "../db/trace-store.ts";
+import type { VinyanBus } from "../core/bus.ts";
 
 const BASE_MS_PER_FILE = 2000;
+
+/** Minimum samples in bias window before emitting miscalibration event. */
+const MISCALIBRATION_WINDOW = 20;
+/** Fraction of same-direction errors to trigger alert. */
+const MISCALIBRATION_THRESHOLD = 0.7;
 
 /** Per-task-type parameter row in `self_model_params` table. */
 interface TaskTypeParams {
@@ -58,16 +64,20 @@ function ema(current: number, observed: number, alpha: number): number {
 export class CalibratedSelfModel implements SelfModel {
   private db?: Database;
   private traceStore?: TraceStore;
+  private bus?: VinyanBus;
   /** Cached global average — invalidated on calibrate. */
   private globalAvgCache?: TaskTypeParams;
   /** In-memory store for when DB is unavailable. */
   private memStore: Map<string, TaskTypeParams> = new Map();
   /** Total observation count across all task types. */
   private totalObservations: number = 0;
+  /** G3: Sliding window of prediction error directions for miscalibration detection. */
+  private recentBiases: Array<"over" | "under"> = [];
 
-  constructor(options?: { traceStore?: TraceStore; db?: Database }) {
+  constructor(options?: { traceStore?: TraceStore; db?: Database; bus?: VinyanBus }) {
     this.traceStore = options?.traceStore;
     this.db = options?.db;
+    this.bus = options?.bus;
     this.ensureSchema();
     this.migrateFromOldBlob();
     this.totalObservations = this.computeTotalObservations();
@@ -188,6 +198,32 @@ export class CalibratedSelfModel implements SelfModel {
     this.upsertTaskTypeParams(params);
     this.totalObservations++;
     this.globalAvgCache = undefined; // invalidate
+
+    // G3: Track prediction error direction for systematic miscalibration detection
+    const predictionError = error.error.composite;
+    this.recentBiases.push(predictionError > 0 ? "over" : "under");
+    if (this.recentBiases.length > MISCALIBRATION_WINDOW) {
+      this.recentBiases.shift();
+    }
+
+    if (this.bus && this.recentBiases.length >= MISCALIBRATION_WINDOW) {
+      const overCount = this.recentBiases.filter(b => b === "over").length;
+      const underCount = this.recentBiases.length - overCount;
+      const dominantBias = overCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+        ? "over" as const
+        : underCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+          ? "under" as const
+          : null;
+
+      if (dominantBias) {
+        this.bus.emit("selfmodel:systematic_miscalibration", {
+          taskId: prediction.taskId,
+          biasDirection: dominantBias,
+          magnitude: Math.abs(overCount / this.recentBiases.length - 0.5),
+          windowSize: this.recentBiases.length,
+        });
+      }
+    }
 
     return error;
   }

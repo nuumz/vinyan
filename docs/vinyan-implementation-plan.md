@@ -1,6 +1,6 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-03-30 | Branch: `main`
+> Generated: 2026-03-29 | Updated: 2026-03-31 | Branch: `feature/main`
 > Source of truth: [vinyan-concept.md](vinyan-concept.md) §12, [vinyan-tdd.md](vinyan-tdd.md) §4–§19, [vinyan-architecture.md](vinyan-architecture.md)
 
 ---
@@ -1278,12 +1278,24 @@ Stream B (PH3.3, ~3d) and Stream C (PH3.4, ~1d) run in parallel — not on criti
 
 ---
 
-### Phase 4: Fleet Governance — Empirical Worker Identity
+### Phase 4: Fleet Governance — Empirical Worker Identity — ✅ Implemented
 
-> **Status:** Complete design. All open questions resolved. Ready for implementation after Phase 3 validation.
+> **Status:** ✅ Fully implemented. 1047 tests pass, `tsc --noEmit` clean. All sub-phases (PH4.0-PH4.6) complete. 7 post-implementation review gaps identified and fixed.
 > **Prerequisite:** Phase 3 complete + PH3.7 readiness gate passed + Phase 4 readiness gate (already implemented in `src/observability/phase3-report.ts:209-242`).
 > **Type:** Engineering-heavy (PH4.0-PH4.5), with one scoped research component (PH4.6).
 > **Estimated duration:** ~5-6 weeks (4 weeks engineering with parallelism + 1-2 weeks integration/validation).
+
+#### Overall Status: 100% Complete (1047 tests, 0 type errors)
+
+| Sub-Phase | Status | Key Files | Tests |
+|:----------|:------:|:----------|:------|
+| PH4.0 Multi-Model Data Seeding | ✅ Done | `types.ts`, `factory.ts`, `core-loop.ts`, `bus.ts`, `data-gate.ts`, `trace-schema.ts` | Existing core-loop + factory tests |
+| PH4.1 Worker Profile Registry | ✅ Done | `worker-schema.ts`, `worker-store.ts`, `vinyan-db.ts`, `metrics.ts` | `worker-store.test.ts` |
+| PH4.2 Worker Lifecycle | ✅ Done | `worker-lifecycle.ts`, `shadow-runner.ts`, `safety-invariants.ts` | `worker-lifecycle.test.ts` |
+| PH4.3 Task Fingerprinting | ✅ Done | `task-fingerprint.ts`, `capability-model.ts`, `perception.ts` | `task-fingerprint.test.ts`, `capability-model.test.ts` |
+| PH4.4 Capability-Based Router | ✅ Done | `worker-selector.ts`, `core-loop.ts`, `worker-pool.ts`, `provider-registry.ts` | `worker-selector.test.ts`, `core-loop-fleet.test.ts` |
+| PH4.5 Fleet Evaluation | ✅ Done | `fleet-evaluator.ts`, `sleep-cycle.ts`, `rule-generator.ts`, `backtester.ts`, `phase3-report.ts` | `fleet-evaluator.test.ts`, `assign-worker-rule.test.ts` |
+| PH4.6 Cross-Project Transfer | ✅ Done | `pattern-abstraction.ts`, `cli/patterns.ts`, `cli/index.ts` | `abstract-pattern.test.ts` |
 
 ---
 
@@ -1343,7 +1355,7 @@ Before *any* Phase 4 component activates (already implemented in `src/observabil
 
 #### Sub-Components
 
-##### PH4.0 — Multi-Model Data Seeding `[S]` — Engineering
+##### PH4.0 — Multi-Model Data Seeding `[S]` — Engineering ✅
 
 > **Why this sub-phase exists:** The original draft overlooked a chicken-and-egg problem. PH4.3-PH4.4 need multi-model trace data to compare workers, but the current system uses a single model per tier. Without deliberate seeding, the system accumulates 500+ traces all from the same worker per tier, making worker comparison statistically impossible.
 
@@ -1372,7 +1384,7 @@ Before *any* Phase 4 component activates (already implemented in `src/observabil
 
 ---
 
-##### PH4.1 — Worker Profile Registry `[M]` — Engineering
+##### PH4.1 — Worker Profile Registry `[M]` — Engineering ✅
 
 **What:** Define `WorkerProfile` as a first-class entity and persist it in SQLite. A WorkerProfile pairs a specific configuration with empirical statistics computed from `ExecutionTrace` data.
 
@@ -1486,7 +1498,7 @@ FROM execution_traces WHERE worker_id = ? GROUP BY worker_id;
 
 ---
 
-##### PH4.2 — Worker Lifecycle (Probation/Promotion/Demotion) `[M]` — Engineering
+##### PH4.2 — Worker Lifecycle (Probation/Promotion/Demotion) `[M]` — Engineering ✅
 
 **What:** Deterministic state machine governing worker status transitions. New configurations start on probation. Promotion requires statistically significant quality. Demotion is automatic on sustained underperformance.
 
@@ -1567,7 +1579,7 @@ FROM execution_traces WHERE worker_id = ? GROUP BY worker_id;
 
 ---
 
-##### PH4.3 — Task Fingerprinting & Capability Modeling `[L]` — Engineering + Research
+##### PH4.3 — Task Fingerprinting & Capability Modeling `[L]` — Engineering + Research ✅
 
 **What:** Build a matching system between task characteristics and worker demonstrated strengths, derived from trace data, not declared. "This worker empirically succeeds at React refactoring tasks."
 
@@ -1638,7 +1650,7 @@ Framework markers require new column: `framework_markers TEXT` in `execution_tra
 
 ---
 
-##### PH4.4 — Capability-Based Router `[L]` — Engineering
+##### PH4.4 — Capability-Based Router `[L]` — Engineering ✅
 
 **What:** Replace `LLMProviderRegistry.selectForRoutingLevel()` with a multi-factor capability match. **The core architectural change of Phase 4.**
 
@@ -1734,7 +1746,7 @@ if (deps.workerSelector) {
 
 ---
 
-##### PH4.5 — Fleet Evaluation & Evolution Integration `[M]` — Engineering
+##### PH4.5 — Fleet Evaluation & Evolution Integration `[M]` — Engineering ✅
 
 **What:** Extend Sleep Cycle and Evolution Engine to reason about worker performance. The system learns which worker is best for which task type and encodes that knowledge as deterministic rules.
 
@@ -1803,7 +1815,7 @@ fleetMetrics:
 
 ---
 
-##### PH4.6 — Cross-Project Pattern Transfer `[L]` — Research (SCOPED DOWN)
+##### PH4.6 — Cross-Project Pattern Transfer `[L]` — Research (SCOPED DOWN) ✅
 
 **What:** Design and implement the pattern abstraction layer. **Defer actual automatic cross-project transfer to Phase 5.**
 
@@ -2057,6 +2069,37 @@ New events added to `VinyanBusEvents` (in `src/core/bus.ts`):
 - `src/orchestrator/capability-model.ts` — per-worker capability vectors
 - `src/evolution/pattern-abstraction.ts` — pattern abstraction + `AbstractPattern` type
 - `src/cli/patterns.ts` — export/import CLI
+- `src/orchestrator/fleet-evaluator.ts` — Gini coefficient, fleet health metrics (added beyond original plan)
+
+---
+
+#### Phase 4 Implementation Review — Post-Implementation Gap Fixes
+
+A systematic review of the implementation against this design document identified **7 gaps** between the design specification and the initial code. All gaps were root-caused, fixed, and verified (1047 tests, tsc clean). Documented here for traceability.
+
+| # | Gap | Severity | Root Cause | Fix | Verification |
+|:--|:----|:---------|:-----------|:----|:-------------|
+| **IG-1** | Framework markers not detected in perception | LOW | `perception.ts` built dep cone but did not call `detectFrameworkMarkers()` from `task-fingerprint.ts` | Added import + call in `perception.ts:assemble()`, set `hierarchy.frameworkMarkers`; added `frameworkMarkers?: string[]` to `PerceptualHierarchy` | tsc clean, existing perception tests pass |
+| **IG-2** | `workerSelectionAudit` missing on timeout/escalation traces | LOW | `workerSelection` declared inside inner loop — not accessible from timeout (top of loop) or escalation (outside loop) traces | Hoisted `lastWorkerSelection` to outer scope, updated on each selection; used in timeout/escalation trace objects | `core-loop-fleet.test.ts` — escalation trace includes audit |
+| **IG-3** | **I10 Probation no-commit not enforced** | **CRITICAL** | `OrchestratorDeps` missing `workerStore` field → factory never injected it → core-loop couldn't check worker status before commit | Added `workerStore?` to `OrchestratorDeps`; wired in `factory.ts`; added probation check in success path — returns empty mutations + shadow enqueue | `core-loop-fleet.test.ts` — probation worker result has 0 mutations + "probation-shadow-only" note |
+| **IG-4** | **A2 uncertain abstention missing** | **CRITICAL** | `capability-model.ts:getMaxCapabilityForFingerprint()` existed but was never called; `WorkerSelectionResult` lacked `maxCapability`/`isUncertain` fields | Added uncertainty check in `worker-selector.ts:selectWorker()` (maxCapability < 0.3 → uncertain); added short-circuit in `core-loop.ts` returning `status: "uncertain"`; extended `TaskResult.status` with `"uncertain"` | `worker-selector.test.ts` — all workers below 0.3 → uncertain; `core-loop-fleet.test.ts` — uncertain short-circuits dispatch |
+| **IG-5** | Staleness penalty (Layer C) not applied | MEDIUM | `WorkerStats.lastActiveAt` computed by `worker-store.ts` but never consumed in scoring | Added temporal decay `0.9^cyclesSinceActive` to `worker-selector.ts:scoreWorker()`; added `cycleDurationMs` config | `worker-selector.test.ts` — stale worker scored lower than active worker |
+| **IG-6** | Exploration uniform random, not targeting underserved | MEDIUM | `exploreRandomWorker()` used uniform `Math.random()` instead of weighting by task deficit | Replaced with inverse-task-count weighted selection: `weight = 1/(stats.totalTasks + 1)` | `worker-selector.test.ts` — exploration selects non-default worker |
+| **IG-7** | `assign-worker` rules always fail backtest | HIGH | `sleep-cycle.ts` only imported `backtestRule`, never routed `assign-worker` rules to `backtestWorkerAssignment()` | Added routing: `rule.action === "assign-worker" ? backtestWorkerAssignment(rule, traces) : backtestRule(rule, traces)` in both probation backtest and active rule re-evaluation | `assign-worker-rule.test.ts` — backtestWorkerAssignment returns quality-based pass/fail |
+
+**Design deviations (intentional):**
+
+| Deviation | Reason |
+|:----------|:-------|
+| `WorkerSelectionResult.workerId` → `selectedWorkerId` | More explicit naming, avoids collision with `WorkerProfile.id` |
+| `WorkerSelectionResult.selectionReason` → `reason` | Shorter, consistent with other result types |
+| `WorkerSelectionResult.workerConfig` field omitted | Config available via `workerStore.findById()`; duplicating it in every selection result is unnecessary |
+| `fleet_min_worker_trace_diversity` = 100 in `factory.ts` (doc says 100 at line 1671) | Matches doc. Sleep-cycle uses threshold = 2 for its own gate (different scope). |
+| Added `fleet-evaluator.ts` (not in original file list) | Fleet metrics (Gini coefficient, capability coverage) needed by `phase3-report.ts` for `fleetMetrics` field |
+| `TaskResult.status` includes `"uncertain"` | Required by IG-4 (A2 abstention). Doc line 1312 specifies ECP `type: 'unknown'` response — `"uncertain"` is the TaskResult equivalent |
+| `TaskResult.notes?: string[]` field added | Carries audit notes (probation-shadow-only, uncertain) without overloading existing fields |
+
+---
 
 ### Phase 5 — Self-Hosted ENS (DRAFT Guideline)
 

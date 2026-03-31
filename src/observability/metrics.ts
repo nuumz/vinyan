@@ -11,6 +11,7 @@ import type { RuleStore } from "../db/rule-store.ts";
 import type { SkillStore } from "../db/skill-store.ts";
 import type { PatternStore } from "../db/pattern-store.ts";
 import type { ShadowStore } from "../db/shadow-store.ts";
+import type { WorkerStore } from "../db/worker-store.ts";
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
 import { generatePhase3Report, type EvolutionMetrics } from "./phase3-report.ts";
 import type { VinyanBus } from "../core/bus.ts";
@@ -21,6 +22,7 @@ export interface MetricsDeps {
   skillStore?: SkillStore;
   patternStore?: PatternStore;
   shadowStore?: ShadowStore;
+  workerStore?: WorkerStore;
 }
 
 export interface SystemMetrics {
@@ -50,10 +52,19 @@ export interface SystemMetrics {
   shadow: {
     queueDepth: number;
   };
+  workers: {
+    total: number;
+    active: number;
+    probation: number;
+    demoted: number;
+    retired: number;
+    traceDiversity: number;
+  };
   dataGates: {
     sleepCycle: boolean;
     skillFormation: boolean;
     evolutionEngine: boolean;
+    fleetRouting: boolean;
   };
   evolution?: EvolutionMetrics;
 }
@@ -71,7 +82,7 @@ const DEFAULT_GATE_THRESHOLDS: DataGateThresholds = {
 };
 
 export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
-  const { traceStore, ruleStore, skillStore, patternStore, shadowStore } = deps;
+  const { traceStore, ruleStore, skillStore, patternStore, shadowStore, workerStore } = deps;
 
   // Trace stats
   const totalTraces = traceStore.count();
@@ -110,6 +121,14 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
   // Shadow queue depth
   const shadowQueueDepth = shadowStore?.count() ?? 0;
 
+  // Worker stats (Phase 4)
+  const workerTotal = workerStore?.count() ?? 0;
+  const workerActive = workerStore?.countActive() ?? 0;
+  const workerProbation = workerStore?.countByStatus("probation") ?? 0;
+  const workerDemoted = workerStore?.countByStatus("demoted") ?? 0;
+  const workerRetired = workerStore?.countByStatus("retired") ?? 0;
+  const workerTraceDiversity = workerStore?.countDistinctWorkerIds() ?? 0;
+
   // Data gates
   const gateStats: DataGateStats = {
     traceCount: totalTraces,
@@ -117,8 +136,8 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
     patternsExtracted: totalPatterns,
     activeSkills: activeSkills.length,
     sleepCyclesRun,
-    activeWorkers: 0,              // Phase 4: populated when WorkerStore is wired
-    workerTraceDiversity: 0,       // Phase 4: populated when WorkerStore is wired
+    activeWorkers: workerActive,
+    workerTraceDiversity,
   };
 
   return {
@@ -148,10 +167,19 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
     shadow: {
       queueDepth: shadowQueueDepth,
     },
+    workers: {
+      total: workerTotal,
+      active: workerActive,
+      probation: workerProbation,
+      demoted: workerDemoted,
+      retired: workerRetired,
+      traceDiversity: workerTraceDiversity,
+    },
     dataGates: {
       sleepCycle: checkDataGate("sleep_cycle", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
       skillFormation: checkDataGate("skill_formation", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
       evolutionEngine: checkDataGate("evolution_engine", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
+      fleetRouting: checkDataGate("fleet_routing", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
     },
     evolution: generatePhase3Report({ traceStore, ruleStore, skillStore, patternStore }),
   };

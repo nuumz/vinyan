@@ -8,7 +8,7 @@
  *
  * Source of truth: vinyan-implementation-plan.md §Phase 4.3
  */
-import type { TaskFingerprint, TaskInput, PerceptualHierarchy } from "./types.ts";
+import type { TaskFingerprint, TaskInput, PerceptualHierarchy, ExecutionTrace } from "./types.ts";
 
 /** Known framework patterns detected from import paths. */
 const FRAMEWORK_PATTERNS: Array<{ pattern: RegExp; marker: string }> = [
@@ -38,24 +38,69 @@ const ACTION_VERBS = [
 ];
 
 /**
+ * Options for data-gated fingerprint dimensions.
+ * Pass traceCount to enable gated dimensions (frameworkMarkers at 200+, oracleFailurePattern at 500+).
+ */
+export interface FingerprintOptions {
+  traceCount?: number;
+  /** Pre-computed oracle failure pattern for this task type (requires DB access). */
+  oracleFailurePattern?: string;
+}
+
+/**
  * Compute a task fingerprint from input and perception data.
  * Deterministic for same inputs (A3 compliance).
  */
 export function computeFingerprint(
   input: TaskInput,
   perception?: PerceptualHierarchy,
+  options?: FingerprintOptions,
 ): TaskFingerprint {
   const actionVerb = extractActionVerb(input.goal);
   const fileExtensions = extractFileExtensions(input.targetFiles ?? []);
   const blastRadiusBucket = computeBlastBucket(perception);
-  const frameworkMarkers = perception ? detectFrameworkMarkers(perception) : undefined;
+
+  const traceCount = options?.traceCount ?? 0;
+
+  // Data-gated dimension: frameworkMarkers (200+ traces)
+  const frameworkMarkers = (traceCount >= 200 && perception)
+    ? detectFrameworkMarkers(perception)
+    : undefined;
+
+  // Data-gated dimension: oracleFailurePattern (500+ traces)
+  const oracleFailurePattern = (traceCount >= 500 && options?.oracleFailurePattern)
+    ? options.oracleFailurePattern
+    : undefined;
 
   return {
     actionVerb,
     fileExtensions,
     blastRadiusBucket,
     frameworkMarkers: frameworkMarkers?.length ? frameworkMarkers : undefined,
+    oracleFailurePattern,
   };
+}
+
+/**
+ * Compute the most-frequently-failing oracle for a given task type signature from traces.
+ * Returns the oracle name or undefined if no dominant failure exists.
+ */
+export function computeOracleFailurePattern(
+  traces: ExecutionTrace[],
+  taskTypeSignature: string,
+): string | undefined {
+  const oracleFails = new Map<string, number>();
+  for (const trace of traces) {
+    if (trace.task_type_signature !== taskTypeSignature) continue;
+    for (const [oracle, passed] of Object.entries(trace.oracleVerdicts)) {
+      if (!passed) {
+        oracleFails.set(oracle, (oracleFails.get(oracle) ?? 0) + 1);
+      }
+    }
+  }
+  if (oracleFails.size === 0) return undefined;
+  const sorted = [...oracleFails.entries()].sort((a, b) => b[1] - a[1]);
+  return sorted[0]![0];
 }
 
 /**

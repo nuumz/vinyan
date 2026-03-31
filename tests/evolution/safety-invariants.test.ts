@@ -42,13 +42,22 @@ describe("checkSafetyInvariants", () => {
     expect(result.violations[0]).toContain("I2");
   });
 
-  test("I3: detects budget ceiling violation", () => {
+  test("I3: detects budget ceiling violation (maxTokens)", () => {
     const result = checkSafetyInvariants(makeRule({
       action: "adjust-threshold",
       parameters: { maxTokens: 1_000_000 },
     }));
     expect(result.safe).toBe(false);
     expect(result.violations[0]).toContain("I3");
+  });
+
+  test("I3: detects budget ceiling violation (maxDurationMs)", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "adjust-threshold",
+      parameters: { maxDurationMs: 700_000 },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I3"))).toBe(true);
   });
 
   test("I4: detects skipped tests", () => {
@@ -69,13 +78,22 @@ describe("checkSafetyInvariants", () => {
     expect(result.violations[0]).toContain("I5");
   });
 
-  test("I6: detects routing floor violation", () => {
+  test("I6: detects routing floor violation (forceL0ForMultiFile)", () => {
     const result = checkSafetyInvariants(makeRule({
       action: "adjust-threshold",
       parameters: { forceL0ForMultiFile: true },
     }));
     expect(result.safe).toBe(false);
     expect(result.violations[0]).toContain("I6");
+  });
+
+  test("I6: detects escalation to negative level", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "escalate",
+      parameters: { toLevel: -1 },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I6"))).toBe(true);
   });
 
   test("multiple violations detected at once", () => {
@@ -100,6 +118,51 @@ describe("filterSafeRules", () => {
     expect(result.safe).toHaveLength(2);
     expect(result.violations).toHaveLength(1);
     expect(result.violations[0]!.ruleId).toBe("unsafe-1");
+  });
+});
+
+describe("checkSafetyInvariants — I9/I10/I11 Fleet Governance", () => {
+  test("I9: assign-worker with skipOracles is rejected", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "assign-worker",
+      parameters: { workerId: "w-1", skipOracles: true },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I9"))).toBe(true);
+  });
+
+  test("I10: probation worker with allowCommit is rejected", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "assign-worker",
+      parameters: { workerId: "w-1", workerStatus: "probation", allowCommit: true },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I10"))).toBe(true);
+  });
+
+  test("I11: exclusiveAllocation > 0.70 is rejected", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "assign-worker",
+      parameters: { workerId: "w-1", exclusiveAllocation: 0.85 },
+    }));
+    expect(result.safe).toBe(false);
+    expect(result.violations.some(v => v.includes("I11"))).toBe(true);
+  });
+
+  test("I11: exclusiveAllocation = 0.70 is allowed (at boundary)", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "assign-worker",
+      parameters: { workerId: "w-1", exclusiveAllocation: 0.70 },
+    }));
+    expect(result.safe).toBe(true);
+  });
+
+  test("assign-worker without violations is allowed", () => {
+    const result = checkSafetyInvariants(makeRule({
+      action: "assign-worker",
+      parameters: { workerId: "w-1" },
+    }));
+    expect(result.safe).toBe(true);
   });
 });
 

@@ -11,6 +11,9 @@ import type { TraceStore } from "../db/trace-store.ts";
 import type { RuleStore } from "../db/rule-store.ts";
 import type { SkillStore } from "../db/skill-store.ts";
 import type { PatternStore } from "../db/pattern-store.ts";
+import type { WorkerStore } from "../db/worker-store.ts";
+import type { CapabilityModel } from "../orchestrator/capability-model.ts";
+import { evaluateFleet, type FleetMetrics } from "../orchestrator/fleet-evaluator.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -21,6 +24,10 @@ export interface Phase3ReportDeps {
   patternStore?: PatternStore;
   /** Optional: provides per-task-type basis distribution. */
   selfModelParams?: Map<string, { basis: string }>;
+  /** Phase 4: worker store for fleet metrics. */
+  workerStore?: WorkerStore;
+  /** Phase 4: capability model for fleet evaluation. */
+  capabilityModel?: CapabilityModel;
 }
 
 export interface EvolutionMetrics {
@@ -48,6 +55,8 @@ export interface EvolutionMetrics {
     explorationRate: number;
     explorationQualityDelta: number;
   };
+  /** Phase 4: fleet governance metrics (present when WorkerStore is wired). */
+  fleet?: FleetMetrics;
   phase4Readiness: Phase4ReadinessGate;
 }
 
@@ -153,6 +162,12 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
     sleepCyclesRun,
   });
 
+  // ── Fleet metrics (Phase 4) ──
+  let fleet: FleetMetrics | undefined;
+  if (deps.workerStore) {
+    fleet = evaluateFleet(deps.workerStore, deps.capabilityModel);
+  }
+
   return {
     selfModel: {
       globalAccuracy,
@@ -178,6 +193,7 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
       explorationRate,
       explorationQualityDelta,
     },
+    fleet,
     phase4Readiness,
   };
 }

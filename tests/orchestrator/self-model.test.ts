@@ -165,8 +165,9 @@ describe("CalibratedSelfModel", () => {
     }
 
     const params = model.getParams();
-    // After 20 observations of 0.9 quality, EMA should have moved from 0.5 toward 0.9
-    expect(params.avgQualityScore).toBeGreaterThan(0.75);
+    // After 20 observations of 0.9 quality, EMA should have moved substantially from 0.5 toward 0.9
+    expect(params.avgQualityScore).toBeGreaterThan(0.80);
+    expect(params.avgQualityScore).toBeLessThan(0.95); // Not yet fully converged
     expect(params.observationCount).toBe(20);
   });
 
@@ -190,7 +191,9 @@ describe("CalibratedSelfModel", () => {
 
     const pred10 = await model.predict(makeInput(), makePerception());
     expect(pred10.calibrationDataPoints).toBe(10);
-    // With 10+ observations and accuracy may be >= 0.4 → at least "hybrid"
+    // With 10 observations, basis depends on per-task-type accuracy (not global params).
+    // computeBasis(obs=10, accuracy): if accuracy >= 0.4 → "hybrid", else "static-heuristic"
+    // The exact accuracy depends on how well predictions matched actuals.
     expect(["hybrid", "static-heuristic"]).toContain(pred10.basis);
   });
 

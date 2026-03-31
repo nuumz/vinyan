@@ -225,13 +225,22 @@ describe("WorkerLifecycle", () => {
   });
 
   describe("reEnrollExpired", () => {
-    test("re-enrolls demoted worker after cooldown", () => {
+    test("re-enrolls demoted worker after cooldown (trace-count based)", () => {
       store.insert(makeProfile("w1", "active"));
       store.updateStatus("w1", "demoted", "quality drop");
 
-      // Manually set demotedAt far enough in the past
-      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`,
-        [Date.now() - 60 * 60_000, "w1"]); // 60 minutes ago (> 50 * 1min cooldown)
+      // Set demotedAt in the past
+      const demotedAt = Date.now() - 60 * 60_000;
+      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`, [demotedAt, "w1"]);
+
+      // Insert 50+ traces since demotion to satisfy cooldown (reentryCooldownSessions=50)
+      for (let i = 0; i < 55; i++) {
+        db.run(
+          `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id)
+           VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'success', '{}', '[]', ?)`,
+          [`trace-cooldown-${i}`, `task-cooldown-${i}`, demotedAt + (i + 1) * 1000, "w1"],
+        );
+      }
 
       const reEnrolled = lifecycle.reEnrollExpired(100);
       expect(reEnrolled).toContain("w1");
@@ -241,7 +250,7 @@ describe("WorkerLifecycle", () => {
     test("does not re-enroll if cooldown not met", () => {
       store.insert(makeProfile("w1", "active"));
       store.updateStatus("w1", "demoted", "quality drop");
-      // demotedAt is very recent — cooldown not met
+      // demotedAt is very recent and no traces since — cooldown not met
 
       const reEnrolled = lifecycle.reEnrollExpired(1);
       expect(reEnrolled).toHaveLength(0);
@@ -254,8 +263,17 @@ describe("WorkerLifecycle", () => {
       store.insert(profile);
       store.updateStatus("w1", "demoted", "quality drop");
 
-      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`,
-        [Date.now() - 60 * 60_000, "w1"]);
+      const demotedAt = Date.now() - 60 * 60_000;
+      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`, [demotedAt, "w1"]);
+
+      // Insert traces to satisfy cooldown
+      for (let i = 0; i < 55; i++) {
+        db.run(
+          `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id)
+           VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'success', '{}', '[]', ?)`,
+          [`trace-retire-${i}`, `task-retire-${i}`, demotedAt + (i + 1) * 1000, "w1"],
+        );
+      }
 
       const reEnrolled = lifecycle.reEnrollExpired(100);
       expect(reEnrolled).toHaveLength(0);
@@ -269,8 +287,18 @@ describe("WorkerLifecycle", () => {
 
       store.insert(makeProfile("w1", "active"));
       store.updateStatus("w1", "demoted", "test");
-      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`,
-        [Date.now() - 60 * 60_000, "w1"]);
+
+      const demotedAt = Date.now() - 60 * 60_000;
+      db.run(`UPDATE worker_profiles SET demoted_at = ? WHERE id = ?`, [demotedAt, "w1"]);
+
+      // Insert traces to satisfy cooldown
+      for (let i = 0; i < 55; i++) {
+        db.run(
+          `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id)
+           VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'success', '{}', '[]', ?)`,
+          [`trace-event-${i}`, `task-event-${i}`, demotedAt + (i + 1) * 1000, "w1"],
+        );
+      }
 
       lifecycle.reEnrollExpired(100);
       expect(events).toHaveLength(1);
@@ -305,6 +333,22 @@ describe("WorkerLifecycle", () => {
 
       lifecycle.emergencyReactivation();
       expect(events).toHaveLength(1);
+    });
+  });
+
+  describe("isOnProbation", () => {
+    test("returns true for probation worker", () => {
+      store.insert(makeProfile("w1", "probation"));
+      expect(lifecycle.isOnProbation("w1")).toBe(true);
+    });
+
+    test("returns false for active worker", () => {
+      store.insert(makeProfile("w1", "active"));
+      expect(lifecycle.isOnProbation("w1")).toBe(false);
+    });
+
+    test("returns false for unknown worker", () => {
+      expect(lifecycle.isOnProbation("nonexistent")).toBe(false);
     });
   });
 

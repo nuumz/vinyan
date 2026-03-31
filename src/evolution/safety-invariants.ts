@@ -96,6 +96,15 @@ export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult
 
   // ── Phase 4 Fleet Governance Invariants ──────────────────────────────
 
+  // Invariant 8: Cannot demote last active worker (fleet collapse protection)
+  // Fail-safe: if activeWorkerCount is omitted, block the demotion (conservative default)
+  if (rule.action === "assign-worker" && rule.parameters.forceDemote === true) {
+    const remainingActive = rule.parameters.activeWorkerCount as number | undefined;
+    if (remainingActive === undefined || remainingActive <= 1) {
+      violations.push("I8: Cannot demote last active worker — would cause fleet collapse");
+    }
+  }
+
   // Invariant 9: Oracle verification bypass prohibition
   if (rule.action === "assign-worker" && rule.parameters.skipOracles === true) {
     violations.push("I9: assign-worker rules cannot bypass oracle verification");
@@ -156,7 +165,7 @@ const BUDGET_CEILING = {
 const RISK_THRESHOLD_FLOOR = 0.05;
 
 /** Allowed model name prefixes for prefer-model rules. */
-const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/"];
+const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/", "openrouter/"];
 
 /** I11: Maximum allocation for a single worker (Phase 4 fleet diversity). */
 const WORKER_DIVERSITY_CAP = 0.70;

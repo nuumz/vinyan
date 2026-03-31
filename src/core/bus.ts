@@ -104,6 +104,9 @@ export interface VinyanBusEvents {
 
   // Fleet-level uncertainty — GAP-H UC-7 (Phase 4.4)
   "task:uncertain": { taskId: string; reason: string; maxCapability: number };
+
+  // Artifact commit (Phase 1 — A6: orchestrator disposes)
+  "commit:rejected": { taskId: string; rejected: Array<{ path: string; reason: string }> };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

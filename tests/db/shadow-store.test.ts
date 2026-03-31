@@ -38,14 +38,14 @@ describe("ShadowStore", () => {
     expect(found!.mutations).toEqual([{ file: "src/foo.ts", content: "export const x = 1;" }]);
   });
 
-  test("findPending returns pending and running jobs", () => {
+  test("findPending returns only pending jobs (not running — prevents double-processing)", () => {
     store.insert(makeJob({ id: "s1", status: "pending" }));
     store.insert(makeJob({ id: "s2", status: "running" }));
     store.insert(makeJob({ id: "s3", status: "done" }));
 
     const pending = store.findPending();
-    expect(pending).toHaveLength(2);
-    expect(pending.map(j => j.id).sort()).toEqual(["s1", "s2"]);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.id).toBe("s1");
   });
 
   test("updateStatus to running sets started_at", () => {

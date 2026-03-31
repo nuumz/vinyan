@@ -63,13 +63,26 @@ function makeRegistry(responseContent?: string) {
 }
 
 describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
-  test("1. L0 task completes without LLM call", async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
+  test("1. L0 task completes without LLM call (A3)", async () => {
+    // A3: at L0, Orchestrator must make zero LLM calls — verify via spy
+    let llmCallCount = 0;
+    const registry = new LLMProviderRegistry();
+    const spyProvider = createMockProvider({ id: "mock/fast", tier: "fast", responseContent: "{}" });
+    const originalGenerate = spyProvider.generate.bind(spyProvider);
+    spyProvider.generate = async (request: Parameters<typeof originalGenerate>[0]) => {
+      llmCallCount++;
+      return originalGenerate(request);
+    };
+    registry.register(spyProvider);
+
+    const orchestrator = createOrchestrator({ workspace: tempDir, registry, useSubprocess: false });
     // No targetFiles → L0 routing → no LLM needed
     const result = await orchestrator.executeTask(makeInput());
-    // L0 produces empty mutations → goes through gate → either completes or escalates
-    expect(["completed", "escalated"]).toContain(result.status);
+    expect(result.status).toBe("completed");
     expect(result.id).toBe("t-integration");
+    expect(result.trace.routingLevel).toBe(0);
+    // Core A3 assertion: zero LLM calls at L0
+    expect(llmCallCount).toBe(0);
   });
 
   test("2. L1 task uses fast provider and returns mutations", async () => {
@@ -101,37 +114,43 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
     expect(traces[0]!.taskId).toBe("t-integration");
   });
 
-  test("5. escalation happens when all retries exhausted", async () => {
-    // Use a provider that returns empty mutations — gate will pass but no actual work done
-    // With maxRetries: 1, this will escalate through levels
-    const emptyContent = JSON.stringify({
-      proposedMutations: [],
-      proposedToolCalls: [],
-      uncertainties: [],
-    });
+  test("5. escalation when oracle gate always rejects (A6 fail-closed)", async () => {
+    // Inject an oracleGate that ALWAYS fails — forces escalation through all levels
+    const alwaysFailGate = {
+      verify: async () => ({
+        passed: false,
+        verdicts: {},
+        reason: "forced failure for escalation test",
+      }),
+    };
     const orchestrator = createOrchestrator({
       workspace: tempDir,
-      registry: makeRegistry(emptyContent),
+      registry: makeRegistry(),
       useSubprocess: false,
+      oracleGate: alwaysFailGate,
     });
     const result = await orchestrator.executeTask(
-      makeInput({ targetFiles: ["src/foo.ts"], budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 } }),
+      makeInput({
+        targetFiles: ["src/foo.ts"],
+        budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
+      }),
     );
-    // Empty mutations still pass gate → completes or goes through routing
-    expect(["completed", "escalated"]).toContain(result.status);
+    // All retries fail verification → must escalate
+    expect(result.status).toBe("escalated");
   });
 
-  test("6. working memory tracks failed approaches across retries", async () => {
+  test("6. traces record model_used and duration for every attempt", async () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
-    const result = await orchestrator.executeTask(
+    await orchestrator.executeTask(
       makeInput({ targetFiles: ["src/foo.ts"] }),
     );
-    // Even if it succeeds on first try, trace is recorded
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
     for (const trace of traces) {
       expect(trace.model_used).toBeDefined();
+      expect(typeof trace.model_used).toBe("string");
       expect(trace.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(trace.taskId).toBe("t-integration");
     }
   });
 

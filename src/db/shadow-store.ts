@@ -70,7 +70,7 @@ export class ShadowStore {
 
   findPending(): ShadowJobWithMutations[] {
     const rows = this.db.prepare(
-      `SELECT * FROM shadow_jobs WHERE status IN ('pending', 'running') ORDER BY enqueued_at ASC`,
+      `SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC`,
     ).all();
     return rows.map(rowToShadowJob);
   }

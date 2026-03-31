@@ -10,7 +10,6 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
-import { commitArtifacts } from "./artifact-commit.ts";
 import type {
   TaskInput,
   PerceptualHierarchy,
@@ -72,7 +71,8 @@ export class WorkerPoolImpl implements WorkerPool {
     const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing);
 
     // L2/L3: container dispatch when isolation level = 2
-    if (workerInput.isolationLevel === 2) {
+    // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
+    if (workerInput.isolationLevel === 2 && this.useSubprocess) {
       const output = await this.dispatchContainer(workerInput, routing);
       return this.toWorkerResult(output, startTime);
     }
@@ -158,6 +158,11 @@ export class WorkerPoolImpl implements WorkerPool {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      env: {
+        ...process.env,
+        // PH4.4: Pass workerId to subprocess so it can select the right provider
+        ...(routing.workerId ? { VINYAN_WORKER_ID: routing.workerId } : {}),
+      },
     });
 
     const validated = WorkerInputSchema.parse(workerInput);
@@ -218,6 +223,8 @@ export class WorkerPoolImpl implements WorkerPool {
       "--network=none",
       "--pids-limit=256",
       "--memory=1g",
+      // PH4.4: Pass workerId to container so it can select the right provider
+      ...(routing.workerId ? ["-e", `VINYAN_WORKER_ID=${routing.workerId}`] : []),
       "-v", `${this.workspace}:/workspace:ro`,
       "-v", `${overlayDir}:/overlay:rw`,
       "-v", `${ipcDir}:/ipc:rw`,
@@ -225,8 +232,6 @@ export class WorkerPoolImpl implements WorkerPool {
     ];
 
     const timeoutMs = routing.latencyBudget_ms;
-    let containerId: string | undefined;
-
     try {
       const proc = Bun.spawn(args, {
         stdout: "pipe",

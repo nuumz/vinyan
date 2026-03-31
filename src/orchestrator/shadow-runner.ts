@@ -105,6 +105,66 @@ export class ShadowRunner {
   }
 
   /**
+   * Run an alternative (probation) worker in shadow mode.
+   * The probation worker's output is validated but NOT committed.
+   * Result goes to pheAlternatives in the shadow validation (PH4.2 D4.2-3).
+   */
+  async runAlternativeWorker(
+    taskId: string,
+    mutations: Array<{ file: string; content: string }>,
+    workerId: string,
+  ): Promise<ShadowValidationResult> {
+    const startTime = performance.now();
+
+    const sandboxDir = await this.createSandbox(mutations);
+    try {
+      const proc = Bun.spawn(["sh", "-c", this.testCommand], {
+        cwd: sandboxDir,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const timeoutPromise = new Promise<"timeout">(r =>
+        setTimeout(() => r("timeout"), this.timeoutMs),
+      );
+
+      const processPromise = (async () => {
+        const stdout = await new Response(proc.stdout).text();
+        const exitCode = await proc.exited;
+        return { stdout, exitCode };
+      })();
+
+      const raceResult = await Promise.race([processPromise, timeoutPromise]);
+      const duration_ms = Math.round(performance.now() - startTime);
+
+      if (raceResult === "timeout") {
+        proc.kill();
+        return {
+          taskId,
+          testsPassed: false,
+          duration_ms,
+          timestamp: Date.now(),
+          alternativeWorkerId: workerId,
+        };
+      }
+
+      const testsPassed = raceResult.exitCode === 0;
+      const testResults = parseTestOutput(raceResult.stdout);
+
+      return {
+        taskId,
+        testsPassed,
+        testResults,
+        duration_ms,
+        timestamp: Date.now(),
+        alternativeWorkerId: workerId,
+      };
+    } finally {
+      try { rmSync(sandboxDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  /**
    * Run the actual validation — test suite execution in a sandbox.
    * Copies workspace to a temp directory, applies proposed mutations,
    * then runs the test suite against the mutated state.

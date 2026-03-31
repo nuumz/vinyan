@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS worker_profiles (
   tool_allowlist     TEXT,
   system_prompt_tpl  TEXT DEFAULT 'default',
   max_context_tokens INTEGER,
+  project_id         TEXT,
   status             TEXT NOT NULL DEFAULT 'probation'
                      CHECK(status IN ('probation','active','demoted','retired')),
   created_at         INTEGER NOT NULL,
@@ -26,6 +27,8 @@ CREATE TABLE IF NOT EXISTS worker_profiles (
   demotion_count     INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS idx_wp_identity
+  ON worker_profiles(model_id, temperature, system_prompt_tpl);
 CREATE INDEX IF NOT EXISTS idx_wp_status ON worker_profiles(status);
 CREATE INDEX IF NOT EXISTS idx_wp_model ON worker_profiles(model_id);
 `;

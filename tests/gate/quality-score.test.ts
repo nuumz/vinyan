@@ -65,8 +65,17 @@ describe("computeQualityScore", () => {
   });
 
   test("composite = compliance * 0.6 + efficiency * 0.4 (phase0)", () => {
-    const qs = computeQualityScore({ ast: makeVerdict(true) }, 0, 2000);
-    expect(qs.composite).toBeCloseTo(1.0 * 0.6 + 1.0 * 0.4, 5);
+    // Use non-trivial inputs to verify actual weight formula (not 1.0 * any_weight = 1.0)
+    const results = {
+      ast: makeVerdict(true),
+      type: makeVerdict(false), // compliance = 1/2 = 0.5
+    };
+    // duration=400, budget=2000 → efficiency = 1 - 400/2000 = 0.8
+    const qs = computeQualityScore(results, 400, 2000);
+    expect(qs.architecturalCompliance).toBeCloseTo(0.5, 5);
+    expect(qs.efficiency).toBeCloseTo(0.8, 5);
+    // composite = 0.5 * 0.6 + 0.8 * 0.4 = 0.62
+    expect(qs.composite).toBeCloseTo(0.62, 5);
   });
 
   // ── Phase 1 dimensions ──────────────────────────────────────────

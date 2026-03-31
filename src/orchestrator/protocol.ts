@@ -180,7 +180,7 @@ export const WorkerOutputSchema = z.object({
 const TaskBudgetSchema = z.object({
   maxTokens: z.number().positive(),
   maxDurationMs: z.number().positive(),
-  maxRetries: z.number().positive(),
+  maxRetries: z.number().nonnegative(),
 });
 
 export const TaskInputSchema = z.object({

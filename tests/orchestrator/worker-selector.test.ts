@@ -109,7 +109,7 @@ describe("WorkerSelector", () => {
       capabilityModel: capModel,
       bus: createBus(),
       epsilonWorker: 0, // disable exploration for deterministic tests
-      diversityFloorPct: 0.15,
+      diversityCapPct: 0.70,
       gateStats: () => GATE_MET,
       gateThresholds: THRESHOLDS,
     });
@@ -123,7 +123,7 @@ describe("WorkerSelector", () => {
         capabilityModel: capModel,
         bus: createBus(),
         epsilonWorker: 0,
-        diversityFloorPct: 0.15,
+        diversityCapPct: 0.70,
         gateStats: () => GATE_NOT_MET,
         gateThresholds: THRESHOLDS,
       });
@@ -206,7 +206,7 @@ describe("WorkerSelector", () => {
         capabilityModel: capModel,
         bus: createBus(),
         epsilonWorker: 1.0, // always explore
-        diversityFloorPct: 0.15,
+        diversityCapPct: 0.70,
         gateStats: () => GATE_MET,
         gateThresholds: THRESHOLDS,
       });
@@ -229,7 +229,7 @@ describe("WorkerSelector", () => {
         capabilityModel: capModel,
         bus: createBus(),
         epsilonWorker: 1.0,
-        diversityFloorPct: 0.15,
+        diversityCapPct: 0.70,
         gateStats: () => GATE_MET,
         gateThresholds: THRESHOLDS,
       });
@@ -274,6 +274,96 @@ describe("WorkerSelector", () => {
     });
   });
 
+  describe("uncertainty detection (Gap #4)", () => {
+    test("returns uncertain when all workers below capability threshold", () => {
+      store.insert(makeProfile("w1"));
+      store.insert(makeProfile("w2"));
+
+      // Both workers have very low success rate → capability < 0.3
+      insertTraces(db, "w1", 20, { taskTypeSig: "refactor::.ts::small", successRate: 0.15, quality: 0.2 });
+      insertTraces(db, "w2", 20, { taskTypeSig: "refactor::.ts::small", successRate: 0.10, quality: 0.1 });
+      store.invalidateCache();
+
+      const result = selector.selectWorker(FP, 1, BUDGET);
+      expect(result.isUncertain).toBe(true);
+      expect(result.reason).toBe("uncertain");
+      expect(result.selectedWorkerId).toBe("");
+      expect(result.maxCapability).toBeDefined();
+      expect(result.maxCapability!).toBeLessThan(0.3);
+    });
+
+    test("does not return uncertain when at least one worker has sufficient capability", () => {
+      store.insert(makeProfile("w1"));
+      store.insert(makeProfile("w2"));
+
+      // w1 has good success rate → capability > 0.3
+      insertTraces(db, "w1", 20, { taskTypeSig: "refactor::.ts::small", successRate: 0.9, quality: 0.8 });
+      // w2 has low success rate
+      insertTraces(db, "w2", 20, { taskTypeSig: "refactor::.ts::small", successRate: 0.1, quality: 0.1 });
+      store.invalidateCache();
+
+      const result = selector.selectWorker(FP, 1, BUDGET);
+      expect(result.isUncertain).toBeFalsy();
+      expect(result.selectedWorkerId).toBe("w1");
+    });
+  });
+
+  describe("staleness penalty (Gap #5)", () => {
+    test("stale worker gets lower score than active worker", () => {
+      store.insert(makeProfile("w1"));
+      store.insert(makeProfile("w2"));
+
+      // w1: traces from 10 cycles ago (very stale) — same quality/success as w2
+      const tenCyclesAgo = Date.now() - 10 * 600_000;
+      for (let i = 0; i < 10; i++) {
+        db.run(
+          `INSERT INTO execution_traces (
+            id, task_id, timestamp, routing_level, approach, model_used,
+            tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files,
+            worker_id, quality_composite, task_type_signature
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            `trace-w1-stale-${i}`, `task-${i}`, tenCyclesAgo, 1, "approach", "model-w1",
+            1000, 5000, "success", "{}", "[]", "w1", 0.8, "refactor::.ts::small",
+          ],
+        );
+      }
+      // w2: traces from just now (active) — same quality/success as w1
+      insertTraces(db, "w2", 10, { taskTypeSig: "refactor::.ts::small", successRate: 1.0, quality: 0.8 });
+      store.invalidateCache();
+
+      const result = selector.selectWorker(FP, 1, BUDGET);
+      // w2 should win: equal capability but w1 has 0.9^10 ≈ 0.35 staleness penalty
+      expect(result.selectedWorkerId).toBe("w2");
+    });
+  });
+
+  describe("weighted exploration (Gap #6)", () => {
+    test("exploration exists and selects a non-default worker", () => {
+      const exploringSelector = new WorkerSelector({
+        workerStore: store,
+        capabilityModel: capModel,
+        bus: createBus(),
+        epsilonWorker: 1.0, // always explore
+        diversityCapPct: 0.70,
+        gateStats: () => GATE_MET,
+        gateThresholds: THRESHOLDS,
+      });
+
+      store.insert(makeProfile("w1"));
+      store.insert(makeProfile("w2"));
+      store.insert(makeProfile("w3"));
+      insertTraces(db, "w1", 10, { taskTypeSig: "refactor::.ts::small", successRate: 0.9, quality: 0.9 });
+      insertTraces(db, "w2", 10, { taskTypeSig: "refactor::.ts::small", successRate: 0.7, quality: 0.7 });
+      insertTraces(db, "w3", 10, { taskTypeSig: "refactor::.ts::small", successRate: 0.5, quality: 0.5 });
+      store.invalidateCache();
+
+      const result = exploringSelector.selectWorker(FP, 1, BUDGET);
+      expect(result.explorationTriggered).toBe(true);
+      expect(result.selectedWorkerId).not.toBe("w1"); // not the default best
+    });
+  });
+
   describe("bus events", () => {
     test("emits worker:selected event", () => {
       const bus = createBus();
@@ -285,7 +375,7 @@ describe("WorkerSelector", () => {
         capabilityModel: capModel,
         bus,
         epsilonWorker: 0,
-        diversityFloorPct: 0.15,
+        diversityCapPct: 0.70,
         gateStats: () => GATE_MET,
         gateThresholds: THRESHOLDS,
       });

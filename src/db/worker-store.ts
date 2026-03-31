@@ -161,6 +161,92 @@ export class WorkerStore {
     }
   }
 
+  /**
+   * Compute stats from the most recent N traces for a worker (rolling window).
+   * Used by WorkerLifecycle for demotion checks (rolling 30 tasks per plan PH4.2).
+   */
+  getRecentStats(workerId: string, limit: number): WorkerStats {
+    const agg = this.db.prepare(`
+      SELECT
+        COUNT(*) as total_tasks,
+        AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
+        AVG(quality_composite) as avg_quality,
+        AVG(duration_ms) as avg_duration,
+        AVG(tokens_consumed) as avg_tokens,
+        MAX(timestamp) as last_active_at
+      FROM (
+        SELECT outcome, quality_composite, duration_ms, tokens_consumed, timestamp
+        FROM execution_traces
+        WHERE worker_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      )
+    `).get(workerId, limit) as {
+      total_tasks: number;
+      success_rate: number | null;
+      avg_quality: number | null;
+      avg_duration: number | null;
+      avg_tokens: number | null;
+      last_active_at: number | null;
+    };
+
+    return {
+      totalTasks: agg.total_tasks,
+      successRate: agg.success_rate ?? 0,
+      avgQualityScore: agg.avg_quality ?? 0,
+      avgDuration_ms: agg.avg_duration ?? 0,
+      avgTokenCost: agg.avg_tokens ?? 0,
+      taskTypeBreakdown: {},
+      lastActiveAt: agg.last_active_at ?? 0,
+    };
+  }
+
+  /**
+   * Compute stats from traces since a given timestamp for a worker.
+   * Used by WorkerLifecycle for scoped safety-violation checks during probation.
+   */
+  getStatsSince(workerId: string, sinceTimestamp: number): WorkerStats {
+    const agg = this.db.prepare(`
+      SELECT
+        COUNT(*) as total_tasks,
+        AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
+        AVG(quality_composite) as avg_quality,
+        AVG(duration_ms) as avg_duration,
+        AVG(tokens_consumed) as avg_tokens,
+        MAX(timestamp) as last_active_at
+      FROM execution_traces
+      WHERE worker_id = ? AND timestamp >= ?
+    `).get(workerId, sinceTimestamp) as {
+      total_tasks: number;
+      success_rate: number | null;
+      avg_quality: number | null;
+      avg_duration: number | null;
+      avg_tokens: number | null;
+      last_active_at: number | null;
+    };
+
+    return {
+      totalTasks: agg.total_tasks,
+      successRate: agg.success_rate ?? 0,
+      avgQualityScore: agg.avg_quality ?? 0,
+      avgDuration_ms: agg.avg_duration ?? 0,
+      avgTokenCost: agg.avg_tokens ?? 0,
+      taskTypeBreakdown: {},
+      lastActiveAt: agg.last_active_at ?? 0,
+    };
+  }
+
+  /**
+   * Count traces for a worker since a given timestamp.
+   * Used for session-based cooldown in WorkerLifecycle.
+   */
+  countTracesSince(workerId: string, sinceTimestamp: number): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM execution_traces WHERE worker_id = ? AND timestamp >= ?`,
+    ).get(workerId, sinceTimestamp) as { cnt: number };
+    return row.cnt;
+  }
+
   /** Count distinct worker_ids in recent traces (for data gate). */
   countDistinctWorkerIds(): number {
     const row = this.db.prepare(

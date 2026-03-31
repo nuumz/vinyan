@@ -38,6 +38,7 @@ import { ToolExecutor } from "./tools/tool-executor.ts";
 import { MetricsCollector } from "../observability/metrics.ts";
 import { WorkerStore } from "../db/worker-store.ts";
 import { WorkerSelector } from "./worker-selector.ts";
+import { WorkerLifecycle } from "./worker-lifecycle.ts";
 import { CapabilityModel } from "./capability-model.ts";
 import type { WorkerProfile } from "./types.ts";
 import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
@@ -50,6 +51,8 @@ export interface OrchestratorConfig {
   useSubprocess?: boolean;
   /** Provide an existing bus instance (one is created if omitted). */
   bus?: VinyanBus;
+  /** Override oracle gate (for testing escalation and fail-closed scenarios). */
+  oracleGate?: import("./core-loop.ts").OracleGate;
 }
 
 export interface Orchestrator {
@@ -60,6 +63,7 @@ export interface Orchestrator {
   shadowRunner?: ShadowRunner;
   skillManager?: SkillManager;
   sleepCycleRunner?: SleepCycleRunner;
+  workerLifecycle?: WorkerLifecycle;
   getSessionCount(): number;
   close(): void;
 }
@@ -108,6 +112,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // WorldGraph unavailable — fact invalidation disabled
   }
 
+  // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
+  let workerLifecycle: WorkerLifecycle | undefined;
+  if (workerStore) {
+    workerLifecycle = new WorkerLifecycle({
+      workerStore,
+      bus,
+      probationMinTasks: 30,
+      demotionWindowTasks: 30,
+      demotionMaxReentries: 3,
+      reentryCooldownSessions: 50,
+    });
+  }
+
   // Phase 2 managers
   const skillManager = skillStore
     ? new SkillManager({ skillStore, workspace })
@@ -116,7 +133,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     ? new ShadowRunner({ shadowStore, workspace })
     : undefined;
   const sleepCycleRunner = (patternStore && traceStore)
-    ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus })
+    ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle })
     : undefined;
 
   // Shadow: startup recovery (A6 crash-safety)
@@ -155,7 +172,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workspace,
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
   });
-  const oracleGate = new OracleGateAdapter(workspace);
+  const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
   const toolExecutor = new ToolExecutor();
 
@@ -187,14 +204,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       evolution_min_active_skills: 1,
       evolution_min_sleep_cycles: 3,
       fleet_min_active_workers: 2,
-      fleet_min_worker_trace_diversity: 2,
+      fleet_min_worker_trace_diversity: 100,
     };
     workerSelector = new WorkerSelector({
       workerStore,
       capabilityModel,
       bus,
       epsilonWorker: 0.10,
-      diversityFloorPct: 0.15,
+      diversityCapPct: 0.70,
       gateStats: () => ({
         traceCount: traceStore?.count() ?? 0,
         distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,
@@ -217,11 +234,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     oracleGate,
     traceCollector,
     bus,
+    workspace,
     skillManager,
     shadowRunner,
     ruleStore,
     toolExecutor,
     workerSelector,
+    workerStore,
+    workerLifecycle,
+    // Disable exploration in test mode for deterministic routing (A3)
+    explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)
@@ -275,6 +297,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     shadowRunner,
     skillManager,
     sleepCycleRunner,
+    workerLifecycle,
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);
@@ -287,6 +310,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   };
 }
 
+/** Allowed model name prefixes — mirrors safety-invariants.ts MODEL_ALLOWLIST_PREFIXES. */
+const WORKER_MODEL_ALLOWLIST = ["claude-", "gpt-", "gemini-", "mock/", "openrouter/"];
+
 /**
  * Auto-register existing LLM providers as WorkerProfiles.
  * Grandfathered as "active" — these are proven models from Phase 3.
@@ -297,6 +323,13 @@ function autoRegisterWorkers(
   bus: VinyanBus,
 ): void {
   for (const provider of registry.listProviders()) {
+    // M12: Validate model against allowlist before registration
+    const allowlisted = WORKER_MODEL_ALLOWLIST.some(p => provider.id.startsWith(p));
+    if (!allowlisted) {
+      console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);
+      continue;
+    }
+
     const workerId = `worker-${provider.id}`;
     const existing = workerStore.findById(workerId);
     if (existing) continue;

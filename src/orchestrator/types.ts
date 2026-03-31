@@ -67,7 +67,7 @@ export interface TaskInput {
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;
-  status: "completed" | "failed" | "escalated";
+  status: "completed" | "failed" | "escalated" | "uncertain";
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -76,6 +76,7 @@ export interface TaskResult {
   trace: ExecutionTrace;
   qualityScore?: QualityScore;
   escalationReason?: string; // If status === 'escalated'
+  notes?: string[];          // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,7 @@ export interface PerceptualHierarchy {
     os: string;
     availableTools: string[];
   };
+  frameworkMarkers?: string[];  // Phase 4: detected frameworks (e.g., 'react', 'express')
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */
@@ -227,6 +229,7 @@ export interface ShadowValidationResult {
   }>;
   duration_ms: number;
   timestamp: number;
+  alternativeWorkerId?: string;     // PH4.2: probation worker that produced this shadow result
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +555,7 @@ export interface TaskFingerprint {
 /** Result of capability-based worker selection — audit trail */
 export interface WorkerSelectionResult {
   selectedWorkerId: string;
-  reason: "capability-score" | "exploration" | "tier-fallback" | "assign-worker-rule";
+  reason: "capability-score" | "exploration" | "tier-fallback" | "assign-worker-rule" | "uncertain";
   score: number;
   alternatives: Array<{
     workerId: string;
@@ -560,4 +563,6 @@ export interface WorkerSelectionResult {
   }>;
   explorationTriggered: boolean;
   dataGateMet: boolean;
+  maxCapability?: number;    // Phase 4: fleet max capability for this fingerprint
+  isUncertain?: boolean;     // Phase 4: true if all workers below capability threshold (A2)
 }

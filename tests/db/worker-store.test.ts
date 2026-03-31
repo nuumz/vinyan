@@ -267,6 +267,44 @@ describe("WorkerStore", () => {
     });
   });
 
+  describe("getStatsSince", () => {
+    test("returns stats only from traces after timestamp", () => {
+      store.insert(makeProfile({ id: "w1" }));
+      const cutoff = Date.now();
+      // Insert old trace (before cutoff)
+      db.run(
+        `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id, quality_composite)
+         VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'failure', '{}', '[]', ?, 0.3)`,
+        ["trace-old", "task-old", cutoff - 10000, "w1"],
+      );
+      // Insert new traces (after cutoff)
+      db.run(
+        `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id, quality_composite)
+         VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'success', '{}', '[]', ?, 0.9)`,
+        ["trace-new-1", "task-new-1", cutoff + 1000, "w1"],
+      );
+      db.run(
+        `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files, worker_id, quality_composite)
+         VALUES (?, ?, ?, 1, 'test', 'model', 1000, 5000, 'success', '{}', '[]', ?, 0.8)`,
+        ["trace-new-2", "task-new-2", cutoff + 2000, "w1"],
+      );
+
+      const stats = store.getStatsSince("w1", cutoff);
+      expect(stats.totalTasks).toBe(2); // only new traces
+      expect(stats.successRate).toBe(1.0);
+      expect(stats.avgQualityScore).toBeCloseTo(0.85, 2);
+    });
+
+    test("returns zero stats when no traces after timestamp", () => {
+      store.insert(makeProfile({ id: "w1" }));
+      insertTrace(db, "w1", { outcome: "success" });
+      const futureTimestamp = Date.now() + 100000;
+      const stats = store.getStatsSince("w1", futureTimestamp);
+      expect(stats.totalTasks).toBe(0);
+      expect(stats.successRate).toBe(0);
+    });
+  });
+
   describe("config serialization", () => {
     test("preserves toolAllowlist", () => {
       store.insert(makeProfile({

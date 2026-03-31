@@ -62,7 +62,8 @@ describe("World Graph Retention", () => {
       maxFactCount: 50_000,
     });
 
-    expect(deleted).toBeGreaterThan(0);
+    // Exactly 5 old facts deleted (source counts fact rows, not CASCADE junction rows)
+    expect(deleted).toBe(5);
     // Old facts gone
     expect(wg.queryFacts("old-0.ts")).toHaveLength(0);
     expect(wg.queryFacts("old-1.ts")).toHaveLength(0);
@@ -112,7 +113,8 @@ describe("World Graph Retention", () => {
       maxFactCount: 10,
     });
 
-    expect(deleted).toBeGreaterThan(0);
+    // Exactly 5 excess facts deleted (15 - 10 = 5)
+    expect(deleted).toBe(5);
     const remaining = db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
     expect(remaining.cnt).toBe(10);
   });

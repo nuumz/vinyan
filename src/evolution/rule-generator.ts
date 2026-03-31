@@ -24,6 +24,9 @@ export function generateRule(pattern: ExtractedPattern): EvolutionaryRule | null
   if (pattern.type === "success-pattern") {
     return generatePreferenceRule(pattern);
   }
+  if (pattern.type === "worker-performance") {
+    return generateWorkerAssignmentRule(pattern);
+  }
   return null;
 }
 
@@ -105,6 +108,39 @@ function generatePreferenceRule(pattern: ExtractedPattern): EvolutionaryRule {
       comparedApproach: pattern.comparedApproach,
       qualityDelta: pattern.qualityDelta,
       reason: `Success pattern: ${pattern.description}`,
+      sourcePatternId: pattern.id,
+    },
+    status: "probation",
+    created_at: Date.now(),
+    effectiveness: 0,
+    specificity,
+  };
+}
+
+function generateWorkerAssignmentRule(pattern: ExtractedPattern): EvolutionaryRule | null {
+  if (!pattern.workerId) return null;
+
+  const condition: EvolutionaryRule["condition"] = {};
+  let specificity = 0;
+
+  // Worker-performance patterns use fingerprint-format signatures (e.g. "refactor::.ts::small")
+  // — the last segment is a blast radius bucket, NOT a file pattern.
+  // Use model_pattern matching instead of file_pattern for worker assignment rules.
+  if (pattern.modelPattern) { condition.model_pattern = pattern.modelPattern; specificity++; }
+  if (pattern.oracleName) { condition.oracle_name = pattern.oracleName; specificity++; }
+  if (pattern.riskAbove != null) { condition.risk_above = pattern.riskAbove; specificity++; }
+
+  return {
+    id: `rule-assign-${pattern.id}`,
+    source: "sleep-cycle",
+    condition,
+    action: "assign-worker",
+    parameters: {
+      workerId: pattern.workerId,
+      comparedWorkerId: pattern.comparedWorkerId,
+      qualityDelta: pattern.qualityDelta,
+      taskTypeSignature: pattern.taskTypeSignature,
+      reason: `Worker performance: ${pattern.description}`,
       sourcePatternId: pattern.id,
     },
     status: "probation",

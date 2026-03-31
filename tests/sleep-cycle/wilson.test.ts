@@ -6,11 +6,10 @@ describe("wilsonLowerBound", () => {
     expect(wilsonLowerBound(0, 0)).toBe(0);
   });
 
-  test("1/1 gives high lower bound", () => {
-    // 1 success out of 1 trial — small sample, LB should be moderate
-    const lb = wilsonLowerBound(1, 1);
-    expect(lb).toBeGreaterThan(0.02);
-    expect(lb).toBeLessThan(1);
+  test("1/1 gives known Wilson lower bound", () => {
+    // 1 success out of 1 trial at z=1.96 → LB ≈ 0.2065
+    const lb = wilsonLowerBound(1, 1, 1.96);
+    expect(lb).toBeCloseTo(0.2065, 3);
   });
 
   test("10/10 gives higher lower bound than 1/1", () => {
@@ -21,10 +20,9 @@ describe("wilsonLowerBound", () => {
     expect(wilsonLowerBound(0, 10)).toBe(0);
   });
 
-  test("large sample with 80% success rate gives LB ≥ 0.6", () => {
-    // 80/100 = 80% rate, should have Wilson LB well above 0.6
-    const lb = wilsonLowerBound(80, 100);
-    expect(lb).toBeGreaterThanOrEqual(0.6);
+  test("known value: 80/100 at z=1.96 → LB ≈ 0.7112", () => {
+    const lb = wilsonLowerBound(80, 100, 1.96);
+    expect(lb).toBeCloseTo(0.7112, 3);
   });
 
   test("small sample with 80% rate may not reach 0.6 LB", () => {
@@ -33,18 +31,20 @@ describe("wilsonLowerBound", () => {
     expect(lb).toBeLessThan(0.6);
   });
 
-  test("known value: 5/10 at z=1.96", () => {
-    // 50% rate with 10 observations
+  test("known value: 5/10 at z=1.96 → LB ≈ 0.2366", () => {
     const lb = wilsonLowerBound(5, 10, 1.96);
-    // Expected: approximately 0.236 (can verify with online calculator)
-    expect(lb).toBeGreaterThan(0.2);
-    expect(lb).toBeLessThan(0.5);
+    expect(lb).toBeCloseTo(0.2366, 3);
   });
 });
 
 describe("wilsonUpperBound", () => {
   test("returns 0 for empty sample", () => {
     expect(wilsonUpperBound(0, 0)).toBe(0);
+  });
+
+  test("known value: 5/10 at z=1.96 → UB ≈ 0.7634", () => {
+    const ub = wilsonUpperBound(5, 10, 1.96);
+    expect(ub).toBeCloseTo(0.7634, 3);
   });
 
   test("upper bound is always >= lower bound", () => {

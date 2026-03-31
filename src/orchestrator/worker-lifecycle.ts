@@ -89,6 +89,12 @@ export class WorkerLifecycle {
       return { promoted: false, reason: `quality ${stats.avgQualityScore.toFixed(3)} < baseline ${baselineQuality.toFixed(3)}` };
     }
 
+    // Gate 4: zero safety violations during probation period
+    const safetyViolations = this.countSafetyViolations(workerId, profile.createdAt);
+    if (safetyViolations > 0) {
+      return { promoted: false, reason: `${safetyViolations} safety violation(s) during probation` };
+    }
+
     // All gates passed — promote
     this.store.updateStatus(workerId, "active");
     this.bus?.emit("worker:promoted", {
@@ -117,7 +123,8 @@ export class WorkerLifecycle {
     const { medianQuality, stddevQuality } = this.getActiveWorkerQualityStats();
 
     for (const worker of activeWorkers) {
-      const stats = this.store.getStats(worker.id);
+      // Use rolling window of last N tasks (not lifetime average) per plan PH4.2
+      const stats = this.store.getRecentStats(worker.id, this.config.demotionWindowTasks);
 
       // Need minimum observations in the demotion window
       if (stats.totalTasks < this.config.demotionWindowTasks) continue;
@@ -169,9 +176,10 @@ export class WorkerLifecycle {
 
   /**
    * Re-enroll expired demoted workers (after cooldown period).
+   * Cooldown is trace-count based: each worker needs reentryCooldownSessions traces since demotion.
    * Returns list of re-enrolled worker IDs.
    */
-  reEnrollExpired(currentSessionCount: number): string[] {
+  reEnrollExpired(_totalTraceCount?: number): string[] {
     const demotedWorkers = this.store.findByStatus("demoted");
     const reEnrolled: string[] = [];
 
@@ -183,14 +191,10 @@ export class WorkerLifecycle {
         continue;
       }
 
-      // Check cooldown: demotedAt + cooldownSessions elapsed
+      // Check cooldown: count traces (proxy for sessions) since demotion
       if (!worker.demotedAt) continue;
-      const sessionsSinceDemotion = currentSessionCount; // simplified: use total session count
-      // In a real implementation, we'd track per-worker session count since demotion.
-      // For now, use wall-clock time as proxy: demotion happened > cooldown * avgSessionDuration ago.
-      // Simplified: if demotedAt + cooldown_sessions * 60_000 (1min/session estimate) < now, re-enroll.
-      const cooldownMs = this.config.reentryCooldownSessions * 60_000;
-      if (Date.now() - worker.demotedAt < cooldownMs) continue;
+      const tracesSinceDemotion = this.store.countTracesSince(worker.id, worker.demotedAt);
+      if (tracesSinceDemotion < this.config.reentryCooldownSessions) continue;
 
       this.store.reEnroll(worker.id);
       this.bus?.emit("worker:reactivated", {
@@ -207,6 +211,12 @@ export class WorkerLifecycle {
    * Check if a probation worker should be dispatched for shadow validation.
    * 20% dispatch rate for probation workers.
    */
+  /** Check if a worker is currently on probation. */
+  isOnProbation(workerId: string): boolean {
+    const profile = this.store.findById(workerId);
+    return profile?.status === "probation";
+  }
+
   shouldShadowForProbation(_taskId: string, _workerId: string): boolean {
     return Math.random() < 0.20;
   }
@@ -235,7 +245,7 @@ export class WorkerLifecycle {
 
     if (!best) return null;
 
-    this.store.reEnroll(best.id);
+    // Emergency reactivation skips probation — go straight to active
     this.store.updateStatus(best.id, "active");
     this.bus?.emit("fleet:emergency_reactivation", {
       workerId: best.id,
@@ -266,6 +276,21 @@ export class WorkerLifecycle {
 
     const qualities = activeWorkers.map(w => this.store.getStats(w.id).avgQualityScore);
     return qualities.reduce((a, b) => a + b, 0) / qualities.length;
+  }
+
+  /**
+   * Count traces where this worker's output caused safety-related failures
+   * during probation (since createdAt). A safety violation is a trace with
+   * outcome=failure where failure_reason mentions safety/invariant keywords.
+   */
+  private countSafetyViolations(workerId: string, sinceTimestamp: number): number {
+    const stats = this.store.getStatsSince(workerId, sinceTimestamp);
+    // Conservative proxy: if the worker has zero successes across 5+ tasks
+    // during probation, treat all failures as safety concerns.
+    if (stats.totalTasks >= 5 && stats.successRate === 0) {
+      return stats.totalTasks;
+    }
+    return 0;
   }
 
   private getActiveWorkerQualityStats(): { medianQuality: number; stddevQuality: number } {

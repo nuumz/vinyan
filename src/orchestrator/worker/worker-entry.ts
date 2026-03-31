@@ -53,7 +53,11 @@ async function main() {
     }
   }
 
-  const provider = registry.selectForRoutingLevel(input.routingLevel);
+  // PH4.4: Use VINYAN_WORKER_ID env var to select provider if available, fallback to tier-based
+  const workerId = process.env.VINYAN_WORKER_ID;
+  const provider = workerId
+    ? (registry.selectById(workerId) ?? registry.selectForRoutingLevel(input.routingLevel))
+    : registry.selectForRoutingLevel(input.routingLevel);
 
   if (!provider) {
     writeOutput({

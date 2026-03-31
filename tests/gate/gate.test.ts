@@ -150,21 +150,32 @@ describe("Oracle Gate", () => {
   });
 
   test("oracle crash produces block verdict (fail-closed)", async () => {
-    // Create a file that will cause AST oracle to crash (non-existent pattern)
+    // Inject a type error so the type oracle WOULD fail, then corrupt the file
+    // to trigger the crash path (not just "file not found" silence)
+    const crashFile = join(workspace, "crash-target.ts");
+    // Write valid TS so the file exists for oracle resolution, but use a
+    // non-existent workspace for tsc to crash on (deterministic crash path)
+    const crashWorkspace = "/tmp/nonexistent-workspace-" + Date.now();
     const request: GateRequest = {
       tool: "write_file",
       params: {
-        file_path: "/nonexistent/path/that/should/fail.ts",
-        workspace: "/tmp/nonexistent-workspace-" + Date.now(),
+        file_path: "crash-target.ts",
+        workspace: crashWorkspace,
       },
       session_id: "crash-test",
     };
 
-    // The type oracle should fail because the workspace doesn't exist
-    // Gate should still return a verdict (not throw)
+    // Gate should return a verdict (not throw), and the verdict MUST be "block"
+    // because type oracle crashes → verified:false → fail-closed per A3/A6
     const verdict = await runGate(request);
     expect(verdict).toBeDefined();
-    expect(typeof verdict.decision).toBe("string");
+    expect(verdict.decision).toBe("block");
+    // Verify the crash was captured — at least one oracle should have errorCode
+    const oracleNames = Object.keys(verdict.oracle_results);
+    const hasCrashEvidence = oracleNames.some(
+      (name) => verdict.oracle_results[name]?.errorCode != null,
+    );
+    expect(hasCrashEvidence).toBe(true);
     expect(verdict.duration_ms).toBeGreaterThan(0);
   });
 

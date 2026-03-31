@@ -27,6 +27,7 @@ import type {
 import { WorkingMemory } from "./working-memory.ts";
 import type { VinyanBus } from "../core/bus.ts";
 import { computeQualityScore, buildComplexityContext } from "../gate/quality-score.ts";
+import { commitArtifacts } from "./worker/artifact-commit.ts";
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -75,6 +76,8 @@ export interface OracleGate {
 
 export interface TraceCollector {
   record(trace: ExecutionTrace): Promise<void>;
+  /** Optional: returns total trace count for data-gated features. */
+  getTraceCount?(): number;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +115,8 @@ export interface OrchestratorDeps {
   oracleGate: OracleGate;
   traceCollector: TraceCollector;
   bus?: VinyanBus;
+  /** Workspace root — needed for commitArtifacts after oracle verification. */
+  workspace?: string;
   // Phase 2 — optional, activated by factory when DB is available
   skillManager?: import("./skill-manager.ts").SkillManager;
   shadowRunner?: import("./shadow-runner.ts").ShadowRunner;
@@ -119,6 +124,10 @@ export interface OrchestratorDeps {
   toolExecutor?: import("./tools/tool-executor.ts").ToolExecutor;
   // Phase 4 — optional, activated by factory when worker profiles are available
   workerSelector?: import("./worker-selector.ts").WorkerSelector;
+  workerStore?: import("../db/worker-store.ts").WorkerStore;
+  workerLifecycle?: import("./worker-lifecycle.ts").WorkerLifecycle;
+  /** Epsilon-greedy exploration rate (default 0.05). Set to 0 in tests for determinism. */
+  explorationEpsilon?: number;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -174,7 +183,7 @@ export async function executeTask(
   }
 
   // PH3.6: Epsilon-greedy exploration — with probability ε, route UP one level (never down)
-  const EPSILON = 0.05;
+  const EPSILON = deps.explorationEpsilon ?? 0.05;
   let explorationFlag = false;
   if (routing.level < MAX_ROUTING_LEVEL && Math.random() < EPSILON) {
     const fromLevel = routing.level;
@@ -184,6 +193,9 @@ export async function executeTask(
   }
 
   deps.bus?.emit("task:start", { input, routing });
+
+  // Hoist for audit trail on timeout/escalation traces (Gap #2)
+  let lastWorkerSelection: import("./types.ts").WorkerSelectionResult | undefined;
 
   while (routing.level <= MAX_ROUTING_LEVEL) {
     // Track matched skill for feedback loop (H4) — resets on level escalation
@@ -207,6 +219,7 @@ export async function executeTask(
           outcome: "timeout",
           failure_reason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
           affected_files: input.targetFiles ?? [],
+          workerSelectionAudit: lastWorkerSelection,
         };
         await deps.traceCollector.record(timeoutTrace);
         deps.bus?.emit("task:timeout", {
@@ -263,13 +276,50 @@ export async function executeTask(
       }
 
       // ── Step 2½: SELECT WORKER (Phase 4) ──────────────────────────
+      let workerSelection: import("./types.ts").WorkerSelectionResult | undefined;
       if (deps.workerSelector && !routing.workerId) {
         const { computeFingerprint } = await import("./task-fingerprint.ts");
-        const fingerprint = computeFingerprint(input, perception);
+        const fingerprint = computeFingerprint(input, perception, {
+          traceCount: deps.traceCollector.getTraceCount?.() ?? 0,
+        });
         const selection = deps.workerSelector.selectWorker(
           fingerprint, routing.level,
           { maxTokens: input.budget.maxTokens, timeoutMs: input.budget.maxDurationMs },
+          undefined, input.id,
         );
+        workerSelection = selection;
+        lastWorkerSelection = selection;
+
+        // A2: Fleet-level uncertainty — all workers below capability threshold
+        if (selection.isUncertain) {
+          const uncertainTrace: ExecutionTrace = {
+            id: `trace-${input.id}-uncertain`,
+            taskId: input.id,
+            worker_id: "none",
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: "fleet-uncertain",
+            oracleVerdicts: {},
+            model_used: "none",
+            tokens_consumed: 0,
+            duration_ms: Date.now() - startTime,
+            outcome: "failure",
+            failure_reason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
+            affected_files: input.targetFiles ?? [],
+            workerSelectionAudit: selection,
+          };
+          await deps.traceCollector.record(uncertainTrace);
+          const uncertainResult: TaskResult = {
+            id: input.id,
+            status: "uncertain",
+            mutations: [],
+            trace: uncertainTrace,
+            notes: ["All workers below capability threshold — abstaining per A2"],
+          };
+          deps.bus?.emit("task:complete", { result: uncertainResult });
+          return uncertainResult;
+        }
+
         if (selection.selectedWorkerId) {
           routing = { ...routing, workerId: selection.selectedWorkerId };
         }
@@ -408,18 +458,15 @@ export async function executeTask(
         qualityScore,
         prediction,
         exploration: explorationFlag || undefined,
+        workerSelectionAudit: workerSelection,
       };
 
-      await deps.traceCollector.record(trace);
-      deps.bus?.emit("trace:record", { trace });
-
-      // Calibrate self-model from prediction vs actual outcome (PH3.1 — persist PredictionError)
+      // Calibrate self-model BEFORE recording — so predictionError is included in single insert
       if (prediction && deps.selfModel.calibrate) {
         try {
           const predictionError = deps.selfModel.calibrate(prediction, trace);
           if (predictionError) {
             trace.predictionError = predictionError;
-            await deps.traceCollector.record(trace);
           }
         } catch (calibErr) {
           deps.bus?.emit("selfmodel:calibration_error", {
@@ -428,6 +475,10 @@ export async function executeTask(
           });
         }
       }
+
+      // Record trace once — after calibration so predictionError is persisted
+      await deps.traceCollector.record(trace);
+      deps.bus?.emit("trace:record", { trace });
 
       // ── Step 5½: EXECUTE mutating tools ONLY after verification ──
       if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
@@ -461,6 +512,59 @@ export async function executeTask(
 
       // ── SUCCESS → return result ──────────────────────────────────
       if (verification.passed) {
+        // ── I10: Probation workers cannot commit — shadow-only ──────
+        if (deps.workerStore && routing.workerId) {
+          const workerProfile = deps.workerStore.findById(routing.workerId);
+          if (workerProfile?.status === "probation") {
+            // Enqueue as shadow for evaluation, do NOT commit
+            if (deps.shadowRunner) {
+              const job = deps.shadowRunner.enqueue(
+                input.id,
+                workerResult.mutations.map(m => ({ file: m.file, content: m.content })),
+              );
+              deps.bus?.emit("shadow:enqueue", { job });
+
+              // PH4.2: Shadow validation with alternative worker for comparison (20% sample)
+              if (deps.workerLifecycle?.shouldShadowForProbation(input.id, routing.workerId!)) {
+                deps.shadowRunner.runAlternativeWorker(
+                  input.id,
+                  workerResult.mutations.map(m => ({ file: m.file, content: m.content })),
+                  routing.workerId!,
+                ).then(result => {
+                  deps.bus?.emit("shadow:complete", {
+                    job: { id: "", taskId: input.id, status: "done" as const, enqueuedAt: 0, retryCount: 0, maxRetries: 1 },
+                    result,
+                  });
+                }).catch(() => { /* fire-and-forget — A6 compliance */ });
+              }
+            }
+            const probationResult: TaskResult = {
+              id: input.id,
+              status: "completed",
+              mutations: [],
+              trace: { ...trace, outcome: "success" as const },
+              notes: ["probation-shadow-only: I10 — probation worker result not committed"],
+            };
+            deps.bus?.emit("task:complete", { result: probationResult });
+            return probationResult;
+          }
+        }
+
+        // ── Commit verified mutations to workspace ──────────────────
+        let commitResult: { applied: string[]; rejected: Array<{ path: string; reason: string }> } | undefined;
+        if (deps.workspace && workerResult.mutations.length > 0) {
+          commitResult = commitArtifacts(
+            deps.workspace,
+            workerResult.mutations.map(m => ({ path: m.file, content: m.content })),
+          );
+          if (commitResult.rejected.length > 0) {
+            deps.bus?.emit("commit:rejected", {
+              taskId: input.id,
+              rejected: commitResult.rejected,
+            });
+          }
+        }
+
         const successResult: TaskResult = {
           id: input.id,
           status: "completed",
@@ -550,6 +654,7 @@ export async function executeTask(
     outcome: "escalated",
     failure_reason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
     affected_files: input.targetFiles ?? [],
+    workerSelectionAudit: lastWorkerSelection,
   };
 
   await deps.traceCollector.record(escalationTrace);

@@ -33,17 +33,24 @@ export class LLMProviderRegistry {
 
   /**
    * Select a provider by worker ID.
-   * Resolution: match against provider ID prefix (e.g., "claude-sonnet" matches "claude-sonnet-4").
-   * Falls back to exact match, then prefix match on modelId.
+   * Resolution order:
+   *   1. Exact match on provider.id
+   *   2. Strip "worker-" prefix and match (autoRegisterWorkers uses "worker-{provider.id}")
+   *   3. Prefix match on modelId
    */
   selectById(workerId: string): LLMProvider | undefined {
     // Exact match first
     const exact = this.providers.get(workerId);
     if (exact) return exact;
 
-    // Prefix match: workerId starts with provider.id or provider.id starts with workerId
+    // Strip "worker-" prefix — autoRegisterWorkers creates IDs as "worker-{provider.id}"
+    const stripped = workerId.startsWith("worker-") ? workerId.slice(7) : workerId;
+    const byStripped = this.providers.get(stripped);
+    if (byStripped) return byStripped;
+
+    // Prefix match: stripped workerId starts with provider.id or vice versa
     for (const provider of this.providers.values()) {
-      if (workerId.startsWith(provider.id) || provider.id.startsWith(workerId)) {
+      if (stripped.startsWith(provider.id) || provider.id.startsWith(stripped)) {
         return provider;
       }
     }

@@ -59,6 +59,8 @@ export class SleepCycleRunner {
   private skillManager?: SkillManager;
   private ruleStore?: RuleStore;
   private bus?: VinyanBus;
+  private workerStore?: import("../db/worker-store.ts").WorkerStore;
+  private workerLifecycle?: import("../orchestrator/worker-lifecycle.ts").WorkerLifecycle;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -71,6 +73,8 @@ export class SleepCycleRunner {
     skillManager?: SkillManager;
     ruleStore?: RuleStore;
     bus?: VinyanBus;
+    workerStore?: import("../db/worker-store.ts").WorkerStore;
+    workerLifecycle?: import("../orchestrator/worker-lifecycle.ts").WorkerLifecycle;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -78,6 +82,8 @@ export class SleepCycleRunner {
     this.skillManager = options.skillManager;
     this.ruleStore = options.ruleStore;
     this.bus = options.bus;
+    this.workerStore = options.workerStore;
+    this.workerLifecycle = options.workerLifecycle;
     this.decayExperiment = createExperimentState();
   }
 
@@ -147,6 +153,10 @@ export class SleepCycleRunner {
       newPatterns.push(correlationToPattern(corr));
     }
 
+    // PH4.5: Worker performance patterns — compare workers per task type
+    const workerPatterns = this.extractWorkerPerformancePatterns(traces);
+    newPatterns.push(...workerPatterns);
+
     // Store new patterns + feed into Skill Formation (2.5) and Evolution (2.6)
     let skillsCreated = 0;
     let rulesGenerated = 0;
@@ -182,12 +192,14 @@ export class SleepCycleRunner {
 
     // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
-      const { backtestRule } = await import("../evolution/backtester.ts");
+      const { backtestRule, backtestWorkerAssignment } = await import("../evolution/backtester.ts");
       const activeRules = this.ruleStore.findActive();
       for (const rule of activeRules) {
         const bt = this.getTracesForBacktest(rule);
         if (bt.length < 5) continue;
-        const result = backtestRule(rule, bt);
+        const result = rule.action === "assign-worker"
+          ? backtestWorkerAssignment(rule, bt)
+          : backtestRule(rule, bt);
         this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
 
         if (result.effectiveness <= 0) {
@@ -209,6 +221,26 @@ export class SleepCycleRunner {
     // GAP-9: Re-verify active skills whose dep-cone may have changed
     if (this.skillManager) {
       this.skillManager.reVerifyStaleSkills();
+    }
+
+    // PH4.2: Worker lifecycle transitions — promotion, demotion, re-enrollment
+    // WorkerLifecycle emits its own bus events (worker:promoted, worker:demoted, etc.)
+    if (this.workerLifecycle && this.workerStore) {
+      // Evaluate probation workers for promotion
+      const probationWorkers = this.workerStore.findByStatus("probation");
+      for (const worker of probationWorkers) {
+        this.workerLifecycle.evaluatePromotion(worker.id);
+      }
+
+      // Check active workers for demotion
+      this.workerLifecycle.checkDemotions();
+
+      // Re-enroll expired demoted workers
+      const totalTraces = this.traceStore.count();
+      this.workerLifecycle.reEnrollExpired(totalTraces);
+
+      // Emergency reactivation safety net
+      this.workerLifecycle.emergencyReactivation();
     }
 
     // Apply decay to existing patterns
@@ -482,7 +514,7 @@ export class SleepCycleRunner {
   private async backtestProbationRules(excludeIds: Set<string>): Promise<number> {
     if (!this.ruleStore) return 0;
 
-    const { backtestRule } = await import("../evolution/backtester.ts");
+    const { backtestRule, backtestWorkerAssignment } = await import("../evolution/backtester.ts");
     const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
     const probationRules = this.ruleStore.findByStatus("probation")
       .filter(r => !excludeIds.has(r.id));
@@ -492,7 +524,10 @@ export class SleepCycleRunner {
       const backtestTraces = this.getTracesForBacktest(rule);
       if (backtestTraces.length < 5) continue;
 
-      const result = backtestRule(rule, backtestTraces);
+      // Route to appropriate backtest: worker assignment uses quality comparison, others use failure prevention
+      const result = rule.action === "assign-worker"
+        ? backtestWorkerAssignment(rule, backtestTraces)
+        : backtestRule(rule, backtestTraces);
       this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
 
       if (result.pass) {
@@ -514,9 +549,130 @@ export class SleepCycleRunner {
     return promoted;
   }
 
-  /** Get traces relevant for backtesting a rule. */
-  private getTracesForBacktest(_rule: EvolutionaryRule): ExecutionTrace[] {
-    return this.traceStore.findRecent(1000);
+  /** Get traces relevant for backtesting a rule, filtered by rule conditions. */
+  private getTracesForBacktest(rule: EvolutionaryRule): ExecutionTrace[] {
+    const allTraces = this.traceStore.findRecent(1000);
+    const condition = rule.condition;
+
+    // No filtering conditions → use all traces
+    if (!condition.file_pattern && !condition.oracle_name && !condition.model_pattern) {
+      return allTraces;
+    }
+
+    const filtered = allTraces.filter(trace => {
+      if (condition.file_pattern) {
+        const pattern = condition.file_pattern;
+        const regex = new RegExp("^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+        const matches = trace.affected_files.some(f => regex.test(f));
+        if (!matches) return false;
+      }
+      if (condition.oracle_name) {
+        if (!Object.keys(trace.oracleVerdicts).includes(condition.oracle_name)) return false;
+      }
+      if (condition.model_pattern) {
+        if (!trace.model_used.includes(condition.model_pattern)) return false;
+      }
+      return true;
+    });
+
+    // If filtering leaves too few traces, fall back to all
+    return filtered.length >= 5 ? filtered : allTraces;
+  }
+
+  /**
+   * PH4.5: Extract worker performance patterns.
+   * Groups traces by (task_type_signature, worker_id) and compares
+   * Wilson LB/UB quality across workers for the same task type.
+   */
+  private extractWorkerPerformancePatterns(traces: ExecutionTrace[]): ExtractedPattern[] {
+    const patterns: ExtractedPattern[] = [];
+
+    // Group by task type → worker → traces
+    const byTaskType = new Map<string, Map<string, ExecutionTrace[]>>();
+    for (const trace of traces) {
+      const sig = trace.task_type_signature ?? "unknown";
+      const wid = trace.worker_id;
+      if (!wid) continue;
+
+      if (!byTaskType.has(sig)) byTaskType.set(sig, new Map());
+      const byWorker = byTaskType.get(sig)!;
+      if (!byWorker.has(wid)) byWorker.set(wid, []);
+      byWorker.get(wid)!.push(trace);
+    }
+
+    for (const [taskSig, byWorker] of byTaskType) {
+      // Need at least 2 workers to compare
+      if (byWorker.size < 2) continue;
+
+      // Compute per-worker quality stats
+      const workerStats: Array<{
+        workerId: string;
+        avgQuality: number;
+        successRate: number;
+        count: number;
+        traceIds: string[];
+      }> = [];
+
+      for (const [workerId, workerTraces] of byWorker) {
+        if (workerTraces.length < this.config.pattern_min_frequency) continue;
+
+        const qualityTraces = workerTraces.filter(t => t.qualityScore?.composite != null);
+        const avgQuality = qualityTraces.length > 0
+          ? qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length
+          : 0;
+        const successRate = workerTraces.filter(t => t.outcome === "success").length / workerTraces.length;
+
+        workerStats.push({
+          workerId,
+          avgQuality,
+          successRate,
+          count: workerTraces.length,
+          traceIds: workerTraces.map(t => t.id),
+        });
+      }
+
+      if (workerStats.length < 2) continue;
+
+      // Sort by avgQuality descending
+      workerStats.sort((a, b) => b.avgQuality - a.avgQuality);
+
+      // Compare best vs rest: generate pattern if delta >= 0.15
+      const best = workerStats[0]!;
+      for (let i = 1; i < workerStats.length; i++) {
+        const other = workerStats[i]!;
+        const delta = best.avgQuality - other.avgQuality;
+        if (delta < 0.15) continue;
+
+        // Wilson LB significance check on pairwise comparison
+        const totalPairs = best.count * other.count;
+        if (totalPairs === 0) continue;
+        // Simple: check if best's success rate is significantly better
+        const wilsonLB = wilsonLowerBound(
+          Math.round(best.successRate * best.count),
+          best.count,
+        );
+        if (wilsonLB < 0.15) continue;
+
+        patterns.push({
+          id: `wp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          type: "worker-performance",
+          description: `Worker "${best.workerId}" outperforms "${other.workerId}" by ${(delta * 100).toFixed(0)}% quality on task type "${taskSig}"`,
+          frequency: best.count + other.count,
+          confidence: wilsonLB,
+          taskTypeSignature: taskSig,
+          approach: best.workerId,
+          comparedApproach: other.workerId,
+          qualityDelta: delta,
+          sourceTraceIds: [...best.traceIds, ...other.traceIds],
+          createdAt: Date.now(),
+          decayWeight: 1.0,
+          workerId: best.workerId,
+          comparedWorkerId: other.workerId,
+        });
+      }
+    }
+
+    return patterns;
   }
 
   private gatherStats(): DataGateStats {
@@ -526,8 +682,8 @@ export class SleepCycleRunner {
       patternsExtracted: this.patternStore.count(),
       activeSkills: this.skillManager?.countActive() ?? 0,
       sleepCyclesRun: this.patternStore.countCycleRuns(),
-      activeWorkers: 0,              // Phase 4: populated when WorkerStore is wired
-      workerTraceDiversity: 0,       // Phase 4: populated when WorkerStore is wired
+      activeWorkers: this.workerStore?.countActive() ?? 0,
+      workerTraceDiversity: this.workerStore?.countDistinctWorkerIds() ?? 0,
     };
   }
 

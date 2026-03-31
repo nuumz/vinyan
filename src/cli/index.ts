@@ -5,6 +5,7 @@ import { init } from "./init.ts";
 import { join } from "path";
 import { runGate, type GateRequest, analyzeSessionDir, formatMetrics } from "../gate/index.ts";
 import { runAgentTask } from "./run.ts";
+import { runPatternsCommand } from "./patterns.ts";
 
 const command = process.argv[2];
 const workspacePath = process.argv[3] || process.cwd();
@@ -76,9 +77,14 @@ switch (command) {
     break;
   }
 
+  case "patterns": {
+    await runPatternsCommand(process.argv.slice(3));
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer`,
     );
     process.exit(1);
 }

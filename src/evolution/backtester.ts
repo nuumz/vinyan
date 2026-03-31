@@ -124,8 +124,8 @@ function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean 
   const c = rule.condition;
 
   if (c.file_pattern) {
-    const traceFiles = trace.affected_files.join(",");
-    if (!simpleGlobMatch(c.file_pattern, traceFiles)) return false;
+    const matches = trace.affected_files.some(f => simpleGlobMatch(c.file_pattern!, f));
+    if (!matches) return false;
   }
 
   if (c.oracle_name) {
@@ -187,6 +187,88 @@ export function computeQualityImpact(
     estimatedQualityAfter: avgAfter,
     impact: avgAfter - avgBefore,
   };
+}
+
+/**
+ * Backtest a worker assignment rule.
+ * Instead of failure prevention, compares quality:
+ *   traces assigned to `workerId` vs traces assigned to other workers
+ *   for matching task type signature.
+ *
+ * Pass criteria: assigned worker's avg quality ≥ fleet average for matching tasks.
+ */
+export function backtestWorkerAssignment(
+  rule: EvolutionaryRule,
+  traces: ExecutionTrace[],
+): BacktestResult {
+  if (traces.length < 5 || rule.action !== "assign-worker") {
+    return {
+      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
+      totalFailures: 0, totalSuccesses: 0, trainingSize: 0, validationSize: 0,
+    };
+  }
+
+  const workerId = typeof rule.parameters.workerId === "string"
+    ? rule.parameters.workerId : undefined;
+  if (!workerId) {
+    return {
+      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
+      totalFailures: 0, totalSuccesses: 0, trainingSize: 0, validationSize: 0,
+    };
+  }
+
+  // Filter traces that match the rule's condition (task type / file pattern)
+  const matching = traces.filter(t => wouldRuleApply(rule, t));
+  if (matching.length < 5) {
+    return {
+      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
+      totalFailures: 0, totalSuccesses: 0, trainingSize: matching.length, validationSize: 0,
+    };
+  }
+
+  // Sort by timestamp, 80/20 split
+  const sorted = [...matching].sort((a, b) => a.timestamp - b.timestamp);
+  const splitIndex = Math.floor(sorted.length * 0.8);
+  const validation = sorted.slice(splitIndex);
+
+  if (validation.length === 0) {
+    return {
+      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
+      totalFailures: 0, totalSuccesses: 0, trainingSize: splitIndex, validationSize: 0,
+    };
+  }
+
+  // Compare assigned worker quality vs others in validation set
+  const workerTraces = validation.filter(t => t.worker_id === workerId);
+  const otherTraces = validation.filter(t => t.worker_id !== workerId);
+
+  const workerAvgQuality = avgQuality(workerTraces);
+  const otherAvgQuality = avgQuality(otherTraces);
+
+  // Effectiveness = quality advantage (capped at 1.0)
+  const qualityDelta = workerAvgQuality - otherAvgQuality;
+  const effectiveness = Math.min(1.0, Math.max(0, qualityDelta));
+
+  // Pass if assigned worker is at least as good (delta >= 0) and has evidence
+  const pass = qualityDelta >= 0 && workerTraces.length >= 2;
+
+  return {
+    pass,
+    effectiveness,
+    prevented: workerTraces.filter(t => t.outcome === "success").length,
+    falsePositives: 0,
+    totalFailures: validation.filter(t => t.outcome === "failure").length,
+    totalSuccesses: validation.filter(t => t.outcome === "success").length,
+    trainingSize: splitIndex,
+    validationSize: validation.length,
+  };
+}
+
+function avgQuality(traces: ExecutionTrace[]): number {
+  if (traces.length === 0) return 0;
+  const qualityTraces = traces.filter(t => t.qualityScore?.composite != null);
+  if (qualityTraces.length === 0) return 0;
+  return qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length;
 }
 
 function simpleGlobMatch(pattern: string, value: string): boolean {

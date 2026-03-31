@@ -90,16 +90,21 @@ describe("computeFingerprint", () => {
     expect(fp.blastRadiusBucket).toBe("single");
   });
 
-  test("detects framework markers from imports", () => {
-    const fp = computeFingerprint(makeInput(), makePerception());
+  test("detects framework markers from imports (with data gate met)", () => {
+    const fp = computeFingerprint(makeInput(), makePerception(), { traceCount: 200 });
     expect(fp.frameworkMarkers).toContain("express");
     expect(fp.frameworkMarkers).toContain("zod");
+  });
+
+  test("no framework markers when data gate not met", () => {
+    const fp = computeFingerprint(makeInput(), makePerception(), { traceCount: 50 });
+    expect(fp.frameworkMarkers).toBeUndefined();
   });
 
   test("no framework markers when no matching imports", () => {
     const fp = computeFingerprint(makeInput(), makePerception({
       dependencyCone: { directImporters: [], directImportees: ["./utils.ts"], transitiveBlastRadius: 1 },
-    }));
+    }), { traceCount: 200 });
     expect(fp.frameworkMarkers).toBeUndefined();
   });
 

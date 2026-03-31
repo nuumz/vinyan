@@ -37,8 +37,8 @@ export class RiskRouterImpl implements RiskRouter {
         });
         blastRadius = verdict.evidence.length;
       } catch {
-        // dep-oracle failed — use conservative default
-        blastRadius = 1;
+        // A6 fail-closed: unknown blast radius → assume large enough to trigger L1 floor
+        blastRadius = 2;
       }
     }
 

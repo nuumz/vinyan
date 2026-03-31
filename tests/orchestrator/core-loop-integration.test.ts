@@ -286,9 +286,9 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
   test("15. §16.4 criterion 4: worker timeout produces empty mutations", async () => {
     // Create a mock provider that simulates high latency
     const registry = new LLMProviderRegistry();
-    registry.register(createMockProvider({ id: "mock/fast", tier: "fast", latencyMs: 5000 }));
-    registry.register(createMockProvider({ id: "mock/balanced", tier: "balanced", latencyMs: 5000 }));
-    registry.register(createMockProvider({ id: "mock/powerful", tier: "powerful", latencyMs: 5000 }));
+    registry.register(createMockProvider({ id: "mock/fast", tier: "fast", latencyMs: 2000 }));
+    registry.register(createMockProvider({ id: "mock/balanced", tier: "balanced", latencyMs: 2000 }));
+    registry.register(createMockProvider({ id: "mock/powerful", tier: "powerful", latencyMs: 2000 }));
 
     const orchestrator = createOrchestrator({
       workspace: tempDir,

@@ -286,6 +286,123 @@ export const gitDiff: Tool = {
   },
 };
 
+export const searchSemantic: Tool = {
+  name: "search_semantic",
+  description: "AST-based symbol search — find symbols by name in a file using TypeScript compiler API",
+  minIsolationLevel: 0,
+  category: "search",
+  sideEffect: false,
+  async execute(params, context) {
+    const filePath = (params.file_path ?? params.path) as string;
+    const symbolName = params.symbol as string;
+    if (!filePath || !symbolName) {
+      return makeResult(params._callId as string ?? "", "search_semantic", {
+        status: "error",
+        error: "Both file_path and symbol are required",
+      });
+    }
+    const absPath = resolve(context.workspace, filePath);
+    try {
+      const ts = (await import("typescript")).default;
+      const content = readFileSync(absPath, "utf-8");
+      const sf = ts.createSourceFile(absPath, content, ts.ScriptTarget.Latest, true);
+
+      const matches: Array<{ line: number; snippet: string }> = [];
+
+      function visit(node: import("typescript").Node) {
+        let name: string | undefined;
+
+        if (ts.isFunctionDeclaration(node) && node.name) name = node.name.text;
+        else if (ts.isClassDeclaration(node) && node.name) name = node.name.text;
+        else if (ts.isInterfaceDeclaration(node) && node.name) name = node.name.text;
+        else if (ts.isTypeAliasDeclaration(node)) name = node.name.text;
+        else if (ts.isEnumDeclaration(node)) name = node.name.text;
+        else if (ts.isMethodDeclaration(node) && node.name) name = node.name.getText(sf);
+        else if (ts.isVariableStatement(node)) {
+          node.declarationList.declarations.forEach((decl) => {
+            if (ts.isIdentifier(decl.name) && decl.name.text.includes(symbolName)) {
+              const line = sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1;
+              const text = decl.getText(sf);
+              matches.push({ line, snippet: text.length > 120 ? text.slice(0, 117) + "..." : text });
+            }
+          });
+        }
+
+        if (name && name.includes(symbolName)) {
+          const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+          const text = node.getText(sf);
+          matches.push({ line, snippet: text.length > 120 ? text.slice(0, 117) + "..." : text });
+        }
+
+        ts.forEachChild(node, visit);
+      }
+
+      ts.forEachChild(sf, visit);
+
+      const output = matches.length > 0
+        ? matches.map(m => `${filePath}:${m.line}: ${m.snippet}`).join("\n")
+        : `No symbol matching "${symbolName}" found in ${filePath}`;
+      return makeResult(params._callId as string ?? "", "search_semantic", {
+        output,
+        evidence: makeEvidence(filePath, content),
+      });
+    } catch (e) {
+      return makeResult(params._callId as string ?? "", "search_semantic", {
+        status: "error",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+};
+
+const HTTP_GET_TIMEOUT_MS = 10_000;
+const HTTP_GET_MAX_BYTES = 50 * 1024; // 50KB
+
+export const httpGet: Tool = {
+  name: "http_get",
+  description: "HTTP GET with 10s timeout and 50KB response limit (no auth headers)",
+  minIsolationLevel: 1,
+  category: "shell",
+  sideEffect: false,
+  async execute(params, _context) {
+    const url = params.url as string;
+    if (!url) {
+      return makeResult(params._callId as string ?? "", "http_get", {
+        status: "error",
+        error: "url is required",
+      });
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), HTTP_GET_TIMEOUT_MS);
+      const response = await fetch(url, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { "User-Agent": "vinyan-agent/1.0" },
+      });
+      clearTimeout(timer);
+
+      const buffer = await response.arrayBuffer();
+      let body = new TextDecoder().decode(buffer.slice(0, HTTP_GET_MAX_BYTES));
+      const truncated = buffer.byteLength > HTTP_GET_MAX_BYTES;
+      if (truncated) {
+        body += `\n... [truncated at ${HTTP_GET_MAX_BYTES} bytes, total: ${buffer.byteLength}]`;
+      }
+
+      return makeResult(params._callId as string ?? "", "http_get", {
+        status: response.ok ? "success" : "error",
+        output: body,
+        error: response.ok ? undefined : `HTTP ${response.status} ${response.statusText}`,
+      });
+    } catch (e) {
+      return makeResult(params._callId as string ?? "", "http_get", {
+        status: "error",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+};
+
 /** All built-in tools indexed by name. */
 export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ["file_read", fileRead],
@@ -296,4 +413,6 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ["shell_exec", shellExec],
   ["git_status", gitStatus],
   ["git_diff", gitDiff],
+  ["search_semantic", searchSemantic],
+  ["http_get", httpGet],
 ]);

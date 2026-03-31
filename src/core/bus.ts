@@ -30,6 +30,7 @@ export interface VinyanBusEvents {
   "task:complete": { result: TaskResult };
   "worker:dispatch": { taskId: string; routing: RoutingDecision };
   "oracle:verdict": { taskId: string; oracleName: string; verdict: OracleVerdict };
+  "critic:verdict": { taskId: string; accepted: boolean; confidence: number; reason?: string };
   "trace:record": { trace: ExecutionTrace };
 
   // Worker lifecycle
@@ -70,6 +71,9 @@ export interface VinyanBusEvents {
   // Task lifecycle extensions
   "task:escalate": { taskId: string; fromLevel: number; toLevel: number; reason: string };
   "task:timeout": { taskId: string; elapsed_ms: number; budget_ms: number };
+
+  // Human approval gate (A6: zero-trust for high-risk production tasks)
+  "task:approval_required": { taskId: string; riskScore: number; reason: string };
 
   // PH3.6: Epsilon-greedy exploration
   "task:explore": { taskId: string; fromLevel: number; toLevel: number };

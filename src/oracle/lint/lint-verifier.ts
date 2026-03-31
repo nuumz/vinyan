@@ -100,7 +100,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   if (!linter) {
     return buildVerdict({
       verified: true,
-      type: "known",
+      type: "uncertain",
       confidence: 0.5,
       evidence: [],
       fileHashes: {},
@@ -113,7 +113,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   if (!existsSync(targetPath)) {
     return buildVerdict({
       verified: true,
-      type: "known",
+      type: "uncertain",
       confidence: 0.5,
       evidence: [],
       fileHashes: {},

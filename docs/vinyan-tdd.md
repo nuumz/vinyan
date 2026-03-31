@@ -460,6 +460,7 @@ interface RoutingDecision {
   latencyBudget_ms: number;
   mandatoryOracles?: string[];       // [Phase 2] require-oracle rules add entries here
   riskThresholdOverride?: number;    // [Phase 2] adjust-threshold rules set this
+  riskScore?: number;                // Computed risk score (0.0–1.0)
   workerId?: string;                 // [Phase 4] selected worker profile ID
 }
 ```
@@ -2815,7 +2816,7 @@ interface PromptAssembler {
   assemble(
     task: TaskInput,
     perception: PerceptualHierarchy,
-    memory: WorkingMemory,
+    memory: WorkingMemoryState,
     plan?: TaskDAG,
   ): { systemPrompt: string; userPrompt: string };
 }

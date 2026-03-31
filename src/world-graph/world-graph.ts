@@ -119,6 +119,87 @@ export class WorldGraph {
     return row?.current_hash;
   }
 
+  // ── WP-3: Dependency Edges ─────────────────────────────────────────
+
+  /** Store a single dependency edge. */
+  storeEdge(fromFile: string, toFile: string, edgeType = "imports"): void {
+    this.db.query(`
+      INSERT OR REPLACE INTO dependency_edges (from_file, to_file, edge_type, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+    `).run(fromFile, toFile, edgeType);
+  }
+
+  /** Store multiple dependency edges in a single transaction. */
+  storeEdges(edges: Array<{ from: string; to: string; type?: string }>): void {
+    const stmt = this.db.query(`
+      INSERT OR REPLACE INTO dependency_edges (from_file, to_file, edge_type, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+    `);
+    this.db.exec("BEGIN");
+    try {
+      for (const edge of edges) {
+        stmt.run(edge.from, edge.to, edge.type ?? "imports");
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  /** BFS reverse traversal: find all files that depend on the given file, bounded by maxDepth. */
+  queryDependents(file: string, maxDepth = 3): string[] {
+    const visited = new Set<string>();
+    let frontier = [file];
+
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const nextFrontier: string[] = [];
+      for (const current of frontier) {
+        const rows = this.db.query(
+          "SELECT from_file FROM dependency_edges WHERE to_file = ?",
+        ).all(current) as Array<{ from_file: string }>;
+        for (const row of rows) {
+          if (row.from_file !== file && !visited.has(row.from_file)) {
+            visited.add(row.from_file);
+            nextFrontier.push(row.from_file);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    return Array.from(visited);
+  }
+
+  /** BFS forward traversal: find all files that the given file depends on, bounded by maxDepth. */
+  queryDependencies(file: string, maxDepth = 3): string[] {
+    const visited = new Set<string>();
+    let frontier = [file];
+
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const nextFrontier: string[] = [];
+      for (const current of frontier) {
+        const rows = this.db.query(
+          "SELECT to_file FROM dependency_edges WHERE from_file = ?",
+        ).all(current) as Array<{ to_file: string }>;
+        for (const row of rows) {
+          if (row.to_file !== file && !visited.has(row.to_file)) {
+            visited.add(row.to_file);
+            nextFrontier.push(row.to_file);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    return Array.from(visited);
+  }
+
+  /** Remove all edges originating from the given file. */
+  clearEdgesForFile(file: string): void {
+    this.db.query("DELETE FROM dependency_edges WHERE from_file = ?").run(file);
+  }
+
   /** Close the database connection. */
   close(): void {
     this.db.close();

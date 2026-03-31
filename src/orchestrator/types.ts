@@ -33,6 +33,7 @@ export interface RoutingDecision {
   mandatoryOracles?: string[];       // Phase 2.6: require-oracle rules add entries here
   riskThresholdOverride?: number;    // Phase 2.6: adjust-threshold rules set this
   workerId?: string;                 // Phase 4.4: selected worker profile ID
+  riskScore?: number;                // WP-4: computed risk score (0.0-1.0)
 }
 
 /** Input factors for risk scoring (→ TDD §6) */
@@ -57,6 +58,7 @@ export interface TaskInput {
   goal: string; // Natural language task description
   targetFiles?: string[]; // Optional explicit scope
   constraints?: string[]; // User-specified constraints
+  acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
@@ -368,6 +370,7 @@ export interface ExecutionTrace {
   shadow_validation?: ShadowValidationResult;
   validation_depth?: "structural" | "structural_and_tests" | "full_shadow";
   exploration?: boolean;                   // PH3.6: true if epsilon-greedy exploration was used
+  oracleFailurePattern?: string;           // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
   framework_markers?: string[];            // PH4: detected framework markers (e.g., 'react', 'express')
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
 }

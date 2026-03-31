@@ -8,7 +8,6 @@
  */
 import { resolve, relative } from "path";
 import { buildDependencyGraph, computeBlastRadius } from "../oracle/dep/dep-analyzer.ts";
-import { detectFrameworkMarkers } from "./task-fingerprint.ts";
 import type { WorldGraph } from "../world-graph/world-graph.ts";
 import type { PerceptualHierarchy, RoutingLevel } from "./types.ts";
 import type { PerceptionAssembler } from "./core-loop.ts";
@@ -50,7 +49,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     // Run diagnostics
     const diagnostics = await this.runDiagnostics();
 
-    const hierarchy: PerceptualHierarchy = {
+    return {
       taskTarget: {
         file: targetFile,
         symbol: undefined,
@@ -71,11 +70,6 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
         availableTools: this.availableTools,
       },
     };
-
-    // Phase 4: Detect framework markers from dependency cone
-    hierarchy.frameworkMarkers = detectFrameworkMarkers(hierarchy);
-
-    return hierarchy;
   }
 
   private buildDependencyCone(targetAbsolute: string, level: RoutingLevel) {
@@ -91,6 +85,17 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
 
     try {
       const graph = buildDependencyGraph(this.workspace);
+
+      // Persist dependency edges to World Graph for bounded cascade
+      if (this.worldGraph) {
+        const edges: Array<{ from: string; to: string }> = [];
+        for (const [fromFile, deps] of graph.entries()) {
+          for (const toFile of deps) {
+            edges.push({ from: fromFile, to: toFile });
+          }
+        }
+        try { this.worldGraph.storeEdges(edges); } catch { /* best-effort */ }
+      }
 
       // Forward deps: what the target imports
       const forwardDeps = graph.get(targetAbsolute) ?? new Set<string>();

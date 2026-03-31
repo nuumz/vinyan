@@ -165,6 +165,19 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
     const hash = computeHash(filePath);
     const fileHashes: Record<string, string> = { [filePath]: hash };
 
+    // A2: Check for parse diagnostics — degrade to uncertain if file has syntax errors
+    if ((sf as any).parseDiagnostics?.length > 0) {
+      return buildVerdict({
+        verified: false,
+        type: "uncertain",
+        confidence: 0.3,
+        evidence: [],
+        fileHashes,
+        reason: `File has ${(sf as any).parseDiagnostics.length} parse error(s) — AST analysis unreliable`,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+    }
+
     switch (hypothesis.pattern) {
       case "symbol-exists": {
         const symbolName = context.symbolName as string;

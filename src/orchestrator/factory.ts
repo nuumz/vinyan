@@ -40,6 +40,7 @@ import { WorkerStore } from "../db/worker-store.ts";
 import { WorkerSelector } from "./worker-selector.ts";
 import { WorkerLifecycle } from "./worker-lifecycle.ts";
 import { CapabilityModel } from "./capability-model.ts";
+import { LLMCriticImpl } from "./critic/llm-critic-impl.ts";
 import type { WorkerProfile } from "./types.ts";
 import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
 
@@ -176,6 +177,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
   const toolExecutor = new ToolExecutor();
 
+  // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
+  const criticProvider = registry.selectByTier("powerful") ?? registry.selectByTier("balanced");
+  const criticEngine = criticProvider ? new LLMCriticImpl(criticProvider) : undefined;
+
   // Startup logging — confirm active components (P3.0 Gap 7)
   const components = [
     `self-model: ${selfModel.constructor.name}`,
@@ -243,6 +248,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore,
     workerLifecycle,
     worldGraph,
+    criticEngine,
     // Disable exploration in test mode for deterministic routing (A3)
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
   };

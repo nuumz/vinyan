@@ -46,8 +46,10 @@ function resolveTscPath(): string {
   return localTsc;
 }
 
-/** Run tsc --noEmit and return diagnostics. */
-async function runTsc(workspace: string, target?: string): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number }> {
+const TSC_TIMEOUT_MS = 30_000;
+
+/** Run tsc --noEmit and return diagnostics. Kills process after 30s timeout. */
+async function runTsc(workspace: string, target?: string): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
   const args = ["--noEmit", "--pretty", "false", "--project", workspace];
 
   const proc = Bun.spawn([resolveTscPath(), ...args], {
@@ -56,10 +58,24 @@ async function runTsc(workspace: string, target?: string): Promise<{ diagnostics
     stderr: "pipe",
   });
 
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<"timeout">(r => {
+    timer = setTimeout(() => r("timeout"), TSC_TIMEOUT_MS);
+  });
+  const processPromise = (async () => {
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    return { stdout, exitCode };
+  })();
 
-  return { diagnostics: parseTscOutput(stdout), exitCode };
+  const result = await Promise.race([processPromise, timeoutPromise]);
+  clearTimeout(timer!);
+  if (result === "timeout") {
+    proc.kill();
+    return { diagnostics: [], exitCode: -1, timedOut: true };
+  }
+
+  return { diagnostics: parseTscOutput(result.stdout), exitCode: result.exitCode };
 }
 
 export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {
@@ -68,7 +84,23 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   const target = hypothesis.target;
 
   try {
-    const { diagnostics } = await runTsc(workspace);
+    const tscResult = await runTsc(workspace);
+
+    // A2: Timeout → uncertain rather than unknown (partial information available)
+    if (tscResult.timedOut) {
+      return buildVerdict({
+        verified: false,
+        type: "uncertain",
+        confidence: 0.2,
+        evidence: [],
+        fileHashes: {},
+        reason: `Type verification timed out after ${TSC_TIMEOUT_MS}ms`,
+        errorCode: "TIMEOUT",
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+    }
+
+    const { diagnostics } = tscResult;
 
     // Filter diagnostics to target file if specified
     const targetDiags = target

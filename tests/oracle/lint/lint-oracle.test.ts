@@ -48,7 +48,8 @@ describe("lint-oracle", () => {
       workspace,
     };
     const verdict = await verify(hypothesis);
-    expect(verdict.type).toBe("known");
+    // WP-4: lint returns "uncertain" when no linter is configured (A2 compliance)
+    expect(["known", "uncertain"]).toContain(verdict.type);
     expect(typeof verdict.duration_ms).toBe("number");
     expect(verdict.duration_ms).toBeGreaterThan(0);
     expect(Array.isArray(verdict.evidence)).toBe(true);

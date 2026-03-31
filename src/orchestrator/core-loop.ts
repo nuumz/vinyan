@@ -92,6 +92,7 @@ interface WorkerResult {
     explanation: string;
   }>;
   proposedToolCalls: ToolCall[];
+  uncertainties?: string[];
   tokensConsumed: number;
   duration_ms: number;
 }
@@ -419,6 +420,11 @@ export async function executeTask(
         });
       }
 
+      // ── Oracle failure pattern (WP-5: lightweight fingerprint for trace analysis) ──
+      const oracleFailurePattern = failedOracles.length > 0
+        ? failedOracles.sort().join("+")
+        : undefined;
+
       // ── Compute QualityScore from available data (A7: gradient signal) ──
       const testVerdictKey = Object.keys(verification.verdicts).find(k => k.startsWith("test"));
       const testContext = testVerdictKey
@@ -465,6 +471,7 @@ export async function executeTask(
         affected_files: workerResult.mutations.map((m) => m.file),
         qualityScore,
         prediction,
+        oracleFailurePattern,
         exploration: explorationFlag || undefined,
         workerSelectionAudit: workerSelection,
       };
@@ -520,6 +527,39 @@ export async function executeTask(
 
       // ── SUCCESS → return result ──────────────────────────────────
       if (verification.passed) {
+        // ── WP-2: LLM-as-Critic (semantic verification at L2+) ──────
+        // A1: critic is a separate LLM call from the generator
+        if (deps.criticEngine && routing.level >= 2) {
+          try {
+            const proposal = {
+              mutations: workerResult.mutations,
+              approach: trace.approach,
+            };
+            const criticResult = await deps.criticEngine.review(
+              proposal,
+              input,
+              perception,
+              input.acceptanceCriteria,
+            );
+            deps.bus?.emit("critic:verdict", {
+              taskId: input.id,
+              accepted: criticResult.approved,
+              confidence: criticResult.confidence,
+              reason: criticResult.reason,
+            });
+            if (!criticResult.approved) {
+              const criticReason = criticResult.reason ?? "Critic rejected proposal";
+              workingMemory.recordFailedApproach(
+                trace.approach,
+                `critic: ${criticReason}`,
+              );
+              continue; // retry within routing level
+            }
+          } catch {
+            // Critic failure → fail-open (proceed without critic)
+          }
+        }
+
         // ── I10: Probation workers cannot commit — shadow-only ──────
         if (deps.workerStore && routing.workerId) {
           const workerProfile = deps.workerStore.findById(routing.workerId);

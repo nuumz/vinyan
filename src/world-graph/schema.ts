@@ -48,4 +48,13 @@ BEGIN
     SELECT fact_id FROM fact_evidence_files WHERE file_path = NEW.path
   ) AND source_file != NEW.path AND file_hash != NEW.current_hash;
 END;
+
+CREATE TABLE IF NOT EXISTS dependency_edges (
+  from_file TEXT NOT NULL,
+  to_file TEXT NOT NULL,
+  edge_type TEXT NOT NULL DEFAULT 'imports',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (from_file, to_file, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_dep_edges_to ON dependency_edges(to_file);
 `;

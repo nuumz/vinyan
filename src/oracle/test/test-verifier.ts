@@ -111,13 +111,30 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       duration_ms,
     });
   } catch (err) {
+    // A2: ENOENT (runner binary not found) → uncertain, not unknown
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isEnoent = errMsg.includes("ENOENT") || (err as any)?.code === "ENOENT";
+
+    if (isEnoent) {
+      return buildVerdict({
+        verified: false,
+        type: "uncertain",
+        confidence: 0.2,
+        evidence: [],
+        fileHashes: {},
+        reason: `Test runner binary not found: ${errMsg}`,
+        errorCode: "ORACLE_CRASH",
+        duration_ms: performance.now() - start,
+      });
+    }
+
     return buildVerdict({
       verified: false,
       type: "unknown",
       confidence: 0,
       evidence: [],
       fileHashes: {},
-      reason: `Test runner failed: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `Test runner failed: ${errMsg}`,
       errorCode: "ORACLE_CRASH",
       duration_ms: performance.now() - start,
     });

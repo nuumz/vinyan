@@ -36,6 +36,18 @@ const ALL_EVENTS: BusEventName[] = [
   "evolution:ruleRetired",
   "sleep:cycleComplete",
   "tools:executed",
+  // Phase 1 — verification & governance
+  "critic:verdict",
+  "task:approval_required",
+  "commit:rejected",
+  // Guardrails
+  "guardrail:injection_detected",
+  "guardrail:bypass_detected",
+  // Self-model & oracle
+  "selfmodel:calibration_error",
+  "oracle:contradiction",
+  // Decomposer
+  "decomposer:fallback",
   // Phase 4 — Fleet Governance
   "worker:registered",
   "worker:promoted",

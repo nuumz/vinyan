@@ -6,6 +6,7 @@ import { join } from "path";
 import { runGate, type GateRequest, analyzeSessionDir, formatMetrics } from "../gate/index.ts";
 import { runAgentTask } from "./run.ts";
 import { runPatternsCommand } from "./patterns.ts";
+import { runStatusCommand, runMetricsCommand, runRulesCommand, runSkillsCommand } from "./status.ts";
 
 const command = process.argv[2];
 const workspacePath = process.argv[3] || process.cwd();
@@ -82,9 +83,29 @@ switch (command) {
     break;
   }
 
+  case "status": {
+    await runStatusCommand(workspacePath);
+    break;
+  }
+
+  case "metrics": {
+    await runMetricsCommand(workspacePath);
+    break;
+  }
+
+  case "rules": {
+    await runRulesCommand(workspacePath);
+    break;
+  }
+
+  case "skills": {
+    await runSkillsCommand(workspacePath);
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills`,
     );
     process.exit(1);
 }

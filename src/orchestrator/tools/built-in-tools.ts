@@ -34,6 +34,7 @@ export const fileRead: Tool = {
   description: "Read file contents",
   minIsolationLevel: 0,
   category: "file_read",
+  sideEffect: false,
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const absPath = resolve(context.workspace, filePath);
@@ -57,6 +58,7 @@ export const fileWrite: Tool = {
   description: "Write content to a file",
   minIsolationLevel: 1,
   category: "file_write",
+  sideEffect: true,
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const content = params.content as string;
@@ -81,6 +83,7 @@ export const fileEdit: Tool = {
   description: "Apply an edit to a file (read, modify, write)",
   minIsolationLevel: 1,
   category: "file_write",
+  sideEffect: true,
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const oldStr = params.old_string as string;
@@ -114,6 +117,7 @@ export const directoryList: Tool = {
   description: "List directory contents",
   minIsolationLevel: 0,
   category: "file_read",
+  sideEffect: false,
   async execute(params, context) {
     const dirPath = (params.path ?? params.directory) as string ?? ".";
     const absPath = resolve(context.workspace, dirPath);
@@ -135,6 +139,7 @@ export const searchGrep: Tool = {
   description: "Search file contents with grep",
   minIsolationLevel: 0,
   category: "search",
+  sideEffect: false,
   async execute(params, context) {
     const pattern = params.pattern as string;
     const path = (params.path ?? ".") as string;
@@ -173,6 +178,7 @@ export const shellExec: Tool = {
   description: "Execute a shell command (allowlisted commands only)",
   minIsolationLevel: 1,
   category: "shell",
+  sideEffect: true,
   async execute(params, context) {
     const command = params.command as string;
     try {
@@ -215,6 +221,7 @@ export const gitStatus: Tool = {
   description: "Show git working tree status",
   minIsolationLevel: 0,
   category: "vcs",
+  sideEffect: false,
   async execute(params, context) {
     try {
       const proc = Bun.spawn(["git", "status", "--porcelain"], {
@@ -239,6 +246,7 @@ export const gitDiff: Tool = {
   description: "Show git diff",
   minIsolationLevel: 0,
   category: "vcs",
+  sideEffect: false,
   async execute(params, context) {
     const target = params.file_path as string | undefined;
     const args = ["git", "diff"];

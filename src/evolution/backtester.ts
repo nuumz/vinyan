@@ -53,13 +53,26 @@ export function backtestRule(
   // 80/20 temporal split
   const splitIndex = Math.floor(sorted.length * 0.8);
   const training = sorted.slice(0, splitIndex);
-  const validation = sorted.slice(splitIndex);
+  let validation = sorted.slice(splitIndex);
 
-  // Anti-lookahead check: validation must be strictly newer
+  // Anti-lookahead check: validation must be strictly newer than training
   const trainingMaxTime = training[training.length - 1]?.timestamp ?? 0;
   const validationMinTime = validation[0]?.timestamp ?? 0;
   if (validationMinTime <= trainingMaxTime && validation.length > 0 && training.length > 0) {
-    // This shouldn't happen with sorted data, but guard against it
+    // Filter out validation traces that overlap with training (duplicate timestamps)
+    validation = validation.filter(t => t.timestamp > trainingMaxTime);
+    if (validation.length === 0) {
+      return {
+        pass: false,
+        effectiveness: 0,
+        prevented: 0,
+        falsePositives: 0,
+        totalFailures: 0,
+        totalSuccesses: 0,
+        trainingSize: training.length,
+        validationSize: 0,
+      };
+    }
   }
 
   // Count failures and successes in validation set
@@ -178,7 +191,7 @@ export function computeQualityImpact(
 
 function simpleGlobMatch(pattern: string, value: string): boolean {
   const regex = new RegExp(
-    pattern.replace(/\./g, "\\.").replace(/\*/g, ".*"),
+    "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$",
   );
   return regex.test(value);
 }

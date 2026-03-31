@@ -3,10 +3,13 @@
  *
  * Source of truth: vinyan-implementation-plan.md §P3.6
  */
+import type { OracleCircuitBreaker } from "../oracle/circuit-breaker.ts";
 
 export interface HealthDeps {
   dbPath?: string;
   shadowQueueDepth: number;
+  circuitBreaker?: OracleCircuitBreaker;
+  /** @deprecated Use circuitBreaker instead */
   circuitBreakerStates?: Record<string, "closed" | "open" | "half-open">;
 }
 
@@ -33,7 +36,9 @@ export function getHealthCheck(deps: HealthDeps): HealthCheck {
   }
 
   const shadowOk = deps.shadowQueueDepth < 100; // warn if queue grows too large
-  const cbStates = deps.circuitBreakerStates ?? {};
+
+  // Prefer live circuit breaker over static state map
+  const cbStates = deps.circuitBreaker?.getAllStates() ?? deps.circuitBreakerStates ?? {};
   const openBreakers = Object.values(cbStates).filter(s => s === "open").length;
   const cbOk = openBreakers === 0;
 

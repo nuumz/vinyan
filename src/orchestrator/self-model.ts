@@ -79,7 +79,7 @@ export class CalibratedSelfModel implements SelfModel {
   ): Promise<SelfModelPrediction> {
     const fileCount = Math.max(1, input.targetFiles?.length ?? 1);
     const taskSig = this.computeTaskSignature(input);
-    const params = this.getTaskTypeParams(taskSig);
+    const params = this.resolveTaskTypeParams(taskSig);
     const obs = params.observationCount;
 
     // Heuristic predictions enriched with per-task-type data
@@ -161,7 +161,7 @@ export class CalibratedSelfModel implements SelfModel {
       id: trace.taskId, source: "cli", goal: "", targetFiles: trace.affected_files,
       budget: { maxTokens: 0, maxDurationMs: 0, maxRetries: 0 },
     });
-    const params = this.getTaskTypeParams(taskSig);
+    const params = this.resolveTaskTypeParams(taskSig);
 
     // Adaptive alpha based on this task type's observation count
     const alpha = adaptiveAlpha(params.observationCount);
@@ -232,9 +232,9 @@ export class CalibratedSelfModel implements SelfModel {
     };
   }
 
-  /** Get params for a specific task type (for testing). */
-  getTaskTypeParamsPublic(taskSig: string): TaskTypeParams {
-    return this.getTaskTypeParams(taskSig);
+  /** Get params for a specific task type. */
+  getTaskTypeParams(taskSig: string): TaskTypeParams {
+    return this.resolveTaskTypeParams(taskSig);
   }
 
   /** PH3.6: Get all per-task-type params for counterfactual analysis. */
@@ -333,7 +333,7 @@ export class CalibratedSelfModel implements SelfModel {
     } catch { /* table may already exist */ }
   }
 
-  private getTaskTypeParams(taskSig: string): TaskTypeParams {
+  private resolveTaskTypeParams(taskSig: string): TaskTypeParams {
     // Check DB first
     if (this.db) {
       try {

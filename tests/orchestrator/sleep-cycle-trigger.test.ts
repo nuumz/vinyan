@@ -62,11 +62,11 @@ describe("Sleep Cycle Trigger (H1)", () => {
     expect(result.rulesPromoted).toBe(0);
   });
 
-  test("sleep:cycle_complete event includes rulesPromoted", async () => {
+  test("sleep:cycleComplete event includes rulesPromoted", async () => {
     const { traceStore, patternStore } = createStores();
     const bus = createBus();
     let emitted: any = null;
-    bus.on("sleep:cycle_complete", (payload) => { emitted = payload; });
+    bus.on("sleep:cycleComplete", (payload) => { emitted = payload; });
 
     // Insert enough data to pass the data gate
     for (let i = 0; i < 110; i++) {

@@ -193,7 +193,7 @@ export class SleepCycleRunner {
           if (count >= 3) {
             this.ruleStore.retire(rule.id);
             rulesRetired++;
-            this.bus?.emit("evolution:rule_retired", {
+            this.bus?.emit("evolution:ruleRetired", {
               ruleId: rule.id,
               reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
             });
@@ -204,6 +204,11 @@ export class SleepCycleRunner {
       }
     }
 
+    // GAP-9: Re-verify active skills whose dep-cone may have changed
+    if (this.skillManager) {
+      this.skillManager.reVerifyStaleSkills();
+    }
+
     // Apply decay to existing patterns
     const decayedCount = this.applyDecay();
 
@@ -211,7 +216,7 @@ export class SleepCycleRunner {
       cycleId, traces.length, newPatterns.length,
     );
 
-    this.bus?.emit("sleep:cycle_complete", {
+    this.bus?.emit("sleep:cycleComplete", {
       cycleId,
       patternsFound: newPatterns.length,
       rulesGenerated,
@@ -365,7 +370,7 @@ export class SleepCycleRunner {
   // ── Decay ────────────────────────────────────────────────────────────
 
   private applyDecay(): number {
-    const existingPatterns = this.patternStore.queryActive(0.01);
+    const existingPatterns = this.patternStore.findActive(0.01);
     let decayedCount = 0;
 
     const halfLife = this.config.decay_half_life_sessions;
@@ -447,12 +452,12 @@ export class SleepCycleRunner {
 
     if (cycleTimestamps.length === 0) {
       // No cycles yet — fall back to count-bounded
-      return this.traceStore.queryRecentTraces(10000);
+      return this.traceStore.findRecent(10000);
     }
 
     // Use the oldest of the last 5 cycle starts as the window start
     const oldestCycleStart = cycleTimestamps[cycleTimestamps.length - 1]!;
-    return this.traceStore.queryByTimeRange(oldestCycleStart, Date.now());
+    return this.traceStore.findByTimeRange(oldestCycleStart, Date.now());
   }
 
   /** PH3.7: Track consecutive ineffective cycles for a rule. Returns new count. */
@@ -493,13 +498,13 @@ export class SleepCycleRunner {
         if (safety.safe) {
           this.ruleStore.activate(rule.id);
           promoted++;
-          this.bus?.emit("evolution:rule_promoted", {
+          this.bus?.emit("evolution:rulePromoted", {
             ruleId: rule.id, taskSig: rule.condition.file_pattern ?? "*",
           });
         }
       } else {
         this.ruleStore.retire(rule.id);
-        this.bus?.emit("evolution:rule_retired", {
+        this.bus?.emit("evolution:ruleRetired", {
           ruleId: rule.id, reason: `Failed backtest (effectiveness: ${result.effectiveness.toFixed(2)})`,
         });
       }
@@ -509,7 +514,7 @@ export class SleepCycleRunner {
 
   /** Get traces relevant for backtesting a rule. */
   private getTracesForBacktest(_rule: EvolutionaryRule): ExecutionTrace[] {
-    return this.traceStore.queryRecentTraces(1000);
+    return this.traceStore.findRecent(1000);
   }
 
   private gatherStats(): DataGateStats {

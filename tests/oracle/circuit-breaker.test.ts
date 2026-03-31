@@ -105,4 +105,54 @@ describe("OracleCircuitBreaker", () => {
     cb.recordFailure("ast");
     expect(cb.getState("ast")).toBe("open");
   });
+
+  // ── getAllStates() tests ───────────────────────────────────────────────────
+
+  test("getAllStates() returns empty object when no oracles recorded", () => {
+    const cb = new OracleCircuitBreaker();
+    expect(cb.getAllStates()).toEqual({});
+  });
+
+  test("getAllStates() returns 'open' after 3 failures", () => {
+    const cb = new OracleCircuitBreaker();
+    cb.recordFailure("ast");
+    cb.recordFailure("ast");
+    cb.recordFailure("ast");
+    const states = cb.getAllStates();
+    expect(states["ast"]).toBe("open");
+  });
+
+  test("getAllStates() returns correct states for multiple oracles", () => {
+    const cb = new OracleCircuitBreaker();
+    // Trip ast to open
+    cb.recordFailure("ast");
+    cb.recordFailure("ast");
+    cb.recordFailure("ast");
+    // Keep type closed (2 failures, below threshold)
+    cb.recordFailure("type");
+    cb.recordFailure("type");
+
+    const states = cb.getAllStates();
+    expect(states["ast"]).toBe("open");
+    expect(states["type"]).toBe("closed");
+    expect(Object.keys(states)).toHaveLength(2);
+  });
+
+  test("getAllStates() reflects 'closed' after recordSuccess() on open circuit", () => {
+    const cb = new OracleCircuitBreaker({ resetTimeout_ms: 100 });
+    const now = 2000;
+
+    cb.recordFailure("ast", now);
+    cb.recordFailure("ast", now);
+    cb.recordFailure("ast", now);
+    expect(cb.getAllStates()["ast"]).toBe("open");
+
+    // Transition to half-open via shouldSkip after timer
+    cb.shouldSkip("ast", now + 100);
+    expect(cb.getAllStates()["ast"]).toBe("half-open");
+
+    // Probe succeeds → back to closed
+    cb.recordSuccess("ast");
+    expect(cb.getAllStates()["ast"]).toBe("closed");
+  });
 });

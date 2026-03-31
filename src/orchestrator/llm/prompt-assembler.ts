@@ -4,9 +4,18 @@
  * System: ROLE + OUTPUT FORMAT
  * User: PERCEPTION + CONSTRAINTS + GOAL + PLAN
  *
+ * All untrusted text (goal, diagnostics, working memory, facts)
+ * is sanitized through guardrail scanners before interpolation.
+ *
  * Source of truth: vinyan-tdd.md §17.2
  */
 import type { PerceptualHierarchy, WorkingMemoryState, TaskDAG } from "../types.ts";
+import { sanitizeForPrompt } from "../../guardrails/index.ts";
+
+/** Sanitize a string for safe prompt inclusion. */
+function clean(s: string): string {
+  return sanitizeForPrompt(s).cleaned;
+}
 
 export interface AssembledPrompt {
   systemPrompt: string;
@@ -53,12 +62,12 @@ function buildUserPrompt(
 ): string {
   const sections: string[] = [];
 
-  // GOAL
-  sections.push(`[TASK]\n${goal}`);
+  // GOAL — sanitized (user/API input)
+  sections.push(`[TASK]\n${clean(goal)}`);
 
   // PERCEPTION
   sections.push(`[PERCEPTION]
-Target: ${perception.taskTarget.file} — ${perception.taskTarget.description}
+Target: ${perception.taskTarget.file} — ${clean(perception.taskTarget.description)}
 Direct importers: ${perception.dependencyCone.directImporters.join(", ") || "none"}
 Direct importees: ${perception.dependencyCone.directImportees.join(", ") || "none"}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
@@ -66,7 +75,7 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
   if (perception.diagnostics.typeErrors.length > 0) {
     const errors = perception.diagnostics.typeErrors
       .slice(0, 10)
-      .map(e => `  ${e.file}:${e.line}: ${e.message}`)
+      .map(e => `  ${e.file}:${e.line}: ${clean(e.message)}`)
       .join("\n");
     sections.push(`[DIAGNOSTICS]\n${errors}`);
   }
@@ -74,23 +83,23 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
   if (perception.verifiedFacts.length > 0) {
     const facts = perception.verifiedFacts
       .slice(0, 10)
-      .map(f => `  ${f.target}: ${f.pattern} (verified)`)
+      .map(f => `  ${f.target}: ${clean(f.pattern)} (verified)`)
       .join("\n");
     sections.push(`[VERIFIED FACTS]\n${facts}`);
   }
 
-  // CONSTRAINTS (failed approaches)
+  // CONSTRAINTS (failed approaches) — sanitized (LLM-generated text re-entering prompt)
   if (memory.failedApproaches.length > 0) {
     const constraints = memory.failedApproaches
-      .map(f => `  - Do NOT try: ${f.approach} (rejected: ${f.oracleVerdict})`)
+      .map(f => `  - Do NOT try: ${clean(f.approach)} (rejected: ${clean(f.oracleVerdict)})`)
       .join("\n");
     sections.push(`[CONSTRAINTS]\n${constraints}`);
   }
 
-  // HYPOTHESES
+  // HYPOTHESES — sanitized (may contain cached skill approaches)
   if (memory.activeHypotheses.length > 0) {
     const hypotheses = memory.activeHypotheses
-      .map(h => `  - ${h.hypothesis} (confidence: ${h.confidence}, source: ${h.source})`)
+      .map(h => `  - ${clean(h.hypothesis)} (confidence: ${h.confidence}, source: ${h.source})`)
       .join("\n");
     sections.push(`[HYPOTHESES]\n${hypotheses}`);
   }
@@ -98,15 +107,15 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
   // UNCERTAINTIES
   if (memory.unresolvedUncertainties.length > 0) {
     const uncertainties = memory.unresolvedUncertainties
-      .map(u => `  - ${u.area}: ${u.suggestedAction}`)
+      .map(u => `  - ${clean(u.area)}: ${clean(u.suggestedAction)}`)
       .join("\n");
     sections.push(`[UNCERTAINTIES]\n${uncertainties}`);
   }
 
-  // PLAN (L2+ only)
+  // PLAN (L2+ only) — sanitized (LLM-generated DAG descriptions)
   if (plan && plan.nodes.length > 0) {
     const steps = plan.nodes
-      .map((n, i) => `  ${i + 1}. ${n.description} → ${n.targetFiles.join(", ")}`)
+      .map((n, i) => `  ${i + 1}. ${clean(n.description)} → ${n.targetFiles.join(", ")}`)
       .join("\n");
     sections.push(`[PLAN]\n${steps}`);
   }

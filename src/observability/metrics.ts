@@ -12,6 +12,7 @@ import type { SkillStore } from "../db/skill-store.ts";
 import type { PatternStore } from "../db/pattern-store.ts";
 import type { ShadowStore } from "../db/shadow-store.ts";
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
+import { generatePhase3Report, type EvolutionMetrics } from "./phase3-report.ts";
 
 export interface MetricsDeps {
   traceStore: TraceStore;
@@ -53,6 +54,7 @@ export interface SystemMetrics {
     skillFormation: boolean;
     evolutionEngine: boolean;
   };
+  evolution?: EvolutionMetrics;
 }
 
 const DEFAULT_GATE_THRESHOLDS: DataGateThresholds = {
@@ -71,7 +73,7 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
   // Trace stats
   const totalTraces = traceStore.count();
   const distinctTaskTypes = traceStore.countDistinctTaskTypes();
-  const recentTraces = traceStore.queryRecentTraces(1000);
+  const recentTraces = traceStore.findRecent(1000);
 
   const successCount = recentTraces.filter(t => t.outcome === "success").length;
   const successRate = recentTraces.length > 0 ? successCount / recentTraces.length : 0;
@@ -146,5 +148,6 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
       skillFormation: checkDataGate("skill_formation", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
       evolutionEngine: checkDataGate("evolution_engine", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
     },
+    evolution: generatePhase3Report({ traceStore, ruleStore, skillStore, patternStore }),
   };
 }

@@ -5,9 +5,10 @@
  * Based on architecture.md Decision A6: Content entering worker prompts
  * stripped of instruction-like patterns at perception boundary.
  */
+import { extractStrings } from "./text-utils.ts";
 
 /** Patterns that indicate prompt injection attempts. */
-const INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+export const INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
   // System prompt markers
   { pattern: /\[SYSTEM\]/i, label: "system-prompt-marker" },
   { pattern: /<<\s*SYS\s*>>/i, label: "llama-system-tag" },
@@ -40,6 +41,7 @@ export interface InjectionResult {
 /**
  * Scan an object's string values for prompt injection patterns.
  * Recursively inspects all string values in the params object.
+ * Strings are Unicode-normalized before scanning (see text-utils.ts).
  */
 export function detectPromptInjection(params: unknown): InjectionResult {
   const strings = extractStrings(params);
@@ -57,14 +59,4 @@ export function detectPromptInjection(params: unknown): InjectionResult {
     detected: matched.size > 0,
     patterns: Array.from(matched),
   };
-}
-
-/** Recursively extract all string values from an object. */
-function extractStrings(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(extractStrings);
-  if (value !== null && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).flatMap(extractStrings);
-  }
-  return [];
 }

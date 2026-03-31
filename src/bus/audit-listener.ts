@@ -24,9 +24,18 @@ const ALL_EVENTS: BusEventName[] = [
   "circuit:close",
   "task:escalate",
   "task:timeout",
+  "task:explore",
   "shadow:enqueue",
   "shadow:complete",
-  "shadow:fail",
+  "shadow:failed",
+  "skill:match",
+  "skill:miss",
+  "skill:outcome",
+  "evolution:rulesApplied",
+  "evolution:rulePromoted",
+  "evolution:ruleRetired",
+  "sleep:cycleComplete",
+  "tools:executed",
 ];
 
 export function attachAuditListener(

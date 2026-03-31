@@ -197,7 +197,7 @@ describe("PH3.8: Phase 3 Integration Validation", () => {
       }
 
       // After calibration, params should reflect the consistent data
-      const params = model.getTaskTypeParamsPublic("refactor::ts::single");
+      const params = model.getTaskTypeParams("refactor::ts::single");
       expect(params.observationCount).toBe(20);
       expect(params.avgQualityScore).toBeGreaterThan(0.5);
       expect(params.failRate).toBeLessThan(0.2);

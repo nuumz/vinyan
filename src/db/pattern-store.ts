@@ -46,14 +46,14 @@ export class PatternStore {
     return rows.map(rowToPattern);
   }
 
-  queryByTaskSignature(signature: string, limit = 50): ExtractedPattern[] {
+  findByTaskSignature(signature: string, limit = 50): ExtractedPattern[] {
     const rows = this.db.prepare(
       `SELECT * FROM extracted_patterns WHERE task_type_signature = ? ORDER BY confidence DESC LIMIT ?`,
     ).all(signature, limit) as PatternRow[];
     return rows.map(rowToPattern);
   }
 
-  queryActive(minDecayWeight = 0.1): ExtractedPattern[] {
+  findActive(minDecayWeight = 0.1): ExtractedPattern[] {
     const rows = this.db.prepare(
       `SELECT * FROM extracted_patterns WHERE decay_weight >= ? ORDER BY confidence DESC`,
     ).all(minDecayWeight) as PatternRow[];
@@ -112,7 +112,7 @@ export class PatternStore {
   }
 
   /** PH3.5: Follow derivedFrom chain for pattern lineage. */
-  queryLineage(patternId: string): ExtractedPattern[] {
+  findLineage(patternId: string): ExtractedPattern[] {
     const chain: ExtractedPattern[] = [];
     let currentId: string | undefined = patternId;
     const visited = new Set<string>();

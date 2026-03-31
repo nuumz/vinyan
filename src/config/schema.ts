@@ -40,7 +40,10 @@ const RoutingConfigSchema = z.object({
   l2_budget_tokens: z.number().positive().default(50000),
   l3_budget_tokens: z.number().positive().default(100000),
   latency_budgets_ms: LatencyBudgetsSchema.default(() => defaults(LatencyBudgetsSchema)),
-});
+}).refine(
+  data => data.l0_max_risk < data.l1_max_risk && data.l1_max_risk < data.l2_max_risk,
+  { message: "Risk thresholds must be strictly ordered: l0_max_risk < l1_max_risk < l2_max_risk" },
+);
 
 const IsolationConfigSchema = z.object({
   l0_max_risk: z.number().min(0).max(1).default(0.2),

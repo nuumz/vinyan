@@ -61,7 +61,7 @@ describe("buildComplexityContext (P3.3 — QualityScore enrichment)", () => {
       workspace,
     );
     const qs = computeQualityScore(
-      { ast: { verified: true, confidence: 1, evidence: [] } },
+      { ast: { verified: true, confidence: 1, evidence: [], type: "known" as const, fileHashes: {}, duration_ms: 0 } },
       50,
       2000,
       ctx,
@@ -78,7 +78,7 @@ describe("buildComplexityContext (P3.3 — QualityScore enrichment)", () => {
       workspace,
     );
     const qs = computeQualityScore(
-      { ast: { verified: true, confidence: 1, evidence: [] } },
+      { ast: { verified: true, confidence: 1, evidence: [], type: "known" as const, fileHashes: {}, duration_ms: 0 } },
       50,
       2000,
       ctx,

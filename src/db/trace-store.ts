@@ -66,28 +66,28 @@ export class TraceStore {
     });
   }
 
-  queryByTaskType(taskTypeSignature: string, limit = 100): ExecutionTrace[] {
+  findByTaskType(taskTypeSignature: string, limit = 100): ExecutionTrace[] {
     const rows = this.db.prepare(
       `SELECT * FROM execution_traces WHERE task_type_signature = ? ORDER BY timestamp DESC LIMIT ?`,
     ).all(taskTypeSignature, limit);
     return rows.map(rowToTrace);
   }
 
-  queryByOutcome(outcome: string, limit = 100): ExecutionTrace[] {
+  findByOutcome(outcome: string, limit = 100): ExecutionTrace[] {
     const rows = this.db.prepare(
       `SELECT * FROM execution_traces WHERE outcome = ? ORDER BY timestamp DESC LIMIT ?`,
     ).all(outcome, limit);
     return rows.map(rowToTrace);
   }
 
-  queryRecentTraces(limit = 50): ExecutionTrace[] {
+  findRecent(limit = 50): ExecutionTrace[] {
     const rows = this.db.prepare(
       `SELECT * FROM execution_traces ORDER BY timestamp DESC LIMIT ?`,
     ).all(limit);
     return rows.map(rowToTrace);
   }
 
-  queryByTimeRange(from: number, to: number): ExecutionTrace[] {
+  findByTimeRange(from: number, to: number): ExecutionTrace[] {
     const rows = this.db.prepare(
       `SELECT * FROM execution_traces WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`,
     ).all(from, to);

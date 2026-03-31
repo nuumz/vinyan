@@ -343,7 +343,8 @@ function parseWorkerOutput(
   try {
     const cleaned = stripCodeBlock(response.content);
     const parsed = JSON.parse(cleaned);
-    return {
+    // Validate through Zod schema (prevents malformed field types from reaching pipeline)
+    const candidate = {
       taskId,
       proposedMutations: parsed.proposedMutations ?? [],
       proposedToolCalls: parsed.proposedToolCalls ?? response.toolCalls ?? [],
@@ -351,6 +352,9 @@ function parseWorkerOutput(
       tokensConsumed: tokens,
       duration_ms,
     };
+    const validated = WorkerOutputSchema.safeParse(candidate);
+    if (validated.success) return validated.data;
+    return emptyOutput(taskId, tokens);
   } catch {
     return emptyOutput(taskId, tokens);
   }

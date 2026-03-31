@@ -179,6 +179,34 @@ export class SkillManager {
   }
 
   /**
+   * Re-verify active skills whose dep-cone files have changed.
+   * Demotes stale skills so they don't produce incorrect L0 reflex shortcuts.
+   * Called periodically by the Sleep Cycle (GAP-9).
+   */
+  reVerifyStaleSkills(): { checked: number; demoted: number } {
+    const activeSkills = this.store.findActive();
+    let checked = 0;
+    let demoted = 0;
+
+    for (const skill of activeSkills) {
+      checked++;
+      const result = this.verify(skill);
+      if (!result.valid) {
+        this.store.updateStatus(skill.taskSignature, "demoted");
+        demoted++;
+      } else {
+        // Refresh hashes and timestamp
+        this.store.updateDepConeHashes(
+          skill.taskSignature,
+          this.computeCurrentHashes(Object.keys(skill.depConeHashes)),
+        );
+      }
+    }
+
+    return { checked, demoted };
+  }
+
+  /**
    * Check if dep cone file hashes still match.
    */
   private checkDepConeHashes(

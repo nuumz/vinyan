@@ -76,6 +76,40 @@ export function attachCLIProgressListener(
     write(`${dim("[vinyan]")} Task ${status}: ${result.mutations.length} mutation(s)`);
   }));
 
+  // Evolution engine events
+  detachers.push(bus.on("evolution:rulesApplied", ({ taskId, rules }) => {
+    if (verbose) {
+      write(`${dim("[vinyan]")} Applied ${rules.length} evolution rule(s) to ${taskId}`);
+    }
+  }));
+
+  detachers.push(bus.on("evolution:rulePromoted", ({ ruleId, taskSig }) => {
+    write(`${dim("[vinyan]")} ${green("Rule promoted")}: ${ruleId} for ${taskSig}`);
+  }));
+
+  detachers.push(bus.on("evolution:ruleRetired", ({ ruleId, reason }) => {
+    write(`${dim("[vinyan]")} ${yellow("Rule retired")}: ${ruleId} — ${reason}`);
+  }));
+
+  // Skill events
+  detachers.push(bus.on("skill:match", ({ taskId, skill }) => {
+    if (verbose) {
+      write(`${dim("[vinyan]")} Skill match for ${taskId}: ${skill.taskSignature}`);
+    }
+  }));
+
+  detachers.push(bus.on("skill:outcome", ({ skill, success }) => {
+    if (verbose) {
+      const result = success ? green("success") : red("failure");
+      write(`${dim("[vinyan]")} Skill outcome ${skill.taskSignature}: ${result}`);
+    }
+  }));
+
+  // Sleep cycle
+  detachers.push(bus.on("sleep:cycleComplete", ({ patternsFound, rulesPromoted, skillsCreated }) => {
+    write(`${dim("[vinyan]")} Sleep cycle: ${patternsFound} patterns, ${rulesPromoted} rules promoted, ${skillsCreated} skills`);
+  }));
+
   return () => {
     for (const detach of detachers) detach();
   };

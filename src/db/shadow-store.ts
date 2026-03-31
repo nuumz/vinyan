@@ -68,14 +68,14 @@ export class ShadowStore {
     ).run(id);
   }
 
-  queryPending(): ShadowJobWithMutations[] {
+  findPending(): ShadowJobWithMutations[] {
     const rows = this.db.prepare(
       `SELECT * FROM shadow_jobs WHERE status IN ('pending', 'running') ORDER BY enqueued_at ASC`,
     ).all();
     return rows.map(rowToShadowJob);
   }
 
-  queryByTaskId(taskId: string): ShadowJobWithMutations | null {
+  findByTaskId(taskId: string): ShadowJobWithMutations | null {
     const row = this.db.prepare(
       `SELECT * FROM shadow_jobs WHERE task_id = ? ORDER BY enqueued_at DESC LIMIT 1`,
     ).get(taskId);

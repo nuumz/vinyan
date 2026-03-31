@@ -19,6 +19,8 @@ export interface Phase3ReportDeps {
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
   patternStore?: PatternStore;
+  /** Optional: provides per-task-type basis distribution. */
+  selfModelParams?: Map<string, { basis: string }>;
 }
 
 export interface EvolutionMetrics {
@@ -43,6 +45,8 @@ export interface EvolutionMetrics {
     qualityTrend: number;
     routingEfficiency: number;
     escalationRate: number;
+    explorationRate: number;
+    explorationQualityDelta: number;
   };
   phase4Readiness: Phase4ReadinessGate;
 }
@@ -63,8 +67,8 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   const { traceStore, ruleStore, skillStore, patternStore } = deps;
 
   // ── Overall quality metrics from traces ──
-  const recentTraces = traceStore.queryRecentTraces(200);
-  // queryRecentTraces returns DESC — reverse to get chronological order for trend
+  const recentTraces = traceStore.findRecent(200);
+  // findRecent returns DESC — reverse to get chronological order for trend
   const chronological = [...recentTraces].reverse();
   const qualityTrend = computeQualityTrend(
     chronological
@@ -92,6 +96,14 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   const escalatedCount = [...taskOutcomes.values()].filter(t => t.escalated).length;
   const routingEfficiency = totalTasks > 0 ? resolvedAtInitial / totalTasks : 0;
   const escalationRate = totalTasks > 0 ? escalatedCount / totalTasks : 0;
+
+  // ── Exploration metrics (PH3.6) ──
+  const explorationTraces = chronological.filter(t => t.exploration);
+  const normalTraces = chronological.filter(t => !t.exploration);
+  const explorationRate = chronological.length > 0 ? explorationTraces.length / chronological.length : 0;
+  const explorationAvgQuality = avgQualityOf(explorationTraces);
+  const normalAvgQuality = avgQualityOf(normalTraces);
+  const explorationQualityDelta = explorationAvgQuality - normalAvgQuality;
 
   // ── Rule metrics ──
   const activeRules = ruleStore?.findActive() ?? [];
@@ -144,7 +156,7 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   return {
     selfModel: {
       globalAccuracy,
-      basisDistribution: {}, // Would need self-model access for full breakdown
+      basisDistribution: computeBasisDistribution(deps.selfModelParams),
     },
     evolutionEngine: {
       rulesTotal: allRulesCount,
@@ -163,6 +175,8 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
       qualityTrend,
       routingEfficiency,
       escalationRate,
+      explorationRate,
+      explorationQualityDelta,
     },
     phase4Readiness,
   };
@@ -225,4 +239,20 @@ function computePhase4Readiness(stats: {
     ready: Object.values(conditions).every(c => c.met),
     conditions,
   };
+}
+
+function avgQualityOf(traces: { qualityScore?: { composite: number } }[]): number {
+  const scores = traces.filter(t => t.qualityScore?.composite != null).map(t => t.qualityScore!.composite);
+  return scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+}
+
+function computeBasisDistribution(
+  params?: Map<string, { basis: string }>,
+): Record<string, number> {
+  if (!params || params.size === 0) return {};
+  const dist: Record<string, number> = {};
+  for (const p of params.values()) {
+    dist[p.basis] = (dist[p.basis] ?? 0) + 1;
+  }
+  return dist;
 }

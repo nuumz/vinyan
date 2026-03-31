@@ -75,6 +75,24 @@ export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult
   if (rule.action === "adjust-threshold" && rule.parameters.forceL0ForMultiFile === true) {
     violations.push("I6: Cannot route multi-file changes to L0");
   }
+  // Risk threshold cannot be set below safety floor
+  if (rule.action === "adjust-threshold") {
+    const riskThreshold = rule.parameters.riskThreshold as number | undefined;
+    if (riskThreshold !== undefined && riskThreshold < RISK_THRESHOLD_FLOOR) {
+      violations.push(`I6: riskThreshold ${riskThreshold} below safety floor ${RISK_THRESHOLD_FLOOR}`);
+    }
+  }
+
+  // Invariant 7: Model allowlist — prevent routing to arbitrary/external models
+  if (rule.action === "prefer-model") {
+    const preferredModel = rule.parameters.preferredModel;
+    if (typeof preferredModel === "string") {
+      const allowed = MODEL_ALLOWLIST_PREFIXES.some(p => preferredModel.startsWith(p));
+      if (!allowed) {
+        violations.push(`I7: preferredModel '${preferredModel}' does not match any allowed prefix (${MODEL_ALLOWLIST_PREFIXES.join(", ")})`);
+      }
+    }
+  }
 
   return {
     safe: violations.length === 0,
@@ -110,3 +128,9 @@ const BUDGET_CEILING = {
   maxTokens: 500_000,
   maxDurationMs: 600_000, // 10 minutes
 } as const;
+
+/** Minimum risk threshold — prevents routing everything to L0 (no oracles). */
+const RISK_THRESHOLD_FLOOR = 0.05;
+
+/** Allowed model name prefixes for prefer-model rules. */
+const MODEL_ALLOWLIST_PREFIXES = ["claude-", "gpt-", "gemini-", "mock/"];

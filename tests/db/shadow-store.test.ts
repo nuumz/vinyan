@@ -30,7 +30,7 @@ describe("ShadowStore", () => {
     const job = makeJob();
     store.insert(job);
 
-    const found = store.queryByTaskId("task-1");
+    const found = store.findByTaskId("task-1");
     expect(found).not.toBeNull();
     expect(found!.id).toBe(job.id);
     expect(found!.taskId).toBe("task-1");
@@ -38,12 +38,12 @@ describe("ShadowStore", () => {
     expect(found!.mutations).toEqual([{ file: "src/foo.ts", content: "export const x = 1;" }]);
   });
 
-  test("queryPending returns pending and running jobs", () => {
+  test("findPending returns pending and running jobs", () => {
     store.insert(makeJob({ id: "s1", status: "pending" }));
     store.insert(makeJob({ id: "s2", status: "running" }));
     store.insert(makeJob({ id: "s3", status: "done" }));
 
-    const pending = store.queryPending();
+    const pending = store.findPending();
     expect(pending).toHaveLength(2);
     expect(pending.map(j => j.id).sort()).toEqual(["s1", "s2"]);
   });
@@ -53,7 +53,7 @@ describe("ShadowStore", () => {
     store.insert(job);
     store.updateStatus("s-run", "running");
 
-    const found = store.queryByTaskId("task-1");
+    const found = store.findByTaskId("task-1");
     expect(found!.status).toBe("running");
     expect(found!.startedAt).toBeDefined();
   });
@@ -71,7 +71,7 @@ describe("ShadowStore", () => {
     };
     store.updateStatus("s-done", "done", result);
 
-    const found = store.queryByTaskId("task-1");
+    const found = store.findByTaskId("task-1");
     expect(found!.status).toBe("done");
     expect(found!.completedAt).toBeDefined();
     expect(found!.result!.testsPassed).toBe(true);
@@ -82,7 +82,7 @@ describe("ShadowStore", () => {
     store.insert(makeJob({ id: "s-retry" }));
     store.incrementRetry("s-retry");
 
-    const found = store.queryByTaskId("task-1");
+    const found = store.findByTaskId("task-1");
     expect(found!.retryCount).toBe(1);
   });
 

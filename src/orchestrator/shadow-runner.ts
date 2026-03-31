@@ -9,6 +9,9 @@
  *
  * Source of truth: vinyan-tdd.md §12B (Shadow Execution), Phase 2.2
  */
+import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { resolve, dirname, join } from "path";
+import { tmpdir } from "os";
 import type { ShadowJob, ShadowValidationResult } from "./types.ts";
 import type { ShadowStore, ShadowJobWithMutations } from "../db/shadow-store.ts";
 
@@ -61,7 +64,7 @@ export class ShadowRunner {
    * Returns the validation result, or null if no pending jobs.
    */
   async processNext(): Promise<ShadowValidationResult | null> {
-    const pending = this.store.queryPending();
+    const pending = this.store.findPending();
     if (pending.length === 0) return null;
 
     const job = pending[0]!;
@@ -102,55 +105,88 @@ export class ShadowRunner {
   }
 
   /**
-   * Run the actual validation — test suite execution.
-   * In production this runs in a Docker container; here we use subprocess.
+   * Run the actual validation — test suite execution in a sandbox.
+   * Copies workspace to a temp directory, applies proposed mutations,
+   * then runs the test suite against the mutated state.
    */
   private async runValidation(
     job: ShadowJobWithMutations,
   ): Promise<ShadowValidationResult> {
     const startTime = performance.now();
 
-    const proc = Bun.spawn(["sh", "-c", this.testCommand], {
-      cwd: this.workspace,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    // Create isolated sandbox with mutations applied
+    const sandboxDir = await this.createSandbox(job.mutations ?? []);
 
-    const timeoutPromise = new Promise<"timeout">(r =>
-      setTimeout(() => r("timeout"), this.timeoutMs),
-    );
+    try {
+      const proc = Bun.spawn(["sh", "-c", this.testCommand], {
+        cwd: sandboxDir,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-    const processPromise = (async () => {
-      const stdout = await new Response(proc.stdout).text();
-      const exitCode = await proc.exited;
-      return { stdout, exitCode };
-    })();
+      const timeoutPromise = new Promise<"timeout">(r =>
+        setTimeout(() => r("timeout"), this.timeoutMs),
+      );
 
-    const raceResult = await Promise.race([processPromise, timeoutPromise]);
-    const duration_ms = Math.round(performance.now() - startTime);
+      const processPromise = (async () => {
+        const stdout = await new Response(proc.stdout).text();
+        const exitCode = await proc.exited;
+        return { stdout, exitCode };
+      })();
 
-    if (raceResult === "timeout") {
-      proc.kill();
+      const raceResult = await Promise.race([processPromise, timeoutPromise]);
+      const duration_ms = Math.round(performance.now() - startTime);
+
+      if (raceResult === "timeout") {
+        proc.kill();
+        return {
+          taskId: job.taskId,
+          testsPassed: false,
+          duration_ms,
+          timestamp: Date.now(),
+        };
+      }
+
+      const testsPassed = raceResult.exitCode === 0;
+      const testResults = parseTestOutput(raceResult.stdout);
+
       return {
         taskId: job.taskId,
-        testsPassed: false,
+        testsPassed,
+        testResults,
         duration_ms,
         timestamp: Date.now(),
       };
+    } finally {
+      // Clean up sandbox
+      try { rmSync(sandboxDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  /**
+   * Create an isolated workspace copy with proposed mutations applied.
+   * Uses cp -r for simplicity; Phase 3 can use overlay FS or Docker.
+   */
+  private async createSandbox(
+    mutations: Array<{ file: string; content: string }>,
+  ): Promise<string> {
+    const sandboxDir = join(tmpdir(), `vinyan-shadow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+    // Copy workspace to sandbox
+    const cp = Bun.spawn(["cp", "-r", this.workspace, sandboxDir], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await cp.exited;
+
+    // Apply proposed mutations over the copy
+    for (const m of mutations) {
+      const targetPath = resolve(sandboxDir, m.file);
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, m.content);
     }
 
-    const testsPassed = raceResult.exitCode === 0;
-
-    // Parse test output for counts (best-effort)
-    const testResults = parseTestOutput(raceResult.stdout);
-
-    return {
-      taskId: job.taskId,
-      testsPassed,
-      testResults,
-      duration_ms,
-      timestamp: Date.now(),
-    };
+    return sandboxDir;
   }
 }
 

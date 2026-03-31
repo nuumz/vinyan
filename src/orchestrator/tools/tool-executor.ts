@@ -70,6 +70,22 @@ export class ToolExecutor {
     return results;
   }
 
+  /** Partition tool calls into read-only and mutating (side-effect) groups. */
+  partitionBySideEffect(calls: ToolCall[]): { readOnly: ToolCall[]; mutating: ToolCall[] } {
+    const readOnly: ToolCall[] = [];
+    const mutating: ToolCall[] = [];
+    for (const call of calls) {
+      const tool = this.tools.get(call.tool);
+      if (tool?.sideEffect === false) {
+        readOnly.push(call);
+      } else {
+        // Unknown tools or side-effect tools go to mutating (conservative)
+        mutating.push(call);
+      }
+    }
+    return { readOnly, mutating };
+  }
+
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
   }

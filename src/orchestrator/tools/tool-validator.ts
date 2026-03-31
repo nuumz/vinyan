@@ -20,6 +20,15 @@ const SHELL_ALLOWLIST = new Set([
 
 const DANGEROUS_SHELL_CHARS = /[;|&`$(){}><\n\\]/;
 
+/** Git subcommands that are destructive or have external side effects. */
+const DANGEROUS_GIT_SUBCOMMANDS = new Set(["push", "reset", "clean", "remote"]);
+
+/** Dangerous flags for specific git subcommands. */
+const DANGEROUS_GIT_FLAGS = new Set(["--force", "-f", "--hard", "--mirror"]);
+
+/** Arguments to reject for runtime executables that can run arbitrary code. */
+const RUNTIME_DANGEROUS_ARGS = new Set(["--eval", "-e", "eval"]);
+
 export function validateToolCall(
   call: ToolCall,
   tool: Tool,
@@ -59,16 +68,34 @@ export function validateToolCall(
     }
   }
 
-  // 3. Shell command allowlist + metacharacter check
+  // 3. Shell command allowlist + metacharacter + subcommand check
   if (tool.name === "shell_exec") {
     const command = call.parameters.command as string | undefined;
     if (command) {
-      const firstWord = command.trim().split(/\s+/)[0]!;
+      const words = command.trim().split(/\s+/);
+      const firstWord = words[0]!;
       if (!SHELL_ALLOWLIST.has(firstWord)) {
         return { valid: false, reason: `Shell command '${firstWord}' is not in allowlist` };
       }
       if (DANGEROUS_SHELL_CHARS.test(command)) {
         return { valid: false, reason: `Shell command contains dangerous metacharacter` };
+      }
+      // Git subcommand validation — block destructive operations
+      if (firstWord === "git" && words.length > 1) {
+        const subcommand = words[1]!;
+        if (DANGEROUS_GIT_SUBCOMMANDS.has(subcommand)) {
+          const hasDangerousFlag = words.slice(2).some(w => DANGEROUS_GIT_FLAGS.has(w));
+          if (subcommand === "push" || subcommand === "remote" || hasDangerousFlag) {
+            return { valid: false, reason: `Dangerous git operation: 'git ${words.slice(1).join(" ")}'` };
+          }
+        }
+      }
+      // Runtime executor validation — block --eval and similar code execution
+      if ((firstWord === "bun" || firstWord === "node" || firstWord === "python") && words.length > 1) {
+        const hasEval = words.slice(1).some(w => RUNTIME_DANGEROUS_ARGS.has(w));
+        if (hasEval) {
+          return { valid: false, reason: `'${firstWord}' with eval flag is not allowed` };
+        }
       }
     }
   }

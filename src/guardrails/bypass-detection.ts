@@ -4,9 +4,10 @@
  * Based on architecture.md Decision A6: Worker output referencing
  * "skip Oracle" / "bypass validation" rejected by Orchestrator.
  */
+import { extractStrings } from "./text-utils.ts";
 
 /** Patterns that indicate attempts to bypass Oracle validation. */
-const BYPASS_PATTERNS: { pattern: RegExp; label: string }[] = [
+export const BYPASS_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /skip\s+oracle/i, label: "skip-oracle" },
   { pattern: /bypass\s+(the\s+)?validation/i, label: "bypass-validation" },
   { pattern: /ignore\s+(the\s+)?verification/i, label: "ignore-verification" },
@@ -29,6 +30,7 @@ export interface BypassResult {
 /**
  * Scan an object's string values for Oracle bypass attempts.
  * Recursively inspects all string values in the params object.
+ * Strings are Unicode-normalized before scanning (see text-utils.ts).
  */
 export function containsBypassAttempt(params: unknown): BypassResult {
   const strings = extractStrings(params);
@@ -46,14 +48,4 @@ export function containsBypassAttempt(params: unknown): BypassResult {
     detected: matched.size > 0,
     patterns: Array.from(matched),
   };
-}
-
-/** Recursively extract all string values from an object. */
-function extractStrings(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(extractStrings);
-  if (value !== null && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).flatMap(extractStrings);
-  }
-  return [];
 }

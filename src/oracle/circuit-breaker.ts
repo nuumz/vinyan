@@ -83,4 +83,13 @@ export class OracleCircuitBreaker {
   getState(oracleName: string): CircuitState {
     return this.circuits.get(oracleName)?.state ?? "closed";
   }
+
+  /** Get all circuit states — used by health check. */
+  getAllStates(): Record<string, CircuitState> {
+    const result: Record<string, CircuitState> = {};
+    for (const [name, entry] of this.circuits) {
+      result[name] = entry.state;
+    }
+    return result;
+  }
 }

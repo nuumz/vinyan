@@ -38,7 +38,7 @@ describe("ShadowRunner", () => {
     expect(job.id).toContain("shadow-task-1");
 
     // Verify persisted
-    const found = store.queryByTaskId("task-1");
+    const found = store.findByTaskId("task-1");
     expect(found).not.toBeNull();
     expect(found!.status).toBe("pending");
     expect(found!.mutations).toHaveLength(1);
@@ -85,7 +85,7 @@ describe("ShadowRunner", () => {
     expect(result!.duration_ms).toBeGreaterThan(0);
 
     // Job should be marked done
-    const job = store.queryByTaskId("task-1");
+    const job = store.findByTaskId("task-1");
     expect(job!.status).toBe("done");
   });
 
@@ -144,7 +144,7 @@ describe("ShadowRunner", () => {
     expect(recovered).toBe(1);
 
     // Stale job should be back to pending
-    const jobs = store.queryPending();
+    const jobs = store.findPending();
     expect(jobs).toHaveLength(2);
     expect(jobs.every(j => j.status === "pending")).toBe(true);
   });

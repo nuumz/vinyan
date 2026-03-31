@@ -105,7 +105,7 @@ function buildDeps(rules: EvolutionaryRule[]): {
       verify: async () => ({
         passed: true,
         verdicts: {
-          ast: { verified: true, confidence: 1, evidence: [] } as OracleVerdict,
+          ast: { verified: true, confidence: 1, evidence: [], type: "known", fileHashes: {}, duration_ms: 0 } as OracleVerdict,
         },
       }),
     },

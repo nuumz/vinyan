@@ -46,7 +46,7 @@ describe("PatternStore", () => {
     store.insert(makePattern({ id: "p2", taskTypeSignature: "fix::db.ts" }));
     store.insert(makePattern({ id: "p3", taskTypeSignature: "refactor::auth.ts" }));
 
-    const results = store.queryByTaskSignature("refactor::auth.ts");
+    const results = store.findByTaskSignature("refactor::auth.ts");
     expect(results).toHaveLength(2);
   });
 
@@ -73,13 +73,13 @@ describe("PatternStore", () => {
     expect(result.sourceTraceIds).toEqual(["t1", "t2", "t3"]);
   });
 
-  test("queryActive filters by decay weight", () => {
+  test("findActive filters by decay weight", () => {
     const store = createStore();
     store.insert(makePattern({ id: "p1", decayWeight: 0.5 }));
     store.insert(makePattern({ id: "p2", decayWeight: 0.05 }));
     store.insert(makePattern({ id: "p3", decayWeight: 0.9 }));
 
-    const active = store.queryActive(0.1);
+    const active = store.findActive(0.1);
     expect(active).toHaveLength(2);
     expect(active.map(p => p.id).sort()).toEqual(["p1", "p3"]);
   });
@@ -90,7 +90,7 @@ describe("PatternStore", () => {
 
     store.updateDecayWeight("p1", 0.3);
 
-    const result = store.queryActive(0)[0]!;
+    const result = store.findActive(0)[0]!;
     expect(result.decayWeight).toBeCloseTo(0.3);
   });
 

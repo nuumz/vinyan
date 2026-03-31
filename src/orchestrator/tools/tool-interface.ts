@@ -12,6 +12,8 @@ export interface Tool {
   description: string;
   minIsolationLevel: IsolationLevel;
   category: ToolCategory;
+  /** Whether this tool has side effects (writes to disk, executes commands). */
+  sideEffect: boolean;
   execute(params: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 

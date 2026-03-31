@@ -38,7 +38,7 @@ export interface VinyanBusEvents {
   // Shadow validation (Phase 2.2)
   "shadow:enqueue": { job: ShadowJob };
   "shadow:complete": { job: ShadowJob; result: ShadowValidationResult };
-  "shadow:fail": { job: ShadowJob; error: string };
+  "shadow:failed": { job: ShadowJob; error: string };
 
   // Skill Formation (Phase 2.5)
   "skill:match": { taskId: string; skill: CachedSkill };
@@ -46,12 +46,12 @@ export interface VinyanBusEvents {
   "skill:outcome": { taskId: string; skill: CachedSkill; success: boolean };
 
   // Evolution Engine (Phase 2.6)
-  "evolution:rules_applied": { taskId: string; rules: EvolutionaryRule[] };
-  "evolution:rule_promoted": { ruleId: string; taskSig: string };
-  "evolution:rule_retired": { ruleId: string; reason: string };
+  "evolution:rulesApplied": { taskId: string; rules: EvolutionaryRule[] };
+  "evolution:rulePromoted": { ruleId: string; taskSig: string };
+  "evolution:ruleRetired": { ruleId: string; reason: string };
 
   // Sleep Cycle (Phase 2.4)
-  "sleep:cycle_complete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number; rulesPromoted: number };
+  "sleep:cycleComplete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number; rulesPromoted: number };
 
   // Self-Model (Phase 1C.1)
   "selfmodel:predict": { prediction: SelfModelPrediction };
@@ -72,6 +72,13 @@ export interface VinyanBusEvents {
 
   // PH3.6: Epsilon-greedy exploration
   "task:explore": { taskId: string; fromLevel: number; toLevel: number };
+
+  // Guardrail detections
+  "guardrail:injection_detected": { field: string; patterns: string[] };
+  "guardrail:bypass_detected": { field: string; patterns: string[] };
+
+  // Self-model calibration
+  "selfmodel:calibration_error": { taskId: string; error: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

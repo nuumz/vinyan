@@ -56,7 +56,7 @@ describe("TraceStore", () => {
     const trace = makeTrace();
     store.insert(trace);
 
-    const results = store.queryRecentTraces(10);
+    const results = store.findRecent(10);
     expect(results).toHaveLength(1);
     expect(results[0]!.id).toBe("trace-001");
     expect(results[0]!.taskId).toBe("task-001");
@@ -74,7 +74,7 @@ describe("TraceStore", () => {
     });
     store.insert(trace);
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.oracleVerdicts).toEqual({ ast: true, type: false });
     expect(result.affected_files).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"]);
   });
@@ -83,7 +83,7 @@ describe("TraceStore", () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.qualityScore).toBeDefined();
     expect(result.qualityScore!.architecturalCompliance).toBe(0.85);
     expect(result.qualityScore!.efficiency).toBe(0.72);
@@ -97,7 +97,7 @@ describe("TraceStore", () => {
   test("trace without QualityScore returns undefined", () => {
     store.insert(makeTrace());
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.qualityScore).toBeUndefined();
   });
 
@@ -111,39 +111,39 @@ describe("TraceStore", () => {
     };
     store.insert(makeTrace({ qualityScore: phase0 }));
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.qualityScore!.phase).toBe("phase0");
     expect(result.qualityScore!.dimensions_available).toBe(2);
     expect(result.qualityScore!.simplificationGain).toBeUndefined();
   });
 
-  test("queryByTaskType filters correctly", () => {
+  test("findByTaskType filters correctly", () => {
     store.insert(makeTrace({ id: "t1", task_type_signature: "refactor:rename" }));
     store.insert(makeTrace({ id: "t2", task_type_signature: "bugfix:null-check" }));
     store.insert(makeTrace({ id: "t3", task_type_signature: "refactor:rename" }));
 
-    const refactors = store.queryByTaskType("refactor:rename");
+    const refactors = store.findByTaskType("refactor:rename");
     expect(refactors).toHaveLength(2);
     expect(refactors.every(t => t.task_type_signature === "refactor:rename")).toBe(true);
   });
 
-  test("queryByOutcome filters correctly", () => {
+  test("findByOutcome filters correctly", () => {
     store.insert(makeTrace({ id: "t1", outcome: "success" }));
     store.insert(makeTrace({ id: "t2", outcome: "failure", failure_reason: "type error" }));
     store.insert(makeTrace({ id: "t3", outcome: "timeout" }));
 
-    const failures = store.queryByOutcome("failure");
+    const failures = store.findByOutcome("failure");
     expect(failures).toHaveLength(1);
     expect(failures[0]!.failure_reason).toBe("type error");
   });
 
-  test("queryByTimeRange filters correctly", () => {
+  test("findByTimeRange filters correctly", () => {
     const now = Date.now();
     store.insert(makeTrace({ id: "t1", timestamp: now - 5000 }));
     store.insert(makeTrace({ id: "t2", timestamp: now - 1000 }));
     store.insert(makeTrace({ id: "t3", timestamp: now + 5000 }));
 
-    const results = store.queryByTimeRange(now - 6000, now);
+    const results = store.findByTimeRange(now - 6000, now);
     expect(results).toHaveLength(2);
     expect(results[0]!.id).toBe("t1"); // ASC order
     expect(results[1]!.id).toBe("t2");
@@ -182,7 +182,7 @@ describe("TraceStore", () => {
     });
     store.insert(trace);
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.predictionError).toBeDefined();
     expect(result.predictionError!.error.composite).toBe(0.45);
     expect(result.predictionError!.actual.testResults).toBe("fail");
@@ -197,7 +197,7 @@ describe("TraceStore", () => {
       validation_depth: "structural",
     }));
 
-    const result = store.queryRecentTraces(1)[0]!;
+    const result = store.findRecent(1)[0]!;
     expect(result.session_id).toBe("sess-1");
     expect(result.worker_id).toBe("w-1");
     expect(result.approach_description).toBe("detailed explanation");

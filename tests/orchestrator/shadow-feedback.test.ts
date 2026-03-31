@@ -88,9 +88,9 @@ describe("Shadow Feedback Loop (H3)", () => {
     expect(emitted.result.testsPassed).toBe(true);
   });
 
-  test("shadow:fail event emitted on error", () => {
+  test("shadow:failed event emitted on error", () => {
     let emitted: any = null;
-    bus.on("shadow:fail", (payload) => { emitted = payload; });
+    bus.on("shadow:failed", (payload) => { emitted = payload; });
 
     const job = {
       id: "s-fail",
@@ -101,7 +101,7 @@ describe("Shadow Feedback Loop (H3)", () => {
       maxRetries: 0,
     };
 
-    bus.emit("shadow:fail", { job, error: "test error" });
+    bus.emit("shadow:failed", { job, error: "test error" });
 
     expect(emitted).not.toBeNull();
     expect(emitted.error).toBe("test error");
@@ -121,7 +121,7 @@ describe("Shadow Feedback Loop (H3)", () => {
     traceStore.updateShadowValidation("task-1", mockResult);
 
     // Query and verify
-    const traces = traceStore.queryRecentTraces(1);
+    const traces = traceStore.findRecent(1);
     expect(traces).toHaveLength(1);
     expect(traces[0]!.shadow_validation).toBeDefined();
     expect(traces[0]!.shadow_validation!.testsPassed).toBe(true);
@@ -150,7 +150,7 @@ describe("Shadow Feedback Loop (H3)", () => {
     });
 
     // Verify trace was updated
-    const traces = traceStore.queryRecentTraces(1);
+    const traces = traceStore.findRecent(1);
     expect(traces[0]!.shadow_validation!.testsPassed).toBe(false);
   });
 });

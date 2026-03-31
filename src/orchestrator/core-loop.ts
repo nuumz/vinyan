@@ -164,7 +164,7 @@ export async function executeTask(
           routing = { ...routing, riskThresholdOverride: rule.parameters.riskThreshold };
         }
       }
-      deps.bus?.emit("evolution:rules_applied", { taskId: input.id, rules: winners });
+      deps.bus?.emit("evolution:rulesApplied", { taskId: input.id, rules: winners });
     }
   }
 
@@ -268,15 +268,32 @@ export async function executeTask(
 
       // ── Step 4: GENERATE (dispatch to worker) ────────────────────
       deps.bus?.emit("worker:dispatch", { taskId: input.id, routing });
-      const workerResult = await deps.workerPool.dispatch(
-        input,
-        perception,
-        workingMemory.getSnapshot(),
-        plan,
-        routing,
-      );
+      const dispatchStart = Date.now();
+      let workerResult;
+      try {
+        workerResult = await deps.workerPool.dispatch(
+          input,
+          perception,
+          workingMemory.getSnapshot(),
+          plan,
+          routing,
+        );
+        deps.bus?.emit("worker:complete", {
+          taskId: input.id,
+          output: workerResult as unknown as import("./types.ts").WorkerOutput,
+          duration_ms: Date.now() - dispatchStart,
+        });
+      } catch (dispatchErr) {
+        deps.bus?.emit("worker:error", {
+          taskId: input.id,
+          error: String(dispatchErr),
+          routing,
+        });
+        throw dispatchErr;
+      }
 
-      // ── Step 4½: EXECUTE proposed tool calls ─────────────────────
+      // ── Step 4½a: EXECUTE read-only tool calls (safe pre-verification) ──
+      let mutatingToolCalls: import("./types.ts").ToolCall[] = [];
       if (deps.toolExecutor && workerResult.proposedToolCalls.length > 0) {
         const toolContext = {
           workspace: process.cwd(),
@@ -284,29 +301,15 @@ export async function executeTask(
           routingLevel: routing.level,
         } as import("./tools/tool-interface.ts").ToolContext;
 
-        const toolResults = await deps.toolExecutor.executeProposedTools(
+        const { readOnly, mutating } = deps.toolExecutor.partitionBySideEffect(
           workerResult.proposedToolCalls,
-          toolContext,
         );
+        mutatingToolCalls = mutating;
 
-        deps.bus?.emit("tools:executed", { taskId: input.id, results: toolResults });
-
-        // Merge file-write tool results back into mutations
-        for (const tr of toolResults) {
-          if (tr.status === "success" && tr.output && typeof tr.output === "object") {
-            const out = tr.output as { file?: string; content?: string };
-            if (out.file && out.content) {
-              const existing = workerResult.mutations.find(m => m.file === out.file);
-              if (!existing) {
-                workerResult.mutations.push({
-                  file: out.file,
-                  content: out.content,
-                  diff: "",
-                  explanation: `Tool ${tr.tool} output`,
-                });
-              }
-            }
-          }
+        // Execute read-only tools immediately (no side effects)
+        if (readOnly.length > 0) {
+          const readOnlyResults = await deps.toolExecutor.executeProposedTools(readOnly, toolContext);
+          deps.bus?.emit("tools:executed", { taskId: input.id, results: readOnlyResults });
         }
       }
 
@@ -383,7 +386,42 @@ export async function executeTask(
             trace.predictionError = predictionError;
             await deps.traceCollector.record(trace);
           }
-        } catch { /* best-effort */ }
+        } catch (calibErr) {
+          deps.bus?.emit("selfmodel:calibration_error", {
+            taskId: input.id,
+            error: calibErr instanceof Error ? calibErr.message : String(calibErr),
+          });
+        }
+      }
+
+      // ── Step 5½: EXECUTE mutating tools ONLY after verification ──
+      if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
+        const toolContext = {
+          workspace: process.cwd(),
+          allowedPaths: input.targetFiles ?? [],
+          routingLevel: routing.level,
+        } as import("./tools/tool-interface.ts").ToolContext;
+
+        const mutatingResults = await deps.toolExecutor.executeProposedTools(mutatingToolCalls, toolContext);
+        deps.bus?.emit("tools:executed", { taskId: input.id, results: mutatingResults });
+
+        // Merge file-write tool results back into mutations
+        for (const tr of mutatingResults) {
+          if (tr.status === "success" && tr.output && typeof tr.output === "object") {
+            const out = tr.output as { file?: string; content?: string };
+            if (out.file && out.content) {
+              const existing = workerResult.mutations.find(m => m.file === out.file);
+              if (!existing) {
+                workerResult.mutations.push({
+                  file: out.file,
+                  content: out.content,
+                  diff: "",
+                  explanation: `Tool ${tr.tool} output`,
+                });
+              }
+            }
+          }
+        }
       }
 
       // ── SUCCESS → return result ──────────────────────────────────
@@ -413,7 +451,7 @@ export async function executeTask(
               deps.bus?.emit("shadow:complete", { job, result });
             }
           }).catch(err => {
-            deps.bus?.emit("shadow:fail", { job, error: String(err) });
+            deps.bus?.emit("shadow:failed", { job, error: String(err) });
           });
         }
 

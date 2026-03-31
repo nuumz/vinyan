@@ -1278,203 +1278,1347 @@ Stream B (PH3.3, ~3d) and Stream C (PH3.4, ~1d) run in parallel — not on criti
 
 ---
 
-### Phase 4+: Outline (Detail When Phase 3 Completes)
+### Phase 4: Fleet Governance — Empirical Worker Identity
 
-### Phase 4 — Fleet Governance (DRAFT Guideline)
+> **Status:** Complete design. All open questions resolved. Ready for implementation after Phase 3 validation.
+> **Prerequisite:** Phase 3 complete + PH3.7 readiness gate passed + Phase 4 readiness gate (already implemented in `src/observability/phase3-report.ts:209-242`).
+> **Type:** Engineering-heavy (PH4.0-PH4.5), with one scoped research component (PH4.6).
+> **Estimated duration:** ~5-6 weeks (4 weeks engineering with parallelism + 1-2 weeks integration/validation).
 
-> **Status:** Draft brief. Detail after Phase 3 results are in.
-> **Prerequisite:** Phase 3 complete + PH3.7 readiness gate passed.
-> **Type:** Engineering-heavy, with one high-risk research component (PH4.6).
+---
 
-#### Vision
+#### Architectural Premise: From Task Learning to Worker Learning
 
-Phase 3 proves Vinyan can learn from its own data: trace-calibrated predictions, pattern-mined rules, effectiveness-scored skills. But Phase 3 treats the worker fleet as a fixed, static mapping: `RoutingLevel -> tier ("fast"|"balanced"|"powerful") -> single provider`. The Orchestrator has no concept of a worker's *empirical track record* or *domain capability* — it selects by tier alone.
+Phase 3 proved that Vinyan can learn about *tasks* from its own execution data: trace-calibrated predictions, pattern-mined rules, and effectiveness-scored skills. But Phase 3 treats the worker fleet as a fixed, static mapping: `RoutingLevel → tier ("fast"|"balanced"|"powerful") → single provider` (see `LLMProviderRegistry.selectForRoutingLevel()` at `src/orchestrator/llm/provider-registry.ts`).
 
-Phase 4 introduces **empirical worker identity**. Each worker configuration (model + temperature + tool set + system prompt variant) becomes a first-class entity with an observed performance profile. The Orchestrator stops routing by tier and starts routing by *measured capability against task characteristics*. Workers earn their workload through deterministic quality gates — not by label or default position.
+Phase 4 is a **metacognitive leap**. The system must model not just the external world (tasks, code) but its *internal capabilities* (which worker is good at what). This is the transition from a Self-Model that says "I will probably succeed at this task" to one that says "Worker X will probably succeed at this task better than Worker Y, given this task fingerprint, at this cost."
 
-What changes: the `LLMProviderRegistry.selectForRoutingLevel()` call in `worker-pool.ts:115` becomes a multi-factor capability match. The `RoutingDecision.model` field becomes a `workerId` pointing to a tracked configuration. The `ExecutionTrace.model_used` field becomes the primary input to worker evaluation.
+The key insight: **worker identity is not declared, it is earned from empirical evidence**. A `WorkerProfile` is a hypothesis: "this configuration produces good results for tasks matching these fingerprints." That hypothesis is subject to the same epistemic machinery (Wilson CI, backtesting, probation) that Phase 2-3 uses for patterns and rules.
+
+**Terminology note:** In this section, "Worker" means a **Generator-class Reasoning Engine** (concept doc §3). The fleet governance model applies to LLM Generator engines specifically — Oracle/Verifier engine lifecycle governance is deferred to Phase 5. `TaskFingerprint` extends the concept doc's "task type" / "task pattern" vocabulary with additional queryable dimensions for worker matching.
+
+What changes architecturally:
+- `LLMProviderRegistry.selectForRoutingLevel()` in `worker-pool.ts` → multi-factor capability match via `WorkerSelector`
+- `RoutingDecision.model` → `RoutingDecision.workerId` pointing to a tracked configuration
+- `ExecutionTrace.model_used` → primary input to worker evaluation (already collected but unused)
+- `ExecutionTrace.worker_id` → populated on every trace (field exists but never set)
+- `WorkerPool.dispatch()` interface changes from `(input, level)` to `(input, routing)` to carry `workerId` — **breaking interface change** to `WorkerPool` contract
+
+#### Axiom Compliance
+
+| Axiom | Phase 4 Relevance |
+|:------|:-----------------|
+| A1 (Epistemic Separation) | Workers generate; Oracle Gate verifies. Worker selection does not bypass verification. Probation workers cannot commit artifacts. The LLM-as-Critic used for `QualityScore` (feeding `WorkerStats`) MUST be a different model instance from the worker being evaluated — A1 boundary preserved. |
+| A2 (First-Class Uncertainty) | New worker configurations start with `basis: "unknown"`. The system explicitly says "I don't know if this worker is good at this task type" until sufficient traces exist. When no worker has capability > 0.3 for a fingerprint, the Orchestrator returns an ECP response with `type: 'unknown'` (not just a bus event) and triggers uncertainty reduction: escalation to human delegation per concept §2.2. The `task:uncertain` bus event is emitted alongside for observability. |
+| A3 (Deterministic Governance) | Worker selection is a deterministic scoring function over empirical data. No LLM in the routing or selection path. Auditable selection trace (`WorkerSelectionResult.alternatives`) recorded for every dispatch. |
+| A4 (Content-Addressed Truth) | `WorkerStats` are computed on-demand from `execution_traces` (never materialized as a blob), preserving derivability from content-hash-bound trace data. `WorkerProfile` metadata (`promotedAt`, `demotionCount`) are operational state, not verified facts — A4 applies to the source traces, not the derived statistics. Capability cache (60s TTL) is invalidated if new traces arrive for the relevant worker, preventing stale routing decisions. |
+| A5 (Tiered Trust) | Worker capability scores inherit trust tiers: oracle-verified outcomes (deterministic) > quality score deltas (heuristic) > token cost proxies (probabilistic). |
+| A6 (Zero-Trust Execution) | Probation workers execute in shadow mode only. Promoted workers still go through full oracle verification. Worker status transitions require passing safety invariants. |
+| A7 (Prediction Error as Learning) | Worker selection produces a prediction: "Worker X will achieve quality Y on this task." The delta between predicted and actual quality calibrates the worker capability model. |
+
+---
+
+#### Phase 4 Readiness Gate
+
+Before *any* Phase 4 component activates (already implemented in `src/observability/phase3-report.ts:209-242`):
+
+| Gate | Threshold | Source |
+|:-----|:----------|:-------|
+| Active rules with effectiveness > 0.3 | ≥ 3 | `ruleStore.findActive()` |
+| Active skills with successRate > 0.7 | ≥ 2 | `skillStore.findActive()` |
+| Self-Model global accuracy | ≥ 0.70 | `phase3Report.selfModel.globalAccuracy` |
+| Sleep cycles completed | ≥ 10 | `patternStore.countCycleRuns()` |
+
+#### Per-Sub-Phase Data Gates
+
+| Prerequisite | PH4.0 | PH4.1 | PH4.2 | PH4.3 | PH4.4 | PH4.5 |
+|:-------------|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+| Total traces | P3 gate | 500 | 500 | 750 | 750 | 1000 |
+| Distinct task signatures | P3 gate | 10 | 10 | 15 | 15 | 20 |
+| Traces with >1 distinct `worker_id` | 0 | 50 | 100 | 200 | 200 | 300 |
+| Registered worker profiles | 0 | 0 | 2 | 3 | 3 | 3 |
+| Workers with ≥20 traces each | 0 | 0 | 0 | 2 | 2 | 3 |
+
+---
 
 #### Sub-Components
 
-##### PH4.1 — Worker Profile Registry `[M]`
+##### PH4.0 — Multi-Model Data Seeding `[S]` — Engineering
 
-**Purpose:** Define the `WorkerProfile` as a first-class entity — a specific configuration (model ID, temperature, tool allowlist, system prompt template) paired with empirical statistics computed from `ExecutionTrace` data.
+> **Why this sub-phase exists:** The original draft overlooked a chicken-and-egg problem. PH4.3-PH4.4 need multi-model trace data to compare workers, but the current system uses a single model per tier. Without deliberate seeding, the system accumulates 500+ traces all from the same worker per tier, making worker comparison statistically impossible.
 
-**Key concepts to design:**
-- `WorkerProfile` interface: `{ id, config: WorkerConfig, stats: WorkerStats, status: "probation"|"active"|"demoted", createdAt, promotedAt? }`
-- `WorkerConfig`: `{ modelId, temperature, toolAllowlist, systemPromptTemplate?, maxContextTokens }`
-- `WorkerStats`: aggregated from traces — `{ totalTasks, successRate, avgQualityScore, avgDuration, avgTokenCost, taskTypeBreakdown: Record<taskSig, { count, successRate, avgQuality }> }`
-- `WorkerProfileStore` (SQLite table) for persistence
-- Registration API: create profile, initial stats = zero, status = probation
+**What:** Bootstrap Phase 4 data requirements by converting existing single-model-per-tier mappings into explicit `WorkerProfile` records, and extending epsilon-greedy exploration from routing-level (PH3.6) to worker selection.
 
-**Dependencies on Phase 3:** `ExecutionTrace` schema already carries `model_used` (PH3.1 improves task signatures). Self-Model per-task-type parameters (PH3.2) provide the baseline to compare worker performance against.
+**Implementation scope:**
 
-**Open questions:**
-- What constitutes a "different worker"? Whether temperature alone (e.g., `claude-sonnet@0.3` vs `claude-sonnet@0.7`) warrants separate profiles, or only model-level granularity.
-- How to handle model version changes (e.g., `claude-sonnet-4-20250514` vs a future version)? Version-aware identity or reset stats?
-- Should profiles be global (across projects) or project-scoped? Phase 4 scope says single-project, but the data model should not block Phase 5 multi-project.
+1. **Auto-register existing models as WorkerProfiles.** On factory startup, for each provider in `LLMProviderRegistry`, create a `WorkerProfile` with `status: "active"` (grandfathered — these are proven models from Phase 3) and initial `stats` bootstrapped from existing traces filtered by `model_used`. This ensures backward compatibility — the system starts with the same behavior as Phase 3, but now with explicit worker identity.
 
-##### PH4.2 — Worker Lifecycle (Probation/Promotion/Demotion) `[M]`
+2. **Worker-level epsilon exploration.** Extend the existing `EPSILON = 0.05` mechanism (currently at `core-loop.ts` for routing-level exploration) to include worker variation: with probability `epsilon_worker` (default: 0.10), select a *different* active worker than the scoring function would choose. Constraint: exploration never selects a probation or demoted worker. Exploration never routes DOWN (safety carried from PH3.6).
 
-**Purpose:** Deterministic state machine governing worker status transitions. New configurations start on probation (logging-only, shadowed). Promotion requires statistically significant quality. Demotion is automatic on sustained underperformance.
+3. **Trace tagging.** `ExecutionTrace.worker_id` (field exists in `types.ts` and SQLite schema but is never populated) must be set on every trace with the selected WorkerProfile ID. This is the single most important change — it unlocks all downstream Phase 4 analysis.
 
-**Key concepts to design:**
-- State machine: `probation -> active -> demoted` (and `demoted -> probation` for re-evaluation)
-- Promotion gate: minimum N tasks on probation (explore: 20? 50?), Wilson score lower bound on success rate > threshold, average quality score >= project baseline
-- Demotion trigger: rolling window (explore: last 30 tasks) where success rate drops below threshold OR quality score drops below active-worker median by > K sigma
-- Probation behavior: worker is dispatched alongside the "incumbent" worker for the same task. Only the incumbent's output is committed. Probation worker's output is scored but not applied. Reuses the existing `ShadowValidationResult.pheAlternatives` pattern from `orchestrator/types.ts`.
-- Safety invariant extension: a promoted worker cannot bypass oracle verification. Extend `checkSafetyInvariants()` to cover worker lifecycle rules.
+**Files changed:**
+- `src/orchestrator/types.ts` — add `WorkerProfile`, `WorkerConfig`, `WorkerStats` interfaces; add `workerSelectionAudit?: WorkerSelectionResult` to `ExecutionTrace`
+- `src/orchestrator/factory.ts` — auto-register existing providers as worker profiles on startup
+- `src/orchestrator/core-loop.ts` — populate `trace.worker_id` from `routing.workerId`
+- `src/orchestrator/worker/worker-pool.ts` — change `dispatch()` signature from `(input, level)` to `(input, routing)` to carry `workerId`; update all callers
+- `src/db/trace-schema.ts` — add `CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id)` (**critical for performance** — without this, every `WorkerStats` computation does a full table scan); add `worker_selection_audit TEXT` column
 
-**Dependencies on Phase 3:** Wilson score lower bound (PH3.3 fix). `EvolutionMetrics` framework (PH3.7) provides the scoring infrastructure.
+**Acceptance criteria:**
+- Every new trace has `worker_id` non-null
+- At least 2 worker profiles registered on startup (one per existing tier)
+- After 100 traces, ≥ 10% have a different `worker_id` than the default selection would produce
+- Backward-compatible: system runs identically to Phase 3 when epsilon exploration is disabled
 
-**Open questions:**
-- Minimum task count before promotion decisions are statistically meaningful? Depends on variance observed in Phase 3 data.
-- Should demotion be permanent or time-boxed (e.g., re-evaluate after 50 sessions)?
-- How does the probation shadow interact with Phase 2's existing shadow execution? Avoid doubling compute cost.
+---
 
-##### PH4.3 — Capability Tagging & Task Fingerprinting `[L]`
+##### PH4.1 — Worker Profile Registry `[M]` — Engineering
 
-**Purpose:** Build a matching system between task characteristics and worker demonstrated strengths. "This worker empirically succeeds at React refactoring tasks" — derived from trace data, not declared.
+**What:** Define `WorkerProfile` as a first-class entity and persist it in SQLite. A WorkerProfile pairs a specific configuration with empirical statistics computed from `ExecutionTrace` data.
 
-**Key concepts to design:**
-- Task fingerprint: extends PH3.1's `task_type_signature` with additional dimensions — framework markers (detected from imports/deps), oracle failure patterns, code complexity bucket
-- Worker capability vector: per-task-fingerprint-dimension success rates, built from `WorkerStats.taskTypeBreakdown`
-- Capability inference: after N traces per worker per task fingerprint dimension, compute a capability score. Explore: simple success rate, or quality-weighted score?
-- Negative capabilities: "this worker consistently fails at test-writing tasks" — equally valuable for routing exclusion
+**Design Decisions (all open questions from draft resolved):**
 
-**Dependencies on Phase 3:** Task signature quality (PH3.1), cross-task pattern correlation (PH3.5) — if PH3.5 finds meaningful cross-task patterns, those become candidate capability dimensions.
+**D4.1-1: Worker identity granularity.** A worker is identified by `(modelId, temperature, systemPromptTemplate)`.
+- `modelId` alone is too coarse — temperature significantly affects output quality for creative vs. precise tasks.
+- `toolAllowlist` differences create distinct capability profiles and should differentiate workers.
+- `systemPromptTemplate` is included because different system prompts produce qualitatively different behavior (e.g., a "concise" variant vs. a "thorough" variant).
+- Model version changes within the same family (e.g., `claude-sonnet-4-20250514` vs a future point release) do **NOT** create new workers. `modelId` uses the base model name (`claude-sonnet`), not the full version string. Rationale: point releases are typically improvements; resetting stats on every version prevents data accumulation. A major generation change (e.g., `claude-sonnet` → `claude-opus`) IS a new worker.
 
-**Open questions:**
-- How many task fingerprint dimensions are meaningful? Too few = no differentiation. Too many = insufficient data per cell.
-- Should capability be binary (can/cannot) or continuous (score 0-1)?
-- Cold-start for new task fingerprint dimensions? Fall back to tier-based routing until data accumulates.
+**D4.1-2: Scope.** Profiles are **project-scoped**. The data model includes an optional `projectId` field (nullable, defaults to current project) so Phase 5 can extend to cross-project without migration. Aligns with existing per-project SQLite database pattern.
 
-##### PH4.4 — Capability-Based Router `[L]`
+**D4.1-3: Stats computation.** `WorkerStats` is **NOT** stored as a materialized blob. It is computed on-demand from traces via SQL aggregates, cached in-memory with 60-second TTL. Rationale: storing a stats blob creates sync problems (stats diverge from traces); computing from traces is cheap with proper SQLite indexes.
 
-**Purpose:** Replace the current `RoutingLevel -> tier -> provider` mapping with a multi-factor worker selection. The core architectural change — empirically-grounded worker assignment decisions.
+**Key types (scope-level — implementor defines exact Zod schemas):**
 
-**Key concepts to design:**
-- New interface replacing `LLMProviderRegistry.selectForRoutingLevel()`: `selectWorker(taskFingerprint, routingLevel, budget) -> WorkerProfile`
-- Selection algorithm (must be deterministic per A3):
-  1. Filter: only `status: "active"` workers at or above required routing level
-  2. Filter: worker's tool allowlist covers task requirements
-  3. Score: capability match (PH4.3) × quality track record (PH4.1) × cost efficiency
-  4. Tiebreak: lowest token cost (or deterministic ordering)
-- Fallback: if no worker has sufficient capability data for this task fingerprint, fall back to tier-based selection (backward compatible with Phase 3)
-- Integration point: `core-loop.ts` — after `riskRouter.assessInitialLevel()`, before `workerPool.dispatch()`. The `RoutingDecision` gains a `workerId` field.
+```
+WorkerProfile:
+  id: string                      // "worker-{modelBase}-{tempBucket}-{hash(config)}"
+  config: WorkerConfig
+  status: "probation" | "active" | "demoted" | "retired"
+  createdAt: number
+  promotedAt?: number
+  demotedAt?: number
+  demotionReason?: string
+  demotionCount: number           // track re-entries for permanent retirement
 
-**Dependencies on Phase 3:** PH3.6 counterfactual analysis feeds "would a different worker have done better?" analysis.
+WorkerConfig:
+  modelId: string                 // base model name, e.g., "claude-sonnet"
+  modelVersion?: string           // optional specific version for audit trail
+  temperature: number             // quantized to 0.1 increments
+  toolAllowlist?: string[]        // if empty/undefined, all tools allowed
+  systemPromptTemplate?: string   // template ID or "default"
+  maxContextTokens?: number
 
-**Open questions:**
-- Scoring formula: weighted sum vs priority-based filter chain? Must be deterministic and auditable.
-- Exploration vs exploitation: extend PH3.6's epsilon-greedy to worker selection?
-- Token cost as first-class factor or tiebreak only?
-- Transition period: gradual rollout starting with 1 task fingerprint dimension, expand as data accumulates.
+WorkerStats (computed from traces, NOT stored):
+  totalTasks: number
+  successRate: number
+  avgQualityScore: number
+  avgDuration_ms: number
+  avgTokenCost: number
+  taskTypeBreakdown: Record<taskSig, {
+    count: number
+    successRate: number
+    avgQuality: number
+    avgTokens: number
+  }>
+  lastActiveAt: number
+```
 
-##### PH4.5 — Fleet Evaluation & Evolution Integration `[M]`
+**New SQLite table:** `worker_profiles` — schema follows existing patterns (`rule_store`, `skill_store`):
 
-**Purpose:** Extend Sleep Cycle and Evolution Engine to reason about worker performance. Generate rules like "for React refactoring, prefer worker X over worker Y."
+```sql
+CREATE TABLE IF NOT EXISTS worker_profiles (
+  id                TEXT PRIMARY KEY,
+  model_id          TEXT NOT NULL,
+  model_version     TEXT,
+  temperature       REAL NOT NULL DEFAULT 0.7,
+  tool_allowlist    TEXT,          -- JSON array or null
+  system_prompt_tpl TEXT DEFAULT 'default',
+  max_context_tokens INTEGER,
+  status            TEXT NOT NULL DEFAULT 'probation'
+                    CHECK(status IN ('probation','active','demoted','retired')),
+  created_at        INTEGER NOT NULL,
+  promoted_at       INTEGER,
+  demoted_at        INTEGER,
+  demotion_reason   TEXT,
+  demotion_count    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_wp_status ON worker_profiles(status);
+CREATE INDEX IF NOT EXISTS idx_wp_model ON worker_profiles(model_id);
+```
 
-**Key concepts to design:**
-- New pattern type: `"worker-performance"` added to `ExtractedPattern.type`
-- Worker comparison during Sleep Cycle: for each task fingerprint with sufficient data across multiple workers, compare quality distributions. If one worker is statistically better (Wilson LB), generate a `prefer-model` rule.
-- New evolution rule action: `"assign-worker"` — directly maps a task fingerprint to a worker ID. Subject to all existing safety invariants.
-- Fleet-level metrics extension to `EvolutionMetrics` (PH3.7): worker utilization distribution, capability coverage, fleet diversity score
+Stats computed via trace aggregation:
 
-**Dependencies on Phase 3:** Evolution pipeline (PH3.3), evaluation framework (PH3.7), pattern mining (PH3.5).
+```sql
+SELECT worker_id, COUNT(*) as total_tasks,
+  AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
+  AVG(quality_composite) as avg_quality,
+  AVG(tokens_consumed) as avg_tokens,
+  AVG(duration_ms) as avg_duration
+FROM execution_traces WHERE worker_id = ? GROUP BY worker_id;
+```
 
-**Open questions:**
-- Should worker-preference rules go through the same probation pipeline as other evolution rules?
-- How to prevent the fleet from collapsing to a single "best" worker? Diversity incentives or minimum allocation floors.
+**New files:**
+- `src/db/worker-schema.ts` — schema SQL
+- `src/db/worker-store.ts` — CRUD + stats queries (follows `rule-store.ts` pattern)
 
-##### PH4.6 — Cross-Project Pattern Transfer `[L/XL]` (Research)
+**Files modified:**
+- `src/db/vinyan-db.ts` — add `WORKER_SCHEMA_SQL` to schema initialization
+- `src/orchestrator/types.ts` — add `WorkerProfile`, `WorkerConfig`, `WorkerStats` interfaces
+- `src/observability/metrics.ts` — add worker stats to `SystemMetrics`
 
-**Purpose:** Abstract patterns learned in one project so they can seed behavior in a new project. "React refactoring patterns learned in Project A apply to Project B."
+**Failure modes:**
 
-**Key concepts to design:**
-- Pattern abstraction layer: strip project-specific details (file paths, symbol names) from `ExtractedPattern` and `CachedSkill`, retain structural characteristics (framework, task type, complexity class)
-- Portable pattern format: `AbstractPattern { taskFingerprint, approach, qualityRange, sourceProjectCount, confidence }`
-- Import/export mechanism: serialize patterns to a transferable format, import into a new project's pattern store with `status: "probation"` and reduced confidence
-- Similarity metric for cross-project applicability: whether two projects are "similar enough" for transfer
+| Failure | Detection | Recovery |
+|:--------|:----------|:---------|
+| Worker profile DB corruption | SQLite integrity check on startup | Re-create table, re-derive profiles from trace data (`model_used` column) |
+| Stats computation timeout | 5-second SQL timeout | Return stale cached stats; log warning |
+| Worker ID format collision | Unique constraint violation on insert | Append random suffix; log warning |
 
-**Open questions (many — highest uncertainty component):**
-- Is cross-project transfer even feasible with the data available? Depends entirely on Phase 3 findings.
-- How to measure whether a transferred pattern is helping vs introducing noise?
-- Minimum project similarity threshold: hand-crafted heuristic or learned?
-- Should transfer be manual (human selects) or automatic?
-- Explore whether this should be deferred to Phase 5 (multi-instance coordination).
+**Safety invariants:**
+- Worker profiles cannot be deleted, only demoted/retired. Audit trail is permanent.
+- The `MODEL_ALLOWLIST_PREFIXES` from existing safety invariants (`safety-invariants.ts`) applies: workers can only reference models matching the allowlist.
 
-**Size:** L/XL — highest research risk. May be descoped to "design the abstraction layer, defer actual transfer" based on Phase 3 findings.
+**Acceptance criteria:**
+- Worker profiles persist across process restarts
+- Stats computation returns within 100ms for 1000 traces
+- Backward-compatible: system runs identically to Phase 3 when no explicit worker profiles exist (falls through to tier-based selection)
+
+---
+
+##### PH4.2 — Worker Lifecycle (Probation/Promotion/Demotion) `[M]` — Engineering
+
+**What:** Deterministic state machine governing worker status transitions. New configurations start on probation. Promotion requires statistically significant quality. Demotion is automatic on sustained underperformance.
+
+**Design Decisions (all open questions from draft resolved):**
+
+**D4.2-1: Minimum task count before promotion.** **30 tasks** on probation. Rationale: Wilson lower bound at α=0.05 requires ~25 observations for meaningful confidence intervals. 30 provides margin for multiple task types. Higher than the draft's "explore: 20?" because we need statistical power across fingerprint dimensions, not just overall.
+
+**D4.2-2: Demotion is time-boxed, not permanent.** Demoted workers re-enter probation after **50 sessions** (configurable). Rationale: model provider improvements, codebase changes, or task distribution shifts can make a previously-poor worker competitive. However, a worker demoted **3 times** is **permanently retired** (prevents oscillation). The `RETIRED` status has no return path.
+
+**D4.2-3: Probation shadow interaction.** Probation worker shadow runs **REPLACE** the Phase 2 shadow test-suite run for that task, not ADD to it. The `ShadowValidationResult.pheAlternatives` field (already typed in `types.ts:223-227`) carries the probation worker's result. This bounds compute cost to 1 extra LLM call per probation worker, not 1 extra LLM call + 1 extra test suite run. The existing `ShadowRunner` (`src/orchestrator/shadow-runner.ts`) is extended with a `runAlternativeWorker()` method.
+
+**D4.2-4: Probation dispatch frequency.** Probation workers are dispatched on **20%** of eligible tasks (not all tasks). "Eligible" means the task's routing level matches the probation worker's model tier. This limits cost increase to ~20% per probation worker.
+
+**State machine:**
+
+```
+                    register()
+     [new config] ────────────> PROBATION
+                                    │
+                      30+ tasks,    │   fail rate > 50% after 30 tasks
+                      Wilson LB     │   OR quality < baseline − 2σ
+                      success > T,  │
+                      quality >= BL │
+                                    │
+               promote()            │ demote()
+                   ┌────────────────┤────────────────┐
+                   v                                  v
+                ACTIVE                            DEMOTED
+                   │                                  │
+                   │  rolling 30 tasks:               │  after 50 sessions:
+                   │  success < T − 0.1               │  re-enter probation
+                   │  OR quality < median              │  (max 3 re-entries,
+                   │     active worker − 2σ            │   then RETIRED)
+                   │                                  │
+                   └──────── demote() ────────────────┘
+                                                      │
+                                              3rd demotion:
+                                                      v
+                                                  RETIRED
+                                              (permanent, no return)
+```
+
+**Promotion gate (deterministic, A3-compliant):**
+1. `observationCount >= 30`
+2. Wilson lower bound of success rate at α=0.05 > project-wide active-worker median success rate
+3. Average quality score >= project-wide baseline (computed from all active workers' average quality)
+4. Zero safety invariant violations during probation period
+
+**Demotion trigger (checked per Sleep Cycle, NOT per-task — prevents oscillation):**
+1. Rolling window of last 30 tasks: success rate drops below `activeWorkerMedianSuccessRate − 0.10`
+2. OR quality score drops below `activeWorkerMedianQuality − 2 × stddev(activeWorkerQualities)`
+
+**New files:**
+- `src/orchestrator/worker-lifecycle.ts` — state machine, promotion/demotion logic, transition checks
+
+**Files modified:**
+- `src/orchestrator/shadow-runner.ts` — add `runAlternativeWorker()` for probation shadow dispatch
+- `src/db/worker-store.ts` — status transition methods with audit logging
+- `src/sleep-cycle/sleep-cycle.ts` — check worker lifecycle transitions during each sleep cycle
+- `src/evolution/safety-invariants.ts` — add fleet governance invariants (I8-I11, see Safety section)
+
+**Failure modes:**
+
+| Failure | Detection | Recovery |
+|:--------|:----------|:---------|
+| Probation worker crashes repeatedly | 3 consecutive timeouts | Auto-demote; do not retry probation |
+| All workers demoted (fleet collapse) | `activeWorkerCount < 1` | Emergency: re-activate the highest-performing demoted worker; emit `fleet:emergency_reactivation` event. **Invariant I8 prevents this.** |
+| Promotion creates monoculture | Diversity metric drops below threshold | See PH4.5 diversity protection |
+
+**Acceptance criteria:**
+- State transitions logged to audit trail (bus events: `worker:promoted`, `worker:demoted`, `worker:reactivated`)
+- A worker with genuinely better quality is promoted within ~50 sessions (20% dispatch rate → ~60 total sessions for 30 observations)
+- A worker with declining quality is demoted within 3 Sleep Cycles of sustained underperformance
+- Architecture success criterion met: **"Fleet governance demotes underperforming configurations within 20 sessions"** (from `vinyan-architecture.md` §10). Note: with `sleep_cycle_interval=20` sessions, the demotion trigger (rolling 30-task window checked per Sleep Cycle) can detect underperformance in 1-2 cycles (20-40 sessions). To meet the 20-session target, the implementor should ensure demotion checks run EVERY Sleep Cycle and that a single cycle's worth of data (≥20 tasks for an active worker) is sufficient to trigger the rolling-window threshold.
+- Backward-compatible: with 0-1 worker profiles, system behaves identically to Phase 3
+
+**Probation worker isolation level:** Probation workers inherit the task's routing level for isolation (L0/L1/L2/L3 as determined by `riskRouter`). They run in the same isolation context as the incumbent worker — the only difference is that their output is NOT committed (I10). For L3 tasks, probation shadow runs use the same container isolation as online L3 workers.
+
+---
+
+##### PH4.3 — Task Fingerprinting & Capability Modeling `[L]` — Engineering + Research
+
+**What:** Build a matching system between task characteristics and worker demonstrated strengths, derived from trace data, not declared. "This worker empirically succeeds at React refactoring tasks."
+
+**Design Decisions (all open questions from draft resolved):**
+
+**D4.3-1: Fingerprint dimensionality.** 5 dimensions — 3 always-active (reusing PH3.1 task signatures) + 2 that activate when data accumulates:
+
+| Dimension | Type | Source | Activation Gate |
+|:----------|:-----|:-------|:---------------|
+| `actionVerb` | categorical | PH3.1 signature segment 1 | Always active |
+| `fileExtensions` | categorical | PH3.1 signature segment 2 | Always active |
+| `blastRadiusBucket` | ordinal (single/small/medium/large) | PH3.1 signature segment 3 | Always active |
+| `frameworkMarkers` | set | Detected from imports in `PerceptualHierarchy.dependencyCone` | 200+ traces with import data |
+| `oracleFailurePattern` | categorical | Most-frequently-failing oracle per task type | 500+ traces |
+
+Rationale: PH3.1's existing task signature provides 3 meaningful dimensions. Framework markers capture domain-level capability (React vs Express vs testing library). Oracle failure pattern captures structural difficulty (type oracle failures = tasks needing strong type reasoning). More dimensions deferred until data proves they differentiate workers.
+
+**D4.3-2: Continuous capability scores, not binary.** Each worker-fingerprint cell stores `capabilityScore: number` in [0, 1], computed as `wilsonLowerBound(successes, total)` at α=0.05. Conservative (underestimates true ability), which is correct for a selection system — you want to be *confident* a worker is good, not optimistic.
+
+**D4.3-3: Cold-start.** When a worker has < 5 traces for a fingerprint dimension, capability is `null` (A2: "I don't know"). The router falls through to tier-based selection for that dimension. Match score uses only dimensions with non-null capability.
+
+**D4.3-4: Negative capabilities.** Explicitly tracked. If `wilsonLowerBound(failures, total) > 0.6` for a worker-fingerprint cell (>60% failure with statistical confidence), the worker has a **negative capability**. Negative capabilities are **exclusionary**: the router will NOT assign a task to a worker with a negative capability for any matching fingerprint dimension, regardless of other scores.
+
+**Key types:**
+
+```
+TaskFingerprint:
+  actionVerb: string              // "refactor", "fix", "add", "test", etc.
+  fileExtensions: string          // "ts", "ts,tsx", "py", etc.
+  blastRadiusBucket: string       // "single", "small", "medium", "large"
+  frameworkMarkers?: string[]     // ["react", "express"], detected from imports
+  oracleFailurePattern?: string   // "type", "test", "ast", etc.
+```
+
+**Capability vector** — NOT a separate table. Computed from indexed traces:
+
+```sql
+SELECT task_type_signature, COUNT(*) as total,
+  SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) as successes
+FROM execution_traces WHERE worker_id = ? GROUP BY task_type_signature;
+```
+
+Framework markers require new column: `framework_markers TEXT` in `execution_traces`, populated during perception assembly by scanning `PerceptualHierarchy.dependencyCone.directImportees` for known framework patterns (react, express, fastify, zod, prisma, etc.).
+
+**New files:**
+- `src/orchestrator/task-fingerprint.ts` — fingerprint computation from `TaskInput` + `PerceptualHierarchy`
+- `src/orchestrator/capability-model.ts` — per-worker capability vector computation and querying
+
+**Files modified:**
+- `src/orchestrator/types.ts` — add `TaskFingerprint` interface
+- `src/orchestrator/perception.ts` — detect framework markers during perception assembly
+- `src/db/trace-schema.ts` — add `framework_markers TEXT` column to `execution_traces`
+- `src/db/trace-store.ts` — add capability aggregation queries
+
+**Failure modes:**
+
+| Failure | Detection | Recovery |
+|:--------|:----------|:---------|
+| Fingerprint dimensionality too low (no differentiation) | All workers have same score for all fingerprints | Fall back to tier-based selection; log diagnostic |
+| Fingerprint dimensionality too high (sparse data) | Most worker-fingerprint cells have < 5 traces | Collapse to 3 active dimensions only |
+| Framework detection false positives | Manual monitoring; no automated detection | Framework pattern list is a configurable allowlist |
+
+**Acceptance criteria:**
+- Fingerprint computed for every task within 10ms
+- At least 2 workers differentiated on at least 1 fingerprint dimension after 300 multi-model traces
+- Negative capabilities correctly exclude workers from tasks they consistently fail at
+- Capability scores are conservative (Wilson LB) and do not overestimate
+
+---
+
+##### PH4.4 — Capability-Based Router `[L]` — Engineering
+
+**What:** Replace `LLMProviderRegistry.selectForRoutingLevel()` with a multi-factor capability match. **The core architectural change of Phase 4.**
+
+**Design Decisions (all open questions from draft resolved):**
+
+**D4.4-1: Scoring formula.** Weighted product (not sum), fully deterministic:
+
+```
+score(worker, fingerprint, budget) =
+  capabilityMatch(worker, fingerprint)^2        // dominant signal
+  × qualityTrackRecord(worker)^1                // moderate signal
+  × costEfficiency(worker, budget)^0.5          // minor signal (tiebreaker-weight)
+  × (1 − negativeCapabilityPenalty(worker, fp)) // binary gate: 0 or 1
+```
+
+Where:
+- `capabilityMatch` = average Wilson LB across matching fingerprint dimensions (null dimensions excluded)
+- `qualityTrackRecord` = worker's overall `avgQualityScore` from WorkerStats
+- `costEfficiency` = `1 − (worker.avgTokenCost / budget.maxTokens)` clamped to [0.1, 1.0]
+- `negativeCapabilityPenalty` = 1 if ANY negative capability on matching dimension, else 0
+
+Rationale for weighted product over sum: a zero in any factor (especially negative capability) completely excludes the worker. Exponents make capability match the dominant signal, quality secondary, and cost a tiebreaker. Rationale over priority-based filter chain: filter chain loses information — a worker that's 2nd-best on capability but 1st on cost would never be considered. Weighted product preserves multi-factor tradeoffs while remaining deterministic (A3).
+
+**D4.4-2: Exploration.** Extend PH3.6's epsilon-greedy to worker selection. With probability `epsilon_worker` (default: 0.10), select a random active worker instead of the highest-scoring. Constraint: exploration never selects probation or demoted workers. Exploration traces tagged `exploration: true` (reusing existing field). This provides variation data for PH4.3 capability modeling.
+
+**D4.4-3: Cost as a factor, not just tiebreak.** Cost matters for budget-constrained tasks but should not override quality. The 0.5 exponent makes cost a weak signal — a 2× cheaper worker gets only ~30% boost, easily overridden by 10% quality advantage. For budget-unlimited tasks, `costEfficiency` approaches 1.0 for all workers (irrelevant).
+
+**D4.4-4: Gradual rollout via data gate.** The capability router activates through the existing data gate mechanism (`src/orchestrator/data-gate.ts`). New gate: `"fleet_routing"` with conditions:
+- `active_workers >= 2`
+- `worker_trace_diversity >= 100` (traces with >1 distinct `worker_id`)
+
+Below thresholds → tier-based selection (backward compatible). Above → capability-based. Smooth transition, not a feature flag.
+
+**New interface:**
+
+```
+WorkerSelector:
+  selectWorker(
+    fingerprint: TaskFingerprint,
+    routingLevel: RoutingLevel,
+    budget: { maxTokens: number; timeoutMs: number },
+    excludeWorkerIds?: string[],  // for retry-with-different-worker
+  ): WorkerSelectionResult
+
+WorkerSelectionResult:
+  workerId: string
+  workerConfig: WorkerConfig
+  selectionReason: "capability" | "tier-fallback" | "exploration"
+  score: number
+  alternatives: Array<{ workerId: string; score: number }>  // audit trail
+```
+
+**Integration point in core loop:** INSIDE the retry loop, after perception assembly (`perceptionAssembler.assemble()`) and risk assessment, but before `workerPool.dispatch()`. Worker selection requires `PerceptualHierarchy` for fingerprint computation (framework markers from `dependencyCone`), so it CANNOT be placed before perception. Approximate location: after `routing = riskRouter.assessInitialLevel(...)` inside the retry loop, before `workerPool.dispatch(workerInput, routing)`.
+
+```
+// Step 2½: SELECT WORKER (Phase 4)
+if (deps.workerSelector) {
+  const fingerprint = computeFingerprint(input, perception);
+  const selection = deps.workerSelector.selectWorker(fingerprint, routing.level, input.budget);
+  routing = { ...routing, workerId: selection.workerId, model: selection.workerConfig.modelId };
+}
+```
+
+**Breaking interface change:** `WorkerPool.dispatch()` signature changes from `(input: WorkerInput, level: RoutingLevel)` to `(input: WorkerInput, routing: RoutingDecision)` to carry `workerId` and `model` through to the provider selection. All callers and the `WorkerPool` interface in types must be updated. The `RoutingDecision.workerId` field (already declared in `types.ts`) flows through to `WorkerPoolImpl.dispatch()`, which uses `routing.workerId` to call `providerRegistry.selectById(workerId)` (new method) instead of `selectForRoutingLevel(level)`.
+
+**`WorkerSelectionResult` audit trail in `ExecutionTrace`:** Add new field `worker_selection_audit TEXT` (JSON) to `execution_traces` schema and `workerSelectionAudit?: WorkerSelectionResult` to `ExecutionTrace` type. This carries the full selection rationale (score, alternatives, reason) for every trace — required for A3 audit compliance.
+
+**New files:**
+- `src/orchestrator/worker-selector.ts` — `WorkerSelector` implementation with scoring function, exploration, diversity enforcement
+
+**Files modified:**
+- `src/orchestrator/core-loop.ts` — add worker selection step between risk assessment and dispatch
+- `src/orchestrator/worker/worker-pool.ts` — use `routing.workerId` to select provider and configure dispatch instead of `selectForRoutingLevel()`
+- `src/orchestrator/llm/provider-registry.ts` — add `selectById(workerId)` method; tier-based `selectForRoutingLevel()` becomes fallback
+- `src/orchestrator/factory.ts` — wire `WorkerSelector` dependency
+- `src/orchestrator/data-gate.ts` — add `fleet_routing` feature gate with `active_workers` and `worker_trace_diversity` conditions (wire the unmapped `DataGateMetric` entries already in `types.ts:243-244`)
+
+**Failure modes:**
+
+| Failure | Detection | Recovery |
+|:--------|:----------|:---------|
+| All workers score identically | Scores within 0.01 of each other | Random selection among tied; log diagnostic — insufficient data, not an error |
+| Selected worker's provider unavailable | `CircuitBreaker.isOpen()` check | Exclude worker from candidates; re-select |
+| Worker selection too slow | 50ms timeout | Return tier-based fallback; log diagnostic |
+| Exploration consistently selects worse workers | Quality trend negative during high exploration | Reduce `epsilon_worker` to 0.03; minimum floor |
+
+**Acceptance criteria:**
+- Worker selection adds < 10ms to the routing path
+- Selection is fully deterministic: same inputs → same output (no randomness except epsilon exploration, which is seeded and logged)
+- With 2+ active workers and 200+ multi-model traces, the router assigns workers differentially (not always the same worker)
+- Tier-based fallback activates cleanly when data gate is not met
+- Selection audit trail (`WorkerSelectionResult.alternatives`) included in every `ExecutionTrace`
+
+---
+
+##### PH4.5 — Fleet Evaluation & Evolution Integration `[M]` — Engineering
+
+**What:** Extend Sleep Cycle and Evolution Engine to reason about worker performance. The system learns which worker is best for which task type and encodes that knowledge as deterministic rules.
+
+**Design Decisions (all open questions from draft resolved):**
+
+**D4.5-1: Worker-preference rules use the SAME probation pipeline.** Rationale: consistency and safety. A "prefer worker X for task type Y" rule is no different from an "escalate to L2 for file pattern Z" rule — both modify routing decisions and both can cause harm if wrong. Same backtesting, same probation period, same safety invariant checks.
+
+**D4.5-2: New evolution rule action `"assign-worker"`.** Added to `EvolutionaryRule.action` union type. Parameters: `{ workerId: string, reason: string }`. Subject to all existing safety invariants PLUS fleet safety invariants (I8-I11). Applied at the same core-loop location as `prefer-model` — sets `routing.workerId`.
+
+**D4.5-3: Fleet collapse prevention — 3-layer defense (the central design challenge):**
+
+| Layer | Mechanism | Enforcement Point |
+|:------|:----------|:-----------------|
+| **A: Diversity Floor** | At least `min(3, activeWorkerCount)` workers must each receive ≥ 15% of tasks per Sleep Cycle window. If any active worker drops below 15%, increase `epsilon_worker` targeting that worker. | `WorkerSelector` in `worker-selector.ts` |
+| **B: Exploration Budget** | Minimum 10% of tasks always dispatched via epsilon-worker exploration (never reduced below 10% even when scoring has a clear winner). Ensures continuous data flow to all active workers. | `WorkerSelector` configuration floor |
+| **C: Staleness Penalty** | A worker's capability score decays if not dispatched recently. After 2 Sleep Cycles without new traces, cached stats get 0.9× penalty per cycle. Naturally rotates traffic to underserved workers. | `capability-model.ts` score computation |
+
+**New pattern type:** `"worker-performance"` added to `ExtractedPattern.type`. **Requires extending `ExtractedPattern` with new fields:** `workerId?: string` and `comparedWorkerId?: string` (analogous to existing `approach`/`comparedApproach` but for worker identity). Generated during Sleep Cycle when:
+- 2+ workers have ≥ 10 traces each for the same task fingerprint
+- Quality distributions are statistically different (Wilson LB comparison)
+- Better worker's Wilson LB quality > worse worker's Wilson UB quality (non-overlapping confidence intervals)
+
+**New rule generation:** `rule-generator.ts` gains `generateWorkerAssignmentRule()`:
+- Input: worker-performance pattern
+- Output: `EvolutionaryRule` with `action: "assign-worker"`, `condition: { task fingerprint dimensions }`, `parameters: { workerId, qualityDelta, reason }`
+- Status: `"probation"` (standard pipeline)
+
+**Fleet-level metrics extension to `EvolutionMetrics`:**
+
+```
+fleetMetrics:
+  activeWorkers: number
+  probationWorkers: number
+  demotedWorkers: number
+  diversityScore: number           // Gini coefficient of task allocation (0 = equal, 1 = monoculture)
+  capabilityCoverage: number       // fraction of fingerprint dimensions with ≥1 worker capability > 0.5
+  avgWorkerSpecialization: number  // average variance of per-worker capability across dimensions
+  workerUtilization: Record<workerId, number>  // fraction of total tasks
+```
+
+**Files modified:**
+- `src/orchestrator/types.ts` — add `"assign-worker"` to `EvolutionaryRule.action` union; add `"worker-performance"` to `ExtractedPattern.type`; add `workerId?`/`comparedWorkerId?` fields to `ExtractedPattern`; add fleet metrics interface
+- `src/db/rule-schema.ts` — **update `CHECK(action IN (...))` constraint** to include `"assign-worker"` (without this, SQLite rejects worker-assignment rules at INSERT)
+- `src/db/pattern-schema.ts` — add `worker_id TEXT` and `compared_worker_id TEXT` columns for worker-performance patterns
+- `src/sleep-cycle/sleep-cycle.ts` — add worker comparison analysis during sleep cycle; generate worker-performance patterns
+- `src/evolution/rule-generator.ts` — add `generateWorkerAssignmentRule()` function
+- `src/evolution/safety-invariants.ts` — add `"assign-worker"` branch to `checkSafetyInvariants()` switch; enforce I8-I11 fleet invariants
+- `src/observability/phase3-report.ts` — extend `EvolutionMetrics` with `fleetMetrics`
+- `src/orchestrator/worker-selector.ts` — implement diversity floor and staleness penalty
+
+**Failure modes:**
+
+| Failure | Detection | Recovery |
+|:--------|:----------|:---------|
+| Worker-performance pattern noise | Backtesting rejects pattern | Standard probation pipeline filters it |
+| Fleet converges to single worker | `diversityScore > 0.8` (high Gini) | Increase `epsilon_worker` to 0.20; emit `fleet:convergence_warning` |
+| Worker assignment rules conflict | Two rules assign different workers for same fingerprint | Standard `resolveRuleConflicts()` picks higher specificity/effectiveness |
+| Sleep cycle too slow with worker analysis | Cycle > 60s | Worker analysis is optional; skip if time budget exceeded |
+
+**Acceptance criteria:**
+- At least 1 worker-performance pattern generated within 30 Sleep Cycles (given sufficient multi-model traces)
+- Fleet diversity score < 0.7 (no monoculture) after 500 traces with 3+ active workers
+- Worker assignment rules pass backtesting at comparable rate to other evolution rules
+- All active workers receive ≥ 10% of tasks over any 5-Sleep-Cycle window
+- **Architecture §10 criterion: "Fleet governance demotes underperforming configurations within 20 sessions"**
+
+---
+
+##### PH4.6 — Cross-Project Pattern Transfer `[L]` — Research (SCOPED DOWN)
+
+**What:** Design and implement the pattern abstraction layer. **Defer actual automatic cross-project transfer to Phase 5.**
+
+**Rationale for scoping down:** The draft correctly identified this as highest uncertainty. Phase 4 should focus on proving single-project fleet governance works. The abstraction layer is valuable infrastructure even without active transfer — it enables pattern export/import as a manual, human-supervised operation.
+
+**Decision: Implement the abstraction layer + manual export/import; defer automatic transfer.**
+
+**Implementation scope:**
+
+1. **AbstractPattern type.** Strips project-specific details from `ExtractedPattern`:
+
+```
+AbstractPattern:
+  fingerprint: TaskFingerprint    // stripped of project-specific file paths
+  approach: string                // generalized approach description
+  qualityRange: { min: number; max: number }
+  confidence: number              // Wilson LB from source, reduced by 50% on import
+  sourceProjectId: string
+  sourcePatternIds: string[]
+  applicabilityConditions:
+    frameworkMarkers: string[]    // must match for import eligibility
+    languageMarkers: string[]    // must match
+    complexityRange: string[]    // must overlap
+```
+
+2. **Pattern abstraction function.** `abstractPattern(pattern, traces) → AbstractPattern | null`:
+   - Strips file paths from task signature, retains verb + extension + blast bucket
+   - Generalizes approach description: replaces specific symbol names with type placeholders
+   - Returns `null` if pattern is too project-specific (e.g., tied to a single file path with no generalizable characteristics)
+
+3. **Export/Import CLI.** `vinyan patterns export --format json` and `vinyan patterns import --file patterns.json --status probation`. Imported patterns enter probation with confidence reduced by 50%.
+
+4. **Project similarity metric.** Simple heuristic: fraction of shared framework + language markers. Threshold for import eligibility: ≥ 0.5 similarity. Intentionally crude — refined in Phase 5.
+
+**New files:**
+- `src/evolution/pattern-abstraction.ts` — abstraction function and `AbstractPattern` type
+- `src/cli/patterns.ts` — export/import CLI commands
+
+**This sub-phase does NOT:**
+- Automatically transfer patterns between projects
+- Run imported patterns without human invocation (`vinyan patterns import` is explicit)
+- Claim to solve cross-domain transfer — code-to-code only
+
+**Acceptance criteria:**
+- At least 50% of generated patterns can be abstracted (non-null result)
+- Exported patterns can be imported into a fresh project and enter probation
+- Imported patterns pass backtesting at ≥ 50% the rate of locally-generated patterns (on a project with similar framework markers)
+
+---
+
+#### Gap Closure Analysis
+
+##### GAP-A: World Graph ≠ World Model
+
+**Phase 4 disposition: PARTIALLY ADDRESSED, remainder deferred.**
+
+Phase 3 delivered the Self-Model (forward predictor for test results, blast radius, duration, quality). Phase 4 extends this by adding *worker-specific* predictions: "Worker X will achieve quality Y on this task." This is a deeper forward model — it predicts not just task outcomes but *agent-task interaction outcomes*.
+
+Remaining gap — causal graph relationships in World Graph ("change to B causes C to break") — NOT addressed. Rationale: the dep-oracle already provides dependency-based blast radius (weak causal proxy), and true causal edges require observing actual cascading failures, not just predicting them. **Deferred to Phase 5** where multi-instance coordination provides observation data for causal inference.
+
+##### GAP-C: Skill Formation vs Rules
+
+**Phase 4 disposition: FURTHER ADDRESSED.**
+
+Phase 2 implemented `CachedSkill` (L0 reflex shortcuts). Phase 3 added cross-task fuzzy matching. Phase 4 adds **worker-specific skills**: "for React refactoring tasks, Worker X with this approach at temperature 0.3 succeeds 90% of the time." Richer model because it binds approach to worker configuration, not just task type.
+
+Remaining gap — hierarchical skill composition ("build auth system" = "implement JWT" + "implement middleware") — NOT addressed. Requires Task Decomposer to reason about skill composition. **Deferred to Phase 5.**
+
+##### GAP-G: Cross-Domain Limitation
+
+**Phase 4 disposition: EXPLICITLY DEFERRED.**
+
+Phase 4 is code-only. All oracles remain code-specific. However, Phase 4's architecture is **domain-agnostic by design**: `TaskFingerprint` dimensions are extensible, `WorkerConfig` can specify domain-specific tools, and the `WorkerSelector` scoring function does not assume code-specific features. Phase 5 can add domain-specific fingerprint dimensions (e.g., "document type" for legal) without changing fleet governance architecture.
+
+##### GAP-H: Multi-Agent Failure Mode Coverage
+
+**Phase 4 disposition: 3 of 7 remaining gaps addressed.**
+
+| Failure Mode | Status | Mechanism |
+|:-------------|:-------|:----------|
+| "Forgot earlier context" (UC-4) | PARTIALLY | WorkerProfile carries cross-task performance history. Not full cross-attempt memory, but worker-level memory of what works. |
+| "Restarted randomly" (UC-6) | NOT ADDRESSED | Checkpoint recovery requires Phase 5 state persistence. |
+| "Didn't ask when confused" (UC-7) | **ADDRESSED** | Worker capability model enables abstention: if no worker has capability > 0.3 for a task fingerprint, emit `task:uncertain` and request human guidance. **First implementation of A2 at fleet level.** |
+| "Withheld information" (UC-9) | PARTIALLY | Worker selection audit trail (`WorkerSelectionResult.alternatives`) broadcasts capability comparison to the bus. Not a full Global Workspace, but oracle results + selection rationale are now available. |
+| "Mismatch think vs do" (UC-11) | **ADDRESSED** | Phase 3 Self-Model + Phase 4 worker-level prediction. Capability score IS "think"; actual outcome IS "do." Delta = A7 learning signal. |
+
+**Post-Phase 4 GAP-H coverage: 10/14** (up from 7/14 at Phase 2).
+
+---
+
+#### Safety Invariants — Fleet Governance Extensions
+
+The 7 existing immutable invariants (in `src/evolution/safety-invariants.ts`) remain unchanged. Phase 4 adds 4 fleet-specific invariants:
+
+| # | Invariant | Enforcement |
+|:--|:----------|:-----------|
+| I8 | **Minimum active workers.** Fleet must maintain ≥ 1 active worker at all times. If the last active worker would be demoted, **block the demotion**. | `worker-lifecycle.ts` checks before demotion |
+| I9 | **Oracle verification bypass prohibition.** No worker configuration, regardless of status, can bypass oracle verification. `assign-worker` rules cannot include `skipOracles: true`. | Extended `checkSafetyInvariants()` |
+| I10 | **Probation workers cannot commit.** Probation workers execute in shadow mode only. Output scored but **never applied** to workspace. | `core-loop.ts` probation dispatch path |
+| I11 | **Worker diversity floor.** No single worker can receive > 70% of tasks over any 5-Sleep-Cycle window. If breached, `epsilon_worker` is forcibly increased. | `worker-selector.ts` diversity enforcement |
+
+These invariants are checked by extending `checkSafetyInvariants()` in `safety-invariants.ts`. The function already handles all evolution rule types; adding `assign-worker` requires a **new branch** in the switch/conditional chain — without this, I8-I11 are never enforced for `assign-worker` rules.
+
+#### Fleet Failure Modes (F6-F10)
+
+Phase 4 introduces 5 new failure modes to the formal register (extending TDD §12C's F1-F5):
+
+| # | Failure Mode | Cause | Detection | Recovery |
+|:--|:-------------|:------|:----------|:---------|
+| F6 | Fleet monoculture collapse | Scoring function consistently picks same worker; diversity mechanisms insufficient | `fleetMetrics.diversityScore > 0.8` | Force `epsilon_worker` to 0.20; emit `fleet:convergence_warning`; review scoring formula weights |
+| F7 | Worker capability data sparsity | Fingerprint dimensions differentiate no workers; all scores equal | All workers score within 0.01 for all fingerprints | Fall back to tier-based selection; reduce to 3 always-active dimensions; log diagnostic |
+| F8 | Probation compute amplification | Multiple simultaneous probation workers (each 20%) exceed budget | Compute cost tracking exceeds `budget.maxTokens × 1.5` | Limit to max 1 probation worker dispatched per task; queue excess probation work |
+| F9 | Worker profile DB divergence | Stats cache serves stale data after trace correction/migration | Periodic consistency check (stats vs. fresh SQL aggregate) | Invalidate cache on any trace mutation; force recompute |
+| F10 | Epsilon exploration quality degradation | Sustained exploration selects worse workers degrading overall quality | Quality trend negative over 5 Sleep Cycles during active exploration | Reduce `epsilon_worker` to floor (0.03); if trend persists, disable exploration temporarily |
+
+---
 
 #### Dependency Graph
 
 ```
-PH4.1 (Worker Profiles) ──┬── PH4.2 (Lifecycle)
-                           │
-                           ├── PH4.3 (Capability Tagging) ── PH4.4 (Capability Router)
-                           │                                        │
-                           └── PH4.5 (Fleet Evolution) ────────────┘
-                                                                    │
-                                                            PH4.6 (Cross-Project) [independent, research]
+PH4.0 (Data Seeding, ~2d) ── PH4.1 (Worker Profiles, ~4d)
+                                    │
+                                    ├── PH4.2 (Lifecycle, ~5d)
+                                    │        │
+                                    │        ├───────────────────────────────────┐
+                                    │        │                                   │
+                                    ├── PH4.3 (Fingerprinting, ~5d)             │
+                                    │        │                                   │
+                                    │        └── PH4.4 (Capability Router, ~6d) ─┤
+                                    │                      │                     │
+                                    │                      └── PH4.5 (Fleet Evolution, ~5d)
+                                    │                                            │
+                                    └──────── PH4.6 (Pattern Transfer, ~4d) ─────┘
+                                              [independent, scoped research]
 ```
 
 **Parallel streams:**
-- Stream A (critical path): PH4.1 → PH4.3 → PH4.4
-- Stream B: PH4.1 → PH4.2 (parallel with Stream A)
-- Stream C: PH4.4 + PH4.2 → PH4.5
-- Stream D: PH4.6 (independent, can start after PH4.1, may be descoped)
+- **Stream A (critical path):** PH4.0 → PH4.1 → PH4.3 → PH4.4 → PH4.5 = **~22d**
+- **Stream B:** PH4.1 → PH4.2 (parallel with PH4.3-PH4.4, not on critical path, ~5d)
+- **Stream C:** PH4.6 (independent, starts after PH4.1, can be descoped, ~4d)
+- **Merge:** PH4.5 requires PH4.2 + PH4.4
+
+**Estimated total:** ~5-6 weeks (engineering ~4 weeks with parallelism, integration + validation ~1-2 weeks)
+
+---
+
+#### Phase 4 Acceptance Criteria (Overall)
+
+| Criterion | Target | Measurement |
+|:----------|:-------|:-----------|
+| Worker differentiation | ≥ 2 workers with statistically different quality profiles for ≥ 1 task type | Wilson LB non-overlapping CIs |
+| Demotion latency | Underperforming worker demoted within 20 sessions | Measured from quality degradation onset to demotion event |
+| Quality improvement | Capability-based routing produces ≥ 5% higher avg quality than tier-based | A/B: 100 traces capability routing vs. 100 tier fallback |
+| Fleet diversity | No single worker receives > 70% of tasks | `fleetMetrics.diversityScore < 0.7` |
+| Safety invariant violations | Zero across all Phase 4 components | Audit log review |
+| Backward compatibility | Graceful degradation to Phase 3 when worker data insufficient | Data gate `fleet_routing` correctly blocks activation |
+| Pattern mining produces rules | ≥ 1 `assign-worker` rule promoted from probation within 30 Sleep Cycles | Rule store query |
+| Latency overhead | Worker selection adds < 10ms to routing path | Performance benchmark |
+| Data pipeline completeness | 100% of traces have non-null `worker_id` | SQL count check |
+| Abstention protocol | System returns ECP `type: 'unknown'` + emits `task:uncertain` when max capability < 0.3 | Integration test: verify both ECP response and bus event |
+| Abstention rate | Abstention triggers < 10% of tasks after 500+ traces (indicates capability coverage growth) | SQL: `COUNT(task:uncertain events) / total tasks` |
+| WorkerProfile→LLMProvider resolution | Every `workerId` resolves to exactly 1 `LLMProvider` instance | Startup validation: all registered profiles have valid provider mapping |
+
+---
+
+#### Phase 4 Risk Assessment
+
+| Component | Risk Type | Level | Mitigation | Fallback |
+|:----------|:----------|:-----:|:-----------|:---------|
+| PH4.0 Data Seeding | Engineering | **Low** | Register existing providers, tag traces. Simple bootstrap. | N/A — required prerequisite |
+| PH4.1 Worker Profiles | Engineering | **Low** | Follows existing store patterns (`rule-store`, `skill-store`). | In-memory only if SQLite unavailable |
+| PH4.2 Lifecycle | Engineering | **Low-Med** | State machine straightforward. Thresholds informed by Phase 3 data. | Conservative defaults: high promotion bar, slow demotion |
+| PH4.3 Fingerprinting | Eng + Research | **Medium** | If dimensions don't differentiate, 3 always-active dimensions provide baseline. | Reduce to 3 dimensions; defer framework markers |
+| PH4.4 Capability Router | Engineering | **Medium** | Core loop integration is highest-risk change. Tier-based fallback ensures safety. | Disable capability routing via data gate (zero code change) |
+| PH4.5 Fleet Evolution | Engineering | **Low-Med** | Extends existing evolution pipeline. Same probation/backtest machinery. | Disable worker-performance patterns; fleet runs on PH4.4 scoring only |
+| PH4.6 Pattern Transfer | Research | **Medium** (scoped down from High) | Abstraction layer only; no auto-transfer. Manual human-supervised. | Export/import is optional; fleet governance works without it |
+| Fleet collapse to monoculture | System | **High** | 3-layer defense: diversity floor + exploration budget + staleness penalty. I11 invariant. | Emergency re-activation of demoted workers |
+| Insufficient multi-model data | Data | **Medium** | PH4.0 seeds data via epsilon-worker (10% minimum). | Extend seeding period; delay PH4.3+ activation via data gates |
+
+---
+
+#### Configuration Schema Extension
+
+Add `phase4` namespace to `VinyanConfigSchema` (in `src/config/schema.ts`):
+
+```
+phase4:
+  worker_identity_granularity: "model" | "model+temp" | "full"  // default: "full"
+  probation_min_tasks: number           // default: 30
+  demotion_window_tasks: number         // default: 30
+  demotion_max_reentries: number        // default: 3
+  reentry_cooldown_sessions: number     // default: 50
+  epsilon_worker: number                // default: 0.10, range: [0.03, 0.30]
+  diversity_floor_pct: number           // default: 0.15, range: [0.05, 0.50]
+  max_active_workers: number            // default: 10
+  capability_min_traces: number         // default: 5
+  negative_capability_threshold: number // default: 0.6
+  staleness_penalty_per_cycle: number   // default: 0.9
+```
+
+#### Bus Events Extension
+
+New events added to `VinyanBusEvents` (in `src/core/bus.ts`):
+
+```
+// Worker lifecycle (PH4.2)
+"worker:registered": { profile: WorkerProfile }
+"worker:promoted": { workerId: string; afterTasks: number; successRate: number }
+"worker:demoted": { workerId: string; reason: string; permanent: boolean }
+"worker:reactivated": { workerId: string; previousDemotionCount: number }
+
+// Worker selection (PH4.4)
+"worker:selected": { taskId: string; workerId: string; reason: string; score: number; alternatives: number }
+"worker:exploration": { taskId: string; selectedWorkerId: string; defaultWorkerId: string }
+
+// Fleet governance (PH4.5)
+"fleet:convergence_warning": { giniScore: number; dominantWorkerId: string; allocation: number }
+"fleet:emergency_reactivation": { workerId: string; reason: string }
+"fleet:diversity_enforced": { workerId: string; boostAmount: number }
+
+// Fleet-level uncertainty — GAP-H UC-7 (PH4.4)
+"task:uncertain": { taskId: string; reason: string; maxCapability: number }
+```
+
+#### Critical Files for Implementation
+
+| File | Changes |
+|:-----|:--------|
+| `src/orchestrator/types.ts` | Add `WorkerProfile`, `WorkerConfig`, `WorkerStats`, `TaskFingerprint`, `WorkerSelectionResult`. Extend `EvolutionaryRule.action` with `"assign-worker"`. Extend `ExtractedPattern` with `type: "worker-performance"`, `workerId?`, `comparedWorkerId?`. Add `workerSelectionAudit?` to `ExecutionTrace`. |
+| `src/orchestrator/core-loop.ts` | Add worker selection step (Step 2½) INSIDE retry loop after perception assembly. Populate `trace.worker_id` and `trace.workerSelectionAudit`. Handle probation worker shadow dispatch. |
+| `src/orchestrator/worker/worker-pool.ts` | **Breaking change:** `dispatch(input, level)` → `dispatch(input, routing)`. Use `routing.workerId` to select provider via `selectById()`. Fallback to `selectForRoutingLevel()`. |
+| `src/orchestrator/llm/provider-registry.ts` | Add `selectById(workerId)` method. Resolution: `WorkerConfig.modelId` → match against `LLMProvider.id` prefix. If multiple providers share same `modelId`, disambiguate by `modelVersion`. Tier-based `selectForRoutingLevel()` becomes fallback. |
+| `src/orchestrator/factory.ts` | Auto-register existing providers as worker profiles (validate against `MODEL_ALLOWLIST_PREFIXES`). Wire `WorkerSelector` dependency. |
+| `src/orchestrator/data-gate.ts` | Add `fleet_routing` feature gate. Wire `active_workers` and `worker_trace_diversity` into `METRIC_TO_STAT` map and `DataGateStats` interface (currently unmapped — will cause `undefined >= threshold` → `false` if not wired). |
+| `src/sleep-cycle/sleep-cycle.ts` | Worker comparison analysis. Worker-performance pattern generation. Lifecycle transition checks. |
+| `src/evolution/rule-generator.ts` | Add `generateWorkerAssignmentRule()`. |
+| `src/evolution/safety-invariants.ts` | Add `"assign-worker"` branch to `checkSafetyInvariants()`. Enforce I8-I11. Without this branch, fleet invariants are silently unenforced. |
+| `src/db/rule-schema.ts` | **Update `CHECK(action IN (...))` constraint** to include `"assign-worker"`. |
+| `src/db/trace-schema.ts` | Add `idx_et_worker_id` index. Add `worker_selection_audit TEXT` and `framework_markers TEXT` columns. |
+| `src/db/pattern-schema.ts` | Add `worker_id TEXT` and `compared_worker_id TEXT` columns. |
+| `src/observability/phase3-report.ts` | Extend `EvolutionMetrics` with `fleetMetrics`. |
+| `src/config/schema.ts` | Add `phase4` config namespace with all Phase 4 parameters. |
+| `src/core/bus.ts` | Add Phase 4 bus events. |
+
+**New files to create:**
+- `src/db/worker-schema.ts` — SQLite schema for `worker_profiles`
+- `src/db/worker-store.ts` — CRUD + stats queries
+- `src/orchestrator/worker-lifecycle.ts` — state machine, promotion/demotion logic
+- `src/orchestrator/worker-selector.ts` — `WorkerSelector` with scoring, exploration, diversity
+- `src/orchestrator/task-fingerprint.ts` — fingerprint computation
+- `src/orchestrator/capability-model.ts` — per-worker capability vectors
+- `src/evolution/pattern-abstraction.ts` — pattern abstraction + `AbstractPattern` type
+- `src/cli/patterns.ts` — export/import CLI
+
+### Phase 5 — Self-Hosted ENS (DRAFT Guideline)
+
+> **Status:** Design document. Detail after Phase 4 results are in.
+> **Prerequisite:** Phase 4 complete + Phase 4 acceptance criteria met.
+> **Type:** Mixed engineering (Pillar 1, Pillar 3) and research (Pillar 2).
+
+#### Vision
+
+Phases 0-4 prove the Vinyan thesis incrementally: verification works (Phase 0), the Orchestrator drives an autonomous agent (Phase 1), pattern mining and skill formation compress experience (Phase 2-3), and empirical fleet governance selects the right worker for the right task (Phase 4). But through all these phases, Vinyan remains a **programmatic library invoked from a CLI** (`vinyan run`). It has no API server for external integration, no interactive UI for human oversight, no way for multiple instances to share knowledge, and its oracle framework is locked to TypeScript despite being transport-agnostic by design.
+
+Phase 5 is the transition from **agent** to **platform**. The Orchestrator, EventBus, World Graph, and Evolution Engine become services accessible through multiple interfaces (terminal, HTTP API, VS Code extension), coordinated across instances (peer ECP over network), and extended to new languages (polyglot oracle binaries).
+
+The key architectural insight: **every Phase 5 component is an extension of an existing Phase 0-4 abstraction, not a replacement**. The API server is a new `TaskInput.source` variant (`'api'` — already declared in `orchestrator/types.ts` but never wired). Multi-instance coordination is ECP over network instead of stdio. Cross-language oracles are `OracleConfig.command` pointing to a non-Bun binary. Phase 5 fills gaps; it does not redesign.
+
+What changes architecturally:
+
+- `TaskInput.source: 'api'` activates with an HTTP server that accepts tasks and returns results
+- `EventBus` gains a network transport layer for cross-instance event forwarding
+- `OracleConfig.command` (already in `config/schema.ts`, currently unused by runner) invokes language-specific oracle binaries
+- `VinyanDB` gains an optional `instance_id` column for provenance in multi-instance scenarios
+- MCP bridge (TDD §19, currently unimplemented) is implemented as the transport substrate for external-facing ECP
+
+```
+Phase 5 Architecture Extension:
+
+┌─────────────────────────────────────────────────────────────┐
+│               Human Interface Layer (NEW)                    │
+│   Terminal UI │ HTTP API │ VS Code Extension                 │
+└───────────────────┬──────────────────────────────────────────┘
+                    │
+┌───────────────────▼──────────────────────────────────────────┐
+│          Vinyan Orchestrator (unchanged core loop)            │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │ Perceive → Predict → Plan → Generate → Verify → Learn │    │
+│  └──────────────────────────────────────────────────────┘    │
+│                                                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐  │
+│  │ Polyglot     │  │ Instance     │  │ ECP Network        │  │
+│  │ Oracle       │  │ Coordinator  │  │ Transport          │  │
+│  │ Framework    │  │ (Pillar 2)   │  │ (Pillar 2)         │  │
+│  │ (Pillar 3)   │  │              │  │                    │  │
+│  └──────────────┘  └──────────────┘  └────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### Axiom Compliance
+
+| Axiom | Phase 5 Relevance |
+|:------|:-----------------|
+| A1 (Epistemic Separation) | Multi-instance coordination enforces A1 at fleet level: Instance A generates, Instance B verifies. Cross-instance oracle invocation prevents self-evaluation across domain boundaries. |
+| A2 (First-Class Uncertainty) | Network transport introduces new uncertainty sources (latency, partition, stale data). ECP's `type: 'unknown'` and `temporal_context` become operationally critical. |
+| A3 (Deterministic Governance) | API server and VS Code extension are thin input adapters — all routing, verification, and commit decisions remain in the rule-based Orchestrator. No UI-driven governance bypass. |
+| A4 (Content-Addressed Truth) | Cross-instance fact sharing requires project-scoped content hashes. World Graph gains `instance_id` provenance without changing the hash-invalidation model. |
+| A5 (Tiered Trust) | Remote oracle verdicts from peer instances carry lower trust than local deterministic oracles. The tiered registry naturally handles this via confidence scoring. |
+| A6 (Zero-Trust Execution) | API server tasks have the same zero-trust constraints as CLI tasks. No API endpoint can bypass oracle verification. |
+| A7 (Prediction Error as Learning) | Cross-instance trace sharing enables richer prediction error signals. Instance A's experience calibrates Instance B's Self-Model for shared task fingerprints. |
+
+#### Phase 5 Readiness Gate
+
+| Gate | Threshold | Source |
+|:-----|:----------|:-------|
+| Phase 4 acceptance criteria met | All criteria | Phase 4 validation |
+| Worker differentiation proven | ≥ 2 workers with statistically different profiles | Wilson LB comparison |
+| Pattern abstraction functional | ≥ 5 patterns successfully abstracted (PH4.6) | PatternStore query |
+| Total traces | ≥ 2000 | TraceStore.count() |
+| Sleep cycles completed | ≥ 30 | PatternStore.countCycleRuns() |
+
+---
+
+#### Pillar 1: Standalone System
+
+> **Goal:** Vinyan operates as a fully independent platform with no external framework dependency. Multiple human interfaces (terminal, API, editor) converge on the same Orchestrator core.
+
+##### PH5.1 — API Server `[L]`
+
+**Purpose:** Provide an HTTP API that accepts tasks, streams progress, and returns results. This is the foundational service layer that all other interfaces (VS Code extension, web dashboard, CI/CD integration, multi-instance coordination) depend on.
+
+**Key concepts to design:**
+
+- **Task lifecycle over HTTP.** The existing `executeTask()` returns a `Promise<TaskResult>` — synchronous for the caller. The API server needs: (1) synchronous task execution (POST, wait for result), (2) async task submission (POST, get task ID, poll or subscribe for result), (3) progress streaming (SSE or WebSocket for bus events during execution).
+- **EventBus projection.** The audit listener (`src/bus/audit-listener.ts`) already serializes every bus event as `{ ts, event, payload }` JSONL. The API server should project this same stream over SSE/WebSocket per-task, filtered by `taskId`. Reuses the existing event architecture.
+- **Authentication and authorization.** Since Vinyan runs locally (same machine as workspace), the default can be simple (bearer token, local-only binding). Production deployments need more. The auth model should be extensible without changing the Orchestrator.
+- **Session management.** `TaskInput.source` already includes `'api'`. The API server should maintain a session concept (grouping multiple tasks with shared Working Memory state) that maps to existing session handling.
+- **Health and metrics endpoints.** Expose `HealthCheck` and `SystemMetrics` (from `src/observability/`) via HTTP. Read-only status endpoints.
+
+**Dependencies:** Phase 1 (Orchestrator core loop), Phase 2 (EventBus with all event types)
+
+**Open questions:**
+- HTTP framework choice (Bun's built-in `Bun.serve()` vs. lightweight framework like Hono)
+- WebSocket vs SSE for event streaming — tradeoffs in reconnection handling
+- Whether session state is persisted (SQLite) or in-memory only
+- API versioning strategy (URL prefix vs. header)
+- Rate limiting approach for multi-tenant deployments
+
+##### PH5.2 — Terminal UI `[M]`
+
+**Purpose:** Replace the minimal `vinyan run` CLI with an interactive terminal interface that provides real-time visibility into Orchestrator state, bus events, worker progress, and verification results. The developer's primary window into what Vinyan is doing and why.
+
+**Key concepts to design:**
+
+- **Bus event rendering.** The terminal UI subscribes to the EventBus and renders 27+ event types in real time: task lifecycle (progress bar), worker dispatch/complete (status line), oracle verdicts (pass/fail indicators), escalation (warning), evolution (rule promotion/retirement). Read-only projection of existing bus events.
+- **Observability dashboard.** Render `SystemMetrics` (traces, rules, skills, patterns, shadow queue, data gates) and `EvolutionMetrics` in structured panel layout. Include fleet metrics from Phase 4 (worker utilization, diversity score, capability coverage).
+- **Interactive commands.** Support commands within the TUI: submit new task, cancel running task, inspect trace, view worker profiles, trigger sleep cycle, export patterns.
+- **JSONL transcript replay.** Replay audit JSONL files for debugging — render historical events in the same format as live events.
+
+**Dependencies:** PH5.1 (API Server — shares session and task management), Phase 2+ (EventBus events)
+
+**Open questions:**
+- TUI framework choice (Ink/React for terminal vs. raw ANSI escape codes vs. blessed-like library)
+- Whether TUI runs as a separate process connecting to the API server, or in-process with the Orchestrator
+- Level of interactivity (read-only dashboard vs. full interactive task management)
+- Layout design (panels, tabs, or scrolling log)
+
+##### PH5.3 — VS Code Extension `[L]`
+
+**Purpose:** Integrate Vinyan directly into the developer's editor. Contextual integration (file-aware task submission, inline oracle verdicts, diagnostic overlays) reduces friction to near-zero.
+
+**Key concepts to design:**
+
+- **API client architecture.** The extension communicates with the Vinyan API server (PH5.1) via HTTP/WebSocket. It is a thin client — no Orchestrator logic, no oracle execution, no SQLite access. This enforces A6 (the extension proposes; the Orchestrator disposes).
+- **Contextual task submission.** The extension knows the current file, cursor position, selection, and active diagnostics. It constructs `TaskInput` with pre-populated `targetFiles` and contextual `constraints` from editor state.
+- **Oracle verdict overlay.** After verification, display oracle verdicts as editor decorations (inline annotations, gutter icons, diagnostic markers). Map `OracleVerdict.evidence` (file + line + snippet) to VS Code `Diagnostic` positions.
+- **World Graph integration.** Show verified facts for the current file in a sidebar panel. Highlight stale facts (file modified since last verification). Makes A4 (content-addressed truth) tangible to the developer.
+- **Event stream panel.** Render the same bus event stream as the Terminal UI (PH5.2) in a VS Code output channel or webview panel.
+
+**Dependencies:** PH5.1 (API Server — the extension is a pure client)
+
+**Open questions:**
+- VS Code extension API version target and minimum VS Code version
+- Whether to use webview panels (rich HTML) or native VS Code tree views for the sidebar
+- Whether the extension bundles a Vinyan server (auto-start) or requires an external running instance
+- Language Server Protocol (LSP) integration — whether to implement Vinyan as a language server for deeper editor integration
+- Marketplace publication strategy (public vs. internal)
+
+##### PH5.4 — MCP External Interface Implementation `[M]`
+
+**Purpose:** Implement the MCP Client Bridge and MCP Server specified in TDD §19 but never built. Enables Vinyan to consume external MCP tools (GitHub, databases, etc.) and expose its oracles to other agents (Claude Code, other Vinyan instances, any MCP-compatible client).
+
+**Key concepts to design:**
+
+- **MCPClientBridge implementation.** Follow the interface defined in TDD §19.1. Bridge connects to external MCP servers (stdio or HTTP transport), discovers tools, executes tools, wraps results in ECP responses with confidence levels based on `MCPServerConfig.trustLevel`.
+- **MCPServer implementation.** Expose the 4 oracle tools defined in TDD §19.2 (`vinyan_ast_verify`, `vinyan_type_check`, `vinyan_blast_radius`, `vinyan_query_facts`) as an MCP server. Lets external agents invoke Vinyan's verification capabilities.
+- **ECP-to-MCP translation.** Implement the bidirectional translation table from TDD §19.3. The protocol bridge that preserves epistemic semantics across the MCP boundary.
+
+**Dependencies:** Phase 0 (oracle framework), Phase 1 (tool execution layer)
+
+**Open questions:**
+- MCP SDK choice (@modelcontextprotocol/sdk or custom implementation)
+- Server lifecycle management (auto-start/stop for stdio servers, connection pooling for HTTP)
+- Trust level calibration method (static config vs. empirical track record)
+- Whether MCP server exposes additional tools beyond the 4 defined in TDD (e.g., pattern query, skill lookup)
+
+---
+
+#### Pillar 2: Multi-Instance Coordination
+
+> **Goal:** Multiple Vinyan instances communicate as peer Reasoning Engines via ECP over network boundaries. Each instance can specialize in a domain (frontend, backend, infrastructure) while sharing verified knowledge and coordinating on cross-domain tasks.
+
+##### PH5.5 — ECP Network Transport `[L]`
+
+**Purpose:** Extend the Epistemic Communication Protocol from stdio (local process) to network boundaries. The substrate that enables multi-instance coordination. Must preserve ECP's epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol (MCP, A2A, HTTP/JSON-RPC) does this natively.
+
+**Key concepts to design:**
+
+- **Transport abstraction.** Currently, ECP uses stdin/stdout JSON. Phase 5 needs a transport abstraction supporting: (1) local stdio (existing), (2) network (new). The Orchestrator should be transport-agnostic — it sends/receives ECP messages regardless of whether the peer is a local child process or a remote instance.
+- **Network transport requirements.** Bidirectional, low-latency, supports streaming (for long-running oracle verification), reconnection-resilient. The transport carries `ECPResponse` payloads with full epistemic metadata.
+- **Instance discovery.** Peer instances need to find each other. Options range from simple static configuration (known instance addresses) to dynamic discovery (multicast, registry service, `.well-known/vinyan.json` à la A2A's Agent Card pattern). Discovery declares each instance's capabilities (which oracles, which languages, domain specialization).
+- **Instance capability declaration.** Each instance advertises: oracle set + language coverage, domain specialization tags, current health status, capacity (available worker slots). Maps naturally to existing `OracleConfig` registry — just made discoverable over the network.
+- **Temporal context enforcement.** Over a network, evidence ages. The `temporal_context` ECP extension becomes mandatory for all cross-instance messages. The receiving Orchestrator must check `valid_until` before trusting remote evidence.
+
+**Dependencies:** PH5.1 (API Server — shares HTTP/WebSocket infrastructure), PH5.4 (MCP bridge — shares transport patterns)
+
+**Open questions:**
+- Wire protocol choice (WebSocket, gRPC, HTTP/2 SSE, raw TCP with length-prefix framing)
+- Serialization format (JSON vs. MessagePack vs. Protocol Buffers) — tradeoffs in human readability vs. efficiency
+- Discovery mechanism (static config, mDNS, registry service, `.well-known`)
+- TLS/mTLS for cross-instance authentication
+- Message ordering guarantees (FIFO per-instance or causal ordering)
+
+##### PH5.6 — Instance Coordinator `[XL]` (Research)
+
+**Purpose:** Enable multiple Vinyan instances to act as a coordinated ensemble while preserving A3 (no LLM in governance decisions between instances). The most architecturally significant Phase 5 component — transforms Vinyan from a single-instance agent into a distributed epistemic system.
+
+**Key concepts to design:**
+
+- **Coordination topology.** Instances are peers, not master-worker. There is no "super-orchestrator" — each instance's Orchestrator remains sovereign over its own workspace. Coordination is advisory (shared knowledge, optional delegation) not mandatory. Preserves A3 at the inter-instance level.
+- **Task delegation protocol.** An instance encountering a task outside its domain specialization can delegate to a peer via ECP. The delegating instance's Orchestrator remains responsible for final verification (A6 — zero-trust delegation). The delegation message carries the full `TaskInput` plus the delegating instance's `PerceptualHierarchy`.
+- **Cross-instance verification.** Highest-value coordination pattern: Instance A sends a `HypothesisTuple` to Instance B for verification by an oracle that Instance A does not have (e.g., Instance A is TypeScript-focused, Instance B has the Python type oracle). Remote `OracleVerdict` is received with confidence reduced by a network penalty factor and `temporal_context` enforced. Natural extension of the oracle runner — instead of `Bun.spawn()`, the runner sends the hypothesis over ECP network transport to a remote instance.
+- **Shared knowledge bus.** A subset of EventBus events forwarded to peer instances for shared learning. Candidate events: `sleep:cycleComplete` (share pattern discoveries), `evolution:rulePromoted` (share effective rules), `skill:outcome` (share skill effectiveness). NOT all events — `worker:dispatch` and `trace:record` are local. Forwarding filter is configurable.
+- **Conflict resolution across instances.** When two instances produce contradictory verdicts for the same hypothesis, the existing 5-step contradiction resolution (concept §3.2) applies, with an additional step: domain authority. The instance whose oracle specialization covers the hypothesis domain has higher authority. Deterministic rule, not LLM arbitration (A3).
+- **Data sovereignty.** Each instance owns its own `VinyanDB`. Cross-instance data sharing is opt-in. Shared data (rules, patterns, skills) enters the receiving instance with `status: 'probation'` and reduced confidence — identical to PH4.6 pattern import but automated via the coordination protocol.
+
+**Dependencies:** PH5.5 (ECP Network Transport), PH5.1 (API Server), Phase 4 (worker profiles, capability-based routing — extends to instance-level capability routing)
+
+**Open questions:**
+- Maximum number of peer instances per coordination group
+- Whether delegation is "fire and forget" or requires the delegating instance to block until completion
+- How instance specialization is declared (manual config vs. inferred from oracle registry + trace history)
+- Conflict resolution tie-breaking when instances have equivalent domain authority
+- Whether cross-instance traces count toward local data gates (e.g., does a delegated task's trace count toward local Phase 4 metrics?)
+- Consensus mechanism for shared rule promotion (does a rule need to prove effective on multiple instances before cross-promotion?)
+
+##### PH5.7 — Cross-Instance Knowledge Sharing `[M]` (Research)
+
+**Purpose:** Enable instances to share learned knowledge (rules, patterns, skills, Self-Model parameters) while maintaining epistemic integrity. The distributed extension of PH4.6's pattern abstraction — automated rather than manual, continuous rather than one-shot.
+
+**Key concepts to design:**
+
+- **Knowledge export protocol.** Each instance periodically (during Sleep Cycle) identifies knowledge candidates for sharing: rules with effectiveness > threshold, skills with high success rate, patterns with broad applicability (low project-specificity score from PH4.6 abstraction). Export uses the `AbstractPattern` format from PH4.6.
+- **Knowledge import pipeline.** Incoming shared knowledge enters the local instance's probation pipeline. Confidence is reduced (PH4.6 uses 50% reduction). The local backtester validates against local traces before promotion. Shared knowledge must prove itself locally before influencing governance.
+- **Self-Model parameter sharing.** The most valuable cross-instance signal: prediction parameters for task fingerprints. If Instance A has calibrated Self-Model parameters for "React refactoring" tasks over 500 traces, Instance B (newly encountering React tasks) can import those parameters as a warm start instead of cold-starting from static heuristics. Import enters as `basis: 'hybrid'` until local traces corroborate.
+- **Provenance chain.** Every piece of shared knowledge carries a full provenance chain: originating instance ID, original pattern/rule/skill IDs, transformation history (abstraction, confidence reduction), receiving instance ID, local probation status. Enables audit and rollback if shared knowledge proves harmful.
+
+**Dependencies:** PH5.5 (ECP Network Transport), PH5.6 (Instance Coordinator), Phase 4 (PH4.6 pattern abstraction)
+
+**Open questions:**
+- Frequency of knowledge export (every Sleep Cycle, or demand-driven by peer requests?)
+- Push model (instance broadcasts discoveries) vs. pull model (instance requests knowledge for specific task fingerprints)
+- How to handle divergence (Instance A's rule promotes while the same rule retires on Instance B)
+- Privacy boundaries — can instances opt out of specific knowledge categories (e.g., share patterns but not Self-Model parameters)?
+- Data volume management — how to prevent knowledge accumulation from overwhelming local probation pipelines
+
+---
+
+#### Pillar 3: Cross-Language Support
+
+> **Goal:** Extend Vinyan's oracle framework from TypeScript-only to Python, Go, and Rust. The oracle runner is already language-agnostic by design (stdin/stdout JSON); only the oracle implementations are language-specific.
+
+##### PH5.8 — Polyglot Oracle Framework `[M]`
+
+**Purpose:** Formalize the oracle runner's language-agnostic design so that adding a new language oracle is a well-documented, repeatable process. The runner (`src/oracle/runner.ts`) currently spawns `Bun.spawn(["bun", "run", oraclePath])` — hardcodes Bun as the oracle runtime. The `OracleConfig.command` field exists in `config/schema.ts` but is not consumed by the runner. Making the runner use `config.command` (when present) unlocks polyglot oracles.
+
+**Key concepts to design:**
+
+- **Oracle runner generalization.** When `OracleConfig.command` is present, use that command instead of `bun run`. For example: `{ command: "python -m vinyan_pyright_oracle" }` or `{ command: "vinyan-go-oracle" }`. The runner's contract is unchanged: write `HypothesisTuple` JSON to stdin, read `OracleVerdict` JSON from stdout.
+- **Oracle implementation contract.** Formalize the "oracle binary" contract as documentation: (1) read JSON from stdin matching `HypothesisTupleSchema`, (2) write JSON to stdout matching `OracleVerdictSchema`, (3) exit with code 0 on success or non-zero on crash. This contract is already implicit; making it explicit enables third-party oracle development.
+- **Language detection.** The Orchestrator needs to know which language a project uses to route hypotheses to the correct oracle. Options: (1) file extension mapping, (2) config-declared language per project, (3) auto-detection from project files (package.json = TypeScript, pyproject.toml = Python, go.mod = Go, Cargo.toml = Rust).
+- **Oracle configuration per language.** Extend `vinyan.json` to support language-keyed oracle configuration. `oracles.type.languages: ["typescript"]` already exists in the schema; generalize to `oracles.type_python: { command: "pyright-oracle", languages: ["python"], tier: "deterministic" }`.
+- **Shared oracle infrastructure.** All language-specific oracles share: circuit breaker (`src/oracle/circuit-breaker.ts`), timeout handling (existing in runner), Zod validation (existing schemas). No per-language infrastructure changes needed.
+
+**Dependencies:** Phase 0 (oracle framework, runner, circuit breaker)
+
+**Open questions:**
+- Whether language detection is automatic or config-only
+- Oracle distribution format (standalone binary, pip package, npm package, Docker image)
+- How to handle multi-language projects (e.g., TypeScript frontend + Python backend) — parallel oracle invocation?
+- Whether oracle binaries are bundled with Vinyan or installed separately
+- Performance benchmarks per language oracle (P99 latency targets)
+
+##### PH5.9 — Python Oracle (Pyright) `[M]`
+
+**Purpose:** Implement a Python-specific oracle that verifies type correctness, symbol existence, and import relationships using Pyright. The first non-TypeScript oracle, proving the polyglot framework works.
+
+**Key concepts to design:**
+
+- **Oracle scope.** Mirror the existing TypeScript type oracle's capabilities for Python: (1) type checking (`pyright --outputjson`), (2) symbol existence verification, (3) import validation. Map Pyright JSON output to `OracleVerdict` format.
+- **Pyright integration.** CLI mode (`pyright --outputjson`) is simpler and matches the existing subprocess model. The oracle binary reads `HypothesisTuple` from stdin, invokes `pyright` on the workspace, filters results to the target file/symbol, produces an `OracleVerdict`.
+- **Python-specific `HypothesisTuple` patterns.** Define the `pattern` vocabulary for Python: `"function-signature"`, `"import-exists"`, `"type-check"`, `"class-inherits"`, etc. Parallel to TypeScript oracle's patterns but account for Python-specific constructs (decorators, metaclasses, dynamic attributes).
+- **Virtual environment handling.** The oracle needs to respect the project's Python interpreter and type stubs, typically configured via `pyrightconfig.json` or `pyproject.toml`.
+
+**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+
+**Open questions:**
+- Whether to implement the oracle binary in Python (natural) or TypeScript (consistent with codebase)
+- Pyright version pinning strategy
+- How to handle Python projects without type annotations (strict vs. basic mode)
+- Whether to include a Python AST oracle (using Python's `ast` module) in addition to Pyright
+
+##### PH5.10 — Go Oracle (gopls) `[M]`
+
+**Purpose:** Implement a Go-specific oracle using gopls (the official Go language server) for type checking, symbol resolution, and import verification.
+
+**Key concepts to design:**
+
+- **Oracle scope.** Go type checking (`go vet`, `go build` dry run), symbol existence, import validation, interface satisfaction checking. Go's strict type system makes it well-suited for deterministic verification.
+- **gopls integration.** The oracle can either: (1) invoke `go vet` / `go build` as a CLI (simpler, matches subprocess model), or (2) communicate with gopls via LSP (richer diagnostics). Implementor should evaluate both.
+- **Go-specific patterns.** Interface satisfaction (`does type X implement interface Y?`), goroutine safety (race detector), module dependency resolution (`go mod tidy` validation).
+
+**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+
+**Open questions:**
+- CLI (`go vet` + `go build`) vs. LSP (gopls) approach
+- Whether to implement the oracle binary in Go (natural, single binary, fast startup) or TypeScript
+- Go module proxy and dependency caching considerations
+- Race detector integration (deterministic or heuristic tier?)
+
+##### PH5.11 — Rust Oracle (rust-analyzer) `[M]`
+
+**Purpose:** Implement a Rust-specific oracle using rust-analyzer for type checking, borrow checker verification, and trait implementation validation.
+
+**Key concepts to design:**
+
+- **Oracle scope.** Rust compilation check (`cargo check --message-format=json`), borrow checker verification, trait implementation validation, lifetime correctness. Rust's compiler output is structured JSON — ideal for oracle verdict extraction.
+- **Cargo integration.** The oracle invokes `cargo check` with JSON output, parses diagnostics, maps to `OracleVerdict` format. Cargo's incremental compilation makes repeated checks fast.
+- **Rust-specific patterns.** Borrow checker errors, lifetime mismatches, trait bound failures, unsafe block auditing. Rust-unique verification capabilities that no other language oracle provides.
+
+**Dependencies:** PH5.8 (Polyglot Oracle Framework)
+
+**Open questions:**
+- `cargo check` (simple, fast) vs. rust-analyzer LSP (richer diagnostics) approach
+- Whether to implement the oracle binary in Rust (natural, zero-dependency) or TypeScript
+- How to handle Rust edition differences and feature flags
+- Whether to expose unsafe block detection as a separate oracle or integrated into the type oracle
+
+---
+
+#### Cross-Cutting Concerns
+
+##### PH5.12 — Security Model `[M]`
+
+**Purpose:** Define the security model for the API server (PH5.1), multi-instance communication (PH5.5-5.6), and remote oracle invocation (PH5.8). Vinyan moves from a local-only CLI tool to a networked service — fundamentally changes the threat model.
+
+**Key concepts to design:**
+
+- **API authentication.** For local-only use: simple bearer token (generated on first run, stored in `~/.vinyan/api-token`). For multi-instance use: mTLS (mutual TLS) for instance-to-instance communication.
+- **Instance identity.** Each Vinyan instance has a unique identity (generated keypair) used for signing cross-instance messages. Enables provenance verification — "this verdict was produced by Instance X" is cryptographically verifiable.
+- **Trust bootstrapping.** New instances start as untrusted. Trust is earned through the same empirical mechanism as worker profiles (Phase 4): the receiving instance tracks the remote instance's verdict accuracy over time. Wilson lower bound on remote verdict accuracy determines the remote instance's effective trust tier.
+- **Authorization scoping.** API endpoints and cross-instance operations need granular permission controls: read-only access (query facts, view metrics), task submission access, admin access (configuration, instance management). Extensible permission model.
+- **Existing guardrails extension.** The existing `src/guardrails/` (injection detection, bypass detection) applies to API inputs with the same rigor as CLI inputs.
+
+**Dependencies:** PH5.1 (API Server), PH5.5 (Network Transport)
+
+**Open questions:**
+- Token format (JWT, opaque, API key)
+- Key management for mTLS (automated via ACME or manual)
+- Whether to support OAuth2 for enterprise integration
+- Audit logging format for security events
+
+##### PH5.13 — Observability Extension `[S]`
+
+**Purpose:** Extend the existing observability infrastructure (health checks, system metrics, event bus) for the multi-interface, multi-instance Phase 5 context.
+
+**Key concepts to design:**
+
+- **Distributed tracing.** When a task spans multiple instances (delegated verification, cross-instance oracle invocation), trace IDs must propagate across instance boundaries. Extend `ExecutionTrace` with `parentInstanceId` and `delegatedFrom` fields.
+- **Fleet-level metrics.** Aggregate metrics across instances: total fleet throughput, per-instance health, cross-instance delegation success rate, shared knowledge adoption rate. Computed from Instance Coordinator (PH5.6) data.
+- **API metrics.** Request rate, latency distribution, error rate for the API server.
+- **Alert thresholds.** Define alert conditions: instance unreachable, cross-instance latency > threshold, delegation failure rate > threshold, shared knowledge rejection rate > threshold.
+
+**Dependencies:** PH5.1 (API Server), PH5.6 (Instance Coordinator), Phase 3 (PH3.7 Evaluation Framework)
+
+**Open questions:**
+- OpenTelemetry integration (structured tracing standard) or custom format
+- Metrics export format (Prometheus, JSON, or both)
+- Alert delivery mechanism (webhook, bus event, log)
+
+##### PH5.14 — Data Migration & Backward Compatibility `[S]`
+
+**Purpose:** Ensure existing Phase 0-4 installations can upgrade to Phase 5 without data loss or behavioral changes. Phase 5 adds new columns, new tables, and new configuration — all must be backward-compatible.
+
+**Key concepts to design:**
+
+- **SQLite schema migration.** `VinyanDB` constructor currently runs `CREATE TABLE IF NOT EXISTS`. Phase 5 adds new columns to existing tables (`execution_traces.parent_instance_id`, `execution_traces.delegated_from`) and new tables (instance registry, cross-instance knowledge). Migrations must be additive (no column removal, no type changes).
+- **Configuration migration.** `vinyan.json` gains a `phase5` namespace. Existing configs without `phase5` work unchanged. New config fields have sensible defaults.
+- **Feature activation via data gates.** Phase 5 features activate through the existing `DataGate` mechanism. Multi-instance features require `instance_registry.count >= 2`. Cross-language oracles require `oracle_config[language].enabled = true`. No feature activates silently.
+- **API server opt-in.** The API server is not started by default. Activates when `phase5.api.enabled = true` in config. CLI-only operation remains the default.
+
+**Dependencies:** Phase 0-4 (all existing infrastructure)
+
+**Open questions:**
+- Migration strategy (in-place ALTER TABLE vs. copy-and-swap)
+- Whether to support downgrade (Phase 5 → Phase 4 rollback)
+- Schema versioning approach (version number in config vs. migration table)
+
+---
+
+#### Safety Invariants — Phase 5 Extensions
+
+The 7 existing immutable invariants (I1-I7) plus 4 Phase 4 fleet invariants (I8-I11) remain unchanged. Phase 5 adds:
+
+| # | Invariant | Enforcement |
+|:--|:----------|:-----------|
+| I12 | **No remote governance bypass.** No cross-instance message can bypass local oracle verification. A remote instance cannot instruct the local Orchestrator to skip verification, commit without checking, or override safety invariants. | `InstanceCoordinator` message validation |
+| I13 | **Remote verdict confidence ceiling.** Remote oracle verdicts always carry confidence < 0.95, regardless of the remote oracle's declared confidence. Only local deterministic oracles can produce confidence ≥ 0.95. | ECP Network Transport confidence adjustment |
+| I14 | **Cross-instance knowledge enters probation.** Shared rules, patterns, and skills always start at `status: 'probation'` regardless of their status on the source instance. No shortcut to `active` via cross-instance sharing. | Knowledge import pipeline |
+| I15 | **API authentication mandatory for mutations.** Read-only API endpoints (health, metrics, fact queries) may operate without authentication. Any endpoint that creates tasks, modifies configuration, or triggers actions requires authentication. | API server middleware |
+
+#### Dependency Graph
+
+```
+PH5.1 (API Server) ─────────┬── PH5.2 (Terminal UI)
+                              │
+                              ├── PH5.3 (VS Code Extension)
+                              │
+                              ├── PH5.4 (MCP Bridge)
+                              │
+                              └── PH5.5 (ECP Network Transport)
+                                          │
+                                          ├── PH5.6 (Instance Coordinator)
+                                          │        │
+                                          │        └── PH5.7 (Knowledge Sharing)
+                                          │
+                                          └── PH5.12 (Security Model)
+
+PH5.8 (Polyglot Framework) ─┬── PH5.9 (Python/Pyright)
+                              ├── PH5.10 (Go/gopls)
+                              └── PH5.11 (Rust/rust-analyzer)
+
+PH5.13 (Observability Extension) — parallel with any component
+PH5.14 (Data Migration) — prerequisite for deployment, parallel with dev
+```
+
+**Parallel streams:**
+- **Stream A (critical path — Standalone):** PH5.1 → PH5.3
+- **Stream B (Multi-Instance):** PH5.1 → PH5.5 → PH5.6 → PH5.7 (longest path)
+- **Stream C (Cross-Language):** PH5.8 → PH5.9 + PH5.10 + PH5.11 (parallel, fully independent)
+- **Stream D (UI):** PH5.1 → PH5.2 (parallel with Stream A/B)
 
 #### Data Prerequisites
 
-Phase 4 decisions are only as good as the trace data they consume. Before starting:
+Phase 5 multi-instance features are only valuable with sufficient single-instance maturity:
 
 | Prerequisite | Minimum | Ideal | Source |
 |:-------------|:--------|:------|:-------|
-| Total execution traces | 500 | 1000+ | Phase 3 burn-in + validation |
-| Distinct task type signatures | 10 | 20+ | PH3.1 improved signatures |
-| Traces with >1 distinct `model_used` | 100 | 300+ | Need multi-model data for worker comparison |
-| Active evolution rules | 3 | 10+ | PH3.3 promotion pipeline |
-| Self-Model per-type accuracy >75% | 5 task types | 10+ | PH3.2 adaptive EMA |
-| Sleep cycles completed | 10 | 25+ | PH3.5 pattern mining maturity |
+| Total execution traces | 2000 | 5000+ | TraceStore.count() |
+| Distinct task type signatures | 20 | 40+ | PH3.1 improved signatures |
+| Active evolution rules | 10 | 25+ | RuleStore.countActive() |
+| Worker profiles with distinct stats | 3 | 5+ | Phase 4 WorkerProfileStore |
+| Patterns successfully abstracted | 5 | 15+ | PH4.6 AbstractPattern count |
+| Sleep cycles completed | 30 | 50+ | PatternStore.countCycleRuns() |
+| Self-Model accuracy >80% | 10 task types | 15+ | PH3.2 adaptive EMA |
 
-**Critical gap:** Current system uses a single model per tier. Phase 4 needs traces from *multiple worker configurations per routing level* to compare. Phase 3 validation (PH3.8) should deliberately run with 2-3 model configs to seed this data.
+**Critical gap:** Single-instance must be production-proven before multi-instance coordination adds value. Pillar 1 (Standalone) and Pillar 3 (Cross-Language) can proceed independently of this data requirement.
+
+#### Phase 5 Acceptance Criteria
+
+| Criterion | Target | Measurement |
+|:----------|:-------|:-----------|
+| API server operational | Tasks submitted via HTTP produce identical results to CLI | Comparison test: same 50 tasks via CLI vs API |
+| Terminal UI renders all event types | All 27+ bus event types rendered without crash | Manual review during 100-task run |
+| VS Code extension functional | Task submission, verdict overlay, fact display working | Extension integration test suite |
+| MCP bridge bidirectional | Vinyan consumes external MCP tool AND exposes oracles to external client | Integration test with reference MCP server/client |
+| Cross-instance delegation | Instance A delegates task to Instance B, receives verified result | End-to-end test with 2 instances |
+| Cross-instance knowledge sharing | Rule promoted on Instance A enters probation on Instance B | Automated test across instance boundary |
+| Python oracle verification | Pyright-based oracle catches type errors in Python code | 30 Python hypothesis test cases |
+| Go oracle verification | Go oracle catches type/import errors | 30 Go hypothesis test cases |
+| Rust oracle verification | Rust oracle catches borrow/type errors | 30 Rust hypothesis test cases |
+| Security: no unauthenticated mutations | API mutation endpoints reject unauthenticated requests | Security test suite |
+| Backward compatibility | Phase 4 installation upgrades to Phase 5 with zero data loss | Migration test on existing `.vinyan/vinyan.db` |
+| Safety invariant violations | Zero across all Phase 5 components | Audit log review |
 
 #### Key Design Decisions (Open)
 
-1. **Worker identity granularity.** Is `(modelId, temperature)` sufficient, or does `(modelId, temperature, systemPromptVariant, toolAllowlist)` define a distinct worker?
-2. **Routing integration point.** Options: (a) extend `RoutingDecision` with `workerId`, (b) add `workerSelector` dependency between risk router and worker pool, (c) make worker selection internal to `WorkerPoolImpl`.
-3. **Probation compute budget.** Probation workers run in shadow mode. Explore: run on random subset (e.g., 20%) rather than all tasks to limit cost.
-4. **Capability vector representation.** Dense (one score per dimension per worker) vs sparse (only store dimensions with sufficient data).
-5. **Fleet size governance.** Cap on active worker configurations? Dynamic cap tied to trace volume.
-6. **Backward compatibility.** Must degrade gracefully to Phase 3 tier-based behavior when worker data is insufficient.
+1. **API framework.** Bun.serve() (zero-dependency) vs. Hono (routing + middleware). Affects PH5.1.
+2. **ECP network wire format.** JSON-RPC 2.0 + epistemic headers vs. custom binary protocol. Affects PH5.5.
+3. **Instance discovery.** Static config (simple, requires manual setup) vs. dynamic discovery (complex, zero-config). Affects PH5.5-5.6.
+4. **Oracle binary language.** Each language oracle implemented in its own language (natural, diverse toolchain) vs. all in TypeScript (consistent, single toolchain). Affects PH5.9-5.11.
+5. **VS Code extension bundling.** Standalone (requires running server) vs. self-contained (bundles server, auto-starts). Affects PH5.3.
+6. **Multi-instance topology.** Flat peer mesh vs. hierarchical (domain coordinators). Affects PH5.6.
+7. **Knowledge sharing model.** Push (broadcast) vs. pull (request) vs. hybrid. Affects PH5.7.
+
+#### Configuration Schema Extension
+
+Add `phase5` namespace to `VinyanConfigSchema` (in `src/config/schema.ts`):
+
+```
+phase5:
+  api:
+    enabled: boolean              // default: false
+    port: number                  // default: 3927
+    bind_address: string          // default: "127.0.0.1" (local only)
+    auth_required: boolean        // default: true for mutation endpoints
+
+  instances:
+    enabled: boolean              // default: false
+    instance_id: string           // auto-generated UUID on first run
+    peers: Array<{
+      url: string
+      trust_level: string         // "untrusted" | "semi-trusted" | "trusted"
+    }>
+    knowledge_sharing: boolean    // default: false
+    delegation_enabled: boolean   // default: false
+
+  polyglot:
+    language_detection: string    // "auto" | "config"
+    enabled_languages: string[]   // default: ["typescript"]
+```
+
+#### Bus Events Extension
+
+New events added to `VinyanBusEvents`:
+
+```
+// API server (PH5.1)
+"api:request"              — { method, path, taskId? }
+"api:response"             — { taskId, status, duration_ms }
+
+// Instance coordination (PH5.6)
+"instance:connected"       — { peerId, capabilities[] }
+"instance:disconnected"    — { peerId, reason }
+"instance:delegated"       — { taskId, toPeerId, reason }
+"instance:delegation_complete" — { taskId, fromPeerId, success }
+
+// Knowledge sharing (PH5.7)
+"knowledge:exported"       — { type, count, toPeerId }
+"knowledge:imported"       — { type, count, fromPeerId }
+"knowledge:rejected"       — { type, fromPeerId, reason }
+
+// Polyglot (PH5.8-5.11)
+"oracle:language_detected" — { file, language }
+"oracle:remote_invoked"    — { oracleName, peerId, duration_ms }
+```
+
+#### Gap Closure Analysis
+
+| Gap | Status | How |
+|:----|:-------|:----|
+| GAP-1 (No Channel/Integration Layer) | **Fully addressed** | API server (HTTP), VS Code extension (editor), Terminal UI (interactive CLI). External channels (Slack, Matrix) achievable via API server. |
+| GAP-2 (No Concrete Tool Protocol) | **Fully addressed** | PH5.4 implements MCP bridge (TDD §19). Vinyan becomes both MCP client + server. |
+| GAP-3 (No Session Management) | **Partially addressed** | API server introduces session concepts. Full transcript/compaction is a Phase 5 extension. |
+| GAP-5 (No Observability/Debugging UI) | **Fully addressed** | Terminal UI, VS Code extension, API metrics endpoints, extended observability. |
+| GAP-G (Cross-Domain Limitation) | **Partially addressed** | Pillar 3 extends to Python, Go, Rust. True cross-domain (legal, financial) deferred. Polyglot framework (PH5.8) establishes extension pattern. |
+| GAP-H UC-6 (Restarted Randomly) | **Addressed** | API server session persistence + cross-instance state delegation. |
+
+#### Items Deferred from Phase 4 to Phase 5
+
+- Automatic cross-project pattern transfer (PH4.6 implements abstraction layer only) → **PH5.7**
+- Oracle/Verifier-class Reasoning Engine lifecycle governance (concept §13.4) → **PH5.6**
+- Multi-instance WorkerProfile sharing via ECP (concept §11) → **PH5.7**
+- ECP `temporal_context` for capability evidence aging (concept §13.2) → **PH5.5**
+- ECP `deliberation_request` as capability signal input (concept §13.1) → **PH5.5**
+- Cross-domain oracle framework (GAP-G) → **PH5.8**
+- Checkpoint recovery for "restarted randomly" failure mode (GAP-H UC-6) → **PH5.1**
+
+#### Items Remaining Beyond Phase 5
+
+- Hierarchical skill composition (GAP-C remainder — requires Task Decomposer skill reasoning)
+- Causal graph relationships in World Graph (GAP-A remainder)
+- True cross-domain support beyond programming languages (legal, financial, scientific verification)
+- Proactive Background Cognition (concept §13.3 — persistent background agents, resource model unresolved)
+- Fleet-level consensus governance (beyond advisory peer coordination)
 
 #### Risk Assessment
 
 | Component | Risk Type | Level | Notes |
 |:----------|:----------|:-----:|:------|
-| PH4.1 Worker Profiles | Engineering | Low | Data modeling. Follows existing store patterns. |
-| PH4.2 Lifecycle | Engineering | Low-Med | State machine straightforward. Thresholds need tuning from Phase 3 data. |
-| PH4.3 Capability Tagging | Eng + Research | Medium | Depends on Phase 3 finding meaningful task fingerprint dimensions. |
-| PH4.4 Capability Router | Engineering | Medium | Core loop integration is highest-risk engineering change. |
-| PH4.5 Fleet Evolution | Engineering | Low-Med | Extends existing evolution infrastructure. |
-| PH4.6 Cross-Project Transfer | Research | **High** | May be infeasible. Depends on Phase 3 abstractable patterns. |
+| PH5.1 API Server | Engineering | Low | Well-understood HTTP server pattern. Bun has built-in HTTP server. |
+| PH5.2 Terminal UI | Engineering | Low | Rendering bus events is read-only. No complex state management. |
+| PH5.3 VS Code Extension | Engineering | Medium | VS Code extension API is stable but verbose. Must work across versions. |
+| PH5.4 MCP Bridge | Engineering | Low-Med | TDD §19 fully specifies the interface. MCP SDK exists. |
+| PH5.5 ECP Network Transport | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Must design carefully. |
+| PH5.6 Instance Coordinator | Research | **High** | Distributed coordination is inherently complex. Consensus, ordering, partition tolerance. |
+| PH5.7 Knowledge Sharing | Research | Medium | Builds on PH4.6 abstraction. Main risk: shared knowledge harmful locally. |
+| PH5.8 Polyglot Framework | Engineering | Low | Runner generalization is a small change (use `config.command`). |
+| PH5.9-5.11 Language Oracles | Engineering | Low-Med | Each language tool has structured JSON output. |
+| PH5.12 Security Model | Engineering | Medium | Security is easy to get wrong. Must not block legitimate use. |
+| PH5.14 Migration | Engineering | Low | Additive-only schema changes. SQLite handles this well. |
+| Network partition handling | System | **High** | Distributed system fundamental challenge. All multi-instance features must degrade gracefully to single-instance mode. |
 
-**Biggest unknown:** Whether single-project trace data provides enough statistical power for meaningful worker differentiation. Phase 3 should measure trace-per-task-type distribution to inform this.
+**Biggest unknown:** Whether multi-instance coordination provides enough value over single-instance to justify the distributed systems complexity. Phase 4 trace data (especially PH4.6 cross-project transfer results) should inform this before investing heavily in Pillar 2.
 
 #### Critical Files for Implementation
-- `src/orchestrator/types.ts` — WorkerProfile, WorkerConfig, WorkerStats interfaces
-- `src/orchestrator/worker/worker-pool.ts` — Primary integration point: `selectForRoutingLevel()` becomes capability-based
-- `src/orchestrator/llm/provider-registry.ts` — Current tier-based selection becomes fallback path
-- `src/evolution/safety-invariants.ts` — Extend with fleet governance invariants
-- `src/orchestrator/core-loop.ts` — RoutingDecision gains `workerId`, worker selection step added
 
-### Phase 5 — Self-Hosted ENS
-
-| Component | Description |
-|:----------|:------------|
-| Standalone system | Own terminal UI, API server, VS Code extension. No external framework dependency. |
-| Multi-instance coordination | Multiple Vinyan instances as peer Reasoning Engines via ECP. Domain specialization. |
-| Cross-language support | Python (Pyright), Go (gopls), Rust (rust-analyzer). Oracle framework is language-agnostic; implementations are language-specific. |
+- `src/oracle/runner.ts` — Core change for polyglot oracles: switch from hardcoded `bun run` to `config.command`
+- `src/orchestrator/factory.ts` — Wiring point for all new Phase 5 dependencies (API server, instance coordinator, polyglot oracles)
+- `src/core/bus.ts` — EventBus must gain network transport capability for cross-instance event forwarding
+- `src/orchestrator/types.ts` — All new interfaces (instance identity, cross-instance delegation, polyglot oracle config)
+- `src/config/schema.ts` — `phase5` config namespace
+- `src/observability/metrics.ts` — Fleet and API metrics extensions
+- `src/bus/audit-listener.ts` — JSONL format is the natural serialization for cross-instance events
+- `docs/vinyan-tdd.md` §19 — MCP bridge specification that PH5.4 implements directly
 
 ---
 
@@ -1497,7 +2641,7 @@ Phase 0 Gaps (P0-1..P0-5)
                                                                                │
                                                            Phase 3 (Evolution + Self-Model, ~4-5 wk)
                                                                                │
-                                                           Phase 4 (Fleet Governance, ~6-8 wk)
+                                                           Phase 4 (Fleet Governance, ~5-6 wk)
                                                                                │
                                                            Phase 5 (Self-Hosted ENS)
 ```
@@ -1512,7 +2656,9 @@ Phase 0 Gaps (P0-1..P0-5)
 - **Vinyan 2.0** — Phase 2 → hardened execution + self-improvement
 - **Vinyan 2.1** — Pre-Phase 3 → integration hardening + burn-in validation (≥200 real traces)
 - **Vinyan 3.0** — Phase 3 → full evolution engine + trace-calibrated self-model
-- **Vinyan 4.0** — Phase 4 → empirical worker identity + capability-based routing
+- **Vinyan 4.0** — Phase 4 → empirical worker identity + capability-based routing + fleet governance + pattern abstraction
+- **Vinyan 5.0** — Phase 5 Pillar 1+3 → standalone platform (API server, terminal UI, VS Code extension) + polyglot oracles (Python, Go, Rust)
+- **Vinyan 5.1** — Phase 5 Pillar 2 → multi-instance coordination + cross-instance knowledge sharing
 
 ---
 
@@ -1531,6 +2677,12 @@ Phase 0 Gaps (P0-1..P0-5)
 | Self-Model miscalibration cascade (PH3.2) | System | **High** | Layered defense: detection → containment → recovery → prevention. S1-S4 safeguards. Freeze + revert on degradation. |
 | Counterfactual exploration (PH3.6) | Research | Medium | Epsilon exploration never routes DOWN. Conservative ε=0.05. Disable if disruptive. |
 | Rule feedback loop (PH3.3) | System | Medium | Re-backtest before promotion. Auto-retire bad rules. Cap at 20 active rules. |
-| Capability-based routing (PH4.4) | Engineering | Medium | Core loop integration risk. Tier-based fallback ensures backward compatibility. |
-| Worker differentiation data (PH4.3) | Research | Medium | Depends on trace volume per worker-task-type cell. Phase 3 should seed multi-model traces. |
-| Cross-project transfer (PH4.6) | Research | **High** | May be infeasible. Depends on Phase 3 finding abstractable patterns. Descope to design-only if data insufficient. |
+| Capability-based routing (PH4.4) | Engineering | Medium | Core loop integration is highest-risk Phase 4 change. Tier-based fallback via data gate ensures safety. Disable with zero code change. |
+| Worker differentiation data (PH4.3) | Eng + Research | Medium | 3 always-active fingerprint dimensions provide baseline even if framework markers don't differentiate. |
+| Cross-project transfer (PH4.6) | Research | Medium | Scoped down to abstraction layer + manual export/import only. Automatic transfer deferred to Phase 5. |
+| Fleet collapse to monoculture (PH4.5) | System | **High** | 3-layer defense: diversity floor (15% minimum) + exploration budget (10% minimum) + staleness penalty. Safety invariant I11 caps single-worker allocation at 70%. |
+| Multi-model data bootstrapping (PH4.0) | Data | Medium | PH4.0 auto-registers existing models + epsilon-worker exploration (10%) seeds diversity. Data gates block PH4.3+ until sufficient. |
+| ECP Network Transport (PH5.5) | Eng + Research | **High** | No existing protocol carries ECP semantics natively. Start with HTTP/JSON-RPC + ECP headers, optimize later. |
+| Instance Coordinator (PH5.6) | Research | **High** | Distributed coordination inherently complex. Start with 2-instance static topology. All features degrade to single-instance. |
+| Polyglot oracle framework (PH5.8) | Engineering | Low | Runner generalization is a small change. Oracle binary contract already implicit. |
+| Network partition handling (PH5.6) | System | **High** | All multi-instance features must degrade gracefully to single-instance mode. Advisory-only coordination minimizes partition damage. |

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
+import { isAbstention } from '../../../src/core/types.ts';
 import { verify } from '../../../src/oracle/lint/lint-verifier.ts';
 
 describe('lint-oracle', () => {
@@ -17,41 +18,47 @@ describe('lint-oracle', () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  test('returns verified=true with note when no linter configured', async () => {
+  test('returns OracleAbstention when no linter configured', async () => {
     const hypothesis: HypothesisTuple = {
       target: 'clean.ts',
       pattern: 'lint-clean',
       workspace,
     };
-    const verdict = await verify(hypothesis);
-    expect(verdict.verified).toBe(true);
-    expect(verdict.confidence).toBe(0.5);
-    expect(verdict.reason).toContain('No linter configured');
+    const response = await verify(hypothesis);
+    expect(isAbstention(response)).toBe(true);
+    if (isAbstention(response)) {
+      expect(response.type).toBe('abstained');
+      expect(response.reason).toBe('no_linter_configured');
+      expect(response.oracleName).toBe('lint');
+      expect(response.durationMs).toBeGreaterThanOrEqual(0);
+      expect(response.prerequisites).toBeDefined();
+    }
   });
 
-  test('returns verified=true when target file not found (no linter)', async () => {
+  test('returns OracleAbstention when target file not found (no linter)', async () => {
     const hypothesis: HypothesisTuple = {
       target: 'nonexistent.ts',
       pattern: 'lint-clean',
       workspace,
     };
-    const verdict = await verify(hypothesis);
-    // Without a linter configured, returns early before file check
-    expect(verdict.verified).toBe(true);
-    expect(verdict.confidence).toBeLessThan(1.0);
+    const response = await verify(hypothesis);
+    // Without a linter configured, returns abstention before file check
+    expect(isAbstention(response)).toBe(true);
+    if (isAbstention(response)) {
+      expect(response.reason).toBe('no_linter_configured');
+    }
   });
 
-  test('has correct verdict structure', async () => {
+  test('has correct abstention structure', async () => {
     const hypothesis: HypothesisTuple = {
       target: 'clean.ts',
       pattern: 'lint-clean',
       workspace,
     };
-    const verdict = await verify(hypothesis);
-    // WP-4: lint returns "uncertain" when no linter is configured (A2 compliance)
-    expect(['known', 'uncertain']).toContain(verdict.type);
-    expect(typeof verdict.durationMs).toBe('number');
-    expect(verdict.durationMs).toBeGreaterThan(0);
-    expect(Array.isArray(verdict.evidence)).toBe(true);
+    const response = await verify(hypothesis);
+    // WP-4: lint returns abstention when no linter is configured (EHD abstention path)
+    expect(isAbstention(response)).toBe(true);
+    expect(typeof response.durationMs).toBe('number');
+    expect(response.durationMs).toBeGreaterThanOrEqual(0);
   });
 });

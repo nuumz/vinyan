@@ -10,7 +10,7 @@
 import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
-import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict } from '../../core/types.ts';
 
 interface LintError {
   file: string;
@@ -90,21 +90,19 @@ function parseRuffOutput(output: string): LintError[] {
   }
 }
 
-export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {
+export async function verify(hypothesis: HypothesisTuple): Promise<OracleResponse> {
   const start = performance.now();
   const { workspace, target } = hypothesis;
 
   const linter = detectLinter(workspace);
   if (!linter) {
-    return buildVerdict({
-      verified: true,
-      type: 'uncertain',
-      confidence: 0.5,
-      evidence: [],
-      fileHashes: {},
-      reason: 'No linter configured in workspace',
+    return {
+      type: 'abstained',
+      reason: 'no_linter_configured',
+      oracleName: 'lint',
       durationMs: performance.now() - start,
-    });
+      prerequisites: ['Install ESLint (package.json devDependencies) or Ruff (pyproject.toml)'],
+    } satisfies OracleAbstention;
   }
 
   const targetPath = join(workspace, target);
@@ -127,7 +125,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       stderr: 'pipe',
     });
 
-    const _exitCode = await proc.exited;
+    const exitCode = await proc.exited;
     const stdout = await new Response(proc.stdout).text();
     const durationMs = performance.now() - start;
 

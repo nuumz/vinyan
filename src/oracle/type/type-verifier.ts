@@ -51,7 +51,7 @@ const TSC_TIMEOUT_MS = 30_000;
 /** Run tsc --noEmit and return diagnostics. Kills process after 30s timeout. */
 async function runTsc(
   workspace: string,
-  _target?: string,
+  target?: string,
 ): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
   const args = ['--noEmit', '--pretty', 'false', '--project', workspace];
 
@@ -127,6 +127,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
 
     return buildVerdict({
       verified: targetDiags.length === 0,
+      type: 'known',
+      confidence: 1.0,
       evidence,
       fileHashes,
       reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,

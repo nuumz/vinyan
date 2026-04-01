@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { HypothesisTuple } from '../../../src/core/types.ts';
+import type { HypothesisTuple, OracleVerdict } from '../../../src/core/types.ts';
+import { isAbstention } from '../../../src/core/types.ts';
 import { verify } from '../../../src/oracle/test/test-verifier.ts';
 
 describe('test-oracle', () => {
@@ -48,7 +49,9 @@ test("always fails", () => { expect(1).toBe(2); });
       pattern: 'test-pass',
       workspace,
     };
-    const verdict = await verify(hypothesis);
+    const response = await verify(hypothesis);
+    expect(isAbstention(response)).toBe(false);
+    const verdict = response as OracleVerdict;
     expect(verdict.verified).toBe(true);
     expect(verdict.durationMs).toBeGreaterThan(0);
   }, 10_000);
@@ -67,20 +70,27 @@ test("broken", () => { expect(1).toBe(2); });
       pattern: 'test-pass',
       workspace,
     };
-    const verdict = await verify(hypothesis);
+    const response = await verify(hypothesis);
+    expect(isAbstention(response)).toBe(false);
+    const verdict = response as OracleVerdict;
     expect(verdict.verified).toBe(false);
     expect(verdict.reason).toBeDefined();
   }, 10_000);
 
-  test('returns verified=true with low confidence when no test file exists', async () => {
+  test('returns OracleAbstention when no test file exists', async () => {
     const hypothesis: HypothesisTuple = {
       target: 'src/no-tests-for-this.ts',
       pattern: 'test-pass',
       workspace,
     };
-    const verdict = await verify(hypothesis);
-    expect(verdict.verified).toBe(true);
-    expect(verdict.confidence).toBeLessThan(1.0);
-    expect(verdict.reason).toContain('No test file');
+    const response = await verify(hypothesis);
+    expect(isAbstention(response)).toBe(true);
+    if (isAbstention(response)) {
+      expect(response.type).toBe('abstained');
+      expect(response.reason).toBe('no_test_files');
+      expect(response.oracleName).toBe('test');
+      expect(response.durationMs).toBeGreaterThanOrEqual(0);
+      expect(response.prerequisites).toBeDefined();
+    }
   });
 });

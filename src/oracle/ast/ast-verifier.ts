@@ -26,7 +26,7 @@ function getLineNumber(sf: ts.SourceFile, pos: number): number {
 function getSnippet(sf: ts.SourceFile, node: ts.Node): string {
   const text = node.getText(sf);
   // Truncate long snippets
-  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  return text.length > 120 ? text.slice(0, 117) + '...' : text;
 }
 
 /** Pattern: symbol-exists — verify a named symbol (function, class, variable, type) exists in the file. */
@@ -182,6 +182,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         if (!symbolName) {
           return buildVerdict({
             verified: false,
+            type: 'known',
+            confidence: 1.0,
             evidence: [],
             fileHashes,
             reason: "context.symbolName is required for pattern 'symbol-exists'",
@@ -192,6 +194,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         const result = verifySymbolExists(sf, filePath, symbolName);
         return buildVerdict({
           verified: result.found,
+          type: 'known',
+          confidence: 1.0,
           evidence: result.evidence,
           fileHashes,
           reason: result.found ? undefined : `Symbol '${symbolName}' not found in ${filePath}`,
@@ -205,6 +209,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         if (!functionName) {
           return buildVerdict({
             verified: false,
+            type: 'known',
+            confidence: 1.0,
             evidence: [],
             fileHashes,
             reason: "context.functionName is required for pattern 'function-signature'",
@@ -215,6 +221,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         const result = verifyFunctionSignature(sf, filePath, functionName, context);
         return buildVerdict({
           verified: result.found && result.matches,
+          type: 'known',
+          confidence: 1.0,
           evidence: result.evidence,
           fileHashes,
           reason: result.reason,
@@ -228,6 +236,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         if (!moduleSpecifier) {
           return buildVerdict({
             verified: false,
+            type: 'known',
+            confidence: 1.0,
             evidence: [],
             fileHashes,
             reason: "context.moduleSpecifier is required for pattern 'import-exists'",
@@ -238,6 +248,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         const result = verifyImportExists(sf, filePath, moduleSpecifier);
         return buildVerdict({
           verified: result.found,
+          type: 'known',
+          confidence: 1.0,
           evidence: result.evidence,
           fileHashes,
           reason: result.found ? undefined : `Import '${moduleSpecifier}' not found in ${filePath}`,
@@ -249,6 +261,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
       default:
         return buildVerdict({
           verified: false,
+          type: 'known',
+          confidence: 1.0,
           evidence: [],
           fileHashes,
           reason: `Unknown pattern: '${hypothesis.pattern}'`,

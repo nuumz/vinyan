@@ -11,7 +11,8 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { loadConfig } from '../config/loader.ts';
 import { buildVerdict } from '../core/index.ts';
-import type { HypothesisTuple, OracleVerdict, QualityScore } from '../core/types.ts';
+import { isAbstention } from '../core/types.ts';
+import type { HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict, QualityScore } from '../core/types.ts';
 import { containsBypassAttempt, detectPromptInjection } from '../guardrails/index.ts';
 import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
 import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
@@ -58,6 +59,9 @@ export function getOracleAccuracy(): Record<string, { total: number; correct: nu
 
 // ── Public types ────────────────────────────────────────────────
 
+/** 4-state epistemic gate decision (A2 compliance, Phase 3 prerequisite). */
+export type EpistemicGateDecision = 'commit' | 'abstain' | 'escalate' | 'contradict';
+
 export interface GateRequest {
   /** Agent tool name, e.g. "write_file", "edit_file" */
   tool: string;
@@ -81,6 +85,14 @@ export interface GateVerdict {
   decision: GateDecision;
   reasons: string[];
   oracle_results: Record<string, OracleVerdict>;
+  /** Abstaining oracles — excluded from scoring, surfaced for observability. */
+  oracle_abstentions?: Record<string, OracleAbstention>;
+  /** 4-state epistemic decision (Phase 3 prerequisite). */
+  epistemicDecision?: EpistemicGateDecision;
+  /** Weighted harmonic mean of oracle confidences. */
+  aggregateConfidence?: number;
+  /** Actionable hints for uncertainty resolution. */
+  caveats?: string[];
   durationMs: number;
   qualityScore?: QualityScore;
   /** Risk score used for oracle tier selection (0.0-1.0). Present when risk-tiered mode is active. */
@@ -89,7 +101,7 @@ export interface GateVerdict {
 
 // ── Oracle dispatch map ─────────────────────────────────────────
 
-type OracleVerifyFn = (h: HypothesisTuple) => OracleVerdict | Promise<OracleVerdict>;
+type OracleVerifyFn = (h: HypothesisTuple) => OracleResponse | Promise<OracleResponse>;
 
 interface OracleEntry {
   verify: OracleVerifyFn;
@@ -125,6 +137,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   const start = performance.now();
   const reasons: string[] = [];
   const oracleResults: Record<string, OracleVerdict> = {};
+  const oracleAbstentions: Record<string, OracleAbstention> = {};
 
   // ① Guardrails — scan params for injection / bypass
   const injection = detectPromptInjection(request.params);
@@ -142,18 +155,20 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
       decision: 'block',
       reasons,
       oracle_results: oracleResults,
+      oracle_abstentions: oracleAbstentions,
       durationMs: performance.now() - start,
     };
     await safeLog(request, verdict);
     return verdict;
   }
 
-  // ①½ Read-only tool short-circuit — skip oracles (no mutation to verify)
+  // ½ Read-only tool short-circuit — skip oracles (no mutation to verify)
   if (!isMutatingTool(request.tool)) {
     const verdict: GateVerdict = {
       decision: 'allow',
       reasons: [],
       oracle_results: {},
+      oracle_abstentions: {},
       durationMs: performance.now() - start,
     };
     await safeLog(request, verdict);
@@ -237,6 +252,11 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
             return { name, result: timeoutResult };
           }
 
+          // If oracle abstained (e.g., no test files, no linter configured), return without clamping.
+          if (isAbstention(raceResult)) {
+            return { name, result: raceResult };
+          }
+
           // Record success/failure for circuit breaker
           if (raceResult.errorCode) {
             circuitBreaker.recordFailure(name);
@@ -265,10 +285,15 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
       }),
   );
 
-  // ④ Collect results (skip null — oracle was excluded via timeout_behavior: "warn")
+  // ⑤ Collect results — partition into verdicts vs abstentions
+  // (skip null — oracle was excluded via timeout_behavior: "warn")
   for (const { name, result } of results) {
     if (!result) continue;
-    oracleResults[name] = result;
+    if (isAbstention(result)) {
+      oracleAbstentions[name] = result;
+    } else {
+      oracleResults[name] = result;
+    }
   }
 
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
@@ -278,7 +303,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     ),
     oracleAccuracy: oracleAccuracyTracker.size > 0 ? Object.fromEntries(oracleAccuracyTracker) : undefined,
     informationalOracles: INFORMATIONAL_ORACLES,
-  });
+  }, oracleAbstentions);
   reasons.push(...resolved.reasons);
 
   const decision: GateDecision = reasons.length > 0 ? 'block' : 'allow';
@@ -301,8 +326,8 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
 
   // Build test context from test oracle results
   let testContext: TestContext | undefined;
-  if (oracleResults.test) {
-    testContext = { testsExist: true, testsPassed: oracleResults.test.verified };
+  if (oracleResults['test']) {
+    testContext = { testsExist: true, testsPassed: oracleResults['test'].verified };
   }
 
   // Build oracle tier map from config for A5 tier-weighted quality scoring
@@ -315,6 +340,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     decision,
     reasons,
     oracle_results: oracleResults,
+    oracle_abstentions: oracleAbstentions,
     durationMs,
     qualityScore: computeQualityScore(
       oracleResults,

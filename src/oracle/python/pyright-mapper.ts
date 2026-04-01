@@ -48,6 +48,8 @@ export function mapPyrightToVerdict(output: PyrightOutput, durationMs: number): 
 
   return buildVerdict({
     verified: errors.length === 0,
+    type: 'known',
+    confidence: 1.0,
     evidence,
     fileHashes: {},
     reason:

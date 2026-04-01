@@ -15,7 +15,7 @@ let workspace: string;
 
 beforeAll(() => {
   workspace = join(tmpdir(), `vinyan-risk-gate-test-${Date.now()}`);
-  const fixtureDir = resolve(import.meta.dir, '../benchmark/fixtures/simple-project');
+  const fixtureDir = resolve(import.meta.dir, '../benchmark-fixtures/simple-project');
   cpSync(fixtureDir, workspace, { recursive: true });
 });
 

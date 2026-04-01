@@ -41,9 +41,21 @@ export function computeQualityScore(
 ): QualityScore {
   // Dimension 1: architecturalCompliance (A5 tier-weighted oracle pass ratio)
   const entries = Object.entries(oracleResults);
+
+  // Dimension 2: efficiency (latency vs budget) — computed early for zero-oracle exit path.
+  const efficiency = Math.max(0, Math.min(1, 1 - gateDurationMs / latencyBudgetMs));
+
   let architecturalCompliance: number;
   if (entries.length === 0) {
-    architecturalCompliance = 1.0;
+    // C3 fix: zero oracles is INDETERMINATE, not "perfect". Use NaN + unverified flag.
+    return {
+      architecturalCompliance: NaN,
+      efficiency,
+      composite: NaN,
+      dimensionsAvailable: 0,
+      phase: 'phase0',
+      unverified: true,
+    };
   } else if (oracleTiers) {
     let weightedSum = 0;
     let totalWeight = 0;
@@ -58,9 +70,6 @@ export function computeQualityScore(
     architecturalCompliance = entries.filter(([, v]) => v.verified).length / entries.length;
   }
 
-  // Dimension 2: efficiency (latency vs budget)
-  const efficiency = Math.max(0, Math.min(1, 1 - gateDurationMs / latencyBudgetMs));
-
   // Dimension 3: simplificationGain (cyclomatic complexity reduction)
   let simplificationGain: number | undefined;
   if (complexityContext?.originalSource != null && complexityContext?.mutatedSource != null) {
@@ -73,32 +82,32 @@ export function computeQualityScore(
     }
   }
 
-  // Dimension 4: testMutationScore (heuristic based on test existence + pass/fail)
-  let testMutationScore: number | undefined;
+  // Dimension 4: testPresenceHeuristic (heuristic based on test existence + pass/fail)
+  let testPresenceHeuristic: number | undefined;
   if (testContext) {
     if (testContext.testsExist && testContext.testsPassed) {
-      testMutationScore = 0.7;
+      testPresenceHeuristic = 0.7;
     } else if (testContext.testsExist && !testContext.testsPassed) {
-      testMutationScore = 0.3;
+      testPresenceHeuristic = 0.3;
     } else {
-      testMutationScore = 0.4; // no tests
+      testPresenceHeuristic = 0.4; // no tests
     }
   }
 
   // Composite — weights adapt to available dimensions
-  const dims = 2 + (simplificationGain != null ? 1 : 0) + (testMutationScore != null ? 1 : 0);
+  const dims = 2 + (simplificationGain != null ? 1 : 0) + (testPresenceHeuristic != null ? 1 : 0);
   let composite: number;
   let phase: QualityScore['phase'];
 
   if (dims === 4) {
     composite =
-      architecturalCompliance * 0.3 + efficiency * 0.2 + simplificationGain! * 0.25 + testMutationScore! * 0.25;
+      architecturalCompliance * 0.3 + efficiency * 0.2 + simplificationGain! * 0.25 + testPresenceHeuristic! * 0.25;
     phase = 'phase1';
   } else if (dims === 3 && simplificationGain != null) {
     composite = architecturalCompliance * 0.35 + efficiency * 0.25 + simplificationGain * 0.4;
     phase = 'phase1';
-  } else if (dims === 3 && testMutationScore != null) {
-    composite = architecturalCompliance * 0.35 + efficiency * 0.25 + testMutationScore * 0.4;
+  } else if (dims === 3 && testPresenceHeuristic != null) {
+    composite = architecturalCompliance * 0.35 + efficiency * 0.25 + testPresenceHeuristic * 0.4;
     phase = 'phase1';
   } else {
     composite = architecturalCompliance * 0.6 + efficiency * 0.4;
@@ -109,7 +118,7 @@ export function computeQualityScore(
     architecturalCompliance,
     efficiency,
     ...(simplificationGain != null ? { simplificationGain } : {}),
-    ...(testMutationScore != null ? { testMutationScore } : {}),
+    ...(testPresenceHeuristic != null ? { testPresenceHeuristic } : {}),
     composite,
     dimensionsAvailable: dims,
     phase,

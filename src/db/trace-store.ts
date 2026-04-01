@@ -17,7 +17,7 @@ export class TraceStore {
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO execution_traces (
         id, task_id, session_id, worker_id, timestamp, routing_level,
-        task_type_signature, approach, approach_description, risk_score,
+        taskTypeSignature, approach, approach_description, risk_score,
         quality_composite, quality_arch, quality_efficiency,
         quality_simplification, quality_testmutation,
         model_used, tokens_consumed, duration_ms,
@@ -26,7 +26,7 @@ export class TraceStore {
         framework_markers, worker_selection_audit
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
-        $task_type_signature, $approach, $approach_description, $risk_score,
+        $taskTypeSignature, $approach, $approach_description, $risk_score,
         $quality_composite, $quality_arch, $quality_efficiency,
         $quality_simplification, $quality_testmutation,
         $model_used, $tokens_consumed, $duration_ms,
@@ -46,7 +46,7 @@ export class TraceStore {
       $worker_id: trace.workerId ?? null,
       $timestamp: trace.timestamp,
       $routing_level: trace.routingLevel,
-      $task_type_signature: trace.taskTypeSignature ?? null,
+      $taskTypeSignature: trace.taskTypeSignature ?? null,
       $approach: trace.approach,
       $approach_description: trace.approachDescription ?? null,
       $risk_score: trace.riskScore ?? null,
@@ -54,7 +54,7 @@ export class TraceStore {
       $quality_arch: qs?.architecturalCompliance ?? null,
       $quality_efficiency: qs?.efficiency ?? null,
       $quality_simplification: qs?.simplificationGain ?? null,
-      $quality_testmutation: qs?.testMutationScore ?? null,
+      $quality_testmutation: qs?.testPresenceHeuristic ?? null,
       $model_used: trace.modelUsed,
       $tokens_consumed: trace.tokensConsumed,
       $duration_ms: trace.durationMs,
@@ -73,7 +73,7 @@ export class TraceStore {
 
   findByTaskType(taskTypeSignature: string, limit = 100): ExecutionTrace[] {
     const rows = this.db
-      .prepare(`SELECT * FROM execution_traces WHERE task_type_signature = ? ORDER BY timestamp DESC LIMIT ?`)
+      .prepare(`SELECT * FROM execution_traces WHERE taskTypeSignature = ? ORDER BY timestamp DESC LIMIT ?`)
       .all(taskTypeSignature, limit);
     return rows.map(rowToTrace);
   }
@@ -105,7 +105,7 @@ export class TraceStore {
   countDistinctTaskTypes(): number {
     const row = this.db
       .prepare(
-        `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL`,
+        `SELECT COUNT(DISTINCT taskTypeSignature) as cnt FROM execution_traces WHERE taskTypeSignature IS NOT NULL`,
       )
       .get() as { cnt: number };
     return row.cnt;
@@ -137,7 +137,7 @@ function rowToTrace(row: any): ExecutionTrace {
     workerId: row.worker_id ?? undefined,
     timestamp: row.timestamp,
     routingLevel: row.routing_level,
-    taskTypeSignature: row.task_type_signature ?? undefined,
+    taskTypeSignature: row.taskTypeSignature ?? undefined,
     approach: row.approach,
     approachDescription: row.approach_description ?? undefined,
     riskScore: row.risk_score ?? undefined,
@@ -148,7 +148,7 @@ function rowToTrace(row: any): ExecutionTrace {
             architecturalCompliance: row.quality_arch,
             efficiency: row.quality_efficiency,
             simplificationGain: row.quality_simplification ?? undefined,
-            testMutationScore: row.quality_testmutation ?? undefined,
+            testPresenceHeuristic: row.quality_testmutation ?? undefined,
             composite: row.quality_composite,
             dimensionsAvailable:
               2 + (row.quality_simplification != null ? 1 : 0) + (row.quality_testmutation != null ? 1 : 0),

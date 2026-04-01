@@ -1,27 +1,35 @@
 export { type BusEventName, createBus, EventBus, type VinyanBus, type VinyanBusEvents } from './bus.ts';
 export type {
+  AbstentionReason,
   Evidence,
   Fact,
   HypothesisTuple,
+  OracleAbstention,
   OracleErrorCode,
+  OracleResponse,
   OracleVerdict,
   QualityScore,
 } from './types.ts';
+export { isAbstention } from './types.ts';
+export type { SubjectiveOpinion } from './subjective-opinion.ts';
+export {
+  dogmatic,
+  fromScalar,
+  isValid,
+  isVacuous,
+  projectedProbability,
+  resolveOpinion,
+  SubjectiveOpinionSchema,
+  vacuous,
+} from './subjective-opinion.ts';
 
 /**
- * Build an OracleVerdict with required ECP fields defaulted.
- * Deterministic oracles get type='known', confidence=1.0.
- * Pass type='unknown' and lower confidence for heuristic/failed results.
+ * Build an OracleVerdict with required ECP fields.
+ * EHD C1 fix: 'type' and 'confidence' are now REQUIRED — no silent defaults.
+ * Oracles must explicitly declare their epistemic state.
  */
 export function buildVerdict(
-  fields: Omit<import('./types.ts').OracleVerdict, 'type' | 'confidence'> & {
-    type?: 'known' | 'unknown' | 'uncertain' | 'contradictory';
-    confidence?: number;
-  },
+  fields: import('./types.ts').OracleVerdict,
 ): import('./types.ts').OracleVerdict {
-  return {
-    type: 'known',
-    confidence: 1.0,
-    ...fields,
-  };
+  return fields;
 }

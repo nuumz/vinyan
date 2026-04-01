@@ -32,14 +32,41 @@ export interface QualityScore {
   efficiency: number;
   /** Reduction in cyclomatic complexity (0.0–1.0). Phase 1+. */
   simplificationGain?: number;
-  /** % of injected faults caught by tests. Phase 1+. */
-  testMutationScore?: number;
+  /** Heuristic: whether test files exist and pass (renamed from testMutationScore). Phase 1+. */
+  testPresenceHeuristic?: number;
   /** Weighted combination — single scalar for ranking. */
   composite: number;
   /** How many dimensions were actually computed (2 in Phase 0, 4 in Phase 1+). */
   dimensionsAvailable: number;
   /** Which phase's dimensions are trustworthy. */
   phase: 'phase0' | 'phase1' | 'phase2';
+  /** C3 fix: true when zero oracles ran — score is INDETERMINATE, not trusted. */
+  unverified?: boolean;
+}
+
+// ── Abstention types (C3 fix: oracles that cannot produce verdicts must abstain) ──────
+
+export type AbstentionReason =
+  | 'no_test_files'
+  | 'no_linter_configured'
+  | 'out_of_domain'
+  | 'insufficient_data'
+  | 'timeout'
+  | 'circuit_open'
+  | 'target_not_found';
+
+export interface OracleAbstention {
+  type: 'abstained';
+  reason: AbstentionReason;
+  oracleName: string;
+  durationMs: number;
+  prerequisites?: string[];
+}
+
+export type OracleResponse = OracleVerdict | OracleAbstention;
+
+export function isAbstention(response: OracleResponse): response is OracleAbstention {
+  return response.type === 'abstained';
 }
 
 /** Oracle verification error codes for programmatic handling. */
@@ -98,6 +125,10 @@ export interface OracleVerdict {
     validUntil: number;
     decayModel: 'linear' | 'step' | 'none';
   };
+  /** Phase B+: Subjective Logic opinion for SL fusion (Phase 4). */
+  opinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
+  /** Phase B+: Unclamped opinion before tier adjustment (for audit). */
+  rawOpinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
 }
 
 /** A verified fact stored in the World Graph. */

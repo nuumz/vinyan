@@ -69,7 +69,7 @@ describe('audit-listener ALL_EVENTS coverage', () => {
 
     const arrayContent = match![1]!;
     // Extract all quoted strings
-    const eventNames = [...arrayContent.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    const eventNames = [...arrayContent.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
 
     const auditSet = new Set(eventNames);
 

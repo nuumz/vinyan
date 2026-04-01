@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS extracted_patterns (
   description         TEXT NOT NULL,
   frequency           INTEGER NOT NULL,
   confidence          REAL NOT NULL,
-  task_type_signature TEXT NOT NULL,
+  taskTypeSignature      TEXT NOT NULL,
   approach            TEXT,
   compared_approach   TEXT,
   quality_delta       REAL,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS extracted_patterns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_patterns_type ON extracted_patterns(type);
-CREATE INDEX IF NOT EXISTS idx_patterns_task_sig ON extracted_patterns(task_type_signature);
+CREATE INDEX IF NOT EXISTS idx_patterns_task_sig ON extracted_patterns(taskTypeSignature);
 CREATE INDEX IF NOT EXISTS idx_patterns_created ON extracted_patterns(created_at);
 
 CREATE TABLE IF NOT EXISTS sleep_cycle_runs (

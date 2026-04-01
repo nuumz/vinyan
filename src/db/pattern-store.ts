@@ -16,7 +16,7 @@ export class PatternStore {
   insert(pattern: ExtractedPattern): void {
     this.db.run(
       `INSERT OR REPLACE INTO extracted_patterns
-       (id, type, description, frequency, confidence, task_type_signature,
+       (id, type, description, frequency, confidence, taskTypeSignature,
         approach, compared_approach, quality_delta, source_trace_ids,
         created_at, expires_at, decay_weight, derived_from,
         worker_id, compared_worker_id)
@@ -51,7 +51,7 @@ export class PatternStore {
 
   findByTaskSignature(signature: string, limit = 50): ExtractedPattern[] {
     const rows = this.db
-      .prepare(`SELECT * FROM extracted_patterns WHERE task_type_signature = ? ORDER BY confidence DESC LIMIT ?`)
+      .prepare(`SELECT * FROM extracted_patterns WHERE taskTypeSignature = ? ORDER BY confidence DESC LIMIT ?`)
       .all(signature, limit) as PatternRow[];
     return rows.map(rowToPattern);
   }
@@ -140,7 +140,7 @@ interface PatternRow {
   description: string;
   frequency: number;
   confidence: number;
-  task_type_signature: string;
+  taskTypeSignature: string;
   approach: string | null;
   compared_approach: string | null;
   quality_delta: number | null;
@@ -160,7 +160,7 @@ function rowToPattern(row: PatternRow): ExtractedPattern {
     description: row.description,
     frequency: row.frequency,
     confidence: row.confidence,
-    taskTypeSignature: row.task_type_signature,
+    taskTypeSignature: row.taskTypeSignature,
     approach: row.approach ?? undefined,
     comparedApproach: row.compared_approach ?? undefined,
     qualityDelta: row.quality_delta ?? undefined,

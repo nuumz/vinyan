@@ -9,7 +9,9 @@ import type { MCPToolResult } from '../../src/mcp/types.ts';
 describe('ecpToMcp', () => {
   test('verified=true → text content with verification details', () => {
     const verdict: OracleVerdict = buildVerdict({
+      type: 'known',
       verified: true,
+      confidence: 1.0,
       evidence: [{ file: 'src/app.ts', line: 10, snippet: 'export class App {}' }],
       fileHashes: { 'src/app.ts': 'abc123' },
       oracleName: 'ast',

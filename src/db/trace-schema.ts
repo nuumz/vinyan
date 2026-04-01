@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   worker_id              TEXT,
   timestamp              INTEGER NOT NULL,
   routing_level          INTEGER NOT NULL,
-  task_type_signature    TEXT,
+  taskTypeSignature      TEXT,
   approach               TEXT NOT NULL,
   approach_description   TEXT,
   risk_score             REAL,
@@ -37,11 +37,11 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   worker_selection_audit TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
+CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(taskTypeSignature);
 CREATE INDEX IF NOT EXISTS idx_et_outcome ON execution_traces(outcome);
 CREATE INDEX IF NOT EXISTS idx_et_timestamp ON execution_traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite);
-CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
+CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(taskTypeSignature, approach);
 CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
 `;
 
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS model_parameters (
 /** PH3.2: Per-task-type Self-Model parameter storage. */
 export const SELF_MODEL_PARAMS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS self_model_params (
-  task_type_signature   TEXT PRIMARY KEY,
+  taskTypeSignature     TEXT PRIMARY KEY,
   observation_count     INTEGER NOT NULL DEFAULT 0,
   avg_quality_score     REAL NOT NULL DEFAULT 0.5,
   avg_duration_per_file REAL NOT NULL DEFAULT 2000,

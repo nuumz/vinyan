@@ -138,7 +138,10 @@ export class CalibratedSelfModel implements SelfModel {
       testResults: (trace.outcome === 'success' ? 'pass' : 'fail') as 'pass' | 'fail' | 'partial',
       blastRadius: trace.affectedFiles.length,
       duration: trace.durationMs,
-      qualityScore: trace.qualityScore?.composite ?? 0.5,
+      qualityScore:
+        trace.qualityScore != null && !isNaN(trace.qualityScore.composite)
+          ? trace.qualityScore.composite
+          : 0.5, // Guard against NaN composite from unverified gate results (C3 EHD fix)
     };
 
     const error: PredictionError = {

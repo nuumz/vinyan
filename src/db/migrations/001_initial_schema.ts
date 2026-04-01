@@ -117,7 +117,7 @@ export const migration001: Migration = {
         task_id      TEXT NOT NULL,
         status       TEXT NOT NULL CHECK(status IN ('pending', 'running', 'done', 'failed')),
         enqueued_at  INTEGER NOT NULL,
-        startedAt   INTEGER,
+        started_at   INTEGER,
         completed_at INTEGER,
         result       TEXT,
         mutations    TEXT NOT NULL,

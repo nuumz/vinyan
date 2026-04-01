@@ -33,7 +33,7 @@ const PHASE1_QUALITY: QualityScore = {
   architecturalCompliance: 0.85,
   efficiency: 0.72,
   simplificationGain: 0.6,
-  testMutationScore: 0.45,
+  testPresenceHeuristic: 0.45,
   composite: 0.66,
   dimensionsAvailable: 4,
   phase: 'phase1',
@@ -88,7 +88,7 @@ describe('TraceStore', () => {
     expect(result.qualityScore!.architecturalCompliance).toBe(0.85);
     expect(result.qualityScore!.efficiency).toBe(0.72);
     expect(result.qualityScore!.simplificationGain).toBe(0.6);
-    expect(result.qualityScore!.testMutationScore).toBe(0.45);
+    expect(result.qualityScore!.testPresenceHeuristic).toBe(0.45);
     expect(result.qualityScore!.composite).toBe(0.66);
     expect(result.qualityScore!.dimensionsAvailable).toBe(4);
     expect(result.qualityScore!.phase).toBe('phase1');

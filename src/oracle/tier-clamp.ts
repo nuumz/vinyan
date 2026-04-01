@@ -40,7 +40,7 @@ export type PeerTrustLevel = keyof typeof PEER_TRUST_CAPS;
 /** Clamp confidence by tier ceiling (A5: Tiered Trust). */
 export function clampByTier(confidence: number, tier?: string): number {
   if (!tier) return confidence;
-  const cap = TIER_CAPS[tier] ?? 1.0;
+  const cap = TIER_CAPS[tier] ?? TIER_CAPS['heuristic']!;  // Unknown tier → heuristic default (0.9)
   return Math.min(confidence, cap);
 }
 
@@ -56,6 +56,18 @@ export function clampByPeerTrust(confidence: number, peerTrust?: PeerTrustLevel)
   if (!peerTrust) return confidence;
   const cap = PEER_TRUST_CAPS[peerTrust];
   return Math.min(confidence, cap);
+}
+
+/** Clamp by tier with A2A safety: untiered A2A verdicts default to 'speculative' (0.4). */
+export function clampByTierWithOrigin(
+  confidence: number,
+  tier?: string,
+  origin?: 'local' | 'a2a' | 'mcp',
+): number {
+  if (origin === 'a2a' && !tier) {
+    return Math.min(confidence, TIER_CAPS['speculative']!);  // 0.4
+  }
+  return clampByTier(confidence, tier);
 }
 
 /**

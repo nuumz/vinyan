@@ -10,7 +10,7 @@
 import { existsSync } from 'fs';
 import { basename, dirname, join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
-import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict } from '../../core/types.ts';
 
 /** Detect test runner from workspace markers. */
 function detectTestRunner(workspace: string): { cmd: string; args: string[] } {
@@ -46,7 +46,7 @@ function deriveTestFiles(target: string, workspace: string): string[] {
   return candidates.filter((f) => existsSync(f));
 }
 
-export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {
+export async function verify(hypothesis: HypothesisTuple): Promise<OracleResponse> {
   const start = performance.now();
   const { workspace, target } = hypothesis;
 
@@ -54,15 +54,14 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   const testFiles = deriveTestFiles(target, workspace);
 
   if (testFiles.length === 0) {
-    return buildVerdict({
-      verified: true,
-      type: 'known',
-      confidence: 0.5,
-      evidence: [],
-      fileHashes: {},
-      reason: `No test file found for ${target}`,
-      durationMs: performance.now() - start,
-    });
+    const end = performance.now();
+    return {
+      type: 'abstained',
+      reason: 'no_test_files',
+      oracleName: 'test',
+      durationMs: end - start,
+      prerequisites: ['Create test files matching the source structure'],
+    } satisfies OracleAbstention;
   }
 
   const runner = detectTestRunner(workspace);

@@ -61,7 +61,7 @@ function loadPathAliases(workspace: string): Map<string, string> {
         if (targets.length === 0) continue;
         // Handle "alias/*" → ["src/*"] pattern
         const aliasPrefix = pattern.replace(/\/?\*$/, '');
-        const targetDir = targets[0]?.replace(/\/?\*$/, '');
+        const targetDir = targets[0]!.replace(/\/?\*$/, '');
         aliases.set(aliasPrefix, resolve(base, targetDir));
       }
     }
@@ -75,7 +75,7 @@ function loadPathAliases(workspace: string): Map<string, string> {
 function resolveImport(
   specifier: string,
   fromFile: string,
-  _workspace: string,
+  workspace: string,
   pathAliases: Map<string, string>,
 ): string | null {
   let base: string;
@@ -88,7 +88,7 @@ function resolveImport(
     // Try path aliases
     let matched = false;
     for (const [prefix, targetDir] of pathAliases) {
-      if (specifier === prefix || specifier.startsWith(`${prefix}/`)) {
+      if (specifier === prefix || specifier.startsWith(prefix + '/')) {
         const rest = specifier === prefix ? '' : specifier.slice(prefix.length + 1);
         base = rest ? join(targetDir, rest) : targetDir;
         matched = true;
@@ -142,7 +142,7 @@ export function computeBlastRadius(targetAbsolute: string, graph: Map<string, Se
   for (const [file, deps] of graph) {
     for (const dep of deps) {
       if (!reverseGraph.has(dep)) reverseGraph.set(dep, new Set());
-      reverseGraph.get(dep)?.add(file);
+      reverseGraph.get(dep)!.add(file);
     }
   }
 
@@ -227,6 +227,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
 
     return buildVerdict({
       verified: true,
+      type: 'known',
+      confidence: 1.0,
       evidence,
       fileHashes: { [target]: fileHash },
       reason: `Blast radius: ${blastRadius} file(s) depend on ${target}`,

@@ -692,7 +692,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 fileHash: hash,
                 verifiedAt: Date.now(),
                 sessionId: input.id,
-                confidence: 1.0,
+                // M4 fix: use minimum oracle confidence instead of hardcoded 1.0
+                confidence: computeFactConfidence(verification.verdicts),
               });
             }
           } catch {
@@ -828,4 +829,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   };
   deps.bus?.emit('task:complete', { result: escalationResult });
   return escalationResult;
+}
+
+/**
+ * Compute fact confidence from oracle verdicts — use minimum of passing oracle confidences.
+ * M4 fix: WG facts must not be stored at 1.0 when oracles produced lower confidence scores.
+ * Minimum is the most conservative choice — WG fact confidence = weakest verification link.
+ */
+function computeFactConfidence(allVerdicts: Record<string, import('../core/types.ts').OracleVerdict>): number {
+  const passingConfidences = Object.values(allVerdicts)
+    .filter((v) => v.verified)
+    .map((v) => v.confidence);
+  if (passingConfidences.length === 0) return 0;
+  return Math.min(...passingConfidences);
 }

@@ -378,6 +378,18 @@ export interface ExecutionTrace {
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
+  /** EHD Phase 3: Aggregate verification confidence from the gate verdict. */
+  verificationConfidence?: number;
+  /** EHD Phase 3: 4-state epistemic decision from the gate. */
+  epistemicDecision?: 'allow' | 'allow-with-caveats' | 'uncertain' | 'block';
+  /** EHD Phase 3: Confidence-based action taken for this task. */
+  confidenceDecision?: {
+    action: 'allow' | 're-verify' | 'retry' | 'escalate' | 'refuse';
+    confidence: number;
+    reason?: string;
+  };
+  /** EHD Phase 3: Why the task was escalated (confidence vs. failure). */
+  escalationReason?: 'uncertain-verification' | 'low-pipeline-confidence';
 }
 
 // ---------------------------------------------------------------------------

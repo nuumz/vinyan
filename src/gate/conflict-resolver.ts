@@ -12,7 +12,7 @@
  *
  * Axiom compliance: A5 (Tiered Trust), A3 (Deterministic Governance — rule-based, no LLM).
  */
-import type { OracleVerdict } from '../core/types.ts';
+import type { OracleAbstention, OracleVerdict } from '../core/types.ts';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -92,12 +92,17 @@ function getTierPriority(tier: string): number {
  *
  * @param oracleResults - Map of oracle name → verdict (from gate pipeline)
  * @param config - Resolver configuration (tiers, accuracy, informational set)
+ * @param abstentions - Abstaining oracles (excluded from resolution, surfaced for observability)
  * @returns Resolved gate result with decision, reasons, and resolution details
  */
 export function resolveConflicts(
   oracleResults: Record<string, OracleVerdict>,
   config: ResolverConfig,
+  abstentions?: Record<string, OracleAbstention>,
 ): ResolvedGateResult {
+  // Abstaining oracles are NOT in oracleResults — they're passed separately.
+  // They have no opinion to conflict with and are excluded from all resolution steps.
+  // (See OracleAbstention in core/types.ts)
   const reasons: string[] = [];
   const resolutions: ConflictResolution[] = [];
   let hasContradiction = false;
@@ -203,8 +208,8 @@ function resolveConflictPair(
   }
 
   // Step 2: Confidence comparison — higher tier wins (A5)
-  const passTier = config.oracleTiers[passName] ?? 'deterministic';
-  const failTier = config.oracleTiers[failName] ?? 'deterministic';
+  const passTier = config.oracleTiers[passName] ?? 'heuristic';
+  const failTier = config.oracleTiers[failName] ?? 'heuristic';
   const passPriority = getTierPriority(passTier);
   const failPriority = getTierPriority(failTier);
 

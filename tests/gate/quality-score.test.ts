@@ -44,9 +44,13 @@ describe('computeQualityScore', () => {
     expect(qs.architecturalCompliance).toBe(0);
   });
 
-  test('no oracles → compliance 1.0 (vacuously true)', () => {
+  test('no oracles → C3 fix: INDETERMINATE (NaN + unverified)', () => {
     const qs = computeQualityScore({}, 100);
-    expect(qs.architecturalCompliance).toBe(1.0);
+    expect(Number.isNaN(qs.architecturalCompliance)).toBe(true);
+    expect(Number.isNaN(qs.composite)).toBe(true);
+    expect(qs.unverified).toBe(true);
+    expect(qs.dimensionsAvailable).toBe(0);
+    expect(qs.phase).toBe('phase0');
   });
 
   test('fast gate → high efficiency', () => {
@@ -121,27 +125,27 @@ describe('computeQualityScore', () => {
     expect(qs.simplificationGain).toBe(0.5);
   });
 
-  test('testMutationScore heuristic: tests exist + pass → 0.7', () => {
+  test('testPresenceHeuristic heuristic: tests exist + pass → 0.7', () => {
     const qs = computeQualityScore({ ast: makeVerdict(true) }, 100, 2000, undefined, {
       testsExist: true,
       testsPassed: true,
     });
-    expect(qs.testMutationScore).toBe(0.7);
+    expect(qs.testPresenceHeuristic).toBe(0.7);
     expect(qs.dimensionsAvailable).toBe(3);
     expect(qs.phase).toBe('phase1');
   });
 
-  test('testMutationScore heuristic: tests exist + fail → 0.3', () => {
+  test('testPresenceHeuristic heuristic: tests exist + fail → 0.3', () => {
     const qs = computeQualityScore({ ast: makeVerdict(true) }, 100, 2000, undefined, {
       testsExist: true,
       testsPassed: false,
     });
-    expect(qs.testMutationScore).toBe(0.3);
+    expect(qs.testPresenceHeuristic).toBe(0.3);
   });
 
-  test('testMutationScore heuristic: no tests → 0.4', () => {
+  test('testPresenceHeuristic heuristic: no tests → 0.4', () => {
     const qs = computeQualityScore({ ast: makeVerdict(true) }, 100, 2000, undefined, { testsExist: false });
-    expect(qs.testMutationScore).toBe(0.4);
+    expect(qs.testPresenceHeuristic).toBe(0.4);
   });
 
   test('4 dimensions: composite uses phase1 weights', () => {
@@ -161,7 +165,7 @@ describe('computeQualityScore', () => {
       qs.architecturalCompliance * 0.3 +
       qs.efficiency * 0.2 +
       qs.simplificationGain! * 0.25 +
-      qs.testMutationScore! * 0.25;
+      qs.testPresenceHeuristic! * 0.25;
     expect(qs.composite).toBeCloseTo(expected, 5);
   });
 
@@ -170,6 +174,6 @@ describe('computeQualityScore', () => {
     expect(qs.dimensionsAvailable).toBe(2);
     expect(qs.phase).toBe('phase0');
     expect(qs.simplificationGain).toBeUndefined();
-    expect(qs.testMutationScore).toBeUndefined();
+    expect(qs.testPresenceHeuristic).toBeUndefined();
   });
 });

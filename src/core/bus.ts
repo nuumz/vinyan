@@ -86,6 +86,11 @@ export interface VinyanBusEvents {
   // PH3.6: Epsilon-greedy exploration
   'task:explore': { taskId: string; fromLevel: number; toLevel: number };
 
+  // EHD Phase 3B: Pipeline confidence decision events
+  'pipeline:re-verify': { taskId: string; composite: number | undefined; routing: RoutingDecision };
+  'pipeline:escalate': { taskId: string; composite: number | undefined; fromLevel: number };
+  'pipeline:refuse': { taskId: string; composite: number | undefined; reason: string };
+
   // Guardrail detections
   'guardrail:injection_detected': { field: string; patterns: string[] };
   'guardrail:bypass_detected': { field: string; patterns: string[] };

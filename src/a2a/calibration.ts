@@ -34,6 +34,8 @@ interface RemoteCalibrationRecord {
 export interface CalibrationExchangeConfig {
   instanceId: string;
   discountThreshold?: number;
+  /** Optional self-model for warm-starting from peer calibration data (PH5.9). */
+  selfModel?: { warmStartFromPeer(report: CalibrationReport, weight?: number): number };
 }
 
 const DEFAULT_DISCOUNT_THRESHOLD = 0.3;
@@ -83,6 +85,11 @@ export class CalibrationExchange {
       report,
       receivedAt: Date.now(),
     });
+
+    // PH5.9: Feed peer calibration into self-model as warm-start (reduced weight)
+    if (this.config.selfModel && !this.shouldDiscountPeer(peerId)) {
+      this.config.selfModel.warmStartFromPeer(report, 0.25);
+    }
   }
 
   getRemoteCalibration(peerId: string): CalibrationReport | undefined {

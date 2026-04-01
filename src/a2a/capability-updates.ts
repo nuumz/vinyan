@@ -39,6 +39,8 @@ export interface CapabilityManagerConfig {
   instanceId: string;
   peerUrls: string[];
   bus?: EventBus<VinyanBusEvents>;
+  /** Optional oracle profile store for creating probation profiles from peer capability updates (PH5.9). */
+  oracleProfileStore?: import('../db/oracle-profile-store.ts').OracleProfileStore;
 }
 
 export class CapabilityManager {
@@ -89,6 +91,17 @@ export class CapabilityManager {
       instanceId: update.instance_id,
       capabilityVersion: update.capability_version,
     });
+
+    // PH5.9: Create oracle profile in probation when a peer adds an oracle
+    if (update.update_type === 'oracle_added' && update.delta && this.config.oracleProfileStore) {
+      const existing = this.config.oracleProfileStore.getProfile(update.instance_id, update.delta.oracle_name);
+      if (!existing) {
+        this.config.oracleProfileStore.createProfile({
+          instanceId: update.instance_id,
+          oracleName: update.delta.oracle_name,
+        });
+      }
+    }
 
     return true;
   }

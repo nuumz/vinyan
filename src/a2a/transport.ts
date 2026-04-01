@@ -15,7 +15,7 @@ export interface ECPTransport {
   /** Release any resources held by this transport. */
   close(): Promise<void>;
   /** Transport type identifier — used for confidence clamping (A5). */
-  readonly transportType: 'stdio' | 'http' | 'a2a';
+  readonly transportType: 'stdio' | 'websocket' | 'http' | 'a2a';
   /** Whether the transport is currently connected and usable. */
   readonly isConnected: boolean;
 }

@@ -1,5 +1,6 @@
 import { StdioTransport } from '../a2a/stdio-transport.ts';
 import type { ECPTransport } from '../a2a/transport.ts';
+import { WebSocketTransport } from '../a2a/websocket-transport.ts';
 import { buildVerdict } from '../core/index.ts';
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import { getOracleEntry, getOraclePath } from './registry.ts';
@@ -15,6 +16,10 @@ export interface RunOracleOptions {
   transport?: ECPTransport;
   /** Peer trust level — only applies when transport is A2A. */
   peerTrust?: PeerTrustLevel;
+  /** WebSocket endpoint URL (for websocket transport). */
+  endpoint?: string;
+  /** Auth token for WebSocket transport. */
+  authToken?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -34,8 +39,8 @@ export async function runOracle(
   const oraclePath = options.oraclePath ?? getOraclePath(oracleName);
   const timeoutMs = options.timeoutMs ?? entry?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Resolve transport: explicit > build from registry/options
-  const transport = options.transport ?? resolveStdioTransport(oracleName, customCommand, oraclePath);
+  // Resolve transport: explicit > websocket (from registry) > stdio
+  const transport = options.transport ?? resolveTransport(oracleName, entry, customCommand, oraclePath, options);
   if (!transport) {
     return buildVerdict({
       verified: false,
@@ -69,14 +74,35 @@ export async function runOracle(
   return { ...verdict, confidence: clampedConfidence, oracleName, durationMs: verdict.durationMs };
 }
 
-function resolveStdioTransport(
+/** Persistent WebSocket transport cache — reuse connections across invocations. */
+const wsTransportCache = new Map<string, WebSocketTransport>();
+
+function resolveTransport(
   oracleName: string,
+  entry: { transport?: string; command?: string } | undefined,
   customCommand: string | undefined,
   oraclePath: string | undefined,
-): StdioTransport | null {
+  options: RunOracleOptions,
+): ECPTransport | null {
+  const transportType = entry?.transport;
+
+  // WebSocket transport — persistent connection via cache
+  if (transportType === 'websocket') {
+    const endpoint = options.endpoint ?? (entry as { endpoint?: string })?.endpoint;
+    if (!endpoint) return null;
+
+    const cacheKey = `${oracleName}:${endpoint}`;
+    let ws = wsTransportCache.get(cacheKey);
+    if (!ws || !ws.isConnected) {
+      ws = new WebSocketTransport({ endpoint, oracleName, authToken: options.authToken });
+      ws.connect();
+      wsTransportCache.set(cacheKey, ws);
+    }
+    return ws;
+  }
+
+  // Default: stdio transport
   if (!customCommand && !oraclePath) return null;
-
   const spawnArgs = customCommand ? customCommand.split(/\s+/) : ['bun', 'run', oraclePath!];
-
   return new StdioTransport({ spawnArgs, oracleName });
 }

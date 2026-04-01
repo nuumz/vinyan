@@ -8,6 +8,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ALL_MIGRATIONS, MigrationRunner } from './migrations/index.ts';
+import { migratePipelineConfidenceColumns } from './trace-schema.ts';
 
 export class VinyanDB {
   private db: Database;
@@ -23,6 +24,9 @@ export class VinyanDB {
     // Apply versioned migrations (TDD §20)
     const runner = new MigrationRunner();
     runner.migrate(this.db, ALL_MIGRATIONS);
+
+    // Safe column additions for EHD Phase 3 (idempotent ALTER TABLE)
+    migratePipelineConfidenceColumns(this.db);
   }
 
   getDb(): Database {

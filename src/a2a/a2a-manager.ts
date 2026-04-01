@@ -328,6 +328,15 @@ export class A2AManagerImpl {
         return this.routeKnowledgeTransfer(peerId, payload);
 
       case 'knowledge_offer':
+        if (this.knowledgeExchangeManager) {
+          const offer = payload as unknown as import('./knowledge-exchange.ts').KnowledgeOffer;
+          const acceptance = this.knowledgeExchangeManager.evaluateOffer(offer);
+          this.config.bus.emit('a2a:knowledgeOffered', {
+            peerId,
+            patternCount: offer.patterns.length,
+          });
+          return { handled: true, type: 'knowledge_offer_evaluated', data: acceptance as unknown as Record<string, unknown> };
+        }
         return { handled: true, type: 'knowledge_offer_received' };
 
       case 'knowledge_accept':
@@ -368,7 +377,13 @@ export class A2AManagerImpl {
       return { handled: true, type: 'gossip_propagated' };
     }
 
-    // Generic knowledge transfer
+    // Knowledge transfer with patterns — import via KnowledgeExchangeManager
+    if (this.knowledgeExchangeManager && payload.patterns) {
+      const transfer = payload as unknown as import('./knowledge-exchange.ts').KnowledgeTransfer;
+      const imported = this.knowledgeExchangeManager.importPatterns(transfer, peerId);
+      return { handled: true, type: 'knowledge_transfer_imported', data: { imported: imported.length } };
+    }
+
     return { handled: true, type: 'knowledge_transfer_received' };
   }
 

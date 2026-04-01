@@ -390,6 +390,8 @@ export interface ExecutionTrace {
   };
   /** EHD Phase 3: Why the task was escalated (confidence vs. failure). */
   escalationReason?: 'uncertain-verification' | 'low-pipeline-confidence';
+  /** EHD Phase 3B: Pipeline-level composite confidence (geometric mean across 6 steps). */
+  pipelineConfidence?: { composite: number; formula: string };
 }
 
 // ---------------------------------------------------------------------------

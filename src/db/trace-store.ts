@@ -23,7 +23,8 @@ export class TraceStore {
         model_used, tokens_consumed, duration_ms,
         outcome, failure_reason, oracle_verdicts, affected_files,
         prediction_error, validation_depth, shadow_validation, exploration,
-        framework_markers, worker_selection_audit
+        framework_markers, worker_selection_audit,
+        pipeline_confidence_composite, confidence_decision
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -32,7 +33,8 @@ export class TraceStore {
         $model_used, $tokens_consumed, $duration_ms,
         $outcome, $failure_reason, $oracle_verdicts, $affected_files,
         $prediction_error, $validation_depth, $shadow_validation, $exploration,
-        $framework_markers, $worker_selection_audit
+        $framework_markers, $worker_selection_audit,
+        $pipeline_confidence_composite, $confidence_decision
       )
     `);
   }
@@ -68,6 +70,8 @@ export class TraceStore {
       $exploration: trace.exploration ? 1 : null,
       $framework_markers: trace.frameworkMarkers ? JSON.stringify(trace.frameworkMarkers) : null,
       $worker_selection_audit: trace.workerSelectionAudit ? JSON.stringify(trace.workerSelectionAudit) : null,
+      $pipeline_confidence_composite: trace.pipelineConfidence?.composite ?? null,
+      $confidence_decision: trace.confidenceDecision ? JSON.stringify(trace.confidenceDecision) : null,
     });
   }
 
@@ -167,5 +171,9 @@ function rowToTrace(row: any): ExecutionTrace {
     exploration: row.exploration === 1 ? true : undefined,
     frameworkMarkers: row.framework_markers ? JSON.parse(row.framework_markers) : undefined,
     workerSelectionAudit: row.worker_selection_audit ? JSON.parse(row.worker_selection_audit) : undefined,
+    pipelineConfidence: row.pipeline_confidence_composite != null
+      ? { composite: row.pipeline_confidence_composite, formula: '' }
+      : undefined,
+    confidenceDecision: row.confidence_decision ? JSON.parse(row.confidence_decision) : undefined,
   };
 }

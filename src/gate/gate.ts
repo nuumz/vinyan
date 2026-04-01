@@ -23,6 +23,12 @@ import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
 import type { RiskFactors } from '../orchestrator/types.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
+import {
+  computeAggregateConfidence,
+  deriveEpistemicDecision,
+  generateResolutionHints,
+  type EpistemicGateDecision,
+} from './epistemic-decision.ts';
 import { logDecision, type SessionLogEntry } from './logger.ts';
 import type { ComplexityContext, TestContext } from './quality-score.ts';
 import { computeQualityScore } from './quality-score.ts';
@@ -33,34 +39,17 @@ import { isMutatingTool } from './tool-classifier.ts';
 const circuitBreaker = new OracleCircuitBreaker();
 
 /**
- * Module-level oracle accuracy tracker — aggregates verdict correctness over time.
- * Used by conflict resolver step 4 (historical accuracy comparison).
- * "Correct" means the oracle verdict aligned with the final gate decision.
+ * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
+ * from trace-based calibration in SelfModel (Phase 3). Kept as no-op for backward compat.
  */
-const oracleAccuracyTracker = new Map<string, { total: number; correct: number }>();
-
-/** Update accuracy tracker after gate resolution. */
-function updateOracleAccuracy(oracleResults: Record<string, OracleVerdict>, finalDecision: 'allow' | 'block'): void {
-  for (const [name, verdict] of Object.entries(oracleResults)) {
-    const entry = oracleAccuracyTracker.get(name) ?? { total: 0, correct: 0 };
-    entry.total++;
-    // Oracle is "correct" if it agrees with the final decision
-    const oracleBlocked = !verdict.verified;
-    const decisionBlocked = finalDecision === 'block';
-    if (oracleBlocked === decisionBlocked) entry.correct++;
-    oracleAccuracyTracker.set(name, entry);
-  }
-}
-
-/** Exported for testing and external consumers. */
 export function getOracleAccuracy(): Record<string, { total: number; correct: number }> {
-  return Object.fromEntries(oracleAccuracyTracker);
+  return {};
 }
 
 // ── Public types ────────────────────────────────────────────────
 
-/** 4-state epistemic gate decision (A2 compliance, Phase 3 prerequisite). */
-export type EpistemicGateDecision = 'commit' | 'abstain' | 'escalate' | 'contradict';
+// EpistemicGateDecision is re-exported from epistemic-decision.ts
+export type { EpistemicGateDecision };
 
 export interface GateRequest {
   /** Agent tool name, e.g. "write_file", "edit_file" */
@@ -301,15 +290,35 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     oracleTiers: Object.fromEntries(
       Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'deterministic']),
     ),
-    oracleAccuracy: oracleAccuracyTracker.size > 0 ? Object.fromEntries(oracleAccuracyTracker) : undefined,
     informationalOracles: INFORMATIONAL_ORACLES,
   }, oracleAbstentions);
   reasons.push(...resolved.reasons);
 
-  const decision: GateDecision = reasons.length > 0 ? 'block' : 'allow';
+  // Compute aggregate confidence (weighted harmonic mean across oracle tiers)
+  const oracleTiersForConfidence: Record<string, string> = Object.fromEntries(
+    Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'heuristic']),
+  );
+  const aggregateConfidence = computeAggregateConfidence(oracleResults, oracleTiersForConfidence);
+  // "All abstained" means oracles were dispatched but all returned abstentions (no verdicts).
+  // Empty oracleResults + empty oracleAbstentions = no oracles ran (deliberate skip, not abstention).
+  const hasAllAbstained = Object.keys(oracleResults).length === 0 && Object.keys(oracleAbstentions).length > 0;
+  const epistemicDecision = deriveEpistemicDecision(aggregateConfidence, hasAllAbstained);
 
-  // Update oracle accuracy tracker with this gate run's results
-  updateOracleAccuracy(oracleResults, decision);
+  // Backward-compat: map epistemic decision to binary allow/block
+  // When no oracles ran at all (e.g., L0 hash-only risk tier), fall back to reasons-only decision.
+  const noOraclesDispatched = Object.keys(oracleResults).length === 0 && Object.keys(oracleAbstentions).length === 0;
+  const decision: GateDecision = reasons.length > 0
+    ? 'block'
+    : noOraclesDispatched
+      ? 'allow'
+      : (epistemicDecision === 'allow' || epistemicDecision === 'allow-with-caveats') ? 'allow' : 'block';
+
+  // Generate caveats for non-clean passes
+  const abstentionReasons = Object.values(oracleAbstentions).map(a => a.reason);
+  const caveats = epistemicDecision !== 'allow'
+    ? generateResolutionHints(abstentionReasons, aggregateConfidence).map(h => h as string)
+    : [];
+
   const durationMs = performance.now() - start;
 
   // Build complexity context for QualityScore Phase 1 dimensions
@@ -341,6 +350,9 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     reasons,
     oracle_results: oracleResults,
     oracle_abstentions: oracleAbstentions,
+    epistemicDecision,
+    aggregateConfidence,
+    caveats: caveats.length > 0 ? caveats : undefined,
     durationMs,
     qualityScore: computeQualityScore(
       oracleResults,

@@ -15,6 +15,7 @@ import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
+import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
@@ -46,6 +47,7 @@ import { TraceCollectorImpl } from './trace-collector.ts';
 import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
 import { WorkerLifecycle } from './worker-lifecycle.ts';
+import { InstanceCoordinator } from './instance-coordinator.ts';
 import { WorkerSelector } from './worker-selector.ts';
 
 export interface OrchestratorConfig {
@@ -273,6 +275,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     });
   }
 
+  // Phase 5: Instance Coordinator (PH5.8) — cross-instance task delegation
+  let instanceCoordinator: InstanceCoordinator | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const instancesConfig = vinyanConfig.network?.instances;
+    if (instancesConfig?.enabled && instancesConfig.peers?.length) {
+      const oracleProfileStore = db ? new OracleProfileStore(db.getDb()) : undefined;
+      instanceCoordinator = new InstanceCoordinator({
+        peerUrls: instancesConfig.peers.map((p: { url: string }) => p.url),
+        instanceId: crypto.randomUUID(),
+        profileStore: oracleProfileStore,
+        bus,
+      });
+    }
+  } catch {
+    /* instance coordinator wiring is best-effort */
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -295,6 +315,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     testGenerator,
     // Disable exploration in test mode for deterministic routing (A3)
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
+    // Phase 5 — Instance Coordinator (PH5.8)
+    instanceCoordinator: instanceCoordinator,
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)

@@ -11,16 +11,23 @@ export type {
   QualityScore,
 } from './types.ts';
 export { isAbstention } from './types.ts';
-export type { SubjectiveOpinion } from './subjective-opinion.ts';
+export type { ConflictReport, FusionInput, SubjectiveOpinion } from './subjective-opinion.ts';
 export {
+  averagingFusion,
+  clampOpinionByTier,
+  computeConflictReport,
+  cumulativeFusion,
   dogmatic,
   fromScalar,
+  fuseAll,
   isValid,
   isVacuous,
   projectedProbability,
   resolveOpinion,
   SubjectiveOpinionSchema,
+  temporalDecay,
   vacuous,
+  weightedFusion,
 } from './subjective-opinion.ts';
 
 /**

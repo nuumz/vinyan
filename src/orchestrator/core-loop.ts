@@ -28,6 +28,7 @@ import type {
   ToolCall,
   WorkingMemoryState,
 } from './types.ts';
+import { computePipelineConfidence, deriveConfidenceDecision, type ConfidenceDecision } from './pipeline-confidence.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
 import { WorkingMemory } from './working-memory.ts';
 
@@ -93,6 +94,9 @@ interface VerificationResult {
   passed: boolean;
   verdicts: Record<string, import('../core/types.ts').OracleVerdict>;
   reason?: string;
+  epistemicDecision?: import('../gate/epistemic-decision.ts').EpistemicGateDecision;
+  aggregateConfidence?: number;
+  caveats?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +131,9 @@ export interface OrchestratorDeps {
   testGenerator?: import('./test-gen/test-generator.ts').TestGenerator;
   /** Epsilon-greedy exploration rate (default 0.05). Set to 0 in tests for determinism. */
   explorationEpsilon?: number;
+  // Phase 5 — optional, activated when A2A instances configured
+  /** InstanceCoordinator for cross-instance task delegation and remote oracle dispatch (PH5.8). */
+  instanceCoordinator?: import('./instance-coordinator.ts').InstanceCoordinator;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -260,9 +267,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
       // ── Step 2: PREDICT (L2+ only) ───────────────────────────────
       let prediction: SelfModelPrediction | undefined;
+      let predictionConfidence: number | undefined;
+      let metaPredictionConfidence: number | undefined;
       if (routing.level >= 2) {
         prediction = await deps.selfModel.predict(input, perception);
         deps.bus?.emit('selfmodel:predict', { prediction });
+
+        // Injection A: capture prediction confidence for pipeline computation
+        predictionConfidence = prediction.confidence;
+        metaPredictionConfidence = prediction.metaConfidence;
 
         // S1: Cold-start safeguard — enforce minimum routing level
         if (prediction.forceMinLevel != null && routing.level < prediction.forceMinLevel) {
@@ -289,6 +302,36 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
         // A2: Fleet-level uncertainty — all workers below capability threshold
         if (selection.isUncertain) {
+          // PH5.8: Try cross-instance delegation before giving up
+          if (deps.instanceCoordinator?.canDelegate(input, fingerprint)) {
+            const delegation = await deps.instanceCoordinator.delegate(input, fingerprint);
+            if (delegation.delegated && delegation.result) {
+              // I12: Re-verify delegated result locally — remote cannot bypass verification
+              if (delegation.result.mutations.length > 0 && deps.workspace) {
+                // Map TaskResult mutations to OracleGate.verify format (file + content)
+                const verifyMutations = delegation.result.mutations.map((m) => ({
+                  file: m.file,
+                  content: m.diff, // Best-effort: use diff as content proxy for re-verification
+                }));
+                const reVerify = await deps.oracleGate.verify(verifyMutations, deps.workspace);
+                if (!reVerify.passed) {
+                  deps.bus?.emit('task:uncertain', {
+                    taskId: input.id,
+                    reason: `Delegated result from ${delegation.peerId} failed local re-verification`,
+                    maxCapability: selection.maxCapability ?? 0,
+                  });
+                  // Fall through to uncertain result below
+                } else {
+                  deps.bus?.emit('task:complete', { result: delegation.result });
+                  return delegation.result;
+                }
+              } else {
+                deps.bus?.emit('task:complete', { result: delegation.result });
+                return delegation.result;
+              }
+            }
+          }
+
           const uncertainTrace: ExecutionTrace = {
             id: `trace-${input.id}-uncertain`,
             taskId: input.id,
@@ -468,6 +511,22 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         testContext,
       );
 
+      // ── Injection B: Compute pipeline confidence (L1+ only) ──────
+      const verificationConfidence = verification.aggregateConfidence
+        ?? (verification.passed ? 0.85 : 0.30);
+
+      let pipelineConf: ReturnType<typeof computePipelineConfidence> | undefined;
+      let confidenceDecision: ConfidenceDecision | undefined;
+
+      if (routing.level > 0) {
+        pipelineConf = computePipelineConfidence({
+          prediction: predictionConfidence,
+          metaPrediction: metaPredictionConfidence,
+          verification: verificationConfidence,
+        });
+        confidenceDecision = deriveConfidenceDecision(pipelineConf.composite);
+      }
+
       // ── Step 6: LEARN ────────────────────────────────────────────
       // Compute task type signature for Sleep Cycle grouping
       const filePattern = (input.targetFiles ?? []).sort().join(',') || '*';
@@ -476,6 +535,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // PH4: Detect framework markers for capability routing (always compute, data-gate only in fingerprint)
       const { detectFrameworkMarkers } = await import('./task-fingerprint.ts');
       const frameworkMarkers = detectFrameworkMarkers(perception);
+
+      // Injection D: determine outcome using confidence decision when available
+      const effectiveOutcome: ExecutionTrace['outcome'] =
+        (routing.level === 0 || !confidenceDecision)
+          ? (verification.passed ? 'success' : 'failure')
+          : (confidenceDecision === 'allow' ? 'success' : 'failure');
 
       const trace: ExecutionTrace = {
         id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
@@ -489,8 +554,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         modelUsed: routing.model ?? 'none',
         tokensConsumed: workerResult.tokensConsumed,
         durationMs: workerResult.durationMs,
-        outcome: verification.passed ? 'success' : 'failure',
-        failureReason: verification.passed ? undefined : verification.reason,
+        outcome: effectiveOutcome,
+        failureReason: effectiveOutcome === 'success' ? undefined : verification.reason,
         affectedFiles: workerResult.mutations.map((m) => m.file),
         qualityScore,
         prediction,
@@ -498,6 +563,18 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         exploration: explorationFlag || undefined,
         workerSelectionAudit: workerSelection,
         frameworkMarkers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
+        // Injection D: populate pipeline confidence fields
+        verificationConfidence: routing.level > 0 ? verificationConfidence : undefined,
+        epistemicDecision: verification.epistemicDecision,
+        confidenceDecision: confidenceDecision ? {
+          action: confidenceDecision,
+          confidence: pipelineConf?.composite ?? 0,
+          reason: pipelineConf?.formula,
+        } : undefined,
+        pipelineConfidence: pipelineConf ? {
+          composite: pipelineConf.composite,
+          formula: pipelineConf.formula,
+        } : undefined,
       };
 
       // Calibrate self-model BEFORE recording — so predictionError is included in single insert
@@ -549,8 +626,110 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         }
       }
 
+      // ── Injection C: Confidence-driven decision routing ──────────
+      // Determine whether to take the success path based on confidence decision (L1+)
+      // or binary verification result (L0).
+      const shouldCommit = routing.level === 0 || !confidenceDecision
+        ? verification.passed
+        : confidenceDecision === 'allow';
+
+      // Handle re-verify, escalate, refuse for L1+ before the main success/failure branch
+      if (routing.level > 0 && confidenceDecision && !shouldCommit) {
+        switch (confidenceDecision) {
+          case 're-verify': {
+            // Escalate verification level without consuming a retry
+            deps.bus?.emit('pipeline:re-verify', {
+              taskId: input.id,
+              composite: pipelineConf?.composite,
+              routing,
+            });
+            // Re-run verification at a higher level
+            const reVerification = await deps.oracleGate.verify(
+              workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
+              input.targetFiles?.[0] ?? '.',
+            );
+            const reVerConfidence = reVerification.aggregateConfidence
+              ?? (reVerification.passed ? 0.85 : 0.30);
+            const reVerPipeline = computePipelineConfidence({
+              prediction: predictionConfidence,
+              metaPrediction: metaPredictionConfidence,
+              verification: reVerConfidence,
+            });
+            const reVerDecision = deriveConfidenceDecision(reVerPipeline.composite);
+
+            if (reVerDecision === 'allow' || reVerification.passed) {
+              // Update trace with re-verification data
+              trace.verificationConfidence = reVerConfidence;
+              trace.confidenceDecision = {
+                action: reVerDecision,
+                confidence: reVerPipeline.composite,
+                reason: reVerPipeline.formula,
+              };
+              trace.pipelineConfidence = {
+                composite: reVerPipeline.composite,
+                formula: reVerPipeline.formula,
+              };
+              trace.outcome = 'success';
+              trace.failureReason = undefined;
+              // Fall through to success path by updating verification reference
+              // (but we can't reassign const — so we handle commit inline)
+              // Commit success directly here
+            } else {
+              // Re-verify didn't help → fall through to failure
+              workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+              for (const oName of failedOracles) {
+                deps.bus?.emit('context:verdict_omitted', {
+                  taskId: input.id,
+                  oracleName: oName,
+                  reason: 'Oracle verdict available but not propagated to worker context on retry',
+                });
+              }
+              if (matchedSkill && deps.skillManager) {
+                deps.skillManager.recordOutcome(matchedSkill, false);
+                deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
+                matchedSkill = null;
+              }
+              continue;
+            }
+            break;
+          }
+          case 'escalate': {
+            // Bump routing level and skip remaining retries at this level
+            deps.bus?.emit('pipeline:escalate', {
+              taskId: input.id,
+              composite: pipelineConf?.composite,
+              fromLevel: routing.level,
+            });
+            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            if (matchedSkill && deps.skillManager) {
+              deps.skillManager.recordOutcome(matchedSkill, false);
+              deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
+              matchedSkill = null;
+            }
+            // Exhaust retries to trigger routing level escalation
+            retry = input.budget.maxRetries + deliberationBonusRetries;
+            continue;
+          }
+          case 'refuse': {
+            // Block — record failed approach, do not retry
+            deps.bus?.emit('pipeline:refuse', {
+              taskId: input.id,
+              composite: pipelineConf?.composite,
+              reason: 'Pipeline confidence below refuse threshold',
+            });
+            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            if (matchedSkill && deps.skillManager) {
+              deps.skillManager.recordOutcome(matchedSkill, false);
+              deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
+              matchedSkill = null;
+            }
+            continue;
+          }
+        }
+      }
+
       // ── SUCCESS → return result ──────────────────────────────────
-      if (verification.passed) {
+      if (shouldCommit || trace.outcome === 'success') {
         // ── WP-2: LLM-as-Critic (semantic verification at L2+) ──────
         // A1: critic is a separate LLM call from the generator
         if (deps.criticEngine && routing.level >= 2) {

@@ -41,8 +41,10 @@ const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
   'task:explore',
   'guardrail:injection_detected',
   'guardrail:bypass_detected',
+  'guardrail:violation',
   'selfmodel:calibration_error',
   'oracle:contradiction',
+  'oracle:deliberation_request',
   'decomposer:fallback',
   'worker:registered',
   'worker:promoted',
@@ -55,6 +57,34 @@ const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
   'fleet:diversity_enforced',
   'task:uncertain',
   'commit:rejected',
+  // Phase 5 — Observability
+  'memory:eviction_warning',
+  'context:verdict_omitted',
+  'selfmodel:systematic_miscalibration',
+  'observability:alert',
+  // Phase 5 — API & Session
+  'api:request',
+  'api:response',
+  'session:created',
+  'session:compacted',
+  // Phase 5 — File & Peer
+  'file:hashChanged',
+  'peer:connected',
+  'peer:disconnected',
+  'peer:trustChanged',
+  // Phase 5 — A2A Knowledge
+  'a2a:verdictReceived',
+  'a2a:knowledgeImported',
+  'a2a:knowledgeOffered',
+  'a2a:knowledgeAccepted',
+  // Phase 5 — A2A Coordination
+  'a2a:proposalReceived',
+  'a2a:commitmentFailed',
+  'a2a:retractionReceived',
+  'a2a:feedbackReceived',
+  'a2a:intentDeclared',
+  'a2a:intentConflict',
+  'a2a:capabilityUpdated',
 ];
 
 describe('audit-listener ALL_EVENTS coverage', () => {

@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   shadow_validation      TEXT,
   exploration            INTEGER,
   framework_markers      TEXT,
-  worker_selection_audit TEXT
+  worker_selection_audit TEXT,
+  pipeline_confidence_composite REAL,
+  confidence_decision    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -44,6 +46,22 @@ CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite)
 CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
 CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
 `;
+
+/**
+ * Safe migration for pipeline confidence columns.
+ * Uses PRAGMA table_info to check if columns already exist before altering.
+ */
+export function migratePipelineConfidenceColumns(db: import('bun:sqlite').Database): void {
+  const columns = db.prepare('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+  const columnNames = new Set(columns.map((c) => c.name));
+
+  if (!columnNames.has('pipeline_confidence_composite')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN pipeline_confidence_composite REAL');
+  }
+  if (!columnNames.has('confidence_decision')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN confidence_decision TEXT');
+  }
+}
 
 export const MODEL_PARAMS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS model_parameters (

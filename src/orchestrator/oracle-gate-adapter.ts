@@ -4,8 +4,8 @@
  * Maps mutations[] → individual GateRequest calls → aggregated VerificationResult.
  * Source of truth: spec/tdd.md §16 (Core Loop Step 5: VERIFY)
  */
-
 import type { OracleVerdict } from '../core/types.ts';
+import type { EpistemicGateDecision } from '../gate/epistemic-decision.ts';
 import { runGate } from '../gate/gate.ts';
 import type { OracleGate } from './core-loop.ts';
 
@@ -25,6 +25,19 @@ export class OracleGateAdapter implements OracleGate {
     const allVerdicts: Record<string, OracleVerdict> = {};
     const reasons: string[] = [];
     let allPassed = true;
+
+    // Track epistemic fields — use most conservative across all gate results
+    let worstEpistemic: EpistemicGateDecision | undefined;
+    let lowestConfidence: number | undefined;
+    const allCaveats: string[] = [];
+
+    // Epistemic decision severity for picking the worst
+    const SEVERITY: Record<EpistemicGateDecision, number> = {
+      allow: 0,
+      'allow-with-caveats': 1,
+      uncertain: 2,
+      block: 3,
+    };
 
     // Run gate verification in parallel for multi-file mutations
     const results = await Promise.all(
@@ -54,12 +67,30 @@ export class OracleGateAdapter implements OracleGate {
         allPassed = false;
         reasons.push(...gateResult.reasons);
       }
+
+      // Aggregate epistemic fields — keep the worst (most conservative)
+      if (gateResult.epistemicDecision) {
+        if (!worstEpistemic || SEVERITY[gateResult.epistemicDecision] > SEVERITY[worstEpistemic]) {
+          worstEpistemic = gateResult.epistemicDecision;
+        }
+      }
+      if (gateResult.aggregateConfidence !== undefined) {
+        if (lowestConfidence === undefined || gateResult.aggregateConfidence < lowestConfidence) {
+          lowestConfidence = gateResult.aggregateConfidence;
+        }
+      }
+      if (gateResult.caveats) {
+        allCaveats.push(...gateResult.caveats);
+      }
     }
 
     return {
       passed: allPassed,
       verdicts: allVerdicts,
       reason: allPassed ? undefined : reasons.join('; '),
+      epistemicDecision: worstEpistemic,
+      aggregateConfidence: lowestConfidence,
+      caveats: allCaveats.length > 0 ? allCaveats : undefined,
     };
   }
 }

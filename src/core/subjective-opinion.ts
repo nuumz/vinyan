@@ -109,3 +109,317 @@ export function resolveOpinion(
   }
   return fromScalar(verdict.confidence, baseRate);
 }
+
+// ---------------------------------------------------------------------------
+// Internal: validation tolerance & normalization
+// ---------------------------------------------------------------------------
+
+/** Floating-point tolerance for b+d+u=1 check. */
+const EPSILON = 1e-9;
+
+function normalize(o: SubjectiveOpinion): SubjectiveOpinion {
+  const sum = o.belief + o.disbelief + o.uncertainty;
+  if (sum === 0) return vacuous(o.baseRate);
+  return {
+    belief: o.belief / sum,
+    disbelief: o.disbelief / sum,
+    uncertainty: o.uncertainty / sum,
+    baseRate: o.baseRate,
+  };
+}
+
+function assertValid(o: SubjectiveOpinion, label: string): void {
+  if (!isValid(o)) {
+    throw new Error(
+      `Invalid SubjectiveOpinion (${label}): b=${o.belief}, d=${o.disbelief}, u=${o.uncertainty}, ` +
+        `sum=${o.belief + o.disbelief + o.uncertainty}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Cumulative Fusion (Josang 2016 §12.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cumulative fusion for independent oracle pairs.
+ * Reduces uncertainty when both sources carry evidence.
+ */
+export function cumulativeFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): SubjectiveOpinion {
+  assertValid(a, "cumulativeFusion.a");
+  assertValid(b, "cumulativeFusion.b");
+
+  const uA = a.uncertainty;
+  const uB = b.uncertainty;
+
+  // Both dogmatic — simple average
+  if (uA < EPSILON && uB < EPSILON) {
+    return normalize({
+      belief: (a.belief + b.belief) / 2,
+      disbelief: (a.disbelief + b.disbelief) / 2,
+      uncertainty: 0,
+      baseRate: (a.baseRate + b.baseRate) / 2,
+    });
+  }
+
+  // Exactly one dogmatic — it overrides
+  if (uA < EPSILON) return { ...a };
+  if (uB < EPSILON) return { ...b };
+
+  // General case
+  const denom = uA + uB - uA * uB;
+  return normalize({
+    belief: (a.belief * uB + b.belief * uA) / denom,
+    disbelief: (a.disbelief * uB + b.disbelief * uA) / denom,
+    uncertainty: (uA * uB) / denom,
+    baseRate: (a.baseRate * uB + b.baseRate * uA) / (uA + uB),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 2. Averaging Fusion
+// ---------------------------------------------------------------------------
+
+/**
+ * Averaging fusion for dependent oracle pairs (shared upstream deps).
+ * Does NOT reduce uncertainty beyond the mean of inputs.
+ */
+export function averagingFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): SubjectiveOpinion {
+  assertValid(a, "averagingFusion.a");
+  assertValid(b, "averagingFusion.b");
+
+  const uA = a.uncertainty;
+  const uB = b.uncertainty;
+
+  // Both dogmatic — simple average
+  if (uA < EPSILON && uB < EPSILON) {
+    return normalize({
+      belief: (a.belief + b.belief) / 2,
+      disbelief: (a.disbelief + b.disbelief) / 2,
+      uncertainty: 0,
+      baseRate: (a.baseRate + b.baseRate) / 2,
+    });
+  }
+
+  const uSum = uA + uB;
+  return normalize({
+    belief: (a.belief * uB + b.belief * uA) / uSum,
+    disbelief: (a.disbelief * uB + b.disbelief * uA) / uSum,
+    uncertainty: (2 * uA * uB) / uSum,
+    baseRate: (a.baseRate + b.baseRate) / 2,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 3. Weighted Fusion
+// ---------------------------------------------------------------------------
+
+/**
+ * Weighted fusion for partially overlapping dependency sets.
+ * Weights are typically derived from tier priority.
+ */
+export function weightedFusion(
+  a: SubjectiveOpinion,
+  wa: number,
+  b: SubjectiveOpinion,
+  wb: number,
+): SubjectiveOpinion {
+  assertValid(a, "weightedFusion.a");
+  assertValid(b, "weightedFusion.b");
+  if (wa < 0 || wb < 0) throw new Error("Weights must be non-negative");
+  const total = wa + wb;
+  if (total === 0) return vacuous((a.baseRate + b.baseRate) / 2);
+
+  return normalize({
+    belief: (wa * a.belief + wb * b.belief) / total,
+    disbelief: (wa * a.disbelief + wb * b.disbelief) / total,
+    uncertainty: (wa * a.uncertainty + wb * b.uncertainty) / total,
+    baseRate: (wa * a.baseRate + wb * b.baseRate) / total,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 4. Conflict Report
+// ---------------------------------------------------------------------------
+
+export interface ConflictReport {
+  /** Conflict mass: b1*d2 + d1*b2. K=0 means full agreement, K>0.5 means high conflict. */
+  K: number;
+  /** 'fuse' if K <= 0.5, 'reject' if K > 0.5 (Dempster normalization amplifies >2x). */
+  resolution: "fuse" | "reject";
+}
+
+export function computeConflictReport(a: SubjectiveOpinion, b: SubjectiveOpinion): ConflictReport {
+  const K = a.belief * b.disbelief + a.disbelief * b.belief;
+  return { K, resolution: K > 0.5 ? "reject" : "fuse" };
+}
+
+// ---------------------------------------------------------------------------
+// 5. N-ary Fusion (fuseAll)
+// ---------------------------------------------------------------------------
+
+export interface FusionInput {
+  opinion: SubjectiveOpinion;
+  tier: string; // 'deterministic' | 'heuristic' | 'probabilistic'
+  deps: string[]; // dependency file paths (for Jaccard overlap)
+}
+
+/** Tier priority order (deterministic first). */
+const TIER_PRIORITY: Record<string, number> = {
+  deterministic: 0,
+  heuristic: 1,
+  probabilistic: 2,
+};
+
+/** Tier weights for weighted fusion. */
+const TIER_WEIGHT: Record<string, number> = {
+  deterministic: 1.0,
+  heuristic: 0.6,
+  probabilistic: 0.3,
+};
+
+function jaccard(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 0;
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let intersection = 0;
+  for (const x of setA) {
+    if (setB.has(x)) intersection++;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Fuse N oracle opinions using Jaccard dep-set overlap to select the
+ * appropriate fusion operator per pair.
+ *
+ * Algorithm:
+ * 1. Sort inputs by tier priority (deterministic first).
+ * 2. Accumulate by fusing pairwise, selecting operator by Jaccard overlap
+ *    between each input's deps and the FIRST input's deps.
+ * 3. Skip inputs whose conflict K > 0.5 with the accumulator.
+ * 4. If all are skipped, return vacuous().
+ */
+export function fuseAll(inputs: FusionInput[]): SubjectiveOpinion {
+  if (inputs.length === 0) return vacuous();
+
+  // Sort by tier priority (stable sort preserves insertion order within same tier)
+  const sorted = [...inputs].sort(
+    (x, y) => (TIER_PRIORITY[x.tier] ?? 99) - (TIER_PRIORITY[y.tier] ?? 99),
+  );
+
+  if (sorted.length === 1) return { ...sorted[0]!.opinion };
+
+  const firstDeps = sorted[0]!.deps;
+  let acc = { ...sorted[0]!.opinion };
+  let anyFused = false;
+
+  for (let i = 1; i < sorted.length; i++) {
+    const input = sorted[i]!;
+
+    // Conflict check against accumulator
+    const report = computeConflictReport(acc, input.opinion);
+    if (report.resolution === "reject") continue;
+
+    // Select operator by Jaccard overlap with first input's deps
+    const j = jaccard(firstDeps, input.deps);
+
+    if (j > 0.5) {
+      acc = averagingFusion(acc, input.opinion);
+    } else if (j === 0) {
+      acc = cumulativeFusion(acc, input.opinion);
+    } else {
+      const wAcc = TIER_WEIGHT[sorted[0]!.tier] ?? 0.3;
+      const wInput = TIER_WEIGHT[input.tier] ?? 0.3;
+      acc = weightedFusion(acc, wAcc, input.opinion, wInput);
+    }
+    anyFused = true;
+  }
+
+  if (!anyFused && sorted.length > 1) return vacuous();
+
+  return acc;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Clamp Opinion By Tier
+// ---------------------------------------------------------------------------
+
+const TIER_U_FLOORS: Record<string, number> = {
+  deterministic: 0.01,
+  heuristic: 0.10,
+  probabilistic: 0.25,
+};
+
+/**
+ * Enforce an uncertainty floor by tier. NEVER decreases u.
+ * If u < floor, redistributes proportionally from b and d to meet the floor.
+ */
+export function clampOpinionByTier(o: SubjectiveOpinion, tier: string): SubjectiveOpinion {
+  const floor = TIER_U_FLOORS[tier];
+  if (floor === undefined) return { ...o };
+  if (o.uncertainty >= floor) return { ...o };
+
+  const deficit = floor - o.uncertainty;
+  const bd = o.belief + o.disbelief;
+
+  // If b+d is essentially 0, just set u to floor (edge case: all zero after rounding)
+  if (bd < EPSILON) {
+    return { belief: 0, disbelief: 0, uncertainty: floor, baseRate: o.baseRate };
+  }
+
+  // Redistribute proportionally from b and d
+  const scale = (bd - deficit) / bd;
+  return normalize({
+    belief: o.belief * scale,
+    disbelief: o.disbelief * scale,
+    uncertainty: floor,
+    baseRate: o.baseRate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 7. Temporal Decay
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply temporal decay — uncertainty grows over time, modeling evidence staleness.
+ *
+ * @param o          - The opinion to decay
+ * @param elapsedMs  - Time elapsed since evidence was gathered
+ * @param halfLifeMs - Half-life for the decay model
+ * @param decayModel - 'linear' | 'step' | 'none'
+ */
+export function temporalDecay(
+  o: SubjectiveOpinion,
+  elapsedMs: number,
+  halfLifeMs: number,
+  decayModel: "linear" | "step" | "none",
+): SubjectiveOpinion {
+  if (decayModel === "none") return { ...o };
+
+  if (decayModel === "step") {
+    if (elapsedMs >= halfLifeMs) return vacuous(o.baseRate);
+    return { ...o };
+  }
+
+  // Linear decay: uncertainty grows linearly toward 1.0 over 2 * halfLife
+  const decayFactor = Math.min(1, elapsedMs / (2 * halfLifeMs));
+  const uNew = o.uncertainty + (1 - o.uncertainty) * decayFactor;
+
+  // Scale b and d proportionally so b + d + uNew = 1
+  const bdOld = o.belief + o.disbelief;
+  if (bdOld < EPSILON) {
+    return { belief: 0, disbelief: 0, uncertainty: uNew, baseRate: o.baseRate };
+  }
+
+  const bdNew = 1 - uNew;
+  const scale = bdNew / bdOld;
+  return {
+    belief: o.belief * scale,
+    disbelief: o.disbelief * scale,
+    uncertainty: uNew,
+    baseRate: o.baseRate,
+  };
+}

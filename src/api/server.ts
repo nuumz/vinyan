@@ -20,6 +20,7 @@ import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
+import type { RunOracleOptions } from '../oracle/runner.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
@@ -43,6 +44,8 @@ export interface APIServerDeps {
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   a2aManager?: A2AManagerImpl;
+  /** Oracle runner for WebSocket ECP endpoint (PH5.18). */
+  runOracle?: (oracleName: string, hypothesis: unknown, options?: RunOracleOptions) => Promise<unknown>;
 }
 
 export class VinyanAPIServer {
@@ -54,6 +57,7 @@ export class VinyanAPIServer {
   private shuttingDown = false;
   private a2aBridge: A2ABridge;
   private defaultSessionId: string | null = null;
+  private wsClients = new Set<{ ws: unknown; authenticated: boolean }>();
 
   constructor(
     private config: APIServerConfig,
@@ -74,8 +78,32 @@ export class VinyanAPIServer {
     this.server = Bun.serve({
       port: this.config.port,
       hostname: this.config.bind,
-      async fetch(req) {
+      async fetch(req, server) {
+        // WebSocket upgrade for /ws/ecp
+        const url = new URL(req.url);
+        if (url.pathname === '/ws/ecp') {
+          const upgraded = server.upgrade(req, { data: { authenticated: !self.config.authRequired } } as never);
+          if (!upgraded) {
+            return new Response('WebSocket upgrade failed', { status: 400 });
+          }
+          return undefined as unknown as Response;
+        }
         return self.handleRequest(req);
+      },
+      websocket: {
+        open(ws) {
+          const client = { ws, authenticated: !self.config.authRequired };
+          self.wsClients.add(client);
+          (ws as unknown as { data: { client: typeof client } }).data = { client };
+        },
+        message(ws, message) {
+          const client = (ws as unknown as { data: { client: { authenticated: boolean } } }).data?.client;
+          self.handleWebSocketMessage(ws, typeof message === 'string' ? message : new TextDecoder().decode(message), client);
+        },
+        close(ws) {
+          const client = (ws as unknown as { data: { client: object } }).data?.client;
+          if (client) self.wsClients.delete(client as { ws: unknown; authenticated: boolean });
+        },
       },
     });
 
@@ -240,6 +268,72 @@ export class VinyanAPIServer {
     const body = await req.json();
     const response = await this.a2aBridge.handleRequest(body);
     return jsonResponse(response); // JSON-RPC: errors are in response body, HTTP is always 200
+  }
+
+  // ── WebSocket ECP Handler (PH5.18) ─────────────────────
+
+  private handleWebSocketMessage(
+    ws: { send(data: string): void },
+    data: string,
+    client?: { authenticated: boolean },
+  ): void {
+    try {
+      const msg = JSON.parse(data) as { jsonrpc?: string; id?: string; method?: string; params?: Record<string, unknown> };
+
+      if (msg.method === 'ecp/authenticate') {
+        const token = (msg.params?.token as string) ?? '';
+        const authResult = this.auth.authenticate(
+          new Request('http://localhost', { headers: { Authorization: `Bearer ${token}` } }),
+        );
+        if (client) client.authenticated = authResult.authenticated;
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { authenticated: authResult.authenticated } }));
+        return;
+      }
+
+      if (msg.method === 'ecp/heartbeat') {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { status: 'ok' } }));
+        return;
+      }
+
+      // Auth required for verify operations
+      if (this.config.authRequired && !client?.authenticated) {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'Unauthorized' } }));
+        return;
+      }
+
+      if (msg.method === 'ecp/verify') {
+        const oracleName = msg.params?.oracle_name as string;
+        const hypothesis = msg.params?.hypothesis;
+        if (!oracleName || !hypothesis) {
+          ws.send(
+            JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Missing oracle_name or hypothesis' } }),
+          );
+          return;
+        }
+        if (this.deps.runOracle) {
+          this.deps.runOracle(oracleName, hypothesis as never).then(
+            (verdict) => ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: verdict })),
+            (err) =>
+              ws.send(
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: msg.id,
+                  error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+                }),
+              ),
+          );
+        } else {
+          ws.send(
+            JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Oracle runner not configured' } }),
+          );
+        }
+        return;
+      }
+
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } }));
+    } catch {
+      // Malformed message — ignore
+    }
   }
 
   // ── Task Handlers ───────────────────────────────────────

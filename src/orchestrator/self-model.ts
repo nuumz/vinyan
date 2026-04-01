@@ -280,6 +280,47 @@ export class CalibratedSelfModel implements SelfModel {
     return map;
   }
 
+  /**
+   * PH5.9: Warm-start from peer calibration data with reduced weight.
+   * Peer data is treated as having 1/4 the observation count of local data,
+   * and only used for task types we haven't seen locally yet.
+   */
+  warmStartFromPeer(
+    peerCalibration: import('../a2a/calibration.ts').CalibrationReport,
+    peerWeight = 0.25,
+  ): number {
+    let applied = 0;
+
+    for (const [taskType, cal] of Object.entries(peerCalibration.per_task_type)) {
+      const existing = this.resolveTaskTypeParams(taskType);
+
+      // Only warm-start task types we have no local data for
+      if (existing.observationCount > 0) continue;
+
+      // Create a warm-start entry with reduced weight
+      const warmObs = Math.max(1, Math.floor(cal.sample_size * peerWeight));
+      const params: TaskTypeParams = {
+        taskTypeSignature: taskType,
+        observationCount: warmObs,
+        avgQualityScore: 1 - cal.brier_score, // Brier score is error; invert for quality proxy
+        avgDurationPerFile: existing.avgDurationPerFile, // No duration data in calibration
+        predictionAccuracy: cal.wilson_lb * peerWeight, // Discounted accuracy
+        failRate: cal.bias_direction === 'overconfident' ? 0.3 : 0.1,
+        partialRate: 0.1,
+        lastUpdated: Date.now(),
+        basis: 'static-heuristic', // Peer data never counts as trace-calibrated
+      };
+
+      this.upsertTaskTypeParams(params);
+      applied++;
+    }
+
+    if (applied > 0) {
+      this.globalAvgCache = undefined;
+    }
+    return applied;
+  }
+
   // ── Private ────────────────────────────────────────────────────────
 
   private predictTestResults(perception: PerceptualHierarchy, params: TaskTypeParams): 'pass' | 'fail' | 'partial' {

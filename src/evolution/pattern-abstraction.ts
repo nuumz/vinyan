@@ -45,7 +45,50 @@ export interface AbstractPatternExport {
 
 /** Supported export versions and their migration transforms. */
 const CURRENT_EXPORT_VERSION = 1;
-const SUPPORTED_VERSIONS = new Set([1]);
+
+/**
+ * Version migration dispatch table.
+ * Each entry transforms from version N to N+1.
+ * When a new version is introduced, add a transform here and bump CURRENT_EXPORT_VERSION.
+ */
+const VERSION_TRANSFORMS: Record<number, (exported: AbstractPatternExport) => AbstractPatternExport> = {
+  // Example: when v2 is introduced, add: 1: (exp) => ({ ...exp, version: 2, /* transform fields */ })
+};
+
+/** Maximum version we can import (after migration). */
+const MAX_SUPPORTED_VERSION = CURRENT_EXPORT_VERSION;
+/** Minimum version we can migrate from. */
+const MIN_SUPPORTED_VERSION = 1;
+
+/**
+ * Migrate an export from any supported version to CURRENT_EXPORT_VERSION.
+ * Applies transforms sequentially: v1 → v2 → ... → current.
+ * Throws if the version is unsupported or newer than current.
+ */
+export function migrateExport(exported: AbstractPatternExport): AbstractPatternExport {
+  if (exported.version === CURRENT_EXPORT_VERSION) return exported;
+
+  if (exported.version > MAX_SUPPORTED_VERSION) {
+    throw new Error(
+      `Export version ${exported.version} is newer than supported (max: ${MAX_SUPPORTED_VERSION}). Upgrade Vinyan to import this data.`,
+    );
+  }
+  if (exported.version < MIN_SUPPORTED_VERSION) {
+    throw new Error(
+      `Export version ${exported.version} is too old to migrate (min: ${MIN_SUPPORTED_VERSION}).`,
+    );
+  }
+
+  let migrated = { ...exported };
+  for (let v = exported.version; v < CURRENT_EXPORT_VERSION; v++) {
+    const transform = VERSION_TRANSFORMS[v];
+    if (!transform) {
+      throw new Error(`Missing migration transform from version ${v} to ${v + 1}.`);
+    }
+    migrated = transform(migrated);
+  }
+  return migrated;
+}
 
 /**
  * Abstract an ExtractedPattern for cross-project transfer.
@@ -189,16 +232,12 @@ export function importPatterns(
   targetMarkers: { frameworks: string[]; languages: string[] },
   similarityThreshold = 0.5,
 ): ExtractedPattern[] {
-  // Version validation — reject unknown versions (PH5.0)
-  if (!SUPPORTED_VERSIONS.has(exported.version)) {
-    throw new Error(
-      `Unsupported pattern export version: ${exported.version}. Supported: ${[...SUPPORTED_VERSIONS].join(', ')}`,
-    );
-  }
+  // Version migration — upgrade older exports to current version (PH5.0)
+  const migrated = migrateExport(exported);
 
   const imported: ExtractedPattern[] = [];
 
-  for (const ap of exported.patterns) {
+  for (const ap of migrated.patterns) {
     const similarity = projectSimilarity(ap.applicabilityConditions, targetMarkers);
     if (similarity >= similarityThreshold) {
       imported.push(importAbstractPattern(ap, targetProjectId));

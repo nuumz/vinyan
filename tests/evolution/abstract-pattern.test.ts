@@ -6,6 +6,7 @@ import {
   exportPatterns,
   importAbstractPattern,
   importPatterns,
+  migrateExport,
   projectSimilarity,
 } from '../../src/evolution/pattern-abstraction.ts';
 import type { ExtractedPattern } from '../../src/orchestrator/types.ts';
@@ -204,6 +205,57 @@ describe('classifyPortability', () => {
     ap.applicabilityConditions.languageMarkers = [];
     const cls = classifyPortability(ap);
     expect(cls).toBe('project-specific');
+  });
+});
+
+describe('migrateExport', () => {
+  test('returns same object for current version', () => {
+    const exported = exportPatterns([makePattern()], 'proj');
+    const migrated = migrateExport(exported);
+    expect(migrated).toBe(exported); // identity — no copy needed
+  });
+
+  test('throws for version newer than current', () => {
+    const futureExport: AbstractPatternExport = {
+      version: 999,
+      projectId: 'proj',
+      exportedAt: Date.now(),
+      patterns: [],
+    };
+    expect(() => migrateExport(futureExport)).toThrow(/newer than supported/);
+  });
+
+  test('throws for version below minimum', () => {
+    const ancientExport: AbstractPatternExport = {
+      version: 0,
+      projectId: 'proj',
+      exportedAt: Date.now(),
+      patterns: [],
+    };
+    expect(() => migrateExport(ancientExport)).toThrow(/too old to migrate/);
+  });
+});
+
+describe('importPatterns with version migration', () => {
+  test('importPatterns calls migrateExport transparently for current version', () => {
+    const patterns = [makePattern()];
+    const exported = exportPatterns(patterns, 'source');
+
+    // Should work without error — migration is a no-op for current version
+    const imported = importPatterns(exported, 'target', { frameworks: [], languages: ['typescript'] }, 0.5);
+    expect(imported.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('importPatterns rejects future versions', () => {
+    const futureExport: AbstractPatternExport = {
+      version: 999,
+      projectId: 'source',
+      exportedAt: Date.now(),
+      patterns: [],
+    };
+    expect(() => importPatterns(futureExport, 'target', { frameworks: [], languages: [] })).toThrow(
+      /newer than supported/,
+    );
   });
 });
 

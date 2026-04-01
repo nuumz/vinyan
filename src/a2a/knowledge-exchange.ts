@@ -8,10 +8,12 @@
  * Source of truth: Plan Phase E2
  */
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
+import type { PatternStore } from '../db/pattern-store.ts';
 import {
   type AbstractPattern,
   abstractPattern,
   classifyPortability,
+  exportPatterns,
   importAbstractPattern,
   projectSimilarity,
 } from '../evolution/pattern-abstraction.ts';
@@ -51,6 +53,8 @@ export interface KnowledgeExchangeConfig {
   targetMarkers: { frameworks: string[]; languages: string[] };
   /** Minimum Jaccard similarity to accept a pattern (default: 0.5). */
   minSimilarity?: number;
+  /** Optional pattern store for persisting imported patterns. */
+  patternStore?: PatternStore;
 }
 
 // ── Manager ───────────────────────────────────────────────────────────
@@ -131,13 +135,16 @@ export class KnowledgeExchangeManager {
     return { acceptedPatternIds: accepted, rejectedPatternIds: rejected };
   }
 
-  /** Import accepted patterns with 50% confidence reduction (probation). */
+  /** Import accepted patterns with 50% confidence reduction (probation). Persists to store if available. */
   importPatterns(transfer: KnowledgeTransfer, peerId: string): ExtractedPattern[] {
     const imported: ExtractedPattern[] = [];
 
     for (const abstractPat of transfer.patterns) {
       const pattern = importAbstractPattern(abstractPat, this.config.projectId);
       imported.push(pattern);
+
+      // Persist to pattern store if available (I14: all imported patterns enter as low-confidence)
+      this.config.patternStore?.insert(pattern);
     }
 
     if (imported.length > 0) {
@@ -149,5 +156,29 @@ export class KnowledgeExchangeManager {
     }
 
     return imported;
+  }
+
+  /**
+   * Export high-quality patterns from the store for sharing with peers.
+   * Only exports patterns above a minimum confidence (default: 0.7).
+   */
+  exportFromStore(minConfidence = 0.7): KnowledgeOffer | null {
+    const store = this.config.patternStore;
+    if (!store) return null;
+
+    // findActive filters by decay weight; further filter by confidence for sharing
+    const patterns = store.findActive(0.5).filter((p) => p.confidence >= minConfidence);
+    if (patterns.length === 0) return null;
+
+    return this.createOffer(patterns, `export-${Date.now().toString(36)}`);
+  }
+
+  /**
+   * Build a KnowledgeTransfer payload from extracted patterns for peer consumption.
+   * Abstracts patterns and filters to portable ones only.
+   */
+  buildTransfer(patterns: ExtractedPattern[]): KnowledgeTransfer {
+    const exported = exportPatterns(patterns, this.config.projectId);
+    return { patterns: exported.patterns };
   }
 }

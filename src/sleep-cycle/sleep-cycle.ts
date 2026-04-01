@@ -64,6 +64,7 @@ export class SleepCycleRunner {
   private bus?: VinyanBus;
   private workerStore?: import('../db/worker-store.ts').WorkerStore;
   private workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
+  private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -78,6 +79,7 @@ export class SleepCycleRunner {
     bus?: VinyanBus;
     workerStore?: import('../db/worker-store.ts').WorkerStore;
     workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
+    knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -87,6 +89,7 @@ export class SleepCycleRunner {
     this.bus = options.bus;
     this.workerStore = options.workerStore;
     this.workerLifecycle = options.workerLifecycle;
+    this.knowledgeExchange = options.knowledgeExchange;
     this.decayExperiment = createExperimentState();
   }
 
@@ -276,6 +279,11 @@ export class SleepCycleRunner {
       skillsCreated,
       rulesPromoted,
     });
+
+    // PH5.9: Export high-quality patterns for cross-instance sharing
+    if (this.knowledgeExchange && newPatterns.length > 0) {
+      this.knowledgeExchange.exportFromStore();
+    }
 
     return {
       cycleId,

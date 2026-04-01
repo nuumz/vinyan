@@ -21,7 +21,7 @@ export const migration001: Migration = {
         worker_id              TEXT,
         timestamp              INTEGER NOT NULL,
         routing_level          INTEGER NOT NULL,
-        taskTypeSignature    TEXT,
+        task_type_signature   TEXT,
         approach               TEXT NOT NULL,
         approach_description   TEXT,
         risk_score             REAL,
@@ -44,11 +44,11 @@ export const migration001: Migration = {
         framework_markers      TEXT,
         worker_selection_audit TEXT
       );
-      CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(taskTypeSignature);
+      CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
       CREATE INDEX IF NOT EXISTS idx_et_outcome ON execution_traces(outcome);
       CREATE INDEX IF NOT EXISTS idx_et_timestamp ON execution_traces(timestamp);
       CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite);
-      CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(taskTypeSignature, approach);
+      CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
       CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
     `);
 
@@ -64,7 +64,7 @@ export const migration001: Migration = {
     // ── Self-Model Parameters (Phase 3) ──────────────────
     db.exec(`
       CREATE TABLE IF NOT EXISTS self_model_params (
-        taskTypeSignature   TEXT PRIMARY KEY,
+        task_type_signature  TEXT PRIMARY KEY,
         observation_count     INTEGER NOT NULL DEFAULT 0,
         avg_quality_score     REAL NOT NULL DEFAULT 0.5,
         avg_duration_per_file REAL NOT NULL DEFAULT 2000,
@@ -84,7 +84,7 @@ export const migration001: Migration = {
         description         TEXT NOT NULL,
         frequency           INTEGER NOT NULL,
         confidence          REAL NOT NULL,
-        taskTypeSignature TEXT NOT NULL,
+        task_type_signature TEXT NOT NULL,
         approach            TEXT,
         compared_approach   TEXT,
         quality_delta       REAL,
@@ -97,7 +97,7 @@ export const migration001: Migration = {
         compared_worker_id  TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_patterns_type ON extracted_patterns(type);
-      CREATE INDEX IF NOT EXISTS idx_patterns_task_sig ON extracted_patterns(taskTypeSignature);
+      CREATE INDEX IF NOT EXISTS idx_patterns_task_sig ON extracted_patterns(task_type_signature);
       CREATE INDEX IF NOT EXISTS idx_patterns_created ON extracted_patterns(created_at);
 
       CREATE TABLE IF NOT EXISTS sleep_cycle_runs (

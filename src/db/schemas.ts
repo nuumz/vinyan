@@ -84,7 +84,7 @@ export const ExecutionTraceRowSchema = z.object({
   worker_id: z.string().nullable().optional(),
   timestamp: z.number(),
   routing_level: z.number(),
-  taskTypeSignature: z.string().nullable().optional(),
+  task_type_signature: z.string().nullable().optional(),
   approach: z.string(),
   approach_description: z.string().nullable().optional(),
   risk_score: z.number().nullable().optional(),

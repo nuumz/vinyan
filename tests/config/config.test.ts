@@ -25,7 +25,7 @@ describe('config loader', () => {
           type: { enabled: true, command: 'tsc --noEmit' },
           dep: { enabled: false },
         },
-        phase1: {
+        orchestrator: {
           routing: {
             l0_max_risk: 0.15,
             l1_max_risk: 0.3,
@@ -44,11 +44,11 @@ describe('config loader', () => {
     expect(config.oracles.ast?.enabled).toBe(true);
     expect(config.oracles.ast?.languages).toEqual(['typescript', 'python']);
     expect(config.oracles.dep?.enabled).toBe(false);
-    expect(config.phase1?.routing.l0_max_risk).toBe(0.15);
-    expect(config.phase1?.routing.l1_max_risk).toBe(0.3);
-    expect(config.phase1?.routing.l2_max_risk).toBe(0.8);
-    expect(config.phase1?.escalation.channel).toBe('slack');
-    expect(config.phase1?.escalation.max_retries_before_human).toBe(5);
+    expect(config.orchestrator?.routing.l0_max_risk).toBe(0.15);
+    expect(config.orchestrator?.routing.l1_max_risk).toBe(0.3);
+    expect(config.orchestrator?.routing.l2_max_risk).toBe(0.8);
+    expect(config.orchestrator?.escalation.channel).toBe('slack');
+    expect(config.orchestrator?.escalation.max_retries_before_human).toBe(5);
   });
 
   test('missing vinyan.json → returns defaults (Phase 0 only)', () => {
@@ -56,7 +56,7 @@ describe('config loader', () => {
     expect(config.version).toBe(1);
     expect(config.oracles.ast?.enabled).toBe(true);
     // Phase 1+ config not present by default
-    expect(config.phase1).toBeUndefined();
+    expect(config.orchestrator).toBeUndefined();
   });
 
   test('partial config → defaults applied for missing fields', () => {
@@ -67,15 +67,15 @@ describe('config loader', () => {
     // Phase 0: oracles get defaults
     expect(config.oracles.ast?.enabled).toBe(true);
     // Phase 1+ not present when not specified
-    expect(config.phase1).toBeUndefined();
+    expect(config.orchestrator).toBeUndefined();
   });
 
-  test('phase1 config → routing/isolation/evolution/escalation parsed', () => {
+  test('orchestrator config → routing/isolation/evolution/escalation parsed', () => {
     writeFileSync(
       join(tempDir, 'vinyan.json'),
       JSON.stringify({
         version: 1,
-        phase1: {
+        orchestrator: {
           routing: {},
           isolation: {},
           evolution: {},
@@ -85,14 +85,14 @@ describe('config loader', () => {
     );
 
     const config = loadConfig(tempDir);
-    expect(config.phase1?.routing.l0_l1_model).toBe('claude-haiku');
-    expect(config.phase1?.routing.l2_model).toBe('claude-sonnet');
-    expect(config.phase1?.routing.l3_model).toBe('claude-opus');
-    expect(config.phase1?.routing.latency_budgets_ms.l0).toBe(100);
-    expect(config.phase1?.routing.latency_budgets_ms.l3).toBe(60000);
-    expect(config.phase1?.isolation.container_image).toBe('vinyan-sandbox:latest');
-    expect(config.phase1?.evolution.enabled).toBe(true);
-    expect(config.phase1?.escalation.max_retries_before_human).toBe(3);
+    expect(config.orchestrator?.routing.l0_l1_model).toBe('claude-haiku');
+    expect(config.orchestrator?.routing.l2_model).toBe('claude-sonnet');
+    expect(config.orchestrator?.routing.l3_model).toBe('claude-opus');
+    expect(config.orchestrator?.routing.latency_budgets_ms.l0).toBe(100);
+    expect(config.orchestrator?.routing.latency_budgets_ms.l3).toBe(60000);
+    expect(config.orchestrator?.isolation.container_image).toBe('vinyan-sandbox:latest');
+    expect(config.orchestrator?.evolution.enabled).toBe(true);
+    expect(config.orchestrator?.escalation.max_retries_before_human).toBe(3);
   });
 
   test('invalid JSON → throws with clear error', () => {
@@ -106,7 +106,7 @@ describe('config loader', () => {
       join(tempDir, 'vinyan.json'),
       JSON.stringify({
         version: 1,
-        phase1: { routing: { l0_max_risk: 2.0 } }, // out of range [0, 1]
+        orchestrator: { routing: { l0_max_risk: 2.0 } }, // out of range [0, 1]
       }),
     );
 

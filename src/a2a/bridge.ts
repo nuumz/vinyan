@@ -9,14 +9,17 @@
  * - A5: Tiered trust — remote = "uncertain" (lowest tier)
  */
 import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { A2AManagerImpl } from './a2a-manager.ts';
 import { generateAgentCard } from './agent-card.ts';
 import { injectA2AConfidence } from './confidence-injector.ts';
+import { extractECPFromA2APart } from './ecp-a2a-translation.ts';
 import type { A2AJsonRpcResponse, A2ATask } from './types.ts';
 import { A2AJsonRpcRequestSchema } from './types.ts';
 
 export interface A2ABridgeDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   baseUrl: string;
+  a2aManager?: A2AManagerImpl;
 }
 
 export class A2ABridge {
@@ -54,6 +57,34 @@ export class A2ABridge {
 
   /** Map A2A tasks/send to Vinyan TaskInput, execute, return A2A Task artifact */
   private async handleTaskSend(id: string | number, params: Record<string, unknown>): Promise<A2AJsonRpcResponse> {
+    // Route ECP data parts through A2AManager (before executeTask)
+    if (this.deps.a2aManager) {
+      const msg = params.message as { parts?: Array<{ type?: string; mimeType?: string; data?: unknown }> } | undefined;
+      if (msg?.parts) {
+        for (const part of msg.parts) {
+          const ecpPart = extractECPFromA2APart(part);
+          if (ecpPart) {
+            const peerId = ecpPart.signer?.instance_id ?? 'unknown';
+            const result = this.deps.a2aManager.routeECPMessage(peerId, ecpPart);
+            if (result.handled) {
+              const taskId = (params.id as string) ?? crypto.randomUUID();
+              return {
+                jsonrpc: '2.0',
+                id,
+                result: {
+                  id: taskId,
+                  status: { state: 'completed' },
+                  ...(result.data
+                    ? { artifacts: [{ name: 'ecp_response', parts: [{ type: 'data', data: result.data }] }] }
+                    : {}),
+                },
+              };
+            }
+          }
+        }
+      }
+    }
+
     // Extract goal from A2A message parts
     const message = params.message as { parts?: Array<{ text?: string }> } | undefined;
     const goal =
@@ -178,7 +209,7 @@ export class A2ABridge {
 
   /** Serve /.well-known/agent.json */
   getAgentCard(): unknown {
-    return generateAgentCard(this.deps.baseUrl);
+    return generateAgentCard(this.deps.baseUrl, this.deps.a2aManager?.identity);
   }
 
   /** Map Vinyan TaskResult to A2A Task with artifacts, applying confidence cap */

@@ -355,7 +355,7 @@ export class CalibratedSelfModel implements SelfModel {
     if (!this.db) return;
     try {
       this.db.exec(`CREATE TABLE IF NOT EXISTS self_model_params (
-        taskTypeSignature   TEXT PRIMARY KEY,
+        task_type_signature   TEXT PRIMARY KEY,
         observation_count     INTEGER NOT NULL DEFAULT 0,
         avg_quality_score     REAL NOT NULL DEFAULT 0.5,
         avg_duration_per_file REAL NOT NULL DEFAULT 2000,
@@ -374,7 +374,7 @@ export class CalibratedSelfModel implements SelfModel {
     // Check DB first
     if (this.db) {
       try {
-        const row = this.db.prepare(`SELECT * FROM self_model_params WHERE taskTypeSignature = ?`).get(taskSig) as any;
+        const row = this.db.prepare(`SELECT * FROM self_model_params WHERE task_type_signature = ?`).get(taskSig) as any;
         if (row) return this.rowToParams(row);
       } catch {
         /* fallback */
@@ -447,7 +447,7 @@ export class CalibratedSelfModel implements SelfModel {
 
   private rowToParams(row: any): TaskTypeParams {
     return {
-      taskTypeSignature: row.taskTypeSignature,
+      taskTypeSignature: row.task_type_signature,
       observationCount: row.observation_count,
       avgQualityScore: row.avg_quality_score,
       avgDurationPerFile: row.avg_duration_per_file,
@@ -468,7 +468,7 @@ export class CalibratedSelfModel implements SelfModel {
       this.db
         .prepare(`
         INSERT OR REPLACE INTO self_model_params
-          (taskTypeSignature, observation_count, avg_quality_score, avg_duration_per_file,
+          (task_type_signature, observation_count, avg_quality_score, avg_duration_per_file,
            prediction_accuracy, fail_rate, partial_rate, last_updated, basis)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)

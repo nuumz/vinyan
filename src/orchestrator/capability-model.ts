@@ -74,7 +74,7 @@ export class CapabilityModel {
         SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END) as failures,
         AVG(quality_composite) as avg_quality
       FROM execution_traces
-      WHERE worker_id = ? AND taskTypeSignature LIKE ?
+      WHERE worker_id = ? AND task_type_signature LIKE ?
     `)
       .get(workerId, `${fingerprintKey}%`) as {
       total: number;
@@ -112,17 +112,17 @@ export class CapabilityModel {
     const rows = this.db
       .prepare(`
       SELECT
-        taskTypeSignature,
+        task_type_signature,
         COUNT(*) as total,
         SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes,
         SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END) as failures,
         AVG(quality_composite) as avg_quality
       FROM execution_traces
-      WHERE worker_id = ? AND taskTypeSignature IS NOT NULL
-      GROUP BY taskTypeSignature
+      WHERE worker_id = ? AND task_type_signature IS NOT NULL
+      GROUP BY task_type_signature
     `)
       .all(workerId) as Array<{
-      taskTypeSignature: string;
+      task_type_signature: string;
       total: number;
       successes: number;
       failures: number;
@@ -136,7 +136,7 @@ export class CapabilityModel {
 
       return {
         workerId,
-        fingerprint: row.taskTypeSignature,
+        fingerprint: row.task_type_signature,
         total: row.total,
         successes: row.successes,
         failures: row.failures,

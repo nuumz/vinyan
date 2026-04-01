@@ -274,17 +274,17 @@ export class WorkerStore {
     const breakdown = this.db
       .prepare(`
       SELECT
-        taskTypeSignature,
+        task_type_signature,
         COUNT(*) as count,
         AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
         AVG(quality_composite) as avg_quality,
         AVG(tokens_consumed) as avg_tokens
       FROM execution_traces
-      WHERE worker_id = ? AND taskTypeSignature IS NOT NULL
-      GROUP BY taskTypeSignature
+      WHERE worker_id = ? AND task_type_signature IS NOT NULL
+      GROUP BY task_type_signature
     `)
       .all(workerId) as Array<{
-      taskTypeSignature: string;
+      task_type_signature: string;
       count: number;
       success_rate: number;
       avg_quality: number | null;
@@ -293,7 +293,7 @@ export class WorkerStore {
 
     const taskTypeBreakdown: WorkerStats['taskTypeBreakdown'] = {};
     for (const row of breakdown) {
-      taskTypeBreakdown[row.taskTypeSignature] = {
+      taskTypeBreakdown[row.task_type_signature] = {
         count: row.count,
         successRate: row.success_rate,
         avgQuality: row.avg_quality ?? 0,

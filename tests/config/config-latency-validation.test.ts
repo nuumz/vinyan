@@ -3,7 +3,7 @@ import { VinyanConfigSchema } from '../../src/config/schema.ts';
 
 function configWithLatency(latency: { l0: number; l1: number; l2: number; l3: number }) {
   return {
-    phase1: {
+    orchestrator: {
       routing: {
         latency_budgets_ms: latency,
       },

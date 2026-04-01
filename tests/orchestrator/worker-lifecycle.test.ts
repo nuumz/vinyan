@@ -41,7 +41,7 @@ function insertTraces(
       `INSERT INTO execution_traces (
         id, task_id, timestamp, routing_level, approach, model_used,
         tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files,
-        worker_id, quality_composite, taskTypeSignature
+        worker_id, quality_composite, task_type_signature
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         `trace-${workerId}-${i}-${Math.random().toString(36).slice(2, 6)}`,

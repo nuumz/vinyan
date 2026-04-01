@@ -267,7 +267,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
       const rows = db.prepare(`SELECT * FROM self_model_params`).all() as any[];
       expect(rows.length).toBe(2);
 
-      const refactorRow = rows.find((r: any) => r.taskTypeSignature === 'refactor::ts::single');
+      const refactorRow = rows.find((r: any) => r.task_type_signature === 'refactor::ts::single');
       expect(refactorRow).toBeDefined();
       expect(refactorRow!.observation_count).toBe(15);
     });

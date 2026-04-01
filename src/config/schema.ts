@@ -1,10 +1,9 @@
 /**
  * Config Schema — Zod schema for vinyan.json matching TDD §2.
  *
- * Phase 0 config: version + oracles only.
- * Phase 1+ configs (routing, isolation, evolution, escalation) are accepted
- * under an optional `phase1` namespace for forward-compatibility but are
- * NOT consumed by any Phase 0 code path.
+ * Core config: version + oracles.
+ * Optional sections: orchestrator (routing/isolation/evolution/escalation),
+ * fleet (worker governance), network (multi-instance coordination).
  */
 import { z } from 'zod/v4';
 
@@ -19,7 +18,7 @@ const OracleConfigSchema = z.object({
   timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
 
-// ─── Phase 1+ schemas (not used in Phase 0) ─────────────────────────
+// ─── Orchestrator schemas (routing, isolation, evolution, escalation) ─
 
 /** 4-level routing thresholds — Phase 1 Orchestrator (→ TDD §16). */
 const LatencyBudgetsSchema = z
@@ -85,16 +84,16 @@ const EscalationConfigSchema = z.object({
   channel: z.enum(['matrix', 'slack', 'stdout']).default('stdout'),
 });
 
-const Phase1ConfigSchema = z.object({
+const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
   evolution: EvolutionConfigSchema.default(() => defaults(EvolutionConfigSchema)),
   escalation: EscalationConfigSchema.default(() => defaults(EscalationConfigSchema)),
 });
 
-// ─── Phase 4 schema (Fleet Governance) ──────────────────────────────
+// ─── Fleet Governance schema ────────────────────────────────────────
 
-const Phase4ConfigSchema = z.object({
+const FleetConfigSchema = z.object({
   worker_identity_granularity: z.enum(['model', 'model+temp', 'full']).default('full'),
   probation_min_tasks: z.number().positive().default(30),
   demotion_window_tasks: z.number().positive().default(30),
@@ -108,7 +107,7 @@ const Phase4ConfigSchema = z.object({
   staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
 });
 
-// ─── Phase 5 schema (Self-Hosted ENS) ────────────────────────────────
+// ─── Network schema (multi-instance coordination) ───────────────────
 
 const APIConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -216,7 +215,7 @@ const MCPConfigSchema = z.object({
     .default([]),
 });
 
-const Phase5ConfigSchema = z.object({
+const NetworkConfigSchema = z.object({
   api: APIConfigSchema.optional(),
   instances: InstancesConfigSchema.optional(),
   polyglot: PolyglotConfigSchema.optional(),
@@ -246,12 +245,12 @@ export const VinyanConfigSchema = z.object({
     test: { enabled: false, timeout_ms: 5000, tier: 'deterministic', timeout_behavior: 'warn' },
     lint: { enabled: false, timeout_ms: 1000, tier: 'deterministic', timeout_behavior: 'warn' },
   }),
-  /** Phase 1+ config — accepted for forward-compat, not used in Phase 0. */
-  phase1: Phase1ConfigSchema.optional(),
-  /** Phase 4 config — Fleet Governance parameters. */
-  phase4: Phase4ConfigSchema.optional(),
-  /** Phase 5 config — Self-Hosted ENS parameters. */
-  phase5: Phase5ConfigSchema.optional(),
+  /** Orchestrator config — routing, isolation, evolution, escalation. */
+  orchestrator: OrchestratorConfigSchema.optional(),
+  /** Fleet Governance — worker identity, probation, demotion, diversity. */
+  fleet: FleetConfigSchema.optional(),
+  /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
+  network: NetworkConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

@@ -3,8 +3,13 @@
  *
  * Validates JSON-RPC handling, TaskInput mapping, confidence capping.
  */
-import { describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createA2AManager } from '../../src/a2a/a2a-manager.ts';
 import { A2ABridge } from '../../src/a2a/bridge.ts';
+import { ECP_MIME_TYPE } from '../../src/a2a/ecp-data-part.ts';
+import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 import { PEER_TRUST_CAPS } from '../../src/oracle/tier-clamp.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
@@ -294,5 +299,173 @@ describe('A2ABridge', () => {
       expect(card.name).toBe('Vinyan ENS');
       expect(card.url).toBe('http://localhost:3000');
     });
+  });
+});
+
+// ── ECP Routing Tests (A2AManager integration) ──────────────────────
+
+const ECP_TEST_WORKSPACE = join(import.meta.dir, '../../.test-workspace-bridge');
+
+function makeECPRequest(messageType: string, payload: Record<string, unknown> = {}) {
+  return {
+    jsonrpc: '2.0' as const,
+    id: 'req-ecp',
+    method: 'tasks/send' as const,
+    params: {
+      message: {
+        parts: [
+          {
+            type: 'data',
+            mimeType: ECP_MIME_TYPE,
+            data: {
+              ecp_version: 1,
+              message_type: messageType,
+              epistemic_type: 'known',
+              confidence: 1,
+              confidence_reported: true,
+              payload,
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+describe('A2ABridge — ECP routing', () => {
+  beforeEach(() => {
+    if (!existsSync(ECP_TEST_WORKSPACE)) {
+      mkdirSync(join(ECP_TEST_WORKSPACE, '.vinyan'), { recursive: true });
+    }
+  });
+
+  afterEach(() => {
+    if (existsSync(ECP_TEST_WORKSPACE)) {
+      rmSync(ECP_TEST_WORKSPACE, { recursive: true, force: true });
+    }
+  });
+
+  test('ECP heartbeat dispatched to a2aManager, executeTask NOT called', async () => {
+    let executeTaskCalled = false;
+    const mgr = createA2AManager({
+      workspace: ECP_TEST_WORKSPACE,
+      bus: new EventBus<VinyanBusEvents>(),
+      network: {
+        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+      },
+    });
+
+    const bridge = new A2ABridge({
+      executeTask: async (input) => {
+        executeTaskCalled = true;
+        return mockExecuteTask(input);
+      },
+      baseUrl: 'http://localhost:3000',
+      a2aManager: mgr,
+    });
+
+    const response = await bridge.handleRequest(makeECPRequest('heartbeat'));
+    expect(response.error).toBeUndefined();
+    const task = response.result as { status: { state: string } };
+    expect(task.status.state).toBe('completed');
+    expect(executeTaskCalled).toBe(false);
+  });
+
+  test('ECP retract dispatched to a2aManager', async () => {
+    let executeTaskCalled = false;
+    const mgr = createA2AManager({
+      workspace: ECP_TEST_WORKSPACE,
+      bus: new EventBus<VinyanBusEvents>(),
+      network: {
+        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+      },
+    });
+
+    const bridge = new A2ABridge({
+      executeTask: async (input) => {
+        executeTaskCalled = true;
+        return mockExecuteTask(input);
+      },
+      baseUrl: 'http://localhost:3000',
+      a2aManager: mgr,
+    });
+
+    const retraction = {
+      retraction_id: 'ret-bridge-001',
+      target_type: 'verdict',
+      target_id: 'v-bridge-001',
+      severity: 'advisory',
+      reason: 'manual',
+      timestamp: Date.now(),
+      peer_id: 'peer-A',
+    };
+
+    const response = await bridge.handleRequest(makeECPRequest('retract', retraction));
+    expect(response.error).toBeUndefined();
+    expect(executeTaskCalled).toBe(false);
+    expect(mgr.retractionManager.isRetracted('v-bridge-001')).toBe(true);
+  });
+
+  test('plain text message falls through to executeTask (backward compat)', async () => {
+    let executeTaskCalled = false;
+    const mgr = createA2AManager({
+      workspace: ECP_TEST_WORKSPACE,
+      bus: new EventBus<VinyanBusEvents>(),
+      network: {
+        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+      },
+    });
+
+    const bridge = new A2ABridge({
+      executeTask: async (input) => {
+        executeTaskCalled = true;
+        return mockExecuteTask(input);
+      },
+      baseUrl: 'http://localhost:3000',
+      a2aManager: mgr,
+    });
+
+    const response = await bridge.handleRequest(
+      makeJsonRpcRequest('tasks/send', {
+        message: { parts: [{ text: 'Fix the bug' }] },
+      }),
+    );
+
+    expect(executeTaskCalled).toBe(true);
+    expect(response.error).toBeUndefined();
+  });
+
+  test('works without a2aManager (backward compat)', async () => {
+    const bridge = makeBridge();
+    const response = await bridge.handleRequest(
+      makeJsonRpcRequest('tasks/send', {
+        message: { parts: [{ text: 'test' }] },
+      }),
+    );
+
+    expect(response.error).toBeUndefined();
+    const task = response.result as { status: { state: string } };
+    expect(task.status.state).toBe('completed');
+  });
+
+  test('agent card includes x-vinyan-ecp when a2aManager present', () => {
+    const mgr = createA2AManager({
+      workspace: ECP_TEST_WORKSPACE,
+      bus: new EventBus<VinyanBusEvents>(),
+      network: {
+        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+      },
+    });
+
+    const bridge = new A2ABridge({
+      executeTask: mockExecuteTask,
+      baseUrl: 'http://localhost:3000',
+      a2aManager: mgr,
+    });
+
+    const card = bridge.getAgentCard() as { 'x-vinyan-ecp'?: { protocol: string; instance_id: string } };
+    expect(card['x-vinyan-ecp']).toBeDefined();
+    expect(card['x-vinyan-ecp']!.protocol).toBe('vinyan-ecp');
+    expect(card['x-vinyan-ecp']!.instance_id).toBe(mgr.identity.instanceId);
   });
 });

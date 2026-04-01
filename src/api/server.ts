@@ -9,6 +9,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;
 
+import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import type { RuleStore } from '../db/rule-store.ts';
@@ -41,6 +42,7 @@ export interface APIServerDeps {
   workerStore?: WorkerStore;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  a2aManager?: A2AManagerImpl;
 }
 
 export class VinyanAPIServer {
@@ -62,6 +64,7 @@ export class VinyanAPIServer {
     this.a2aBridge = new A2ABridge({
       executeTask: deps.executeTask,
       baseUrl: `http://${config.bind}:${config.port}`,
+      a2aManager: deps.a2aManager,
     });
   }
 

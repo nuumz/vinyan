@@ -148,12 +148,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
-    if (vinyanConfig.phase1) {
-      const r = vinyanConfig.phase1.routing;
+    if (vinyanConfig.orchestrator) {
+      const r = vinyanConfig.orchestrator.routing;
       routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
     }
-    if (vinyanConfig.phase4) {
-      fleetConfig = vinyanConfig.phase4;
+    if (vinyanConfig.fleet) {
+      fleetConfig = vinyanConfig.fleet;
     }
   } catch {
     /* config loading is best-effort */

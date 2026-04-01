@@ -2505,7 +2505,7 @@ vinyan-agent/
   "name": "vinyan-agent",
   "private": true,
   "scripts": {
-    "test": "bun test",
+    "test": "bun run test",
     "lint": "tsc --noEmit"
   }
 }

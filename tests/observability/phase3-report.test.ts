@@ -8,7 +8,7 @@ import { SKILL_SCHEMA_SQL } from '../../src/db/skill-schema.ts';
 import { SkillStore } from '../../src/db/skill-store.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
-import { computeQualityTrend, generatePhase3Report } from '../../src/observability/phase3-report.ts';
+import { computeQualityTrend, generateEvolutionReport } from '../../src/observability/phase3-report.ts';
 import type { CachedSkill, EvolutionaryRule, ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 function createAllStores() {
@@ -33,11 +33,11 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     routingLevel: 1,
     approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: 'gpt-4o',
-    tokens_consumed: 100,
+    modelUsed: 'gpt-4o',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['a.ts'],
+    affectedFiles: ['a.ts'],
     ...overrides,
   };
 }
@@ -99,7 +99,7 @@ describe('PH3.7: Phase 3 Report', () => {
     });
   });
 
-  describe('generatePhase3Report', () => {
+  describe('generateEvolutionReport', () => {
     test('returns all metric fields with populated stores', () => {
       const stores = createAllStores();
 
@@ -125,7 +125,7 @@ describe('PH3.7: Phase 3 Report', () => {
       // Insert skills
       stores.skillStore.insert(makeSkill({ taskSignature: 'refactor::ts::a', successRate: 0.9 }));
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
 
       expect(report.evolutionEngine.rulesActive).toBe(1);
       expect(report.evolutionEngine.rulesRetired).toBe(1);
@@ -141,7 +141,7 @@ describe('PH3.7: Phase 3 Report', () => {
       stores.traceStore.insert(makeTrace({ taskId: 't2', routingLevel: 1, outcome: 'success' }));
       stores.traceStore.insert(makeTrace({ taskId: 't3', routingLevel: 1, outcome: 'escalated' }));
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
       // t1 and t2 resolved at initial, t3 escalated
       expect(report.overall.routingEfficiency).toBeCloseTo(2 / 3, 2);
       expect(report.overall.escalationRate).toBeCloseTo(1 / 3, 2);
@@ -153,7 +153,7 @@ describe('PH3.7: Phase 3 Report', () => {
       const traceStore = new TraceStore(db);
       traceStore.insert(makeTrace());
 
-      const report = generatePhase3Report({ traceStore });
+      const report = generateEvolutionReport({ traceStore });
       expect(report.evolutionEngine.rulesActive).toBe(0);
       expect(report.skillFormation.active).toBe(0);
     });
@@ -164,7 +164,7 @@ describe('PH3.7: Phase 3 Report', () => {
       const stores = createAllStores();
       stores.traceStore.insert(makeTrace());
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
       expect(report.phase4Readiness.ready).toBe(false);
     });
 
@@ -172,7 +172,7 @@ describe('PH3.7: Phase 3 Report', () => {
       const stores = createAllStores();
       stores.traceStore.insert(makeTrace());
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
       const conds = report.phase4Readiness.conditions;
 
       expect(conds.activeRulesEffective.threshold).toBe(3);
@@ -219,7 +219,7 @@ describe('PH3.7: Phase 3 Report', () => {
         );
       }
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
       expect(report.phase4Readiness.conditions.activeRulesEffective.met).toBe(true);
       expect(report.phase4Readiness.conditions.activeSkillsHighPerf.met).toBe(true);
       expect(report.phase4Readiness.conditions.sleepCycles.met).toBe(true);

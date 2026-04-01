@@ -200,7 +200,7 @@ describe('Phase 0 A/B Experiment — Oracle Gate Effectiveness', () => {
       console.log('║  Missed (not caught by gate)                        ║');
       console.log('╠══════════════════════════════════════════════════════╣');
       for (const m of missed) {
-        console.log(`║  ${m.id} [${m.category}]`.padEnd(55) + '║');
+        console.log(`${`║  ${m.id} [${m.category}]`.padEnd(55)}║`);
       }
     }
     console.log('╠══════════════════════════════════════════════════════╣');
@@ -208,7 +208,7 @@ describe('Phase 0 A/B Experiment — Oracle Gate Effectiveness', () => {
       `║  VERDICT: ${reductionDelta >= 0.3 ? '✅ PASS' : '❌ FAIL'} — Gate ${reductionDelta >= 0.3 ? 'meets' : 'does NOT meet'} ≥30% target     ║`,
     );
     console.log(
-      `║  FP:      ${totalFp === 0 ? '✅ PASS' : '❌ FAIL'} — ${totalFp === 0 ? 'Zero' : totalFp + ' '} false positives               ║`,
+      `║  FP:      ${totalFp === 0 ? '✅ PASS' : '❌ FAIL'} — ${totalFp === 0 ? 'Zero' : `${totalFp} `} false positives               ║`,
     );
     console.log('╚══════════════════════════════════════════════════════╝');
 

@@ -162,12 +162,12 @@ export class VinyanMCPServer {
               id: 0,
               error: JSON_RPC_ERRORS.PARSE_ERROR,
             };
-            process.stdout.write(JSON.stringify(errorResponse) + '\n');
+            process.stdout.write(`${JSON.stringify(errorResponse)}\n`);
             continue;
           }
 
           const response = await this.handleRequest(parsed);
-          process.stdout.write(JSON.stringify(response) + '\n');
+          process.stdout.write(`${JSON.stringify(response)}\n`);
         }
       }
     } finally {

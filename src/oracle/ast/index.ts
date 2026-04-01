@@ -7,4 +7,4 @@ import { verify } from './ast-verifier.ts';
 const input = await Bun.stdin.text();
 const hypothesis = JSON.parse(input);
 const verdict = verify(hypothesis);
-process.stdout.write(JSON.stringify(verdict) + '\n');
+process.stdout.write(`${JSON.stringify(verdict)}\n`);

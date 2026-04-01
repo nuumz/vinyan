@@ -25,7 +25,7 @@ for (const t of CODING_TASKS) {
       if (k === 'correct') {
         if (r.status !== 0) {
           cf++;
-          errs.push(t.id + ' correct FAIL: ' + (r.stdout ?? '').split('\n')[0]);
+          errs.push(`${t.id} correct FAIL: ${(r.stdout ?? '').split('\n')[0]}`);
         } else {
           cp++;
         }
@@ -34,7 +34,7 @@ for (const t of CODING_TASKS) {
           iff++;
         } else {
           ip++;
-          errs.push(t.id + ' incorrect COMPILED OK');
+          errs.push(`${t.id} incorrect COMPILED OK`);
         }
       }
     } finally {
@@ -45,7 +45,7 @@ for (const t of CODING_TASKS) {
 }
 
 console.log('');
-console.log('Correct: ' + cp + ' pass, ' + cf + ' fail');
-console.log('Incorrect: ' + iff + ' fail(good), ' + ip + ' pass(BAD)');
+console.log(`Correct: ${cp} pass, ${cf} fail`);
+console.log(`Incorrect: ${iff} fail(good), ${ip} pass(BAD)`);
 errs.forEach((e) => console.log('ERR:', e));
 process.exit(errs.length);

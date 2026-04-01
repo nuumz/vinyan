@@ -10,7 +10,7 @@
  */
 import { isAbsolute, resolve } from 'path';
 import { containsBypassAttempt } from '../../guardrails/index.ts';
-import type { IsolationLevel, ToolCall } from '../types.ts';
+import type { ToolCall } from '../types.ts';
 import type { Tool, ToolContext, ToolValidationResult } from './tool-interface.ts';
 
 const SHELL_ALLOWLIST = new Set([
@@ -48,7 +48,7 @@ const DANGEROUS_GIT_SUBCOMMANDS = new Set(['push', 'reset', 'clean', 'remote']);
 const DANGEROUS_GIT_FLAGS = new Set(['--force', '-f', '--hard', '--mirror']);
 
 /** Arguments to reject for runtime executables that can run arbitrary code. */
-const RUNTIME_DANGEROUS_ARGS = new Set(['--eval', '-e', 'eval']);
+const _RUNTIME_DANGEROUS_ARGS = new Set(['--eval', '-e', 'eval']);
 
 export function validateToolCall(call: ToolCall, tool: Tool, context: ToolContext): ToolValidationResult {
   // 1. Isolation level check
@@ -69,7 +69,7 @@ export function validateToolCall(call: ToolCall, tool: Tool, context: ToolContex
       }
       const absPath = resolve(context.workspace, filePath);
       // Workspace containment — catches ../ traversal
-      if (!absPath.startsWith(context.workspace + '/') && absPath !== context.workspace) {
+      if (!absPath.startsWith(`${context.workspace}/`) && absPath !== context.workspace) {
         return { valid: false, reason: `Path '${filePath}' escapes workspace` };
       }
       if (context.allowedPaths.length > 0) {

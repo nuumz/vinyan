@@ -21,7 +21,7 @@ import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
-import type { CompactionResult, Session, SessionManager } from './session-manager.ts';
+import type { Session, SessionManager } from './session-manager.ts';
 import { createSSEStream } from './sse.ts';
 
 export interface APIServerConfig {
@@ -79,7 +79,7 @@ export class VinyanAPIServer {
     console.log(`[vinyan-api] Listening on ${this.config.bind}:${this.config.port}`);
   }
 
-  private async handleRequest(req: Request): Promise<Response> {
+  async handleRequest(req: Request): Promise<Response> {
     if (this.shuttingDown) {
       return jsonResponse({ error: 'Server is shutting down' }, 503);
     }

@@ -190,7 +190,7 @@ describe('discoverPeers', () => {
       expect(peers).toHaveLength(1);
       expect(peers[0]!.url).toBe(url);
       expect(peers[0]!.card.name).toBe('Vinyan ENS');
-      expect(peers[0]!.isVinyan).toBe(true);
+      expect(peers[0]!.isVinyanPeer).toBe(true);
       expect(peers[0]!.ecpExtension).not.toBeNull();
       expect(peers[0]!.discoveredAt).toBeGreaterThan(0);
     } finally {
@@ -223,7 +223,7 @@ describe('discoverPeers', () => {
     }
   });
 
-  test('isVinyan is false for non-Vinyan cards', async () => {
+  test('isVinyanPeer is false for non-Vinyan cards', async () => {
     const card = makeAgentCard(); // no x-vinyan-ecp
     const server = Bun.serve({
       port: 0,
@@ -235,7 +235,7 @@ describe('discoverPeers', () => {
     try {
       const peers = await discoverPeers([`http://localhost:${server.port}`]);
       expect(peers).toHaveLength(1);
-      expect(peers[0]!.isVinyan).toBe(false);
+      expect(peers[0]!.isVinyanPeer).toBe(false);
       expect(peers[0]!.ecpExtension).toBeNull();
     } finally {
       server.stop(true);
@@ -262,7 +262,7 @@ describe('filterVinyanPeers', () => {
     url: 'http://peer-1:3928',
     card: makeVinyanCard(),
     ecpExtension: makeVinyanCard()['x-vinyan-ecp']!,
-    isVinyan: true,
+    isVinyanPeer: true,
     discoveredAt: now,
   };
 
@@ -270,7 +270,7 @@ describe('filterVinyanPeers', () => {
     url: 'http://peer-2:3928',
     card: makeAgentCard(),
     ecpExtension: null,
-    isVinyan: false,
+    isVinyanPeer: false,
     discoveredAt: now,
   };
 

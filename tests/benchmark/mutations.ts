@@ -69,7 +69,7 @@ const validMutations: Omit<MutationCase, 'workspace'>[] = [
       snapshot(ws, 'math.ts');
       writeFileSync(
         join(ws, 'math.ts'),
-        original + '\nexport function square(n: number): number {\n  return n * n;\n}\n',
+        `${original}\nexport function square(n: number): number {\n  return n * n;\n}\n`,
       );
     },
     teardown: (ws) => restore(ws, 'math.ts'),
@@ -275,7 +275,7 @@ export function error(message: string): void {
       snapshot(ws, 'types.ts');
       writeFileSync(
         join(ws, 'types.ts'),
-        original + '\nexport interface Session {\n  token: string;\n  expiresAt: number;\n}\n',
+        `${original}\nexport interface Session {\n  token: string;\n  expiresAt: number;\n}\n`,
       );
     },
     teardown: (ws) => restore(ws, 'types.ts'),
@@ -411,7 +411,7 @@ export const PI = 3.14159;
       snapshot(ws, 'types.ts');
       writeFileSync(
         join(ws, 'types.ts'),
-        original + "\nexport enum Status {\n  Active = 'active',\n  Inactive = 'inactive',\n}\n",
+        `${original}\nexport enum Status {\n  Active = 'active',\n  Inactive = 'inactive',\n}\n`,
       );
     },
     teardown: (ws) => restore(ws, 'types.ts'),

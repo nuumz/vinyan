@@ -18,7 +18,7 @@ import { evaluateFleet, type FleetMetrics } from '../orchestrator/fleet-evaluato
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface Phase3ReportDeps {
+export interface EvolutionReportDeps {
   traceStore: TraceStore;
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
@@ -58,10 +58,10 @@ export interface EvolutionMetrics {
   };
   /** Phase 4: fleet governance metrics (present when WorkerStore is wired). */
   fleet?: FleetMetrics;
-  phase4Readiness: Phase4ReadinessGate;
+  phase4Readiness: FleetReadinessGate;
 }
 
-export interface Phase4ReadinessGate {
+export interface FleetReadinessGate {
   ready: boolean;
   conditions: {
     activeRulesEffective: { current: number; threshold: number; met: boolean };
@@ -73,7 +73,7 @@ export interface Phase4ReadinessGate {
 
 // ── Public API ─────────────────────────────────────────────────────────
 
-export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
+export function generateEvolutionReport(deps: EvolutionReportDeps): EvolutionMetrics {
   const { traceStore, ruleStore, skillStore, patternStore } = deps;
 
   // ── Overall quality metrics from traces ──
@@ -81,7 +81,7 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   // findRecent returns DESC — reverse to get chronological order for trend
   const chronological = [...recentTraces].reverse();
   const qualityTrend = computeQualityTrend(
-    chronological.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite),
+    chronological.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore?.composite),
   );
 
   // Routing efficiency: % resolved without escalation
@@ -153,7 +153,7 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   const sleepCyclesRun = patternStore?.countCycleRuns() ?? 0;
 
   // ── Phase 4 readiness gate ──
-  const phase4Readiness = computePhase4Readiness({
+  const phase4Readiness = computeFleetReadiness({
     effectiveRuleCount: effectiveRules.length,
     highPerfSkillCount: highPerfSkills.length,
     globalAccuracy,
@@ -223,12 +223,12 @@ export function computeQualityTrend(scores: number[]): number {
   return (n * sumXY - sumX * sumY) / denominator;
 }
 
-function computePhase4Readiness(stats: {
+function computeFleetReadiness(stats: {
   effectiveRuleCount: number;
   highPerfSkillCount: number;
   globalAccuracy: number;
   sleepCyclesRun: number;
-}): Phase4ReadinessGate {
+}): FleetReadinessGate {
   const conditions = {
     activeRulesEffective: {
       current: stats.effectiveRuleCount,
@@ -259,7 +259,7 @@ function computePhase4Readiness(stats: {
 }
 
 function avgQualityOf(traces: { qualityScore?: { composite: number } }[]): number {
-  const scores = traces.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite);
+  const scores = traces.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore?.composite);
   return scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 }
 

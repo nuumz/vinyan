@@ -3,14 +3,12 @@ import type { OracleVerdict } from '../../src/core/types.ts';
 import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
 import type {
   EvolutionaryRule,
-  ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
   RoutingLevel,
   SelfModelPrediction,
   TaskDAG,
   TaskInput,
-  WorkingMemoryState,
 } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------

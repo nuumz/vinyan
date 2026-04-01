@@ -19,7 +19,7 @@ describe('StdioTransport', () => {
       oracleName: 'test',
     });
     expect(transport.transportType).toBe('stdio');
-    expect(transport.connected).toBe(true);
+    expect(transport.isConnected).toBe(true);
   });
 
   test('returns TIMEOUT verdict when command exceeds timeout', async () => {

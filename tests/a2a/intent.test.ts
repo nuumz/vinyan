@@ -2,7 +2,7 @@
  * Intent declaration + task preemption tests — Phase H1+H2.
  */
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_TTLS, type EcpIntent, IntentManager } from '../../src/a2a/intent.ts';
+import { DEFAULT_TTLS, type ECPIntent, IntentManager } from '../../src/a2a/intent.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {
@@ -13,7 +13,7 @@ function makeManager(instanceId = 'inst-001', bus?: EventBus<VinyanBusEvents>) {
   return new IntentManager({ instanceId, bus });
 }
 
-function makeRemoteIntent(overrides: Partial<EcpIntent> = {}): EcpIntent {
+function makeRemoteIntent(overrides: Partial<ECPIntent> = {}): ECPIntent {
   return {
     intent_id: `int-remote-${Date.now()}`,
     instance_id: 'inst-002',
@@ -22,7 +22,7 @@ function makeRemoteIntent(overrides: Partial<EcpIntent> = {}): EcpIntent {
     priority: 'normal',
     lease_ttl_ms: 180_000,
     declared_at: Date.now(),
-    expires_at: Date.now() + 180_000,
+    expiresAt: Date.now() + 180_000,
     ...overrides,
   };
 }
@@ -81,7 +81,7 @@ describe('IntentManager — renew', () => {
 
     const ok = mgr.renew(intent.intent_id, 300_000);
     expect(ok).toBe(true);
-    expect(mgr.getIntent(intent.intent_id)!.expires_at).toBeGreaterThanOrEqual(beforeRenew + 300_000);
+    expect(mgr.getIntent(intent.intent_id)!.expiresAt).toBeGreaterThanOrEqual(beforeRenew + 300_000);
   });
 
   test('returns false for unknown intent', () => {
@@ -95,7 +95,7 @@ describe('IntentManager — renew', () => {
     const before = Date.now();
 
     mgr.renew(intent.intent_id); // no additionalMs
-    const newExpiry = mgr.getIntent(intent.intent_id)!.expires_at;
+    const newExpiry = mgr.getIntent(intent.intent_id)!.expiresAt;
     expect(newExpiry).toBeGreaterThanOrEqual(before + 300_000 - 10);
   });
 });

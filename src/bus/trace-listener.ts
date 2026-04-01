@@ -73,9 +73,9 @@ export function attachTraceListener(bus: VinyanBus): {
     if (!metrics.byRoutingLevel[level]) {
       metrics.byRoutingLevel[level] = { total: 0, success: 0 };
     }
-    metrics.byRoutingLevel[level]!.total++;
+    metrics.byRoutingLevel[level].total++;
     if (trace.outcome === 'success') {
-      metrics.byRoutingLevel[level]!.success++;
+      metrics.byRoutingLevel[level].success++;
     }
   });
 

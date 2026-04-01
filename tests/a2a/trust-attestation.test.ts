@@ -30,7 +30,7 @@ function makeAttestation(overrides: Partial<TrustAttestation> = {}): TrustAttest
     interactions: 30,
     accurate: 27,
     wilson_lb: 0.75,
-    attestation_age_ms: 5000,
+    attestationAgeMs: 5000,
     hop_count: 0,
     timestamp: Date.now(),
     ...overrides,

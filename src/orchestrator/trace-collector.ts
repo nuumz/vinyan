@@ -38,7 +38,7 @@ export class TraceCollectorImpl implements TraceCollector {
     // On success, invalidate World Graph facts for affected files
     // so stale verified facts don't persist after mutations
     if (trace.outcome === 'success' && this.worldGraph) {
-      for (const file of trace.affected_files) {
+      for (const file of trace.affectedFiles) {
         try {
           this.worldGraph.invalidateByFile(file);
         } catch {

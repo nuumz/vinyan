@@ -45,7 +45,7 @@ export class RuleStore {
       $created_at: rule.createdAt,
       $effectiveness: rule.effectiveness,
       $specificity: rule.specificity,
-      $superseded_by: rule.superseded_by ?? null,
+      $superseded_by: rule.supersededBy ?? null,
       $origin: rule.origin ?? 'local',
     });
   }
@@ -152,7 +152,7 @@ function rowToRule(row: unknown): EvolutionaryRule {
     createdAt: r.created_at,
     effectiveness: r.effectiveness,
     specificity: r.specificity,
-    superseded_by: r.superseded_by ?? undefined,
+    supersededBy: r.superseded_by ?? undefined,
     origin: r.origin ?? 'local',
   };
 }

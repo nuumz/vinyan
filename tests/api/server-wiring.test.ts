@@ -1,6 +1,8 @@
 /**
  * API Server Wiring Tests — verify closed wiring gaps (G1-G4).
  *
+ * Uses handleRequest() directly — no Bun.serve(), no port binding.
+ *
  * Covers:
  *  1. Prometheus text format on GET /api/v1/metrics (default)
  *  2. JSON format on GET /api/v1/metrics?format=json with SystemMetrics fields
@@ -26,15 +28,11 @@ import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-wiring-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
-const TEST_TOKEN = 'test-token-' + 'b'.repeat(52);
-const PORT = 39400 + Math.floor(Math.random() * 100);
+const TEST_TOKEN = `test-token-${'b'.repeat(52)}`;
 
 let server: VinyanAPIServer;
 let db: Database;
 let bus: VinyanBus;
-let sessionManager: SessionManager;
-let traceStore: TraceStore;
-let metricsCollector: MetricsCollector;
 
 function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
   return Promise.resolve({
@@ -47,15 +45,26 @@ function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
       timestamp: Date.now(),
       routing_level: 1,
       approach: 'test',
-      model_used: 'mock/test',
-      tokens_consumed: 100,
+      modelUsed: 'mock/test',
+      tokensConsumed: 100,
       durationMs: 50,
       outcome: 'success',
-      oracle_verdicts: {},
-      affected_files: [],
+      oracleVerdicts: {},
+      affectedFiles: [],
     } as any,
   });
 }
+
+/** Build a Request targeting the server's handleRequest directly. */
+function req(path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}): Request {
+  return new Request(`http://localhost${path}`, {
+    method: opts.method ?? 'GET',
+    headers: opts.headers,
+    body: opts.body,
+  });
+}
+
+const authHeaders = { Authorization: `Bearer ${TEST_TOKEN}`, 'Content-Type': 'application/json' };
 
 beforeAll(() => {
   mkdirSync(TEST_DIR, { recursive: true });
@@ -68,14 +77,14 @@ beforeAll(() => {
 
   bus = createBus();
   const sessionStore = new SessionStore(db);
-  sessionManager = new SessionManager(sessionStore);
-  traceStore = new TraceStore(db);
-  metricsCollector = new MetricsCollector();
+  const sessionManager = new SessionManager(sessionStore);
+  const traceStore = new TraceStore(db);
+  const metricsCollector = new MetricsCollector();
   metricsCollector.attach(bus);
 
   server = new VinyanAPIServer(
     {
-      port: PORT,
+      port: 0,
       bind: '127.0.0.1',
       tokenPath: TOKEN_PATH,
       authRequired: true,
@@ -89,24 +98,17 @@ beforeAll(() => {
       metricsCollector,
     },
   );
-
-  server.start();
+  // No server.start() — we call handleRequest directly
 });
 
-afterAll(async () => {
-  await server.stop(1000);
+afterAll(() => {
   db.close();
 });
-
-const baseUrl = () => `http://127.0.0.1:${PORT}`;
-const authHeaders = { Authorization: `Bearer ${TEST_TOKEN}`, 'Content-Type': 'application/json' };
 
 describe('API Server Wiring', () => {
   // ── 1. Prometheus text format by default ──────────────────
   test('GET /api/v1/metrics returns Prometheus text format by default', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/metrics`, {
-      headers: authHeaders,
-    });
+    const res = await server.handleRequest(req('/api/v1/metrics', { headers: authHeaders }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/plain; version=0.0.4');
@@ -122,9 +124,7 @@ describe('API Server Wiring', () => {
 
   // ── 2. JSON format with full SystemMetrics fields ─────────
   test('GET /api/v1/metrics?format=json returns JSON with SystemMetrics fields', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/metrics?format=json`, {
-      headers: authHeaders,
-    });
+    const res = await server.handleRequest(req('/api/v1/metrics?format=json', { headers: authHeaders }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('application/json');
@@ -165,7 +165,7 @@ describe('API Server Wiring', () => {
     const unsubRes = bus.on('api:response', (e) => responseEvents.push(e));
 
     try {
-      await fetch(`${baseUrl()}/api/v1/health`);
+      await server.handleRequest(req('/api/v1/health'));
 
       expect(requestEvents.length).toBeGreaterThanOrEqual(1);
       const reqEvent = requestEvents[requestEvents.length - 1];
@@ -186,41 +186,39 @@ describe('API Server Wiring', () => {
 
   // ── 4. Session tracking: POST /tasks creates session tasks ─
   test('POST /api/v1/tasks creates a session task', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/tasks`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ goal: 'wiring test task' }),
-    });
+    const res = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'wiring test task' }),
+      }),
+    );
 
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
     const taskId = data.result.id;
     expect(taskId).toBeTruthy();
 
-    // The server auto-creates a default session and tracks tasks in it.
-    // Verify by listing sessions — the default session should have tasks.
-    // We can check via sessionManager indirectly: submit a second task and
-    // verify the session's taskCount increments.
-    const res2 = await fetch(`${baseUrl()}/api/v1/tasks`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ goal: 'second wiring test task' }),
-    });
+    const res2 = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'second wiring test task' }),
+      }),
+    );
     expect(res2.status).toBe(200);
 
-    // Create an explicit session and submit a task through it, then verify
-    // the session has tasks by fetching it.
-    const sessionRes = await fetch(`${baseUrl()}/api/v1/sessions`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ source: 'wiring-test' }),
-    });
-    const { session } = (await sessionRes.json()) as any;
+    // Create an explicit session
+    const sessionRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'wiring-test' }),
+      }),
+    );
+    expect(sessionRes.status).toBe(201);
 
-    // Verify the default session (created by task submissions) exists and has tasks.
-    // The server uses getOrCreateDefaultSession() — we can't directly query its ID,
-    // but we know the session store should have tasks from the submissions above.
-    // As a proxy, count tasks in the DB directly.
+    // Verify the default session has tasks via DB
     const taskRows = db.query('SELECT COUNT(*) as cnt FROM session_tasks').get() as any;
     expect(taskRows.cnt).toBeGreaterThanOrEqual(2);
   });
@@ -231,11 +229,13 @@ describe('API Server Wiring', () => {
     const unsub = bus.on('session:created', (e) => events.push(e));
 
     try {
-      const res = await fetch(`${baseUrl()}/api/v1/sessions`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ source: 'bus-event-test' }),
-      });
+      const res = await server.handleRequest(
+        req('/api/v1/sessions', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ source: 'bus-event-test' }),
+        }),
+      );
 
       expect(res.status).toBe(201);
       const { session } = (await res.json()) as any;

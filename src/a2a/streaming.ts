@@ -46,7 +46,7 @@ export interface A2AStreamingChannel {
   sendProgress(update: ECPProgressUpdate): void;
   sendPartialVerdict(verdict: ECPPartialVerdict): void;
   close(): void;
-  readonly closed: boolean;
+  readonly isClosed: boolean;
 }
 
 /**
@@ -102,7 +102,7 @@ export function createA2AStreamingChannel(controller: ReadableStreamDefaultContr
       }
     },
 
-    get closed(): boolean {
+    get isClosed(): boolean {
       return isClosed;
     },
   };

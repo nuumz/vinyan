@@ -27,7 +27,7 @@ function renderLabeledMetric(name: string, help: string, type: string, labels: R
   for (const [label, value] of Object.entries(labels)) {
     lines.push(`${name}{${label}} ${value}`);
   }
-  return lines.join('\n') + '\n';
+  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -60,7 +60,7 @@ export function renderPrometheus(metrics: SystemMetrics, eventCounters: Record<s
   bucketLines.push(`vinyan_task_duration_seconds_bucket{le="+Inf"} ${metrics.traces.total}`);
   bucketLines.push(`vinyan_task_duration_seconds_sum ${avgDuration * metrics.traces.total}`);
   bucketLines.push(`vinyan_task_duration_seconds_count ${metrics.traces.total}`);
-  parts.push(bucketLines.join('\n') + '\n');
+  parts.push(`${bucketLines.join('\n')}\n`);
 
   // vinyan_oracle_verdicts_total (counter)
   parts.push(

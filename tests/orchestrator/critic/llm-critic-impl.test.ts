@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { LLMCriticImpl } from '../../../src/orchestrator/critic/llm-critic-impl.ts';
 import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../../../src/orchestrator/types.ts';
 

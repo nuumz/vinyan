@@ -10,7 +10,6 @@
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import {
   type AbstractPattern,
-  type AbstractPatternExport,
   abstractPattern,
   classifyPortability,
   importAbstractPattern,

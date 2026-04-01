@@ -127,7 +127,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       stderr: 'pipe',
     });
 
-    const exitCode = await proc.exited;
+    const _exitCode = await proc.exited;
     const stdout = await new Response(proc.stdout).text();
     const durationMs = performance.now() - start;
 

@@ -24,13 +24,13 @@ function mockLlmProvider(id: string): LLMProvider {
 describe('autoRegisterWorkers logic', () => {
   let db: Database;
   let workerStore: WorkerStore;
-  let bus: ReturnType<typeof createBus>;
+  let _bus: ReturnType<typeof createBus>;
 
   beforeEach(() => {
     db = new Database(':memory:');
     db.exec(WORKER_SCHEMA_SQL);
     workerStore = new WorkerStore(db);
-    bus = createBus();
+    _bus = createBus();
   });
 
   afterEach(() => {

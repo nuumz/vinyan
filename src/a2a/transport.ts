@@ -17,5 +17,5 @@ export interface ECPTransport {
   /** Transport type identifier — used for confidence clamping (A5). */
   readonly transportType: 'stdio' | 'http' | 'a2a';
   /** Whether the transport is currently connected and usable. */
-  readonly connected: boolean;
+  readonly isConnected: boolean;
 }

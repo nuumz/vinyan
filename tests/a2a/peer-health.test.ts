@@ -2,7 +2,7 @@
  * Peer Health Monitor tests — Phase L1.
  */
 import { describe, expect, test } from 'bun:test';
-import { PeerHealthMonitor, type PeerHealthState } from '../../src/a2a/peer-health.ts';
+import { PeerHealthMonitor } from '../../src/a2a/peer-health.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {

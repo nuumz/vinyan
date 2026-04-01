@@ -3,7 +3,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PeerTrustManager } from '../../src/a2a/peer-trust.ts';
-import { type EcpRetraction, RetractionManager } from '../../src/a2a/retraction.ts';
+import { type ECPRetraction, RetractionManager } from '../../src/a2a/retraction.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {
@@ -16,7 +16,7 @@ function makeTrust(): PeerTrustManager {
   return mgr;
 }
 
-function makeRetraction(overrides: Partial<EcpRetraction> = {}): EcpRetraction {
+function makeRetraction(overrides: Partial<ECPRetraction> = {}): ECPRetraction {
   return {
     retraction_id: `ret-${Date.now()}`,
     target_type: 'verdict',

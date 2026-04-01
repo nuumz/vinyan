@@ -39,11 +39,11 @@ function makeTrace(taskId: string): ExecutionTrace {
     routingLevel: 2,
     approach: 'test-approach',
     oracleVerdicts: { type: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['a.ts'],
+    affectedFiles: ['a.ts'],
   };
 }
 
@@ -127,9 +127,9 @@ describe('Shadow Feedback Loop (H3)', () => {
     // Query and verify
     const traces = traceStore.findRecent(1);
     expect(traces).toHaveLength(1);
-    expect(traces[0]!.shadow_validation).toBeDefined();
-    expect(traces[0]!.shadow_validation!.testsPassed).toBe(true);
-    expect(traces[0]!.validation_depth).toBe('structural_and_tests');
+    expect(traces[0]!.shadowValidation).toBeDefined();
+    expect(traces[0]!.shadowValidation!.testsPassed).toBe(true);
+    expect(traces[0]!.validationDepth).toBe('structural_and_tests');
   });
 
   test('bus listener wires shadow:complete to trace store update', () => {
@@ -162,6 +162,6 @@ describe('Shadow Feedback Loop (H3)', () => {
 
     // Verify trace was updated
     const traces = traceStore.findRecent(1);
-    expect(traces[0]!.shadow_validation!.testsPassed).toBe(false);
+    expect(traces[0]!.shadowValidation!.testsPassed).toBe(false);
   });
 });

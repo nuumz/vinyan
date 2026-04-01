@@ -42,11 +42,11 @@ function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
       routingLevel: 1,
       approach: 'test',
       oracleVerdicts: { 'ast-oracle': true },
-      model_used: 'mock/test',
-      tokens_consumed: 100,
+      modelUsed: 'mock/test',
+      tokensConsumed: 100,
       durationMs: 50,
       outcome: 'success',
-      affected_files: ['src/test.ts'],
+      affectedFiles: ['src/test.ts'],
     },
   });
 }

@@ -34,7 +34,7 @@ const PRIORITY_ORDER: Record<IntentPriority, number> = {
   low: 1,
 };
 
-export interface EcpIntent {
+export interface ECPIntent {
   intent_id: string;
   instance_id: string;
   action: IntentAction;
@@ -44,10 +44,10 @@ export interface EcpIntent {
   lease_ttl_ms: number;
   description?: string;
   declared_at: number;
-  expires_at: number;
+  expiresAt: number;
 }
 
-export interface EcpPreemption {
+export interface ECPPreemption {
   preemption_id: string;
   target_task_id: string;
   reason: string;
@@ -78,7 +78,7 @@ function intersect(a: string[], b: string[]): string[] {
 }
 
 export class IntentManager {
-  private intents = new Map<string, EcpIntent>();
+  private intents = new Map<string, ECPIntent>();
 
   constructor(private config: IntentManagerConfig) {}
 
@@ -87,11 +87,11 @@ export class IntentManager {
     targets: string[],
     priority: IntentPriority,
     options?: { blastRadius?: string[]; description?: string; ttlMs?: number },
-  ): EcpIntent {
+  ): ECPIntent {
     const ttl = options?.ttlMs ?? DEFAULT_TTLS[priority];
     const now = Date.now();
 
-    const intent: EcpIntent = {
+    const intent: ECPIntent = {
       intent_id: genId(),
       instance_id: this.config.instanceId,
       action,
@@ -101,7 +101,7 @@ export class IntentManager {
       lease_ttl_ms: ttl,
       description: options?.description,
       declared_at: now,
-      expires_at: now + ttl,
+      expiresAt: now + ttl,
     };
 
     this.intents.set(intent.intent_id, intent);
@@ -117,11 +117,11 @@ export class IntentManager {
     if (!intent) return false;
 
     const extension = additionalMs ?? intent.lease_ttl_ms;
-    intent.expires_at = Date.now() + extension;
+    intent.expiresAt = Date.now() + extension;
     return true;
   }
 
-  handleRemoteIntent(peerId: string, intent: EcpIntent): IntentAck {
+  handleRemoteIntent(peerId: string, intent: ECPIntent): IntentAck {
     this.intents.set(intent.intent_id, intent);
 
     this.config.bus?.emit('a2a:intentDeclared', {
@@ -156,7 +156,7 @@ export class IntentManager {
     return 'proceed';
   }
 
-  checkConflict(newIntent: EcpIntent): ConflictResult[] {
+  checkConflict(newIntent: ECPIntent): ConflictResult[] {
     const results: ConflictResult[] = [];
 
     for (const [, existing] of this.intents) {
@@ -207,11 +207,11 @@ export class IntentManager {
     return results;
   }
 
-  getActiveIntents(): EcpIntent[] {
+  getActiveIntents(): ECPIntent[] {
     return [...this.intents.values()];
   }
 
-  getIntent(intentId: string): EcpIntent | undefined {
+  getIntent(intentId: string): ECPIntent | undefined {
     return this.intents.get(intentId);
   }
 
@@ -220,7 +220,7 @@ export class IntentManager {
     const expired: string[] = [];
 
     for (const [id, intent] of this.intents) {
-      if (intent.expires_at < now) {
+      if (intent.expiresAt < now) {
         this.intents.delete(id);
         expired.push(id);
       }
@@ -229,7 +229,7 @@ export class IntentManager {
     return expired;
   }
 
-  private resolveAck(incoming: EcpIntent, existing: EcpIntent): IntentAck {
+  private resolveAck(incoming: ECPIntent, existing: ECPIntent): IntentAck {
     const incomingPriority = PRIORITY_ORDER[incoming.priority];
     const existingPriority = PRIORITY_ORDER[existing.priority];
 

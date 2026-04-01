@@ -144,8 +144,8 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
     for (const trace of traces) {
-      expect(trace.model_used).toBeDefined();
-      expect(typeof trace.model_used).toBe('string');
+      expect(trace.modelUsed).toBeDefined();
+      expect(typeof trace.modelUsed).toBe('string');
       expect(trace.durationMs).toBeGreaterThanOrEqual(0);
       expect(trace.taskId).toBe('t-integration');
     }
@@ -169,8 +169,8 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     await orchestrator.executeTask(makeInput());
     const traces = orchestrator.traceCollector.getTraces();
     const trace = traces[0]!;
-    expect(trace.model_used).toBeDefined();
-    expect(typeof trace.tokens_consumed).toBe('number');
+    expect(trace.modelUsed).toBeDefined();
+    expect(typeof trace.tokensConsumed).toBe('number');
     expect(typeof trace.durationMs).toBe('number');
   });
 
@@ -248,12 +248,12 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     // escalationReason should reference the failed approaches count
     expect(result.escalationReason).toContain('failed approaches');
     // The trace failure_reason should also reference attempts
-    expect(result.trace.failure_reason).toContain('Failed after');
+    expect(result.trace.failureReason).toContain('Failed after');
   });
 
   test('14. §16.4 criterion 3: routing escalation L1→L2→L3', async () => {
     // Oracle gate always fails → forces escalation through routing levels
-    const maxLevelSeen = 0;
+    const _maxLevelSeen = 0;
     const levelTracker = {
       verify: async () => {
         return { passed: false, verdicts: {}, reason: 'forced-escalation' };
@@ -309,7 +309,7 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     if (result.status === 'completed' && result.mutations.length > 0) {
       // WorldGraph fact commitment is best-effort — check that the task at least completed
       expect(result.trace.outcome).toBe('success');
-      expect(result.trace.affected_files.length).toBeGreaterThan(0);
+      expect(result.trace.affectedFiles.length).toBeGreaterThan(0);
     }
   });
 
@@ -346,7 +346,7 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       useSubprocess: false,
     });
 
-    const result = await orchestrator.executeTask(
+    const _result = await orchestrator.executeTask(
       makeInput({
         targetFiles: ['src/foo.ts'],
         budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
@@ -360,9 +360,9 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     if (failureTraces.length > 0) {
       const dispatchFailTrace = failureTraces.find(
         (t) =>
-          t.failure_reason?.includes('dispatch') ||
-          t.failure_reason?.includes('Worker dispatch') ||
-          t.failure_reason?.includes('failed'),
+          t.failureReason?.includes('dispatch') ||
+          t.failureReason?.includes('Worker dispatch') ||
+          t.failureReason?.includes('failed'),
       );
       if (dispatchFailTrace) {
         expect(dispatchFailTrace.taskId).toBe('t-integration');

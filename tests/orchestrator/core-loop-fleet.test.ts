@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
 import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
-import type { RoutingDecision, TaskInput, TaskResult, WorkerSelectionResult } from '../../src/orchestrator/types.ts';
+import type { TaskInput, WorkerSelectionResult } from '../../src/orchestrator/types.ts';
 
 const defaultInput: TaskInput = {
   id: 'task-fleet-1',
@@ -207,7 +207,7 @@ describe('Gap #4: Uncertain Abstention', () => {
 describe('Gap #2: workerSelectionAudit on all trace paths', () => {
   test('escalation trace includes workerSelectionAudit', async () => {
     const traces: any[] = [];
-    let selectionCallCount = 0;
+    let _selectionCallCount = 0;
     const mockSelection: WorkerSelectionResult = {
       selectedWorkerId: 'w1',
       reason: 'capability-score',
@@ -219,7 +219,7 @@ describe('Gap #2: workerSelectionAudit on all trace paths', () => {
     const deps = buildBaseDeps({
       workerSelector: {
         selectWorker: () => {
-          selectionCallCount++;
+          _selectionCallCount++;
           return mockSelection;
         },
       } as any,

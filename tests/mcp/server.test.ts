@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { buildVerdict } from '../../src/core/index.ts';
 import type { Fact, HypothesisTuple, OracleVerdict } from '../../src/core/types.ts';
 import { VinyanMCPServer } from '../../src/mcp/server.ts';
-import type { JsonRpcResponse } from '../../src/mcp/types.ts';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -273,7 +272,7 @@ describe('initialize', () => {
 describe('ECP translation integration', () => {
   test('oracle verdict is properly translated to MCP result', async () => {
     const server = new VinyanMCPServer({
-      runOracle: async (name, h) =>
+      runOracle: async (name, _h) =>
         buildVerdict({
           verified: false,
           type: 'unknown',

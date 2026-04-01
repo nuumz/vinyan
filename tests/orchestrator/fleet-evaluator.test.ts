@@ -4,7 +4,7 @@ import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import { CapabilityModel } from '../../src/orchestrator/capability-model.ts';
-import { evaluateFleet, type FleetMetrics, giniCoefficient } from '../../src/orchestrator/fleet-evaluator.ts';
+import { evaluateFleet, giniCoefficient } from '../../src/orchestrator/fleet-evaluator.ts';
 import type { WorkerProfile } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
@@ -42,7 +42,7 @@ function insertTraces(
       `INSERT INTO execution_traces (
         id, task_id, timestamp, routing_level, approach, model_used,
         tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files,
-        worker_id, quality_composite, task_type_signature
+        worker_id, quality_composite, taskTypeSignature
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         `trace-${workerId}-${i}-${Math.random().toString(36).slice(2, 8)}`,
@@ -147,8 +147,8 @@ describe('evaluateFleet', () => {
     store.invalidateCache();
 
     const metrics = evaluateFleet(store);
-    expect(metrics.workerUtilization['w1']).toBeCloseTo(0.75, 1);
-    expect(metrics.workerUtilization['w2']).toBeCloseTo(0.25, 1);
+    expect(metrics.workerUtilization.w1).toBeCloseTo(0.75, 1);
+    expect(metrics.workerUtilization.w2).toBeCloseTo(0.25, 1);
   });
 
   test('computes diversity score from active worker task distribution', () => {

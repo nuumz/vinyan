@@ -176,7 +176,7 @@ export class WorkerPoolImpl implements WorkerPool {
     });
 
     const validated = WorkerInputSchema.parse(workerInput);
-    proc.stdin.write(JSON.stringify(validated) + '\n');
+    proc.stdin.write(`${JSON.stringify(validated)}\n`);
     proc.stdin.end();
 
     const timeoutMs = routing.latencyBudgetMs;

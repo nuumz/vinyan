@@ -65,7 +65,7 @@ export class CapabilityModel {
    */
   getCapabilityByKey(workerId: string, fingerprintKey: string): CapabilityScore {
     // Query traces matching this worker and fingerprint key pattern
-    // The task_type_signature is a superset of fingerprint key — we match the prefix
+    // The taskTypeSignature is a superset of fingerprint key — we match the prefix
     const row = this.db
       .prepare(`
       SELECT
@@ -74,7 +74,7 @@ export class CapabilityModel {
         SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END) as failures,
         AVG(quality_composite) as avg_quality
       FROM execution_traces
-      WHERE worker_id = ? AND task_type_signature LIKE ?
+      WHERE worker_id = ? AND taskTypeSignature LIKE ?
     `)
       .get(workerId, `${fingerprintKey}%`) as {
       total: number;
@@ -112,17 +112,17 @@ export class CapabilityModel {
     const rows = this.db
       .prepare(`
       SELECT
-        task_type_signature,
+        taskTypeSignature,
         COUNT(*) as total,
         SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes,
         SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END) as failures,
         AVG(quality_composite) as avg_quality
       FROM execution_traces
-      WHERE worker_id = ? AND task_type_signature IS NOT NULL
-      GROUP BY task_type_signature
+      WHERE worker_id = ? AND taskTypeSignature IS NOT NULL
+      GROUP BY taskTypeSignature
     `)
       .all(workerId) as Array<{
-      task_type_signature: string;
+      taskTypeSignature: string;
       total: number;
       successes: number;
       failures: number;
@@ -136,7 +136,7 @@ export class CapabilityModel {
 
       return {
         workerId,
-        fingerprint: row.task_type_signature,
+        fingerprint: row.taskTypeSignature,
         total: row.total,
         successes: row.successes,
         failures: row.failures,

@@ -71,7 +71,7 @@ describe('LLM Proxy — A6 Credential Isolation', () => {
 describe('buildWorkerEnv credential isolation', () => {
   test('proxy mode excludes API keys from env', async () => {
     // Import the function dynamically to test it
-    const mod = await import('../../../src/orchestrator/worker/worker-pool.ts');
+    const _mod = await import('../../../src/orchestrator/worker/worker-pool.ts');
 
     // The buildWorkerEnv is a module-level function, not exported.
     // Instead, test through WorkerPoolConfig.proxySocketPath presence.

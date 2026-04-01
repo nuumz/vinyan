@@ -110,7 +110,7 @@ const Phase4ConfigSchema = z.object({
 
 // ─── Phase 5 schema (Self-Hosted ENS) ────────────────────────────────
 
-const Phase5APIConfigSchema = z.object({
+const APIConfigSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().positive().default(3927),
   bind: z.string().default('127.0.0.1'),
@@ -119,7 +119,7 @@ const Phase5APIConfigSchema = z.object({
   rate_limit_enabled: z.boolean().default(true),
 });
 
-const Phase5InstancesConfigSchema = z.object({
+const InstancesConfigSchema = z.object({
   enabled: z.boolean().default(false),
   listen_port: z.number().positive().default(3928),
   heartbeat_interval_ms: z.number().positive().default(15_000),
@@ -134,7 +134,7 @@ const Phase5InstancesConfigSchema = z.object({
     .default([]),
 });
 
-const Phase5A2AConfigSchema = z.object({
+const A2AConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Max confidence for any A2A-received verdict (applied via clampFull). */
   confidence_cap: z.number().min(0).max(1).default(0.5),
@@ -144,12 +144,12 @@ const Phase5A2AConfigSchema = z.object({
     .default(['tasks/send', 'tasks/get', 'tasks/cancel']),
 });
 
-const Phase5KnowledgeSharingConfigSchema = z.object({
+const KnowledgeSharingConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Tier 0: relay file hash invalidations in real-time. */
   file_invalidation_enabled: z.boolean().default(true),
   /** Tier 2: batch exchange patterns/rules on sleep cycle. */
-  batch_on_sleep_cycle: z.boolean().default(true),
+  batch_exchange_enabled: z.boolean().default(true),
   /** Max items in probation queue before rejecting new imports. */
   max_probation_queue: z.number().positive().default(100),
   /** Tier 3: gossip-based knowledge propagation for fleet scale. */
@@ -162,7 +162,7 @@ const Phase5KnowledgeSharingConfigSchema = z.object({
   gossip_dampening_window_ms: z.number().positive().default(10_000),
 });
 
-const Phase5TrustConfigSchema = z.object({
+const TrustConfigSchema = z.object({
   /** Wilson LB threshold: untrusted → provisional. */
   promotion_untrusted_lb: z.number().min(0).max(1).default(0.6),
   /** Wilson LB threshold: provisional → established. */
@@ -185,25 +185,25 @@ const Phase5TrustConfigSchema = z.object({
   attestation_max_attesters: z.number().positive().default(3),
 });
 
-const Phase5CoordinationConfigSchema = z.object({
+const CoordinationConfigSchema = z.object({
   intent_declaration_enabled: z.boolean().default(false),
   negotiation_enabled: z.boolean().default(false),
   commitment_tracking_enabled: z.boolean().default(false),
 });
 
-const Phase5TracingConfigSchema = z.object({
+const TracingConfigSchema = z.object({
   distributed_enabled: z.boolean().default(false),
-  w3c_trace_context: z.boolean().default(true),
+  w3c_trace_context_enabled: z.boolean().default(true),
   /** Sampling rate for distributed traces (0.0–1.0). */
   sample_rate: z.number().min(0).max(1).default(0.1),
 });
 
-const Phase5PolyglotConfigSchema = z.object({
+const PolyglotConfigSchema = z.object({
   enabled_languages: z.array(z.string()).default(['typescript']),
   language_detection: z.enum(['auto', 'config']).default('auto'),
 });
 
-const Phase5MCPConfigSchema = z.object({
+const MCPConfigSchema = z.object({
   server_enabled: z.boolean().default(false),
   client_servers: z
     .array(
@@ -217,15 +217,15 @@ const Phase5MCPConfigSchema = z.object({
 });
 
 const Phase5ConfigSchema = z.object({
-  api: Phase5APIConfigSchema.optional(),
-  instances: Phase5InstancesConfigSchema.optional(),
-  polyglot: Phase5PolyglotConfigSchema.optional(),
-  mcp: Phase5MCPConfigSchema.optional(),
-  a2a: Phase5A2AConfigSchema.optional(),
-  knowledge_sharing: Phase5KnowledgeSharingConfigSchema.optional(),
-  trust: Phase5TrustConfigSchema.optional(),
-  coordination: Phase5CoordinationConfigSchema.optional(),
-  tracing: Phase5TracingConfigSchema.optional(),
+  api: APIConfigSchema.optional(),
+  instances: InstancesConfigSchema.optional(),
+  polyglot: PolyglotConfigSchema.optional(),
+  mcp: MCPConfigSchema.optional(),
+  a2a: A2AConfigSchema.optional(),
+  knowledge_sharing: KnowledgeSharingConfigSchema.optional(),
+  trust: TrustConfigSchema.optional(),
+  coordination: CoordinationConfigSchema.optional(),
+  tracing: TracingConfigSchema.optional(),
 });
 
 // ─── Helper ──────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createBus, type VinyanBus } from '../../src/core/bus.ts';
+import { createBus } from '../../src/core/bus.ts';
 import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
 import { RULE_SCHEMA_SQL } from '../../src/db/rule-schema.ts';
@@ -23,15 +23,10 @@ import { SKILL_SCHEMA_SQL } from '../../src/db/skill-schema.ts';
 import { SkillStore } from '../../src/db/skill-store.ts';
 import { SELF_MODEL_PARAMS_SCHEMA_SQL, TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
-import { generatePhase3Report } from '../../src/observability/phase3-report.ts';
+import { generateEvolutionReport } from '../../src/observability/phase3-report.ts';
 import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
 import { SkillManager } from '../../src/orchestrator/skill-manager.ts';
-import type {
-  ExecutionTrace,
-  PerceptualHierarchy,
-  RoutingLevel,
-  SelfModelPrediction,
-} from '../../src/orchestrator/types.ts';
+import type { ExecutionTrace, PerceptualHierarchy } from '../../src/orchestrator/types.ts';
 import { SleepCycleRunner } from '../../src/sleep-cycle/sleep-cycle.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -58,14 +53,14 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     taskId: `task-${Math.random().toString(36).slice(2)}`,
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::auth.ts',
+    taskTypeSignature: 'refactor::auth.ts',
     approach: 'direct-edit',
     oracleVerdicts: { type: true },
-    model_used: 'gpt-4o',
-    tokens_consumed: 100,
+    modelUsed: 'gpt-4o',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['auth.ts'],
+    affectedFiles: ['auth.ts'],
     ...overrides,
   };
 }
@@ -80,10 +75,10 @@ function seedTraces(
       makeTrace({
         id: `fail-${opts.approach}-${i}`,
         timestamp: base + i,
-        task_type_signature: opts.taskSig,
+        taskTypeSignature: opts.taskSig,
         approach: opts.approach,
         outcome: 'failure',
-        session_id: `s-${i % 5}`,
+        sessionId: `s-${i % 5}`,
       }),
     );
   }
@@ -92,10 +87,10 @@ function seedTraces(
       makeTrace({
         id: `succ-${opts.approach}-${i}`,
         timestamp: base + opts.failures + i,
-        task_type_signature: opts.taskSig,
+        taskTypeSignature: opts.taskSig,
         approach: opts.approach,
         outcome: 'success',
-        session_id: `s-${i % 5}`,
+        sessionId: `s-${i % 5}`,
       }),
     );
   }
@@ -108,8 +103,8 @@ function seedDistinctTaskTypes(store: TraceStore, count: number) {
       makeTrace({
         id: `extra-${i}`,
         timestamp: base + i,
-        task_type_signature: `type-${i}::file-${i}.ts`,
-        affected_files: [`file-${i}.ts`],
+        taskTypeSignature: `type-${i}::file-${i}.ts`,
+        affectedFiles: [`file-${i}.ts`],
       }),
     );
   }
@@ -139,7 +134,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
         patternStore,
         ruleStore,
         bus,
-        config: { min_traces_for_analysis: 50 },
+        config: { minTracesForAnalysis: 50 },
       });
 
       // First run: extracts patterns, generates rules in probation
@@ -155,10 +150,10 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
           makeTrace({
             id: `fail2-${i}`,
             timestamp: recentBase + i,
-            task_type_signature: 'refactor::auth.ts',
+            taskTypeSignature: 'refactor::auth.ts',
             approach: 'bad-approach',
             outcome: 'failure',
-            session_id: `s-${i % 5}`,
+            sessionId: `s-${i % 5}`,
           }),
         );
       }
@@ -168,8 +163,8 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
           makeTrace({
             id: `extra2-${i}`,
             timestamp: recentBase + 60 + i,
-            task_type_signature: `type2-${i}::file2-${i}.ts`,
-            affected_files: [`file2-${i}.ts`],
+            taskTypeSignature: `type2-${i}::file2-${i}.ts`,
+            affectedFiles: [`file2-${i}.ts`],
           }),
         );
       }
@@ -209,7 +204,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
         const trace: ExecutionTrace = makeTrace({
           id: `trace-${i}`,
           routingLevel: 1,
-          task_type_signature: 'refactor::ts::single',
+          taskTypeSignature: 'refactor::ts::single',
           outcome: 'success',
           qualityScore: {
             composite: 0.75,
@@ -252,7 +247,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
           makeTrace({
             id: `good-${i}`,
             timestamp: base + i,
-            task_type_signature: 'refactor::src/auth.ts',
+            taskTypeSignature: 'refactor::src/auth.ts',
             approach: 'extract-method',
             outcome: 'success',
             qualityScore: {
@@ -262,8 +257,8 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
               dimensionsAvailable: 2,
               phase: 'phase0',
             },
-            session_id: `s-${i % 5}`,
-            affected_files: ['src/auth.ts'],
+            sessionId: `s-${i % 5}`,
+            affectedFiles: ['src/auth.ts'],
           }),
         );
       }
@@ -272,7 +267,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
           makeTrace({
             id: `bad-${i}`,
             timestamp: base + 10 + i,
-            task_type_signature: 'refactor::src/auth.ts',
+            taskTypeSignature: 'refactor::src/auth.ts',
             approach: 'inline-all',
             outcome: 'success',
             qualityScore: {
@@ -282,8 +277,8 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
               dimensionsAvailable: 2,
               phase: 'phase0',
             },
-            session_id: `s-${i % 5}`,
-            affected_files: ['src/auth.ts'],
+            sessionId: `s-${i % 5}`,
+            affectedFiles: ['src/auth.ts'],
           }),
         );
       }
@@ -294,7 +289,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
         patternStore: stores.patternStore,
         ruleStore: stores.ruleStore,
         skillManager,
-        config: { min_traces_for_analysis: 20 },
+        config: { minTracesForAnalysis: 20 },
       });
 
       await runner.run();
@@ -329,7 +324,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
       // Minimal data
       stores.traceStore.insert(makeTrace());
 
-      const report = generatePhase3Report(stores);
+      const report = generateEvolutionReport(stores);
       expect(report.phase4Readiness.ready).toBe(false);
       expect(report.overall).toBeDefined();
       expect(report.evolutionEngine).toBeDefined();
@@ -347,7 +342,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
       const runner = new SleepCycleRunner({
         traceStore,
         patternStore,
-        config: { min_traces_for_analysis: 50 },
+        config: { minTracesForAnalysis: 50 },
       });
 
       const result = await runner.run();
@@ -363,7 +358,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
       const traceStore = new TraceStore(db);
       traceStore.insert(makeTrace());
 
-      const report = generatePhase3Report({ traceStore });
+      const report = generateEvolutionReport({ traceStore });
       expect(report.evolutionEngine.rulesActive).toBe(0);
       expect(report.skillFormation.active).toBe(0);
       expect(report.phase4Readiness.ready).toBe(false);
@@ -394,7 +389,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
         traceStore,
         patternStore,
         ruleStore,
-        config: { min_traces_for_analysis: 100 },
+        config: { minTracesForAnalysis: 100 },
       });
 
       const result = await runner.run();

@@ -76,7 +76,7 @@ export function attachAuditListener(bus: VinyanBus, auditPath: string): () => vo
       bus.on(event, (payload: unknown) => {
         try {
           const line = JSON.stringify({ ts: Date.now(), event, payload });
-          appendFileSync(auditPath, line + '\n');
+          appendFileSync(auditPath, `${line}\n`);
         } catch {
           // Audit is best-effort — never block the core loop
         }

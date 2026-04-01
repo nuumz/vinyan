@@ -36,7 +36,7 @@ export function sanitizeForPrompt(text: string): SanitizeResult {
     if (detections.includes(label)) {
       const globalPattern = new RegExp(
         pattern.source,
-        pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+        pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
       );
       cleaned = cleaned.replace(globalPattern, `[REDACTED: ${label}]`);
     }

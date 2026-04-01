@@ -5,13 +5,13 @@ import { describe, expect, test } from 'bun:test';
 import { KnowledgeExchangeManager, type KnowledgeOffer } from '../../src/a2a/knowledge-exchange.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 import type { AbstractPattern } from '../../src/evolution/pattern-abstraction.ts';
-import type { ExtractedPattern, TaskFingerprint } from '../../src/orchestrator/types.ts';
+import type { ExtractedPattern } from '../../src/orchestrator/types.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {
   return new EventBus<VinyanBusEvents>();
 }
 
-function makePattern(overrides: Partial<ExtractedPattern> = {}): ExtractedPattern {
+function _makePattern(overrides: Partial<ExtractedPattern> = {}): ExtractedPattern {
   return {
     id: 'pat-001',
     type: 'anti-pattern',

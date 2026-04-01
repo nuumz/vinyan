@@ -11,7 +11,7 @@
 import type { EvolutionaryRule, ExtractedPattern } from '../orchestrator/types.ts';
 
 /** Default probation period in sessions before a rule can become active. */
-const PROBATION_SESSIONS = 10;
+const _PROBATION_SESSIONS = 10;
 
 /**
  * Generate an EvolutionaryRule from an ExtractedPattern.

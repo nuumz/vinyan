@@ -57,26 +57,26 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
               const errorResponse: LLMProxyResponse = {
                 error: 'No provider available',
               };
-              socket.write(JSON.stringify(errorResponse) + '\n');
+              socket.write(`${JSON.stringify(errorResponse)}\n`);
               continue;
             }
 
             try {
               const llmResponse = await provider.generate(request.llmRequest);
               const proxyResponse: LLMProxyResponse = { response: llmResponse };
-              socket.write(JSON.stringify(proxyResponse) + '\n');
+              socket.write(`${JSON.stringify(proxyResponse)}\n`);
             } catch (err) {
               const errorResponse: LLMProxyResponse = {
                 error: err instanceof Error ? err.message : String(err),
               };
-              socket.write(JSON.stringify(errorResponse) + '\n');
+              socket.write(`${JSON.stringify(errorResponse)}\n`);
             }
           }
         } catch (err) {
           const errorResponse: LLMProxyResponse = {
             error: `Proxy parse error: ${err instanceof Error ? err.message : String(err)}`,
           };
-          socket.write(JSON.stringify(errorResponse) + '\n');
+          socket.write(`${JSON.stringify(errorResponse)}\n`);
         }
       },
       open() {
@@ -137,7 +137,7 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider['tier'
               }
             },
             open(socket) {
-              socket.write(JSON.stringify(proxyRequest) + '\n');
+              socket.write(`${JSON.stringify(proxyRequest)}\n`);
             },
             error(_socket, error) {
               reject(error);

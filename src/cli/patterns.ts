@@ -36,7 +36,7 @@ async function handleExport(args: string[]): Promise<void> {
   let db: VinyanDB;
   try {
     db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
-  } catch (err) {
+  } catch (_err) {
     console.error(`Cannot open database at ${workspace}/.vinyan/vinyan.db`);
     process.exit(1);
     return;
@@ -111,7 +111,7 @@ function detectProjectMarkers(workspace: string): { frameworks: string[]; langua
   const languages: string[] = [];
 
   try {
-    const config = loadConfig(workspace);
+    const _config = loadConfig(workspace);
     // Use config hints if available
   } catch {
     // No config — detect from package.json or similar

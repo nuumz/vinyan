@@ -45,7 +45,7 @@ export const EvolutionaryRuleRowSchema = z
     createdAt: row.created_at,
     effectiveness: row.effectiveness,
     specificity: row.specificity,
-    superseded_by: row.superseded_by,
+    supersededBy: row.superseded_by,
     origin: row.origin,
   }));
 

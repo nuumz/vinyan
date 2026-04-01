@@ -9,7 +9,7 @@
  * Source of truth: Plan Phase I1
  */
 
-export interface EcpTraceSpan {
+export interface ECPTraceSpan {
   trace_context: {
     trace_id: string;
     span_id: string;
@@ -41,7 +41,7 @@ function randomHex(bytes: number): string {
 }
 
 export class DistributedTracer {
-  private activeSpans = new Map<string, EcpTraceSpan>();
+  private activeSpans = new Map<string, ECPTraceSpan>();
 
   constructor(private config: DistributedTracerConfig) {}
 
@@ -54,7 +54,7 @@ export class DistributedTracer {
       routingLevel?: number;
       correlationId?: string;
     },
-  ): EcpTraceSpan {
+  ): ECPTraceSpan {
     const parentSpan = options?.parentSpanId ? this.activeSpans.get(options.parentSpanId) : undefined;
     const traceId = options?.traceId ?? parentSpan?.trace_context.trace_id ?? randomHex(16);
     const parentChain = parentSpan?.trace_context.vinyan_instance_chain ?? [];
@@ -62,7 +62,7 @@ export class DistributedTracer {
       ? [...parentChain]
       : [...parentChain, this.config.instanceId];
 
-    const span: EcpTraceSpan = {
+    const span: ECPTraceSpan = {
       trace_context: {
         trace_id: traceId,
         span_id: randomHex(8),
@@ -84,7 +84,7 @@ export class DistributedTracer {
     return span;
   }
 
-  endSpan(spanId: string, options?: { confidenceOut?: number; cost?: EcpTraceSpan['cost'] }): EcpTraceSpan | null {
+  endSpan(spanId: string, options?: { confidenceOut?: number; cost?: ECPTraceSpan['cost'] }): ECPTraceSpan | null {
     const span = this.activeSpans.get(spanId);
     if (!span) return null;
 
@@ -101,7 +101,7 @@ export class DistributedTracer {
     span.events.push({ name, timestamp: Date.now(), attributes });
   }
 
-  inject(span: EcpTraceSpan): Record<string, string> {
+  inject(span: ECPTraceSpan): Record<string, string> {
     const { trace_id, span_id, trace_flags } = span.trace_context;
     const flagsHex = trace_flags.toString(16).padStart(2, '0');
     const traceparent = `00-${trace_id}-${span_id}-${flagsHex}`;
@@ -135,16 +135,16 @@ export class DistributedTracer {
     if (traceId.length !== 32 || parentSpanId.length !== 16) return null;
 
     const traceFlags = parseInt(flagsHex, 16);
-    if (isNaN(traceFlags)) return null;
+    if (Number.isNaN(traceFlags)) return null;
 
     return { traceId, parentSpanId, traceFlags };
   }
 
-  getActiveSpan(spanId: string): EcpTraceSpan | undefined {
+  getActiveSpan(spanId: string): ECPTraceSpan | undefined {
     return this.activeSpans.get(spanId);
   }
 
-  getActiveSpans(): EcpTraceSpan[] {
+  getActiveSpans(): ECPTraceSpan[] {
     return [...this.activeSpans.values()];
   }
 }

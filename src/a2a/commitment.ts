@@ -22,7 +22,7 @@ export interface FulfillmentCriteria {
   description?: string;
 }
 
-export interface EcpCommitment {
+export interface ECPCommitment {
   commitment_id: string;
   committer_instance_id: string;
   description: string;
@@ -44,12 +44,12 @@ function genId(): string {
 }
 
 export class CommitmentTracker {
-  private commitments = new Map<string, EcpCommitment>();
+  private commitments = new Map<string, ECPCommitment>();
 
   constructor(private config: CommitmentTrackerConfig) {}
 
-  create(peerId: string, description: string, deadline: number, criteria: FulfillmentCriteria): EcpCommitment {
-    const commitment: EcpCommitment = {
+  create(peerId: string, description: string, deadline: number, criteria: FulfillmentCriteria): ECPCommitment {
+    const commitment: ECPCommitment = {
       commitment_id: genId(),
       committer_instance_id: this.config.instanceId,
       description,
@@ -116,15 +116,15 @@ export class CommitmentTracker {
     return failed;
   }
 
-  getActive(): EcpCommitment[] {
+  getActive(): ECPCommitment[] {
     return [...this.commitments.values()].filter((c) => c.status === 'active');
   }
 
-  getByPeer(peerId: string): EcpCommitment[] {
+  getByPeer(peerId: string): ECPCommitment[] {
     return [...this.commitments.values()].filter((c) => c.peer_id === peerId);
   }
 
-  get(commitmentId: string): EcpCommitment | undefined {
+  get(commitmentId: string): ECPCommitment | undefined {
     return this.commitments.get(commitmentId);
   }
 }

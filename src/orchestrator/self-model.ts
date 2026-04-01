@@ -136,7 +136,7 @@ export class CalibratedSelfModel implements SelfModel {
   calibrate(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError {
     const actual = {
       testResults: (trace.outcome === 'success' ? 'pass' : 'fail') as 'pass' | 'fail' | 'partial',
-      blastRadius: trace.affected_files.length,
+      blastRadius: trace.affectedFiles.length,
       duration: trace.durationMs,
       qualityScore: trace.qualityScore?.composite ?? 0.5,
     };
@@ -156,12 +156,12 @@ export class CalibratedSelfModel implements SelfModel {
 
     // Load current per-task-type params
     const taskSig =
-      trace.task_type_signature ??
+      trace.taskTypeSignature ??
       this.computeTaskSignature({
         id: trace.taskId,
         source: 'cli',
         goal: '',
-        targetFiles: trace.affected_files,
+        targetFiles: trace.affectedFiles,
         budget: { maxTokens: 0, maxDurationMs: 0, maxRetries: 0 },
       });
     const params = this.resolveTaskTypeParams(taskSig);
@@ -171,7 +171,7 @@ export class CalibratedSelfModel implements SelfModel {
 
     // EMA updates
     params.avgQualityScore = ema(params.avgQualityScore, actual.qualityScore, alpha);
-    const fileCount = Math.max(1, trace.affected_files.length);
+    const fileCount = Math.max(1, trace.affectedFiles.length);
     params.avgDurationPerFile = ema(params.avgDurationPerFile, actual.duration / fileCount, alpha);
 
     // Accuracy tracking
@@ -352,7 +352,7 @@ export class CalibratedSelfModel implements SelfModel {
     if (!this.db) return;
     try {
       this.db.exec(`CREATE TABLE IF NOT EXISTS self_model_params (
-        task_type_signature   TEXT PRIMARY KEY,
+        taskTypeSignature   TEXT PRIMARY KEY,
         observation_count     INTEGER NOT NULL DEFAULT 0,
         avg_quality_score     REAL NOT NULL DEFAULT 0.5,
         avg_duration_per_file REAL NOT NULL DEFAULT 2000,
@@ -371,9 +371,7 @@ export class CalibratedSelfModel implements SelfModel {
     // Check DB first
     if (this.db) {
       try {
-        const row = this.db
-          .prepare(`SELECT * FROM self_model_params WHERE task_type_signature = ?`)
-          .get(taskSig) as any;
+        const row = this.db.prepare(`SELECT * FROM self_model_params WHERE taskTypeSignature = ?`).get(taskSig) as any;
         if (row) return this.rowToParams(row);
       } catch {
         /* fallback */
@@ -446,7 +444,7 @@ export class CalibratedSelfModel implements SelfModel {
 
   private rowToParams(row: any): TaskTypeParams {
     return {
-      taskTypeSignature: row.task_type_signature,
+      taskTypeSignature: row.taskTypeSignature,
       observationCount: row.observation_count,
       avgQualityScore: row.avg_quality_score,
       avgDurationPerFile: row.avg_duration_per_file,
@@ -467,7 +465,7 @@ export class CalibratedSelfModel implements SelfModel {
       this.db
         .prepare(`
         INSERT OR REPLACE INTO self_model_params
-          (task_type_signature, observation_count, avg_quality_score, avg_duration_per_file,
+          (taskTypeSignature, observation_count, avg_quality_score, avg_duration_per_file,
            prediction_accuracy, fail_rate, partial_rate, last_updated, basis)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)

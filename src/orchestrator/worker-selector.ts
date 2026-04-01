@@ -246,8 +246,8 @@ export class WorkerSelector {
    */
   private enforceDiversityFloor(
     scored: Array<{ worker: WorkerProfile; score: number }>,
-    fingerprint: TaskFingerprint,
-    budget: { maxTokens: number; timeoutMs: number },
+    _fingerprint: TaskFingerprint,
+    _budget: { maxTokens: number; timeoutMs: number },
     taskId?: string,
   ): WorkerSelectionResult | null {
     if (scored.length < 2) return null;
@@ -296,10 +296,10 @@ export class WorkerSelector {
     };
   }
 
-  private tierFallback(routingLevel: RoutingLevel): WorkerSelectionResult {
+  private tierFallback(_routingLevel: RoutingLevel): WorkerSelectionResult {
     // No specific worker — let worker pool use tier-based selection
     const activeWorkers = this.store.findActive();
-    const workerId = activeWorkers.length > 0 ? activeWorkers[0]!.id : '';
+    const workerId = activeWorkers.length > 0 ? activeWorkers[0]?.id : '';
 
     return {
       selectedWorkerId: workerId,

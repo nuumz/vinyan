@@ -15,11 +15,11 @@ function makeFailedResult(taskId: string): TaskResult {
       routingLevel: 1,
       approach: 'test',
       oracleVerdicts: {},
-      model_used: 'test',
-      tokens_consumed: 0,
+      modelUsed: 'test',
+      tokensConsumed: 0,
       durationMs: 0,
       outcome: 'failure',
-      affected_files: [],
+      affectedFiles: [],
     } as ExecutionTrace,
   };
 }
@@ -36,11 +36,11 @@ function makeCompletedResult(taskId: string): TaskResult {
       routingLevel: 1,
       approach: 'test',
       oracleVerdicts: {},
-      model_used: 'test',
-      tokens_consumed: 0,
+      modelUsed: 'test',
+      tokensConsumed: 0,
       durationMs: 0,
       outcome: 'success',
-      affected_files: [],
+      affectedFiles: [],
     } as ExecutionTrace,
   };
 }
@@ -120,7 +120,7 @@ describe('GapHDetector', () => {
       bus.emit('task:complete', { result: makeFailedResult('t1') });
 
       const state = detector.getState();
-      expect(state.fc4.evictions['t1']).toBeUndefined();
+      expect(state.fc4.evictions.t1).toBeUndefined();
     });
   });
 

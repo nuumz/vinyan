@@ -5,10 +5,10 @@
  * TDD §8: hash-only (< 0.2), structural (0.2-0.4), full (≥ 0.4)
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { cpSync, mkdirSync, rmSync } from 'fs';
+import { cpSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { type GateRequest, type GateVerdict, runGate } from '../../src/gate/index.ts';
+import { type GateRequest, runGate } from '../../src/gate/index.ts';
 import { calculateRiskScore, getIrreversibilityScore } from '../../src/gate/risk-router.ts';
 
 let workspace: string;
@@ -73,7 +73,7 @@ describe('Risk-Tiered Gate Pipeline (G2)', () => {
 
     // Structural tier: type/lint/dep may run, but test oracle should NOT
     expect(verdict.riskScore).toBe(0.3);
-    expect(verdict.oracle_results['test']).toBeUndefined();
+    expect(verdict.oracle_results.test).toBeUndefined();
     // At least one structural oracle should have run (type is always enabled)
     const structuralOracles = Object.keys(verdict.oracle_results).filter((name) =>
       ['type', 'lint', 'dep'].includes(name),
@@ -96,7 +96,7 @@ describe('Risk-Tiered Gate Pipeline (G2)', () => {
     expect(verdict.riskScore).toBe(0.8);
     // Full tier: test oracle should be included (if enabled in config)
     // Type oracle should definitely run
-    expect(verdict.oracle_results['type']).toBeDefined();
+    expect(verdict.oracle_results.type).toBeDefined();
   });
 
   test('existing gate behavior unchanged when riskScore not provided', async () => {
@@ -112,7 +112,7 @@ describe('Risk-Tiered Gate Pipeline (G2)', () => {
     );
 
     // Type oracle should always run when no risk filtering is active
-    expect(verdict.oracle_results['type']).toBeDefined();
+    expect(verdict.oracle_results.type).toBeDefined();
     // riskScore should still be computed for observability
     expect(verdict.riskScore).toBeDefined();
     expect(typeof verdict.riskScore).toBe('number');

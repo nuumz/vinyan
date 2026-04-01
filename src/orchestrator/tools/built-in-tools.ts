@@ -5,9 +5,9 @@
 
 import { createHash } from 'crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import type { ToolResult } from '../types.ts';
-import type { Tool, ToolContext } from './tool-interface.ts';
+import type { Tool } from './tool-interface.ts';
 
 const TOOL_TIMEOUT_MS = 30_000;
 
@@ -146,7 +146,7 @@ export const searchGrep: Tool = {
     const path = (params.path ?? '.') as string;
     // Path containment — reject traversal outside workspace
     const absPath = resolve(context.workspace, path);
-    if (!absPath.startsWith(context.workspace + '/') && absPath !== context.workspace) {
+    if (!absPath.startsWith(`${context.workspace}/`) && absPath !== context.workspace) {
       return makeResult((params.callId as string) ?? '', 'search_grep', {
         status: 'error',
         error: `Path '${path}' escapes workspace`,
@@ -193,7 +193,7 @@ export const shellExec: Tool = {
     // Validate cwd if provided — must stay within workspace
     const cwd = params.cwd as string | undefined;
     const effectiveCwd = cwd ? resolve(context.workspace, cwd) : context.workspace;
-    if (!effectiveCwd.startsWith(context.workspace + '/') && effectiveCwd !== context.workspace) {
+    if (!effectiveCwd.startsWith(`${context.workspace}/`) && effectiveCwd !== context.workspace) {
       return makeResult((params.callId as string) ?? '', 'shell_exec', {
         status: 'error',
         error: `cwd '${cwd}' escapes workspace`,
@@ -324,15 +324,15 @@ export const searchSemantic: Tool = {
             if (ts.isIdentifier(decl.name) && decl.name.text.includes(symbolName)) {
               const line = sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1;
               const text = decl.getText(sf);
-              matches.push({ line, snippet: text.length > 120 ? text.slice(0, 117) + '...' : text });
+              matches.push({ line, snippet: text.length > 120 ? `${text.slice(0, 117)}...` : text });
             }
           });
         }
 
-        if (name && name.includes(symbolName)) {
+        if (name?.includes(symbolName)) {
           const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
           const text = node.getText(sf);
-          matches.push({ line, snippet: text.length > 120 ? text.slice(0, 117) + '...' : text });
+          matches.push({ line, snippet: text.length > 120 ? `${text.slice(0, 117)}...` : text });
         }
 
         ts.forEachChild(node, visit);

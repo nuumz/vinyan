@@ -19,7 +19,7 @@ describe('A2ATransport', () => {
       oracleName: 'ast-oracle',
     });
     expect(transport.transportType).toBe('a2a');
-    expect(transport.connected).toBe(true);
+    expect(transport.isConnected).toBe(true);
   });
 
   test('returns error verdict when peer is unreachable', async () => {
@@ -32,7 +32,7 @@ describe('A2ATransport', () => {
     expect(verdict.verified).toBe(false);
     expect(verdict.type).toBe('unknown');
     expect(verdict.origin).toBe('a2a');
-    expect(transport.connected).toBe(false);
+    expect(transport.isConnected).toBe(false);
   });
 
   test('returns timeout verdict when peer takes too long', async () => {
@@ -104,7 +104,7 @@ describe('A2ATransport', () => {
       expect(verdict.confidence).toBe(0.95);
       expect(verdict.oracleName).toBe('remote-ast');
       expect(verdict.origin).toBe('a2a');
-      expect(transport.connected).toBe(true);
+      expect(transport.isConnected).toBe(true);
     } finally {
       server.stop(true);
     }
@@ -142,9 +142,9 @@ describe('A2ATransport', () => {
       peerUrl: 'http://localhost:9999',
       oracleName: 'ast-oracle',
     });
-    expect(transport.connected).toBe(true);
+    expect(transport.isConnected).toBe(true);
     await transport.close();
-    expect(transport.connected).toBe(false);
+    expect(transport.isConnected).toBe(false);
   });
 
   test('ECP_MIME_TYPE is correct', () => {

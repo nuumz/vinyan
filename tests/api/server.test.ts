@@ -1,5 +1,7 @@
 /**
  * API Server Tests — TDD §22.8 Acceptance Criteria
+ *
+ * Uses handleRequest() directly — no Bun.serve(), no port binding.
  */
 
 import { Database } from 'bun:sqlite';
@@ -16,8 +18,7 @@ import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-api-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
-const TEST_TOKEN = 'test-token-' + 'a'.repeat(52);
-const PORT = 39270 + Math.floor(Math.random() * 100);
+const TEST_TOKEN = `test-token-${'a'.repeat(52)}`;
 
 let server: VinyanAPIServer;
 let db: Database;
@@ -33,15 +34,26 @@ function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
       timestamp: Date.now(),
       routing_level: 1,
       approach: 'test',
-      model_used: 'mock/test',
-      tokens_consumed: 100,
+      modelUsed: 'mock/test',
+      tokensConsumed: 100,
       durationMs: 50,
       outcome: 'success',
-      oracle_verdicts: {},
-      affected_files: [],
+      oracleVerdicts: {},
+      affectedFiles: [],
     } as any,
   });
 }
+
+/** Build a Request targeting the server's handleRequest directly. */
+function req(path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}): Request {
+  return new Request(`http://localhost${path}`, {
+    method: opts.method ?? 'GET',
+    headers: opts.headers,
+    body: opts.body,
+  });
+}
+
+const authHeaders = { Authorization: `Bearer ${TEST_TOKEN}`, 'Content-Type': 'application/json' };
 
 beforeAll(() => {
   mkdirSync(TEST_DIR, { recursive: true });
@@ -58,11 +70,11 @@ beforeAll(() => {
 
   server = new VinyanAPIServer(
     {
-      port: PORT,
+      port: 0,
       bind: '127.0.0.1',
       tokenPath: TOKEN_PATH,
       authRequired: true,
-      rateLimitEnabled: false, // disable for tests
+      rateLimitEnabled: false,
     },
     {
       bus,
@@ -70,26 +82,23 @@ beforeAll(() => {
       sessionManager,
     },
   );
-
-  server.start();
+  // No server.start() — we call handleRequest directly
 });
 
-afterAll(async () => {
-  await server.stop(1000);
+afterAll(() => {
   db.close();
 });
-
-const baseUrl = () => `http://127.0.0.1:${PORT}`;
-const authHeaders = { Authorization: `Bearer ${TEST_TOKEN}`, 'Content-Type': 'application/json' };
 
 describe('API Server', () => {
   // ── Criterion 1: Sync task submission ───────────────────
   test('POST /api/v1/tasks returns TaskResult', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/tasks`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ goal: 'test task' }),
-    });
+    const res = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'test task' }),
+      }),
+    );
 
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
@@ -98,11 +107,13 @@ describe('API Server', () => {
 
   // ── Criterion 2: Async task submission ──────────────────
   test('POST /api/v1/tasks/async returns 202 with taskId', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/tasks/async`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ goal: 'async test' }),
-    });
+    const res = await server.handleRequest(
+      req('/api/v1/tasks/async', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'async test' }),
+      }),
+    );
 
     expect(res.status).toBe(202);
     const data = (await res.json()) as any;
@@ -110,46 +121,46 @@ describe('API Server', () => {
     expect(data.status).toBe('accepted');
 
     // Poll for completion
-    await new Promise((r) => setTimeout(r, 100));
-    const poll = await fetch(`${baseUrl()}/api/v1/tasks/${data.taskId}`, {
-      headers: authHeaders,
-    });
+    await new Promise((r) => setTimeout(r, 50));
+    const poll = await server.handleRequest(req(`/api/v1/tasks/${data.taskId}`, { headers: authHeaders }));
     const pollData = (await poll.json()) as any;
     expect(pollData.status).toBe('completed');
   });
 
   // ── Criterion 4: Session management ─────────────────────
   test('session create + get', async () => {
-    const createRes = await fetch(`${baseUrl()}/api/v1/sessions`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ source: 'test' }),
-    });
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'test' }),
+      }),
+    );
 
     expect(createRes.status).toBe(201);
     const { session } = (await createRes.json()) as any;
     expect(session.id).toBeTruthy();
     expect(session.source).toBe('test');
 
-    const getRes = await fetch(`${baseUrl()}/api/v1/sessions/${session.id}`, {
-      headers: authHeaders,
-    });
+    const getRes = await server.handleRequest(req(`/api/v1/sessions/${session.id}`, { headers: authHeaders }));
     expect(getRes.status).toBe(200);
   });
 
   // ── Criterion 7: Auth enforcement (I15) ─────────────────
   test('POST /tasks without token returns 401', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/tasks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal: 'no auth' }),
-    });
+    const res = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: 'no auth' }),
+      }),
+    );
 
     expect(res.status).toBe(401);
   });
 
   test('GET /health without token returns 200', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/health`);
+    const res = await server.handleRequest(req('/api/v1/health'));
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
     expect(data.status).toBe('ok');
@@ -157,14 +168,14 @@ describe('API Server', () => {
 
   // ── Read-only endpoints ─────────────────────────────────
   test('GET /workers returns array', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/workers`);
+    const res = await server.handleRequest(req('/api/v1/workers'));
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
     expect(data.workers).toBeArray();
   });
 
   test('GET /rules returns array', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/rules`);
+    const res = await server.handleRequest(req('/api/v1/rules'));
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
     expect(data.rules).toBeArray();
@@ -172,9 +183,7 @@ describe('API Server', () => {
 
   // ── 404 for unknown routes ──────────────────────────────
   test('unknown route returns 404', async () => {
-    const res = await fetch(`${baseUrl()}/api/v1/unknown`, {
-      headers: authHeaders,
-    });
+    const res = await server.handleRequest(req('/api/v1/unknown', { headers: authHeaders }));
     expect(res.status).toBe(404);
   });
 });

@@ -48,7 +48,7 @@ describe('ShadowStore', () => {
     expect(pending[0]!.id).toBe('s1');
   });
 
-  test('updateStatus to running sets started_at', () => {
+  test('updateStatus to running sets startedAt', () => {
     const job = makeJob({ id: 's-run' });
     store.insert(job);
     store.updateStatus('s-run', 'running');

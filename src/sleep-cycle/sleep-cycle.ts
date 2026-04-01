@@ -7,7 +7,7 @@
  *
  * Algorithm per TDD §12B:
  * 1. Trigger every N sessions (default: 20)
- * 2. Group traces by task_type_signature
+ * 2. Group traces by taskTypeSignature
  * 3. Anti-pattern: approach X fails on task Y ≥80% → Wilson LB ≥ 0.6
  * 4. Success pattern: approach A beats B by ≥25% composite → Wilson LB ≥ 0.15
  * 5. Minimum support: ≥5 observations, ≥3 distinct sessions
@@ -38,11 +38,11 @@ import {
 import { wilsonLowerBound } from './wilson.ts';
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
-  interval_sessions: 20,
-  min_traces_for_analysis: 100,
-  pattern_min_frequency: 5,
-  pattern_min_confidence: 0.6,
-  decay_half_life_sessions: 50,
+  intervalSessions: 20,
+  minTracesForAnalysis: 100,
+  patternMinFrequency: 5,
+  patternMinConfidence: 0.6,
+  decayHalfLifeSessions: 50,
 };
 
 export interface SleepCycleResult {
@@ -92,7 +92,7 @@ export class SleepCycleRunner {
 
   /** Returns the configured session interval for triggering sleep cycles. */
   getInterval(): number {
-    return this.config.interval_sessions;
+    return this.config.intervalSessions;
   }
 
   /**
@@ -121,7 +121,7 @@ export class SleepCycleRunner {
 
     // PH3.5: Time-windowed trace analysis — use last 5 cycle windows
     const traces = this.queryTracesTimeWindowed();
-    const hasEnoughTraces = traces.length >= this.config.min_traces_for_analysis;
+    const hasEnoughTraces = traces.length >= this.config.minTracesForAnalysis;
 
     // Even if not enough traces for new pattern extraction, still backtest existing rules
     if (!hasEnoughTraces) {
@@ -157,8 +157,8 @@ export class SleepCycleRunner {
     // PH3.5: Cross-task-type correlation analysis
     const crossTaskCorrelations = findFailureCorrelations(
       traces,
-      this.config.pattern_min_frequency,
-      this.config.pattern_min_confidence,
+      this.config.patternMinFrequency,
+      this.config.patternMinConfidence,
     );
     for (const corr of crossTaskCorrelations) {
       newPatterns.push(correlationToPattern(corr));
@@ -211,7 +211,7 @@ export class SleepCycleRunner {
     // Phase 2.6 + PH3.3: Backtest probation rules — promote or retire
     // Skip rules generated in this cycle — they need fresh data to validate
     const rulesPromoted = await this.backtestProbationRules(newRuleIds);
-    let rulesRetired = 0;
+    let _rulesRetired = 0;
 
     // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
@@ -227,7 +227,7 @@ export class SleepCycleRunner {
           const count = this.trackIneffectiveCycle(rule.id);
           if (count >= 3) {
             this.ruleStore.retire(rule.id);
-            rulesRetired++;
+            _rulesRetired++;
             this.bus?.emit('evolution:ruleRetired', {
               ruleId: rule.id,
               reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
@@ -298,10 +298,10 @@ export class SleepCycleRunner {
 
     for (const [approach, approachTraces] of byApproach) {
       const total = approachTraces.length;
-      if (total < this.config.pattern_min_frequency) continue;
+      if (total < this.config.patternMinFrequency) continue;
 
       // Check minimum distinct sessions
-      const distinctSessions = new Set(approachTraces.map((t) => t.session_id ?? t.taskId));
+      const distinctSessions = new Set(approachTraces.map((t) => t.sessionId ?? t.taskId));
       if (distinctSessions.size < 3) continue;
 
       const failures = approachTraces.filter((t) => t.outcome === 'failure' || t.outcome === 'timeout').length;
@@ -312,7 +312,7 @@ export class SleepCycleRunner {
 
       // Statistical significance: Wilson LB ≥ 0.6
       const wilsonLB = wilsonLowerBound(failures, total);
-      if (wilsonLB < this.config.pattern_min_confidence) continue;
+      if (wilsonLB < this.config.patternMinConfidence) continue;
 
       // PH3.3: Capture routing level + model for proportional escalation and multi-condition rules
       const failingTraces = approachTraces.filter((t) => t.outcome === 'failure');
@@ -322,7 +322,7 @@ export class SleepCycleRunner {
           : 1;
       const modelCounts = new Map<string, number>();
       for (const t of failingTraces) {
-        modelCounts.set(t.model_used, (modelCounts.get(t.model_used) ?? 0) + 1);
+        modelCounts.set(t.modelUsed, (modelCounts.get(t.modelUsed) ?? 0) + 1);
       }
       const dominantModel = [...modelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
 
@@ -358,7 +358,7 @@ export class SleepCycleRunner {
     }> = [];
 
     for (const [approach, approachTraces] of byApproach) {
-      if (approachTraces.length < this.config.pattern_min_frequency) continue;
+      if (approachTraces.length < this.config.patternMinFrequency) continue;
 
       const qualityTraces = approachTraces.filter((t) => t.qualityScore);
       if (qualityTraces.length === 0) continue;
@@ -383,7 +383,7 @@ export class SleepCycleRunner {
         const loser = delta > 0 ? b : a;
 
         // Check minimum sessions
-        const winnerSessions = new Set(winner.traces.map((t) => t.session_id ?? t.taskId));
+        const winnerSessions = new Set(winner.traces.map((t) => t.sessionId ?? t.taskId));
         if (winnerSessions.size < 3) continue;
 
         // PH3.3: Real pairwise Wilson LB — compare individual trace pairs
@@ -426,7 +426,7 @@ export class SleepCycleRunner {
     const existingPatterns = this.patternStore.findActive(0.01);
     let decayedCount = 0;
 
-    const halfLife = this.config.decay_half_life_sessions;
+    const halfLife = this.config.decayHalfLifeSessions;
     const activeFn = getActiveDecayFunction(this.decayExperiment);
 
     // Track surviving pattern counts for both functions this cycle (ratio = surviving/total)
@@ -436,7 +436,7 @@ export class SleepCycleRunner {
 
     for (const pattern of existingPatterns) {
       const ageMs = Date.now() - pattern.createdAt;
-      const ageCycles = ageMs / (this.config.interval_sessions * 60_000);
+      const ageCycles = ageMs / (this.config.intervalSessions * 60_000);
 
       // PH3.5: Compute both decay weights for experiment
       const expWeight = computeDecay('exponential', ageCycles, halfLife);
@@ -473,7 +473,7 @@ export class SleepCycleRunner {
   private groupByTaskType(traces: ExecutionTrace[]): Map<string, ExecutionTrace[]> {
     const groups = new Map<string, ExecutionTrace[]>();
     for (const trace of traces) {
-      const sig = trace.task_type_signature ?? 'unknown';
+      const sig = trace.taskTypeSignature ?? 'unknown';
       const group = groups.get(sig);
       if (group) {
         group.push(trace);
@@ -575,14 +575,14 @@ export class SleepCycleRunner {
     const filtered = allTraces.filter((trace) => {
       if (condition.filePattern) {
         const pattern = condition.filePattern;
-        const matches = trace.affected_files.some((f) => simpleGlobMatch(pattern, f));
+        const matches = trace.affectedFiles.some((f) => simpleGlobMatch(pattern, f));
         if (!matches) return false;
       }
       if (condition.oracleName) {
         if (!Object.keys(trace.oracleVerdicts).includes(condition.oracleName)) return false;
       }
       if (condition.modelPattern) {
-        if (!trace.model_used.includes(condition.modelPattern)) return false;
+        if (!trace.modelUsed.includes(condition.modelPattern)) return false;
       }
       return true;
     });
@@ -593,7 +593,7 @@ export class SleepCycleRunner {
 
   /**
    * PH4.5: Extract worker performance patterns.
-   * Groups traces by (task_type_signature, worker_id) and compares
+   * Groups traces by (taskTypeSignature, worker_id) and compares
    * Wilson LB/UB quality across workers for the same task type.
    */
   private extractWorkerPerformancePatterns(traces: ExecutionTrace[]): ExtractedPattern[] {
@@ -602,14 +602,14 @@ export class SleepCycleRunner {
     // Group by task type → worker → traces
     const byTaskType = new Map<string, Map<string, ExecutionTrace[]>>();
     for (const trace of traces) {
-      const sig = trace.task_type_signature ?? 'unknown';
-      const wid = trace.worker_id;
+      const sig = trace.taskTypeSignature ?? 'unknown';
+      const wid = trace.workerId;
       if (!wid) continue;
 
       if (!byTaskType.has(sig)) byTaskType.set(sig, new Map());
       const byWorker = byTaskType.get(sig)!;
       if (!byWorker.has(wid)) byWorker.set(wid, []);
-      byWorker.get(wid)!.push(trace);
+      byWorker.get(wid)?.push(trace);
     }
 
     for (const [taskSig, byWorker] of byTaskType) {
@@ -626,7 +626,7 @@ export class SleepCycleRunner {
       }> = [];
 
       for (const [workerId, workerTraces] of byWorker) {
-        if (workerTraces.length < this.config.pattern_min_frequency) continue;
+        if (workerTraces.length < this.config.patternMinFrequency) continue;
 
         const qualityTraces = workerTraces.filter((t) => t.qualityScore?.composite != null);
         const avgQuality =
@@ -699,7 +699,7 @@ export class SleepCycleRunner {
 
   private getThresholds(): DataGateThresholds {
     return {
-      sleep_cycle_min_traces: this.config.min_traces_for_analysis,
+      sleep_cycle_min_traces: this.config.minTracesForAnalysis,
       sleep_cycle_min_task_types: 5,
       skill_min_patterns: 1,
       skill_min_sleep_cycles: 1,
@@ -719,7 +719,7 @@ export class SleepCycleRunner {
     const files = new Set<string>();
     for (const trace of allTraces) {
       if (traceIdSet.has(trace.id)) {
-        for (const f of trace.affected_files) files.add(f);
+        for (const f of trace.affectedFiles) files.add(f);
       }
     }
     return [...files];
@@ -734,8 +734,8 @@ export class SleepCycleRunner {
     const risks: number[] = [];
     for (const trace of allTraces) {
       if (traceIdSet.has(trace.id)) {
-        if (trace.risk_score != null) {
-          risks.push(trace.risk_score);
+        if (trace.riskScore != null) {
+          risks.push(trace.riskScore);
         } else {
           // Proxy: routing level / 3
           risks.push(trace.routingLevel / 3);

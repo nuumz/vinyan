@@ -78,7 +78,7 @@ export interface VinyanBusEvents {
 
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
-  'task:timeout': { taskId: string; elapsed_ms: number; budget_ms: number };
+  'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
 
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
@@ -196,7 +196,7 @@ export class EventBus<Events extends {}> {
     }
     set.add(handler as Handler<never>);
     return () => {
-      set!.delete(handler as Handler<never>);
+      set?.delete(handler as Handler<never>);
     };
   }
 

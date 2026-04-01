@@ -36,20 +36,20 @@ const defaultPerception: PerceptualHierarchy = {
   runtime: { nodeVersion: '', os: '', availableTools: [] },
 };
 
-function makeTrace(prediction: SelfModelPrediction, outcome: 'success' | 'failure' = 'success'): ExecutionTrace {
+function makeTrace(_prediction: SelfModelPrediction, outcome: 'success' | 'failure' = 'success'): ExecutionTrace {
   return {
     id: `t-${Math.random().toString(36).slice(2)}`,
     taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::ts::single',
+    taskTypeSignature: 'refactor::ts::single',
     approach: 'direct',
     oracleVerdicts: { ast: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome,
-    affected_files: ['src/auth.ts'],
+    affectedFiles: ['src/auth.ts'],
     qualityScore: {
       architecturalCompliance: 0.9,
       efficiency: 0.8,
@@ -104,7 +104,7 @@ describe('Self-Model Foundation (PH3.1)', () => {
       const prediction = await model.predict(defaultInput, defaultPerception);
 
       // We can verify the task signature by checking that the model stores it
-      const params = model.getParams();
+      const _params = model.getParams();
       // After predict, no calibration yet — no observations stored
       // Calibrate to store the task type
       model.calibrate(prediction, makeTrace(prediction));
@@ -113,7 +113,7 @@ describe('Self-Model Foundation (PH3.1)', () => {
       // Should have a key matching the pattern {verb}::{ext}::{bucket}
       const keys = Object.keys(updatedParams.taskTypeObservations);
       expect(keys.length).toBeGreaterThan(0);
-      // The trace's task_type_signature is "refactor::ts::single" from makeTrace
+      // The trace's taskTypeSignature is "refactor::ts::single" from makeTrace
       // But the model's internal signature comes from computeTaskSignature
       // Let's verify the internal format by checking the signature doesn't match old format
       const key = keys.find((k) => k.includes('::'));
@@ -127,10 +127,10 @@ describe('Self-Model Foundation (PH3.1)', () => {
       const fixInput = { ...defaultInput, id: 't-2', goal: 'fix the login bug' };
 
       const pred1 = await model.predict(refactorInput, defaultPerception);
-      model.calibrate(pred1, { ...makeTrace(pred1), task_type_signature: 'refactor::ts::single' });
+      model.calibrate(pred1, { ...makeTrace(pred1), taskTypeSignature: 'refactor::ts::single' });
 
       const pred2 = await model.predict(fixInput, defaultPerception);
-      model.calibrate(pred2, { ...makeTrace(pred2), task_type_signature: 'fix::ts::single' });
+      model.calibrate(pred2, { ...makeTrace(pred2), taskTypeSignature: 'fix::ts::single' });
 
       // Should have two different task type entries
       const params = model.getParams();
@@ -144,12 +144,12 @@ describe('Self-Model Foundation (PH3.1)', () => {
       // single file
       const singleInput = { ...defaultInput, id: 't-1', targetFiles: ['a.ts'] };
       const p1 = await model.predict(singleInput, defaultPerception);
-      model.calibrate(p1, { ...makeTrace(p1), task_type_signature: 'refactor::ts::single' });
+      model.calibrate(p1, { ...makeTrace(p1), taskTypeSignature: 'refactor::ts::single' });
 
       // 5 files = medium
       const mediumInput = { ...defaultInput, id: 't-2', targetFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'] };
       const p2 = await model.predict(mediumInput, defaultPerception);
-      model.calibrate(p2, { ...makeTrace(p2), task_type_signature: 'refactor::ts::medium' });
+      model.calibrate(p2, { ...makeTrace(p2), taskTypeSignature: 'refactor::ts::medium' });
 
       const params = model.getParams();
       const keys = Object.keys(params.taskTypeObservations);
@@ -174,7 +174,7 @@ describe('Self-Model Foundation (PH3.1)', () => {
         model.calibrate(pred, {
           ...makeTrace(pred, 'failure'),
           durationMs: 50000, // very different from predicted
-          affected_files: Array.from({ length: 20 }, (_, j) => `file-${j}.ts`),
+          affectedFiles: Array.from({ length: 20 }, (_, j) => `file-${j}.ts`),
         });
       }
 

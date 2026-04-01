@@ -14,4 +14,4 @@ const verdict = {
   durationMs: 1,
 };
 
-process.stdout.write(JSON.stringify(verdict) + '\n');
+process.stdout.write(`${JSON.stringify(verdict)}\n`);

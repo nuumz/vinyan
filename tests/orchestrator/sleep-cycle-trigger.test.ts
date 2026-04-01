@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
 import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
@@ -24,14 +24,14 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::auth.ts',
+    taskTypeSignature: 'refactor::auth.ts',
     approach: 'direct-edit',
     oracleVerdicts: { type: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['auth.ts'],
+    affectedFiles: ['auth.ts'],
     ...overrides,
   };
 }
@@ -42,7 +42,7 @@ describe('Sleep Cycle Trigger (H1)', () => {
     const runner = new SleepCycleRunner({
       traceStore,
       patternStore,
-      config: { interval_sessions: 15 },
+      config: { intervalSessions: 15 },
     });
     expect(runner.getInterval()).toBe(15);
   });
@@ -75,7 +75,7 @@ describe('Sleep Cycle Trigger (H1)', () => {
       traceStore.insert(
         makeTrace({
           id: `t-${i}`,
-          task_type_signature: `type-${i % 6}::file.ts`,
+          taskTypeSignature: `type-${i % 6}::file.ts`,
         }),
       );
     }
@@ -84,7 +84,7 @@ describe('Sleep Cycle Trigger (H1)', () => {
       traceStore,
       patternStore,
       bus,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     await runner.run();

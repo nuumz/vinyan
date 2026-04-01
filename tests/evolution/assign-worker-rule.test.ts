@@ -41,16 +41,15 @@ function makeTrace(
     timestamp: opts.timestamp ?? Date.now(),
     routingLevel: opts.routingLevel ?? 1,
     approach: 'default',
-    model_used: `model-${workerId}`,
+    modelUsed: `model-${workerId}`,
     tokensConsumed: 1000,
-    tokens_consumed: 1000,
     durationMs: 5000,
     outcome: opts.outcome ?? 'success',
     oracleVerdicts: {},
-    affected_files: opts.affectedFiles ?? ['src/foo.ts'],
-    worker_id: workerId,
+    affectedFiles: opts.affectedFiles ?? ['src/foo.ts'],
+    workerId: workerId,
     qualityScore: opts.quality != null ? { composite: opts.quality } : undefined,
-    task_type_signature: opts.taskTypeSig ?? 'refactor::.ts::small',
+    taskTypeSignature: opts.taskTypeSig ?? 'refactor::.ts::small',
   } as ExecutionTrace;
 }
 

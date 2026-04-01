@@ -8,7 +8,7 @@
 
 import { buildVerdict } from '../core/index.ts';
 import type { Evidence, OracleVerdict } from '../core/types.ts';
-import { clampFull, PEER_TRUST_CAPS, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
+import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type { MCPToolResult } from './types.ts';
 
 /**

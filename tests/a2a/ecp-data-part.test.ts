@@ -8,7 +8,7 @@ import {
   verdictToECPDataPart,
   wrapAsA2ADataPart,
 } from '../../src/a2a/ecp-a2a-translation.ts';
-import { ECP_MIME_TYPE, ECPDataPartSchema, isECPDataPart, parseECPDataPart } from '../../src/a2a/ecp-data-part.ts';
+import { ECP_MIME_TYPE, ECPDataPartSchema, isECPDataPart } from '../../src/a2a/ecp-data-part.ts';
 import { buildVerdict } from '../../src/core/index.ts';
 import { PEER_TRUST_CAPS } from '../../src/oracle/tier-clamp.ts';
 

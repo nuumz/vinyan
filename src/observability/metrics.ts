@@ -15,7 +15,7 @@ import type { SkillStore } from '../db/skill-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
-import { type EvolutionMetrics, generatePhase3Report } from './phase3-report.ts';
+import { type EvolutionMetrics, generateEvolutionReport } from './phase3-report.ts';
 
 export interface MetricsDeps {
   traceStore: TraceStore;
@@ -95,7 +95,7 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
 
   const qualityScores = recentTraces
     .filter((t) => t.qualityScore?.composite != null)
-    .map((t) => t.qualityScore!.composite);
+    .map((t) => t.qualityScore?.composite);
   const avgQualityComposite =
     qualityScores.length > 0 ? qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length : 0;
 
@@ -181,7 +181,7 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
       evolutionEngine: checkDataGate('evolution_engine', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
       fleetRouting: checkDataGate('fleet_routing', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
     },
-    evolution: generatePhase3Report({ traceStore, ruleStore, skillStore, patternStore }),
+    evolution: generateEvolutionReport({ traceStore, ruleStore, skillStore, patternStore }),
   };
 }
 

@@ -19,23 +19,23 @@ export type ProposalType =
 
 export type ProposalState = 'proposed' | 'countered' | 'affirmed' | 'rejected' | 'expired';
 
-export interface EcpProposal {
+export interface ECPProposal {
   proposal_id: string;
   proposal_type: ProposalType;
   proposer_instance_id: string;
   terms: Record<string, unknown>;
-  expires_at: number;
+  expiresAt: number;
   max_rounds: number;
   round: number;
 }
 
-export interface EcpAffirm {
+export interface ECPAffirm {
   proposal_id: string;
   commitments: string[];
 }
 
 export interface ProposalRecord {
-  proposal: EcpProposal;
+  proposal: ECPProposal;
   state: ProposalState;
   peerId: string;
   history: Array<{ round: number; action: 'propose' | 'counter' | 'affirm' | 'reject'; timestamp: number }>;
@@ -64,13 +64,13 @@ export class NegotiationManager {
     };
   }
 
-  propose(peerId: string, type: ProposalType, terms: Record<string, unknown>): EcpProposal {
-    const proposal: EcpProposal = {
+  propose(peerId: string, type: ProposalType, terms: Record<string, unknown>): ECPProposal {
+    const proposal: ECPProposal = {
       proposal_id: genId('prop'),
       proposal_type: type,
       proposer_instance_id: this.config.instanceId,
       terms,
-      expires_at: Date.now() + this.config.defaultExpiryMs,
+      expiresAt: Date.now() + this.config.defaultExpiryMs,
       max_rounds: 3,
       round: 1,
     };
@@ -85,7 +85,7 @@ export class NegotiationManager {
     return proposal;
   }
 
-  counterPropose(proposalId: string, newTerms: Record<string, unknown>): EcpProposal | null {
+  counterPropose(proposalId: string, newTerms: Record<string, unknown>): ECPProposal | null {
     const record = this.proposals.get(proposalId);
     if (!record) return null;
     if (record.state !== 'proposed' && record.state !== 'countered') return null;
@@ -99,7 +99,7 @@ export class NegotiationManager {
     return record.proposal;
   }
 
-  affirm(proposalId: string, commitmentIds: string[] = []): EcpAffirm | null {
+  affirm(proposalId: string, commitmentIds: string[] = []): ECPAffirm | null {
     const record = this.proposals.get(proposalId);
     if (!record) return null;
     if (record.state !== 'proposed' && record.state !== 'countered') return null;
@@ -120,7 +120,7 @@ export class NegotiationManager {
     return true;
   }
 
-  handleIncomingProposal(peerId: string, proposal: EcpProposal): void {
+  handleIncomingProposal(peerId: string, proposal: ECPProposal): void {
     this.proposals.set(proposal.proposal_id, {
       proposal,
       state: 'proposed',
@@ -135,7 +135,7 @@ export class NegotiationManager {
     });
   }
 
-  handleIncomingAffirm(peerId: string, affirmation: EcpAffirm): void {
+  handleIncomingAffirm(_peerId: string, affirmation: ECPAffirm): void {
     const record = this.proposals.get(affirmation.proposal_id);
     if (!record) return;
 
@@ -155,7 +155,7 @@ export class NegotiationManager {
     const now = Date.now();
     let count = 0;
     for (const [, record] of this.proposals) {
-      if ((record.state === 'proposed' || record.state === 'countered') && record.proposal.expires_at < now) {
+      if ((record.state === 'proposed' || record.state === 'countered') && record.proposal.expiresAt < now) {
         record.state = 'expired';
         count++;
       }

@@ -39,7 +39,7 @@ describe('MCPClientBridge', () => {
 
   test('starts disconnected', () => {
     const bridge = new MCPClientBridge(baseConfig);
-    expect(bridge.connected).toBe(false);
+    expect(bridge.isConnected).toBe(false);
   });
 
   test('callTool throws when not connected', async () => {
@@ -113,10 +113,10 @@ describe('subprocess error handling', () => {
     });
 
     await bridge.connect();
-    expect(bridge.connected).toBe(true);
+    expect(bridge.isConnected).toBe(true);
 
     await bridge.disconnect();
-    expect(bridge.connected).toBe(false);
+    expect(bridge.isConnected).toBe(false);
   });
 
   test('callTool on crashed subprocess returns error verdict', async () => {

@@ -45,7 +45,7 @@ export function buildQualityLookup(
   const lookup = new Map<string, Map<number, { sum: number; count: number }>>();
 
   for (const t of traces) {
-    const sig = t.task_type_signature ?? 'unknown';
+    const sig = t.taskTypeSignature ?? 'unknown';
     const quality = t.qualityScore?.composite;
     if (quality == null) continue;
 
@@ -88,7 +88,7 @@ export function analyzeCounterfactuals(
   const results: CounterfactualResult[] = [];
 
   for (const trace of traces) {
-    const sig = trace.task_type_signature ?? 'unknown';
+    const sig = trace.taskTypeSignature ?? 'unknown';
     const actualQuality = trace.qualityScore?.composite;
     if (actualQuality == null) continue;
     if (trace.routingLevel >= 3) continue; // Already max level

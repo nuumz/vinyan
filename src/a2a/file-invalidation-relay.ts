@@ -9,7 +9,7 @@
  */
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import { wrapAsA2ADataPart } from './ecp-a2a-translation.ts';
-import { ECP_MIME_TYPE, type ECPDataPart } from './ecp-data-part.ts';
+import type { ECPDataPart } from './ecp-data-part.ts';
 
 export interface FileInvalidationRelayConfig {
   bus: EventBus<VinyanBusEvents>;

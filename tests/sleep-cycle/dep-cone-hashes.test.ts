@@ -62,17 +62,17 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
         taskId: `task-${i}`,
         timestamp: Date.now() - (60 - i) * 1000,
         routingLevel: 1,
-        task_type_signature: taskSig,
+        taskTypeSignature: taskSig,
         approach: 'extract-method',
         oracleVerdicts: { ast: true, type: true },
-        model_used: 'mock',
-        tokens_consumed: 100,
+        modelUsed: 'mock',
+        tokensConsumed: 100,
         durationMs: 500,
         outcome: 'success',
-        affected_files: ['auth.ts', 'utils.ts'],
+        affectedFiles: ['auth.ts', 'utils.ts'],
         qualityScore: makeQs(0.9),
-        risk_score: 0.3,
-        session_id: `s-${i % 5}`,
+        riskScore: 0.3,
+        sessionId: `s-${i % 5}`,
       } as ExecutionTrace);
     }
     // Loser approach: 30 successes with low quality
@@ -82,17 +82,17 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
         taskId: `task-${60 + i}`,
         timestamp: Date.now() - (60 - i) * 1000,
         routingLevel: 1,
-        task_type_signature: taskSig,
+        taskTypeSignature: taskSig,
         approach: 'inline-all',
         oracleVerdicts: { ast: true },
-        model_used: 'mock',
-        tokens_consumed: 200,
+        modelUsed: 'mock',
+        tokensConsumed: 200,
         durationMs: 1000,
         outcome: 'success',
-        affected_files: ['auth.ts'],
+        affectedFiles: ['auth.ts'],
         qualityScore: makeQs(0.4),
-        risk_score: 0.15,
-        session_id: `s-${i % 5}`,
+        riskScore: 0.15,
+        sessionId: `s-${i % 5}`,
       } as ExecutionTrace);
     }
     // Additional traces for different task types to satisfy the data gate (5 distinct types)
@@ -103,16 +103,16 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
           taskId: `task-filler-${t}-${i}`,
           timestamp: Date.now(),
           routingLevel: 1,
-          task_type_signature: `other-type-${t}`,
+          taskTypeSignature: `other-type-${t}`,
           approach: 'default',
           oracleVerdicts: { ast: true },
-          model_used: 'mock',
-          tokens_consumed: 50,
+          modelUsed: 'mock',
+          tokensConsumed: 50,
           durationMs: 200,
           outcome: 'success',
-          affected_files: ['other.ts'],
+          affectedFiles: ['other.ts'],
           qualityScore: makeQs(0.7),
-          session_id: `s-${i % 5}`,
+          sessionId: `s-${i % 5}`,
         } as ExecutionTrace);
       }
     }
@@ -126,7 +126,7 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
       traceStore,
       patternStore,
       skillManager,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     const result = await runner.run();
@@ -151,7 +151,7 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
       traceStore,
       patternStore,
       skillManager,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     await runner.run();

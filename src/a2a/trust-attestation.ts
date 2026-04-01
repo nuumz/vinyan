@@ -14,8 +14,7 @@
  */
 
 import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
-import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
-import type { PeerTrustManager, PeerTrustRecord } from './peer-trust.ts';
+import type { PeerTrustManager } from './peer-trust.ts';
 
 export interface TrustAttestation {
   subject_instance_id: string;
@@ -23,7 +22,7 @@ export interface TrustAttestation {
   interactions: number;
   accurate: number;
   wilson_lb: number;
-  attestation_age_ms: number;
+  attestationAgeMs: number;
   hop_count: number;
   timestamp: number;
 }
@@ -84,7 +83,7 @@ export class TrustAttestationManager {
       interactions: record.interactions,
       accurate: record.accurate,
       wilson_lb: record.wilsonLB,
-      attestation_age_ms: Date.now() - record.lastInteraction,
+      attestationAgeMs: Date.now() - record.lastInteraction,
       hop_count: 0, // direct experience
       timestamp: Date.now(),
     };

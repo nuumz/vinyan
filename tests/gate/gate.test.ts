@@ -5,7 +5,7 @@
  * Reuses tests/benchmark/fixtures/simple-project/ as the workspace.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
@@ -137,7 +137,7 @@ describe('Oracle Gate', () => {
       const verdict = await runGate(request);
 
       // Type oracle disabled → its error won't block
-      expect(verdict.oracle_results['type']).toBeUndefined();
+      expect(verdict.oracle_results.type).toBeUndefined();
 
       rmSync(filePath, { force: true });
     } finally {
@@ -152,10 +152,10 @@ describe('Oracle Gate', () => {
   test('oracle crash produces block verdict (fail-closed)', async () => {
     // Inject a type error so the type oracle WOULD fail, then corrupt the file
     // to trigger the crash path (not just "file not found" silence)
-    const crashFile = join(workspace, 'crash-target.ts');
+    const _crashFile = join(workspace, 'crash-target.ts');
     // Write valid TS so the file exists for oracle resolution, but use a
     // non-existent workspace for tsc to crash on (deterministic crash path)
-    const crashWorkspace = '/tmp/nonexistent-workspace-' + Date.now();
+    const crashWorkspace = `/tmp/nonexistent-workspace-${Date.now()}`;
     const request: GateRequest = {
       tool: 'write_file',
       params: {
@@ -191,7 +191,7 @@ describe('Oracle Gate', () => {
     const verdict = await runGate(request);
 
     // dep oracle returns verified:true always, but even if it didn't, it's informational
-    if (verdict.oracle_results['dep']) {
+    if (verdict.oracle_results.dep) {
       // dep should not appear in block reasons
       expect(verdict.reasons.every((r) => !r.includes('"dep"'))).toBe(true);
     }

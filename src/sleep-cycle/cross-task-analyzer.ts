@@ -42,9 +42,9 @@ export function findFailureCorrelations(
   // Build attribute tuples per trace
   const tuples = traces.map((t) => ({
     trace: t,
-    model: t.model_used,
+    model: t.modelUsed,
     routingLevel: t.routingLevel,
-    blastRadiusBucket: blastBucket(t.affected_files.length),
+    blastRadiusBucket: blastBucket(t.affectedFiles.length),
     oracleVerdictPattern: dominantFailedOracle(t.oracleVerdicts),
   }));
 

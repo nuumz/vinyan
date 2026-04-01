@@ -148,7 +148,7 @@ function parseGeneratedTests(content: string): GeneratedTest[] {
     let jsonStr = content.trim();
     const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) {
-      jsonStr = fenceMatch[1]!.trim();
+      jsonStr = fenceMatch[1]?.trim();
     }
 
     const parsed = JSON.parse(jsonStr);

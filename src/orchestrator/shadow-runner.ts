@@ -71,7 +71,7 @@ export class ShadowRunner {
       const result = await this.runValidation(job);
       this.store.updateStatus(job.id, 'done', result);
       return result;
-    } catch (err) {
+    } catch (_err) {
       if (job.retryCount < job.maxRetries) {
         this.store.incrementRetry(job.id);
         this.store.updateStatus(job.id, 'pending');

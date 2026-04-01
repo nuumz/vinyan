@@ -52,7 +52,7 @@ describe('RuleStore', () => {
 
     const retired = store.findByStatus('retired');
     expect(retired).toHaveLength(1);
-    expect(retired[0]!.superseded_by).toBe('r2');
+    expect(retired[0]!.supersededBy).toBe('r2');
     expect(store.findActive()).toHaveLength(0);
   });
 

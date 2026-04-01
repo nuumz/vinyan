@@ -9,7 +9,10 @@
     "lint:fix": "biome check --write src/ tests/",
     "format": "biome format --write src/ tests/",
     "check": "tsc --noEmit && biome check src/ tests/",
-    "test": "bun test"
+    "test": "bun test tests/a2a tests/api tests/bus tests/cli tests/config tests/core tests/db tests/evolution tests/guardrails tests/helpers tests/mcp tests/observability tests/property tests/security tests/sleep-cycle",
+    "test:integration": "bun test tests/gate tests/oracle tests/orchestrator tests/world-graph tests/integration",
+    "test:slow": "bun test tests/benchmark tests/experiment --timeout 120000",
+    "test:all": "bun test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",

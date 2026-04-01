@@ -10,12 +10,12 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     routingLevel: 1,
     approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: 'gpt-4o',
-    tokens_consumed: 100,
+    modelUsed: 'gpt-4o',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['a.ts'],
-    task_type_signature: 'refactor::ts',
+    affectedFiles: ['a.ts'],
+    taskTypeSignature: 'refactor::ts',
     qualityScore: {
       composite: 0.7,
       architecturalCompliance: 0.7,
@@ -32,7 +32,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
     test('groups by task type and routing level', () => {
       const traces = [
         makeTrace({
-          task_type_signature: 'refactor::ts',
+          taskTypeSignature: 'refactor::ts',
           routingLevel: 1,
           qualityScore: {
             composite: 0.6,
@@ -43,7 +43,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
           },
         }),
         makeTrace({
-          task_type_signature: 'refactor::ts',
+          taskTypeSignature: 'refactor::ts',
           routingLevel: 1,
           qualityScore: {
             composite: 0.8,
@@ -54,7 +54,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
           },
         }),
         makeTrace({
-          task_type_signature: 'refactor::ts',
+          taskTypeSignature: 'refactor::ts',
           routingLevel: 2,
           qualityScore: {
             composite: 0.9,

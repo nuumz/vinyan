@@ -100,7 +100,7 @@ export function abstractPattern(pattern: ExtractedPattern, projectId: string): A
  * Convert an AbstractPattern back to an ExtractedPattern for import.
  * Confidence is reduced by 50% on import. Status is always probation.
  */
-export function importAbstractPattern(abstract: AbstractPattern, targetProjectId: string): ExtractedPattern {
+export function importAbstractPattern(abstract: AbstractPattern, _targetProjectId: string): ExtractedPattern {
   const taskTypeSignature = [
     abstract.fingerprint.actionVerb,
     abstract.fingerprint.fileExtensions.join(','),

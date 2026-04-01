@@ -2,7 +2,6 @@
  * Remote Bus Adapter tests — Phase L3.
  */
 import { describe, expect, test } from 'bun:test';
-import { ECP_MIME_TYPE } from '../../src/a2a/ecp-data-part.ts';
 import { DEFAULT_FORWARDED_EVENTS, RemoteBusAdapter } from '../../src/a2a/remote-bus.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 

@@ -14,7 +14,7 @@ import type { PeerTrustManager } from './peer-trust.ts';
 
 export type FeedbackOutcome = 'accurate' | 'inaccurate' | 'partially_accurate' | 'inapplicable';
 
-export interface EcpFeedback {
+export interface ECPFeedback {
   feedback_id: string;
   target_type: 'verdict' | 'knowledge' | 'rule';
   target_id: string;
@@ -46,9 +46,9 @@ function genId(): string {
 }
 
 export class FeedbackManager {
-  private feedbacks = new Map<string, EcpFeedback>();
+  private feedbacks = new Map<string, ECPFeedback>();
   private sentKeys = new Set<string>();
-  private byTarget = new Map<string, EcpFeedback[]>();
+  private byTarget = new Map<string, ECPFeedback[]>();
 
   constructor(private config: FeedbackConfig) {}
 
@@ -61,11 +61,11 @@ export class FeedbackManager {
       evidence?: Array<{ file: string; line: number; snippet: string }>;
       context?: Record<string, unknown>;
     },
-  ): EcpFeedback | null {
+  ): ECPFeedback | null {
     const key = `${targetId}:${this.config.instanceId}`;
     if (this.sentKeys.has(key)) return null;
 
-    const feedback: EcpFeedback = {
+    const feedback: ECPFeedback = {
       feedback_id: genId(),
       target_type: targetType,
       target_id: targetId,
@@ -83,7 +83,7 @@ export class FeedbackManager {
     return feedback;
   }
 
-  handleFeedback(peerId: string, feedback: EcpFeedback): boolean {
+  handleFeedback(peerId: string, feedback: ECPFeedback): boolean {
     const key = `${feedback.target_id}:${feedback.sender_instance_id}`;
     if (this.sentKeys.has(key)) return false;
 
@@ -131,7 +131,7 @@ export class FeedbackManager {
     return this.sentKeys.has(`${targetId}:${senderId}`);
   }
 
-  private appendToTarget(targetId: string, feedback: EcpFeedback): void {
+  private appendToTarget(targetId: string, feedback: ECPFeedback): void {
     const list = this.byTarget.get(targetId) ?? [];
     list.push(feedback);
     this.byTarget.set(targetId, list);

@@ -17,11 +17,11 @@ export function validateDAG(dag: TaskDAG, blastRadius: string[]): DagValidationC
   const nodeIds = new Set(nodes.map((n) => n.id));
 
   return {
-    no_orphans: checkNoOrphans(nodes, nodeIds),
-    no_scope_overlap: checkNoScopeOverlap(nodes),
+    noOrphans: checkNoOrphans(nodes, nodeIds),
+    noScopeOverlap: checkNoScopeOverlap(nodes),
     coverage: checkCoverage(nodes, blastRadius),
-    valid_dependency_order: checkValidDependencyOrder(nodes, nodeIds),
-    verification_specified: checkVerificationSpecified(nodes, nodeIds),
+    validDependencyOrder: checkValidDependencyOrder(nodes, nodeIds),
+    verificationSpecified: checkVerificationSpecified(nodes, nodeIds),
   };
 }
 
@@ -31,12 +31,12 @@ export function allCriteriaMet(criteria: DagValidationCriteria): boolean {
 
 export function formatFailures(criteria: DagValidationCriteria): string[] {
   const failures: string[] = [];
-  if (!criteria.no_orphans) failures.push('Orphan nodes detected: some nodes are disconnected from the DAG');
-  if (!criteria.no_scope_overlap) failures.push('Scope overlap: multiple subtasks target the same file(s)');
+  if (!criteria.noOrphans) failures.push('Orphan nodes detected: some nodes are disconnected from the DAG');
+  if (!criteria.noScopeOverlap) failures.push('Scope overlap: multiple subtasks target the same file(s)');
   if (!criteria.coverage) failures.push("Coverage gap: subtask targets don't cover all blast radius files");
-  if (!criteria.valid_dependency_order)
+  if (!criteria.validDependencyOrder)
     failures.push('Invalid dependency order: cycle detected or unknown dependency ID');
-  if (!criteria.verification_specified) failures.push('Missing verification: leaf nodes must have assigned oracles');
+  if (!criteria.verificationSpecified) failures.push('Missing verification: leaf nodes must have assigned oracles');
   return failures;
 }
 
@@ -117,7 +117,7 @@ function checkValidDependencyOrder(nodes: TaskDAG['nodes'], nodeIds: Set<string>
 
   for (const node of nodes) {
     for (const dep of node.dependencies) {
-      adjacency.get(dep)!.push(node.id);
+      adjacency.get(dep)?.push(node.id);
       inDegree.set(node.id, (inDegree.get(node.id) ?? 0) + 1);
     }
   }
@@ -145,7 +145,7 @@ function checkValidDependencyOrder(nodes: TaskDAG['nodes'], nodeIds: Set<string>
  * C5: Verification specified — every leaf node has assigned oracles.
  * A leaf node has no dependents (no other node depends on it).
  */
-function checkVerificationSpecified(nodes: TaskDAG['nodes'], nodeIds: Set<string>): boolean {
+function checkVerificationSpecified(nodes: TaskDAG['nodes'], _nodeIds: Set<string>): boolean {
   const hasDependents = new Set<string>();
   for (const node of nodes) {
     for (const dep of node.dependencies) {

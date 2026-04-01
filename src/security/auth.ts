@@ -67,7 +67,7 @@ function ensureTokenExists(tokenPath: string): void {
 
   mkdirSync(dirname(tokenPath), { recursive: true });
   const token = randomBytes(32).toString('hex');
-  writeFileSync(tokenPath, token + '\n', { mode: 0o600 });
+  writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
 }
 
 /**

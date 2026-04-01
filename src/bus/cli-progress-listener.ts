@@ -26,7 +26,7 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   const red = (s: string) => (color ? `\x1b[31m${s}\x1b[0m` : s);
   const yellow = (s: string) => (color ? `\x1b[33m${s}\x1b[0m` : s);
 
-  const write = (msg: string) => out.write(msg + '\n');
+  const write = (msg: string) => out.write(`${msg}\n`);
 
   const detachers: Array<() => void> = [];
 
@@ -63,8 +63,8 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   );
 
   detachers.push(
-    bus.on('task:timeout', ({ taskId, elapsed_ms, budget_ms }) => {
-      write(`${dim('[vinyan]')} ${red('TIMEOUT')} task ${taskId} after ${elapsed_ms}ms (budget: ${budget_ms}ms)`);
+    bus.on('task:timeout', ({ taskId, elapsedMs, budgetMs }) => {
+      write(`${dim('[vinyan]')} ${red('TIMEOUT')} task ${taskId} after ${elapsedMs}ms (budget: ${budgetMs}ms)`);
     }),
   );
 

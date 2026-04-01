@@ -82,7 +82,7 @@ export function validateArtifactPath(workspace: string, artifactPath: string): {
     realWorkspace = workspace;
   }
   const absPath = resolve(realWorkspace, artifactPath);
-  const normalizedWorkspace = realWorkspace.endsWith('/') ? realWorkspace : realWorkspace + '/';
+  const normalizedWorkspace = realWorkspace.endsWith('/') ? realWorkspace : `${realWorkspace}/`;
   if (!absPath.startsWith(normalizedWorkspace) && absPath !== realWorkspace) {
     return { valid: false, reason: `Path '${artifactPath}' escapes workspace` };
   }
@@ -101,7 +101,7 @@ export function validateArtifactPath(workspace: string, artifactPath: string): {
   try {
     const parentDir = dirname(absPath);
     const realParent = realpathSync(parentDir);
-    const normalizedParent = realParent.endsWith('/') ? realParent : realParent + '/';
+    const normalizedParent = realParent.endsWith('/') ? realParent : `${realParent}/`;
     if (!normalizedParent.startsWith(normalizedWorkspace) && realParent !== realWorkspace) {
       return { valid: false, reason: `Parent directory of '${artifactPath}' resolves outside workspace` };
     }

@@ -26,7 +26,7 @@ function getLineNumber(sf: ts.SourceFile, pos: number): number {
 function getSnippet(sf: ts.SourceFile, node: ts.Node): string {
   const text = node.getText(sf);
   // Truncate long snippets
-  return text.length > 120 ? text.slice(0, 117) + '...' : text;
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
 /** Pattern: symbol-exists — verify a named symbol (function, class, variable, type) exists in the file. */

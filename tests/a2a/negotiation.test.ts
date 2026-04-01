@@ -2,7 +2,7 @@
  * Negotiation primitives tests — Phase G1.
  */
 import { describe, expect, test } from 'bun:test';
-import { type EcpProposal, NegotiationManager } from '../../src/a2a/negotiation.ts';
+import { type ECPProposal, NegotiationManager } from '../../src/a2a/negotiation.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {
@@ -28,7 +28,7 @@ describe('NegotiationManager — propose', () => {
     expect(p.terms).toEqual({ files: ['a.ts', 'b.ts'] });
     expect(p.max_rounds).toBe(3);
     expect(p.round).toBe(1);
-    expect(p.expires_at).toBeGreaterThan(Date.now());
+    expect(p.expiresAt).toBeGreaterThan(Date.now());
   });
 
   test('generates unique IDs for each proposal', () => {
@@ -88,7 +88,7 @@ describe('NegotiationManager — counterPropose', () => {
 });
 
 describe('NegotiationManager — affirm/reject', () => {
-  test('affirm transitions to affirmed and returns EcpAffirm', () => {
+  test('affirm transitions to affirmed and returns ECPAffirm', () => {
     const mgr = makeManager();
     const p = mgr.propose('peer-A', 'task_split', {});
     const aff = mgr.affirm(p.proposal_id, ['cmt-1', 'cmt-2']);
@@ -129,12 +129,12 @@ describe('NegotiationManager — incoming', () => {
     bus.on('a2a:proposalReceived', (e) => events.push(e));
 
     const mgr = makeManager(bus);
-    const incoming: EcpProposal = {
+    const incoming: ECPProposal = {
       proposal_id: 'prop-remote-001',
       proposal_type: 'knowledge_exchange',
       proposer_instance_id: 'inst-002',
       terms: { patterns: 5 },
-      expires_at: Date.now() + 60_000,
+      expiresAt: Date.now() + 60_000,
       max_rounds: 3,
       round: 1,
     };

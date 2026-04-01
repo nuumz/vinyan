@@ -123,7 +123,7 @@ function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean 
   const c = rule.condition;
 
   if (c.filePattern) {
-    const matches = trace.affected_files.some((f) => simpleGlobMatch(c.filePattern!, f));
+    const matches = trace.affectedFiles.some((f) => simpleGlobMatch(c.filePattern!, f));
     if (!matches) return false;
   }
 
@@ -133,12 +133,12 @@ function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean 
   }
 
   if (c.riskAbove !== undefined) {
-    const riskScore = trace.risk_score ?? 0;
+    const riskScore = trace.riskScore ?? 0;
     if (riskScore <= c.riskAbove) return false;
   }
 
   if (c.modelPattern) {
-    if (!trace.model_used.includes(c.modelPattern)) return false;
+    if (!trace.modelUsed.includes(c.modelPattern)) return false;
   }
 
   return true;
@@ -257,8 +257,8 @@ export function backtestWorkerAssignment(rule: EvolutionaryRule, traces: Executi
   }
 
   // Compare assigned worker quality vs others in validation set
-  const workerTraces = validation.filter((t) => t.worker_id === workerId);
-  const otherTraces = validation.filter((t) => t.worker_id !== workerId);
+  const workerTraces = validation.filter((t) => t.workerId === workerId);
+  const otherTraces = validation.filter((t) => t.workerId !== workerId);
 
   const workerAvgQuality = avgQuality(workerTraces);
   const otherAvgQuality = avgQuality(otherTraces);

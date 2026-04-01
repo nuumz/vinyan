@@ -23,7 +23,7 @@ export async function loadOrCreateIdentity(keyPath: string): Promise<InstanceIde
 
   const identity = await generateIdentity();
   mkdirSync(dirname(keyPath), { recursive: true });
-  writeFileSync(keyPath, JSON.stringify(identity, null, 2) + '\n', { mode: 0o600 });
+  writeFileSync(keyPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
   return identity;
 }
 

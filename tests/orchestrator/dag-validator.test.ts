@@ -24,7 +24,7 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['b.ts'], dependencies: ['n1'], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).no_orphans).toBe(true);
+    expect(validateDAG(dag, []).noOrphans).toBe(true);
   });
 
   test('C1 fail: disconnected nodes', () => {
@@ -34,7 +34,7 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['b.ts'], dependencies: [], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).no_orphans).toBe(false);
+    expect(validateDAG(dag, []).noOrphans).toBe(false);
   });
 
   test('C1/C4: dependency references unknown node → caught by C4', () => {
@@ -44,8 +44,8 @@ describe('validateDAG', () => {
     // Single-node DAG passes C1 (no orphan check needed for 1 node)
     // but fails C4 (unknown dependency ID)
     const result = validateDAG(dag, []);
-    expect(result.no_orphans).toBe(true);
-    expect(result.valid_dependency_order).toBe(false);
+    expect(result.noOrphans).toBe(true);
+    expect(result.validDependencyOrder).toBe(false);
   });
 
   // ── C2: no_scope_overlap ────────────────────────────────────────────
@@ -57,7 +57,7 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['b.ts'], dependencies: ['n1'], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).no_scope_overlap).toBe(true);
+    expect(validateDAG(dag, []).noScopeOverlap).toBe(true);
   });
 
   test('C2 fail: overlapping target files', () => {
@@ -67,7 +67,7 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['shared.ts'], dependencies: ['n1'], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).no_scope_overlap).toBe(false);
+    expect(validateDAG(dag, []).noScopeOverlap).toBe(false);
   });
 
   // ── C3: coverage ────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ describe('validateDAG', () => {
         { id: 'n3', description: 'c', targetFiles: ['c.ts'], dependencies: ['n1', 'n2'], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).valid_dependency_order).toBe(true);
+    expect(validateDAG(dag, []).validDependencyOrder).toBe(true);
   });
 
   test('C4 fail: cycle (A→B→A)', () => {
@@ -115,21 +115,21 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['b.ts'], dependencies: ['n1'], assignedOracles: ['type'] },
       ],
     };
-    expect(validateDAG(dag, []).valid_dependency_order).toBe(false);
+    expect(validateDAG(dag, []).validDependencyOrder).toBe(false);
   });
 
   test('C4 fail: self-cycle', () => {
     const dag: TaskDAG = {
       nodes: [{ id: 'n1', description: 'a', targetFiles: ['a.ts'], dependencies: ['n1'], assignedOracles: ['type'] }],
     };
-    expect(validateDAG(dag, []).valid_dependency_order).toBe(false);
+    expect(validateDAG(dag, []).validDependencyOrder).toBe(false);
   });
 
   test('C4 fail: unknown dependency ID', () => {
     const dag: TaskDAG = {
       nodes: [{ id: 'n1', description: 'a', targetFiles: ['a.ts'], dependencies: ['n999'], assignedOracles: ['type'] }],
     };
-    expect(validateDAG(dag, []).valid_dependency_order).toBe(false);
+    expect(validateDAG(dag, []).validDependencyOrder).toBe(false);
   });
 
   // ── C5: verification_specified ──────────────────────────────────────
@@ -142,7 +142,7 @@ describe('validateDAG', () => {
       ],
     };
     // n2 is the leaf (nobody depends on it) and has oracles
-    expect(validateDAG(dag, []).verification_specified).toBe(true);
+    expect(validateDAG(dag, []).verificationSpecified).toBe(true);
   });
 
   test('C5 fail: leaf has empty oracles', () => {
@@ -152,40 +152,40 @@ describe('validateDAG', () => {
         { id: 'n2', description: 'b', targetFiles: ['b.ts'], dependencies: ['n1'], assignedOracles: [] },
       ],
     };
-    expect(validateDAG(dag, []).verification_specified).toBe(false);
+    expect(validateDAG(dag, []).verificationSpecified).toBe(false);
   });
 
   // ── allCriteriaMet / formatFailures ─────────────────────────────────
 
   test('allCriteriaMet true when all pass', () => {
     const criteria = {
-      no_orphans: true,
-      no_scope_overlap: true,
+      noOrphans: true,
+      noScopeOverlap: true,
       coverage: true,
-      valid_dependency_order: true,
-      verification_specified: true,
+      validDependencyOrder: true,
+      verificationSpecified: true,
     };
     expect(allCriteriaMet(criteria)).toBe(true);
   });
 
   test('allCriteriaMet false when any fail', () => {
     const criteria = {
-      no_orphans: true,
-      no_scope_overlap: false,
+      noOrphans: true,
+      noScopeOverlap: false,
       coverage: true,
-      valid_dependency_order: true,
-      verification_specified: true,
+      validDependencyOrder: true,
+      verificationSpecified: true,
     };
     expect(allCriteriaMet(criteria)).toBe(false);
   });
 
   test('formatFailures returns messages for failed criteria only', () => {
     const criteria = {
-      no_orphans: true,
-      no_scope_overlap: false,
+      noOrphans: true,
+      noScopeOverlap: false,
       coverage: false,
-      valid_dependency_order: true,
-      verification_specified: true,
+      validDependencyOrder: true,
+      verificationSpecified: true,
     };
     const failures = formatFailures(criteria);
     expect(failures).toHaveLength(2);
@@ -195,11 +195,11 @@ describe('validateDAG', () => {
 
   test('formatFailures empty when all pass', () => {
     const criteria = {
-      no_orphans: true,
-      no_scope_overlap: true,
+      noOrphans: true,
+      noScopeOverlap: true,
       coverage: true,
-      valid_dependency_order: true,
-      verification_specified: true,
+      validDependencyOrder: true,
+      verificationSpecified: true,
     };
     expect(formatFailures(criteria)).toHaveLength(0);
   });

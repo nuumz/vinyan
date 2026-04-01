@@ -96,7 +96,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     };
   }
 
-  private buildDependencyCone(targetAbsolute: string, level: RoutingLevel) {
+  private buildDependencyCone(targetAbsolute: string, _level: RoutingLevel) {
     if (!targetAbsolute) {
       return {
         directImportees: [] as string[],

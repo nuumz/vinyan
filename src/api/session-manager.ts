@@ -6,9 +6,9 @@
  *
  * Source of truth: spec/tdd.md §22.3, §22.4
  */
-import type { SessionRow, SessionStore, SessionTaskRow } from '../db/session-store.ts';
+import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
-import type { ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 
 export interface Session {
   id: string;
@@ -35,7 +35,7 @@ export interface CompactionResult {
 export class SessionManager {
   constructor(
     private sessionStore: SessionStore,
-    private traceStore?: TraceStore,
+    _traceStore?: TraceStore,
   ) {}
 
   create(source: string): Session {
@@ -109,17 +109,17 @@ export class SessionManager {
         try {
           const result = JSON.parse(task.result_json) as TaskResult;
           totalDurationMs += result.trace?.durationMs ?? 0;
-          totalTokens += result.trace?.tokens_consumed ?? 0;
+          totalTokens += result.trace?.tokensConsumed ?? 0;
 
           if (result.status === 'completed') {
             successes++;
             // Extract successful approach as pattern
             if (result.trace?.approach) {
-              patterns.push(`${result.trace.task_type_signature}: ${result.trace.approach}`);
+              patterns.push(`${result.trace.taskTypeSignature}: ${result.trace.approach}`);
             }
           } else {
             if (result.escalationReason) failures.push(result.escalationReason);
-            else if (result.trace?.failure_reason) failures.push(result.trace.failure_reason);
+            else if (result.trace?.failureReason) failures.push(result.trace.failureReason);
           }
         } catch {
           // Malformed result — skip

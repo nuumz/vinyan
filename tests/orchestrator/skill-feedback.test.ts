@@ -7,7 +7,7 @@ import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { SKILL_SCHEMA_SQL } from '../../src/db/skill-schema.ts';
 import { SkillStore } from '../../src/db/skill-store.ts';
 import { SkillManager } from '../../src/orchestrator/skill-manager.ts';
-import type { CachedSkill, ExtractedPattern } from '../../src/orchestrator/types.ts';
+import type { ExtractedPattern } from '../../src/orchestrator/types.ts';
 import { WorkingMemory } from '../../src/orchestrator/working-memory.ts';
 
 let db: Database;

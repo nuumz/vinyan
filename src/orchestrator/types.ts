@@ -290,11 +290,11 @@ export interface ExtractedPattern {
 
 /** Sleep Cycle configuration */
 export interface SleepCycleConfig {
-  interval_sessions: number; // default: 20
-  min_traces_for_analysis: number; // minimum traces before analysis runs
-  pattern_min_frequency: number; // minimum occurrences to extract pattern
-  pattern_min_confidence: number; // statistical threshold (Wilson LB)
-  decay_half_life_sessions: number; // pattern relevance decay
+  intervalSessions: number; // default: 20
+  minTracesForAnalysis: number; // minimum traces before analysis runs
+  patternMinFrequency: number; // minimum occurrences to extract pattern
+  patternMinConfidence: number; // statistical threshold (Wilson LB)
+  decayHalfLifeSessions: number; // pattern relevance decay
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ export interface EvolutionaryRule {
   createdAt: number;
   effectiveness: number;
   specificity: number; // count of non-null condition fields
-  superseded_by?: string; // rule ID that replaced this via conflict resolution
+  supersededBy?: string; // rule ID that replaced this via conflict resolution
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
 }
 
@@ -349,32 +349,32 @@ export interface EvolutionaryRule {
 export interface ExecutionTrace {
   id: string;
   taskId: string;
-  session_id?: string; // Session grouping for multi-step tasks
-  worker_id?: string; // Which worker executed this step
+  sessionId?: string; // Session grouping for multi-step tasks
+  workerId?: string; // Which worker executed this step
   timestamp: number;
   routingLevel: RoutingLevel;
   action?: string; // Specific action taken (e.g., 'file_write', 'refactor')
   approach: string; // Brief description of the approach
-  approach_description?: string; // Detailed explanation for Evolution Engine
-  risk_score?: number; // Risk score at time of execution
-  task_type_signature?: string; // Sleep Cycle grouping key (goal pattern + file pattern)
+  approachDescription?: string; // Detailed explanation for Evolution Engine
+  riskScore?: number; // Risk score at time of execution
+  taskTypeSignature?: string; // Sleep Cycle grouping key (goal pattern + file pattern)
   oracleVerdicts: Record<string, boolean>; // oracle_name → pass/fail
   qualityScore?: QualityScore;
   prediction?: SelfModelPrediction;
   predictionError?: PredictionError; // Full prediction error, not just a number
-  success_pattern_tag?: string; // Tag for Evolution Engine pattern extraction
-  model_used: string;
-  tokens_consumed: number;
+  successPatternTag?: string; // Tag for Evolution Engine pattern extraction
+  modelUsed: string;
+  tokensConsumed: number;
   durationMs: number;
   outcome: 'success' | 'failure' | 'timeout' | 'escalated';
-  failure_reason?: string;
-  affected_files: string[];
+  failureReason?: string;
+  affectedFiles: string[];
   // Phase 2.2 — shadow validation (async, post-commit)
-  shadow_validation?: ShadowValidationResult;
-  validation_depth?: 'structural' | 'structural_and_tests' | 'full_shadow';
+  shadowValidation?: ShadowValidationResult;
+  validationDepth?: 'structural' | 'structural_and_tests' | 'full_shadow';
   exploration?: boolean; // PH3.6: true if epsilon-greedy exploration was used
   oracleFailurePattern?: string; // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
-  framework_markers?: string[]; // PH4: detected framework markers (e.g., 'react', 'express')
+  frameworkMarkers?: string[]; // PH4: detected framework markers (e.g., 'react', 'express')
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
@@ -399,11 +399,11 @@ export interface TaskDAG {
 
 /** 5 machine-checkable criteria for DAG validation */
 export interface DagValidationCriteria {
-  no_orphans: boolean;
-  no_scope_overlap: boolean;
+  noOrphans: boolean;
+  noScopeOverlap: boolean;
   coverage: boolean;
-  valid_dependency_order: boolean;
-  verification_specified: boolean;
+  validDependencyOrder: boolean;
+  verificationSpecified: boolean;
 }
 
 // ---------------------------------------------------------------------------

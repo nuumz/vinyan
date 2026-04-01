@@ -19,7 +19,7 @@ export type RetractionReason =
   | 'stale_temporal_context'
   | 'manual';
 
-export interface EcpRetraction {
+export interface ECPRetraction {
   retraction_id: string;
   target_type: RetractionTargetType;
   target_id: string;
@@ -49,9 +49,9 @@ function genId(): string {
 }
 
 export class RetractionManager {
-  private retractions = new Map<string, EcpRetraction>();
+  private retractions = new Map<string, ECPRetraction>();
   private retractedTargets = new Set<string>();
-  private preemptiveStore = new Map<string, EcpRetraction>();
+  private preemptiveStore = new Map<string, ECPRetraction>();
   private peerTimestamps = new Map<string, number[]>();
 
   private spamThreshold: number;
@@ -70,8 +70,8 @@ export class RetractionManager {
     severity: RetractionSeverity,
     reason: RetractionReason,
     options?: { replacementId?: string; evidence?: Array<{ file: string; line: number; snippet: string }> },
-  ): EcpRetraction {
-    const retraction: EcpRetraction = {
+  ): ECPRetraction {
+    const retraction: ECPRetraction = {
       retraction_id: genId(),
       target_type: targetType,
       target_id: targetId,
@@ -88,7 +88,7 @@ export class RetractionManager {
     return retraction;
   }
 
-  handleRetraction(peerId: string, retraction: EcpRetraction): void {
+  handleRetraction(peerId: string, retraction: ECPRetraction): void {
     // Record timestamp for spam detection
     const timestamps = this.peerTimestamps.get(peerId) ?? [];
     timestamps.push(Date.now());
@@ -128,11 +128,11 @@ export class RetractionManager {
     return this.retractedTargets.has(targetId);
   }
 
-  getRetractions(): EcpRetraction[] {
+  getRetractions(): ECPRetraction[] {
     return [...this.retractions.values()];
   }
 
-  getPreemptive(targetId: string): EcpRetraction | undefined {
+  getPreemptive(targetId: string): ECPRetraction | undefined {
     return this.preemptiveStore.get(targetId);
   }
 

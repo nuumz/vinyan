@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { generateRule } from '../../src/evolution/rule-generator.ts';
-import type { EvolutionaryRule, ExtractedPattern } from '../../src/orchestrator/types.ts';
+import type { ExtractedPattern } from '../../src/orchestrator/types.ts';
 
 function makeAntiPattern(overrides?: Partial<ExtractedPattern>): ExtractedPattern {
   return {

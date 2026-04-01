@@ -52,7 +52,7 @@ export const SignerSchema = z.object({
 
 // ── Message Types ──────────────────────────────────────────────────────
 
-export const ECPMessageType = z.enum([
+export const ECPMessageTypeSchema = z.enum([
   // Existing primitives (7)
   'assert',
   'query',
@@ -83,19 +83,19 @@ export const ECPMessageType = z.enum([
   'partial_verdict',
 ]);
 
-export type ECPMessageType = z.infer<typeof ECPMessageType>;
+export type ECPMessageType = z.infer<typeof ECPMessageTypeSchema>;
 
 // ── Epistemic Types ────────────────────────────────────────────────────
 
-export const EpistemicType = z.enum(['known', 'unknown', 'uncertain', 'contradictory']);
-export type EpistemicType = z.infer<typeof EpistemicType>;
+export const EpistemicTypeSchema = z.enum(['known', 'unknown', 'uncertain', 'contradictory']);
+export type EpistemicType = z.infer<typeof EpistemicTypeSchema>;
 
 // ── ECP Data Part (main schema) ────────────────────────────────────────
 
 export const ECPDataPartSchema = z.object({
   ecp_version: z.literal(1),
-  message_type: ECPMessageType,
-  epistemic_type: EpistemicType,
+  message_type: ECPMessageTypeSchema,
+  epistemic_type: EpistemicTypeSchema,
   confidence: z.number().min(0).max(1),
   confidence_reported: z.boolean(),
   evidence: z.array(EvidencePartSchema).optional(),

@@ -136,7 +136,7 @@ export class MCPClientBridge {
   }
 
   /** Check if the bridge is connected. */
-  get connected(): boolean {
+  get isConnected(): boolean {
     return this.proc !== null;
   }
 
@@ -158,7 +158,7 @@ export class MCPClientBridge {
     return new Promise<unknown>((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
       try {
-        this.proc!.stdin.write(JSON.stringify(request) + '\n');
+        this.proc?.stdin.write(`${JSON.stringify(request)}\n`);
       } catch (err) {
         this.pendingRequests.delete(id);
         reject(err instanceof Error ? err : new Error(String(err)));

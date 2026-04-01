@@ -1,7 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { runRetention } from '../../src/world-graph/retention.ts';
-import { SCHEMA_SQL } from '../../src/world-graph/schema.ts';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 describe('World Graph Retention', () => {
@@ -15,7 +14,7 @@ describe('World Graph Retention', () => {
     wg.close();
   });
 
-  function storeFacts(count: number, options?: { sessionId?: string; age_ms?: number }) {
+  function storeFacts(count: number, options?: { sessionId?: string; ageMs?: number }) {
     const now = Date.now();
     for (let i = 0; i < count; i++) {
       wg.storeFact({
@@ -25,7 +24,7 @@ describe('World Graph Retention', () => {
         oracleName: 'ast-oracle',
         fileHash: `hash-${i}`,
         sourceFile: `file-${i}.ts`,
-        verifiedAt: now - (options?.age_ms ?? 0),
+        verifiedAt: now - (options?.ageMs ?? 0),
         sessionId: options?.sessionId,
         confidence: 1.0,
       });
@@ -75,7 +74,7 @@ describe('World Graph Retention', () => {
     const DayMs = 24 * 60 * 60 * 1000;
 
     // Old facts in a "protected" session
-    storeFacts(3, { age_ms: 40 * DayMs, sessionId: 'protected-session' });
+    storeFacts(3, { ageMs: 40 * DayMs, sessionId: 'protected-session' });
     // Recent fact in same session to make it "recent"
     wg.storeFact({
       target: 'recent.ts',

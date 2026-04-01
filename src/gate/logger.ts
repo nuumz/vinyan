@@ -31,7 +31,7 @@ export async function logDecision(workspace: string, entry: SessionLogEntry): Pr
   mkdirSync(sessionDir, { recursive: true });
 
   const logPath = join(sessionDir, `${entry.session_id}.jsonl`);
-  const line = JSON.stringify(entry) + '\n';
+  const line = `${JSON.stringify(entry)}\n`;
   appendFileSync(logPath, line, 'utf-8');
 }
 

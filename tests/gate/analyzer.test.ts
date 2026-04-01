@@ -22,7 +22,7 @@ afterAll(() => {
 function writeJsonl(dir: string, filename: string, entries: SessionLogEntry[]): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, filename);
-  writeFileSync(path, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  writeFileSync(path, `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
   return path;
 }
 
@@ -42,7 +42,7 @@ function makeEntry(overrides: Partial<SessionLogEntry> = {}): SessionLogEntry {
 
 describe('Session Analyzer', () => {
   test('returns empty metrics for non-existent directory', () => {
-    const metrics = analyzeSessionDir('/tmp/nonexistent-' + Date.now());
+    const metrics = analyzeSessionDir(`/tmp/nonexistent-${Date.now()}`);
     expect(metrics.totalDecisions).toBe(0);
     expect(metrics.blockRate).toBe(0);
   });
@@ -69,7 +69,7 @@ describe('Session Analyzer', () => {
     expect(metrics.blockCount).toBe(1);
     expect(metrics.blockRate).toBeCloseTo(1 / 3);
     expect(metrics.avgDurationMs).toBeCloseTo(150);
-    expect(metrics.oracleBlockCounts['type']).toBe(1);
+    expect(metrics.oracleBlockCounts.type).toBe(1);
   });
 
   test('aggregates multiple session files', () => {
@@ -85,8 +85,8 @@ describe('Session Analyzer', () => {
     const metrics = analyzeSessionDir(sessionDir);
     expect(metrics.totalDecisions).toBe(3);
     expect(metrics.blockCount).toBe(2);
-    expect(metrics.oracleBlockCounts['type']).toBe(1);
-    expect(metrics.oracleBlockCounts['ast']).toBe(1);
+    expect(metrics.oracleBlockCounts.type).toBe(1);
+    expect(metrics.oracleBlockCounts.ast).toBe(1);
   });
 
   test('counts guardrail blocks correctly', () => {
@@ -111,8 +111,8 @@ describe('Session Analyzer', () => {
     ]);
 
     const metrics = analyzeSessionDir(sessionDir);
-    expect(metrics.toolBreakdown['write_file']).toEqual({ allow: 1, block: 1 });
-    expect(metrics.toolBreakdown['edit_file']).toEqual({ allow: 1, block: 0 });
+    expect(metrics.toolBreakdown.write_file).toEqual({ allow: 1, block: 1 });
+    expect(metrics.toolBreakdown.edit_file).toEqual({ allow: 1, block: 0 });
   });
 
   test('handles corrupt JSONL lines gracefully', () => {

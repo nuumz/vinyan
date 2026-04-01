@@ -27,14 +27,14 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::auth.ts',
+    taskTypeSignature: 'refactor::auth.ts',
     approach: 'direct-edit',
     oracleVerdicts: { type: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['auth.ts'],
+    affectedFiles: ['auth.ts'],
     ...overrides,
   };
 }
@@ -69,9 +69,9 @@ function seedTracesForBacktest(
         id: `t-fail-${i}`,
         timestamp: base + i,
         outcome: 'failure',
-        affected_files: [opts.filePattern],
-        task_type_signature: `refactor::${opts.filePattern}`,
-        session_id: `s-${i % 5}`,
+        affectedFiles: [opts.filePattern],
+        taskTypeSignature: `refactor::${opts.filePattern}`,
+        sessionId: `s-${i % 5}`,
       }),
     );
   }
@@ -81,9 +81,9 @@ function seedTracesForBacktest(
         id: `t-succ-${i}`,
         timestamp: base + opts.failures + i,
         outcome: 'success',
-        affected_files: [opts.filePattern],
-        task_type_signature: `refactor::${opts.filePattern}`,
-        session_id: `s-${i % 5}`,
+        affectedFiles: [opts.filePattern],
+        taskTypeSignature: `refactor::${opts.filePattern}`,
+        sessionId: `s-${i % 5}`,
       }),
     );
   }
@@ -93,8 +93,8 @@ function seedTracesForBacktest(
       makeTrace({
         id: `t-extra-${i}`,
         timestamp: base + opts.failures + opts.successes + i,
-        task_type_signature: `type-${i}::other.ts`,
-        affected_files: [`other-${i}.ts`],
+        taskTypeSignature: `type-${i}::other.ts`,
+        affectedFiles: [`other-${i}.ts`],
       }),
     );
   }
@@ -117,7 +117,7 @@ describe('Rule Promotion Pipeline (H2)', () => {
       traceStore,
       patternStore,
       ruleStore,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     const result = await runner.run();
@@ -142,7 +142,7 @@ describe('Rule Promotion Pipeline (H2)', () => {
       traceStore,
       patternStore,
       ruleStore,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     const result = await runner.run();
@@ -169,10 +169,10 @@ describe('Rule Promotion Pipeline (H2)', () => {
       traceStore,
       patternStore,
       ruleStore,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
-    const result = await runner.run();
+    const _result = await runner.run();
     // The unsafe rule should NOT be promoted; any other generated rules may be
     const activeRules = ruleStore.findByStatus('active');
     expect(activeRules.some((r) => r.id === 'rule-unsafe')).toBe(false);
@@ -190,7 +190,7 @@ describe('Rule Promotion Pipeline (H2)', () => {
       traceStore,
       patternStore,
       ruleStore,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     await runner.run();
@@ -217,7 +217,7 @@ describe('Rule Promotion Pipeline (H2)', () => {
       traceStore,
       patternStore,
       ruleStore,
-      config: { min_traces_for_analysis: 50 },
+      config: { minTracesForAnalysis: 50 },
     });
 
     await runner.run();

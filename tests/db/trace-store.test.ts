@@ -20,11 +20,11 @@ function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
     routingLevel: 1,
     approach: 'direct-edit',
     oracleVerdicts: { ast: true, type: true, dep: false },
-    model_used: 'claude-haiku',
-    tokens_consumed: 500,
+    modelUsed: 'claude-haiku',
+    tokensConsumed: 500,
     durationMs: 1200,
     outcome: 'success',
-    affected_files: ['src/foo.ts', 'src/bar.ts'],
+    affectedFiles: ['src/foo.ts', 'src/bar.ts'],
     ...overrides,
   };
 }
@@ -62,21 +62,21 @@ describe('TraceStore', () => {
     expect(results[0]!.taskId).toBe('task-001');
     expect(results[0]!.routingLevel).toBe(1);
     expect(results[0]!.approach).toBe('direct-edit');
-    expect(results[0]!.model_used).toBe('claude-haiku');
-    expect(results[0]!.tokens_consumed).toBe(500);
+    expect(results[0]!.modelUsed).toBe('claude-haiku');
+    expect(results[0]!.tokensConsumed).toBe(500);
     expect(results[0]!.outcome).toBe('success');
   });
 
   test('JSON fields deserialized correctly', () => {
     const trace = makeTrace({
       oracleVerdicts: { ast: true, type: false },
-      affected_files: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+      affectedFiles: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
     });
     store.insert(trace);
 
     const result = store.findRecent(1)[0]!;
     expect(result.oracleVerdicts).toEqual({ ast: true, type: false });
-    expect(result.affected_files).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(result.affectedFiles).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
   });
 
   test('QualityScore denormalized into columns and reconstructed', () => {
@@ -118,23 +118,23 @@ describe('TraceStore', () => {
   });
 
   test('findByTaskType filters correctly', () => {
-    store.insert(makeTrace({ id: 't1', task_type_signature: 'refactor:rename' }));
-    store.insert(makeTrace({ id: 't2', task_type_signature: 'bugfix:null-check' }));
-    store.insert(makeTrace({ id: 't3', task_type_signature: 'refactor:rename' }));
+    store.insert(makeTrace({ id: 't1', taskTypeSignature: 'refactor:rename' }));
+    store.insert(makeTrace({ id: 't2', taskTypeSignature: 'bugfix:null-check' }));
+    store.insert(makeTrace({ id: 't3', taskTypeSignature: 'refactor:rename' }));
 
     const refactors = store.findByTaskType('refactor:rename');
     expect(refactors).toHaveLength(2);
-    expect(refactors.every((t) => t.task_type_signature === 'refactor:rename')).toBe(true);
+    expect(refactors.every((t) => t.taskTypeSignature === 'refactor:rename')).toBe(true);
   });
 
   test('findByOutcome filters correctly', () => {
     store.insert(makeTrace({ id: 't1', outcome: 'success' }));
-    store.insert(makeTrace({ id: 't2', outcome: 'failure', failure_reason: 'type error' }));
+    store.insert(makeTrace({ id: 't2', outcome: 'failure', failureReason: 'type error' }));
     store.insert(makeTrace({ id: 't3', outcome: 'timeout' }));
 
     const failures = store.findByOutcome('failure');
     expect(failures).toHaveLength(1);
-    expect(failures[0]!.failure_reason).toBe('type error');
+    expect(failures[0]!.failureReason).toBe('type error');
   });
 
   test('findByTimeRange filters correctly', () => {
@@ -157,9 +157,9 @@ describe('TraceStore', () => {
   });
 
   test('countDistinctTaskTypes counts unique signatures', () => {
-    store.insert(makeTrace({ id: 't1', task_type_signature: 'a' }));
-    store.insert(makeTrace({ id: 't2', task_type_signature: 'a' }));
-    store.insert(makeTrace({ id: 't3', task_type_signature: 'b' }));
+    store.insert(makeTrace({ id: 't1', taskTypeSignature: 'a' }));
+    store.insert(makeTrace({ id: 't2', taskTypeSignature: 'a' }));
+    store.insert(makeTrace({ id: 't3', taskTypeSignature: 'b' }));
     store.insert(makeTrace({ id: 't4' })); // no signature — not counted
 
     expect(store.countDistinctTaskTypes()).toBe(2);
@@ -203,19 +203,19 @@ describe('TraceStore', () => {
   test('optional fields handled gracefully', () => {
     store.insert(
       makeTrace({
-        session_id: 'sess-1',
-        worker_id: 'w-1',
-        approach_description: 'detailed explanation',
-        risk_score: 0.35,
-        validation_depth: 'structural',
+        sessionId: 'sess-1',
+        workerId: 'w-1',
+        approachDescription: 'detailed explanation',
+        riskScore: 0.35,
+        validationDepth: 'structural',
       }),
     );
 
     const result = store.findRecent(1)[0]!;
-    expect(result.session_id).toBe('sess-1');
-    expect(result.worker_id).toBe('w-1');
-    expect(result.approach_description).toBe('detailed explanation');
-    expect(result.risk_score).toBe(0.35);
-    expect(result.validation_depth).toBe('structural');
+    expect(result.sessionId).toBe('sess-1');
+    expect(result.workerId).toBe('w-1');
+    expect(result.approachDescription).toBe('detailed explanation');
+    expect(result.riskScore).toBe(0.35);
+    expect(result.validationDepth).toBe('structural');
   });
 });

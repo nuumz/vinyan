@@ -4,7 +4,7 @@
  * Tests Wilson LB trust progression, promotion, demotion, and inactivity decay.
  */
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_PEER_TRUST_CONFIG, PeerTrustManager, type PeerTrustRecord } from '../../src/a2a/peer-trust.ts';
+import { PeerTrustManager } from '../../src/a2a/peer-trust.ts';
 import { PEER_TRUST_CAPS } from '../../src/oracle/tier-clamp.ts';
 import { wilsonLowerBound } from '../../src/sleep-cycle/wilson.ts';
 

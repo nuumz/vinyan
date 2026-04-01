@@ -119,7 +119,7 @@ describe('OracleCircuitBreaker', () => {
     cb.recordFailure('ast');
     cb.recordFailure('ast');
     const states = cb.getAllStates();
-    expect(states['ast']).toBe('open');
+    expect(states.ast).toBe('open');
   });
 
   test('getAllStates() returns correct states for multiple oracles', () => {
@@ -133,8 +133,8 @@ describe('OracleCircuitBreaker', () => {
     cb.recordFailure('type');
 
     const states = cb.getAllStates();
-    expect(states['ast']).toBe('open');
-    expect(states['type']).toBe('closed');
+    expect(states.ast).toBe('open');
+    expect(states.type).toBe('closed');
     expect(Object.keys(states)).toHaveLength(2);
   });
 
@@ -145,14 +145,14 @@ describe('OracleCircuitBreaker', () => {
     cb.recordFailure('ast', now);
     cb.recordFailure('ast', now);
     cb.recordFailure('ast', now);
-    expect(cb.getAllStates()['ast']).toBe('open');
+    expect(cb.getAllStates().ast).toBe('open');
 
     // Transition to half-open via shouldSkip after timer
     cb.shouldSkip('ast', now + 100);
-    expect(cb.getAllStates()['ast']).toBe('half-open');
+    expect(cb.getAllStates().ast).toBe('half-open');
 
     // Probe succeeds → back to closed
     cb.recordSuccess('ast');
-    expect(cb.getAllStates()['ast']).toBe('closed');
+    expect(cb.getAllStates().ast).toBe('closed');
   });
 });

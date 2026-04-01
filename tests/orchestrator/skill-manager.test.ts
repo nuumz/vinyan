@@ -6,7 +6,7 @@ import { join } from 'path';
 import { SKILL_SCHEMA_SQL } from '../../src/db/skill-schema.ts';
 import { SkillStore } from '../../src/db/skill-store.ts';
 import { hashContent, SkillManager } from '../../src/orchestrator/skill-manager.ts';
-import type { CachedSkill, ExtractedPattern } from '../../src/orchestrator/types.ts';
+import type { ExtractedPattern } from '../../src/orchestrator/types.ts';
 
 let db: Database;
 let store: SkillStore;

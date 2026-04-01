@@ -136,7 +136,7 @@ describe('afterToolCall hook', () => {
   test('handles non-existent affected files gracefully', async () => {
     const result: ToolCallResult = {
       toolName: 'delete_file',
-      affectedFiles: ['/tmp/nonexistent-file-' + Date.now() + '.ts'],
+      affectedFiles: [`/tmp/nonexistent-file-${Date.now()}.ts`],
     };
 
     // Should not throw

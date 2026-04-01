@@ -13,7 +13,7 @@ const TEST_TOKEN = 'a'.repeat(64);
 
 beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
-  writeFileSync(TOKEN_PATH, TEST_TOKEN + '\n');
+  writeFileSync(TOKEN_PATH, `${TEST_TOKEN}\n`);
 });
 
 afterEach(() => {

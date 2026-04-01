@@ -98,7 +98,7 @@ export function computeFingerprint(
 export function computeOracleFailurePattern(traces: ExecutionTrace[], taskTypeSignature: string): string | undefined {
   const oracleFails = new Map<string, number>();
   for (const trace of traces) {
-    if (trace.task_type_signature !== taskTypeSignature) continue;
+    if (trace.taskTypeSignature !== taskTypeSignature) continue;
     for (const [oracle, passed] of Object.entries(trace.oracleVerdicts)) {
       if (!passed) {
         oracleFails.set(oracle, (oracleFails.get(oracle) ?? 0) + 1);
@@ -107,7 +107,7 @@ export function computeOracleFailurePattern(traces: ExecutionTrace[], taskTypeSi
   }
   if (oracleFails.size === 0) return undefined;
   const sorted = [...oracleFails.entries()].sort((a, b) => b[1] - a[1]);
-  return sorted[0]![0];
+  return sorted[0]?.[0];
 }
 
 /**

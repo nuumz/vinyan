@@ -122,10 +122,10 @@ async function main() {
 
 function writeOutput(output: unknown): void {
   const validated = WorkerOutputSchema.parse(output);
-  process.stdout.write(JSON.stringify(validated) + '\n');
+  process.stdout.write(`${JSON.stringify(validated)}\n`);
 }
 
 main().catch((err) => {
-  process.stderr.write(String(err) + '\n');
+  process.stderr.write(`${String(err)}\n`);
   process.exit(1);
 });

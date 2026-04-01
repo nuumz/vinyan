@@ -18,7 +18,7 @@ export class OrderService {
       throw new ValidationError(['Order must have at least one item']);
     }
     if (items.length > MAX_ORDER_ITEMS) {
-      throw new ValidationError(['Cannot exceed ' + MAX_ORDER_ITEMS + ' items']);
+      throw new ValidationError([`Cannot exceed ${MAX_ORDER_ITEMS} items`]);
     }
     const order: Order = {
       id: generateId(),

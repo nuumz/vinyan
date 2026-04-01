@@ -21,7 +21,7 @@ export function createMockProvider(options: MockProviderOptions = {}): LLMProvid
   return {
     id: options.id ?? 'mock/test',
     tier: options.tier ?? 'fast',
-    async generate(request: LLMRequest): Promise<LLMResponse> {
+    async generate(_request: LLMRequest): Promise<LLMResponse> {
       if (options.latencyMs) {
         await new Promise((r) => setTimeout(r, options.latencyMs));
       }

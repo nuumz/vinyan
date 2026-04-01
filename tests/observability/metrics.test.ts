@@ -32,14 +32,14 @@ function insertTrace(store: TraceStore, overrides?: Partial<ExecutionTrace>) {
     taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::foo.ts',
+    taskTypeSignature: 'refactor::foo.ts',
     approach: 'direct',
     oracleVerdicts: { ast: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['foo.ts'],
+    affectedFiles: ['foo.ts'],
     qualityScore: {
       architecturalCompliance: 0.9,
       efficiency: 0.8,
@@ -72,7 +72,7 @@ describe('Observability Metrics (P3.6)', () => {
       insertTrace(deps.traceStore, {
         id: `f-${i}`,
         outcome: 'failure',
-        task_type_signature: 'bugfix::bar.ts',
+        taskTypeSignature: 'bugfix::bar.ts',
       });
     }
 

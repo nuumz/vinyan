@@ -21,7 +21,7 @@ export interface StdioTransportConfig {
 
 export class StdioTransport implements ECPTransport {
   readonly transportType = 'stdio' as const;
-  readonly connected = true;
+  readonly isConnected = true;
   private config: StdioTransportConfig;
 
   constructor(config: StdioTransportConfig) {
@@ -38,7 +38,7 @@ export class StdioTransport implements ECPTransport {
       stderr: 'pipe',
     });
 
-    const input = JSON.stringify(hypothesis) + '\n';
+    const input = `${JSON.stringify(hypothesis)}\n`;
     proc.stdin.write(input);
     proc.stdin.end();
 

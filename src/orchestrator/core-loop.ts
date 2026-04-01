@@ -45,7 +45,7 @@ export interface RiskRouter {
 
 export interface SelfModel {
   predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction>;
-  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError | void;
+  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError | undefined;
 }
 
 export interface TaskDecomposer {
@@ -206,25 +206,25 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         const timeoutTrace: ExecutionTrace = {
           id: `trace-${input.id}-timeout`,
           taskId: input.id,
-          worker_id: routing.workerId ?? routing.model ?? 'unknown',
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
           timestamp: Date.now(),
           routingLevel: routing.level,
           approach: 'wall-clock-timeout',
           oracleVerdicts: {},
-          model_used: routing.model ?? 'none',
-          tokens_consumed: 0,
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
           durationMs: Date.now() - startTime,
           outcome: 'timeout',
-          failure_reason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
-          affected_files: input.targetFiles ?? [],
+          failureReason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
+          affectedFiles: input.targetFiles ?? [],
           workerSelectionAudit: lastWorkerSelection,
         };
         await deps.traceCollector.record(timeoutTrace);
         deps.bus?.emit('trace:record', { trace: timeoutTrace });
         deps.bus?.emit('task:timeout', {
           taskId: input.id,
-          elapsed_ms: Date.now() - startTime,
-          budget_ms: input.budget.maxDurationMs,
+          elapsedMs: Date.now() - startTime,
+          budgetMs: input.budget.maxDurationMs,
         });
         const timeoutResult: TaskResult = {
           id: input.id,
@@ -292,17 +292,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           const uncertainTrace: ExecutionTrace = {
             id: `trace-${input.id}-uncertain`,
             taskId: input.id,
-            worker_id: 'none',
+            workerId: 'none',
             timestamp: Date.now(),
             routingLevel: routing.level,
             approach: 'fleet-uncertain',
             oracleVerdicts: {},
-            model_used: 'none',
-            tokens_consumed: 0,
+            modelUsed: 'none',
+            tokensConsumed: 0,
             durationMs: Date.now() - startTime,
             outcome: 'failure',
-            failure_reason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
-            affected_files: input.targetFiles ?? [],
+            failureReason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
+            affectedFiles: input.targetFiles ?? [],
             workerSelectionAudit: selection,
           };
           await deps.traceCollector.record(uncertainTrace);
@@ -353,17 +353,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         const dispatchFailTrace: ExecutionTrace = {
           id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
           taskId: input.id,
-          worker_id: routing.workerId ?? routing.model ?? 'unknown',
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
           timestamp: Date.now(),
           routingLevel: routing.level,
           approach: 'dispatch-error',
           oracleVerdicts: {},
-          model_used: routing.model ?? 'none',
-          tokens_consumed: 0,
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
           durationMs: Date.now() - startTime,
           outcome: 'failure',
-          failure_reason: `Worker dispatch failed: ${String(dispatchErr)}`,
-          affected_files: input.targetFiles ?? [],
+          failureReason: `Worker dispatch failed: ${String(dispatchErr)}`,
+          affectedFiles: input.targetFiles ?? [],
           workerSelectionAudit: workerSelection ?? lastWorkerSelection,
           exploration: explorationFlag || undefined,
         };
@@ -454,7 +454,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ── Compute QualityScore from available data (A7: gradient signal) ──
       const testVerdictKey = Object.keys(verification.verdicts).find((k) => k.startsWith('test'));
       const testContext = testVerdictKey
-        ? { testsExist: true, testsPassed: verification.verdicts[testVerdictKey]!.verified }
+        ? { testsExist: true, testsPassed: verification.verdicts[testVerdictKey]?.verified }
         : undefined;
       const complexityCtx = buildComplexityContext(
         workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
@@ -480,24 +480,24 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       const trace: ExecutionTrace = {
         id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
         taskId: input.id,
-        worker_id: routing.workerId ?? routing.model ?? 'unknown',
+        workerId: routing.workerId ?? routing.model ?? 'unknown',
         timestamp: Date.now(),
         routingLevel: routing.level,
-        task_type_signature: taskTypeSignature,
+        taskTypeSignature: taskTypeSignature,
         approach: workerResult.mutations.map((m) => m.explanation).join('; '),
         oracleVerdicts: Object.fromEntries(Object.entries(verification.verdicts).map(([k, v]) => [k, v.verified])),
-        model_used: routing.model ?? 'none',
-        tokens_consumed: workerResult.tokensConsumed,
+        modelUsed: routing.model ?? 'none',
+        tokensConsumed: workerResult.tokensConsumed,
         durationMs: workerResult.durationMs,
         outcome: verification.passed ? 'success' : 'failure',
-        failure_reason: verification.passed ? undefined : verification.reason,
-        affected_files: workerResult.mutations.map((m) => m.file),
+        failureReason: verification.passed ? undefined : verification.reason,
+        affectedFiles: workerResult.mutations.map((m) => m.file),
         qualityScore,
         prediction,
         oracleFailurePattern,
         exploration: explorationFlag || undefined,
         workerSelectionAudit: workerSelection,
-        framework_markers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
+        frameworkMarkers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
       };
 
       // Calibrate self-model BEFORE recording — so predictionError is included in single insert
@@ -734,7 +734,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             input.id,
             workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
           );
-          trace.validation_depth = 'structural';
+          trace.validationDepth = 'structural';
           deps.bus?.emit('shadow:enqueue', { job });
           // Fire-and-forget: process shadow job in background
           deps.shadowRunner
@@ -802,17 +802,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   const escalationTrace: ExecutionTrace = {
     id: `trace-${input.id}-escalation`,
     taskId: input.id,
-    worker_id: routing.workerId ?? routing.model ?? 'unknown',
+    workerId: routing.workerId ?? routing.model ?? 'unknown',
     timestamp: Date.now(),
     routingLevel: MAX_ROUTING_LEVEL,
     approach: 'all-levels-exhausted',
     oracleVerdicts: {},
-    model_used: routing.model ?? 'none',
-    tokens_consumed: 0,
+    modelUsed: routing.model ?? 'none',
+    tokensConsumed: 0,
     durationMs: Date.now() - startTime,
     outcome: 'escalated',
-    failure_reason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
-    affected_files: input.targetFiles ?? [],
+    failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
+    affectedFiles: input.targetFiles ?? [],
     workerSelectionAudit: lastWorkerSelection,
   };
 

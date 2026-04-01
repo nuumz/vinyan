@@ -381,7 +381,7 @@ describe('Guardrail Stress Test', () => {
 // =============================================================================
 
 function printGuardrailSummary(): void {
-  console.log('\n' + '='.repeat(80));
+  console.log(`\n${'='.repeat(80)}`);
   console.log('  GUARDRAIL STRESS TEST — RESULTS SUMMARY');
   console.log('='.repeat(80));
 
@@ -419,10 +419,10 @@ function printGuardrailSummary(): void {
     }
   }
 
-  console.log('\n' + '='.repeat(80));
-  const allPass = failures.length === 0;
+  console.log(`\n${'='.repeat(80)}`);
+  const _allPass = failures.length === 0;
   console.log(`  Injection 100%: ${injectionRate === 100 ? 'PASS ✓' : 'FAIL ✗'}`);
   console.log(`  Bypass 100%:    ${bypassRate === 100 ? 'PASS ✓' : 'FAIL ✗'}`);
   console.log(`  Benign FP 0%:   ${benignFpRate === 0 ? 'PASS ✓' : 'FAIL ✗'}`);
-  console.log('='.repeat(80) + '\n');
+  console.log(`${'='.repeat(80)}\n`);
 }

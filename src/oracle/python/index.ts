@@ -51,7 +51,7 @@ if (result === 'timeout') {
     errorCode: 'TIMEOUT',
     durationMs,
   });
-  process.stdout.write(JSON.stringify(verdict) + '\n');
+  process.stdout.write(`${JSON.stringify(verdict)}\n`);
 } else {
   // Pyright exits non-zero when type errors exist -- that's normal, not a crash.
   // Only treat it as a crash if stdout is empty (no JSON output).
@@ -67,9 +67,9 @@ if (result === 'timeout') {
       errorCode: 'ORACLE_CRASH',
       durationMs,
     });
-    process.stdout.write(JSON.stringify(verdict) + '\n');
+    process.stdout.write(`${JSON.stringify(verdict)}\n`);
   } else {
     const verdict = parsePyrightOutput(result.stdout.trim(), durationMs);
-    process.stdout.write(JSON.stringify(verdict) + '\n');
+    process.stdout.write(`${JSON.stringify(verdict)}\n`);
   }
 }

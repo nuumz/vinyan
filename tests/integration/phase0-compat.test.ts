@@ -96,7 +96,7 @@ describe('Phase 0 Compatibility Guards', () => {
     const result = await orchestrator.executeTask(makeInput());
     // L0 routing → no LLM call → zero tokens
     expect(result.trace.routingLevel).toBe(0);
-    expect(result.trace.tokens_consumed).toBe(0);
+    expect(result.trace.tokensConsumed).toBe(0);
   });
 
   test('oracle verdicts carry verified boolean in Phase 0 mode', async () => {

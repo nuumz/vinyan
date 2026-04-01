@@ -51,7 +51,7 @@ const TSC_TIMEOUT_MS = 30_000;
 /** Run tsc --noEmit and return diagnostics. Kills process after 30s timeout. */
 async function runTsc(
   workspace: string,
-  target?: string,
+  _target?: string,
 ): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
   const args = ['--noEmit', '--pretty', 'false', '--project', workspace];
 

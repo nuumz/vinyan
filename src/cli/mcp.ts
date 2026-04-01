@@ -21,7 +21,7 @@ export async function startMCPServer(workspace: string): Promise<void> {
 
   const server = new VinyanMCPServer({
     runOracle: (name, hypothesis) => runOracle(name, hypothesis),
-    queryFacts: worldGraph ? (target) => worldGraph!.queryFacts(target) : () => [],
+    queryFacts: worldGraph ? (target) => worldGraph?.queryFacts(target) : () => [],
   });
 
   await server.startStdio();

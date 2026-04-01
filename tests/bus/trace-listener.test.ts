@@ -11,11 +11,11 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     routingLevel: 1,
     approach: 'test approach',
     oracleVerdicts: { type: true },
-    model_used: 'mock/test',
-    tokens_consumed: 100,
+    modelUsed: 'mock/test',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['a.ts'],
+    affectedFiles: ['a.ts'],
     ...overrides,
   };
 }

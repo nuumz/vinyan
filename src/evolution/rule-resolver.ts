@@ -29,7 +29,7 @@ export function resolveRuleConflicts(rules: EvolutionaryRule[]): EvolutionaryRul
 
   // Step 2: For each action type, pick the winner
   const winners: EvolutionaryRule[] = [];
-  for (const [action, group] of byAction) {
+  for (const [_action, group] of byAction) {
     if (group.length === 1) {
       winners.push(group[0]!);
       continue;

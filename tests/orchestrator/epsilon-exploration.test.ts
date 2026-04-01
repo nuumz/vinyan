@@ -10,11 +10,11 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     routingLevel: 1,
     approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: 'gpt-4o',
-    tokens_consumed: 100,
+    modelUsed: 'gpt-4o',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['auth.ts'],
+    affectedFiles: ['auth.ts'],
     ...overrides,
   };
 }
@@ -76,7 +76,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
         // Non-matching traces at L2 with high quality (proxy for "after")
         makeTrace({
           routingLevel: 2,
-          affected_files: ['other.ts'],
+          affectedFiles: ['other.ts'],
           qualityScore: {
             composite: 0.9,
             architecturalCompliance: 0.9,
@@ -87,7 +87,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
         }),
         makeTrace({
           routingLevel: 2,
-          affected_files: ['other.ts'],
+          affectedFiles: ['other.ts'],
           qualityScore: {
             composite: 0.85,
             architecturalCompliance: 0.85,

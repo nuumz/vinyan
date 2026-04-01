@@ -11,11 +11,11 @@ function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
     routingLevel: 1,
     approach: 'direct-edit',
     oracleVerdicts: {},
-    model_used: 'claude-haiku',
-    tokens_consumed: 100,
+    modelUsed: 'claude-haiku',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: [],
+    affectedFiles: [],
     ...overrides,
   };
 }

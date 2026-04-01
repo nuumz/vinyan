@@ -155,7 +155,7 @@ describe('createA2AStreamingChannel', () => {
       },
     });
 
-    expect(channelRef.closed).toBe(true);
+    expect(channelRef.isClosed).toBe(true);
     // Should not throw
     channelRef.sendProgress({
       ecp_version: 1,

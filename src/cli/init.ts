@@ -1,7 +1,7 @@
 /**
  * vinyan init — detect project type and generate vinyan.json with sensible defaults.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { VinyanConfig } from '../config/schema.ts';
 
@@ -63,7 +63,7 @@ export function init(workspacePath: string, force = false): InitResult {
   const project = detectProject(workspacePath);
   const config = buildConfig(project);
 
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
   return { created: true, configPath };
 }

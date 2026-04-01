@@ -16,11 +16,11 @@ import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
 import { runOracle } from '../../src/oracle/runner.ts';
 import { verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
 import type { MutationCase } from './mutations.ts';
-import { buildMutationCases, INVALID_COUNT, TOTAL_COUNT, VALID_COUNT } from './mutations.ts';
+import { buildMutationCases } from './mutations.ts';
 
 // --- Test state ---
 let workspaceDir: string;
-let cases: MutationCase[];
+let _cases: MutationCase[];
 
 // --- Results tracking ---
 interface CaseResult {
@@ -35,7 +35,7 @@ const results: CaseResult[] = [];
 
 // --- Oracle dispatch ---
 
-async function runOracleByName(
+async function _runOracleByName(
   name: 'ast' | 'type' | 'dep',
   workspace: string,
   targetFile: string,
@@ -78,17 +78,17 @@ async function evaluateMutation(
         pattern: 'type-check',
         workspace: mc.workspace,
       });
-      oracleResults['type'] = { verified: verdict.verified, reason: verdict.reason };
+      oracleResults.type = { verified: verdict.verified, reason: verdict.reason };
       if (!verdict.verified) blocked = true;
     } else if (oracle === 'ast') {
       // AST oracle: check that known imports resolve to real modules/symbols
       const verdict = await runAstChecks(mc.workspace);
-      oracleResults['ast'] = verdict;
+      oracleResults.ast = verdict;
       if (!verdict.verified) blocked = true;
     } else if (oracle === 'dep') {
       // Dep oracle: check for broken dependencies (missing files, circular imports)
       const verdict = await runDepChecks(mc.workspace);
-      oracleResults['dep'] = verdict;
+      oracleResults.dep = verdict;
       if (!verdict.verified) blocked = true;
     }
   }
@@ -128,7 +128,7 @@ async function runAstChecks(workspace: string): Promise<{ verified: boolean; rea
         const targetPath = resolve(workspace, specifier);
         // Try with .ts extension, /index.ts
         const { existsSync } = await import('fs');
-        const candidates = [targetPath, targetPath + '.ts', join(targetPath, 'index.ts')];
+        const candidates = [targetPath, `${targetPath}.ts`, join(targetPath, 'index.ts')];
         const found = candidates.some((c) => existsSync(c));
         if (!found) {
           errors.push(`${file}: import from "${specifier}" — module not found`);
@@ -252,7 +252,7 @@ describe('Oracle Gate Benchmark', () => {
     const fixtureDir = resolve(import.meta.dir, 'fixtures/simple-project');
     cpSync(fixtureDir, workspaceDir, { recursive: true });
 
-    cases = buildMutationCases(workspaceDir);
+    _cases = buildMutationCases(workspaceDir);
   });
 
   afterAll(() => {
@@ -422,7 +422,7 @@ export const PI = 3.14159;
 // =============================================================================
 
 function printSummary(): void {
-  console.log('\n' + '='.repeat(80));
+  console.log(`\n${'='.repeat(80)}`);
   console.log('  ORACLE GATE BENCHMARK — RESULTS SUMMARY');
   console.log('='.repeat(80));
 
@@ -462,7 +462,7 @@ function printSummary(): void {
   }
 
   console.log('  Per-oracle breakdown (invalid mutations only):');
-  console.log('  ' + '-'.repeat(50));
+  console.log(`  ${'-'.repeat(50)}`);
   for (const [oracle, stats] of Object.entries(oracleStats)) {
     const rate = stats.total > 0 ? ((stats.caught / stats.total) * 100).toFixed(1) : 'N/A';
     console.log(`    ${oracle.padEnd(12)} caught ${stats.caught}/${stats.total} (${rate}%)`);
@@ -486,9 +486,9 @@ function printSummary(): void {
   }
 
   console.log('\n  Detailed results:');
-  console.log('  ' + '-'.repeat(76));
+  console.log(`  ${'-'.repeat(76)}`);
   console.log(`  ${'ID'.padEnd(6)} ${'Expected'.padEnd(10)} ${'Actual'.padEnd(10)} ${'Description'}`);
-  console.log('  ' + '-'.repeat(76));
+  console.log(`  ${'-'.repeat(76)}`);
   for (const r of results) {
     const actual = r.actualBlocked ? 'BLOCKED' : 'PASSED';
     const expected = r.expectedResult === 'invalid' ? 'BLOCKED' : 'PASSED';
@@ -496,12 +496,12 @@ function printSummary(): void {
     console.log(`  ${match} ${r.id.padEnd(5)} ${expected.padEnd(10)} ${actual.padEnd(10)} ${r.description}`);
   }
 
-  console.log('\n' + '='.repeat(80));
+  console.log(`\n${'='.repeat(80)}`);
 
   // Assert targets
   const tprPass = tpr >= 30;
   const fprPass = fpr === 0;
   console.log(`  TPR ≥ 30%: ${tprPass ? 'PASS ✓' : 'FAIL ✗'}`);
   console.log(`  FPR = 0%:  ${fprPass ? 'PASS ✓' : 'FAIL ✗'}`);
-  console.log('='.repeat(80) + '\n');
+  console.log(`${'='.repeat(80)}\n`);
 }

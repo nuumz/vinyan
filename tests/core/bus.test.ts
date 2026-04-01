@@ -196,11 +196,11 @@ function makeResult() {
       routingLevel: 0 as const,
       approach: 'test',
       oracleVerdicts: {},
-      model_used: 'test',
-      tokens_consumed: 0,
+      modelUsed: 'test',
+      tokensConsumed: 0,
       durationMs: 0,
       outcome: 'success' as const,
-      affected_files: [],
+      affectedFiles: [],
     },
   };
 }

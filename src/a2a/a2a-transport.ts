@@ -27,10 +27,10 @@ export interface A2ATransportConfig {
 export class A2ATransport implements ECPTransport {
   readonly transportType = 'a2a' as const;
   private config: A2ATransportConfig;
-  private _connected = true;
+  private _isConnected = true;
 
-  get connected(): boolean {
-    return this._connected;
+  get isConnected(): boolean {
+    return this._isConnected;
   }
 
   constructor(config: A2ATransportConfig) {
@@ -81,7 +81,7 @@ export class A2ATransport implements ECPTransport {
       const durationMs = Math.round(performance.now() - startTime);
 
       if (!response.ok) {
-        this._connected = false;
+        this._isConnected = false;
         return buildVerdict({
           verified: false,
           type: 'unknown',
@@ -96,7 +96,7 @@ export class A2ATransport implements ECPTransport {
       }
 
       const rpcResponse = await response.json();
-      this._connected = true;
+      this._isConnected = true;
 
       // Extract verdict from A2A response artifacts or message parts
       const verdict = extractVerdictFromResponse(rpcResponse, oracleName, durationMs);
@@ -106,7 +106,7 @@ export class A2ATransport implements ECPTransport {
       const durationMs = Math.round(performance.now() - startTime);
 
       if (err instanceof DOMException && err.name === 'AbortError') {
-        this._connected = false;
+        this._isConnected = false;
         return buildVerdict({
           verified: false,
           type: 'unknown',
@@ -120,7 +120,7 @@ export class A2ATransport implements ECPTransport {
         });
       }
 
-      this._connected = false;
+      this._isConnected = false;
       return buildVerdict({
         verified: false,
         type: 'unknown',
@@ -136,7 +136,7 @@ export class A2ATransport implements ECPTransport {
   }
 
   async close(): Promise<void> {
-    this._connected = false;
+    this._isConnected = false;
   }
 }
 

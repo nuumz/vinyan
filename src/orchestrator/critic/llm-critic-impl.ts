@@ -1,18 +1,3 @@
-/**
- * LLM-as-Critic Implementation — semantic verification via independent LLM review (WP-2).
- *
- * Axiom: A1 (Epistemic Separation — generation != verification).
- * The critic uses a SEPARATE LLM call from the generator. It never evaluates
- * its own output; it reviews proposals made by the worker.
- *
- * Epistemic tier: probabilistic (A5) — confidence derived from aspect pass rate,
- * NOT from LLM self-assessment.
- *
- * Source of truth: spec/tdd.md §16.2, foundation/concept.md §6
- */
-
-import { buildVerdict } from '../../core/index.ts';
-import type { OracleVerdict } from '../../core/types.ts';
 import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../types.ts';
 import type { CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
 
@@ -149,7 +134,7 @@ function parseCriticResponse(content: string): ParsedCriticResponse | null {
     let jsonStr = content.trim();
     const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) {
-      jsonStr = fenceMatch[1]!.trim();
+      jsonStr = fenceMatch[1]?.trim();
     }
 
     const parsed = JSON.parse(jsonStr);

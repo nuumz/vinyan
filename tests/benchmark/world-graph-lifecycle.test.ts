@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { Fact, HypothesisTuple } from '../../src/core/types.ts';
+import type { Fact } from '../../src/core/types.ts';
 import { verify as verifyAst } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
 import { verify as verifyType } from '../../src/oracle/type/type-verifier.ts';

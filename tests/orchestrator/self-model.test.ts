@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { MODEL_PARAMS_SCHEMA_SQL, TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
+import { MODEL_PARAMS_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
 import type { ExecutionTrace, PerceptualHierarchy, TaskInput } from '../../src/orchestrator/types.ts';
 
@@ -42,11 +42,11 @@ function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
     routingLevel: 2,
     approach: 'direct-edit',
     oracleVerdicts: { ast: true, type: true },
-    model_used: 'claude-sonnet',
-    tokens_consumed: 1000,
+    modelUsed: 'claude-sonnet',
+    tokensConsumed: 1000,
     durationMs: 5000,
     outcome: 'success',
-    affected_files: ['src/foo.ts', 'src/bar.ts'],
+    affectedFiles: ['src/foo.ts', 'src/bar.ts'],
     ...overrides,
   };
 }
@@ -155,7 +155,7 @@ describe('CalibratedSelfModel', () => {
         pred,
         makeTrace({
           id: `trace-${i}`,
-          task_type_signature: 'refactor',
+          taskTypeSignature: 'refactor',
           qualityScore: {
             architecturalCompliance: 0.9,
             efficiency: 0.9,
@@ -194,7 +194,7 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic',
           calibrationDataPoints: i,
         },
-        makeTrace({ id: `trace-${i}`, task_type_signature: 'refactor' }),
+        makeTrace({ id: `trace-${i}`, taskTypeSignature: 'refactor' }),
       );
     }
 

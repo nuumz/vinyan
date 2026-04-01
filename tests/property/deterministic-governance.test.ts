@@ -38,7 +38,7 @@ const ruleArb: fc.Arbitrary<EvolutionaryRule> = fc.record({
   createdAt: fc.nat(),
   effectiveness: fc.float({ min: 0, max: 1, noNaN: true }),
   specificity: fc.nat({ max: 4 }),
-  superseded_by: fc.option(fc.uuid(), { nil: undefined }),
+  supersededBy: fc.option(fc.uuid(), { nil: undefined }),
 });
 
 // ── resolveRuleConflicts: Permutation Invariance (A3) ────────────────

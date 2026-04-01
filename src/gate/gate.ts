@@ -301,8 +301,8 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
 
   // Build test context from test oracle results
   let testContext: TestContext | undefined;
-  if (oracleResults['test']) {
-    testContext = { testsExist: true, testsPassed: oracleResults['test'].verified };
+  if (oracleResults.test) {
+    testContext = { testsExist: true, testsPassed: oracleResults.test.verified };
   }
 
   // Build oracle tier map from config for A5 tier-weighted quality scoring

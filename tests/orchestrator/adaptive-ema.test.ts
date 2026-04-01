@@ -44,14 +44,14 @@ function makeTrace(
     taskId: pred.taskId,
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: 'refactor::ts::single',
+    taskTypeSignature: 'refactor::ts::single',
     approach: 'direct',
     oracleVerdicts: { ast: true },
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome,
-    affected_files: files,
+    affectedFiles: files,
     qualityScore: {
       architecturalCompliance: 0.9,
       efficiency: 0.8,
@@ -148,7 +148,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
         const pred = await model.predict(refactorInput, defaultPerception);
         model.calibrate(pred, {
           ...makeTrace(pred),
-          task_type_signature: 'refactor::ts::single',
+          taskTypeSignature: 'refactor::ts::single',
           qualityScore: {
             architecturalCompliance: 0.9,
             efficiency: 0.9,
@@ -164,7 +164,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
         const pred = await model.predict(fixInput, defaultPerception);
         model.calibrate(pred, {
           ...makeTrace(pred),
-          task_type_signature: 'fix::ts::single',
+          taskTypeSignature: 'fix::ts::single',
           qualityScore: {
             architecturalCompliance: 0.3,
             efficiency: 0.3,
@@ -194,7 +194,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
         const pred = await model.predict(existingInput, defaultPerception);
         model.calibrate(pred, {
           ...makeTrace(pred),
-          task_type_signature: 'refactor::ts::single',
+          taskTypeSignature: 'refactor::ts::single',
           qualityScore: {
             architecturalCompliance: 0.85,
             efficiency: 0.85,
@@ -257,7 +257,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
       );
 
       // Create model — should auto-migrate
-      const model = new CalibratedSelfModel({ db });
+      const _model = new CalibratedSelfModel({ db });
 
       // Old blob should be deleted
       const oldRow = db.prepare(`SELECT * FROM model_parameters WHERE key = 'self_model_params'`).get();
@@ -267,7 +267,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
       const rows = db.prepare(`SELECT * FROM self_model_params`).all() as any[];
       expect(rows.length).toBe(2);
 
-      const refactorRow = rows.find((r: any) => r.task_type_signature === 'refactor::ts::single');
+      const refactorRow = rows.find((r: any) => r.taskTypeSignature === 'refactor::ts::single');
       expect(refactorRow).toBeDefined();
       expect(refactorRow!.observation_count).toBe(15);
     });

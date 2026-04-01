@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { MetricsCollector } from '../../src/observability/metrics.ts';
 import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
-import type { ExecutionTrace, SelfModelPrediction } from '../../src/orchestrator/types.ts';
+import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 import { WorkingMemory } from '../../src/orchestrator/working-memory.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -28,16 +28,16 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
   return {
     id: 'trace-1',
     taskId: 't1',
-    worker_id: 'w1',
+    workerId: 'w1',
     timestamp: Date.now(),
     routingLevel: 2,
     approach: 'test',
     oracleVerdicts: {},
-    model_used: 'mock',
-    tokens_consumed: 100,
+    modelUsed: 'mock',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['test.ts'],
+    affectedFiles: ['test.ts'],
     ...overrides,
   } as any;
 }
@@ -136,7 +136,7 @@ describe('CalibratedSelfModel emits selfmodel:systematic_miscalibration', () => 
         id: `trace-${i}`,
         outcome: 'failure',
         durationMs: prediction.expectedDuration * 3,
-        affected_files: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+        affectedFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
       });
 
       model.calibrate(prediction, trace);
@@ -167,7 +167,7 @@ describe('CalibratedSelfModel emits selfmodel:systematic_miscalibration', () => 
         id: `trace-${i}`,
         outcome: 'failure',
         durationMs: prediction.expectedDuration * 10,
-        affected_files: ['a.ts', 'b.ts', 'c.ts'],
+        affectedFiles: ['a.ts', 'b.ts', 'c.ts'],
       });
       model.calibrate(prediction, trace);
     }
@@ -188,7 +188,7 @@ describe('CalibratedSelfModel emits selfmodel:systematic_miscalibration', () => 
         id: `trace-${i}`,
         outcome: 'failure',
         durationMs: prediction.expectedDuration * 3,
-        affected_files: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+        affectedFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
       });
       model.calibrate(prediction, trace);
     }

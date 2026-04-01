@@ -2,7 +2,7 @@
  * Knowledge feedback loop tests — Phase G4.
  */
 import { describe, expect, test } from 'bun:test';
-import { type EcpFeedback, FeedbackManager } from '../../src/a2a/feedback.ts';
+import { type ECPFeedback, FeedbackManager } from '../../src/a2a/feedback.ts';
 import { PeerTrustManager } from '../../src/a2a/peer-trust.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
@@ -16,7 +16,7 @@ function makeTrust(): PeerTrustManager {
   return mgr;
 }
 
-function makeIncomingFeedback(overrides: Partial<EcpFeedback> = {}): EcpFeedback {
+function makeIncomingFeedback(overrides: Partial<ECPFeedback> = {}): ECPFeedback {
   return {
     feedback_id: `fb-${Date.now()}`,
     target_type: 'verdict',

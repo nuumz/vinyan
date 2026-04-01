@@ -15,7 +15,7 @@ export interface DiscoveredPeer {
   url: string;
   card: A2AAgentCard;
   ecpExtension: VinyanECPExtension | null;
-  isVinyan: boolean;
+  isVinyanPeer: boolean;
   discoveredAt: number;
 }
 
@@ -65,7 +65,7 @@ export async function discoverPeers(peerUrls: string[], config: PeerDiscoveryCon
         url,
         card,
         ecpExtension: getECPExtension(card),
-        isVinyan: isVinyanPeer(card),
+        isVinyanPeer: isVinyanPeer(card),
         discoveredAt: Date.now(),
       } satisfies DiscoveredPeer;
     }),
@@ -81,5 +81,5 @@ export async function discoverPeers(peerUrls: string[], config: PeerDiscoveryCon
  * Filter discovered peers to only Vinyan instances.
  */
 export function filterVinyanPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {
-  return peers.filter((p) => p.isVinyan);
+  return peers.filter((p) => p.isVinyanPeer);
 }

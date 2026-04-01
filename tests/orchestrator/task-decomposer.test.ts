@@ -70,7 +70,7 @@ describe('TaskDecomposerImpl', () => {
   });
 
   test('LLM returns markdown-wrapped JSON → still parsed', async () => {
-    const wrapped = '```json\n' + VALID_DAG_JSON + '\n```';
+    const wrapped = `\`\`\`json\n${VALID_DAG_JSON}\n\`\`\``;
     const registry = new LLMProviderRegistry();
     registry.register(createMockProvider({ tier: 'balanced', responseContent: wrapped }));
 

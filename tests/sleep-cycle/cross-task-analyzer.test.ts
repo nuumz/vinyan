@@ -10,11 +10,11 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
     routingLevel: 1,
     approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: 'gpt-4o',
-    tokens_consumed: 100,
+    modelUsed: 'gpt-4o',
+    tokensConsumed: 100,
     durationMs: 500,
     outcome: 'success',
-    affected_files: ['a.ts'],
+    affectedFiles: ['a.ts'],
     ...overrides,
   };
 }
@@ -27,10 +27,10 @@ describe('PH3.5: Cross-Task Analyzer', () => {
       traces.push(
         makeTrace({
           id: `fail-${i}`,
-          model_used: 'gpt-4o-mini',
+          modelUsed: 'gpt-4o-mini',
           routingLevel: 1,
           outcome: 'failure',
-          task_type_signature: `type-${i % 3}`,
+          taskTypeSignature: `type-${i % 3}`,
         }),
       );
     }
@@ -39,10 +39,10 @@ describe('PH3.5: Cross-Task Analyzer', () => {
       traces.push(
         makeTrace({
           id: `succ-${i}`,
-          model_used: 'gpt-4o',
+          modelUsed: 'gpt-4o',
           routingLevel: 1,
           outcome: 'success',
-          task_type_signature: `type-${i % 3}`,
+          taskTypeSignature: `type-${i % 3}`,
         }),
       );
     }
@@ -64,8 +64,8 @@ describe('PH3.5: Cross-Task Analyzer', () => {
           id: `fail-l1-${i}`,
           routingLevel: 1,
           outcome: 'failure',
-          model_used: 'gpt-4o',
-          affected_files: ['a.ts'],
+          modelUsed: 'gpt-4o',
+          affectedFiles: ['a.ts'],
         }),
       );
     }
@@ -76,8 +76,8 @@ describe('PH3.5: Cross-Task Analyzer', () => {
           id: `succ-l2-${i}`,
           routingLevel: 2,
           outcome: 'success',
-          model_used: 'gpt-4o',
-          affected_files: ['a.ts'],
+          modelUsed: 'gpt-4o',
+          affectedFiles: ['a.ts'],
         }),
       );
     }
@@ -94,7 +94,7 @@ describe('PH3.5: Cross-Task Analyzer', () => {
       traces.push(
         makeTrace({
           id: `fail-${i}`,
-          model_used: 'bad-model',
+          modelUsed: 'bad-model',
           routingLevel: 1,
           outcome: 'failure',
         }),
@@ -104,7 +104,7 @@ describe('PH3.5: Cross-Task Analyzer', () => {
       traces.push(
         makeTrace({
           id: `succ-${i}`,
-          model_used: 'good-model',
+          modelUsed: 'good-model',
           routingLevel: 1,
           outcome: 'success',
         }),
@@ -121,10 +121,10 @@ describe('PH3.5: Cross-Task Analyzer', () => {
     const traces: ExecutionTrace[] = [];
     // 5 traces, 2 failures — 40% fail rate, below meaningful threshold
     for (let i = 0; i < 2; i++) {
-      traces.push(makeTrace({ id: `fail-${i}`, model_used: 'm1', routingLevel: 1, outcome: 'failure' }));
+      traces.push(makeTrace({ id: `fail-${i}`, modelUsed: 'm1', routingLevel: 1, outcome: 'failure' }));
     }
     for (let i = 0; i < 3; i++) {
-      traces.push(makeTrace({ id: `succ-${i}`, model_used: 'm1', routingLevel: 1, outcome: 'success' }));
+      traces.push(makeTrace({ id: `succ-${i}`, modelUsed: 'm1', routingLevel: 1, outcome: 'success' }));
     }
 
     const results = findFailureCorrelations(traces, 5, 0.5);
@@ -139,7 +139,7 @@ describe('PH3.5: Cross-Task Analyzer', () => {
         traces.push(
           makeTrace({
             id: `fail-g${g}-${i}`,
-            model_used: `model-${g}`,
+            modelUsed: `model-${g}`,
             routingLevel: 1,
             outcome: 'failure',
           }),
@@ -179,7 +179,7 @@ describe('PH3.5: Cross-Task Analyzer', () => {
           routingLevel: 1,
           outcome: 'failure',
           oracleVerdicts: { type: false, lint: true },
-          model_used: 'gpt-4o',
+          modelUsed: 'gpt-4o',
         }),
       );
     }
@@ -191,7 +191,7 @@ describe('PH3.5: Cross-Task Analyzer', () => {
           routingLevel: 1,
           outcome: 'success',
           oracleVerdicts: { type: true, lint: true },
-          model_used: 'gpt-4o',
+          modelUsed: 'gpt-4o',
         }),
       );
     }

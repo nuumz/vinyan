@@ -26,7 +26,7 @@ import { WorldGraph } from '../world-graph/world-graph.ts';
 import { CapabilityModel } from './capability-model.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
-import type { DataGateStats, DataGateThresholds } from './data-gate.ts';
+import type { DataGateThresholds } from './data-gate.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
@@ -136,7 +136,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Load config to unify routing thresholds and Phase 4 governance parameters
   let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
-  let phase4Config:
+  let fleetConfig:
     | {
         probation_min_tasks: number;
         demotion_window_tasks: number;
@@ -153,7 +153,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
     }
     if (vinyanConfig.phase4) {
-      phase4Config = vinyanConfig.phase4;
+      fleetConfig = vinyanConfig.phase4;
     }
   } catch {
     /* config loading is best-effort */
@@ -165,10 +165,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerLifecycle = new WorkerLifecycle({
       workerStore,
       bus,
-      probationMinTasks: phase4Config?.probation_min_tasks ?? 30,
-      demotionWindowTasks: phase4Config?.demotion_window_tasks ?? 30,
-      demotionMaxReentries: phase4Config?.demotion_max_reentries ?? 3,
-      reentryCooldownSessions: phase4Config?.reentry_cooldown_sessions ?? 50,
+      probationMinTasks: fleetConfig?.probation_min_tasks ?? 30,
+      demotionWindowTasks: fleetConfig?.demotion_window_tasks ?? 30,
+      demotionMaxReentries: fleetConfig?.demotion_max_reentries ?? 3,
+      reentryCooldownSessions: fleetConfig?.reentry_cooldown_sessions ?? 50,
     });
   }
 
@@ -258,8 +258,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       workerStore,
       capabilityModel,
       bus,
-      epsilonWorker: phase4Config?.epsilon_worker ?? 0.1,
-      diversityCapPct: phase4Config?.diversity_cap_pct ?? 0.7,
+      epsilonWorker: fleetConfig?.epsilon_worker ?? 0.1,
+      diversityCapPct: fleetConfig?.diversity_cap_pct ?? 0.7,
       gateStats: () => ({
         traceCount: traceStore?.count() ?? 0,
         distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,

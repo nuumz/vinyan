@@ -4,7 +4,7 @@
  * Replaces the Phase 0-4 `CREATE TABLE IF NOT EXISTS` pattern with
  * tracked, atomic, additive-only migrations.
  *
- * Source of truth: vinyan-tdd.md §20
+ * Source of truth: spec/tdd.md §20
  */
 import type { Database } from "bun:sqlite";
 

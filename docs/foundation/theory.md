@@ -3,15 +3,15 @@ type: concept-theory
 audience: architects, researchers
 single-source-of-truth-for: theoretical foundations, academic citations, cognitive science basis
 related:
-  - vinyan-concept.md (unified concept — start here)
-  - vinyan-architecture.md (concrete implementation decisions)
+  - concept.md (unified concept — start here)
+  - ../architecture/decisions.md (concrete implementation decisions)
 ---
 
 # Vinyan — Theoretical Foundations & Deep Analysis
 
-> **Relationship to concept.md:** This document (formerly `vinyan-concept-v2.md`, renamed to avoid version confusion) provides the deep theoretical underpinnings for the Vinyan concept defined in [vinyan-concept.md](vinyan-concept.md). Concept.md is the canonical concept document; this file contains the academic citations, cognitive science foundations, v1 critique, and the detailed 8-layer cognitive architecture that justify the design decisions in concept.md. The two documents describe **one unified concept** — concept.md for the "what" and "why", this document for the "evidence" and "theoretical depth".
+> **Relationship to concept.md:** This document (formerly `vinyan-concept-v2.md`, renamed to avoid version confusion) provides the deep theoretical underpinnings for the Vinyan concept defined in [concept.md](concept.md). Concept.md is the canonical concept document; this file contains the academic citations, cognitive science foundations, v1 critique, and the detailed 8-layer cognitive architecture that justify the design decisions in concept.md. The two documents describe **one unified concept** — concept.md for the "what" and "why", this document for the "evidence" and "theoretical depth".
 >
-> **Axiom Foundation:** All theoretical claims in this document trace back to the 7 Core Axioms (A1–A7) defined in [concept.md §1.1](vinyan-concept.md). Each layer, critique resolution, and phase milestone below is tagged with the axiom(s) it implements or validates.
+> **Axiom Foundation:** All theoretical claims in this document trace back to the 7 Core Axioms (A1–A7) defined in [concept.md §1.1](concept.md). Each layer, critique resolution, and phase milestone below is tagged with the axiom(s) it implements or validates.
 >
 > **Scope note:** Some constructs in this document (hippocampal replay, hierarchical skill composition, Affect Engine, Episodic Stream, predictive causal model) are theoretical extensions explored here for academic rigor. Concept.md uses more conservative framing: pattern mining instead of neural replay, cached solution patterns instead of skill formation, dependency edges instead of predictive causal model. This document is the research frontier; concept.md is the implementation contract.
 
@@ -67,7 +67,7 @@ related:
 | **Temporal consciousness** | Sleep Cycle เป็น batch process | **Episodic Stream** — continuous narrative ข้าม sessions |
 | **Global Workspace** | ไม่มี — components คุยผ่าน event bus แบบ fire-and-forget | **Cognitive Broadcast** — attention-gated shared workspace |
 | **Evolution** | Meritocratic fleet governance | **Autopoietic Self-Modification** — system แก้ไข/สร้าง rules ของตัวเอง + formal safety bounds |
-| **Axiom Foundation** | ไม่มี — implicit principles | **7 Core Axioms (A1–A7)** เป็น DNA ที่ทุก layer ต้อง justify ตัวเอง ([concept.md §1.1](vinyan-concept.md)) |
+| **Axiom Foundation** | ไม่มี — implicit principles | **7 Core Axioms (A1–A7)** เป็น DNA ที่ทุก layer ต้อง justify ตัวเอง ([concept.md §1.1](concept.md)) |
 
 ---
 
@@ -467,9 +467,9 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - Multi-Modal Deterministic QA — ดีมาก "Agents ห้ามประเมินตัวเอง" เป็น key insight ที่ไม่มี framework อื่นมี
 
 **Incomplete**:
-- ✅ ~~**ไม่มี Perceptual Hierarchy**~~ — **[Resolved]** PerceptualHierarchy replaces flat StateVector with deterministic salience filtering. See [architecture.md Decision 8](vinyan-architecture.md).
-- ✅ ~~**ไม่มี Attention Mechanism**~~ — **[Resolved]** Salience is deterministic: dep-oracle traverses dependency cone from task target. Depth controlled by routing level (L0-1 shallow, L2-3 deep). See [architecture.md Decision 8](vinyan-architecture.md).
-- ✅ ~~**ไม่มี Predictive Component**~~ — **[Resolved]** Self-Model predicts outcomes before execution (Phase 1). See [architecture.md Decision 11](vinyan-architecture.md).
+- ✅ ~~**ไม่มี Perceptual Hierarchy**~~ — **[Resolved]** PerceptualHierarchy replaces flat StateVector with deterministic salience filtering. See [architecture.md Decision 8](../architecture/decisions.md).
+- ✅ ~~**ไม่มี Attention Mechanism**~~ — **[Resolved]** Salience is deterministic: dep-oracle traverses dependency cone from task target. Depth controlled by routing level (L0-1 shallow, L2-3 deep). See [architecture.md Decision 8](../architecture/decisions.md).
+- ✅ ~~**ไม่มี Predictive Component**~~ — **[Resolved]** Self-Model predicts outcomes before execution (Phase 1). See [architecture.md Decision 11](../architecture/decisions.md).
 
 #### Layer 1: Execution Substrate (Unix Philosophy) — ✅ SOUND
 
@@ -513,10 +513,10 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 - Vinyan Credits (pegged to USD) — pragmatic
 
 **Incomplete** (ดู Section 3.8):
-- ✅ ~~Binary System 1/2 แทนที่ continuum~~ — **[Resolved]** 4-level adaptive continuum implemented. See [architecture.md Decision 9](vinyan-architecture.md).
-- ⚠️ ~~ไม่มี "compiled expertise"~~ — **[Partially resolved]** Skill Formation infrastructure in Phase 1 (trace schema + templates table). Actual caching in Phase 2. See [architecture.md Phase 2+ roadmap](vinyan-architecture.md).
-- ⚠️ ~~**ไม่มี metacognitive router**~~ — **[Partially resolved]** Self-Model provides forward prediction for routing decisions. Full metacognitive learning deferred to Phase 2+. See [architecture.md Decision 11](vinyan-architecture.md).
-- ✅ ~~Risk Score Formula (ใน architecture doc) เป็น static formula ไม่ adaptive~~ — **[Resolved]** Updated with environmentType, irreversibility, production boundary. See [architecture.md Decision 4](vinyan-architecture.md).
+- ✅ ~~Binary System 1/2 แทนที่ continuum~~ — **[Resolved]** 4-level adaptive continuum implemented. See [architecture.md Decision 9](../architecture/decisions.md).
+- ⚠️ ~~ไม่มี "compiled expertise"~~ — **[Partially resolved]** Skill Formation infrastructure in Phase 1 (trace schema + templates table). Actual caching in Phase 2. See [architecture.md Phase 2+ roadmap](../architecture/decisions.md).
+- ⚠️ ~~**ไม่มี metacognitive router**~~ — **[Partially resolved]** Self-Model provides forward prediction for routing decisions. Full metacognitive learning deferred to Phase 2+. See [architecture.md Decision 11](../architecture/decisions.md).
+- ✅ ~~Risk Score Formula (ใน architecture doc) เป็น static formula ไม่ adaptive~~ — **[Resolved]** Updated with environmentType, irreversibility, production boundary. See [architecture.md Decision 4](../architecture/decisions.md).
 
 #### Layer 6: Evolutionary Governance & Telemetry — ⚠️ SOUND concept, IMPLEMENTATION UNDERSPECIFIED
 
@@ -534,7 +534,7 @@ Multimodal models ช่วยบางส่วน (GPT-4V, Gemini map text ↔
 
 | Missing Layer | ทำไมต้องมี | Theoretical Basis |
 |---|---|---|
-| **Self-Model / Metacognition** | Agents ไม่มี internal model ของตัวเอง ไม่ predict ผลก่อน execute ไม่รู้ว่ากำลังทำอะไร | Forward models (Wolpert, 1997); Predictive Processing (Clark, 2013) | **[Resolved → Phase 1]** Promoted to Phase 1 deliverable with concrete interfaces. See [architecture.md Decision 11](vinyan-architecture.md), [concept.md §9](vinyan-concept.md). |
+| **Self-Model / Metacognition** | Agents ไม่มี internal model ของตัวเอง ไม่ predict ผลก่อน execute ไม่รู้ว่ากำลังทำอะไร | Forward models (Wolpert, 1997); Predictive Processing (Clark, 2013) | **[Resolved → Phase 1]** Promoted to Phase 1 deliverable with concrete interfaces. See [architecture.md Decision 11](../architecture/decisions.md), [concept.md §9](concept.md). |
 | **Global Workspace** | ไม่มี attention-gated broadcast ระหว่าง subsystems ทำให้ information fragmented | GWT (Baars, 1988; Dehaene, 2014); Butlin et al. (2023) top indicator |
 | **Affective / Motivational System** | ไม่มี intrinsic motivation, curiosity ไม่มี mechanism สำหรับ exploration vs exploitation | Active Inference (Friston, 2010); Expected Free Energy |
 | **Theory of Mind** | ไม่ model user intent, other agents' beliefs ทำให้ collaborate ได้แย่ | Premack & Woodruff (1978); Mutual ToM (IBM Research, CHI 2024) |

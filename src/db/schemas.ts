@@ -4,7 +4,7 @@
  * These schemas enforce type correctness when reading from SQLite, preventing
  * malformed or corrupt rows from silently propagating through the system.
  *
- * Source of truth: vinyan-tdd.md §2 (Canonical Interface Registry)
+ * Source of truth: spec/tdd.md §2 (Canonical Interface Registry)
  */
 import { z } from "zod/v4";
 

@@ -5,7 +5,7 @@
  * (model + temperature + prompt template) with lifecycle state.
  * Stats are computed on-demand from traces — NOT stored here.
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.1
+ * Source of truth: design/implementation-plan.md §Phase 4.1
  */
 
 export const WORKER_SCHEMA_SQL = `

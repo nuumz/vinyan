@@ -4,7 +4,7 @@
  * Iterates proposed ToolCall[], validates each against the 4-check pipeline,
  * executes allowed calls, and collects ToolResult[].
  *
- * Source of truth: vinyan-tdd.md §18.1, §18.4
+ * Source of truth: spec/tdd.md §18.1, §18.4
  */
 import { createHash } from "crypto";
 import type { Evidence } from "../../core/types.ts";

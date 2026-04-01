@@ -8,7 +8,7 @@
  * Epistemic tier: probabilistic (A5) — confidence derived from aspect pass rate,
  * NOT from LLM self-assessment.
  *
- * Source of truth: vinyan-tdd.md §16.2, vinyan-concept.md §6
+ * Source of truth: spec/tdd.md §16.2, foundation/concept.md §6
  */
 import type { OracleVerdict } from "../../core/types.ts";
 import { buildVerdict } from "../../core/index.ts";

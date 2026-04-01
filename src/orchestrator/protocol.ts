@@ -4,7 +4,7 @@
  * WorkerInput (stdin → worker) and WorkerOutput (worker → stdout) are the
  * primary IPC types. All schemas mirror TypeScript interfaces in ./types.ts.
  *
- * Source of truth: vinyan-tdd.md §11 (Worker IPC), §16.3 (Worker lifecycle)
+ * Source of truth: spec/tdd.md §11 (Worker IPC), §16.3 (Worker lifecycle)
  */
 import { z } from "zod/v4";
 import { EvidenceSchema } from "../oracle/protocol.ts";

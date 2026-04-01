@@ -7,7 +7,7 @@
  * Epsilon-worker exploration (10%), diversity cap (70%, I11).
  * Falls back to tier-based selection when data gate not met.
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.4
+ * Source of truth: design/implementation-plan.md §Phase 4.4
  */
 import type {
   TaskFingerprint,

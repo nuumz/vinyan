@@ -1,7 +1,7 @@
 /**
  * Pattern Store — CRUD for ExtractedPattern records in SQLite.
  *
- * Source of truth: vinyan-tdd.md §12B (Sleep Cycle)
+ * Source of truth: spec/tdd.md §12B (Sleep Cycle)
  */
 import type { Database } from "bun:sqlite";
 import type { ExtractedPattern } from "../orchestrator/types.ts";

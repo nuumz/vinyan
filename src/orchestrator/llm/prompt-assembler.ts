@@ -7,7 +7,7 @@
  * All untrusted text (goal, diagnostics, working memory, facts)
  * is sanitized through guardrail scanners before interpolation.
  *
- * Source of truth: vinyan-tdd.md §17.2
+ * Source of truth: spec/tdd.md §17.2
  */
 import type { PerceptualHierarchy, WorkingMemoryState, TaskDAG } from "../types.ts";
 import { sanitizeForPrompt } from "../../guardrails/index.ts";

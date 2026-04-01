@@ -6,7 +6,7 @@
 #   /ipc       — IPC channel (intent.json in, result.json + artifacts/ out)
 #
 # Security: non-root, no capabilities, no network, PID/memory limits.
-# Source of truth: vinyan-tdd.md §11, vinyan-implementation-plan.md §2.1
+# Source of truth: spec/tdd.md §11, design/implementation-plan.md §2.1
 
 FROM oven/bun:1-slim
 

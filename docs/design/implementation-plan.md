@@ -1,7 +1,7 @@
 # Vinyan Implementation Plan
 
 > Generated: 2026-03-29 | Updated: 2026-03-31 (Phase 5 gap closure) | Branch: `feature/main`
-> Source of truth: [vinyan-concept.md](vinyan-concept.md) §12, [vinyan-tdd.md](vinyan-tdd.md) §4–§19, [vinyan-architecture.md](vinyan-architecture.md)
+> Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
 
@@ -1572,7 +1572,7 @@ FROM execution_traces WHERE worker_id = ? GROUP BY worker_id;
 - State transitions logged to audit trail (bus events: `worker:promoted`, `worker:demoted`, `worker:reactivated`)
 - A worker with genuinely better quality is promoted within ~50 sessions (20% dispatch rate → ~60 total sessions for 30 observations)
 - A worker with declining quality is demoted within 3 Sleep Cycles of sustained underperformance
-- Architecture success criterion met: **"Fleet governance demotes underperforming configurations within 20 sessions"** (from `vinyan-architecture.md` §10). Note: with `sleep_cycle_interval=20` sessions, the demotion trigger (rolling 30-task window checked per Sleep Cycle) can detect underperformance in 1-2 cycles (20-40 sessions). To meet the 20-session target, the implementor should ensure demotion checks run EVERY Sleep Cycle and that a single cycle's worth of data (≥20 tasks for an active worker) is sufficient to trigger the rolling-window threshold.
+- Architecture success criterion met: **"Fleet governance demotes underperforming configurations within 20 sessions"** (from `../architecture/decisions.md` §10). Note: with `sleep_cycle_interval=20` sessions, the demotion trigger (rolling 30-task window checked per Sleep Cycle) can detect underperformance in 1-2 cycles (20-40 sessions). To meet the 20-session target, the implementor should ensure demotion checks run EVERY Sleep Cycle and that a single cycle's worth of data (≥20 tasks for an active worker) is sufficient to trigger the rolling-window threshold.
 - Backward-compatible: with 0-1 worker profiles, system behaves identically to Phase 3
 
 **Probation worker isolation level:** Probation workers inherit the task's routing level for isolation (L0/L1/L2/L3 as determined by `riskRouter`). They run in the same isolation context as the incumbent worker — the only difference is that their output is NOT committed (I10). For L3 tasks, probation shadow runs use the same container isolation as online L3 workers.
@@ -2179,7 +2179,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.1 — API Server `[L]`
 
-> **Interface contracts:** [vinyan-tdd.md §22](vinyan-tdd.md) specifies API endpoints, session manager interface, compaction algorithm, checkpoint recovery, and acceptance criteria.
+> **Interface contracts:** [tdd.md §22](../spec/tdd.md) specifies API endpoints, session manager interface, compaction algorithm, checkpoint recovery, and acceptance criteria.
 
 **Purpose:** HTTP API accepting tasks, streaming progress, returning results. Foundation for all external interfaces. Includes session management with compaction and checkpoint recovery.
 
@@ -2191,7 +2191,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Session management with compaction.** Group multiple `TaskInput` submissions under a session. Session state includes shared `WorkingMemory`, cumulative trace history, and a **compaction pipeline**: after N tasks or M minutes, summarize the session transcript into a condensed episode (approach sequences, key failures, successful patterns). Compacted sessions feed Sleep Cycle as first-class input. [Closes GAP-3: session management]
 - **Checkpoint recovery.** Persist session state and in-progress task state to SQLite (new `session_store` table following `WorkerStore` pattern from `db/worker-store.ts`). On restart, recover pending tasks and resume from last checkpoint. [Closes GAP-H FC6: "restarted randomly"]
 - **Health and metrics.** Expose `SystemMetrics` (from `observability/metrics.ts`) and `FleetMetrics` (from `fleet-evaluator.ts`) via read-only HTTP endpoints.
-- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects VIIP peers, then closes resources. See [vinyan-tdd.md §22.7](vinyan-tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
+- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects VIIP peers, then closes resources. See [tdd.md §22.7](../spec/tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
 
 **Extends:** `TaskInput.source: 'api'` (types.ts:56), `Orchestrator` interface (factory.ts), `WorkingMemory` (working-memory.ts)
 **New files:** `src/api/server.ts`, `src/api/routes.ts`, `src/api/session-manager.ts`, `src/db/session-schema.ts`, `src/db/session-store.ts`
@@ -2320,7 +2320,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.7 — ECP Network Transport `[L]`
 
-> **Design prerequisite:** [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) specifies the full wire protocol (VIIP), message envelope, delivery guarantees, and failure modes. [vinyan-concept.md §2.4](vinyan-concept.md) specifies network-aware ECP semantics and confidence degradation.
+> **Design prerequisite:** [a2a-protocol.md](../spec/a2a-protocol.md) specifies the full wire protocol (VIIP), message envelope, delivery guarantees, and failure modes. [concept.md §2.4](../foundation/concept.md) specifies network-aware ECP semantics and confidence degradation.
 
 **Purpose:** Extend ECP from stdio (local process) to network boundaries. Preserves epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol does this natively.
 
@@ -2346,7 +2346,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.8 — Instance Coordinator `[XL]` (Research)
 
-> **Design prerequisites:** [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) (wire protocol), [vinyan-concept.md §11](vinyan-concept.md) (coordination topology, partition tolerance), [vinyan-tdd.md §23](vinyan-tdd.md) (coordinator interface, state machine, acceptance criteria).
+> **Design prerequisites:** [a2a-protocol.md](../spec/a2a-protocol.md) (wire protocol), [concept.md §11](../foundation/concept.md) (coordination topology, partition tolerance), [tdd.md §23](../spec/tdd.md) (coordinator interface, state machine, acceptance criteria).
 
 **Purpose:** Multiple Vinyan instances coordinate as peers. Each instance's Orchestrator remains sovereign. Includes Oracle/Verifier lifecycle governance (concept §13.4) and Creativity Protection Zone (concept §13.5).
 
@@ -2495,7 +2495,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.14 — Security Model `[M]` — **TIER 0 PREREQUISITE**
 
-> **HIGH (G5-012):** This component is now Tier 0 — must precede any network exposure (PH5.1 API, PH5.6 A2A, PH5.7 ECP Network). See [vinyan-a2a-protocol.md §4](vinyan-a2a-protocol.md) for inter-instance authentication.
+> **HIGH (G5-012):** This component is now Tier 0 — must precede any network exposure (PH5.1 API, PH5.6 A2A, PH5.7 ECP Network). See [a2a-protocol.md §4](../spec/a2a-protocol.md) for inter-instance authentication.
 
 **Purpose:** Security model for API server, multi-instance communication, remote oracle invocation.
 
@@ -2505,7 +2505,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 - **API authentication.** Local-only: bearer token in `~/.vinyan/api-token`. Multi-instance: mTLS.
 - **Instance identity.** Ed25519 keypair per instance for signing cross-instance messages (generated on first run, stored in `~/.vinyan/instance-key.pem`). Cryptographic provenance verification.
-- **Trust bootstrapping.** New remote instances start `untrusted`. Trust earned empirically (Wilson LB on remote verdict accuracy) — same mechanism as `WorkerLifecycle` (`worker-lifecycle.ts`). See [vinyan-a2a-protocol.md §4.4](vinyan-a2a-protocol.md) for trust levels and allowed operations.
+- **Trust bootstrapping.** New remote instances start `untrusted`. Trust earned empirically (Wilson LB on remote verdict accuracy) — same mechanism as `WorkerLifecycle` (`worker-lifecycle.ts`). See [a2a-protocol.md §4.4](../spec/a2a-protocol.md) for trust levels and allowed operations.
 - **Authorization scoping.** Granular: read-only (facts, metrics), task submission, admin (config, instance management). Extensible via config.
 - **Guardrails extension.** Existing `src/guardrails/` (injection/bypass detection) applies to API inputs identically.
 
@@ -2514,7 +2514,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 **Design decisions resolved:**
 - Token format: opaque bearer token (simple, no JWT dependency). Generated via `crypto.randomBytes(32).toString('hex')`
-- Instance identity: Ed25519 keypair (per vinyan-a2a-protocol.md §4.1)
+- Instance identity: Ed25519 keypair (per spec/a2a-protocol.md §4.1)
 - Audit logging: extends existing JSONL audit trail (`audit-listener.ts` format)
 
 ##### PH5.15 — Observability Extension `[M]`
@@ -2549,7 +2549,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.16 — Data Migration & Backward Compatibility `[S]` — **TIER 0 PREREQUISITE**
 
-> **CRITICAL (G5-019):** This component is now Tier 0 — execute FIRST before any other Phase 5 work. All schema changes depend on versioned migrations. See [vinyan-tdd.md §20](vinyan-tdd.md) for full interface contracts and [vinyan-architecture.md D18](vinyan-architecture.md) for design rationale.
+> **CRITICAL (G5-019):** This component is now Tier 0 — execute FIRST before any other Phase 5 work. All schema changes depend on versioned migrations. See [tdd.md §20](../spec/tdd.md) for full interface contracts and [decisions.md D18](../architecture/decisions.md) for design rationale.
 
 **Purpose:** Phase 0-4 installations upgrade without data loss or behavioral changes.
 
@@ -2601,7 +2601,7 @@ Tier 1 — Standalone Foundation:
                                  ├── PH5.5 (MCP Bridge)
                                  └── PH5.6 (A2A Bridge)
 
-Tier 2 — Multi-Instance (requires A2A protocol spec — vinyan-a2a-protocol.md):
+Tier 2 — Multi-Instance (requires A2A protocol spec — spec/a2a-protocol.md):
   PH5.7 (ECP Network Transport) ── PH5.8 (Instance Coordinator)
                                             │
                                             └── PH5.9 (Knowledge Sharing)
@@ -2631,8 +2631,8 @@ Cross-Cutting:
 
 **Key files:** New `packages/oracle-sdk-ts/`, `packages/oracle-sdk-python/`
 **Extends:** `src/oracle/protocol.ts` (extract schemas), `src/core/index.ts` (extract `buildVerdict`)
-**Dependencies:** ECP spec finalized ([vinyan-ecp-spec.md](vinyan-ecp-spec.md))
-**Design guide:** [vinyan-oracle-sdk.md](vinyan-oracle-sdk.md)
+**Dependencies:** ECP spec finalized ([ecp-spec.md](../spec/ecp-spec.md))
+**Design guide:** [oracle-sdk.md](../spec/oracle-sdk.md)
 
 ---
 
@@ -2654,7 +2654,7 @@ Cross-Cutting:
 - New: `src/oracle/transport/types.ts`, `src/oracle/transport/stdio.ts`, `src/oracle/transport/websocket.ts`, `src/oracle/transport/http.ts`
 
 **Dependencies:** PH5.14 (Security — Ed25519 signing for network messages)
-**Design spec:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md) §5, [vinyan-protocol-architecture.md](vinyan-protocol-architecture.md) §2-§3
+**Design spec:** [ecp-spec.md](../spec/ecp-spec.md) §5, [protocol-architecture.md](../architecture/protocol-architecture.md) §2-§3
 
 ---
 
@@ -2663,7 +2663,7 @@ Cross-Cutting:
 **Purpose:** Formalize ECP as a standalone, publishable protocol specification. External developers and projects can implement ECP without depending on Vinyan source code.
 
 **Deliverables:**
-- Finalize [vinyan-ecp-spec.md](vinyan-ecp-spec.md) with community review
+- Finalize [ecp-spec.md](../spec/ecp-spec.md) with community review
 - Publish ECP conformance test suite (Level 0–3 validation)
 - Add ECP version negotiation to `src/core/types.ts`
 
@@ -2688,7 +2688,7 @@ Cross-Cutting:
 **Key ordering fixes (from gap analysis):**
 - PH5.16 (Migration) moved from last to **first** — all schema changes depend on versioned migrations (G5-019 CRITICAL)
 - PH5.14 (Security) moved from cross-cutting to **Tier 0** — must precede any network exposure (G5-012 HIGH)
-- PH5.7/PH5.8 now reference [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) as design prerequisite (G5-001 CRITICAL)
+- PH5.7/PH5.8 now reference [a2a-protocol.md](../spec/a2a-protocol.md) as design prerequisite (G5-001 CRITICAL)
 
 #### Data Prerequisites
 
@@ -2914,8 +2914,8 @@ Phase 5 introduces network latency. These budgets ensure Phase 0-4 performance t
 - `src/orchestrator/worker-lifecycle.ts` — State machine pattern reused for `OracleProfile` lifecycle (PH5.8)
 - `src/evolution/pattern-abstraction.ts` — `AbstractPatternExport.version` migration support (PH5.0) + cross-instance sharing format (PH5.9)
 - `src/db/vinyan-db.ts` — Migration framework replacing `CREATE TABLE IF NOT EXISTS` (PH5.16)
-- `docs/vinyan-tdd.md` §19 — MCP bridge specification that PH5.5 implements directly
-- `docs/vinyan-concept.md` §2.1 — A2A protocol specification that PH5.6 implements
+- `docs/spec/tdd.md` §19 — MCP bridge specification that PH5.5 implements directly
+- `docs/foundation/concept.md` §2.1 — A2A protocol specification that PH5.6 implements
 
 ---
 

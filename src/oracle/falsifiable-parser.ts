@@ -5,7 +5,7 @@
  * Scopes: file, dependency, env, config, time
  * Events: content-change, version-change, deletion, expiry
  *
- * Source of truth: vinyan-ecp-spec.md §4.5, Appendix D.3
+ * Source of truth: spec/ecp-spec.md §4.5, Appendix D.3
  */
 
 export type FalsifiabilityScope = "file" | "dependency" | "env" | "config" | "time";

@@ -5,7 +5,7 @@
  * Phase 1 (3-4 dims): + simplificationGain + testMutationScore (heuristic)
  *
  * Composite weights adapt to available dimensions.
- * Source of truth: vinyan-tdd.md §10 D10
+ * Source of truth: spec/tdd.md §10 D10
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

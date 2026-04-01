@@ -2,7 +2,7 @@
  * SSE — Server-Sent Events for real-time task progress streaming.
  *
  * Subscribes to EventBus, filters by taskId, writes text/event-stream format.
- * Source of truth: vinyan-tdd.md §22.2 (GET /api/v1/tasks/:id/events)
+ * Source of truth: spec/tdd.md §22.2 (GET /api/v1/tasks/:id/events)
  */
 import type { VinyanBus, BusEventName } from "../core/bus.ts";
 

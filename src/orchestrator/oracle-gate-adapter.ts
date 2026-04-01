@@ -2,7 +2,7 @@
  * Oracle Gate Adapter — wraps Phase 0's runGate() for the OracleGate interface.
  *
  * Maps mutations[] → individual GateRequest calls → aggregated VerificationResult.
- * Source of truth: vinyan-tdd.md §16 (Core Loop Step 5: VERIFY)
+ * Source of truth: spec/tdd.md §16 (Core Loop Step 5: VERIFY)
  */
 import { runGate } from "../gate/gate.ts";
 import type { OracleVerdict } from "../core/types.ts";

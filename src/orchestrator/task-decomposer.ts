@@ -4,7 +4,7 @@
  * 3-iteration retry loop: generate DAG → validate → feedback → retry.
  * Falls back to single-node DAG (stub behavior) after max retries.
  *
- * Source of truth: vinyan-tdd.md §10, arch D7
+ * Source of truth: spec/tdd.md §10, arch D7
  */
 import type { TaskDecomposer } from "./core-loop.ts";
 import type { TaskInput, PerceptualHierarchy, WorkingMemoryState, TaskDAG } from "./types.ts";

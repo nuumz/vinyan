@@ -5,7 +5,7 @@
  * Without TraceStore: in-memory only (backward compatible, used in tests).
  * With TraceStore: dual-write to memory + SQLite for Phase 2 Sleep Cycle queries.
  *
- * Source of truth: vinyan-tdd.md §12B (Execution Traces), §16 (Core Loop Step 6: LEARN)
+ * Source of truth: spec/tdd.md §12B (Execution Traces), §16 (Core Loop Step 6: LEARN)
  */
 import type { WorldGraph } from "../world-graph/world-graph.ts";
 import type { TraceCollector } from "./core-loop.ts";

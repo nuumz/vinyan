@@ -2,7 +2,7 @@
  * Session Store — CRUD for API sessions and session tasks.
  *
  * Follows WorkerStore pattern: SQLite-backed, Zod-validated at boundaries.
- * Source of truth: vinyan-tdd.md §22.5
+ * Source of truth: spec/tdd.md §22.5
  */
 import type { Database } from "bun:sqlite";
 

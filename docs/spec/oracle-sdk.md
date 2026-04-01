@@ -1,7 +1,7 @@
 # Vinyan Oracle SDK — Building ECP-Compatible Reasoning Engines
 
 > **Version:** 1.0-draft | **Date:** 2026-04-01
-> **Prerequisite:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md) — the protocol this SDK implements
+> **Prerequisite:** [ecp-spec.md](ecp-spec.md) — the protocol this SDK implements
 > **Reference implementation:** `src/oracle/python/` — a working Python (Pyright) oracle
 
 ---

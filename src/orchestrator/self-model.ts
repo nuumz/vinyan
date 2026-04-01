@@ -4,7 +4,7 @@
  * PH3.2: Per-task-type parameter storage in SQLite, adaptive learning rate,
  * global fallback for unseen task types. Migrates from old single-blob format.
  *
- * Source of truth: vinyan-tdd.md §12, arch D11, implementation-plan.md §PH3.2
+ * Source of truth: spec/tdd.md §12, arch D11, implementation-plan.md §PH3.2
  */
 import type { Database } from "bun:sqlite";
 import type { SelfModel } from "./core-loop.ts";

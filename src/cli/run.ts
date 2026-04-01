@@ -8,7 +8,7 @@
  * CLI is a bus consumer — it observes the core loop via event listeners
  * without modifying execution behavior (A3 compliance).
  *
- * Source of truth: vinyan-tdd.md §16 (Core Loop), §1A.8 (CLI)
+ * Source of truth: spec/tdd.md §16 (Core Loop), §1A.8 (CLI)
  */
 import { createOrchestrator } from "../orchestrator/factory.ts";
 import { createBus } from "../core/bus.ts";

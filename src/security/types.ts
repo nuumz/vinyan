@@ -1,7 +1,7 @@
 /**
  * Security Types — Zod schemas for auth and instance identity.
  *
- * Source of truth: vinyan-tdd.md §22 (API auth), §23 (instance identity)
+ * Source of truth: spec/tdd.md §22 (API auth), §23 (instance identity)
  */
 import { z } from "zod/v4";
 

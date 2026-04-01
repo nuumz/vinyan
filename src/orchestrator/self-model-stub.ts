@@ -4,7 +4,7 @@
  * Fallback when SQLite is unavailable. See CalibratedSelfModel for the full implementation.
  * Forced metaConfidence < 0.3 per A7 (< 10 observations).
  *
- * Source of truth: vinyan-tdd.md §12 (Self-Model), arch D11
+ * Source of truth: spec/tdd.md §12 (Self-Model), arch D11
  */
 import type { SelfModel } from "./core-loop.ts";
 import type { TaskInput, PerceptualHierarchy, SelfModelPrediction } from "./types.ts";

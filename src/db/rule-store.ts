@@ -3,7 +3,7 @@
  *
  * CRUD for EvolutionaryRule lifecycle: probation → active → retired.
  *
- * Source of truth: vinyan-tdd.md §2 (Evolution Engine)
+ * Source of truth: spec/tdd.md §2 (Evolution Engine)
  */
 import type { Database } from "bun:sqlite";
 import type { EvolutionaryRule } from "../orchestrator/types.ts";

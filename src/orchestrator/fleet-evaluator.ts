@@ -4,7 +4,7 @@
  * Gini coefficient, capability coverage, worker utilization.
  * Used by observability and sleep cycle for convergence detection.
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.5
+ * Source of truth: design/implementation-plan.md §Phase 4.5
  */
 import type { WorkerStore } from "../db/worker-store.ts";
 import type { CapabilityModel } from "./capability-model.ts";

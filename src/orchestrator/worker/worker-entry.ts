@@ -6,7 +6,7 @@
  * orchestrator handles tool execution after receiving the worker output.
  *
  * Follows oracle/runner.ts IPC pattern: JSON stdin → JSON stdout.
- * Source of truth: vinyan-tdd.md §16.3 (Worker lifecycle)
+ * Source of truth: spec/tdd.md §16.3 (Worker lifecycle)
  */
 import { WorkerInputSchema, WorkerOutputSchema } from "../protocol.ts";
 import { LLMProviderRegistry } from "../llm/provider-registry.ts";

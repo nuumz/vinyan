@@ -4,7 +4,7 @@
  * CRUD for ShadowJob lifecycle: pending → running → done/failed.
  * Crash-safety: jobs are inserted as 'pending' BEFORE online response returns.
  *
- * Source of truth: vinyan-tdd.md §12B (Shadow Execution)
+ * Source of truth: spec/tdd.md §12B (Shadow Execution)
  */
 import type { Database } from "bun:sqlite";
 import type { ShadowJob, ShadowValidationResult } from "../orchestrator/types.ts";

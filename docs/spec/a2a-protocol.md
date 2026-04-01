@@ -3,7 +3,7 @@
 > **Version:** 1.0 | **Phase:** 5 | **Audience:** AI Agent (Copilot/Claude)
 >
 > **This document owns:** Inter-instance communication protocol for Vinyan multi-instance coordination.
-> **Cross-reference:** [vinyan-concept.md](vinyan-concept.md) §2.4 (Network ECP), §11 (Multi-Instance Coordination), [vinyan-architecture.md](vinyan-architecture.md) Decision 17, [vinyan-tdd.md](vinyan-tdd.md) §20–§23.
+> **Cross-reference:** [concept.md](../foundation/concept.md) §2.4 (Network ECP), §11 (Multi-Instance Coordination), [decisions.md](../architecture/decisions.md) Decision 17, [tdd.md](tdd.md) §20–§23.
 >
 > **Implementation status:** This document specifies the VIIP protocol design for Phase 5. Currently, only instance identity signing (`src/security/instance-identity.ts`) and configuration schema stubs (`src/config/schema.ts` — `Phase5InstancesConfigSchema`) are implemented. All message types (`VIIPEnvelope`, `VIIPMessageType`), WebSocket transport, handshake/heartbeat handlers, task delegation, oracle verification, and knowledge sharing are **specification-only** — no runtime implementation exists in the codebase.
 
@@ -98,7 +98,7 @@ Handshake must complete within 5 seconds. On timeout → close connection, retry
 
 ### 2.4 correlationId Propagation Rules
 
-The `correlation_id` field enables distributed tracing across instances (see also [vinyan-tdd.md](vinyan-tdd.md) §23.5).
+The `correlation_id` field enables distributed tracing across instances (see also [tdd.md](tdd.md) §23.5).
 
 **Rules:**
 

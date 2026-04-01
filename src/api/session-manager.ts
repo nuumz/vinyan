@@ -4,7 +4,7 @@
  * A3 compliance: compaction is rule-based extraction, not LLM-generated.
  * I16: Original JSONL audit trail is never deleted by compaction.
  *
- * Source of truth: vinyan-tdd.md §22.3, §22.4
+ * Source of truth: spec/tdd.md §22.3, §22.4
  */
 import type { SessionStore, SessionRow, SessionTaskRow } from "../db/session-store.ts";
 import type { TaskInput, TaskResult, ExecutionTrace } from "../orchestrator/types.ts";

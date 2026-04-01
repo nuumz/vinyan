@@ -1,6 +1,6 @@
 /**
  * LLM Provider Registry — register and select providers by tier.
- * Source of truth: vinyan-tdd.md §17.1
+ * Source of truth: spec/tdd.md §17.1
  */
 import type { LLMProvider, RoutingLevel } from "../types.ts";
 

@@ -7,7 +7,7 @@
  * - "step": constant until valid_until, then 50% of original
  * - "linear": decreases linearly from valid_from to valid_until, then 0
  *
- * Source of truth: vinyan-ecp-spec.md §3.6
+ * Source of truth: spec/ecp-spec.md §3.6
  */
 
 /**

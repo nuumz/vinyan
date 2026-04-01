@@ -4,7 +4,7 @@
  * 6-step lifecycle: Perceive → Predict → Plan → Generate → Verify → Learn
  * Nested loops: outer = routing level escalation, inner = retry within level.
  *
- * Source of truth: vinyan-tdd.md §16.2
+ * Source of truth: spec/tdd.md §16.2
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  *
  * STATUS: Phase 1 complete — all dependencies implemented (CalibratedSelfModel,

@@ -9,7 +9,7 @@
  *
  * Reuses containment logic from tool-validator.ts:42-46.
  *
- * Source of truth: vinyan-tdd.md §11, vinyan-implementation-plan.md §2.1
+ * Source of truth: spec/tdd.md §11, design/implementation-plan.md §2.1
  */
 import { resolve, isAbsolute } from "path";
 import { writeFileSync, lstatSync, mkdirSync, realpathSync } from "fs";

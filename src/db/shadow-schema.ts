@@ -4,7 +4,7 @@
  * Shadow jobs are enqueued BEFORE online response returns (A6 crash-safety).
  * Background process picks them up for full test suite + PHE validation.
  *
- * Source of truth: vinyan-tdd.md §12B (Shadow Execution), Phase 2.2
+ * Source of truth: spec/tdd.md §12B (Shadow Execution), Phase 2.2
  */
 
 export const SHADOW_SCHEMA_SQL = `

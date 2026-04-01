@@ -5,7 +5,7 @@
  * Anti-lookahead: validation window STRICTLY newer than training.
  * Pass criteria: prevent ≥50% of historical failures WITHOUT blocking successes.
  *
- * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
+ * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
 import type { EvolutionaryRule, ExecutionTrace } from "../orchestrator/types.ts";
 import { simpleGlobMatch } from "../core/glob.ts";

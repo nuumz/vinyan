@@ -6,7 +6,7 @@
  *
  * New rules enter probation status (10 sessions, logging-only).
  *
- * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
+ * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
 import type { EvolutionaryRule, ExtractedPattern } from "../orchestrator/types.ts";
 

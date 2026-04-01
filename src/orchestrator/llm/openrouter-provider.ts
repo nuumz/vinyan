@@ -4,7 +4,7 @@
  * No SDK dependency. Guarded by OPENROUTER_API_KEY env var.
  * Models configurable via OPENROUTER_{FAST,BALANCED,POWERFUL}_MODEL env vars.
  *
- * Source of truth: vinyan-tdd.md §17.1, https://openrouter.ai/docs
+ * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from "../types.ts";
 

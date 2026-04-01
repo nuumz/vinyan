@@ -4,7 +4,7 @@
  * Each Vinyan instance has a unique Ed25519 keypair for VIIP authentication.
  * Keypair stored at ~/.vinyan/instance-key.json (not PEM — simpler JSON format).
  *
- * Source of truth: vinyan-a2a-protocol.md §4.1, vinyan-tdd.md §23
+ * Source of truth: spec/a2a-protocol.md §4.1, spec/tdd.md §23
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";

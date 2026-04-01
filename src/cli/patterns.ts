@@ -4,7 +4,7 @@
  * vinyan patterns export --workspace <path> [--output <file>]
  * vinyan patterns import --workspace <path> --file <file> [--similarity <threshold>]
  *
- * Source of truth: vinyan-implementation-plan.md §PH4.6
+ * Source of truth: design/implementation-plan.md §PH4.6
  */
 import { join } from "path";
 import { readFileSync, writeFileSync } from "fs";

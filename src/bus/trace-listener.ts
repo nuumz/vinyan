@@ -4,7 +4,7 @@
  * Pure observer — does not modify core loop behavior (A3 compliance).
  * Provides runtime metrics for CLI summary and future dashboards.
  *
- * Source of truth: vinyan-tdd.md §1C.4
+ * Source of truth: spec/tdd.md §1C.4
  */
 import type { VinyanBus } from "../core/bus.ts";
 

@@ -5,7 +5,7 @@
  * All arrays are bounded with eviction policies to prevent
  * prompt bloat during long retry loops.
  *
- * Source of truth: vinyan-tdd.md §16.2 (Learn step)
+ * Source of truth: spec/tdd.md §16.2 (Learn step)
  */
 import type { WorkingMemoryState } from "./types.ts";
 import type { VinyanBus } from "../core/bus.ts";

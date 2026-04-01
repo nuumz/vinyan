@@ -1,7 +1,7 @@
 /**
  * Language Detector — auto-detect project languages from marker files.
  *
- * Source of truth: vinyan-implementation-plan.md PH5.10
+ * Source of truth: design/implementation-plan.md PH5.10
  */
 import { existsSync } from "fs";
 import { join } from "path";

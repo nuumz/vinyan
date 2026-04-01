@@ -5,7 +5,7 @@
  * retaining framework/language markers, and generalizing approach descriptions.
  * Imported patterns enter probation with 50% confidence reduction.
  *
- * Source of truth: vinyan-implementation-plan.md §PH4.6
+ * Source of truth: design/implementation-plan.md §PH4.6
  */
 import type { ExtractedPattern, TaskFingerprint } from "../orchestrator/types.ts";
 

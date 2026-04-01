@@ -4,7 +4,7 @@
  * Queries dep-oracle for dependency cone, World Graph for verified facts,
  * and tsc for diagnostics. Filters depth by routing level.
  *
- * Source of truth: vinyan-tdd.md §16.2 (Perceive step), arch D8
+ * Source of truth: spec/tdd.md §16.2 (Perceive step), arch D8
  */
 import { resolve, relative } from "path";
 import { buildDependencyGraph, computeBlastRadius } from "../oracle/dep/dep-analyzer.ts";

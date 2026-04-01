@@ -4,7 +4,7 @@
  * CRUD for WorkerProfile lifecycle: probation → active → demoted → retired.
  * Stats are computed from execution_traces via SQL aggregates, cached 60s.
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.1
+ * Source of truth: design/implementation-plan.md §Phase 4.1
  */
 import type { Database } from "bun:sqlite";
 import type { WorkerProfile, WorkerProfileStatus, WorkerStats, WorkerConfig } from "../orchestrator/types.ts";

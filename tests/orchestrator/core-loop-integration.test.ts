@@ -421,8 +421,11 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
         verdicts: {
           "type-oracle": {
             verified: false,
+            type: "uncertain" as const,
             confidence: 0.3,
             evidence: [],
+            fileHashes: {},
+            duration_ms: 100,
             deliberation_request: {
               reason: "Complex type inference requires deeper analysis",
               suggestedBudget: 2,

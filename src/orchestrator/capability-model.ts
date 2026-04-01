@@ -4,7 +4,7 @@
  * Not stored separately — computed on-demand from trace aggregates.
  * Wilson LB for confident scoring, negative capabilities for exclusion.
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.3
+ * Source of truth: design/implementation-plan.md §Phase 4.3
  */
 import type { Database } from "bun:sqlite";
 import type { TaskFingerprint } from "./types.ts";

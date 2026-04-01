@@ -4,7 +4,7 @@
  * Zero-dependency, synchronous, fully type-safe.
  * A3 compliance: FIFO ordering, deterministic dispatch.
  *
- * Source of truth: vinyan-implementation-plan.md §1C.4
+ * Source of truth: design/implementation-plan.md §1C.4
  */
 import type { OracleVerdict, Fact } from "./types.ts";
 import type {

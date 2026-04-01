@@ -2,7 +2,7 @@
  * DAG Validator — 5 machine-checkable criteria for task decomposition.
  *
  * Pure functions, fully testable without LLM.
- * Source of truth: vinyan-tdd.md §10 (Task Decomposition), arch D7
+ * Source of truth: spec/tdd.md §10 (Task Decomposition), arch D7
  */
 import type { TaskDAG, DagValidationCriteria } from "./types.ts";
 

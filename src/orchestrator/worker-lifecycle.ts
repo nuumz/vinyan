@@ -7,7 +7,7 @@
  * Demotion: rolling 30 tasks, success < median-0.10 OR quality < median-2σ.
  * Retired: 3 demotions = permanent (no return).
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.2
+ * Source of truth: design/implementation-plan.md §Phase 4.2
  */
 import type { WorkerProfile } from "./types.ts";
 import type { WorkerStore } from "../db/worker-store.ts";

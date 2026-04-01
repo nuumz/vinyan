@@ -2,7 +2,7 @@
 
 > **Review Date:** 2026-04-01 | **Phase Reviewed:** 0-4 (implemented) + 5 (design)
 > **Methodology:** 5 specialized AI agents analyzed the full TDD, concept, architecture, ECP spec, gap analysis, and source code independently, then findings were synthesized.
-> **Cross-references:** [vinyan-tdd.md](vinyan-tdd.md) §15 (Q10-Q22), [vinyan-gap-analysis.md](vinyan-gap-analysis.md) §10.6, [vinyan-ecp-spec.md](vinyan-ecp-spec.md) Appendix D
+> **Cross-references:** [tdd.md](../spec/tdd.md) §15 (Q10-Q22), [gap-analysis.md](gap-analysis.md) §10.6, [ecp-spec.md](../spec/ecp-spec.md) Appendix D
 
 ---
 

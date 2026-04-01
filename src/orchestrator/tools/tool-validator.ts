@@ -6,7 +6,7 @@
  * 3. Shell command allowlist
  * 4. Bypass pattern detection
  *
- * Source of truth: vinyan-tdd.md §18.1
+ * Source of truth: spec/tdd.md §18.1
  */
 import { resolve, isAbsolute } from "path";
 import { containsBypassAttempt } from "../../guardrails/index.ts";

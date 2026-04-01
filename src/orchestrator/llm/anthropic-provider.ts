@@ -4,7 +4,7 @@
  * Optional dependency: install with `bun add @anthropic-ai/sdk` to enable.
  * OpenRouter (openrouter-provider.ts) is the recommended primary provider.
  * Guarded by ANTHROPIC_API_KEY environment variable.
- * Source of truth: vinyan-tdd.md §17.1
+ * Source of truth: spec/tdd.md §17.1
  */
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from "../types.ts";
 

@@ -5,7 +5,7 @@
  * L1+: Selects provider from registry, assembles prompt, calls LLM.
  * Subprocess mode follows oracle/runner.ts pattern (Bun.spawn + timeout + Zod validation).
  *
- * Source of truth: vinyan-tdd.md §16.3 (Worker lifecycle), §17 (Generator Engine)
+ * Source of truth: spec/tdd.md §16.3 (Worker lifecycle), §17 (Generator Engine)
  */
 import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { resolve, join } from "path";

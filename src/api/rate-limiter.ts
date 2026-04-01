@@ -1,7 +1,7 @@
 /**
  * Rate Limiter — token-bucket per API key.
  *
- * Source of truth: vinyan-tdd.md §22.6
+ * Source of truth: spec/tdd.md §22.6
  */
 
 export interface RateLimitConfig {

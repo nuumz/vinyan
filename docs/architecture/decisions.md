@@ -1,13 +1,13 @@
 # Vinyan — Architecture Design Decisions
 
 > **Document boundary**: This document owns the **concrete architecture, component design, and technology decisions** for building Vinyan.
-> For vision/philosophy/protocol design, see [vinyan-concept.md](vinyan-concept.md). For theoretical foundations, see [vinyan-theory.md](vinyan-theory.md). For competitive landscape, see [vinyan-gap-analysis.md](vinyan-gap-analysis.md).
+> For vision/philosophy/protocol design, see [concept.md](../foundation/concept.md). For theoretical foundations, see [theory.md](../foundation/theory.md). For competitive landscape, see [gap-analysis.md](../analysis/gap-analysis.md).
 
 ---
 
 ## 1. Architectural Thesis
 
-**Core Decision:** Vinyan is an **Epistemic Nervous System** — a rule-based, non-LLM-driven substrate that connects heterogeneous Reasoning Engines via the Epistemic Communication Protocol (ECP). LLMs are one component, not the brain. The Orchestrator's routing, verification, and commit decisions are rule-based and state-reproducible — no LLM is in the decision path for governance actions (see [concept.md A3](vinyan-concept.md) for the precise definition of "deterministic governance"). Stochastic components (LLMs) are used for generation and initial task decomposition, but operate within deterministic constraints. See [concept.md §1-3](vinyan-concept.md) for the full vision, ECP specification, and Reasoning Engine model. All architectural decisions below implement the 7 Core Axioms defined in [concept.md §1.1](vinyan-concept.md).
+**Core Decision:** Vinyan is an **Epistemic Nervous System** — a rule-based, non-LLM-driven substrate that connects heterogeneous Reasoning Engines via the Epistemic Communication Protocol (ECP). LLMs are one component, not the brain. The Orchestrator's routing, verification, and commit decisions are rule-based and state-reproducible — no LLM is in the decision path for governance actions (see [concept.md A3](../foundation/concept.md) for the precise definition of "deterministic governance"). Stochastic components (LLMs) are used for generation and initial task decomposition, but operate within deterministic constraints. See [concept.md §1-3](../foundation/concept.md) for the full vision, ECP specification, and Reasoning Engine model. All architectural decisions below implement the 7 Core Axioms defined in [concept.md §1.1](../foundation/concept.md).
 
 **Implementation strategy — Prove, then Build:**
 - Phase 0: Prove epistemic verification works by deploying Oracle Gate inside an existing agent host (Claude Code or compatible host). Claude Code is the **test host**, not Vinyan's identity — like testing a new engine in an existing car before building the vehicle around it.
@@ -27,10 +27,10 @@
 ## 2. System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────┐
 │                     Human Interface Layer                        │
 │   CLI │ API │ VS Code Extension │ Web Dashboard                  │
-└─────────────────────┬───────────────────────────────────────────┘
+└─────────────────────┬────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼──────────────────────────────────────────────────┐
 │              Vinyan Orchestrator (rule-based, non-LLM)                 │
@@ -152,7 +152,7 @@ END;
 
 > **Axioms: A1, A2, A5** — Epistemic Separation (pluggable engines ≠ self-evaluation) + First-Class Uncertainty (ECP carries confidence) + Tiered Trust (engine registry ranked by evidence tier)
 
-**Choice:** Each Reasoning Engine communicates with the Orchestrator via the Epistemic Communication Protocol (ECP). Phase 0 transport: JSON-RPC over stdio (same as MCP local). Engines are standalone executables that receive a HypothesisTuple and return an OracleVerdict with epistemic metadata (confidence, evidence chain, falsifiability). See [concept.md §2-3](vinyan-concept.md) for the full ECP specification and Reasoning Engine model. For ECP vs MCP capability comparison, see [concept.md §2.3](vinyan-concept.md) — ECP is a semantic extension of JSON-RPC that adds epistemic state as first-class data; MCP is used only for the External Interface channel (Decision 14).
+**Choice:** Each Reasoning Engine communicates with the Orchestrator via the Epistemic Communication Protocol (ECP). Phase 0 transport: JSON-RPC over stdio (same as MCP local). Engines are standalone executables that receive a HypothesisTuple and return an OracleVerdict with epistemic metadata (confidence, evidence chain, falsifiability). See [concept.md §2-3](../foundation/concept.md) for the full ECP specification and Reasoning Engine model. For ECP vs MCP capability comparison, see [concept.md §2.3](../foundation/concept.md) — ECP is a semantic extension of JSON-RPC that adds epistemic state as first-class data; MCP is used only for the External Interface channel (Decision 14).
 
 **Rationale:**
 - Deterministic Reasoning Engines (Verifiers) MUST NOT call LLMs — they are the epistemic ground truth
@@ -225,7 +225,7 @@ If any fail → reject with evidence, return to worker
 
 > **Axiom: A3** — Deterministic Governance (risk routing uses rule-based heuristics, not ML models)
 
-**Choice:** Numeric risk score from static analysis, with threshold-based routing to a 4-level continuum: L0 Reflex, L1 Heuristic, L2 Analytical, L3 Deliberative (see [concept.md §8](vinyan-concept.md)).
+**Choice:** Numeric risk score from static analysis, with threshold-based routing to a 4-level continuum: L0 Reflex, L1 Heuristic, L2 Analytical, L3 Deliberative (see [concept.md §8](../foundation/concept.md)).
 
 **Rationale:**
 - ML-based risk scoring needs training data we don't have yet
@@ -274,7 +274,7 @@ const ROUTING_THRESHOLDS = {
 };
 ```
 
-**Latency budgets are design constraints, not aspirations** (per [concept.md §7](vinyan-concept.md)). If Oracle verification cannot meet the budget for a routing level, the Oracle is either optimized, made asynchronous (non-blocking with rollback capability), or excluded from that level's pipeline.
+**Latency budgets are design constraints, not aspirations** (per [concept.md §7](../foundation/concept.md)). If Oracle verification cannot meet the budget for a routing level, the Oracle is either optimized, made asynchronous (non-blocking with rollback capability), or excluded from that level's pipeline.
 
 **Operational Guardrails (A6) — Prompt Injection + Production Boundary:**
 
@@ -428,7 +428,7 @@ interface EvolutionaryRule {
 
 > **Axioms: A3, A6** — Deterministic Governance (orchestrator coordinates deterministically) + Zero-Trust Execution (workers have zero execution privileges)
 
-**Choice:** Vinyan Orchestrator (rule-based, non-LLM-driven — see [concept.md A3](vinyan-concept.md)) coordinates LLM workers. NOT an LLM managing other LLMs.
+**Choice:** Vinyan Orchestrator (rule-based, non-LLM-driven — see [concept.md A3](../foundation/concept.md)) coordinates LLM workers. NOT an LLM managing other LLMs.
 
 **HiClaw's flaw:** Manager is an LLM. It can hallucinate task assignments, forget to @mention workers, misjudge task complexity. The whole multi-agent system inherits the Manager's cognitive failures.
 
@@ -454,7 +454,7 @@ Vinyan Orchestrator (rule-based TypeScript process, non-LLM governance)
 
 **Iterative Task Decomposition (replaces one-shot planning):**
 
-**Decomposition is LLM-assisted, not deterministic** (see [concept.md §8](vinyan-concept.md)). The initial task decomposition — breaking a user request into a high-level DAG — uses an LLM in its Generator Engine role (Decision 12). The Orchestrator does not decompose tasks through rules alone — natural language understanding requires an LLM. However, the Orchestrator's **governance** of decomposition is rule-based: it validates each decomposition level through Oracles, enforces structural constraints, and rejects invalid DAGs. **LLMs generate candidate decompositions; the Orchestrator validates and commits them.** This is consistent with A3 — governance decisions are rule-based, even when inputs come from probabilistic sources.
+**Decomposition is LLM-assisted, not deterministic** (see [concept.md §8](../foundation/concept.md)). The initial task decomposition — breaking a user request into a high-level DAG — uses an LLM in its Generator Engine role (Decision 12). The Orchestrator does not decompose tasks through rules alone — natural language understanding requires an LLM. However, the Orchestrator's **governance** of decomposition is rule-based: it validates each decomposition level through Oracles, enforces structural constraints, and rejects invalid DAGs. **LLMs generate candidate decompositions; the Orchestrator validates and commits them.** This is consistent with A3 — governance decisions are rule-based, even when inputs come from probabilistic sources.
 
 Planning loop: `Planner LLM (Generator Engine) → dep-oracle (structural) → coverage-validator (rule-based) → accept or replan (max 3 iterations)`
 
@@ -663,7 +663,7 @@ interface QualityScore {
 
 **Cold-start honesty:** Phase 1 prediction accuracy will be **~50-60%** with static heuristic rules. This is acceptable — the value is in starting the calibration loop early, not in accurate Phase 1 predictions. Architecture consumers MUST NOT treat Self-Model predictions as reliable until Phase 2 calibration data exists.
 
-**Cold-start safeguards** (per [concept.md §9.2](vinyan-concept.md)) to prevent bad predictions from poisoning the calibration loop:
+**Cold-start safeguards** (per [concept.md §9.2](../foundation/concept.md)) to prevent bad predictions from poisoning the calibration loop:
 
 | Safeguard | Mechanism | Configuration |
 |:----------|:----------|:-------------|
@@ -1082,7 +1082,7 @@ interface PluginManifest {
 **Implementation:**
 - `src/core/bus.ts` interface unchanged. `VinyanBus.emit()` remains synchronous
 - New `src/core/remote-bus.ts`: `RemoteBusAdapter` subscribes to local bus events, forwards configured subset to peers via ECP network transport (§2.4)
-- Remote event delivery: at-least-once with idempotency (per [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md) §6)
+- Remote event delivery: at-least-once with idempotency (per [a2a-protocol.md](../spec/a2a-protocol.md) §6)
 - Configurable event filter: only `sleep:cycleComplete`, `evolution:rulePromoted`, `evolution:ruleRetired`, `skill:outcome`, `fleet:convergence_warning` forwarded by default
 - Bus event types extensible for plugins: `VinyanBus.registerEventType(name, schema)` for plugin-defined events
 
@@ -1201,7 +1201,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 ## 6. Phase 0 Implementation — Proving Epistemic Verification
 
-**Goal:** Prove the verification thesis — rule-based Oracle validation reduces **structural** hallucination (hallucinated symbols, wrong types, broken imports) in LLM-generated code. Phase 0 is a **verification library** inside a host agent, not an autonomous system. It proves A1 (epistemic separation) and A4 (content-addressed truth). See [concept.md §12.1](vinyan-concept.md) for the pre-registered experimental protocol. Claude Code (or compatible host) serves as the test host.
+**Goal:** Prove the verification thesis — rule-based Oracle validation reduces **structural** hallucination (hallucinated symbols, wrong types, broken imports) in LLM-generated code. Phase 0 is a **verification library** inside a host agent, not an autonomous system. It proves A1 (epistemic separation) and A4 (content-addressed truth). See [concept.md §12.1](../foundation/concept.md) for the pre-registered experimental protocol. Claude Code (or compatible host) serves as the test host.
 
 **Deliverables:**
 1. Host bridge: `vinyan-oracle-gate` — deployed as Claude Code plugin, intercepts `before_tool_call` and `after_tool_call`
@@ -1358,11 +1358,11 @@ Single agent w/ verification          ├── Generate (LLM Workers via D12)
 
 ## 10. Success Criteria
 
-> **Axiom Validation Gate:** Each phase's success criteria map to proving specific Core Axioms ([concept.md §1.1](vinyan-concept.md)). A phase is not complete until its axiom-mapped metrics pass.
+> **Axiom Validation Gate:** Each phase's success criteria map to proving specific Core Axioms ([concept.md §1.1](../foundation/concept.md)). A phase is not complete until its axiom-mapped metrics pass.
 
 ### Phase 0 (Verification Library) — *Proves A1, A4; partially validates A5, A6*
 
-Per the pre-registered experimental protocol in [concept.md §12.1](vinyan-concept.md):
+Per the pre-registered experimental protocol in [concept.md §12.1](../foundation/concept.md):
 
 - **Primary metric:** ≥25% reduction in structural error rate (broken imports, type errors, wrong signatures, non-existent symbol references) — treatment (agent + oracle gate) vs baseline (agent without oracle gate), measured over ≥30 TypeScript mutation tasks stratified by complexity
 - **False positive rate:** Oracle rejects correct code < 10% of the time
@@ -1404,7 +1404,7 @@ Per the pre-registered experimental protocol in [concept.md §12.1](vinyan-conce
 | How to handle Oracle disagreements? (ast-oracle passes, type-oracle fails) | Any-fail = block. May need weighted voting later. | Phase 0 data collection |
 | How to share World Graph across workers without race conditions? | Read-only copy per worker, merge on return. Orchestrator is single writer. | Phase 1 implementation |
 | What's the right PHE depth for Level 3? | 2–3 levels (approach → implementation → validation). | Phase 2 experiments |
-| When does the Orchestrator itself need an LLM? | Task decomposition (all levels) + Critic (Level 3 only). All governance (routing, verification gating, commit) is rule-based. See Decision 7 and [concept.md §8](vinyan-concept.md). | Phase 1 — validate this assumption |
+| When does the Orchestrator itself need an LLM? | Task decomposition (all levels) + Critic (Level 3 only). All governance (routing, verification gating, commit) is rule-based. See Decision 7 and [concept.md §8](../foundation/concept.md). | Phase 1 — validate this assumption |
 | Should L2 use VM (VZVirtualMachine-style) or Docker? | Docker for Phase 2 MVP. VM for security-critical ops. | Phase 2 — benchmark overhead vs. isolation guarantees |
 | How fast does Self-Model calibrate from static heuristics? | ~50-60% initial accuracy, improving with PredictionError feedback. Target: >75% by 200 sessions. | Phase 1 — track calibration curve |
 | What's the minimum QualityScore dimensions needed for useful Skill Formation? | Hypothesis: 3 dimensions (architectural + efficiency + simplificationGain). | Phase 2 — when Skill Formation cache activates |
@@ -1413,7 +1413,7 @@ Per the pre-registered experimental protocol in [concept.md §12.1](vinyan-conce
 
 ## 12. Failure Modes & Recovery Strategies
 
-For the complete failure mode analysis (F1–F5), see [concept.md §14](vinyan-concept.md). Key failure scenarios and their architectural mitigations:
+For the complete failure mode analysis (F1–F5), see [concept.md §14](../foundation/concept.md). Key failure scenarios and their architectural mitigations:
 
 | Failure Mode | Architecture Mitigation |
 |:-------------|:-----------------------|

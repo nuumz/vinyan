@@ -4,7 +4,7 @@
  * Uses Bun.serve() — zero dependency. Manual routing.
  * Graceful shutdown per TDD §22.7.
  *
- * Source of truth: vinyan-tdd.md §22
+ * Source of truth: spec/tdd.md §22
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;

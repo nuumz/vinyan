@@ -5,7 +5,7 @@
  * oracle verdict pattern) and identifies attribute combinations correlated with failure.
  * Generates multi-condition anti-patterns that single-task-type analysis would miss.
  *
- * Source of truth: vinyan-implementation-plan.md §PH3.5
+ * Source of truth: design/implementation-plan.md §PH3.5
  */
 import type { ExecutionTrace, ExtractedPattern } from "../orchestrator/types.ts";
 import { wilsonLowerBound } from "./wilson.ts";

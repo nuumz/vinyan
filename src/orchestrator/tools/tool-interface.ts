@@ -1,6 +1,6 @@
 /**
  * Tool interfaces — types for the tool execution layer.
- * Source of truth: vinyan-tdd.md §18.1
+ * Source of truth: spec/tdd.md §18.1
  */
 import type { Evidence } from "../../core/types.ts";
 import type { IsolationLevel, RoutingLevel, ToolResult } from "../types.ts";

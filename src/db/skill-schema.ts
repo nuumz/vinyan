@@ -4,7 +4,7 @@
  * Skills are formed from Sleep Cycle success patterns. Lifecycle: probation → active → demoted.
  * Risk-tiered verification: hash-only / structural / full.
  *
- * Source of truth: vinyan-tdd.md §12B (Skill Formation), Phase 2.5
+ * Source of truth: spec/tdd.md §12B (Skill Formation), Phase 2.5
  */
 
 export const SKILL_SCHEMA_SQL = `

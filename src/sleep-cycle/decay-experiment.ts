@@ -4,7 +4,7 @@
  * Runs side-by-side for `evaluationThreshold` cycles, then locks in the winner
  * based on cumulative pattern survival quality (backtest pass rate under each model).
  *
- * Source of truth: vinyan-implementation-plan.md §PH3.5
+ * Source of truth: design/implementation-plan.md §PH3.5
  */
 
 // ── Types ──────────────────────────────────────────────────────────────

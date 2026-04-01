@@ -2,7 +2,7 @@
  * Orchestrator Factory — wires all dependencies and returns the executeTask function.
  *
  * This is the single entry point for creating a fully-wired orchestrator.
- * Source of truth: vinyan-tdd.md §16 (Core Loop)
+ * Source of truth: spec/tdd.md §16 (Core Loop)
  */
 import { verify as depVerify } from "../oracle/dep/dep-analyzer.ts";
 import { executeTask, type OrchestratorDeps } from "./core-loop.ts";

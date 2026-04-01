@@ -1,7 +1,7 @@
 /**
  * Pattern Store Schema — SQLite tables for Sleep Cycle extracted patterns.
  *
- * Source of truth: vinyan-tdd.md §12B (Sleep Cycle)
+ * Source of truth: spec/tdd.md §12B (Sleep Cycle)
  */
 
 export const PATTERN_SCHEMA_SQL = `

@@ -5,7 +5,7 @@
  * Lifecycle: probation → active → retired.
  * 6 immutable safety invariants enforced on every rule application.
  *
- * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
+ * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
 
 export const RULE_SCHEMA_SQL = `

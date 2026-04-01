@@ -6,7 +6,7 @@
  * 2 data-gated dimensions:
  *   frameworkMarkers (200+ traces), oracleFailurePattern (500+ traces)
  *
- * Source of truth: vinyan-implementation-plan.md §Phase 4.3
+ * Source of truth: design/implementation-plan.md §Phase 4.3
  */
 import type { TaskFingerprint, TaskInput, PerceptualHierarchy, ExecutionTrace } from "./types.ts";
 

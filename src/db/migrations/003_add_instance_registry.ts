@@ -1,7 +1,7 @@
 /**
  * Migration 003 — Instance registry for Phase 5 multi-instance coordination.
  *
- * Source of truth: vinyan-tdd.md §23
+ * Source of truth: spec/tdd.md §23
  */
 import type { Database } from "bun:sqlite";
 import type { Migration } from "./migration-runner.ts";

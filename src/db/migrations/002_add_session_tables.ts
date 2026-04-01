@@ -1,7 +1,7 @@
 /**
  * Migration 002 — Session tables for Phase 5 API Server.
  *
- * Source of truth: vinyan-tdd.md §22.5
+ * Source of truth: spec/tdd.md §22.5
  */
 import type { Database } from "bun:sqlite";
 import type { Migration } from "./migration-runner.ts";

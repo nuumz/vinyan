@@ -4,7 +4,7 @@
  * CRUD for CachedSkill lifecycle: probation → active → demoted.
  * Skills are L0 reflex shortcuts — proven approaches cached for reuse.
  *
- * Source of truth: vinyan-tdd.md §12B (Skill Formation)
+ * Source of truth: spec/tdd.md §12B (Skill Formation)
  */
 import type { Database } from "bun:sqlite";
 import type { CachedSkill } from "../orchestrator/types.ts";

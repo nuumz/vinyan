@@ -4,7 +4,7 @@
  * Computes aggregate statistics from trace, rule, skill, and pattern stores.
  * Used by CLI commands (vinyan status/metrics) and PH3.7 evaluation framework.
  *
- * Source of truth: vinyan-implementation-plan.md §P3.6
+ * Source of truth: design/implementation-plan.md §P3.6
  */
 import type { TraceStore } from "../db/trace-store.ts";
 import type { RuleStore } from "../db/rule-store.ts";

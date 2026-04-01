@@ -1,7 +1,7 @@
 /**
  * Health Check — lightweight system health assessment.
  *
- * Source of truth: vinyan-implementation-plan.md §P3.6
+ * Source of truth: design/implementation-plan.md §P3.6
  */
 import type { OracleCircuitBreaker } from "../oracle/circuit-breaker.ts";
 

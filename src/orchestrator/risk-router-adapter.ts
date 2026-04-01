@@ -4,7 +4,7 @@
  * Implements the RiskRouter interface from core-loop.ts by populating
  * RiskFactors from TaskInput and delegating to Phase 0's pure functions.
  *
- * Source of truth: vinyan-tdd.md §6, §16.2
+ * Source of truth: spec/tdd.md §6, §16.2
  */
 import { existsSync } from "fs";
 import { join, dirname, basename } from "path";

@@ -47,7 +47,7 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
             // Select provider by tier (matching worker-entry.ts logic)
             const provider = request.tier
               ? registry.selectByTier(request.tier)
-              : registry.selectForRoutingLevel(request.routingLevel ?? 1);
+              : registry.selectForRoutingLevel((request.routingLevel ?? 1) as import("../types.ts").RoutingLevel);
 
             if (!provider) {
               const errorResponse: LLMProxyResponse = {

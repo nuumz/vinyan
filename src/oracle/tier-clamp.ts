@@ -7,7 +7,7 @@
  *
  * Applied at verdict intake — before aggregation or storage.
  *
- * Source of truth: vinyan-ecp-spec.md §4.4, vinyan-protocol-architecture.md §3/§6
+ * Source of truth: spec/ecp-spec.md §4.4, architecture/protocol-architecture.md §3/§6
  */
 
 /** ECP spec §4.4: Confidence caps by trust tier. */

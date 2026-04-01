@@ -13,7 +13,7 @@
  * 5. Minimum support: ≥5 observations, ≥3 distinct sessions
  * 6. Exponential decay on pattern weights
  *
- * Source of truth: vinyan-tdd.md §12B (Sleep Cycle Algorithm)
+ * Source of truth: spec/tdd.md §12B (Sleep Cycle Algorithm)
  */
 import type { TraceStore } from "../db/trace-store.ts";
 import type { PatternStore } from "../db/pattern-store.ts";

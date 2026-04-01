@@ -1,6 +1,6 @@
 /**
  * Orchestrator types — Phase 1 foundation.
- * Source of truth: vinyan-tdd.md §2 (L3 interfaces), §16 (Core Loop), §17 (Generator), §18 (Tools)
+ * Source of truth: spec/tdd.md §2 (L3 interfaces), §16 (Core Loop), §17 (Generator), §18 (Tools)
  *
  * These types define the Orchestrator's type system. Phase 0 code does not import these;
  * they exist to enable Phase 1 development without modifying Phase 0 interfaces.

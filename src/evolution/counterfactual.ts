@@ -8,7 +8,7 @@
  * If routing UP consistently produces higher expected quality, generates
  * an adjust-threshold rule to preemptively route higher for that task type.
  *
- * Source of truth: vinyan-implementation-plan.md §PH3.6
+ * Source of truth: design/implementation-plan.md §PH3.6
  */
 import type { ExecutionTrace, EvolutionaryRule, RoutingLevel } from "../orchestrator/types.ts";
 import { wilsonLowerBound } from "../sleep-cycle/wilson.ts";

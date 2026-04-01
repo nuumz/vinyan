@@ -7,7 +7,7 @@
  * Crash-safety invariant (A6): ShadowJob is INSERT'd BEFORE online TaskResult returns.
  * On failure: flag for human review — do NOT auto-revert.
  *
- * Source of truth: vinyan-tdd.md §12B (Shadow Execution), Phase 2.2
+ * Source of truth: spec/tdd.md §12B (Shadow Execution), Phase 2.2
  */
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { resolve, dirname, join } from "path";

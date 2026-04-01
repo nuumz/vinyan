@@ -2,7 +2,7 @@
 
 > **Version:** 1.0-draft | **Date:** 2026-04-01
 > **Context:** Rethink of Vinyan's external interface design. MCP/A2A become bridge layers; ECP becomes the native publishable protocol for the ENS ecosystem.
-> **References:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md), [vinyan-oracle-sdk.md](vinyan-oracle-sdk.md), [vinyan-concept.md](vinyan-concept.md) §2
+> **References:** [ecp-spec.md](../spec/ecp-spec.md), [oracle-sdk.md](../spec/oracle-sdk.md), [concept.md](../foundation/concept.md) §2
 
 ---
 
@@ -21,11 +21,11 @@ Vinyan's current external interfaces treat it as either a **tool** (MCP) or a **
 │  ─── translation + trust degradation ───                 │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 2: ECP Network                                    │
-│  WebSocket transport │ HTTP fallback │ Network envelope   │
+│  WebSocket transport │ HTTP fallback │ Network envelope  │
 │  ─── same ECP semantics, network-aware ───               │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 1: ECP Local                                      │
-│  Stdio transport │ Subprocess lifecycle │ Zod validation  │
+│  Stdio transport │ Subprocess lifecycle │ Zod validation │
 │  ─── current production implementation ───               │
 └──────────────────────────────────────────────────────────┘
 ```

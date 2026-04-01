@@ -9,7 +9,7 @@
  *
  * Lifecycle: probation (10 sessions) → active → demoted
  *
- * Source of truth: vinyan-tdd.md §12B (Skill Formation), Phase 2.5
+ * Source of truth: spec/tdd.md §12B (Skill Formation), Phase 2.5
  */
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";

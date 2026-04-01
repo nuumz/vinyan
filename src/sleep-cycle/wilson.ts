@@ -5,7 +5,7 @@
  * not just noise from small sample sizes. TDD §12B requires Wilson lower bound
  * for anti-pattern (≥0.6) and success pattern (≥0.15) thresholds.
  *
- * Source of truth: vinyan-tdd.md §12B (Sleep Cycle Algorithm)
+ * Source of truth: spec/tdd.md §12B (Sleep Cycle Algorithm)
  */
 
 /**

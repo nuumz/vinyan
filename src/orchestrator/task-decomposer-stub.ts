@@ -3,7 +3,7 @@
  *
  * Fallback when no LLM provider is configured. See TaskDecomposerImpl for the full implementation.
  *
- * Source of truth: vinyan-tdd.md §10 (Task Decomposition), arch D7
+ * Source of truth: spec/tdd.md §10 (Task Decomposition), arch D7
  */
 import type { TaskDecomposer } from "./core-loop.ts";
 import type { TaskInput, PerceptualHierarchy, WorkingMemoryState, TaskDAG } from "./types.ts";

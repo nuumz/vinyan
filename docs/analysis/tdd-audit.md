@@ -1,7 +1,7 @@
 # Vinyan TDD Audit — ENS Design Review
 
 > **Document boundary**: เอกสารนี้เป็นเจ้าของ audit findings + action items สำหรับ TDD
-> สำหรับ TDD spec → [vinyan-tdd.md](vinyan-tdd.md), concept → [vinyan-concept.md](vinyan-concept.md), gap analysis → [vinyan-gap-analysis.md](vinyan-gap-analysis.md)
+> สำหรับ TDD spec → [tdd.md](../spec/tdd.md), concept → [concept.md](../foundation/concept.md), gap analysis → [gap-analysis.md](gap-analysis.md)
 >
 > **Audit date**: March 2026 | **Score: 85/100** | **Status: 🟢 Minor Items Remaining**
 >

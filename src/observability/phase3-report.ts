@@ -5,7 +5,7 @@
  * Computes EvolutionMetrics from all Phase 3 stores, including quality trends,
  * rule effectiveness, skill hit rates, and Phase 4 readiness gate.
  *
- * Source of truth: vinyan-implementation-plan.md §PH3.7
+ * Source of truth: design/implementation-plan.md §PH3.7
  */
 import type { TraceStore } from "../db/trace-store.ts";
 import type { RuleStore } from "../db/rule-store.ts";

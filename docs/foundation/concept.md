@@ -3,9 +3,9 @@ type: concept
 audience: all
 single-source-of-truth-for: Vinyan vision, epistemic nervous system architecture, protocol design
 related:
-  - vinyan-theory.md (theoretical foundations, academic citations)
-  - vinyan-architecture.md (concrete implementation decisions)
-  - vinyan-gap-analysis.md (competitive landscape, gap tracking)
+  - theory.md (theoretical foundations, academic citations)
+  - ../architecture/decisions.md (concrete implementation decisions)
+  - ../analysis/gap-analysis.md (competitive landscape, gap tracking)
 ---
 
 # Vinyan — Epistemic Nervous System for AI Systems
@@ -187,11 +187,11 @@ A Level 0 oracle can be built in 15 lines of any language. This low barrier-to-e
 
 **MCP and A2A are bridge layers, not the primary interface.** External agents that speak MCP or A2A interact with Vinyan through translation bridges that enforce trust degradation (§2.3). ECP-native engines get full epistemic semantics without translation loss.
 
-**Full specification:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md) — message format, epistemic semantics, transport bindings, security model, versioning, conformance levels.
+**Full specification:** [ecp-spec.md](../spec/ecp-spec.md) — message format, epistemic semantics, transport bindings, security model, versioning, conformance levels.
 
-**Oracle SDK:** [vinyan-oracle-sdk.md](vinyan-oracle-sdk.md) — developer guide for building ECP-compatible Reasoning Engines.
+**Oracle SDK:** [oracle-sdk.md](../spec/oracle-sdk.md) — developer guide for building ECP-compatible Reasoning Engines.
 
-**Protocol architecture:** [vinyan-protocol-architecture.md](vinyan-protocol-architecture.md) — transport abstraction, remote oracle pattern, bridge evolution, trust degradation matrix.
+**Protocol architecture:** [protocol-architecture.md](../architecture/protocol-architecture.md) — transport abstraction, remote oracle pattern, bridge evolution, trust degradation matrix.
 
 ---
 
@@ -267,7 +267,7 @@ Tool results are wrapped as ECP evidence with provenance (file path, timestamp, 
 
 To operate autonomously at or above human capacity, an agent must possess contextual awareness and the ability to push back against flawed directives. Vinyan closes the cognitive gap between human developers and AI through four deterministic constraints at Layer 0.
 
-* **PerceptualHierarchy Injection (Perception):** Agents are never deployed "blind." Before execution, the Orchestrator assembles a deterministic `PerceptualHierarchy`—comprising dependency cone (filtered by routing level), linter warnings, type errors, verified facts from World Graph, and runtime context—into the agent's context. Salience is deterministic: dep-oracle traverses the dependency cone from the task target, with depth controlled by routing level (L0-1 shallow, L2-3 deep). The Orchestrator also injects `WorkingMemory` containing failed approaches, active hypotheses, and unresolved uncertainties. See [architecture.md Decision 8](vinyan-architecture.md) for concrete interfaces.
+* **PerceptualHierarchy Injection (Perception):** Agents are never deployed "blind." Before execution, the Orchestrator assembles a deterministic `PerceptualHierarchy`—comprising dependency cone (filtered by routing level), linter warnings, type errors, verified facts from World Graph, and runtime context—into the agent's context. Salience is deterministic: dep-oracle traverses the dependency cone from the task target, with depth controlled by routing level (L0-1 shallow, L2-3 deep). The Orchestrator also injects `WorkingMemory` containing failed approaches, active hypotheses, and unresolved uncertainties. See [architecture.md Decision 8](../architecture/decisions.md) for concrete interfaces.
 * **Architectural Invariants & Epistemic Pushback (Alignment):** Vinyan rejects the LLM “helpfulness bias.” The system is governed by hardcoded architectural rules. If a human prompt or a worker’s sub-task violates these invariants (e.g., bypassing authentication), the Orchestrator outright rejects the intent, forcing a systemic pushback rather than attempting a catastrophic execution.
 * **The Ephemeral REPL Sandbox (Exploration):** Autonomy requires experimentation. Workers can request an isolated, temporary REPL (Read-Eval-Print Loop) environment in memory to test assumptions (e.g., validating an API payload structure) before proposing structural changes.
 * **Multi-Modal Deterministic QA (Evaluation):** Agents are forbidden from evaluating their own success. Quality Gates are enforced exclusively by the Orchestrator via deterministic engineering tools (unit tests, AST validation) and visual regression models for UI changes.
@@ -392,7 +392,7 @@ The Self-Model monitors execution state for simple signals:
 - **"Is this too hard?"** → risk score exceeds routing level threshold → escalate routing level (§8)
 - **"Should I ask for help?"** → prediction confidence below minimum + budget near limit → human escalation with context package
 
-> **Scope note:** This is pattern-matching on execution traces, not metacognition. Full metacognitive monitoring (learning which task types need which execution level) is a Phase 2+ research question. **However, Self-Model is a Phase 1 deliverable** with concrete interfaces in [architecture.md Decision 11](vinyan-architecture.md). Phase 1 prediction accuracy is ~50-60% with static heuristic rules — the value is in starting the calibration loop early, not in accurate initial predictions.
+> **Scope note:** This is pattern-matching on execution traces, not metacognition. Full metacognitive monitoring (learning which task types need which execution level) is a Phase 2+ research question. **However, Self-Model is a Phase 1 deliverable** with concrete interfaces in [architecture.md Decision 11](../architecture/decisions.md). Phase 1 prediction accuracy is ~50-60% with static heuristic rules — the value is in starting the calibration loop early, not in accurate initial predictions.
 ---
 
 ### 9.4 Working Memory
@@ -406,7 +406,7 @@ Working Memory is maintained by the Orchestrator (not workers) and persists acro
 
 Working Memory turns "retry" into "replan with evidence" — after Oracle rejection, the failed approach is recorded and the lifecycle re-enters at the Plan step (not Generate). After N failures **per routing level** (configurable, default 3), the routing level auto-escalates.
 
-See [architecture.md Decision 8](vinyan-architecture.md) for the concrete `WorkingMemory` interface.
+See [architecture.md Decision 8](../architecture/decisions.md) for the concrete `WorkingMemory` interface.
 ---
 
 ## 10. Evolutionary Governance & Telemetry
@@ -415,10 +415,10 @@ An epistemic nervous system must evolve its fleet and rulesets based on empirica
 
 Evolution in Vinyan operates at **two speeds**: (1) **Fast loop** — real-time in-session learning: the approach blacklist prevents retrying failed strategies within the same task, and outcome records accumulate for later analysis. (2) **Slow loop** — between-session analysis extracts patterns from accumulated traces to generate new rules. This dual-speed design ensures both immediate behavioral adaptation and long-term structural improvement.
 
-> **QualityScore integration**: Evolution Engine consumes **QualityScore** (multi-dimensional quality signal: architectural compliance, efficiency, complexity delta, mutation test score) and **PredictionError** (Self-Model predicted vs actual outcomes) as primary learning signals. Binary pass/fail is necessary but not sufficient for meaningful calibration — without quality signal, the system can only learn "what fails" but never "what succeeds well." See [architecture.md Decision 10](vinyan-architecture.md) for the `QualityScore` interface.
+> **QualityScore integration**: Evolution Engine consumes **QualityScore** (multi-dimensional quality signal: architectural compliance, efficiency, complexity delta, mutation test score) and **PredictionError** (Self-Model predicted vs actual outcomes) as primary learning signals. Binary pass/fail is necessary but not sufficient for meaningful calibration — without quality signal, the system can only learn "what fails" but never "what succeeds well." See [architecture.md Decision 10](../architecture/decisions.md) for the `QualityScore` interface.
 
-* **Rule Consolidation (The Sleep Cycle):** Vinyan does not dump all interactions into a vector database. It logs structural regressions and failures as immutable traces. During asynchronous background cycles, the system analyzes accumulated traces to extract anti-patterns and successful strategies, decaying irrelevant patterns to prevent unbounded knowledge accumulation. The Phase 1 mechanism is frequency-based pattern detection on structured traces (e.g., "approach X fails on task type Y in 80% of cases") — implementable but limited to high-frequency patterns with clear signals. Full pattern mining that distinguishes signal from noise across diverse task types is a **research problem** (Phase 3+), requiring sufficient data volume (hundreds of tasks minimum), a relevance model for pattern decay, and evaluation methodology for mined rules. Neural replay and counterfactual generation are Phase 3+ research topics explored in [vinyan-theory.md](vinyan-theory.md).
-* **Cached Solution Patterns:** When the same task pattern succeeds repeatedly with the same approach, that approach is cached as a shortcut (populating Level 0 Reflex in §8). This is simple memoization of proven strategies, not hierarchical skill composition or “compression as intelligence” — those are theoretical extensions explored in [vinyan-theory.md](vinyan-theory.md).
+* **Rule Consolidation (The Sleep Cycle):** Vinyan does not dump all interactions into a vector database. It logs structural regressions and failures as immutable traces. During asynchronous background cycles, the system analyzes accumulated traces to extract anti-patterns and successful strategies, decaying irrelevant patterns to prevent unbounded knowledge accumulation. The Phase 1 mechanism is frequency-based pattern detection on structured traces (e.g., "approach X fails on task type Y in 80% of cases") — implementable but limited to high-frequency patterns with clear signals. Full pattern mining that distinguishes signal from noise across diverse task types is a **research problem** (Phase 3+), requiring sufficient data volume (hundreds of tasks minimum), a relevance model for pattern decay, and evaluation methodology for mined rules. Neural replay and counterfactual generation are Phase 3+ research topics explored in [theory.md](theory.md).
+* **Cached Solution Patterns:** When the same task pattern succeeds repeatedly with the same approach, that approach is cached as a shortcut (populating Level 0 Reflex in §8). This is simple memoization of proven strategies, not hierarchical skill composition or “compression as intelligence” — those are theoretical extensions explored in [theory.md](theory.md).
 * **Meritocratic Fleet Governance:** Identity and capability are decoupled. Worker profiles are managed in a flat, concurrent registry. New configurations begin on “Probation” and are promoted to the active roster only after achieving a statistically significant pass rate through deterministic Quality Gates. Underperforming configurations are automatically demoted.
 * **Bounded Self-Modification (Safety Invariants):** The Evolution Engine may modify operational rules (Oracle configurations, risk thresholds, worker configurations, routing models) but **cannot** modify immutable invariants: human escalation triggers, security policies, budget hard limits, minimum test requirements, and rollback capability. This bounded rule adjustment ensures the system can improve without violating safety constraints.
 
@@ -429,7 +429,7 @@ Evolution in Vinyan operates at **two speeds**: (1) **Fast loop** — real-time 
 
 > **Status: Phase 5 design.** Prerequisite: Phase 4 complete, sufficient single-instance maturity (≥2000 traces, ≥30 sleep cycles).
 
-ECP’s design allows multiple Vinyan instances to communicate as peer Reasoning Engines. Each instance registers capabilities in the tiered registry (§3.1); inter-instance communication uses the same ECP semantics as internal communication via the network-aware ECP transport (§2.4). The full inter-instance protocol is specified in [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md).
+ECP’s design allows multiple Vinyan instances to communicate as peer Reasoning Engines. Each instance registers capabilities in the tiered registry (§3.1); inter-instance communication uses the same ECP semantics as internal communication via the network-aware ECP transport (§2.4). The full inter-instance protocol is specified in [a2a-protocol.md](../spec/a2a-protocol.md).
 
 ### 11.1 Coordination Topology
 
@@ -438,7 +438,7 @@ Vinyan uses a **flat peer mesh** — no super-orchestrator, no leader election. 
 ```
 Instance A (frontend specialist)          Instance B (backend specialist)
 ┌──────────────────────────┐              ┌──────────────────────────┐
-│ Local Orchestrator       │◄────ECP────►│ Local Orchestrator       │
+│ Local Orchestrator       │◄────ECP─────►│ Local Orchestrator       │
 │ Local Oracles            │  Network     │ Local Oracles            │
 │ Local World Graph        │  Transport   │ Local World Graph        │
 │ Local Self-Model         │  (§2.4)      │ Local Self-Model         │
@@ -568,7 +568,7 @@ Instance A                          Instance B
 | **2** | Multi-Worker Isolation + Skill Formation | OS-level processes / containers + Shadow Execution + **Pattern-based optimization** (Sleep Cycle extracts failure patterns from traces → threshold adjustments + Level 0 skill cache with probation/promotion). Realistic expectation: 2–3 high-frequency anti-patterns from first 200 tasks. | A3, A6 (hardened) |
 | **3** | Full Self-Improvement | Sleep Cycle (full pattern mining + counterfactual generation) + trace-calibrated Self-Model (replaces static heuristics) + bounded rule modification. **Research-grade** — depends on data volume and evaluation methodology. | A7 (full loop) |
 | **4** | Fleet Governance | Meritocratic worker profiles + capability-based routing | All axioms at scale |
-| **5** | Complete ENS | Full Epistemic Nervous System: standalone platform (API server, terminal UI, web dashboard, VS Code extension), multi-instance coordination via ECP network transport (§2.4, §2.5, §11), cross-language oracle support (Python/Go/Rust), **ECP as publishable protocol standard** ([vinyan-ecp-spec.md](vinyan-ecp-spec.md)), Oracle SDK for external developers ([vinyan-oracle-sdk.md](vinyan-oracle-sdk.md)), A2A + MCP protocol bridges as Layer 3 ([vinyan-protocol-architecture.md](vinyan-protocol-architecture.md)). See [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md). | All axioms at platform scale |
+| **5** | Complete ENS | Full Epistemic Nervous System: standalone platform (API server, terminal UI, web dashboard, VS Code extension), multi-instance coordination via ECP network transport (§2.4, §2.5, §11), cross-language oracle support (Python/Go/Rust), **ECP as publishable protocol standard** ([ecp-spec.md](../spec/ecp-spec.md)), Oracle SDK for external developers ([oracle-sdk.md](../spec/oracle-sdk.md)), A2A + MCP protocol bridges as Layer 3 ([protocol-architecture.md](../architecture/protocol-architecture.md)). See [a2a-protocol.md](../spec/a2a-protocol.md). | All axioms at platform scale |
 
 ### 12.1 Phase 0 — Oracle Gate MVP (Concrete Specification)
 
@@ -659,4 +659,4 @@ Vinyan is an **Epistemic Nervous System** — a neuro-symbolic substrate where L
 
 The path forward is Phase 0 (§12.1): prove the foundational hypothesis with 5 concrete deliverables and a measurable outcome. Everything else follows — or doesn't — based on that evidence.
 
-> **See also:** [vinyan-theory.md](vinyan-theory.md) for deep theoretical foundations (6 LLM deadlocks, 10 theoretical foundations including GWT, Active Inference, Predictive Processing), the proposed 8-layer bidirectional cognitive architecture with Global Workspace, and full academic citations.
+> **See also:** [theory.md](theory.md) for deep theoretical foundations (6 LLM deadlocks, 10 theoretical foundations including GWT, Active Inference, Predictive Processing), the proposed 8-layer bidirectional cognitive architecture with Global Workspace, and full academic citations.

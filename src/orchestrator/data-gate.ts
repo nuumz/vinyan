@@ -5,7 +5,7 @@
  * Phase 2 features (Sleep Cycle, Evolution Engine) activate only when
  * enough trace data has been accumulated.
  *
- * Source of truth: vinyan-tdd.md §12B (Data Gates)
+ * Source of truth: spec/tdd.md §12B (Data Gates)
  */
 import type { DataGate, DataGateMetric } from "./types.ts";
 

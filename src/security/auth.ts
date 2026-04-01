@@ -4,7 +4,7 @@
  * I15: API authentication mandatory for mutations.
  * Read-only endpoints may operate without auth.
  *
- * Source of truth: vinyan-tdd.md §22.6, safety invariant I15
+ * Source of truth: spec/tdd.md §22.6, safety invariant I15
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";

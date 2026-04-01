@@ -1,6 +1,6 @@
 /**
  * Built-in tools — 8 core tools for file I/O, search, shell, and VCS.
- * Source of truth: vinyan-tdd.md §18.1
+ * Source of truth: spec/tdd.md §18.1
  */
 import { readFileSync, writeFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";

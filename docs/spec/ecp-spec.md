@@ -1,7 +1,7 @@
 # Epistemic Communication Protocol (ECP) Specification
 
 > **Version:** 1.0-draft | **Date:** 2026-04-01 | **Status:** Draft
-> **Source of truth:** [vinyan-concept.md](vinyan-concept.md) §2, [vinyan-tdd.md](vinyan-tdd.md), [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md)
+> **Source of truth:** [concept.md](../foundation/concept.md) §2, [tdd.md](tdd.md), [a2a-protocol.md](a2a-protocol.md)
 > **Normative schemas:** `src/oracle/protocol.ts` (Zod — exports `HypothesisTupleSchema`, `EvidenceSchema`, `QualityScoreSchema`, `OracleVerdictSchema`; `DeliberationRequestSchema` and `TemporalContextSchema` are defined but not yet exported), `src/core/types.ts` (TypeScript interfaces)
 
 ---
@@ -956,7 +956,7 @@ Orchestrator                              Security Scanner (remote)
 
 ## Appendix D: Known Limitations (Expert Review, April 2026)
 
-> Source: [vinyan-expert-review.md](vinyan-expert-review.md) — protocol-specific findings from expert panel review.
+> Source: [expert-review.md](../analysis/expert-review.md) — protocol-specific findings from expert panel review.
 
 ### D.1 Spec-Implementation Gap
 
@@ -968,7 +968,7 @@ Orchestrator                              Security Scanner (remote)
 1. **(Recommended)** Amend Level 0 conformance (§11) to explicitly define raw-JSON-over-stdio as a valid Level 0 transport. JSON-RPC 2.0 framing becomes mandatory at Level 1+. This is honest and does not break backward compatibility with existing oracles.
 2. Update the oracle runner to use JSON-RPC 2.0 framing, requiring all existing oracle implementations to add envelope fields.
 
-**Status:** Open — see [TDD §15](vinyan-tdd.md) for related open questions.
+**Status:** Open — see [TDD §15](tdd.md) for related open questions.
 
 ### D.2 Confidence Conflation
 
@@ -985,7 +985,7 @@ tier_reliability: number;   // Set by Orchestrator from engine registration. Det
 engine_certainty: number;   // Reported by engine. Its own assessment of this specific verdict.
 ```
 
-**Status:** Open — breaking protocol change. Requires careful migration path. See [TDD §15 Q16](vinyan-tdd.md).
+**Status:** Open — breaking protocol change. Requires careful migration path. See [TDD §15 Q16](tdd.md).
 
 ### D.3 `falsifiable_by` Lacks Formal Grammar
 
@@ -1002,7 +1002,7 @@ interface FalsifiabilityCondition {
 
 This makes `falsifiable_by` machine-parseable and enables automated re-verification triggers and cross-instance cascade invalidation.
 
-**Status:** Open — see [TDD §15 Q15](vinyan-tdd.md).
+**Status:** Open — see [TDD §15 Q15](tdd.md).
 
 ### D.4 Missing Deliberation Response
 

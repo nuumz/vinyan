@@ -4,7 +4,7 @@
  * Best-effort file writes (swallows errors). Provides event-sourced audit trail
  * for post-mortem debugging and future Sleep Cycle queries.
  *
- * Source of truth: vinyan-tdd.md §1C.4
+ * Source of truth: spec/tdd.md §1C.4
  */
 import { appendFileSync, mkdirSync } from "fs";
 import { dirname } from "path";

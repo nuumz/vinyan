@@ -2,7 +2,7 @@
  * SQLite schema for ExecutionTrace persistence.
  *
  * Denormalized QualityScore columns for efficient Sleep Cycle queries.
- * Source of truth: vinyan-tdd.md §12B, implementation-plan.md §2.3
+ * Source of truth: spec/tdd.md §12B, implementation-plan.md §2.3
  */
 
 export const TRACE_SCHEMA_SQL = `

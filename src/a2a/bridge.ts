@@ -8,11 +8,11 @@
  * - I13: Remote verdict confidence ceiling at 0.5
  * - A5: Tiered trust — remote = "uncertain" (lowest tier)
  */
-import type { TaskInput, TaskResult } from "../orchestrator/types.ts";
-import { A2AJsonRpcRequestSchema } from "./types.ts";
-import type { A2ATask, A2AJsonRpcResponse } from "./types.ts";
-import { injectA2AConfidence } from "./confidence-injector.ts";
-import { generateAgentCard } from "./agent-card.ts";
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import { generateAgentCard } from './agent-card.ts';
+import { injectA2AConfidence } from './confidence-injector.ts';
+import type { A2AJsonRpcResponse, A2ATask } from './types.ts';
+import { A2AJsonRpcRequestSchema } from './types.ts';
 
 export interface A2ABridgeDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
@@ -30,11 +30,11 @@ export class A2ABridge {
     const parsed = A2AJsonRpcRequestSchema.safeParse(request);
     if (!parsed.success) {
       return {
-        jsonrpc: "2.0",
-        id: (request as Record<string, unknown>)?.id as string | number ?? 0,
+        jsonrpc: '2.0',
+        id: ((request as Record<string, unknown>)?.id as string | number) ?? 0,
         error: {
           code: -32600,
-          message: "Invalid Request",
+          message: 'Invalid Request',
           data: parsed.error.issues,
         },
       };
@@ -43,44 +43,42 @@ export class A2ABridge {
     const { id, method, params } = parsed.data;
 
     switch (method) {
-      case "tasks/send":
+      case 'tasks/send':
         return this.handleTaskSend(id, params);
-      case "tasks/get":
+      case 'tasks/get':
         return this.handleTaskGet(id, params);
-      case "tasks/cancel":
+      case 'tasks/cancel':
         return this.handleTaskCancel(id, params);
     }
   }
 
   /** Map A2A tasks/send to Vinyan TaskInput, execute, return A2A Task artifact */
-  private async handleTaskSend(
-    id: string | number,
-    params: Record<string, unknown>,
-  ): Promise<A2AJsonRpcResponse> {
+  private async handleTaskSend(id: string | number, params: Record<string, unknown>): Promise<A2AJsonRpcResponse> {
     // Extract goal from A2A message parts
     const message = params.message as { parts?: Array<{ text?: string }> } | undefined;
-    const goal = message?.parts
-      ?.map((p) => p.text)
-      .filter(Boolean)
-      .join("\n") ?? "";
+    const goal =
+      message?.parts
+        ?.map((p) => p.text)
+        .filter(Boolean)
+        .join('\n') ?? '';
 
     if (!goal) {
       return {
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id,
         error: {
           code: -32602,
-          message: "Invalid params: message must contain at least one text part",
+          message: 'Invalid params: message must contain at least one text part',
         },
       };
     }
 
-    const taskId = params.id as string ?? crypto.randomUUID();
+    const taskId = (params.id as string) ?? crypto.randomUUID();
 
     // Build TaskInput with source: "a2a" — I12: goes through normal routing
     const taskInput: TaskInput = {
       id: taskId,
-      source: "a2a",
+      source: 'a2a',
       goal,
       budget: {
         maxTokens: 50_000,
@@ -92,7 +90,7 @@ export class A2ABridge {
     // Mark as working
     this.tasks.set(taskId, {
       id: taskId,
-      status: { state: "working" },
+      status: { state: 'working' },
     });
 
     try {
@@ -101,7 +99,7 @@ export class A2ABridge {
       this.tasks.set(taskId, a2aTask);
 
       return {
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id,
         result: a2aTask,
       };
@@ -109,17 +107,17 @@ export class A2ABridge {
       const failedTask: A2ATask = {
         id: taskId,
         status: {
-          state: "failed",
+          state: 'failed',
           message: {
-            role: "agent",
-            parts: [{ type: "text", text: String(err) }],
+            role: 'agent',
+            parts: [{ type: 'text', text: String(err) }],
           },
         },
       };
       this.tasks.set(taskId, failedTask);
 
       return {
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id,
         result: failedTask,
       };
@@ -127,16 +125,13 @@ export class A2ABridge {
   }
 
   /** Return stored task status */
-  private handleTaskGet(
-    id: string | number,
-    params: Record<string, unknown>,
-  ): A2AJsonRpcResponse {
+  private handleTaskGet(id: string | number, params: Record<string, unknown>): A2AJsonRpcResponse {
     const taskId = params.id as string;
     const task = this.tasks.get(taskId);
 
     if (!task) {
       return {
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id,
         error: {
           code: -32602,
@@ -146,23 +141,20 @@ export class A2ABridge {
     }
 
     return {
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id,
       result: task,
     };
   }
 
   /** Cancel a running task */
-  private handleTaskCancel(
-    id: string | number,
-    params: Record<string, unknown>,
-  ): A2AJsonRpcResponse {
+  private handleTaskCancel(id: string | number, params: Record<string, unknown>): A2AJsonRpcResponse {
     const taskId = params.id as string;
     const task = this.tasks.get(taskId);
 
     if (!task) {
       return {
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id,
         error: {
           code: -32602,
@@ -173,12 +165,12 @@ export class A2ABridge {
 
     const cancelledTask: A2ATask = {
       id: taskId,
-      status: { state: "canceled" },
+      status: { state: 'canceled' },
     };
     this.tasks.set(taskId, cancelledTask);
 
     return {
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id,
       result: cancelledTask,
     };
@@ -191,7 +183,7 @@ export class A2ABridge {
 
   /** Map Vinyan TaskResult to A2A Task with artifacts, applying confidence cap */
   private mapResultToA2ATask(taskId: string, result: TaskResult): A2ATask {
-    const state = result.status === "completed" ? "completed" : "failed";
+    const state = result.status === 'completed' ? 'completed' : 'failed';
 
     // Build artifacts from mutations — apply I13 confidence cap on verdicts
     const artifacts = result.mutations.map((m) => {
@@ -205,22 +197,22 @@ export class A2ABridge {
         name: m.file,
         description: `Mutation for ${m.file}`,
         parts: [
-          { type: "text" as const, text: m.diff },
-          { type: "data" as const, data: { oracleVerdicts: cappedVerdicts } },
+          { type: 'text' as const, text: m.diff },
+          { type: 'data' as const, data: { oracleVerdicts: cappedVerdicts } },
         ],
       };
     });
 
     // Add summary artifact
-    const summaryParts: Array<{ type: "text"; text: string }> = [
+    const summaryParts: Array<{ type: 'text'; text: string }> = [
       {
-        type: "text",
+        type: 'text',
         text: `Task ${result.status}. ${result.mutations.length} mutation(s).`,
       },
     ];
 
     if (result.escalationReason) {
-      summaryParts.push({ type: "text", text: `Escalation: ${result.escalationReason}` });
+      summaryParts.push({ type: 'text', text: `Escalation: ${result.escalationReason}` });
     }
 
     return {
@@ -228,14 +220,14 @@ export class A2ABridge {
       status: {
         state,
         message: {
-          role: "agent",
+          role: 'agent',
           parts: summaryParts,
         },
       },
       artifacts: [
         {
-          name: "summary",
-          description: "Task execution summary",
+          name: 'summary',
+          description: 'Task execution summary',
           parts: summaryParts,
         },
         ...artifacts,

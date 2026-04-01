@@ -6,17 +6,11 @@
  *
  * Source of truth: spec/tdd.md §12, arch D11, implementation-plan.md §PH3.2
  */
-import type { Database } from "bun:sqlite";
-import type { SelfModel } from "./core-loop.ts";
-import type {
-  TaskInput,
-  PerceptualHierarchy,
-  SelfModelPrediction,
-  PredictionError,
-  ExecutionTrace,
-} from "./types.ts";
-import type { TraceStore } from "../db/trace-store.ts";
-import type { VinyanBus } from "../core/bus.ts";
+import type { Database } from 'bun:sqlite';
+import type { VinyanBus } from '../core/bus.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { SelfModel } from './core-loop.ts';
+import type { ExecutionTrace, PerceptualHierarchy, PredictionError, SelfModelPrediction, TaskInput } from './types.ts';
 
 const BASE_MS_PER_FILE = 2000;
 
@@ -35,17 +29,17 @@ interface TaskTypeParams {
   failRate: number;
   partialRate: number;
   lastUpdated: number;
-  basis: "static-heuristic" | "hybrid" | "trace-calibrated";
+  basis: 'static-heuristic' | 'hybrid' | 'trace-calibrated';
 }
 
-const DEFAULT_TASK_TYPE_PARAMS: Omit<TaskTypeParams, "taskTypeSignature" | "lastUpdated"> = {
+const DEFAULT_TASK_TYPE_PARAMS: Omit<TaskTypeParams, 'taskTypeSignature' | 'lastUpdated'> = {
   observationCount: 0,
   avgQualityScore: 0.5,
   avgDurationPerFile: BASE_MS_PER_FILE,
   predictionAccuracy: 0.5,
   failRate: 0.0,
   partialRate: 0.1,
-  basis: "static-heuristic",
+  basis: 'static-heuristic',
 };
 
 /**
@@ -72,7 +66,7 @@ export class CalibratedSelfModel implements SelfModel {
   /** Total observation count across all task types. */
   private totalObservations: number = 0;
   /** G3: Sliding window of prediction error directions for miscalibration detection. */
-  private recentBiases: Array<"over" | "under"> = [];
+  private recentBiases: Array<'over' | 'under'> = [];
 
   constructor(options?: { traceStore?: TraceStore; db?: Database; bus?: VinyanBus }) {
     this.traceStore = options?.traceStore;
@@ -83,10 +77,7 @@ export class CalibratedSelfModel implements SelfModel {
     this.totalObservations = this.computeTotalObservations();
   }
 
-  async predict(
-    input: TaskInput,
-    perception: PerceptualHierarchy,
-  ): Promise<SelfModelPrediction> {
+  async predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction> {
     const fileCount = Math.max(1, input.targetFiles?.length ?? 1);
     const taskSig = this.computeTaskSignature(input);
     const params = this.resolveTaskTypeParams(taskSig);
@@ -95,14 +86,11 @@ export class CalibratedSelfModel implements SelfModel {
     // Heuristic predictions enriched with per-task-type data
     const expectedBlastRadius = perception.dependencyCone.transitiveBlastRadius;
     const expectedTestResults = this.predictTestResults(perception, params);
-    const expectedDuration = Math.min(
-      input.budget.maxDurationMs,
-      fileCount * params.avgDurationPerFile,
-    );
+    const expectedDuration = Math.min(input.budget.maxDurationMs, fileCount * params.avgDurationPerFile);
     const expectedQualityScore = params.avgQualityScore;
 
     // Confidence & meta-confidence
-    let confidence = params.predictionAccuracy;
+    const confidence = params.predictionAccuracy;
 
     // S2: Meta-uncertainty — forced < 0.3 when < 10 observations for this task type
     let metaConfidence = Math.min(confidence, obs / 20);
@@ -114,9 +102,9 @@ export class CalibratedSelfModel implements SelfModel {
     metaConfidence = Math.min(metaConfidence, params.predictionAccuracy ** 2);
 
     const uncertainAreas: string[] = [];
-    if (perception.diagnostics.typeErrors.length > 0) uncertainAreas.push("type-errors-present");
-    if (expectedBlastRadius > 5) uncertainAreas.push("high-blast-radius");
-    if (obs < 5) uncertainAreas.push("low-task-type-observations");
+    if (perception.diagnostics.typeErrors.length > 0) uncertainAreas.push('type-errors-present');
+    if (expectedBlastRadius > 5) uncertainAreas.push('high-blast-radius');
+    if (obs < 5) uncertainAreas.push('low-task-type-observations');
 
     // S1: Conservative override — first 50 tasks, suggest L2 minimum
     const forceMinLevel = this.totalObservations < 50 ? 2 : undefined;
@@ -147,9 +135,9 @@ export class CalibratedSelfModel implements SelfModel {
    */
   calibrate(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError {
     const actual = {
-      testResults: (trace.outcome === "success" ? "pass" : "fail") as "pass" | "fail" | "partial",
+      testResults: (trace.outcome === 'success' ? 'pass' : 'fail') as 'pass' | 'fail' | 'partial',
       blastRadius: trace.affected_files.length,
-      duration: trace.duration_ms,
+      duration: trace.durationMs,
       qualityScore: trace.qualityScore?.composite ?? 0.5,
     };
 
@@ -167,10 +155,15 @@ export class CalibratedSelfModel implements SelfModel {
     };
 
     // Load current per-task-type params
-    const taskSig = trace.task_type_signature ?? this.computeTaskSignature({
-      id: trace.taskId, source: "cli", goal: "", targetFiles: trace.affected_files,
-      budget: { maxTokens: 0, maxDurationMs: 0, maxRetries: 0 },
-    });
+    const taskSig =
+      trace.task_type_signature ??
+      this.computeTaskSignature({
+        id: trace.taskId,
+        source: 'cli',
+        goal: '',
+        targetFiles: trace.affected_files,
+        budget: { maxTokens: 0, maxDurationMs: 0, maxRetries: 0 },
+      });
     const params = this.resolveTaskTypeParams(taskSig);
 
     // Adaptive alpha based on this task type's observation count
@@ -186,8 +179,8 @@ export class CalibratedSelfModel implements SelfModel {
     params.predictionAccuracy = ema(params.predictionAccuracy, accuracy, alpha);
 
     // Outcome distribution via EMA
-    const isFail = actual.testResults === "fail" ? 1 : 0;
-    const isPartial = actual.testResults === "partial" ? 1 : 0;
+    const isFail = actual.testResults === 'fail' ? 1 : 0;
+    const isPartial = actual.testResults === 'partial' ? 1 : 0;
     params.failRate = ema(params.failRate, isFail, alpha);
     params.partialRate = ema(params.partialRate, isPartial, alpha);
 
@@ -201,22 +194,23 @@ export class CalibratedSelfModel implements SelfModel {
 
     // G3: Track prediction error direction for systematic miscalibration detection
     const predictionError = error.error.composite;
-    this.recentBiases.push(predictionError > 0 ? "over" : "under");
+    this.recentBiases.push(predictionError > 0 ? 'over' : 'under');
     if (this.recentBiases.length > MISCALIBRATION_WINDOW) {
       this.recentBiases.shift();
     }
 
     if (this.bus && this.recentBiases.length >= MISCALIBRATION_WINDOW) {
-      const overCount = this.recentBiases.filter(b => b === "over").length;
+      const overCount = this.recentBiases.filter((b) => b === 'over').length;
       const underCount = this.recentBiases.length - overCount;
-      const dominantBias = overCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
-        ? "over" as const
-        : underCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
-          ? "under" as const
-          : null;
+      const dominantBias =
+        overCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+          ? ('over' as const)
+          : underCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+            ? ('under' as const)
+            : null;
 
       if (dominantBias) {
-        this.bus.emit("selfmodel:systematic_miscalibration", {
+        this.bus.emit('selfmodel:systematic_miscalibration', {
           taskId: prediction.taskId,
           biasDirection: dominantBias,
           magnitude: Math.abs(overCount / this.recentBiases.length - 0.5),
@@ -285,19 +279,16 @@ export class CalibratedSelfModel implements SelfModel {
 
   // ── Private ────────────────────────────────────────────────────────
 
-  private predictTestResults(
-    perception: PerceptualHierarchy,
-    params: TaskTypeParams,
-  ): "pass" | "fail" | "partial" {
+  private predictTestResults(perception: PerceptualHierarchy, params: TaskTypeParams): 'pass' | 'fail' | 'partial' {
     // PH3.1: Use per-task-type outcome rates when enough data exists
     if (params.observationCount >= 5) {
-      if (params.failRate > 0.5) return "fail";
-      if (params.partialRate > 0.3) return "partial";
-      return "pass";
+      if (params.failRate > 0.5) return 'fail';
+      if (params.partialRate > 0.3) return 'partial';
+      return 'pass';
     }
     // Fallback to heuristic
-    if (perception.diagnostics.typeErrors.length > 0) return "partial";
-    return "pass";
+    if (perception.diagnostics.typeErrors.length > 0) return 'partial';
+    return 'pass';
   }
 
   private computeTaskSignature(input: TaskInput): string {
@@ -309,32 +300,34 @@ export class CalibratedSelfModel implements SelfModel {
 
   private extractActionVerb(goal: string): string {
     const lower = goal.toLowerCase().trim();
-    const verbs = ["refactor", "fix", "add", "remove", "update", "test", "rename", "move", "extract", "inline"];
+    const verbs = ['refactor', 'fix', 'add', 'remove', 'update', 'test', 'rename', 'move', 'extract', 'inline'];
     for (const v of verbs) {
       if (lower.startsWith(v)) return v;
     }
-    return lower.split(/\s+/)[0]?.slice(0, 20) ?? "unknown";
+    return lower.split(/\s+/)[0]?.slice(0, 20) ?? 'unknown';
   }
 
   private extractFileExtensions(files: string[]): string {
-    const exts = new Set(files.map(f => {
-      const dot = f.lastIndexOf(".");
-      return dot >= 0 ? f.slice(dot + 1) : "none";
-    }));
-    return [...exts].sort().join(",") || "none";
+    const exts = new Set(
+      files.map((f) => {
+        const dot = f.lastIndexOf('.');
+        return dot >= 0 ? f.slice(dot + 1) : 'none';
+      }),
+    );
+    return [...exts].sort().join(',') || 'none';
   }
 
   private blastRadiusBucket(fileCount: number): string {
-    if (fileCount <= 1) return "single";
-    if (fileCount <= 3) return "small";
-    if (fileCount <= 10) return "medium";
-    return "large";
+    if (fileCount <= 1) return 'single';
+    if (fileCount <= 3) return 'small';
+    if (fileCount <= 10) return 'medium';
+    return 'large';
   }
 
-  private computeBasis(obs: number, accuracy: number): "static-heuristic" | "hybrid" | "trace-calibrated" {
-    if (obs < 10 || accuracy < 0.4) return "static-heuristic";
-    if (obs < 50 || accuracy < 0.6) return "hybrid";
-    return "trace-calibrated";
+  private computeBasis(obs: number, accuracy: number): 'static-heuristic' | 'hybrid' | 'trace-calibrated' {
+    if (obs < 10 || accuracy < 0.4) return 'static-heuristic';
+    if (obs < 50 || accuracy < 0.6) return 'hybrid';
+    return 'trace-calibrated';
   }
 
   private computeCompositeError(
@@ -342,12 +335,15 @@ export class CalibratedSelfModel implements SelfModel {
     actual: { testResults: string; blastRadius: number; duration: number; qualityScore: number },
   ): number {
     const testMatch = predicted.expectedTestResults === actual.testResults ? 0 : 0.3;
-    const blastDelta = Math.abs(actual.blastRadius - predicted.expectedBlastRadius) /
-      Math.max(1, predicted.expectedBlastRadius);
-    const durationDelta = Math.abs(actual.duration - predicted.expectedDuration) /
-      Math.max(1, predicted.expectedDuration);
+    const blastDelta =
+      Math.abs(actual.blastRadius - predicted.expectedBlastRadius) / Math.max(1, predicted.expectedBlastRadius);
+    const durationDelta =
+      Math.abs(actual.duration - predicted.expectedDuration) / Math.max(1, predicted.expectedDuration);
     const qualityDelta = Math.abs(actual.qualityScore - predicted.expectedQualityScore);
-    return Math.min(1, testMatch * 0.3 + Math.min(1, blastDelta) * 0.2 + Math.min(1, durationDelta) * 0.2 + qualityDelta * 0.3);
+    return Math.min(
+      1,
+      testMatch * 0.3 + Math.min(1, blastDelta) * 0.2 + Math.min(1, durationDelta) * 0.2 + qualityDelta * 0.3,
+    );
   }
 
   // ── SQLite persistence (per-task-type) ────────────────────────────
@@ -366,18 +362,22 @@ export class CalibratedSelfModel implements SelfModel {
         last_updated          INTEGER NOT NULL,
         basis                 TEXT NOT NULL DEFAULT 'static-heuristic'
       )`);
-    } catch { /* table may already exist */ }
+    } catch {
+      /* table may already exist */
+    }
   }
 
   private resolveTaskTypeParams(taskSig: string): TaskTypeParams {
     // Check DB first
     if (this.db) {
       try {
-        const row = this.db.prepare(
-          `SELECT * FROM self_model_params WHERE task_type_signature = ?`,
-        ).get(taskSig) as any;
+        const row = this.db
+          .prepare(`SELECT * FROM self_model_params WHERE task_type_signature = ?`)
+          .get(taskSig) as any;
         if (row) return this.rowToParams(row);
-      } catch { /* fallback */ }
+      } catch {
+        /* fallback */
+      }
     }
 
     // Check in-memory store (for no-DB mode)
@@ -395,7 +395,7 @@ export class CalibratedSelfModel implements SelfModel {
     const allParams = this.getAllTaskTypeParams();
     if (allParams.length === 0) {
       this.globalAvgCache = {
-        taskTypeSignature: "__global__",
+        taskTypeSignature: '__global__',
         ...DEFAULT_TASK_TYPE_PARAMS,
         lastUpdated: Date.now(),
       };
@@ -403,7 +403,11 @@ export class CalibratedSelfModel implements SelfModel {
     }
 
     let totalObs = 0;
-    let wQuality = 0, wDuration = 0, wAccuracy = 0, wFail = 0, wPartial = 0;
+    let wQuality = 0,
+      wDuration = 0,
+      wAccuracy = 0,
+      wFail = 0,
+      wPartial = 0;
     for (const p of allParams) {
       const w = p.observationCount;
       totalObs += w;
@@ -415,7 +419,7 @@ export class CalibratedSelfModel implements SelfModel {
     }
 
     this.globalAvgCache = {
-      taskTypeSignature: "__global__",
+      taskTypeSignature: '__global__',
       observationCount: 0,
       avgQualityScore: totalObs > 0 ? wQuality / totalObs : 0.5,
       avgDurationPerFile: totalObs > 0 ? wDuration / totalObs : BASE_MS_PER_FILE,
@@ -423,7 +427,7 @@ export class CalibratedSelfModel implements SelfModel {
       failRate: totalObs > 0 ? wFail / totalObs : 0.0,
       partialRate: totalObs > 0 ? wPartial / totalObs : 0.1,
       lastUpdated: Date.now(),
-      basis: "static-heuristic",
+      basis: 'static-heuristic',
     };
     return this.globalAvgCache;
   }
@@ -432,8 +436,10 @@ export class CalibratedSelfModel implements SelfModel {
     if (this.db) {
       try {
         const rows = this.db.prepare(`SELECT * FROM self_model_params`).all() as any[];
-        return rows.map(r => this.rowToParams(r));
-      } catch { /* fallback to memStore */ }
+        return rows.map((r) => this.rowToParams(r));
+      } catch {
+        /* fallback to memStore */
+      }
     }
     return [...this.memStore.values()];
   }
@@ -458,31 +464,35 @@ export class CalibratedSelfModel implements SelfModel {
 
     if (!this.db) return;
     try {
-      this.db.prepare(`
+      this.db
+        .prepare(`
         INSERT OR REPLACE INTO self_model_params
           (task_type_signature, observation_count, avg_quality_score, avg_duration_per_file,
            prediction_accuracy, fail_rate, partial_rate, last_updated, basis)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        params.taskTypeSignature,
-        params.observationCount,
-        params.avgQualityScore,
-        params.avgDurationPerFile,
-        params.predictionAccuracy,
-        params.failRate,
-        params.partialRate,
-        params.lastUpdated,
-        params.basis,
-      );
-    } catch { /* persistence is best-effort */ }
+      `)
+        .run(
+          params.taskTypeSignature,
+          params.observationCount,
+          params.avgQualityScore,
+          params.avgDurationPerFile,
+          params.predictionAccuracy,
+          params.failRate,
+          params.partialRate,
+          params.lastUpdated,
+          params.basis,
+        );
+    } catch {
+      /* persistence is best-effort */
+    }
   }
 
   private computeTotalObservations(): number {
     if (!this.db) return 0;
     try {
-      const row = this.db.prepare(
-        `SELECT COALESCE(SUM(observation_count), 0) as total FROM self_model_params`,
-      ).get() as { total: number } | null;
+      const row = this.db
+        .prepare(`SELECT COALESCE(SUM(observation_count), 0) as total FROM self_model_params`)
+        .get() as { total: number } | null;
       return row?.total ?? 0;
     } catch {
       return 0;
@@ -493,9 +503,9 @@ export class CalibratedSelfModel implements SelfModel {
   private migrateFromOldBlob(): void {
     if (!this.db) return;
     try {
-      const row = this.db.prepare(
-        `SELECT value FROM model_parameters WHERE key = 'self_model_params'`,
-      ).get() as { value: string } | null;
+      const row = this.db.prepare(`SELECT value FROM model_parameters WHERE key = 'self_model_params'`).get() as {
+        value: string;
+      } | null;
       if (!row) return;
 
       const old = JSON.parse(row.value) as {

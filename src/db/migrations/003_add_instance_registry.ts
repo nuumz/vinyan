@@ -3,12 +3,12 @@
  *
  * Source of truth: spec/tdd.md §23
  */
-import type { Database } from "bun:sqlite";
-import type { Migration } from "./migration-runner.ts";
+import type { Database } from 'bun:sqlite';
+import type { Migration } from './migration-runner.ts';
 
 export const migration003: Migration = {
   version: 3,
-  description: "Add instance_registry for multi-instance coordination",
+  description: 'Add instance_registry for multi-instance coordination',
   up(db: Database) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS instance_registry (
@@ -16,7 +16,7 @@ export const migration003: Migration = {
         public_key  TEXT NOT NULL,
         endpoint    TEXT,
         trust_level TEXT NOT NULL DEFAULT 'untrusted'
-                    CHECK(trust_level IN ('untrusted', 'semi-trusted', 'trusted')),
+                    CHECK(trust_level IN ('untrusted', 'provisional', 'established', 'trusted')),
         capabilities_json TEXT,
         health_json TEXT,
         verdicts_requested INTEGER NOT NULL DEFAULT 0,

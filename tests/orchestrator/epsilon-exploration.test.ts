@@ -1,63 +1,101 @@
-import { describe, test, expect } from "bun:test";
-import { computeQualityImpact } from "../../src/evolution/backtester.ts";
-import type { ExecutionTrace, EvolutionaryRule } from "../../src/orchestrator/types.ts";
+import { describe, expect, test } from 'bun:test';
+import { computeQualityImpact } from '../../src/evolution/backtester.ts';
+import type { EvolutionaryRule, ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
   return {
     id: `t-${Math.random().toString(36).slice(2)}`,
-    taskId: "task-1",
+    taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    approach: "default",
+    approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: "gpt-4o",
+    model_used: 'gpt-4o',
     tokens_consumed: 100,
-    duration_ms: 500,
-    outcome: "success",
-    affected_files: ["auth.ts"],
+    durationMs: 500,
+    outcome: 'success',
+    affected_files: ['auth.ts'],
     ...overrides,
   };
 }
 
 function makeRule(overrides?: Partial<EvolutionaryRule>): EvolutionaryRule {
   return {
-    id: "rule-1",
-    source: "sleep-cycle",
-    condition: { file_pattern: "auth.ts" },
-    action: "escalate",
+    id: 'rule-1',
+    source: 'sleep-cycle',
+    condition: { filePattern: 'auth.ts' },
+    action: 'escalate',
     parameters: { toLevel: 2 },
-    status: "probation",
-    created_at: Date.now(),
+    status: 'probation',
+    createdAt: Date.now(),
     effectiveness: 0,
     specificity: 1,
     ...overrides,
   };
 }
 
-describe("PH3.6: Epsilon Exploration & Quality Impact", () => {
-  describe("exploration flag on ExecutionTrace", () => {
-    test("exploration field is optional and defaults to undefined", () => {
+describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
+  describe('exploration flag on ExecutionTrace', () => {
+    test('exploration field is optional and defaults to undefined', () => {
       const trace = makeTrace();
       expect(trace.exploration).toBeUndefined();
     });
 
-    test("exploration field can be set to true", () => {
+    test('exploration field can be set to true', () => {
       const trace = makeTrace({ exploration: true });
       expect(trace.exploration).toBe(true);
     });
   });
 
-  describe("computeQualityImpact", () => {
-    test("positive impact when rule targets tasks that improve at higher level", () => {
+  describe('computeQualityImpact', () => {
+    test('positive impact when rule targets tasks that improve at higher level', () => {
       const rule = makeRule({ parameters: { toLevel: 2 } });
 
       const traces = [
         // Matching traces at L1 with low quality
-        makeTrace({ routingLevel: 1, qualityScore: { composite: 0.4, architecturalCompliance: 0.4, efficiency: 0.4, dimensions_available: 2, phase: "phase0" } }),
-        makeTrace({ routingLevel: 1, qualityScore: { composite: 0.5, architecturalCompliance: 0.5, efficiency: 0.5, dimensions_available: 2, phase: "phase0" } }),
+        makeTrace({
+          routingLevel: 1,
+          qualityScore: {
+            composite: 0.4,
+            architecturalCompliance: 0.4,
+            efficiency: 0.4,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
+        makeTrace({
+          routingLevel: 1,
+          qualityScore: {
+            composite: 0.5,
+            architecturalCompliance: 0.5,
+            efficiency: 0.5,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
         // Non-matching traces at L2 with high quality (proxy for "after")
-        makeTrace({ routingLevel: 2, affected_files: ["other.ts"], qualityScore: { composite: 0.9, architecturalCompliance: 0.9, efficiency: 0.9, dimensions_available: 2, phase: "phase0" } }),
-        makeTrace({ routingLevel: 2, affected_files: ["other.ts"], qualityScore: { composite: 0.85, architecturalCompliance: 0.85, efficiency: 0.85, dimensions_available: 2, phase: "phase0" } }),
+        makeTrace({
+          routingLevel: 2,
+          affected_files: ['other.ts'],
+          qualityScore: {
+            composite: 0.9,
+            architecturalCompliance: 0.9,
+            efficiency: 0.9,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
+        makeTrace({
+          routingLevel: 2,
+          affected_files: ['other.ts'],
+          qualityScore: {
+            composite: 0.85,
+            architecturalCompliance: 0.85,
+            efficiency: 0.85,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
       ];
 
       const result = computeQualityImpact(rule, traces);
@@ -66,18 +104,26 @@ describe("PH3.6: Epsilon Exploration & Quality Impact", () => {
       expect(result.impact).toBeGreaterThan(0);
     });
 
-    test("returns zero impact when no matching traces", () => {
-      const rule = makeRule({ condition: { file_pattern: "nonexistent.ts" } });
+    test('returns zero impact when no matching traces', () => {
+      const rule = makeRule({ condition: { filePattern: 'nonexistent.ts' } });
       const traces = [makeTrace()];
 
       const result = computeQualityImpact(rule, traces);
       expect(result.impact).toBe(0);
     });
 
-    test("uses matching avg as fallback when no target level data", () => {
+    test('uses matching avg as fallback when no target level data', () => {
       const rule = makeRule({ parameters: { toLevel: 3 } });
       const traces = [
-        makeTrace({ qualityScore: { composite: 0.6, architecturalCompliance: 0.6, efficiency: 0.6, dimensions_available: 2, phase: "phase0" } }),
+        makeTrace({
+          qualityScore: {
+            composite: 0.6,
+            architecturalCompliance: 0.6,
+            efficiency: 0.6,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
       ];
 
       const result = computeQualityImpact(rule, traces);
@@ -86,12 +132,9 @@ describe("PH3.6: Epsilon Exploration & Quality Impact", () => {
       expect(result.impact).toBeCloseTo(0, 2);
     });
 
-    test("handles traces without quality scores", () => {
+    test('handles traces without quality scores', () => {
       const rule = makeRule();
-      const traces = [
-        makeTrace({ qualityScore: undefined }),
-        makeTrace({ qualityScore: undefined }),
-      ];
+      const traces = [makeTrace({ qualityScore: undefined }), makeTrace({ qualityScore: undefined })];
 
       const result = computeQualityImpact(rule, traces);
       expect(result.impact).toBe(0);

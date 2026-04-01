@@ -6,15 +6,11 @@
  *
  * Source of truth: Plan Phase C2
  */
-import type { OracleVerdict, Evidence } from "../core/types.ts";
-import { buildVerdict } from "../core/index.ts";
-import {
-  type ECPDataPart,
-  type ECPMessageType,
-  ECPDataPartSchema,
-  ECP_MIME_TYPE,
-} from "./ecp-data-part.ts";
-import { clampFull, type PeerTrustLevel } from "../oracle/tier-clamp.ts";
+
+import { buildVerdict } from '../core/index.ts';
+import type { Evidence, OracleVerdict } from '../core/types.ts';
+import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
+import { ECP_MIME_TYPE, type ECPDataPart, ECPDataPartSchema, type ECPMessageType } from './ecp-data-part.ts';
 
 /**
  * Convert an OracleVerdict to an ECP data part for A2A transmission.
@@ -22,7 +18,7 @@ import { clampFull, type PeerTrustLevel } from "../oracle/tier-clamp.ts";
  */
 export function verdictToECPDataPart(
   verdict: OracleVerdict,
-  messageType: ECPMessageType = "respond",
+  messageType: ECPMessageType = 'respond',
   options: {
     conversationId?: string;
     instanceId?: string;
@@ -35,12 +31,17 @@ export function verdictToECPDataPart(
     epistemic_type: verdict.type,
     confidence: verdict.confidence,
     confidence_reported: true,
-    evidence: verdict.evidence,
-    falsifiable_by: verdict.falsifiable_by?.[0],
-    temporal_context: verdict.temporal_context
+    evidence: verdict.evidence?.map((e) => ({
+      file: e.file,
+      line: e.line,
+      snippet: e.snippet,
+      content_hash: e.contentHash,
+    })),
+    falsifiable_by: verdict.falsifiableBy?.[0],
+    temporal_context: verdict.temporalContext
       ? {
-          valid_from: verdict.temporal_context.valid_from,
-          ttl_ms: verdict.temporal_context.valid_until - verdict.temporal_context.valid_from,
+          valid_from: verdict.temporalContext.validFrom,
+          ttl_ms: verdict.temporalContext.validUntil - verdict.temporalContext.validFrom,
         }
       : undefined,
     conversation_id: options.conversationId,
@@ -49,12 +50,10 @@ export function verdictToECPDataPart(
       oracleName: verdict.oracleName,
       reason: verdict.reason,
       fileHashes: verdict.fileHashes,
-      duration_ms: verdict.duration_ms,
+      duration_ms: verdict.durationMs,
       errorCode: verdict.errorCode,
     },
-    signer: options.instanceId
-      ? { instance_id: options.instanceId, public_key: options.publicKey ?? "" }
-      : undefined,
+    signer: options.instanceId ? { instance_id: options.instanceId, public_key: options.publicKey ?? '' } : undefined,
   };
 }
 
@@ -62,44 +61,39 @@ export function verdictToECPDataPart(
  * Convert an ECP data part from A2A to an OracleVerdict.
  * Applies peer trust clamping — remote verdicts are always "uncertain" (A5).
  */
-export function ecpDataPartToVerdict(
-  dataPart: ECPDataPart,
-  peerTrust: PeerTrustLevel = "untrusted",
-): OracleVerdict {
+export function ecpDataPartToVerdict(dataPart: ECPDataPart, peerTrust: PeerTrustLevel = 'untrusted'): OracleVerdict {
   const payload = dataPart.payload as Record<string, unknown> | undefined;
 
-  const rawConfidence = dataPart.confidence_reported
-    ? dataPart.confidence
-    : 0;
+  const rawConfidence = dataPart.confidence_reported ? dataPart.confidence : 0;
 
   // Apply canonical clamping: transport=a2a + peer trust
-  const clampedConfidence = clampFull(rawConfidence, undefined, "a2a", peerTrust);
+  const clampedConfidence = clampFull(rawConfidence, undefined, 'a2a', peerTrust);
 
-  const evidence: Evidence[] = (dataPart.evidence ?? []).map(e => ({
+  const evidence: Evidence[] = (dataPart.evidence ?? []).map((e) => ({
     file: e.file,
     line: e.line,
     snippet: e.snippet,
-    contentHash: e.contentHash,
+    contentHash: e.content_hash,
   }));
 
   return buildVerdict({
-    verified: payload?.verified as boolean ?? false,
-    type: "uncertain", // A5: remote sources never get 'known'
+    verified: (payload?.verified as boolean) ?? false,
+    type: 'uncertain', // A5: remote sources never get 'known'
     confidence: clampedConfidence,
-    confidence_reported: dataPart.confidence_reported,
+    confidenceReported: dataPart.confidence_reported,
     evidence,
     fileHashes: (payload?.fileHashes as Record<string, string>) ?? {},
     reason: payload?.reason as string | undefined,
     oracleName: payload?.oracleName as string | undefined,
-    duration_ms: (payload?.duration_ms as number) ?? 0,
-    errorCode: payload?.errorCode as OracleVerdict["errorCode"],
-    origin: "a2a",
-    falsifiable_by: dataPart.falsifiable_by ? [dataPart.falsifiable_by] : undefined,
-    temporal_context: dataPart.temporal_context
+    durationMs: (payload?.duration_ms as number) ?? 0,
+    errorCode: payload?.errorCode as OracleVerdict['errorCode'],
+    origin: 'a2a',
+    falsifiableBy: dataPart.falsifiable_by ? [dataPart.falsifiable_by] : undefined,
+    temporalContext: dataPart.temporal_context
       ? {
-          valid_from: dataPart.temporal_context.valid_from,
-          valid_until: dataPart.temporal_context.valid_from + dataPart.temporal_context.ttl_ms,
-          decay_model: "none" as const,
+          validFrom: dataPart.temporal_context.valid_from,
+          validUntil: dataPart.temporal_context.valid_from + dataPart.temporal_context.ttl_ms,
+          decayModel: 'none' as const,
         }
       : undefined,
   });
@@ -109,12 +103,12 @@ export function ecpDataPartToVerdict(
  * Wrap an ECP data part into an A2A message part.
  */
 export function wrapAsA2ADataPart(ecpDataPart: ECPDataPart): {
-  type: "data";
+  type: 'data';
   mimeType: string;
   data: Record<string, unknown>;
 } {
   return {
-    type: "data",
+    type: 'data',
     mimeType: ECP_MIME_TYPE,
     data: ecpDataPart as unknown as Record<string, unknown>,
   };
@@ -124,12 +118,8 @@ export function wrapAsA2ADataPart(ecpDataPart: ECPDataPart): {
  * Extract and validate an ECP data part from an A2A message part.
  * Returns null if the part is not an ECP data part or fails validation.
  */
-export function extractECPFromA2APart(part: {
-  type?: string;
-  mimeType?: string;
-  data?: unknown;
-}): ECPDataPart | null {
-  if (part.type !== "data" || part.mimeType !== ECP_MIME_TYPE || !part.data) {
+export function extractECPFromA2APart(part: { type?: string; mimeType?: string; data?: unknown }): ECPDataPart | null {
+  if (part.type !== 'data' || part.mimeType !== ECP_MIME_TYPE || !part.data) {
     return null;
   }
   const result = ECPDataPartSchema.safeParse(part.data);

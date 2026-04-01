@@ -6,32 +6,30 @@
  *
  * Runner detection: bun.lock → bun test, vitest.config → vitest, pyproject.toml → pytest.
  */
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
-import { existsSync } from "fs";
-import { join, basename, dirname, relative } from "path";
+
+import { existsSync } from 'fs';
+import { basename, dirname, join, relative } from 'path';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
 
 /** Detect test runner from workspace markers. */
 function detectTestRunner(workspace: string): { cmd: string; args: string[] } {
-  if (existsSync(join(workspace, "bun.lockb")) || existsSync(join(workspace, "bun.lock"))) {
-    return { cmd: "bun", args: ["test"] };
+  if (existsSync(join(workspace, 'bun.lockb')) || existsSync(join(workspace, 'bun.lock'))) {
+    return { cmd: 'bun', args: ['test'] };
   }
-  if (
-    existsSync(join(workspace, "vitest.config.ts")) ||
-    existsSync(join(workspace, "vitest.config.js"))
-  ) {
-    return { cmd: "npx", args: ["vitest", "run"] };
+  if (existsSync(join(workspace, 'vitest.config.ts')) || existsSync(join(workspace, 'vitest.config.js'))) {
+    return { cmd: 'npx', args: ['vitest', 'run'] };
   }
-  if (existsSync(join(workspace, "pyproject.toml")) || existsSync(join(workspace, "pytest.ini"))) {
-    return { cmd: "python", args: ["-m", "pytest"] };
+  if (existsSync(join(workspace, 'pyproject.toml')) || existsSync(join(workspace, 'pytest.ini'))) {
+    return { cmd: 'python', args: ['-m', 'pytest'] };
   }
   // Default to bun test
-  return { cmd: "bun", args: ["test"] };
+  return { cmd: 'bun', args: ['test'] };
 }
 
 /** Derive likely test file paths from a source file. */
 function deriveTestFiles(target: string, workspace: string): string[] {
-  const name = basename(target).replace(/\.(ts|tsx|js|jsx|py)$/, "");
+  const name = basename(target).replace(/\.(ts|tsx|js|jsx|py)$/, '');
   const dir = dirname(target);
   const candidates = [
     // Colocated: src/foo.test.ts
@@ -39,10 +37,10 @@ function deriveTestFiles(target: string, workspace: string): string[] {
     join(workspace, dir, `${name}.test.tsx`),
     join(workspace, dir, `${name}.spec.ts`),
     // Mirror: tests/foo.test.ts
-    join(workspace, "tests", dir.replace(/^src\/?/, ""), `${name}.test.ts`),
-    join(workspace, "tests", `${name}.test.ts`),
+    join(workspace, 'tests', dir.replace(/^src\/?/, ''), `${name}.test.ts`),
+    join(workspace, 'tests', `${name}.test.ts`),
     // Python
-    join(workspace, "tests", `test_${name}.py`),
+    join(workspace, 'tests', `test_${name}.py`),
     join(workspace, dir, `test_${name}.py`),
   ];
   return candidates.filter((f) => existsSync(f));
@@ -58,12 +56,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   if (testFiles.length === 0) {
     return buildVerdict({
       verified: true,
-      type: "known",
+      type: 'known',
       confidence: 0.5,
       evidence: [],
       fileHashes: {},
       reason: `No test file found for ${target}`,
-      duration_ms: performance.now() - start,
+      durationMs: performance.now() - start,
     });
   }
 
@@ -73,70 +71,70 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   try {
     const proc = Bun.spawn([runner.cmd, ...runner.args, ...relativeTestFiles], {
       cwd: workspace,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
 
     const exitCode = await proc.exited;
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
     const output = stdout + stderr;
-    const duration_ms = performance.now() - start;
+    const durationMs = performance.now() - start;
 
     const evidence: Evidence[] = relativeTestFiles.map((f) => ({
       file: f,
       line: 0,
-      snippet: exitCode === 0 ? "PASS" : output.slice(0, 200),
+      snippet: exitCode === 0 ? 'PASS' : output.slice(0, 200),
     }));
 
     if (exitCode === 0) {
       return buildVerdict({
         verified: true,
-        type: "known",
+        type: 'known',
         confidence: 1.0,
         evidence,
         fileHashes: {},
-        reason: `All tests passed (${relativeTestFiles.join(", ")})`,
-        duration_ms,
+        reason: `All tests passed (${relativeTestFiles.join(', ')})`,
+        durationMs,
       });
     }
 
     return buildVerdict({
       verified: false,
-      type: "known",
+      type: 'known',
       confidence: 1.0,
       evidence,
       fileHashes: {},
       reason: `Tests failed (exit code ${exitCode}): ${output.slice(0, 300)}`,
-      duration_ms,
+      durationMs,
     });
   } catch (err) {
     // A2: ENOENT (runner binary not found) → uncertain, not unknown
     const errMsg = err instanceof Error ? err.message : String(err);
-    const isEnoent = errMsg.includes("ENOENT") || (err as any)?.code === "ENOENT";
+    const isEnoent = errMsg.includes('ENOENT') || (err as any)?.code === 'ENOENT';
 
     if (isEnoent) {
       return buildVerdict({
         verified: false,
-        type: "uncertain",
+        type: 'uncertain',
         confidence: 0.2,
         evidence: [],
         fileHashes: {},
         reason: `Test runner binary not found: ${errMsg}`,
-        errorCode: "ORACLE_CRASH",
-        duration_ms: performance.now() - start,
+        errorCode: 'ORACLE_CRASH',
+        durationMs: performance.now() - start,
       });
     }
 
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Test runner failed: ${errMsg}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: performance.now() - start,
+      errorCode: 'ORACLE_CRASH',
+      durationMs: performance.now() - start,
     });
   }
 }

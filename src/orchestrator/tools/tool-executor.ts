@@ -6,12 +6,12 @@
  *
  * Source of truth: spec/tdd.md §18.1, §18.4
  */
-import { createHash } from "crypto";
-import type { Evidence } from "../../core/types.ts";
-import type { ToolCall, ToolResult } from "../types.ts";
-import type { Tool, ToolContext } from "./tool-interface.ts";
-import { validateToolCall } from "./tool-validator.ts";
-import { BUILT_IN_TOOLS } from "./built-in-tools.ts";
+import { createHash } from 'crypto';
+import type { Evidence } from '../../core/types.ts';
+import type { ToolCall, ToolResult } from '../types.ts';
+import { BUILT_IN_TOOLS } from './built-in-tools.ts';
+import type { Tool, ToolContext } from './tool-interface.ts';
+import { validateToolCall } from './tool-validator.ts';
 
 export class ToolExecutor {
   private tools: Map<string, Tool>;
@@ -25,10 +25,7 @@ export class ToolExecutor {
     }
   }
 
-  async executeProposedTools(
-    calls: ToolCall[],
-    context: ToolContext,
-  ): Promise<ToolResult[]> {
+  async executeProposedTools(calls: ToolCall[], context: ToolContext): Promise<ToolResult[]> {
     const results: ToolResult[] = [];
 
     for (const call of calls) {
@@ -39,9 +36,9 @@ export class ToolExecutor {
         results.push({
           callId: call.id,
           tool: call.tool,
-          status: "denied",
+          status: 'denied',
           error: `Unknown tool: ${call.tool}`,
-          duration_ms: 0,
+          durationMs: 0,
         });
         continue;
       }
@@ -51,19 +48,16 @@ export class ToolExecutor {
         results.push({
           callId: call.id,
           tool: call.tool,
-          status: "denied",
+          status: 'denied',
           error: validation.reason,
-          duration_ms: 0,
+          durationMs: 0,
         });
         continue;
       }
 
-      const result = await tool.execute(
-        { ...call.parameters, _callId: call.id },
-        context,
-      );
+      const result = await tool.execute({ ...call.parameters, callId: call.id }, context);
       result.callId = call.id;
-      result.duration_ms = Math.round(performance.now() - startTime);
+      result.durationMs = Math.round(performance.now() - startTime);
       results.push(result);
     }
 
@@ -93,11 +87,11 @@ export class ToolExecutor {
 
 /** Convert a ToolResult to ECP Evidence with content hash (TDD §18.4). */
 export function toolResultToEvidence(result: ToolResult, call: ToolCall): Evidence {
-  const raw = typeof result.output === "string" ? result.output : JSON.stringify(result.output ?? "");
+  const raw = typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
   return {
-    file: result.evidence?.file ?? (call.parameters.file_path as string) ?? (call.parameters.path as string) ?? "",
+    file: result.evidence?.file ?? (call.parameters.file_path as string) ?? (call.parameters.path as string) ?? '',
     line: result.evidence?.line ?? 0,
     snippet: raw.slice(0, 200),
-    contentHash: result.evidence?.contentHash ?? createHash("sha256").update(raw).digest("hex"),
+    contentHash: result.evidence?.contentHash ?? createHash('sha256').update(raw).digest('hex'),
   };
 }

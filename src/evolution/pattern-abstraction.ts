@@ -7,7 +7,7 @@
  *
  * Source of truth: design/implementation-plan.md §PH4.6
  */
-import type { ExtractedPattern, TaskFingerprint } from "../orchestrator/types.ts";
+import type { ExtractedPattern, TaskFingerprint } from '../orchestrator/types.ts';
 
 export interface AbstractPattern {
   /** Generalized task fingerprint — no project-specific file paths. */
@@ -29,7 +29,7 @@ export interface AbstractPattern {
     complexityRange: string[];
   };
   /** Original pattern type. */
-  type: ExtractedPattern["type"];
+  type: ExtractedPattern['type'];
   /** Original description (generalized). */
   description: string;
   /** Export timestamp. */
@@ -51,10 +51,7 @@ const SUPPORTED_VERSIONS = new Set([1]);
  * Abstract an ExtractedPattern for cross-project transfer.
  * Returns null if the pattern is too project-specific to generalize.
  */
-export function abstractPattern(
-  pattern: ExtractedPattern,
-  projectId: string,
-): AbstractPattern | null {
+export function abstractPattern(pattern: ExtractedPattern, projectId: string): AbstractPattern | null {
   // Must have meaningful confidence and frequency
   if (pattern.confidence < 0.3 || pattern.frequency < 3) return null;
 
@@ -63,7 +60,7 @@ export function abstractPattern(
   if (!fingerprint) return null;
 
   // Generalize approach — strip specific symbol names, file paths
-  const approach = generalizeApproach(pattern.approach ?? "default");
+  const approach = generalizeApproach(pattern.approach ?? 'default');
 
   // Determine applicability conditions
   const languageMarkers = extractLanguageMarkers(fingerprint.fileExtensions);
@@ -103,22 +100,19 @@ export function abstractPattern(
  * Convert an AbstractPattern back to an ExtractedPattern for import.
  * Confidence is reduced by 50% on import. Status is always probation.
  */
-export function importAbstractPattern(
-  abstract: AbstractPattern,
-  targetProjectId: string,
-): ExtractedPattern {
+export function importAbstractPattern(abstract: AbstractPattern, targetProjectId: string): ExtractedPattern {
   const taskTypeSignature = [
     abstract.fingerprint.actionVerb,
-    abstract.fingerprint.fileExtensions.join(","),
+    abstract.fingerprint.fileExtensions.join(','),
     abstract.fingerprint.blastRadiusBucket,
-  ].join("::");
+  ].join('::');
 
   return {
     id: `imported-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     type: abstract.type,
     description: `[imported] ${abstract.description}`,
     frequency: 0,
-    confidence: abstract.confidence * 0.5,  // 50% reduction on import
+    confidence: abstract.confidence * 0.5, // 50% reduction on import
     taskTypeSignature,
     approach: abstract.approach,
     sourceTraceIds: [],
@@ -133,17 +127,11 @@ export function importAbstractPattern(
  * Returns a fraction 0-1. Threshold for import eligibility: ≥ 0.5.
  */
 export function projectSimilarity(
-  sourceConditions: AbstractPattern["applicabilityConditions"],
+  sourceConditions: AbstractPattern['applicabilityConditions'],
   targetMarkers: { frameworks: string[]; languages: string[] },
 ): number {
-  const sourceSet = new Set([
-    ...sourceConditions.frameworkMarkers,
-    ...sourceConditions.languageMarkers,
-  ]);
-  const targetSet = new Set([
-    ...targetMarkers.frameworks,
-    ...targetMarkers.languages,
-  ]);
+  const sourceSet = new Set([...sourceConditions.frameworkMarkers, ...sourceConditions.languageMarkers]);
+  const targetSet = new Set([...targetMarkers.frameworks, ...targetMarkers.languages]);
 
   if (sourceSet.size === 0 && targetSet.size === 0) return 1.0;
   if (sourceSet.size === 0 || targetSet.size === 0) return 0;
@@ -154,7 +142,7 @@ export function projectSimilarity(
   }
 
   const union = new Set([...sourceSet, ...targetSet]).size;
-  return shared / union;  // Jaccard similarity
+  return shared / union; // Jaccard similarity
 }
 
 /**
@@ -163,26 +151,21 @@ export function projectSimilarity(
  * - "framework-specific": has framework markers → check similarity
  * - "project-specific": too specific to transfer
  */
-export function classifyPortability(
-  pattern: AbstractPattern,
-): "universal" | "framework-specific" | "project-specific" {
+export function classifyPortability(pattern: AbstractPattern): 'universal' | 'framework-specific' | 'project-specific' {
   const conditions = pattern.applicabilityConditions;
   if (conditions.frameworkMarkers.length === 0 && conditions.languageMarkers.length > 0) {
-    return "universal";
+    return 'universal';
   }
   if (conditions.frameworkMarkers.length > 0) {
-    return "framework-specific";
+    return 'framework-specific';
   }
-  return "project-specific";
+  return 'project-specific';
 }
 
 /**
  * Export patterns to JSON format.
  */
-export function exportPatterns(
-  patterns: ExtractedPattern[],
-  projectId: string,
-): AbstractPatternExport {
+export function exportPatterns(patterns: ExtractedPattern[], projectId: string): AbstractPatternExport {
   const abstracted: AbstractPattern[] = [];
   for (const p of patterns) {
     const ap = abstractPattern(p, projectId);
@@ -209,7 +192,7 @@ export function importPatterns(
   // Version validation — reject unknown versions (PH5.0)
   if (!SUPPORTED_VERSIONS.has(exported.version)) {
     throw new Error(
-      `Unsupported pattern export version: ${exported.version}. Supported: ${[...SUPPORTED_VERSIONS].join(", ")}`,
+      `Unsupported pattern export version: ${exported.version}. Supported: ${[...SUPPORTED_VERSIONS].join(', ')}`,
     );
   }
 
@@ -229,57 +212,61 @@ export function importPatterns(
 
 /** Parse a fingerprint key back to a TaskFingerprint. */
 function parseFingerprint(taskTypeSignature: string): TaskFingerprint | null {
-  const parts = taskTypeSignature.split("::");
+  const parts = taskTypeSignature.split('::');
   if (parts.length < 2) return null;
 
-  const actionVerb = parts[0] ?? "unknown";
-  const extensionPart = parts[1] ?? "";
-  const blastBucket = parts[2] as TaskFingerprint["blastRadiusBucket"] | undefined;
+  const actionVerb = parts[0] ?? 'unknown';
+  const extensionPart = parts[1] ?? '';
+  const blastBucket = parts[2] as TaskFingerprint['blastRadiusBucket'] | undefined;
 
   const fileExtensions = extensionPart
-    .split(",")
-    .map(e => e.trim())
-    .filter(e => e.length > 0);
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
 
   return {
     actionVerb,
     fileExtensions,
-    blastRadiusBucket: blastBucket ?? "small",
+    blastRadiusBucket: blastBucket ?? 'small',
   };
 }
 
 /** Generalize approach — replace specific identifiers with placeholders. */
 function generalizeApproach(approach: string): string {
-  return approach
-    // Replace specific file paths
-    .replace(/(?:src|lib|app)\/[\w./]+/g, "<path>")
-    // Replace specific function/class names (camelCase/PascalCase)
-    .replace(/\b[A-Z][a-zA-Z0-9]{8,}\b/g, "<Symbol>")
-    // Replace specific variable names that are too long
-    .replace(/\b[a-z][a-zA-Z0-9]{12,}\b/g, "<variable>");
+  return (
+    approach
+      // Replace specific file paths
+      .replace(/(?:src|lib|app)\/[\w./]+/g, '<path>')
+      // Replace specific function/class names (camelCase/PascalCase)
+      .replace(/\b[A-Z][a-zA-Z0-9]{8,}\b/g, '<Symbol>')
+      // Replace specific variable names that are too long
+      .replace(/\b[a-z][a-zA-Z0-9]{12,}\b/g, '<variable>')
+  );
 }
 
 /** Generalize description — same path/symbol stripping. */
 function generalizeDescription(description: string): string {
-  return description
-    .replace(/(?:src|lib|app)\/[\w./]+/g, "<path>")
-    .replace(/"[^"]{20,}"/g, '"<specific>"');
+  return description.replace(/(?:src|lib|app)\/[\w./]+/g, '<path>').replace(/"[^"]{20,}"/g, '"<specific>"');
 }
 
 /** Extract language markers from file extensions. */
 function extractLanguageMarkers(extensions: string[]): string[] {
   const langMap: Record<string, string> = {
-    ".ts": "typescript", ".tsx": "typescript",
-    ".js": "javascript", ".jsx": "javascript",
-    ".py": "python",
-    ".rs": "rust",
-    ".go": "go",
-    ".java": "java",
-    ".rb": "ruby",
-    ".cs": "csharp",
-    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
-    ".swift": "swift",
-    ".kt": "kotlin",
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.js': 'javascript',
+    '.jsx': 'javascript',
+    '.py': 'python',
+    '.rs': 'rust',
+    '.go': 'go',
+    '.java': 'java',
+    '.rb': 'ruby',
+    '.cs': 'csharp',
+    '.cpp': 'cpp',
+    '.cc': 'cpp',
+    '.cxx': 'cpp',
+    '.swift': 'swift',
+    '.kt': 'kotlin',
   };
 
   const markers = new Set<string>();

@@ -4,18 +4,18 @@
  * TDD §6: weighted sum with normalization + A6 guardrails.
  * Phase 0 computes and logs; Phase 1 Orchestrator uses for actual routing.
  */
-import type { RiskFactors, RoutingDecision, RoutingLevel } from "../orchestrator/types.ts";
+import type { RiskFactors, RoutingDecision, RoutingLevel } from '../orchestrator/types.ts';
 
 // ── Weights per TDD §6 ──────────────────────────────────────────
 
 const WEIGHTS = {
   blastRadius: 0.25,
-  dependencyDepth: 0.10,
+  dependencyDepth: 0.1,
   testCoverage: 0.15,
-  fileVolatility: 0.10,
-  irreversibility: 0.20,
-  security: 0.10,
-  production: 0.10,
+  fileVolatility: 0.1,
+  irreversibility: 0.2,
+  security: 0.1,
+  production: 0.1,
 } as const;
 
 // ── Normalization bounds ─────────────────────────────────────────
@@ -55,11 +55,11 @@ export function getIrreversibilityScore(toolName: string): number {
 }
 
 /** Detect execution environment from NODE_ENV or CI markers. */
-export function detectEnvironment(): "development" | "staging" | "production" {
-  const env = process.env.NODE_ENV ?? process.env.VINYAN_ENV ?? "";
-  if (env === "production" || env === "prod") return "production";
-  if (env === "staging" || env === "stg") return "staging";
-  return "development";
+export function detectEnvironment(): 'development' | 'staging' | 'production' {
+  const env = process.env.NODE_ENV ?? process.env.VINYAN_ENV ?? '';
+  if (env === 'production' || env === 'prod') return 'production';
+  if (env === 'staging' || env === 'stg') return 'staging';
+  return 'development';
 }
 
 /**
@@ -82,10 +82,10 @@ export function calculateRiskScore(factors: RiskFactors): number {
     normVolatility * WEIGHTS.fileVolatility +
     factors.irreversibility * WEIGHTS.irreversibility +
     (factors.hasSecurityImplication ? WEIGHTS.security : 0) +
-    (factors.environmentType === "production" ? WEIGHTS.production : 0);
+    (factors.environmentType === 'production' ? WEIGHTS.production : 0);
 
   // A6 Guardrail: production + high irreversibility → floor at 0.9
-  if (factors.environmentType === "production" && factors.irreversibility > 0.5) {
+  if (factors.environmentType === 'production' && factors.irreversibility > 0.5) {
     return Math.max(0.9, Math.min(1.0, base));
   }
 
@@ -125,16 +125,16 @@ export function routeByRisk(
   }
 
   // Production boundary: minimum L2 (TDD §7)
-  if (environmentType === "production" && level < 2) {
+  if (environmentType === 'production' && level < 2) {
     level = 2;
   }
 
   // Map level to model + budget (latency budgets sized for remote LLM APIs)
-  const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudget_ms: number }> = {
-    0: { model: null, budgetTokens: 0, latencyBudget_ms: 100 },
-    1: { model: "claude-haiku", budgetTokens: 10_000, latencyBudget_ms: 15_000 },
-    2: { model: "claude-sonnet", budgetTokens: 50_000, latencyBudget_ms: 30_000 },
-    3: { model: "claude-opus", budgetTokens: 100_000, latencyBudget_ms: 120_000 },
+  const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number }> = {
+    0: { model: null, budgetTokens: 0, latencyBudgetMs: 100 },
+    1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000 },
+    2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000 },
+    3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000 },
   };
 
   return {

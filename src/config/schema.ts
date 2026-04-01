@@ -6,7 +6,7 @@
  * under an optional `phase1` namespace for forward-compatibility but are
  * NOT consumed by any Phase 0 code path.
  */
-import { z } from "zod/v4";
+import { z } from 'zod/v4';
 
 const OracleConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -14,46 +14,48 @@ const OracleConfigSchema = z.object({
   command: z.string().optional(),
   timeout_ms: z.number().positive().optional(),
   /** Trust tier — determines confidence range and conflict resolution priority. */
-  tier: z.enum(["deterministic", "heuristic", "probabilistic", "speculative"]).default("deterministic"),
+  tier: z.enum(['deterministic', 'heuristic', 'probabilistic', 'speculative']).default('deterministic'),
   /** Behavior on timeout: 'block' = fail-closed, 'warn' = skip oracle and continue. */
-  timeout_behavior: z.enum(["block", "warn"]).default("block"),
+  timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
 
 // ─── Phase 1+ schemas (not used in Phase 0) ─────────────────────────
 
 /** 4-level routing thresholds — Phase 1 Orchestrator (→ TDD §16). */
-const LatencyBudgetsSchema = z.object({
-  l0: z.number().positive().default(100),
-  l1: z.number().positive().default(2000),
-  l2: z.number().positive().default(10000),
-  l3: z.number().positive().default(60000),
-}).refine(
-  data => data.l0 < data.l1 && data.l1 < data.l2 && data.l2 < data.l3,
-  { message: "Latency budgets must be strictly ordered: l0 < l1 < l2 < l3" },
-);
+const LatencyBudgetsSchema = z
+  .object({
+    l0: z.number().positive().default(100),
+    l1: z.number().positive().default(2000),
+    l2: z.number().positive().default(10000),
+    l3: z.number().positive().default(60000),
+  })
+  .refine((data) => data.l0 < data.l1 && data.l1 < data.l2 && data.l2 < data.l3, {
+    message: 'Latency budgets must be strictly ordered: l0 < l1 < l2 < l3',
+  });
 
-const RoutingConfigSchema = z.object({
-  l0_max_risk: z.number().min(0).max(1).default(0.2),
-  l1_max_risk: z.number().min(0).max(1).default(0.4),
-  l2_max_risk: z.number().min(0).max(1).default(0.7),
-  l0_l1_model: z.string().default("claude-haiku"),
-  l2_model: z.string().default("claude-sonnet"),
-  l3_model: z.string().default("claude-opus"),
-  l1_budget_tokens: z.number().positive().default(10000),
-  l2_budget_tokens: z.number().positive().default(50000),
-  l3_budget_tokens: z.number().positive().default(100000),
-  latency_budgets_ms: LatencyBudgetsSchema.default(() => defaults(LatencyBudgetsSchema)),
-}).refine(
-  data => data.l0_max_risk < data.l1_max_risk && data.l1_max_risk < data.l2_max_risk,
-  { message: "Risk thresholds must be strictly ordered: l0_max_risk < l1_max_risk < l2_max_risk" },
-);
+const RoutingConfigSchema = z
+  .object({
+    l0_max_risk: z.number().min(0).max(1).default(0.2),
+    l1_max_risk: z.number().min(0).max(1).default(0.4),
+    l2_max_risk: z.number().min(0).max(1).default(0.7),
+    l0_l1_model: z.string().default('claude-haiku'),
+    l2_model: z.string().default('claude-sonnet'),
+    l3_model: z.string().default('claude-opus'),
+    l1_budget_tokens: z.number().positive().default(10000),
+    l2_budget_tokens: z.number().positive().default(50000),
+    l3_budget_tokens: z.number().positive().default(100000),
+    latency_budgets_ms: LatencyBudgetsSchema.default(() => defaults(LatencyBudgetsSchema)),
+  })
+  .refine((data) => data.l0_max_risk < data.l1_max_risk && data.l1_max_risk < data.l2_max_risk, {
+    message: 'Risk thresholds must be strictly ordered: l0_max_risk < l1_max_risk < l2_max_risk',
+  });
 
 const IsolationConfigSchema = z.object({
   l0_max_risk: z.number().min(0).max(1).default(0.2),
   l1_max_risk: z.number().min(0).max(1).default(0.7),
-  container_image: z.string().default("vinyan-sandbox:latest"),
+  container_image: z.string().default('vinyan-sandbox:latest'),
   /** L2 container overlay strategy: 'tmpdir' = host-created temp dirs, 'docker-tmpfs' = in-container tmpfs */
-  overlay_strategy: z.enum(["tmpdir", "docker-tmpfs"]).default("tmpdir"),
+  overlay_strategy: z.enum(['tmpdir', 'docker-tmpfs']).default('tmpdir'),
   /** Shadow validation budget in ms (async, separate from L3 online 60s budget) */
   shadow_budget_ms: z.number().positive().default(300_000),
   /** Max PHE workers for shadow validation (0 = no PHE, just test suite) */
@@ -80,7 +82,7 @@ const EvolutionConfigSchema = z.object({
 const EscalationConfigSchema = z.object({
   max_retries_before_human: z.number().positive().default(3),
   risk_threshold_for_notification: z.number().min(0).max(1).default(0.8),
-  channel: z.enum(["matrix", "slack", "stdout"]).default("stdout"),
+  channel: z.enum(['matrix', 'slack', 'stdout']).default('stdout'),
 });
 
 const Phase1ConfigSchema = z.object({
@@ -93,13 +95,13 @@ const Phase1ConfigSchema = z.object({
 // ─── Phase 4 schema (Fleet Governance) ──────────────────────────────
 
 const Phase4ConfigSchema = z.object({
-  worker_identity_granularity: z.enum(["model", "model+temp", "full"]).default("full"),
+  worker_identity_granularity: z.enum(['model', 'model+temp', 'full']).default('full'),
   probation_min_tasks: z.number().positive().default(30),
   demotion_window_tasks: z.number().positive().default(30),
   demotion_max_reentries: z.number().min(0).default(3),
   reentry_cooldown_sessions: z.number().positive().default(50),
-  epsilon_worker: z.number().min(0.03).max(0.30).default(0.10),
-  diversity_cap_pct: z.number().min(0.05).max(0.95).default(0.70),
+  epsilon_worker: z.number().min(0.03).max(0.3).default(0.1),
+  diversity_cap_pct: z.number().min(0.05).max(0.95).default(0.7),
   max_active_workers: z.number().positive().default(10),
   capability_min_traces: z.number().positive().default(5),
   negative_capability_threshold: z.number().min(0).max(1).default(0.6),
@@ -111,7 +113,7 @@ const Phase4ConfigSchema = z.object({
 const Phase5APIConfigSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().positive().default(3927),
-  bind: z.string().default("127.0.0.1"),
+  bind: z.string().default('127.0.0.1'),
   auth_required: z.boolean().default(true),
   session_compaction_threshold: z.number().positive().default(20),
   rate_limit_enabled: z.boolean().default(true),
@@ -122,24 +124,96 @@ const Phase5InstancesConfigSchema = z.object({
   listen_port: z.number().positive().default(3928),
   heartbeat_interval_ms: z.number().positive().default(15_000),
   heartbeat_timeout_ms: z.number().positive().default(45_000),
-  peers: z.array(z.object({
-    url: z.string(),
-    trust_level: z.enum(["untrusted", "provisional", "established", "trusted"]).default("untrusted"),
-  })).default([]),
+  peers: z
+    .array(
+      z.object({
+        url: z.string(),
+        trust_level: z.enum(['untrusted', 'provisional', 'established', 'trusted']).default('untrusted'),
+      }),
+    )
+    .default([]),
+});
+
+const Phase5A2AConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Max confidence for any A2A-received verdict (applied via clampFull). */
+  confidence_cap: z.number().min(0).max(1).default(0.5),
+  streaming_enabled: z.boolean().default(false),
+  allowed_methods: z
+    .array(z.enum(['tasks/send', 'tasks/get', 'tasks/cancel']))
+    .default(['tasks/send', 'tasks/get', 'tasks/cancel']),
+});
+
+const Phase5KnowledgeSharingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Tier 0: relay file hash invalidations in real-time. */
+  file_invalidation_enabled: z.boolean().default(true),
+  /** Tier 2: batch exchange patterns/rules on sleep cycle. */
+  batch_on_sleep_cycle: z.boolean().default(true),
+  /** Max items in probation queue before rejecting new imports. */
+  max_probation_queue: z.number().positive().default(100),
+  /** Tier 3: gossip-based knowledge propagation for fleet scale. */
+  gossip_enabled: z.boolean().default(false),
+  /** Gossip fanout: number of peers to forward each item to. */
+  gossip_fanout: z.number().positive().default(3),
+  /** Max gossip hops before item is dropped. */
+  gossip_max_hops: z.number().positive().default(6),
+  /** Dedup window in ms for content-hash based deduplication. */
+  gossip_dampening_window_ms: z.number().positive().default(10_000),
+});
+
+const Phase5TrustConfigSchema = z.object({
+  /** Wilson LB threshold: untrusted → provisional. */
+  promotion_untrusted_lb: z.number().min(0).max(1).default(0.6),
+  /** Wilson LB threshold: provisional → established. */
+  promotion_provisional_lb: z.number().min(0).max(1).default(0.7),
+  /** Wilson LB threshold: established → trusted. */
+  promotion_established_lb: z.number().min(0).max(1).default(0.8),
+  /** Min interactions before first promotion. */
+  promotion_min_interactions: z.number().positive().default(10),
+  /** Consecutive failures to trigger demotion by one level. */
+  demotion_on_consecutive_failures: z.number().positive().default(5),
+  /** Days of inactivity before trust decays one level. */
+  inactivity_decay_days: z.number().positive().default(7),
+  /** Enable cross-instance trust attestation sharing. */
+  trust_sharing_enabled: z.boolean().default(false),
+  /** Max trust level achievable from remote attestations alone. */
+  max_remote_trust: z.number().min(0).max(1).default(0.4),
+  /** Min interactions before this instance can attest about a peer. */
+  attestation_min_interactions: z.number().positive().default(20),
+  /** Max attesters considered per subject (anti-Sybil). */
+  attestation_max_attesters: z.number().positive().default(3),
+});
+
+const Phase5CoordinationConfigSchema = z.object({
+  intent_declaration_enabled: z.boolean().default(false),
+  negotiation_enabled: z.boolean().default(false),
+  commitment_tracking_enabled: z.boolean().default(false),
+});
+
+const Phase5TracingConfigSchema = z.object({
+  distributed_enabled: z.boolean().default(false),
+  w3c_trace_context: z.boolean().default(true),
+  /** Sampling rate for distributed traces (0.0–1.0). */
+  sample_rate: z.number().min(0).max(1).default(0.1),
 });
 
 const Phase5PolyglotConfigSchema = z.object({
-  enabled_languages: z.array(z.string()).default(["typescript"]),
-  language_detection: z.enum(["auto", "config"]).default("auto"),
+  enabled_languages: z.array(z.string()).default(['typescript']),
+  language_detection: z.enum(['auto', 'config']).default('auto'),
 });
 
 const Phase5MCPConfigSchema = z.object({
   server_enabled: z.boolean().default(false),
-  client_servers: z.array(z.object({
-    name: z.string(),
-    command: z.string(),
-    trust_level: z.enum(["untrusted", "provisional", "established", "trusted"]).default("untrusted"),
-  })).default([]),
+  client_servers: z
+    .array(
+      z.object({
+        name: z.string(),
+        command: z.string(),
+        trust_level: z.enum(['untrusted', 'provisional', 'established', 'trusted']).default('untrusted'),
+      }),
+    )
+    .default([]),
 });
 
 const Phase5ConfigSchema = z.object({
@@ -147,6 +221,11 @@ const Phase5ConfigSchema = z.object({
   instances: Phase5InstancesConfigSchema.optional(),
   polyglot: Phase5PolyglotConfigSchema.optional(),
   mcp: Phase5MCPConfigSchema.optional(),
+  a2a: Phase5A2AConfigSchema.optional(),
+  knowledge_sharing: Phase5KnowledgeSharingConfigSchema.optional(),
+  trust: Phase5TrustConfigSchema.optional(),
+  coordination: Phase5CoordinationConfigSchema.optional(),
+  tracing: Phase5TracingConfigSchema.optional(),
 });
 
 // ─── Helper ──────────────────────────────────────────────────────────
@@ -161,11 +240,11 @@ function defaults<T extends z.ZodType>(schema: T): z.output<T> {
 export const VinyanConfigSchema = z.object({
   version: z.number().default(1),
   oracles: z.record(z.string(), OracleConfigSchema).default({
-    ast: { enabled: true, languages: ["typescript"], tier: "deterministic", timeout_behavior: "block" },
-    type: { enabled: true, command: "tsc --noEmit", tier: "deterministic", timeout_behavior: "block" },
-    dep: { enabled: true, tier: "heuristic", timeout_behavior: "block" },
-    test: { enabled: false, timeout_ms: 5000, tier: "deterministic", timeout_behavior: "warn" },
-    lint: { enabled: false, timeout_ms: 1000, tier: "deterministic", timeout_behavior: "warn" },
+    ast: { enabled: true, languages: ['typescript'], tier: 'deterministic', timeout_behavior: 'block' },
+    type: { enabled: true, command: 'tsc --noEmit', tier: 'deterministic', timeout_behavior: 'block' },
+    dep: { enabled: true, tier: 'heuristic', timeout_behavior: 'block' },
+    test: { enabled: false, timeout_ms: 5000, tier: 'deterministic', timeout_behavior: 'warn' },
+    lint: { enabled: false, timeout_ms: 1000, tier: 'deterministic', timeout_behavior: 'warn' },
   }),
   /** Phase 1+ config — accepted for forward-compat, not used in Phase 0. */
   phase1: Phase1ConfigSchema.optional(),

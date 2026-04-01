@@ -1,18 +1,18 @@
-import { describe, test, expect } from "bun:test";
-import { Database } from "bun:sqlite";
-import { getSystemMetrics, type MetricsDeps } from "../../src/observability/metrics.ts";
-import { TraceStore } from "../../src/db/trace-store.ts";
-import { RuleStore } from "../../src/db/rule-store.ts";
-import { SkillStore } from "../../src/db/skill-store.ts";
-import { PatternStore } from "../../src/db/pattern-store.ts";
-import { TRACE_SCHEMA_SQL } from "../../src/db/trace-schema.ts";
-import { RULE_SCHEMA_SQL } from "../../src/db/rule-schema.ts";
-import { SKILL_SCHEMA_SQL } from "../../src/db/skill-schema.ts";
-import { PATTERN_SCHEMA_SQL } from "../../src/db/pattern-schema.ts";
-import type { ExecutionTrace } from "../../src/orchestrator/types.ts";
+import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
+import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
+import { PatternStore } from '../../src/db/pattern-store.ts';
+import { RULE_SCHEMA_SQL } from '../../src/db/rule-schema.ts';
+import { RuleStore } from '../../src/db/rule-store.ts';
+import { SKILL_SCHEMA_SQL } from '../../src/db/skill-schema.ts';
+import { SkillStore } from '../../src/db/skill-store.ts';
+import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
+import { TraceStore } from '../../src/db/trace-store.ts';
+import { getSystemMetrics, type MetricsDeps } from '../../src/observability/metrics.ts';
+import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 function createDeps(): MetricsDeps & { db: Database } {
-  const db = new Database(":memory:");
+  const db = new Database(':memory:');
   db.exec(TRACE_SCHEMA_SQL);
   db.exec(RULE_SCHEMA_SQL);
   db.exec(SKILL_SCHEMA_SQL);
@@ -29,30 +29,30 @@ function createDeps(): MetricsDeps & { db: Database } {
 function insertTrace(store: TraceStore, overrides?: Partial<ExecutionTrace>) {
   store.insert({
     id: `t-${Math.random().toString(36).slice(2)}`,
-    taskId: "task-1",
+    taskId: 'task-1',
     timestamp: Date.now(),
     routingLevel: 1,
-    task_type_signature: "refactor::foo.ts",
-    approach: "direct",
+    task_type_signature: 'refactor::foo.ts',
+    approach: 'direct',
     oracleVerdicts: { ast: true },
-    model_used: "mock",
+    model_used: 'mock',
     tokens_consumed: 100,
-    duration_ms: 500,
-    outcome: "success",
-    affected_files: ["foo.ts"],
+    durationMs: 500,
+    outcome: 'success',
+    affected_files: ['foo.ts'],
     qualityScore: {
       architecturalCompliance: 0.9,
       efficiency: 0.8,
       composite: 0.85,
-      dimensions_available: 2,
-      phase: "phase0",
+      dimensionsAvailable: 2,
+      phase: 'phase0',
     },
     ...overrides,
   } as ExecutionTrace);
 }
 
-describe("Observability Metrics (P3.6)", () => {
-  test("returns zero counts when stores are empty", () => {
+describe('Observability Metrics (P3.6)', () => {
+  test('returns zero counts when stores are empty', () => {
     const deps = createDeps();
     const metrics = getSystemMetrics(deps);
 
@@ -63,7 +63,7 @@ describe("Observability Metrics (P3.6)", () => {
     expect(metrics.patterns.total).toBe(0);
   });
 
-  test("computes correct trace statistics", () => {
+  test('computes correct trace statistics', () => {
     const deps = createDeps();
 
     // 3 successes, 2 failures
@@ -71,8 +71,8 @@ describe("Observability Metrics (P3.6)", () => {
     for (let i = 0; i < 2; i++) {
       insertTrace(deps.traceStore, {
         id: `f-${i}`,
-        outcome: "failure",
-        task_type_signature: "bugfix::bar.ts",
+        outcome: 'failure',
+        task_type_signature: 'bugfix::bar.ts',
       });
     }
 
@@ -85,7 +85,7 @@ describe("Observability Metrics (P3.6)", () => {
     expect(metrics.traces.routingDistribution[1]).toBe(5);
   });
 
-  test("data gates reflect thresholds", () => {
+  test('data gates reflect thresholds', () => {
     const deps = createDeps();
 
     // Not enough traces for sleep cycle gate (needs 100)
@@ -98,8 +98,8 @@ describe("Observability Metrics (P3.6)", () => {
     expect(metrics.dataGates.evolutionEngine).toBe(false);
   });
 
-  test("works with minimal deps (no optional stores)", () => {
-    const db = new Database(":memory:");
+  test('works with minimal deps (no optional stores)', () => {
+    const db = new Database(':memory:');
     db.exec(TRACE_SCHEMA_SQL);
     const traceStore = new TraceStore(db);
 

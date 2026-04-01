@@ -5,8 +5,8 @@
  * (tier × transport × peer trust) instead of hardcoded caps.
  * Type is forced to "uncertain" — remote engines never claim "known".
  */
-import type { OracleVerdict } from "../core/types.ts";
-import { clampFull, type PeerTrustLevel } from "../oracle/tier-clamp.ts";
+import type { OracleVerdict } from '../core/types.ts';
+import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 
 /**
  * Cap an existing OracleVerdict's confidence for A2A context.
@@ -16,12 +16,12 @@ import { clampFull, type PeerTrustLevel } from "../oracle/tier-clamp.ts";
 export function injectA2AConfidence(
   verdict: OracleVerdict,
   tier?: string,
-  peerTrust: PeerTrustLevel = "untrusted",
+  peerTrust: PeerTrustLevel = 'untrusted',
 ): OracleVerdict {
   return {
     ...verdict,
-    confidence: clampFull(verdict.confidence, tier, "a2a", peerTrust),
-    type: "uncertain",
+    confidence: clampFull(verdict.confidence, tier, 'a2a', peerTrust),
+    type: 'uncertain',
   };
 }
 
@@ -32,15 +32,15 @@ export function injectA2AConfidence(
 export function createA2AVerdict(
   success: boolean,
   reason: string,
-  peerTrust: PeerTrustLevel = "untrusted",
+  peerTrust: PeerTrustLevel = 'untrusted',
 ): OracleVerdict {
   return {
     verified: success,
-    type: "uncertain",
-    confidence: clampFull(1.0, undefined, "a2a", peerTrust),
+    type: 'uncertain',
+    confidence: clampFull(1.0, undefined, 'a2a', peerTrust),
     evidence: [],
     fileHashes: {},
     reason,
-    duration_ms: 0,
+    durationMs: 0,
   };
 }

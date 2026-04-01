@@ -9,18 +9,19 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.2
  */
-import type { WorkerProfile } from "./types.ts";
-import type { WorkerStore } from "../db/worker-store.ts";
-import type { VinyanBus } from "../core/bus.ts";
-import { wilsonLowerBound } from "../sleep-cycle/wilson.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
+import type { WorkerProfile } from './types.ts';
 
 export interface WorkerLifecycleConfig {
   workerStore: WorkerStore;
   bus?: VinyanBus;
-  probationMinTasks: number;        // default: 30
-  demotionWindowTasks: number;      // default: 30
-  demotionMaxReentries: number;     // default: 3
-  reentryCooldownSessions: number;  // default: 50
+  probationMinTasks: number; // default: 30
+  demotionWindowTasks: number; // default: 30
+  demotionMaxReentries: number; // default: 3
+  reentryCooldownSessions: number; // default: 50
 }
 
 export interface PromotionResult {
@@ -51,8 +52,8 @@ export class WorkerLifecycle {
    */
   evaluatePromotion(workerId: string): PromotionResult {
     const profile = this.store.findById(workerId);
-    if (!profile || profile.status !== "probation") {
-      return { promoted: false, reason: "not on probation" };
+    if (!profile || profile.status !== 'probation') {
+      return { promoted: false, reason: 'not on probation' };
     }
 
     const stats = this.store.getStats(workerId);
@@ -67,13 +68,19 @@ export class WorkerLifecycle {
     const successCount = Math.round(stats.successRate * stats.totalTasks);
     const wilsonLB = wilsonLowerBound(successCount, stats.totalTasks);
     if (wilsonLB <= activeMedian) {
-      return { promoted: false, reason: `Wilson LB ${wilsonLB.toFixed(3)} <= active median ${activeMedian.toFixed(3)}` };
+      return {
+        promoted: false,
+        reason: `Wilson LB ${wilsonLB.toFixed(3)} <= active median ${activeMedian.toFixed(3)}`,
+      };
     }
 
     // Gate 3: quality >= baseline
     const baselineQuality = this.getActiveWorkerBaselineQuality();
     if (stats.avgQualityScore < baselineQuality) {
-      return { promoted: false, reason: `quality ${stats.avgQualityScore.toFixed(3)} < baseline ${baselineQuality.toFixed(3)}` };
+      return {
+        promoted: false,
+        reason: `quality ${stats.avgQualityScore.toFixed(3)} < baseline ${baselineQuality.toFixed(3)}`,
+      };
     }
 
     // Gate 4: zero safety violations during probation period
@@ -83,14 +90,14 @@ export class WorkerLifecycle {
     }
 
     // All gates passed — promote
-    this.store.updateStatus(workerId, "active");
-    this.bus?.emit("worker:promoted", {
+    this.store.updateStatus(workerId, 'active');
+    this.bus?.emit('worker:promoted', {
       workerId,
       afterTasks: stats.totalTasks,
       successRate: stats.successRate,
     });
 
-    return { promoted: true, reason: "all promotion gates passed" };
+    return { promoted: true, reason: 'all promotion gates passed' };
   }
 
   /**
@@ -117,12 +124,12 @@ export class WorkerLifecycle {
       if (stats.totalTasks < this.config.demotionWindowTasks) continue;
 
       let shouldDemote = false;
-      let reason = "";
+      let reason = '';
 
       // Trigger 1: success rate drops below median - 0.10
-      if (stats.successRate < medianSuccess - 0.10) {
+      if (stats.successRate < medianSuccess - 0.1) {
         shouldDemote = true;
-        reason = `success rate ${stats.successRate.toFixed(3)} < threshold ${(medianSuccess - 0.10).toFixed(3)}`;
+        reason = `success rate ${stats.successRate.toFixed(3)} < threshold ${(medianSuccess - 0.1).toFixed(3)}`;
       }
 
       // Trigger 2: quality below median - 2σ
@@ -134,8 +141,8 @@ export class WorkerLifecycle {
       if (!shouldDemote) continue;
 
       // I8: don't demote if this would leave 0 active workers
-      if (activeWorkers.length - results.filter(r => r.demoted).length <= 1) {
-        results.push({ demoted: false, permanent: false, reason: "I8: would leave 0 active workers" });
+      if (activeWorkers.length - results.filter((r) => r.demoted).length <= 1) {
+        results.push({ demoted: false, permanent: false, reason: 'I8: would leave 0 active workers' });
         continue;
       }
 
@@ -144,12 +151,12 @@ export class WorkerLifecycle {
       const permanent = newDemotionCount >= this.config.demotionMaxReentries;
 
       if (permanent) {
-        this.store.updateStatus(worker.id, "retired", reason);
+        this.store.updateStatus(worker.id, 'retired', reason);
       } else {
-        this.store.updateStatus(worker.id, "demoted", reason);
+        this.store.updateStatus(worker.id, 'demoted', reason);
       }
 
-      this.bus?.emit("worker:demoted", {
+      this.bus?.emit('worker:demoted', {
         workerId: worker.id,
         reason,
         permanent,
@@ -167,14 +174,14 @@ export class WorkerLifecycle {
    * Returns list of re-enrolled worker IDs.
    */
   reEnrollExpired(_totalTraceCount?: number): string[] {
-    const demotedWorkers = this.store.findByStatus("demoted");
+    const demotedWorkers = this.store.findByStatus('demoted');
     const reEnrolled: string[] = [];
 
     for (const worker of demotedWorkers) {
       // Skip if already at max re-entries
       if (worker.demotionCount >= this.config.demotionMaxReentries) {
         // Should be RETIRED, fix state
-        this.store.updateStatus(worker.id, "retired", "max re-entries reached");
+        this.store.updateStatus(worker.id, 'retired', 'max re-entries reached');
         continue;
       }
 
@@ -184,7 +191,7 @@ export class WorkerLifecycle {
       if (tracesSinceDemotion < this.config.reentryCooldownSessions) continue;
 
       this.store.reEnroll(worker.id);
-      this.bus?.emit("worker:reactivated", {
+      this.bus?.emit('worker:reactivated', {
         workerId: worker.id,
         previousDemotionCount: worker.demotionCount,
       });
@@ -201,11 +208,11 @@ export class WorkerLifecycle {
   /** Check if a worker is currently on probation. */
   isOnProbation(workerId: string): boolean {
     const profile = this.store.findById(workerId);
-    return profile?.status === "probation";
+    return profile?.status === 'probation';
   }
 
   shouldShadowForProbation(_taskId: string, _workerId: string): boolean {
-    return Math.random() < 0.20;
+    return Math.random() < 0.2;
   }
 
   /**
@@ -216,7 +223,7 @@ export class WorkerLifecycle {
     const active = this.store.findActive();
     if (active.length > 0) return null;
 
-    const demoted = this.store.findByStatus("demoted");
+    const demoted = this.store.findByStatus('demoted');
     if (demoted.length === 0) return null;
 
     // Pick the one with best stats
@@ -233,10 +240,10 @@ export class WorkerLifecycle {
     if (!best) return null;
 
     // Emergency reactivation skips probation — go straight to active
-    this.store.updateStatus(best.id, "active");
-    this.bus?.emit("fleet:emergency_reactivation", {
+    this.store.updateStatus(best.id, 'active');
+    this.bus?.emit('fleet:emergency_reactivation', {
       workerId: best.id,
-      reason: "no active workers remaining",
+      reason: 'no active workers remaining',
     });
     return best.id;
   }
@@ -247,21 +254,17 @@ export class WorkerLifecycle {
     const activeWorkers = this.store.findActive();
     if (activeWorkers.length === 0) return 0;
 
-    const rates = activeWorkers
-      .map(w => this.store.getStats(w.id).successRate)
-      .sort((a, b) => a - b);
+    const rates = activeWorkers.map((w) => this.store.getStats(w.id).successRate).sort((a, b) => a - b);
 
     const mid = Math.floor(rates.length / 2);
-    return rates.length % 2 === 0
-      ? (rates[mid - 1]! + rates[mid]!) / 2
-      : rates[mid]!;
+    return rates.length % 2 === 0 ? (rates[mid - 1]! + rates[mid]!) / 2 : rates[mid]!;
   }
 
   private getActiveWorkerBaselineQuality(): number {
     const activeWorkers = this.store.findActive();
     if (activeWorkers.length === 0) return 0;
 
-    const qualities = activeWorkers.map(w => this.store.getStats(w.id).avgQualityScore);
+    const qualities = activeWorkers.map((w) => this.store.getStats(w.id).avgQualityScore);
     return qualities.reduce((a, b) => a + b, 0) / qualities.length;
   }
 
@@ -275,7 +278,7 @@ export class WorkerLifecycle {
   /** Subscribe to guardrail bus events for accurate safety tracking. */
   subscribeToGuardrailEvents(): void {
     if (!this.bus) return;
-    this.bus.on("guardrail:violation", ({ workerId }: { workerId: string }) => {
+    this.bus.on('guardrail:violation', ({ workerId }: { workerId: string }) => {
       this.safetyViolationCounts.set(workerId, (this.safetyViolationCounts.get(workerId) ?? 0) + 1);
     });
   }
@@ -297,14 +300,10 @@ export class WorkerLifecycle {
     const activeWorkers = this.store.findActive();
     if (activeWorkers.length === 0) return { medianQuality: 0, stddevQuality: 0 };
 
-    const qualities = activeWorkers
-      .map(w => this.store.getStats(w.id).avgQualityScore)
-      .sort((a, b) => a - b);
+    const qualities = activeWorkers.map((w) => this.store.getStats(w.id).avgQualityScore).sort((a, b) => a - b);
 
     const mid = Math.floor(qualities.length / 2);
-    const medianQuality = qualities.length % 2 === 0
-      ? (qualities[mid - 1]! + qualities[mid]!) / 2
-      : qualities[mid]!;
+    const medianQuality = qualities.length % 2 === 0 ? (qualities[mid - 1]! + qualities[mid]!) / 2 : qualities[mid]!;
 
     const mean = qualities.reduce((a, b) => a + b, 0) / qualities.length;
     const variance = qualities.reduce((sum, q) => sum + (q - mean) ** 2, 0) / qualities.length;

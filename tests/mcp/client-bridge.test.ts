@@ -1,57 +1,57 @@
-import { describe, test, expect } from "bun:test";
-import { MCPClientBridge, type MCPClientConfig } from "../../src/mcp/client-bridge.ts";
-import { mcpToEcp } from "../../src/mcp/ecp-translation.ts";
-import type { MCPToolResult } from "../../src/mcp/types.ts";
+import { describe, expect, test } from 'bun:test';
+import { MCPClientBridge, type MCPClientConfig } from '../../src/mcp/client-bridge.ts';
+import { mcpToEcp } from '../../src/mcp/ecp-translation.ts';
+import type { MCPToolResult } from '../../src/mcp/types.ts';
 
 // ── Trust level confidence tests (via mcpToEcp directly) ────────────
 
-describe("trust level caps confidence correctly", () => {
+describe('trust level caps confidence correctly', () => {
   const successResult: MCPToolResult = {
-    content: [{ type: "text", text: JSON.stringify({ verified: true, evidence: [], fileHashes: {} }) }],
+    content: [{ type: 'text', text: JSON.stringify({ verified: true, evidence: [], fileHashes: {} }) }],
   };
 
-  test("local trust → 0.7", () => {
-    const verdict = mcpToEcp(successResult, "local");
+  test('local trust → 0.7', () => {
+    const verdict = mcpToEcp(successResult, 'local');
     expect(verdict.confidence).toBe(0.7);
-    expect(verdict.type).toBe("uncertain");
+    expect(verdict.type).toBe('uncertain');
   });
 
-  test("network trust → 0.40", () => {
-    const verdict = mcpToEcp(successResult, "network");
-    expect(verdict.confidence).toBe(0.40);
+  test('network trust → 0.40', () => {
+    const verdict = mcpToEcp(successResult, 'network');
+    expect(verdict.confidence).toBe(0.4);
   });
 
-  test("remote trust → 0.25", () => {
-    const verdict = mcpToEcp(successResult, "remote");
+  test('remote trust → 0.25', () => {
+    const verdict = mcpToEcp(successResult, 'remote');
     expect(verdict.confidence).toBe(0.25);
   });
 });
 
 // ── MCPClientBridge construction ────────────────────────────────────
 
-describe("MCPClientBridge", () => {
+describe('MCPClientBridge', () => {
   const baseConfig: MCPClientConfig = {
-    name: "test-server",
-    command: "echo",
-    args: ["hello"],
-    trustLevel: "local",
+    name: 'test-server',
+    command: 'echo',
+    args: ['hello'],
+    trustLevel: 'local',
   };
 
-  test("starts disconnected", () => {
+  test('starts disconnected', () => {
     const bridge = new MCPClientBridge(baseConfig);
     expect(bridge.connected).toBe(false);
   });
 
-  test("callTool throws when not connected", async () => {
+  test('callTool throws when not connected', async () => {
     const bridge = new MCPClientBridge(baseConfig);
-    expect(bridge.callTool("test_tool", {})).rejects.toThrow("not connected");
+    expect(bridge.callTool('test_tool', {})).rejects.toThrow('not connected');
   });
 });
 
 // ── Tool discovery parsing ──────────────────────────────────────────
 
-describe("tool discovery response parsing", () => {
-  test("discoverTools parses valid tools/list response", async () => {
+describe('tool discovery response parsing', () => {
+  test('discoverTools parses valid tools/list response', async () => {
     // Line-by-line MCP server: reads stdin line-by-line, responds to each
     const serverScript = `
 import { createInterface } from "readline";
@@ -80,22 +80,22 @@ rl.on("line", (line) => {
 });
 `;
 
-    const tmpPath = "/tmp/vinyan-test-mcp-server.ts";
+    const tmpPath = '/tmp/vinyan-test-mcp-server.ts';
     await Bun.write(tmpPath, serverScript);
 
     const bridge = new MCPClientBridge({
-      name: "test",
-      command: "bun",
-      args: ["run", tmpPath],
-      trustLevel: "local",
+      name: 'test',
+      command: 'bun',
+      args: ['run', tmpPath],
+      trustLevel: 'local',
     });
 
     try {
       await bridge.connect();
       const tools = await bridge.discoverTools();
       expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe("test_tool");
-      expect(tools[0]!.description).toBe("A test tool");
+      expect(tools[0]!.name).toBe('test_tool');
+      expect(tools[0]!.description).toBe('A test tool');
     } finally {
       await bridge.disconnect();
     }
@@ -104,12 +104,12 @@ rl.on("line", (line) => {
 
 // ── Error handling ──────────────────────────────────────────────────
 
-describe("subprocess error handling", () => {
-  test("disconnect clears connected state", async () => {
+describe('subprocess error handling', () => {
+  test('disconnect clears connected state', async () => {
     const bridge = new MCPClientBridge({
-      name: "test",
-      command: "cat",
-      trustLevel: "remote",
+      name: 'test',
+      command: 'cat',
+      trustLevel: 'remote',
     });
 
     await bridge.connect();
@@ -119,12 +119,12 @@ describe("subprocess error handling", () => {
     expect(bridge.connected).toBe(false);
   });
 
-  test("callTool on crashed subprocess returns error verdict", async () => {
+  test('callTool on crashed subprocess returns error verdict', async () => {
     // Use a command that exits immediately after echoing
     const bridge = new MCPClientBridge({
-      name: "test",
-      command: "cat",
-      trustLevel: "remote",
+      name: 'test',
+      command: 'cat',
+      trustLevel: 'remote',
     });
 
     await bridge.connect();
@@ -133,6 +133,6 @@ describe("subprocess error handling", () => {
     await bridge.disconnect();
 
     // Calling after disconnect should throw (not connected)
-    expect(bridge.callTool("test", {})).rejects.toThrow("not connected");
+    expect(bridge.callTool('test', {})).rejects.toThrow('not connected');
   });
 });

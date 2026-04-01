@@ -6,43 +6,41 @@
  *
  * Linter detection: eslint.config → eslint, ruff.toml/pyproject → ruff.
  */
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
-import { existsSync } from "fs";
-import { join, relative } from "path";
+
+import { existsSync } from 'fs';
+import { join, relative } from 'path';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
 
 interface LintError {
   file: string;
   line: number;
   message: string;
-  severity: "error" | "warning";
+  severity: 'error' | 'warning';
 }
 
 /** Detect linter from workspace markers. */
 function detectLinter(workspace: string): { cmd: string; args: string[] } | null {
   // ESLint
   const eslintConfigs = [
-    "eslint.config.js",
-    "eslint.config.mjs",
-    "eslint.config.cjs",
-    "eslint.config.ts",
-    ".eslintrc.js",
-    ".eslintrc.json",
-    ".eslintrc.yml",
-    ".eslintrc",
+    'eslint.config.js',
+    'eslint.config.mjs',
+    'eslint.config.cjs',
+    'eslint.config.ts',
+    '.eslintrc.js',
+    '.eslintrc.json',
+    '.eslintrc.yml',
+    '.eslintrc',
   ];
   for (const config of eslintConfigs) {
     if (existsSync(join(workspace, config))) {
-      return { cmd: "npx", args: ["eslint", "--format", "json"] };
+      return { cmd: 'npx', args: ['eslint', '--format', 'json'] };
     }
   }
 
   // Ruff (Python)
-  if (
-    existsSync(join(workspace, "ruff.toml")) ||
-    existsSync(join(workspace, ".ruff.toml"))
-  ) {
-    return { cmd: "ruff", args: ["check", "--output-format", "json"] };
+  if (existsSync(join(workspace, 'ruff.toml')) || existsSync(join(workspace, '.ruff.toml'))) {
+    return { cmd: 'ruff', args: ['check', '--output-format', 'json'] };
   }
 
   return null;
@@ -62,7 +60,7 @@ function parseEslintOutput(output: string): LintError[] {
           file: result.filePath,
           line: msg.line,
           message: msg.message,
-          severity: msg.severity >= 2 ? "error" : "warning",
+          severity: msg.severity >= 2 ? 'error' : 'warning',
         });
       }
     }
@@ -85,7 +83,7 @@ function parseRuffOutput(output: string): LintError[] {
       file: r.filename,
       line: r.location.row,
       message: r.message,
-      severity: "error" as const,
+      severity: 'error' as const,
     }));
   } catch {
     return [];
@@ -100,12 +98,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   if (!linter) {
     return buildVerdict({
       verified: true,
-      type: "uncertain",
+      type: 'uncertain',
       confidence: 0.5,
       evidence: [],
       fileHashes: {},
-      reason: "No linter configured in workspace",
-      duration_ms: performance.now() - start,
+      reason: 'No linter configured in workspace',
+      durationMs: performance.now() - start,
     });
   }
 
@@ -113,29 +111,29 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   if (!existsSync(targetPath)) {
     return buildVerdict({
       verified: true,
-      type: "uncertain",
+      type: 'uncertain',
       confidence: 0.5,
       evidence: [],
       fileHashes: {},
       reason: `Target file ${target} not found`,
-      duration_ms: performance.now() - start,
+      durationMs: performance.now() - start,
     });
   }
 
   try {
     const proc = Bun.spawn([linter.cmd, ...linter.args, target], {
       cwd: workspace,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
 
     const exitCode = await proc.exited;
     const stdout = await new Response(proc.stdout).text();
-    const duration_ms = performance.now() - start;
+    const durationMs = performance.now() - start;
 
-    const isEslint = linter.cmd === "npx" && linter.args.includes("eslint");
+    const isEslint = linter.cmd === 'npx' && linter.args.includes('eslint');
     const lintErrors = isEslint ? parseEslintOutput(stdout) : parseRuffOutput(stdout);
-    const errors = lintErrors.filter((e) => e.severity === "error");
+    const errors = lintErrors.filter((e) => e.severity === 'error');
 
     const evidence: Evidence[] = errors.slice(0, 10).map((e) => ({
       file: relative(workspace, e.file) || target,
@@ -146,34 +144,34 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     if (errors.length === 0) {
       return buildVerdict({
         verified: true,
-        type: "known",
+        type: 'known',
         confidence: 1.0,
         evidence: [],
         fileHashes: {},
         reason: `Lint clean (${lintErrors.length} warnings)`,
-        duration_ms,
+        durationMs,
       });
     }
 
     return buildVerdict({
       verified: false,
-      type: "known",
+      type: 'known',
       confidence: 1.0,
       evidence,
       fileHashes: {},
       reason: `${errors.length} lint error(s) found`,
-      duration_ms,
+      durationMs,
     });
   } catch (err) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Linter failed: ${err instanceof Error ? err.message : String(err)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: performance.now() - start,
+      errorCode: 'ORACLE_CRASH',
+      durationMs: performance.now() - start,
     });
   }
 }

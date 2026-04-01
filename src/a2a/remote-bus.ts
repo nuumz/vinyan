@@ -6,8 +6,8 @@
  *
  * Source of truth: Plan Phase L3
  */
-import type { EventBus, VinyanBusEvents, BusEventName } from "../core/bus.ts";
-import { ECP_MIME_TYPE } from "./ecp-data-part.ts";
+import type { BusEventName, EventBus, VinyanBusEvents } from '../core/bus.ts';
+import { ECP_MIME_TYPE } from './ecp-data-part.ts';
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -21,19 +21,19 @@ export interface RemoteBusConfig {
 
 /** Events safe and useful to forward to peers. */
 export const DEFAULT_FORWARDED_EVENTS: BusEventName[] = [
-  "sleep:cycleComplete",
-  "evolution:rulePromoted",
-  "evolution:ruleRetired",
-  "skill:outcome",
-  "file:hashChanged",
+  'sleep:cycleComplete',
+  'evolution:rulePromoted',
+  'evolution:ruleRetired',
+  'skill:outcome',
+  'file:hashChanged',
 ];
 
 /** Events that must NEVER be forwarded (internal-only). */
 const NEVER_FORWARDED: ReadonlySet<string> = new Set([
-  "worker:dispatch",
-  "trace:record",
-  "task:start",
-  "task:complete",
+  'worker:dispatch',
+  'trace:record',
+  'task:start',
+  'task:complete',
 ]);
 
 // ── Adapter ───────────────────────────────────────────────────────────
@@ -43,8 +43,7 @@ export class RemoteBusAdapter {
   private readonly forwardedEvents: BusEventName[];
 
   constructor(private config: RemoteBusConfig) {
-    this.forwardedEvents = (config.forwardedEvents ?? DEFAULT_FORWARDED_EVENTS)
-      .filter(e => !NEVER_FORWARDED.has(e));
+    this.forwardedEvents = (config.forwardedEvents ?? DEFAULT_FORWARDED_EVENTS).filter((e) => !NEVER_FORWARDED.has(e));
   }
 
   /** Start forwarding events to peers. */
@@ -70,30 +69,32 @@ export class RemoteBusAdapter {
 
   private async forwardToPeers(event: string, payload: unknown): Promise<void> {
     const body = JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id: `remote-bus-${Date.now()}`,
-      method: "tasks/send",
+      method: 'tasks/send',
       params: {
         id: `bus-${event}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         message: {
-          role: "agent",
-          parts: [{
-            type: "data",
-            mimeType: ECP_MIME_TYPE,
-            data: {
-              ecp_version: 1,
-              message_type: "knowledge_transfer",
-              epistemic_type: "known",
-              confidence: 1.0,
-              confidence_reported: true,
-              payload: {
-                bus_event: event,
-                data: payload,
-                instance_id: this.config.instanceId,
-                timestamp: Date.now(),
+          role: 'agent',
+          parts: [
+            {
+              type: 'data',
+              mimeType: ECP_MIME_TYPE,
+              data: {
+                ecp_version: 1,
+                message_type: 'knowledge_transfer',
+                epistemic_type: 'known',
+                confidence: 1.0,
+                confidence_reported: true,
+                payload: {
+                  bus_event: event,
+                  data: payload,
+                  instance_id: this.config.instanceId,
+                  timestamp: Date.now(),
+                },
               },
             },
-          }],
+          ],
         },
       },
     });
@@ -104,8 +105,8 @@ export class RemoteBusAdapter {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 3000);
           await fetch(peerUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body,
             signal: controller.signal,
           });

@@ -6,8 +6,8 @@
  *
  * Source of truth: spec/tdd.md §12B (Shadow Execution)
  */
-import type { Database } from "bun:sqlite";
-import type { ShadowJob, ShadowValidationResult } from "../orchestrator/types.ts";
+import type { Database } from 'bun:sqlite';
+import type { ShadowJob, ShadowValidationResult } from '../orchestrator/types.ts';
 
 export class ShadowStore {
   private db: Database;
@@ -41,37 +41,25 @@ export class ShadowStore {
     });
   }
 
-  updateStatus(
-    id: string,
-    status: ShadowJob["status"],
-    result?: ShadowValidationResult,
-  ): void {
+  updateStatus(id: string, status: ShadowJob['status'], result?: ShadowValidationResult): void {
     const now = Date.now();
-    if (status === "running") {
-      this.db.prepare(
-        `UPDATE shadow_jobs SET status = ?, started_at = ? WHERE id = ?`,
-      ).run(status, now, id);
-    } else if (status === "done" || status === "failed") {
-      this.db.prepare(
-        `UPDATE shadow_jobs SET status = ?, completed_at = ?, result = ? WHERE id = ?`,
-      ).run(status, now, result ? JSON.stringify(result) : null, id);
+    if (status === 'running') {
+      this.db.prepare(`UPDATE shadow_jobs SET status = ?, started_at = ? WHERE id = ?`).run(status, now, id);
+    } else if (status === 'done' || status === 'failed') {
+      this.db
+        .prepare(`UPDATE shadow_jobs SET status = ?, completed_at = ?, result = ? WHERE id = ?`)
+        .run(status, now, result ? JSON.stringify(result) : null, id);
     } else {
-      this.db.prepare(
-        `UPDATE shadow_jobs SET status = ? WHERE id = ?`,
-      ).run(status, id);
+      this.db.prepare(`UPDATE shadow_jobs SET status = ? WHERE id = ?`).run(status, id);
     }
   }
 
   incrementRetry(id: string): void {
-    this.db.prepare(
-      `UPDATE shadow_jobs SET retry_count = retry_count + 1 WHERE id = ?`,
-    ).run(id);
+    this.db.prepare(`UPDATE shadow_jobs SET retry_count = retry_count + 1 WHERE id = ?`).run(id);
   }
 
   findPending(): ShadowJobWithMutations[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC`,
-    ).all();
+    const rows = this.db.prepare(`SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC`).all();
     return rows.map(rowToShadowJob);
   }
 
@@ -82,13 +70,13 @@ export class ShadowStore {
    */
   claimNextPending(): ShadowJobWithMutations | null {
     const txn = this.db.transaction(() => {
-      const row = this.db.prepare(
-        `SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC LIMIT 1`,
-      ).get();
+      const row = this.db
+        .prepare(`SELECT * FROM shadow_jobs WHERE status = 'pending' ORDER BY enqueued_at ASC LIMIT 1`)
+        .get();
       if (!row) return null;
-      const updated = this.db.prepare(
-        `UPDATE shadow_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'`,
-      ).run(Date.now(), (row as any).id);
+      const updated = this.db
+        .prepare(`UPDATE shadow_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'`)
+        .run(Date.now(), (row as any).id);
       if (updated.changes === 0) return null;
       return rowToShadowJob(row);
     });
@@ -96,16 +84,14 @@ export class ShadowStore {
   }
 
   findByTaskId(taskId: string): ShadowJobWithMutations | null {
-    const row = this.db.prepare(
-      `SELECT * FROM shadow_jobs WHERE task_id = ? ORDER BY enqueued_at DESC LIMIT 1`,
-    ).get(taskId);
+    const row = this.db
+      .prepare(`SELECT * FROM shadow_jobs WHERE task_id = ? ORDER BY enqueued_at DESC LIMIT 1`)
+      .get(taskId);
     return row ? rowToShadowJob(row) : null;
   }
 
-  findByStatus(status: ShadowJob["status"]): ShadowJobWithMutations[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM shadow_jobs WHERE status = ? ORDER BY enqueued_at ASC`,
-    ).all(status);
+  findByStatus(status: ShadowJob['status']): ShadowJobWithMutations[] {
+    const rows = this.db.prepare(`SELECT * FROM shadow_jobs WHERE status = ? ORDER BY enqueued_at ASC`).all(status);
     return rows.map(rowToShadowJob);
   }
 
@@ -114,10 +100,10 @@ export class ShadowStore {
     return row.cnt;
   }
 
-  countByStatus(status: ShadowJob["status"]): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM shadow_jobs WHERE status = ?`,
-    ).get(status) as { cnt: number };
+  countByStatus(status: ShadowJob['status']): number {
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM shadow_jobs WHERE status = ?`).get(status) as {
+      cnt: number;
+    };
     return row.cnt;
   }
 }

@@ -1,4 +1,4 @@
-import { add, multiply } from "./math.ts";
+import { add, multiply } from './math.ts';
 
 export function sum(values: number[]): number {
   return values.reduce((acc, v) => add(acc, v), 0);

@@ -9,7 +9,7 @@
  * Each detector listens to specific bus events and emits `observability:alert`
  * when thresholds are exceeded. All logic is deterministic (A3).
  */
-import type { VinyanBus } from "../core/bus.ts";
+import type { VinyanBus } from '../core/bus.ts';
 
 // ── FC4: Forgot context ──────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ const FC9_OMISSION_THRESHOLD = 3;
 
 interface FC11State {
   /** Recent bias directions (ring buffer, max windowSize entries) */
-  recentBiases: Array<"over" | "under">;
+  recentBiases: Array<'over' | 'under'>;
 }
 
 const FC11_WINDOW_SIZE = 20;
@@ -54,7 +54,7 @@ export class GapHDetector {
 
     // FC4: Track memory eviction warnings
     unsubs.push(
-      this.bus.on("memory:eviction_warning", (payload) => {
+      this.bus.on('memory:eviction_warning', (payload) => {
         const count = (this.fc4.evictions.get(payload.taskId) ?? 0) + 1;
         this.fc4.evictions.set(payload.taskId, count);
       }),
@@ -62,13 +62,13 @@ export class GapHDetector {
 
     // FC4: Check for task failure after eviction warnings
     unsubs.push(
-      this.bus.on("task:complete", (payload) => {
-        if (payload.result.status === "failed") {
+      this.bus.on('task:complete', (payload) => {
+        if (payload.result.status === 'failed') {
           const evictionCount = this.fc4.evictions.get(payload.result.id) ?? 0;
           if (evictionCount >= FC4_EVICTION_THRESHOLD) {
-            this.bus.emit("observability:alert", {
-              detector: "FC4",
-              severity: "warning",
+            this.bus.emit('observability:alert', {
+              detector: 'FC4',
+              severity: 'warning',
               message: `Task ${payload.result.id} failed after ${evictionCount} memory eviction warnings — possible context loss`,
               metadata: { taskId: payload.result.id, evictionCount },
             });
@@ -81,14 +81,14 @@ export class GapHDetector {
 
     // FC9: Track omitted oracle verdicts
     unsubs.push(
-      this.bus.on("context:verdict_omitted", (payload) => {
+      this.bus.on('context:verdict_omitted', (payload) => {
         const count = (this.fc9.omissions.get(payload.taskId) ?? 0) + 1;
         this.fc9.omissions.set(payload.taskId, count);
 
         if (count >= FC9_OMISSION_THRESHOLD) {
-          this.bus.emit("observability:alert", {
-            detector: "FC9",
-            severity: "critical",
+          this.bus.emit('observability:alert', {
+            detector: 'FC9',
+            severity: 'critical',
             message: `Task ${payload.taskId} has ${count} omitted oracle verdicts — worker may lack critical context`,
             metadata: {
               taskId: payload.taskId,
@@ -103,7 +103,7 @@ export class GapHDetector {
 
     // FC11: Track prediction error bias
     unsubs.push(
-      this.bus.on("selfmodel:systematic_miscalibration", (payload) => {
+      this.bus.on('selfmodel:systematic_miscalibration', (payload) => {
         this.fc11.recentBiases.push(payload.biasDirection);
         // Keep ring buffer within window size
         if (this.fc11.recentBiases.length > FC11_WINDOW_SIZE) {
@@ -112,16 +112,16 @@ export class GapHDetector {
 
         // Check for sustained bias only when we have enough samples
         if (this.fc11.recentBiases.length >= FC11_WINDOW_SIZE) {
-          const overCount = this.fc11.recentBiases.filter(d => d === "over").length;
+          const overCount = this.fc11.recentBiases.filter((d) => d === 'over').length;
           const underCount = this.fc11.recentBiases.length - overCount;
           const maxCount = Math.max(overCount, underCount);
           const biasRatio = maxCount / this.fc11.recentBiases.length;
 
           if (biasRatio >= FC11_BIAS_THRESHOLD) {
-            const dominantDirection = overCount > underCount ? "over" : "under";
-            this.bus.emit("observability:alert", {
-              detector: "FC11",
-              severity: "warning",
+            const dominantDirection = overCount > underCount ? 'over' : 'under';
+            this.bus.emit('observability:alert', {
+              detector: 'FC11',
+              severity: 'warning',
               message: `Self-model shows sustained ${dominantDirection}-prediction bias: ${(biasRatio * 100).toFixed(0)}% of last ${FC11_WINDOW_SIZE} predictions`,
               metadata: {
                 biasDirection: dominantDirection,
@@ -136,14 +136,14 @@ export class GapHDetector {
       }),
     );
 
-    return () => unsubs.forEach(fn => fn());
+    return () => unsubs.forEach((fn) => fn());
   }
 
   /** Get current detector state for debugging */
   getState(): {
     fc4: { evictions: Record<string, number> };
     fc9: { omissions: Record<string, number> };
-    fc11: { recentBiases: Array<"over" | "under">; windowSize: number };
+    fc11: { recentBiases: Array<'over' | 'under'>; windowSize: number };
   } {
     return {
       fc4: { evictions: Object.fromEntries(this.fc4.evictions) },

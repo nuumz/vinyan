@@ -3,8 +3,8 @@
  *
  * Source of truth: design/implementation-plan.md PH5.10
  */
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 export interface DetectedLanguage {
   language: string;
@@ -13,13 +13,13 @@ export interface DetectedLanguage {
 
 /** Marker file → language mapping. */
 const LANGUAGE_MARKERS: Array<{ file: string; language: string }> = [
-  { file: "package.json", language: "typescript" },
-  { file: "tsconfig.json", language: "typescript" },
-  { file: "pyproject.toml", language: "python" },
-  { file: "setup.py", language: "python" },
-  { file: "requirements.txt", language: "python" },
-  { file: "go.mod", language: "go" },
-  { file: "Cargo.toml", language: "rust" },
+  { file: 'package.json', language: 'typescript' },
+  { file: 'tsconfig.json', language: 'typescript' },
+  { file: 'pyproject.toml', language: 'python' },
+  { file: 'setup.py', language: 'python' },
+  { file: 'requirements.txt', language: 'python' },
+  { file: 'go.mod', language: 'go' },
+  { file: 'Cargo.toml', language: 'rust' },
 ];
 
 /**

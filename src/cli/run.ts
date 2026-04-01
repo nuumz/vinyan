@@ -10,38 +10,39 @@
  *
  * Source of truth: spec/tdd.md §16 (Core Loop), §1A.8 (CLI)
  */
-import { createOrchestrator } from "../orchestrator/factory.ts";
-import { createBus } from "../core/bus.ts";
-import { attachCLIProgressListener } from "../bus/cli-progress-listener.ts";
-import { attachTraceListener } from "../bus/trace-listener.ts";
-import type { TaskInput, TaskResult } from "../orchestrator/types.ts";
-import type { TraceTelemetry } from "../bus/trace-listener.ts";
+
+import { attachCLIProgressListener } from '../bus/cli-progress-listener.ts';
+import type { TraceTelemetry } from '../bus/trace-listener.ts';
+import { attachTraceListener } from '../bus/trace-listener.ts';
+import { createBus } from '../core/bus.ts';
+import { createOrchestrator } from '../orchestrator/factory.ts';
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 
 export async function runAgentTask(argv: string[]): Promise<void> {
   // Parse arguments
-  const goalIndex = argv.indexOf("run") + 1;
+  const goalIndex = argv.indexOf('run') + 1;
   const goal = argv[goalIndex];
 
-  if (!goal || goal.startsWith("--")) {
+  if (!goal || goal.startsWith('--')) {
     console.error('Usage: vinyan run "task description" [--file path] [--budget tokens] [--retries n] [--timeout ms]');
-    console.error("Flags: --verbose  Show oracle verdict details");
-    console.error("       --quiet    Suppress progress output");
-    console.error("       --summary  Print human-friendly summary to stdout instead of JSON");
+    console.error('Flags: --verbose  Show oracle verdict details');
+    console.error('       --quiet    Suppress progress output');
+    console.error('       --summary  Print human-friendly summary to stdout instead of JSON');
     process.exit(2);
   }
 
-  const files = parseArrayFlag(argv, "--file");
-  const budget = parseInt(parseSingleFlag(argv, "--budget") ?? "50000", 10);
-  const retries = parseInt(parseSingleFlag(argv, "--retries") ?? "3", 10);
-  const timeout = parseInt(parseSingleFlag(argv, "--timeout") ?? "60000", 10);
-  const workspace = parseSingleFlag(argv, "--workspace") ?? process.cwd();
-  const quiet = argv.includes("--quiet");
-  const verbose = argv.includes("--verbose");
-  const summaryMode = argv.includes("--summary");
+  const files = parseArrayFlag(argv, '--file');
+  const budget = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
+  const retries = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
+  const timeout = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);
+  const workspace = parseSingleFlag(argv, '--workspace') ?? process.cwd();
+  const quiet = argv.includes('--quiet');
+  const verbose = argv.includes('--verbose');
+  const summaryMode = argv.includes('--summary');
 
   const input: TaskInput = {
     id: `task-${Date.now().toString(36)}`,
-    source: "cli",
+    source: 'cli',
     goal,
     targetFiles: files.length > 0 ? files : undefined,
     budget: {
@@ -86,16 +87,16 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     orchestrator.close();
 
     switch (result.status) {
-      case "completed":
+      case 'completed':
         process.exit(0);
         break;
-      case "failed":
+      case 'failed':
         process.exit(1);
         break;
-      case "escalated":
+      case 'escalated':
         process.exit(2);
         break;
-      case "uncertain":
+      case 'uncertain':
         process.exit(3);
         break;
     }
@@ -107,28 +108,28 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   }
 }
 
-function printSummary(
-  result: TaskResult,
-  metrics: TraceTelemetry,
-  output: NodeJS.WritableStream,
-): void {
+function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJS.WritableStream): void {
   const status =
-    result.status === "completed" ? "OK" :
-    result.status === "escalated" ? "ESCALATED" :
-    result.status === "uncertain" ? "UNCERTAIN" : "FAILED";
+    result.status === 'completed'
+      ? 'OK'
+      : result.status === 'escalated'
+        ? 'ESCALATED'
+        : result.status === 'uncertain'
+          ? 'UNCERTAIN'
+          : 'FAILED';
 
   const qs = result.qualityScore
-    ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensions_available}D)`
-    : "";
+    ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
+    : '';
 
-  output.write(`\n[vinyan] ${status} | ${metrics.totalTraces} attempt(s) | ${result.trace.duration_ms}ms${qs}\n`);
+  output.write(`\n[vinyan] ${status} | ${metrics.totalTraces} attempt(s) | ${result.trace.durationMs}ms${qs}\n`);
 
   if (result.escalationReason) {
     output.write(`[vinyan] Escalation: ${result.escalationReason}\n`);
   }
 
   if (result.mutations.length > 0) {
-    output.write(`[vinyan] Files modified: ${result.mutations.map(m => m.file).join(", ")}\n`);
+    output.write(`[vinyan] Files modified: ${result.mutations.map((m) => m.file).join(', ')}\n`);
   }
 }
 

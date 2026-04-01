@@ -7,7 +7,7 @@
  *
  * Source of truth: spec/tdd.md §12B (Data Gates)
  */
-import type { DataGate, DataGateMetric } from "./types.ts";
+import type { DataGate, DataGateMetric } from './types.ts';
 
 export interface DataGateStats {
   traceCount: number;
@@ -15,8 +15,8 @@ export interface DataGateStats {
   patternsExtracted: number;
   activeSkills: number;
   sleepCyclesRun: number;
-  activeWorkers: number;              // Phase 4: registered active worker profiles
-  workerTraceDiversity: number;       // Phase 4: distinct worker_ids in recent traces
+  activeWorkers: number; // Phase 4: registered active worker profiles
+  workerTraceDiversity: number; // Phase 4: distinct worker_ids in recent traces
 }
 
 export interface DataGateThresholds {
@@ -27,48 +27,44 @@ export interface DataGateThresholds {
   evolution_min_traces: number;
   evolution_min_active_skills: number;
   evolution_min_sleep_cycles: number;
-  fleet_min_active_workers: number;           // Phase 4: minimum active worker profiles
-  fleet_min_worker_trace_diversity: number;   // Phase 4: minimum distinct workers in traces
+  fleet_min_active_workers: number; // Phase 4: minimum active worker profiles
+  fleet_min_worker_trace_diversity: number; // Phase 4: minimum distinct workers in traces
 }
 
 const METRIC_TO_STAT: Record<DataGateMetric, keyof DataGateStats> = {
-  trace_count: "traceCount",
-  distinct_task_types: "distinctTaskTypes",
-  patterns_extracted: "patternsExtracted",
-  active_skills: "activeSkills",
-  sleep_cycles_run: "sleepCyclesRun",
-  active_workers: "activeWorkers",
-  worker_trace_diversity: "workerTraceDiversity",
+  trace_count: 'traceCount',
+  distinct_task_types: 'distinctTaskTypes',
+  patterns_extracted: 'patternsExtracted',
+  active_skills: 'activeSkills',
+  sleep_cycles_run: 'sleepCyclesRun',
+  active_workers: 'activeWorkers',
+  worker_trace_diversity: 'workerTraceDiversity',
 };
 
 const FEATURE_CONDITIONS: Record<string, Array<{ metric: DataGateMetric; thresholdKey: keyof DataGateThresholds }>> = {
   sleep_cycle: [
-    { metric: "trace_count", thresholdKey: "sleep_cycle_min_traces" },
-    { metric: "distinct_task_types", thresholdKey: "sleep_cycle_min_task_types" },
+    { metric: 'trace_count', thresholdKey: 'sleep_cycle_min_traces' },
+    { metric: 'distinct_task_types', thresholdKey: 'sleep_cycle_min_task_types' },
   ],
   skill_formation: [
-    { metric: "patterns_extracted", thresholdKey: "skill_min_patterns" },
-    { metric: "sleep_cycles_run", thresholdKey: "skill_min_sleep_cycles" },
+    { metric: 'patterns_extracted', thresholdKey: 'skill_min_patterns' },
+    { metric: 'sleep_cycles_run', thresholdKey: 'skill_min_sleep_cycles' },
   ],
   evolution_engine: [
-    { metric: "trace_count", thresholdKey: "evolution_min_traces" },
-    { metric: "active_skills", thresholdKey: "evolution_min_active_skills" },
-    { metric: "sleep_cycles_run", thresholdKey: "evolution_min_sleep_cycles" },
+    { metric: 'trace_count', thresholdKey: 'evolution_min_traces' },
+    { metric: 'active_skills', thresholdKey: 'evolution_min_active_skills' },
+    { metric: 'sleep_cycles_run', thresholdKey: 'evolution_min_sleep_cycles' },
   ],
   fleet_routing: [
-    { metric: "active_workers", thresholdKey: "fleet_min_active_workers" },
-    { metric: "worker_trace_diversity", thresholdKey: "fleet_min_worker_trace_diversity" },
+    { metric: 'active_workers', thresholdKey: 'fleet_min_active_workers' },
+    { metric: 'worker_trace_diversity', thresholdKey: 'fleet_min_worker_trace_diversity' },
   ],
 };
 
 /**
  * Check whether a Phase 2 feature has enough data to activate.
  */
-export function checkDataGate(
-  feature: string,
-  stats: DataGateStats,
-  thresholds: DataGateThresholds,
-): DataGate {
+export function checkDataGate(feature: string, stats: DataGateStats, thresholds: DataGateThresholds): DataGate {
   const conditionDefs = FEATURE_CONDITIONS[feature];
   if (!conditionDefs) {
     return { feature, conditions: [], satisfied: false };
@@ -80,18 +76,13 @@ export function checkDataGate(
     return { metric, threshold, current };
   });
 
-  const satisfied = conditions.every(c => c.current >= c.threshold);
+  const satisfied = conditions.every((c) => c.current >= c.threshold);
   return { feature, conditions, satisfied };
 }
 
 /**
  * Check all known data gates and return their status.
  */
-export function checkAllDataGates(
-  stats: DataGateStats,
-  thresholds: DataGateThresholds,
-): DataGate[] {
-  return Object.keys(FEATURE_CONDITIONS).map(feature =>
-    checkDataGate(feature, stats, thresholds),
-  );
+export function checkAllDataGates(stats: DataGateStats, thresholds: DataGateThresholds): DataGate[] {
+  return Object.keys(FEATURE_CONDITIONS).map((feature) => checkDataGate(feature, stats, thresholds));
 }

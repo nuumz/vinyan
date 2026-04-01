@@ -9,11 +9,11 @@
  *
  * Source of truth: spec/tdd.md §12B (Shadow Execution), Phase 2.2
  */
-import { mkdirSync, writeFileSync, rmSync } from "fs";
-import { resolve, dirname, join } from "path";
-import { tmpdir } from "os";
-import type { ShadowJob, ShadowValidationResult } from "./types.ts";
-import type { ShadowStore, ShadowJobWithMutations } from "../db/shadow-store.ts";
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join, resolve } from 'path';
+import type { ShadowJobWithMutations, ShadowStore } from '../db/shadow-store.ts';
+import type { ShadowJob, ShadowValidationResult } from './types.ts';
 
 export interface ShadowRunnerConfig {
   shadowStore: ShadowStore;
@@ -33,7 +33,7 @@ export class ShadowRunner {
   constructor(config: ShadowRunnerConfig) {
     this.store = config.shadowStore;
     this.workspace = config.workspace;
-    this.testCommand = config.testCommand ?? "bun test";
+    this.testCommand = config.testCommand ?? 'bun test';
     this.timeoutMs = config.timeoutMs ?? 300_000;
   }
 
@@ -49,7 +49,7 @@ export class ShadowRunner {
     const job = {
       id: `shadow-${taskId}-${Date.now()}`,
       taskId,
-      status: "pending" as const,
+      status: 'pending' as const,
       enqueuedAt: Date.now(),
       retryCount: 0,
       maxRetries: 1,
@@ -69,20 +69,20 @@ export class ShadowRunner {
 
     try {
       const result = await this.runValidation(job);
-      this.store.updateStatus(job.id, "done", result);
+      this.store.updateStatus(job.id, 'done', result);
       return result;
     } catch (err) {
       if (job.retryCount < job.maxRetries) {
         this.store.incrementRetry(job.id);
-        this.store.updateStatus(job.id, "pending");
+        this.store.updateStatus(job.id, 'pending');
       } else {
         const failResult: ShadowValidationResult = {
           taskId: job.taskId,
           testsPassed: false,
-          duration_ms: 0,
+          durationMs: 0,
           timestamp: Date.now(),
         };
-        this.store.updateStatus(job.id, "failed", failResult);
+        this.store.updateStatus(job.id, 'failed', failResult);
       }
       return null;
     }
@@ -94,9 +94,9 @@ export class ShadowRunner {
    * Returns number of recovered jobs.
    */
   recover(): number {
-    const stale = this.store.findByStatus("running");
+    const stale = this.store.findByStatus('running');
     for (const job of stale) {
-      this.store.updateStatus(job.id, "pending");
+      this.store.updateStatus(job.id, 'pending');
     }
     return stale.length;
   }
@@ -115,15 +115,13 @@ export class ShadowRunner {
 
     const sandboxDir = await this.createSandbox(mutations);
     try {
-      const proc = Bun.spawn(["sh", "-c", this.testCommand], {
+      const proc = Bun.spawn(['sh', '-c', this.testCommand], {
         cwd: sandboxDir,
-        stdout: "pipe",
-        stderr: "pipe",
+        stdout: 'pipe',
+        stderr: 'pipe',
       });
 
-      const timeoutPromise = new Promise<"timeout">(r =>
-        setTimeout(() => r("timeout"), this.timeoutMs),
-      );
+      const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), this.timeoutMs));
 
       const processPromise = (async () => {
         const stdout = await new Response(proc.stdout).text();
@@ -132,14 +130,14 @@ export class ShadowRunner {
       })();
 
       const raceResult = await Promise.race([processPromise, timeoutPromise]);
-      const duration_ms = Math.round(performance.now() - startTime);
+      const durationMs = Math.round(performance.now() - startTime);
 
-      if (raceResult === "timeout") {
+      if (raceResult === 'timeout') {
         proc.kill();
         return {
           taskId,
           testsPassed: false,
-          duration_ms,
+          durationMs,
           timestamp: Date.now(),
           alternativeWorkerId: workerId,
         };
@@ -152,12 +150,16 @@ export class ShadowRunner {
         taskId,
         testsPassed,
         testResults,
-        duration_ms,
+        durationMs,
         timestamp: Date.now(),
         alternativeWorkerId: workerId,
       };
     } finally {
-      try { rmSync(sandboxDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+      try {
+        rmSync(sandboxDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
     }
   }
 
@@ -166,24 +168,20 @@ export class ShadowRunner {
    * Copies workspace to a temp directory, applies proposed mutations,
    * then runs the test suite against the mutated state.
    */
-  private async runValidation(
-    job: ShadowJobWithMutations,
-  ): Promise<ShadowValidationResult> {
+  private async runValidation(job: ShadowJobWithMutations): Promise<ShadowValidationResult> {
     const startTime = performance.now();
 
     // Create isolated sandbox with mutations applied
     const sandboxDir = await this.createSandbox(job.mutations ?? []);
 
     try {
-      const proc = Bun.spawn(["sh", "-c", this.testCommand], {
+      const proc = Bun.spawn(['sh', '-c', this.testCommand], {
         cwd: sandboxDir,
-        stdout: "pipe",
-        stderr: "pipe",
+        stdout: 'pipe',
+        stderr: 'pipe',
       });
 
-      const timeoutPromise = new Promise<"timeout">(r =>
-        setTimeout(() => r("timeout"), this.timeoutMs),
-      );
+      const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), this.timeoutMs));
 
       const processPromise = (async () => {
         const stdout = await new Response(proc.stdout).text();
@@ -192,14 +190,14 @@ export class ShadowRunner {
       })();
 
       const raceResult = await Promise.race([processPromise, timeoutPromise]);
-      const duration_ms = Math.round(performance.now() - startTime);
+      const durationMs = Math.round(performance.now() - startTime);
 
-      if (raceResult === "timeout") {
+      if (raceResult === 'timeout') {
         proc.kill();
         return {
           taskId: job.taskId,
           testsPassed: false,
-          duration_ms,
+          durationMs,
           timestamp: Date.now(),
         };
       }
@@ -211,12 +209,16 @@ export class ShadowRunner {
         taskId: job.taskId,
         testsPassed,
         testResults,
-        duration_ms,
+        durationMs,
         timestamp: Date.now(),
       };
     } finally {
       // Clean up sandbox
-      try { rmSync(sandboxDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+      try {
+        rmSync(sandboxDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
     }
   }
 
@@ -224,15 +226,13 @@ export class ShadowRunner {
    * Create an isolated workspace copy with proposed mutations applied.
    * Uses cp -r for simplicity; Phase 3 can use overlay FS or Docker.
    */
-  private async createSandbox(
-    mutations: Array<{ file: string; content: string }>,
-  ): Promise<string> {
+  private async createSandbox(mutations: Array<{ file: string; content: string }>): Promise<string> {
     const sandboxDir = join(tmpdir(), `vinyan-shadow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 
     // Copy workspace to sandbox
-    const cp = Bun.spawn(["cp", "-r", this.workspace, sandboxDir], {
-      stdout: "pipe",
-      stderr: "pipe",
+    const cp = Bun.spawn(['cp', '-r', this.workspace, sandboxDir], {
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
     await cp.exited;
 

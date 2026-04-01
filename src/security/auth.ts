@@ -6,10 +6,11 @@
  *
  * Source of truth: spec/tdd.md §22.6, safety invariant I15
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
-import { randomBytes, timingSafeEqual } from "crypto";
-import type { AuthContext } from "./types.ts";
+
+import { randomBytes, timingSafeEqual } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
+import type { AuthContext } from './types.ts';
 
 /**
  * Create auth middleware that validates Bearer tokens.
@@ -23,27 +24,27 @@ export function createAuthMiddleware(tokenPath: string): {
 } {
   // Auto-generate token if it doesn't exist
   ensureTokenExists(tokenPath);
-  const token = readFileSync(tokenPath, "utf-8").trim();
+  const token = readFileSync(tokenPath, 'utf-8').trim();
 
   return {
     authenticate(req: Request): AuthContext {
-      const authHeader = req.headers.get("authorization");
+      const authHeader = req.headers.get('authorization');
 
       if (!authHeader) {
-        return { authenticated: false, source: "anonymous" };
+        return { authenticated: false, source: 'anonymous' };
       }
 
       const match = authHeader.match(/^Bearer\s+(.+)$/i);
       if (!match?.[1]) {
-        return { authenticated: false, source: "anonymous" };
+        return { authenticated: false, source: 'anonymous' };
       }
 
       const provided = match[1].trim();
       if (safeCompare(provided, token)) {
-        return { authenticated: true, apiKey: provided, source: "bearer" };
+        return { authenticated: true, apiKey: provided, source: 'bearer' };
       }
 
-      return { authenticated: false, source: "anonymous" };
+      return { authenticated: false, source: 'anonymous' };
     },
 
     getToken(): string {
@@ -65,8 +66,8 @@ function ensureTokenExists(tokenPath: string): void {
   if (existsSync(tokenPath)) return;
 
   mkdirSync(dirname(tokenPath), { recursive: true });
-  const token = randomBytes(32).toString("hex");
-  writeFileSync(tokenPath, token + "\n", { mode: 0o600 });
+  const token = randomBytes(32).toString('hex');
+  writeFileSync(tokenPath, token + '\n', { mode: 0o600 });
 }
 
 /**
@@ -76,14 +77,11 @@ function ensureTokenExists(tokenPath: string): void {
  */
 export function requiresAuth(method: string, path: string): boolean {
   // Health and metrics are always public
-  if (path === "/api/v1/health" || path === "/api/v1/metrics") return false;
+  if (path === '/api/v1/health' || path === '/api/v1/metrics') return false;
 
   // Read-only query endpoints
-  if (method === "GET" && (
-    path === "/api/v1/facts" ||
-    path === "/api/v1/workers" ||
-    path === "/api/v1/rules"
-  )) return false;
+  if (method === 'GET' && (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules'))
+    return false;
 
   // SSE event streams require auth
   // All POST/PUT/DELETE require auth

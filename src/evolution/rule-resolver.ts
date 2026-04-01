@@ -10,7 +10,7 @@
  *
  * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
-import type { EvolutionaryRule } from "../orchestrator/types.ts";
+import type { EvolutionaryRule } from '../orchestrator/types.ts';
 
 /**
  * Resolve conflicts among triggered rules.
@@ -56,17 +56,17 @@ export function resolveRuleConflicts(rules: EvolutionaryRule[]): EvolutionaryRul
 function stricterAction(rule: EvolutionaryRule): number {
   // Escalation is stricter than preference
   switch (rule.action) {
-    case "escalate": {
+    case 'escalate': {
       const level = (rule.parameters.toLevel as number) ?? 1;
       return 100 + level; // Higher escalation level = stricter
     }
-    case "require-oracle":
+    case 'require-oracle':
       return 80;
-    case "adjust-threshold":
+    case 'adjust-threshold':
       return 60;
-    case "assign-worker":
+    case 'assign-worker':
       return 50;
-    case "prefer-model":
+    case 'prefer-model':
       return 40;
     default:
       return 0;

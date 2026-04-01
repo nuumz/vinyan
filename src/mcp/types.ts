@@ -3,12 +3,12 @@
  * Zod schemas for JSON-RPC 2.0 and MCP-specific messages.
  * No external MCP SDK — protocol implemented manually.
  */
-import { z } from "zod/v4";
+import { z } from 'zod/v4';
 
 // ── JSON-RPC 2.0 base ───────────────────────────────────────────────
 
 export const JsonRpcRequestSchema = z.object({
-  jsonrpc: z.literal("2.0"),
+  jsonrpc: z.literal('2.0'),
   id: z.union([z.string(), z.number()]),
   method: z.string(),
   params: z.record(z.string(), z.unknown()).optional(),
@@ -23,7 +23,7 @@ export const JsonRpcErrorSchema = z.object({
 export type JsonRpcError = z.infer<typeof JsonRpcErrorSchema>;
 
 export const JsonRpcResponseSchema = z.object({
-  jsonrpc: z.literal("2.0"),
+  jsonrpc: z.literal('2.0'),
   id: z.union([z.string(), z.number()]),
   result: z.unknown().optional(),
   error: JsonRpcErrorSchema.optional(),
@@ -48,7 +48,7 @@ export type MCPToolCall = z.infer<typeof MCPToolCallSchema>;
 export const MCPToolResultSchema = z.object({
   content: z.array(
     z.object({
-      type: z.literal("text"),
+      type: z.literal('text'),
       text: z.string(),
     }),
   ),
@@ -59,9 +59,9 @@ export type MCPToolResult = z.infer<typeof MCPToolResultSchema>;
 // ── JSON-RPC error codes ────────────────────────────────────────────
 
 export const JSON_RPC_ERRORS = {
-  PARSE_ERROR: { code: -32700, message: "Parse error" },
-  INVALID_REQUEST: { code: -32600, message: "Invalid Request" },
-  METHOD_NOT_FOUND: { code: -32601, message: "Method not found" },
-  INVALID_PARAMS: { code: -32602, message: "Invalid params" },
-  INTERNAL_ERROR: { code: -32603, message: "Internal error" },
+  PARSE_ERROR: { code: -32700, message: 'Parse error' },
+  INVALID_REQUEST: { code: -32600, message: 'Invalid Request' },
+  METHOD_NOT_FOUND: { code: -32601, message: 'Method not found' },
+  INVALID_PARAMS: { code: -32602, message: 'Invalid params' },
+  INTERNAL_ERROR: { code: -32603, message: 'Internal error' },
 } as const;

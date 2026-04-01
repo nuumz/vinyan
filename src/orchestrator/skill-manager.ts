@@ -11,11 +11,12 @@
  *
  * Source of truth: spec/tdd.md §12B (Skill Formation), Phase 2.5
  */
-import { existsSync, readFileSync } from "fs";
-import { resolve } from "path";
-import { createHash } from "crypto";
-import type { CachedSkill, ExtractedPattern } from "./types.ts";
-import type { SkillStore } from "../db/skill-store.ts";
+
+import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
+import type { SkillStore } from '../db/skill-store.ts';
+import type { CachedSkill, ExtractedPattern } from './types.ts';
 
 export interface SkillManagerConfig {
   skillStore: SkillStore;
@@ -51,7 +52,7 @@ export class SkillManager {
    */
   match(taskSignature: string): CachedSkill | null {
     const skill = this.store.findBySignature(taskSignature);
-    if (skill && skill.status === "active") return skill;
+    if (skill && skill.status === 'active') return skill;
 
     // PH3.4: fuzzy fallback — same verb + overlapping file extensions
     const fuzzy = this.fuzzyMatch(taskSignature);
@@ -65,12 +66,12 @@ export class SkillManager {
    * Only considers active skills with successRate >= 0.8.
    */
   fuzzyMatch(taskSignature: string): CachedSkill | null {
-    const parts = taskSignature.split("::");
+    const parts = taskSignature.split('::');
     const verb = parts[0];
     const exts = parts[1];
     if (!verb || !exts) return null;
 
-    const targetExts = new Set(exts.split(","));
+    const targetExts = new Set(exts.split(','));
     const candidates = this.store.findActive();
 
     let best: CachedSkill | null = null;
@@ -78,12 +79,12 @@ export class SkillManager {
       // Skip exact match (already checked above)
       if (skill.taskSignature === taskSignature) continue;
 
-      const sParts = skill.taskSignature.split("::");
+      const sParts = skill.taskSignature.split('::');
       const sVerb = sParts[0];
       const sExts = sParts[1];
       if (sVerb !== verb || !sExts) continue;
 
-      const overlap = sExts.split(",").some(e => targetExts.has(e));
+      const overlap = sExts.split(',').some((e) => targetExts.has(e));
       if (!overlap) continue;
 
       // Require high success rate for fuzzy matches
@@ -98,16 +99,12 @@ export class SkillManager {
    * Create a new skill from a Sleep Cycle success pattern.
    * Enters probation status.
    */
-  createFromPattern(
-    pattern: ExtractedPattern,
-    riskScore: number,
-    depConeHashes: Record<string, string>,
-  ): CachedSkill {
+  createFromPattern(pattern: ExtractedPattern, riskScore: number, depConeHashes: Record<string, string>): CachedSkill {
     const skill: CachedSkill = {
       taskSignature: pattern.taskTypeSignature,
       approach: pattern.approach ?? pattern.description,
       successRate: pattern.confidence,
-      status: "probation",
+      status: 'probation',
       probationRemaining: this.probationSessions,
       usageCount: 0,
       riskAtCreation: riskScore,
@@ -133,7 +130,7 @@ export class SkillManager {
     if (!hashCheck.valid) return hashCheck;
 
     // hash-only profile stops here
-    if (skill.verificationProfile === "hash-only") {
+    if (skill.verificationProfile === 'hash-only') {
       return { valid: true };
     }
 
@@ -161,25 +158,22 @@ export class SkillManager {
 
     if (!success) {
       // Failure → demote immediately
-      this.store.updateStatus(skill.taskSignature, "demoted");
+      this.store.updateStatus(skill.taskSignature, 'demoted');
       return;
     }
 
-    if (skill.status === "probation") {
+    if (skill.status === 'probation') {
       const remaining = skill.probationRemaining - 1;
       if (remaining <= 0) {
         // Probation complete → promote to active
-        this.store.updateStatus(skill.taskSignature, "active", 0);
+        this.store.updateStatus(skill.taskSignature, 'active', 0);
       } else {
-        this.store.updateStatus(skill.taskSignature, "probation", remaining);
+        this.store.updateStatus(skill.taskSignature, 'probation', remaining);
       }
     }
 
     // Update verification timestamp
-    this.store.updateDepConeHashes(
-      skill.taskSignature,
-      this.computeCurrentHashes(Object.keys(skill.depConeHashes)),
-    );
+    this.store.updateDepConeHashes(skill.taskSignature, this.computeCurrentHashes(Object.keys(skill.depConeHashes)));
   }
 
   /**
@@ -196,7 +190,7 @@ export class SkillManager {
       checked++;
       const result = this.verify(skill);
       if (!result.valid) {
-        this.store.updateStatus(skill.taskSignature, "demoted");
+        this.store.updateStatus(skill.taskSignature, 'demoted');
         demoted++;
       } else {
         // Refresh hashes and timestamp
@@ -213,13 +207,11 @@ export class SkillManager {
   /**
    * Check if dep cone file hashes still match.
    */
-  private checkDepConeHashes(
-    hashes: Record<string, string>,
-  ): { valid: boolean; reason?: string } {
+  private checkDepConeHashes(hashes: Record<string, string>): { valid: boolean; reason?: string } {
     for (const [filePath, expectedHash] of Object.entries(hashes)) {
       const absPath = resolve(this.workspace, filePath);
       try {
-        const content = readFileSync(absPath, "utf-8");
+        const content = readFileSync(absPath, 'utf-8');
         const currentHash = hashContent(content);
         if (currentHash !== expectedHash) {
           return { valid: false, reason: `File ${filePath} has changed (hash mismatch)` };
@@ -239,7 +231,7 @@ export class SkillManager {
     for (const filePath of filePaths) {
       const absPath = resolve(this.workspace, filePath);
       try {
-        const content = readFileSync(absPath, "utf-8");
+        const content = readFileSync(absPath, 'utf-8');
         hashes[filePath] = hashContent(content);
       } catch {
         // File doesn't exist or not readable — skip
@@ -251,12 +243,12 @@ export class SkillManager {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function riskToProfile(risk: number): CachedSkill["verificationProfile"] {
-  if (risk < 0.2) return "hash-only";
-  if (risk < 0.4) return "structural";
-  return "full";
+function riskToProfile(risk: number): CachedSkill['verificationProfile'] {
+  if (risk < 0.2) return 'hash-only';
+  if (risk < 0.4) return 'structural';
+  return 'full';
 }
 
 export function hashContent(content: string): string {
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+  return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }

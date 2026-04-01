@@ -6,18 +6,18 @@
  *
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
-import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from "../types.ts";
+import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
 
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-const DEFAULT_MODELS: Record<LLMProvider["tier"], string> = {
-  fast: "google/gemini-2.0-flash-001",
-  balanced: "anthropic/claude-sonnet-4",
-  powerful: "anthropic/claude-opus-4",
+const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {
+  fast: 'google/gemini-2.0-flash-001',
+  balanced: 'anthropic/claude-sonnet-4',
+  powerful: 'anthropic/claude-opus-4',
 };
 
 export interface OpenRouterProviderConfig {
-  tier: LLMProvider["tier"];
+  tier: LLMProvider['tier'];
   apiKey?: string;
   model?: string;
 }
@@ -27,9 +27,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
   if (!apiKey) return null;
 
   const envModelKey = `OPENROUTER_${config.tier.toUpperCase()}_MODEL`;
-  const model = config.model
-    ?? process.env[envModelKey]
-    ?? DEFAULT_MODELS[config.tier];
+  const model = config.model ?? process.env[envModelKey] ?? DEFAULT_MODELS[config.tier];
 
   return {
     id: `openrouter/${model}`,
@@ -40,8 +38,8 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         model,
         max_tokens: request.maxTokens,
         messages: [
-          { role: "system", content: request.systemPrompt },
-          { role: "user", content: request.userPrompt },
+          { role: 'system', content: request.systemPrompt },
+          { role: 'user', content: request.userPrompt },
         ],
       };
 
@@ -51,23 +49,23 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
 
       // Convert tools to OpenAI function-calling format
       if (request.tools?.length) {
-        body.tools = request.tools.map(t => ({
-          type: "function",
+        body.tools = request.tools.map((t) => ({
+          type: 'function',
           function: {
             name: t.name,
             description: t.description,
-            parameters: { type: "object", properties: t.parameters },
+            parameters: { type: 'object', properties: t.parameters },
           },
         }));
       }
 
       const response = await fetch(OPENROUTER_BASE_URL, {
-        method: "POST",
+        method: 'POST',
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://github.com/vinyan-agent",
-          "X-Title": "Vinyan Agent",
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://github.com/vinyan-agent',
+          'X-Title': 'Vinyan Agent',
         },
         body: JSON.stringify(body),
       });
@@ -77,22 +75,24 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         throw new Error(`OpenRouter API error ${response.status}: ${errorText}`);
       }
 
-      const data = await response.json() as OpenRouterResponse;
+      const data = (await response.json()) as OpenRouterResponse;
       const choice = data.choices?.[0];
 
       if (!choice) {
-        throw new Error("OpenRouter returned empty choices");
+        throw new Error('OpenRouter returned empty choices');
       }
 
       // Extract tool calls
       const toolCalls: ToolCall[] = [];
       if (choice.message?.tool_calls) {
         for (const tc of choice.message.tool_calls) {
-          if (tc.type === "function") {
+          if (tc.type === 'function') {
             let params: Record<string, unknown> = {};
             try {
               params = JSON.parse(tc.function.arguments);
-            } catch { /* keep empty */ }
+            } catch {
+              /* keep empty */
+            }
             toolCalls.push({
               id: tc.id,
               tool: tc.function.name,
@@ -103,13 +103,15 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
       }
 
       // Map finish_reason
-      const stopReason: LLMResponse["stopReason"] =
-        choice.finish_reason === "tool_calls" ? "tool_use"
-          : choice.finish_reason === "length" ? "max_tokens"
-          : "end_turn";
+      const stopReason: LLMResponse['stopReason'] =
+        choice.finish_reason === 'tool_calls'
+          ? 'tool_use'
+          : choice.finish_reason === 'length'
+            ? 'max_tokens'
+            : 'end_turn';
 
       return {
-        content: choice.message?.content ?? "",
+        content: choice.message?.content ?? '',
         toolCalls,
         tokensUsed: {
           input: data.usage?.prompt_tokens ?? 0,
@@ -128,7 +130,7 @@ export function registerOpenRouterProviders(
   apiKey?: string,
 ): number {
   let count = 0;
-  for (const tier of ["fast", "balanced", "powerful"] as const) {
+  for (const tier of ['fast', 'balanced', 'powerful'] as const) {
     const provider = createOpenRouterProvider({ tier, apiKey });
     if (provider) {
       registry.register(provider);
@@ -146,7 +148,7 @@ interface OpenRouterResponse {
       content?: string;
       tool_calls?: Array<{
         id: string;
-        type: "function";
+        type: 'function';
         function: { name: string; arguments: string };
       }>;
     };

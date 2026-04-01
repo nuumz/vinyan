@@ -1,11 +1,11 @@
-import { z } from "zod/v4";
-import type { Evidence, OracleVerdict } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
+import { z } from 'zod/v4';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, OracleVerdict } from '../../core/types.ts';
 
 /** Single Pyright diagnostic entry. */
 const PyrightDiagnosticSchema = z.object({
   file: z.string(),
-  severity: z.enum(["error", "warning", "information"]),
+  severity: z.enum(['error', 'warning', 'information']),
   message: z.string(),
   range: z.object({
     start: z.object({ line: z.number(), character: z.number() }),
@@ -37,8 +37,8 @@ export type PyrightOutput = z.infer<typeof PyrightOutputSchema>;
  * - Only errors cause verification failure; warnings/info do not.
  * - Each error becomes an Evidence entry.
  */
-export function mapPyrightToVerdict(output: PyrightOutput, duration_ms: number): OracleVerdict {
-  const errors = output.generalDiagnostics.filter((d) => d.severity === "error");
+export function mapPyrightToVerdict(output: PyrightOutput, durationMs: number): OracleVerdict {
+  const errors = output.generalDiagnostics.filter((d) => d.severity === 'error');
 
   const evidence: Evidence[] = errors.map((d) => ({
     file: d.file,
@@ -54,8 +54,8 @@ export function mapPyrightToVerdict(output: PyrightOutput, duration_ms: number):
       errors.length > 0
         ? `${errors.length} type error(s) found (pyright ${output.version}, ${output.summary.filesAnalyzed} files analyzed)`
         : undefined,
-    errorCode: errors.length > 0 ? "TYPE_MISMATCH" : undefined,
-    duration_ms,
+    errorCode: errors.length > 0 ? 'TYPE_MISMATCH' : undefined,
+    durationMs,
   });
 }
 
@@ -63,19 +63,19 @@ export function mapPyrightToVerdict(output: PyrightOutput, duration_ms: number):
  * Parse raw Pyright JSON string and map to OracleVerdict.
  * Returns an error verdict on malformed input.
  */
-export function parsePyrightOutput(raw: string, duration_ms: number): OracleVerdict {
+export function parsePyrightOutput(raw: string, durationMs: number): OracleVerdict {
   const parsed = PyrightOutputSchema.safeParse(JSON.parse(raw));
   if (!parsed.success) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Failed to parse pyright output: ${parsed.error.message}`,
-      errorCode: "PARSE_ERROR",
-      duration_ms,
+      errorCode: 'PARSE_ERROR',
+      durationMs,
     });
   }
-  return mapPyrightToVerdict(parsed.data, duration_ms);
+  return mapPyrightToVerdict(parsed.data, durationMs);
 }

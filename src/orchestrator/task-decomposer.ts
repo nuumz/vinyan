@@ -6,10 +6,10 @@
  *
  * Source of truth: spec/tdd.md §10, arch D7
  */
-import type { TaskDecomposer } from "./core-loop.ts";
-import type { TaskInput, PerceptualHierarchy, WorkingMemoryState, TaskDAG } from "./types.ts";
-import type { LLMProviderRegistry } from "./llm/provider-registry.ts";
-import { validateDAG, allCriteriaMet, formatFailures } from "./dag-validator.ts";
+import type { TaskDecomposer } from './core-loop.ts';
+import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
+import type { LLMProviderRegistry } from './llm/provider-registry.ts';
+import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
 const MAX_RETRIES = 3;
 
@@ -22,26 +22,17 @@ export class TaskDecomposerImpl implements TaskDecomposer {
     this.maxRetries = options.maxRetries ?? MAX_RETRIES;
   }
 
-  async decompose(
-    input: TaskInput,
-    perception: PerceptualHierarchy,
-    memory: WorkingMemoryState,
-  ): Promise<TaskDAG> {
-    const provider = this.registry.selectByTier("balanced");
+  async decompose(input: TaskInput, perception: PerceptualHierarchy, memory: WorkingMemoryState): Promise<TaskDAG> {
+    const provider = this.registry.selectByTier('balanced');
     if (!provider) return this.fallbackDAG(input);
 
-    const blastRadius = [
-      ...(input.targetFiles ?? []),
-      ...perception.dependencyCone.directImportees,
-    ];
+    const blastRadius = [...(input.targetFiles ?? []), ...perception.dependencyCone.directImportees];
 
     let validationFeedback: string | undefined;
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const { systemPrompt, userPrompt } = this.buildPrompt(
-          input, perception, memory, validationFeedback,
-        );
+        const { systemPrompt, userPrompt } = this.buildPrompt(input, perception, memory, validationFeedback);
 
         const response = await provider.generate({
           systemPrompt,
@@ -51,7 +42,8 @@ export class TaskDecomposerImpl implements TaskDecomposer {
 
         const dag = this.parseDAG(response.content);
         if (!dag) {
-          validationFeedback = "Response was not valid JSON matching TaskDAG schema. Return a JSON object with a 'nodes' array.";
+          validationFeedback =
+            "Response was not valid JSON matching TaskDAG schema. Return a JSON object with a 'nodes' array.";
           continue;
         }
 
@@ -60,9 +52,9 @@ export class TaskDecomposerImpl implements TaskDecomposer {
           return dag;
         }
 
-        validationFeedback = formatFailures(criteria).join("\n");
+        validationFeedback = formatFailures(criteria).join('\n');
       } catch {
-        validationFeedback = "LLM call failed. Please produce valid JSON.";
+        validationFeedback = 'LLM call failed. Please produce valid JSON.';
       }
     }
 
@@ -100,12 +92,12 @@ Rules:
 
     let userPrompt = `Goal: ${input.goal}
 
-Target files: ${(input.targetFiles ?? []).join(", ") || "not specified"}
-Direct importees: ${perception.dependencyCone.directImportees.join(", ") || "none"}
+Target files: ${(input.targetFiles ?? []).join(', ') || 'not specified'}
+Direct importees: ${perception.dependencyCone.directImportees.join(', ') || 'none'}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
 
     if (memory.failedApproaches.length > 0) {
-      userPrompt += `\n\nPreviously failed approaches (avoid these):\n${memory.failedApproaches.map(a => `- ${a.approach}: ${a.oracleVerdict}`).join("\n")}`;
+      userPrompt += `\n\nPreviously failed approaches (avoid these):\n${memory.failedApproaches.map((a) => `- ${a.approach}: ${a.oracleVerdict}`).join('\n')}`;
     }
 
     if (validationFeedback) {
@@ -122,8 +114,8 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
       if (!parsed.nodes || !Array.isArray(parsed.nodes)) return null;
       for (const node of parsed.nodes) {
         if (
-          typeof node.id !== "string" ||
-          typeof node.description !== "string" ||
+          typeof node.id !== 'string' ||
+          typeof node.description !== 'string' ||
           !Array.isArray(node.targetFiles) ||
           !Array.isArray(node.dependencies) ||
           !Array.isArray(node.assignedOracles)
@@ -139,13 +131,15 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
 
   private fallbackDAG(input: TaskInput): TaskDAG {
     return {
-      nodes: [{
-        id: "n1",
-        description: input.goal,
-        targetFiles: input.targetFiles ?? [],
-        dependencies: [],
-        assignedOracles: ["type", "dep"],
-      }],
+      nodes: [
+        {
+          id: 'n1',
+          description: input.goal,
+          targetFiles: input.targetFiles ?? [],
+          dependencies: [],
+          assignedOracles: ['type', 'dep'],
+        },
+      ],
       isFallback: true,
     };
   }

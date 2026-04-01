@@ -1,61 +1,61 @@
 /**
  * A2A Streaming tests — Phase F1.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 import {
-  EcpProgressUpdateSchema,
-  EcpPartialVerdictSchema,
   createA2AStreamingChannel,
-} from "../../src/a2a/streaming.ts";
+  ECPPartialVerdictSchema,
+  ECPProgressUpdateSchema,
+} from '../../src/a2a/streaming.ts';
 
 // ── Schema Validation ─────────────────────────────────────────────────
 
-describe("EcpProgressUpdateSchema", () => {
-  test("validates correct progress update", () => {
+describe('ECPProgressUpdateSchema', () => {
+  test('validates correct progress update', () => {
     const update = {
       ecp_version: 1,
-      message_type: "progress",
-      task_id: "task-001",
-      phase: "oracle_execution",
+      message_type: 'progress',
+      task_id: 'task-001',
+      phase: 'oracle_execution',
       progress_pct: 60,
-      oracle_name: "ast-oracle",
+      oracle_name: 'ast-oracle',
       timestamp: Date.now(),
     };
-    expect(EcpProgressUpdateSchema.safeParse(update).success).toBe(true);
+    expect(ECPProgressUpdateSchema.safeParse(update).success).toBe(true);
   });
 
-  test("rejects invalid phase", () => {
+  test('rejects invalid phase', () => {
     const update = {
       ecp_version: 1,
-      message_type: "progress",
-      task_id: "task-001",
-      phase: "invalid_phase",
+      message_type: 'progress',
+      task_id: 'task-001',
+      phase: 'invalid_phase',
       progress_pct: 50,
       timestamp: Date.now(),
     };
-    expect(EcpProgressUpdateSchema.safeParse(update).success).toBe(false);
+    expect(ECPProgressUpdateSchema.safeParse(update).success).toBe(false);
   });
 
-  test("rejects progress_pct > 100", () => {
+  test('rejects progress_pct > 100', () => {
     const update = {
       ecp_version: 1,
-      message_type: "progress",
-      task_id: "task-001",
-      phase: "routing",
+      message_type: 'progress',
+      task_id: 'task-001',
+      phase: 'routing',
       progress_pct: 150,
       timestamp: Date.now(),
     };
-    expect(EcpProgressUpdateSchema.safeParse(update).success).toBe(false);
+    expect(ECPProgressUpdateSchema.safeParse(update).success).toBe(false);
   });
 });
 
-describe("EcpPartialVerdictSchema", () => {
-  test("validates correct partial verdict", () => {
+describe('ECPPartialVerdictSchema', () => {
+  test('validates correct partial verdict', () => {
     const verdict = {
       ecp_version: 1,
-      message_type: "partial_verdict",
-      task_id: "task-001",
-      oracle_name: "type-oracle",
+      message_type: 'partial_verdict',
+      task_id: 'task-001',
+      oracle_name: 'type-oracle',
       verified: true,
       confidence: 0.85,
       oracles_completed: 2,
@@ -63,37 +63,37 @@ describe("EcpPartialVerdictSchema", () => {
       is_final: false,
       timestamp: Date.now(),
     };
-    expect(EcpPartialVerdictSchema.safeParse(verdict).success).toBe(true);
+    expect(ECPPartialVerdictSchema.safeParse(verdict).success).toBe(true);
   });
 
-  test("rejects confidence > 1", () => {
+  test('rejects confidence > 1', () => {
     const verdict = {
       ecp_version: 1,
-      message_type: "partial_verdict",
-      task_id: "task-001",
-      oracle_name: "type-oracle",
+      message_type: 'partial_verdict',
+      task_id: 'task-001',
+      oracle_name: 'type-oracle',
       verified: true,
       confidence: 1.5,
       is_final: false,
       timestamp: Date.now(),
     };
-    expect(EcpPartialVerdictSchema.safeParse(verdict).success).toBe(false);
+    expect(ECPPartialVerdictSchema.safeParse(verdict).success).toBe(false);
   });
 });
 
 // ── SSE Channel ───────────────────────────────────────────────────────
 
-describe("createA2AStreamingChannel", () => {
-  test("sends SSE-formatted progress data", async () => {
+describe('createA2AStreamingChannel', () => {
+  test('sends SSE-formatted progress data', async () => {
     const chunks: string[] = [];
     const stream = new ReadableStream({
       start(controller) {
         const channel = createA2AStreamingChannel(controller);
         channel.sendProgress({
           ecp_version: 1,
-          message_type: "progress",
-          task_id: "t1",
-          phase: "oracle_execution",
+          message_type: 'progress',
+          task_id: 't1',
+          phase: 'oracle_execution',
           progress_pct: 50,
           timestamp: Date.now(),
         });
@@ -109,21 +109,21 @@ describe("createA2AStreamingChannel", () => {
       chunks.push(decoder.decode(value));
     }
 
-    const output = chunks.join("");
-    expect(output).toContain("event: progress");
-    expect(output).toContain("oracle_execution");
+    const output = chunks.join('');
+    expect(output).toContain('event: progress');
+    expect(output).toContain('oracle_execution');
   });
 
-  test("sends SSE-formatted partial verdict", async () => {
+  test('sends SSE-formatted partial verdict', async () => {
     const chunks: string[] = [];
     const stream = new ReadableStream({
       start(controller) {
         const channel = createA2AStreamingChannel(controller);
         channel.sendPartialVerdict({
           ecp_version: 1,
-          message_type: "partial_verdict",
-          task_id: "t1",
-          oracle_name: "ast-oracle",
+          message_type: 'partial_verdict',
+          task_id: 't1',
+          oracle_name: 'ast-oracle',
           verified: true,
           confidence: 0.9,
           is_final: false,
@@ -141,12 +141,12 @@ describe("createA2AStreamingChannel", () => {
       chunks.push(decoder.decode(value));
     }
 
-    const output = chunks.join("");
-    expect(output).toContain("event: partial_verdict");
-    expect(output).toContain("ast-oracle");
+    const output = chunks.join('');
+    expect(output).toContain('event: partial_verdict');
+    expect(output).toContain('ast-oracle');
   });
 
-  test("close prevents further sends", () => {
+  test('close prevents further sends', () => {
     let channelRef: any;
     new ReadableStream({
       start(controller) {
@@ -159,9 +159,9 @@ describe("createA2AStreamingChannel", () => {
     // Should not throw
     channelRef.sendProgress({
       ecp_version: 1,
-      message_type: "progress",
-      task_id: "t1",
-      phase: "routing",
+      message_type: 'progress',
+      task_id: 't1',
+      phase: 'routing',
       progress_pct: 0,
       timestamp: Date.now(),
     });

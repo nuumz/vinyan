@@ -7,24 +7,24 @@
  *
  * Source of truth: spec/tdd.md §16.3 (Worker lifecycle), §17 (Generator Engine)
  */
-import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from "fs";
-import { resolve, join } from "path";
-import { tmpdir } from "os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import type { WorkerPool } from '../core-loop.ts';
+import { assemblePrompt } from '../llm/prompt-assembler.ts';
+import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 import type {
-  TaskInput,
-  PerceptualHierarchy,
-  WorkingMemoryState,
-  TaskDAG,
-  RoutingDecision,
-  WorkerInput,
-  WorkerOutput,
   IsolationLevel,
   LLMResponse,
-} from "../types.ts";
-import type { WorkerPool } from "../core-loop.ts";
-import { WorkerInputSchema, WorkerOutputSchema } from "../protocol.ts";
-import type { LLMProviderRegistry } from "../llm/provider-registry.ts";
-import { assemblePrompt } from "../llm/prompt-assembler.ts";
+  PerceptualHierarchy,
+  RoutingDecision,
+  TaskDAG,
+  TaskInput,
+  WorkerInput,
+  WorkerOutput,
+  WorkingMemoryState,
+} from '../types.ts';
 
 export interface WorkerPoolConfig {
   registry: LLMProviderRegistry;
@@ -51,10 +51,9 @@ export class WorkerPoolImpl implements WorkerPool {
     this.useSubprocess = config.useSubprocess ?? true;
     this.proxySocketPath = config.proxySocketPath;
     if (!this.useSubprocess) {
-      console.warn("[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.");
+      console.warn('[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.');
     }
-    this.workerEntryPath =
-      config.workerEntryPath ?? resolve(import.meta.dir, "worker-entry.ts");
+    this.workerEntryPath = config.workerEntryPath ?? resolve(import.meta.dir, 'worker-entry.ts');
   }
 
   async dispatch(
@@ -70,9 +69,9 @@ export class WorkerPoolImpl implements WorkerPool {
     if (routing.level === 0) {
       return {
         mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
-        proposedToolCalls: [] as import("../types.ts").ToolCall[],
+        proposedToolCalls: [] as import('../types.ts').ToolCall[],
         tokensConsumed: 0,
-        duration_ms: Math.round(performance.now() - startTime),
+        durationMs: Math.round(performance.now() - startTime),
       };
     }
 
@@ -86,7 +85,9 @@ export class WorkerPoolImpl implements WorkerPool {
         this.dockerAvailable = this.checkDockerAvailable();
       }
       if (!this.dockerAvailable) {
-        console.warn("[vinyan] A6 WARNING: Docker unavailable — falling back to subprocess isolation. L2/L3 container isolation degraded.");
+        console.warn(
+          '[vinyan] A6 WARNING: Docker unavailable — falling back to subprocess isolation. L2/L3 container isolation degraded.',
+        );
         // Fall through to subprocess dispatch below
       } else {
         const output = await this.dispatchContainer(workerInput, routing);
@@ -117,19 +118,16 @@ export class WorkerPoolImpl implements WorkerPool {
       ...(plan ? { plan } : {}),
       budget: {
         maxTokens: routing.budgetTokens,
-        timeoutMs: routing.latencyBudget_ms,
+        timeoutMs: routing.latencyBudgetMs,
       },
-      allowedPaths: input.targetFiles?.map(f => f.replace(/\/[^/]+$/, "/")) ?? ["src/"],
+      allowedPaths: input.targetFiles?.map((f) => f.replace(/\/[^/]+$/, '/')) ?? ['src/'],
       isolationLevel: routingToIsolation(routing.level),
     };
   }
 
   // ── In-process dispatch (default) ───────────────────────────────────
 
-  private async dispatchInProcess(
-    workerInput: WorkerInput,
-    routing: RoutingDecision,
-  ): Promise<WorkerOutput> {
+  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select provider if available, fallback to tier-based
     const provider = routing.workerId
       ? (this.registry.selectById(routing.workerId) ?? this.registry.selectForRoutingLevel(routing.level))
@@ -149,41 +147,40 @@ export class WorkerPoolImpl implements WorkerPool {
 
     // Race: LLM call vs timeout
     const timeoutMs = workerInput.budget.timeoutMs;
-    const timeoutPromise = new Promise<"timeout">(r => setTimeout(() => r("timeout"), timeoutMs));
-    const llmPromise = provider.generate({
-      systemPrompt,
-      userPrompt,
-      maxTokens: workerInput.budget.maxTokens,
-    }).catch((): "error" => "error");
+    const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
+    const llmPromise = provider
+      .generate({
+        systemPrompt,
+        userPrompt,
+        maxTokens: workerInput.budget.maxTokens,
+      })
+      .catch((): 'error' => 'error');
 
     const result = await Promise.race([llmPromise, timeoutPromise]);
-    if (result === "timeout" || result === "error") {
+    if (result === 'timeout' || result === 'error') {
       return emptyOutput(workerInput.taskId);
     }
 
-    const duration_ms = Math.round(performance.now() - startTime);
-    return parseWorkerOutput(workerInput.taskId, result as LLMResponse, duration_ms);
+    const durationMs = Math.round(performance.now() - startTime);
+    return parseWorkerOutput(workerInput.taskId, result as LLMResponse, durationMs);
   }
 
   // ── Subprocess dispatch (production path) ───────────────────────────
 
-  private async dispatchSubprocess(
-    workerInput: WorkerInput,
-    routing: RoutingDecision,
-  ): Promise<WorkerOutput> {
-    const proc = Bun.spawn(["bun", "run", this.workerEntryPath], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+  private async dispatchSubprocess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+    const proc = Bun.spawn(['bun', 'run', this.workerEntryPath], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
       env: buildWorkerEnv(routing, this.proxySocketPath),
     });
 
     const validated = WorkerInputSchema.parse(workerInput);
-    proc.stdin.write(JSON.stringify(validated) + "\n");
+    proc.stdin.write(JSON.stringify(validated) + '\n');
     proc.stdin.end();
 
-    const timeoutMs = routing.latencyBudget_ms;
-    const timeoutPromise = new Promise<"timeout">(r => setTimeout(() => r("timeout"), timeoutMs));
+    const timeoutMs = routing.latencyBudgetMs;
+    const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
 
     const processPromise = (async () => {
       const stdout = await new Response(proc.stdout).text();
@@ -193,7 +190,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
     const result = await Promise.race([processPromise, timeoutPromise]);
 
-    if (result === "timeout") {
+    if (result === 'timeout') {
       proc.kill();
       return emptyOutput(workerInput.taskId);
     }
@@ -212,46 +209,49 @@ export class WorkerPoolImpl implements WorkerPool {
 
   // ── Container dispatch (L2/L3 — Docker isolation) ──────────────────
 
-  private async dispatchContainer(
-    workerInput: WorkerInput,
-    routing: RoutingDecision,
-  ): Promise<WorkerOutput> {
+  private async dispatchContainer(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
     const taskId = workerInput.taskId;
 
     // Create temp dirs for overlay and IPC
     const overlayDir = join(tmpdir(), `vinyan-overlay-${taskId}`);
     const ipcDir = join(tmpdir(), `vinyan-ipc-${taskId}`);
-    mkdirSync(join(ipcDir, "artifacts"), { recursive: true });
+    mkdirSync(join(ipcDir, 'artifacts'), { recursive: true });
     mkdirSync(overlayDir, { recursive: true });
 
     // Write intent to IPC
-    writeFileSync(join(ipcDir, "intent.json"), JSON.stringify(workerInput));
+    writeFileSync(join(ipcDir, 'intent.json'), JSON.stringify(workerInput));
 
-    const containerImage = "vinyan-sandbox:latest";
+    const containerImage = 'vinyan-sandbox:latest';
     const args = [
-      "docker", "run", "--rm",
-      "--user", "65532:65532",
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges",
-      "--network=none",
-      "--pids-limit=256",
-      "--memory=1g",
+      'docker',
+      'run',
+      '--rm',
+      '--user',
+      '65532:65532',
+      '--cap-drop=ALL',
+      '--security-opt=no-new-privileges',
+      '--network=none',
+      '--pids-limit=256',
+      '--memory=1g',
       // PH4.4: Pass workerId to container so it can select the right provider
-      ...(routing.workerId ? ["-e", `VINYAN_WORKER_ID=${routing.workerId}`] : []),
-      "-v", `${this.workspace}:/workspace:ro`,
-      "-v", `${overlayDir}:/overlay:rw`,
-      "-v", `${ipcDir}:/ipc:rw`,
+      ...(routing.workerId ? ['-e', `VINYAN_WORKER_ID=${routing.workerId}`] : []),
+      '-v',
+      `${this.workspace}:/workspace:ro`,
+      '-v',
+      `${overlayDir}:/overlay:rw`,
+      '-v',
+      `${ipcDir}:/ipc:rw`,
       containerImage,
     ];
 
-    const timeoutMs = routing.latencyBudget_ms;
+    const timeoutMs = routing.latencyBudgetMs;
     try {
       const proc = Bun.spawn(args, {
-        stdout: "pipe",
-        stderr: "pipe",
+        stdout: 'pipe',
+        stderr: 'pipe',
       });
 
-      const timeoutPromise = new Promise<"timeout">(r => setTimeout(() => r("timeout"), timeoutMs));
+      const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
       const processPromise = (async () => {
         const exitCode = await proc.exited;
         return { exitCode };
@@ -259,7 +259,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
       const result = await Promise.race([processPromise, timeoutPromise]);
 
-      if (result === "timeout") {
+      if (result === 'timeout') {
         proc.kill();
         return emptyOutput(taskId);
       }
@@ -269,12 +269,12 @@ export class WorkerPoolImpl implements WorkerPool {
       }
 
       // Read result from IPC
-      const resultPath = join(ipcDir, "result.json");
+      const resultPath = join(ipcDir, 'result.json');
       if (!existsSync(resultPath)) {
         return emptyOutput(taskId);
       }
 
-      const raw = JSON.parse(readFileSync(resultPath, "utf-8"));
+      const raw = JSON.parse(readFileSync(resultPath, 'utf-8'));
       const output = WorkerOutputSchema.parse(raw);
 
       // A6: Do NOT commit artifacts here — return them as proposed mutations.
@@ -282,15 +282,19 @@ export class WorkerPoolImpl implements WorkerPool {
       return output;
     } finally {
       // Cleanup temp dirs — zero-cost rollback
-      try { rmSync(overlayDir, { recursive: true, force: true }); } catch {}
-      try { rmSync(ipcDir, { recursive: true, force: true }); } catch {}
+      try {
+        rmSync(overlayDir, { recursive: true, force: true });
+      } catch {}
+      try {
+        rmSync(ipcDir, { recursive: true, force: true });
+      } catch {}
     }
   }
 
   // ── Result conversion ───────────────────────────────────────────────
 
   private toWorkerResult(output: WorkerOutput, startTime: number) {
-    const mutations = output.proposedMutations.map(m => ({
+    const mutations = output.proposedMutations.map((m) => ({
       file: m.file,
       content: m.content,
       diff: this.computeDiff(m.file, m.content),
@@ -301,26 +305,24 @@ export class WorkerPoolImpl implements WorkerPool {
       mutations,
       proposedToolCalls: output.proposedToolCalls,
       tokensConsumed: output.tokensConsumed,
-      duration_ms: Math.round(performance.now() - startTime),
+      durationMs: Math.round(performance.now() - startTime),
     };
   }
 
   private computeDiff(file: string, newContent: string): string {
     const absolutePath = resolve(this.workspace, file);
     try {
-      const original = existsSync(absolutePath)
-        ? readFileSync(absolutePath, "utf-8")
-        : "";
+      const original = existsSync(absolutePath) ? readFileSync(absolutePath, 'utf-8') : '';
       return createUnifiedDiff(file, original, newContent);
     } catch {
-      return createUnifiedDiff(file, "", newContent);
+      return createUnifiedDiff(file, '', newContent);
     }
   }
 
   /** Check if Docker is available on this system. Result is cached. */
   private checkDockerAvailable(): boolean {
     try {
-      const result = Bun.spawnSync(["docker", "info"], { stdout: "pipe", stderr: "pipe" });
+      const result = Bun.spawnSync(['docker', 'info'], { stdout: 'pipe', stderr: 'pipe' });
       return result.exitCode === 0;
     } catch {
       return false;
@@ -331,18 +333,12 @@ export class WorkerPoolImpl implements WorkerPool {
 // ── Environment ─────────────────────────────────────────────────────────
 
 /** Minimal env allowlist for worker subprocesses — prevents leaking credentials. */
-const WORKER_ENV_KEYS = ["PATH", "HOME", "TMPDIR", "LANG", "TERM", "BUN_INSTALL"];
+const WORKER_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'TERM', 'BUN_INSTALL'];
 
 /** Known provider env var names — only the relevant key is forwarded. */
-const PROVIDER_ENV_KEYS = [
-  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
-  "OPENROUTER_API_KEY",
-];
+const PROVIDER_ENV_KEYS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY'];
 
-function buildWorkerEnv(
-  routing: RoutingDecision,
-  proxySocketPath?: string,
-): Record<string, string | undefined> {
+function buildWorkerEnv(routing: RoutingDecision, proxySocketPath?: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of WORKER_ENV_KEYS) {
     if (process.env[key]) env[key] = process.env[key];
@@ -364,7 +360,7 @@ function buildWorkerEnv(
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function routingToIsolation(level: RoutingDecision["level"]): IsolationLevel {
+function routingToIsolation(level: RoutingDecision['level']): IsolationLevel {
   if (level === 0) return 0;
   if (level === 1) return 1;
   return 2;
@@ -377,7 +373,7 @@ function emptyOutput(taskId: string, tokens = 0): WorkerOutput {
     proposedToolCalls: [],
     uncertainties: [],
     tokensConsumed: tokens,
-    duration_ms: 0,
+    durationMs: 0,
   };
 }
 
@@ -388,11 +384,7 @@ function stripCodeBlock(text: string): string {
   return match ? match[1]! : trimmed;
 }
 
-function parseWorkerOutput(
-  taskId: string,
-  response: LLMResponse,
-  duration_ms: number,
-): WorkerOutput {
+function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: number): WorkerOutput {
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
   try {
     const cleaned = stripCodeBlock(response.content);
@@ -404,7 +396,7 @@ function parseWorkerOutput(
       proposedToolCalls: parsed.proposedToolCalls ?? response.toolCalls ?? [],
       uncertainties: parsed.uncertainties ?? [],
       tokensConsumed: tokens,
-      duration_ms,
+      durationMs,
     };
     const validated = WorkerOutputSchema.safeParse(candidate);
     if (validated.success) return validated.data;
@@ -416,17 +408,17 @@ function parseWorkerOutput(
 
 /** Minimal unified diff — full file replacement. */
 export function createUnifiedDiff(file: string, original: string, modified: string): string {
-  if (original === modified) return "";
+  if (original === modified) return '';
 
-  const origLines = original ? original.split("\n") : [];
-  const modLines = modified ? modified.split("\n") : [];
+  const origLines = original ? original.split('\n') : [];
+  const modLines = modified ? modified.split('\n') : [];
 
   const lines: string[] = [`--- a/${file}`, `+++ b/${file}`];
 
-  if (original === "") {
+  if (original === '') {
     lines.push(`@@ -0,0 +1,${modLines.length} @@`);
     for (const l of modLines) lines.push(`+${l}`);
-  } else if (modified === "") {
+  } else if (modified === '') {
     lines.push(`@@ -1,${origLines.length} +0,0 @@`);
     for (const l of origLines) lines.push(`-${l}`);
   } else {
@@ -435,5 +427,5 @@ export function createUnifiedDiff(file: string, original: string, modified: stri
     for (const l of modLines) lines.push(`+${l}`);
   }
 
-  return lines.join("\n");
+  return lines.join('\n');
 }

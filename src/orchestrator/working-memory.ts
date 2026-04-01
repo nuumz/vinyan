@@ -7,8 +7,9 @@
  *
  * Source of truth: spec/tdd.md §16.2 (Learn step)
  */
-import type { WorkingMemoryState } from "./types.ts";
-import type { VinyanBus } from "../core/bus.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import type { WorkingMemoryState } from './types.ts';
 
 export const MAX_FAILED_APPROACHES = 20;
 export const MAX_HYPOTHESES = 10;
@@ -19,10 +20,10 @@ export const MAX_SCOPED_FACTS = 50;
 const EVICTION_WARNING_THRESHOLD = 10;
 
 export class WorkingMemory {
-  private failedApproaches: WorkingMemoryState["failedApproaches"] = [];
-  private activeHypotheses: WorkingMemoryState["activeHypotheses"] = [];
-  private unresolvedUncertainties: WorkingMemoryState["unresolvedUncertainties"] = [];
-  private scopedFacts: WorkingMemoryState["scopedFacts"] = [];
+  private failedApproaches: WorkingMemoryState['failedApproaches'] = [];
+  private activeHypotheses: WorkingMemoryState['activeHypotheses'] = [];
+  private unresolvedUncertainties: WorkingMemoryState['unresolvedUncertainties'] = [];
+  private scopedFacts: WorkingMemoryState['scopedFacts'] = [];
   private bus?: VinyanBus;
   private taskId?: string;
 
@@ -39,7 +40,7 @@ export class WorkingMemory {
 
     // G3: Emit memory pressure warning for GAP-H FC4 detection
     if (this.bus && this.taskId && this.failedApproaches.length >= EVICTION_WARNING_THRESHOLD) {
-      this.bus.emit("memory:eviction_warning", {
+      this.bus.emit('memory:eviction_warning', {
         taskId: this.taskId,
         evictionCount: this.failedApproaches.length,
         memoryPressure: this.failedApproaches.length / MAX_FAILED_APPROACHES,
@@ -77,11 +78,13 @@ export class WorkingMemory {
 
   /** Returns a deep copy — safe for serialization across process boundaries. */
   getSnapshot(): WorkingMemoryState {
-    return JSON.parse(JSON.stringify({
-      failedApproaches: this.failedApproaches,
-      activeHypotheses: this.activeHypotheses,
-      unresolvedUncertainties: this.unresolvedUncertainties,
-      scopedFacts: this.scopedFacts,
-    }));
+    return JSON.parse(
+      JSON.stringify({
+        failedApproaches: this.failedApproaches,
+        activeHypotheses: this.activeHypotheses,
+        unresolvedUncertainties: this.unresolvedUncertainties,
+        scopedFacts: this.scopedFacts,
+      }),
+    );
   }
 }

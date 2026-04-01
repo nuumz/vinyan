@@ -17,16 +17,16 @@ export function computeDecayedConfidence(
   originalConfidence: number,
   verifiedAt: number,
   validUntil: number | undefined,
-  decayModel: "linear" | "step" | "none" | undefined,
+  decayModel: 'linear' | 'step' | 'none' | undefined,
   now: number = Date.now(),
 ): number {
   if (!validUntil || !decayModel) return originalConfidence;
 
-  if (decayModel === "none") {
+  if (decayModel === 'none') {
     return now < validUntil ? originalConfidence : 0;
   }
 
-  if (decayModel === "step") {
+  if (decayModel === 'step') {
     return now < validUntil ? originalConfidence : originalConfidence * 0.5;
   }
 
@@ -46,10 +46,10 @@ export function computeDecayedConfidence(
  */
 export function isFullyExpired(
   validUntil: number | undefined,
-  decayModel: "linear" | "step" | "none" | undefined,
+  decayModel: 'linear' | 'step' | 'none' | undefined,
   now: number = Date.now(),
 ): boolean {
   if (!validUntil) return false;
-  if (decayModel === "step") return false;
+  if (decayModel === 'step') return false;
   return now >= validUntil;
 }

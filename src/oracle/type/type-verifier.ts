@@ -1,7 +1,7 @@
-import { createHash } from "crypto";
-import { readFileSync } from "fs";
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
 
 /**
  * Type Verifier — spawns `tsc --noEmit` on the workspace and parses diagnostic output.
@@ -19,7 +19,7 @@ interface TscDiagnostic {
 /** Parse tsc diagnostic output format: file(line,col): error TSxxxx: message */
 function parseTscOutput(output: string): TscDiagnostic[] {
   const diagnostics: TscDiagnostic[] = [];
-  const lines = output.split("\n");
+  const lines = output.split('\n');
 
   for (const line of lines) {
     // Match: path/to/file.ts(line,col): error TS1234: message
@@ -42,25 +42,28 @@ function parseTscOutput(output: string): TscDiagnostic[] {
 /** Resolve path to tsc binary from this package's node_modules. */
 function resolveTscPath(): string {
   // Use the tsc installed in our own node_modules, not bunx (which depends on CWD's .npmrc)
-  const localTsc = new URL("../../../node_modules/.bin/tsc", import.meta.url).pathname;
+  const localTsc = new URL('../../../node_modules/.bin/tsc', import.meta.url).pathname;
   return localTsc;
 }
 
 const TSC_TIMEOUT_MS = 30_000;
 
 /** Run tsc --noEmit and return diagnostics. Kills process after 30s timeout. */
-async function runTsc(workspace: string, target?: string): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
-  const args = ["--noEmit", "--pretty", "false", "--project", workspace];
+async function runTsc(
+  workspace: string,
+  target?: string,
+): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
+  const args = ['--noEmit', '--pretty', 'false', '--project', workspace];
 
   const proc = Bun.spawn([resolveTscPath(), ...args], {
     cwd: workspace,
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
 
   let timer: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<"timeout">(r => {
-    timer = setTimeout(() => r("timeout"), TSC_TIMEOUT_MS);
+  const timeoutPromise = new Promise<'timeout'>((r) => {
+    timer = setTimeout(() => r('timeout'), TSC_TIMEOUT_MS);
   });
   const processPromise = (async () => {
     const stdout = await new Response(proc.stdout).text();
@@ -70,7 +73,7 @@ async function runTsc(workspace: string, target?: string): Promise<{ diagnostics
 
   const result = await Promise.race([processPromise, timeoutPromise]);
   clearTimeout(timer!);
-  if (result === "timeout") {
+  if (result === 'timeout') {
     proc.kill();
     return { diagnostics: [], exitCode: -1, timedOut: true };
   }
@@ -90,13 +93,13 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     if (tscResult.timedOut) {
       return buildVerdict({
         verified: false,
-        type: "uncertain",
+        type: 'uncertain',
         confidence: 0.2,
         evidence: [],
         fileHashes: {},
         reason: `Type verification timed out after ${TSC_TIMEOUT_MS}ms`,
-        errorCode: "TIMEOUT",
-        duration_ms: Math.round(performance.now() - startTime),
+        errorCode: 'TIMEOUT',
+        durationMs: Math.round(performance.now() - startTime),
       });
     }
 
@@ -117,7 +120,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     const fileHashes: Record<string, string> = {};
     try {
       const content = readFileSync(target);
-      fileHashes[target] = createHash("sha256").update(content).digest("hex");
+      fileHashes[target] = createHash('sha256').update(content).digest('hex');
     } catch {
       // target might be a symbol path, not a file — that's fine
     }
@@ -127,19 +130,19 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       evidence,
       fileHashes,
       reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,
-      errorCode: targetDiags.length > 0 ? "TYPE_MISMATCH" : undefined,
-      duration_ms: Math.round(performance.now() - startTime),
+      errorCode: targetDiags.length > 0 ? 'TYPE_MISMATCH' : undefined,
+      durationMs: Math.round(performance.now() - startTime),
     });
   } catch (err) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Type verification failed: ${err instanceof Error ? err.message : String(err)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: Math.round(performance.now() - startTime),
+      errorCode: 'ORACLE_CRASH',
+      durationMs: Math.round(performance.now() - startTime),
     });
   }
 }

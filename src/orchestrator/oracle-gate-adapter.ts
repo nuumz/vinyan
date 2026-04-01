@@ -4,9 +4,10 @@
  * Maps mutations[] → individual GateRequest calls → aggregated VerificationResult.
  * Source of truth: spec/tdd.md §16 (Core Loop Step 5: VERIFY)
  */
-import { runGate } from "../gate/gate.ts";
-import type { OracleVerdict } from "../core/types.ts";
-import type { OracleGate } from "./core-loop.ts";
+
+import type { OracleVerdict } from '../core/types.ts';
+import { runGate } from '../gate/gate.ts';
+import type { OracleGate } from './core-loop.ts';
 
 export class OracleGateAdapter implements OracleGate {
   private workspace: string;
@@ -15,10 +16,7 @@ export class OracleGateAdapter implements OracleGate {
     this.workspace = workspace;
   }
 
-  async verify(
-    mutations: Array<{ file: string; content: string }>,
-    _workspace: string,
-  ) {
+  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string) {
     // Empty mutations (L0) → trivially pass
     if (mutations.length === 0) {
       return { passed: true as const, verdicts: {} as Record<string, OracleVerdict> };
@@ -30,15 +28,15 @@ export class OracleGateAdapter implements OracleGate {
 
     // Run gate verification in parallel for multi-file mutations
     const results = await Promise.all(
-      mutations.map(mutation =>
+      mutations.map((mutation) =>
         runGate({
-          tool: "write_file",
+          tool: 'write_file',
           params: {
             file_path: mutation.file,
             content: mutation.content,
             workspace: this.workspace,
           },
-        }).then(gateResult => ({ mutation, gateResult })),
+        }).then((gateResult) => ({ mutation, gateResult })),
       ),
     );
 
@@ -52,7 +50,7 @@ export class OracleGateAdapter implements OracleGate {
         }
       }
 
-      if (gateResult.decision === "block") {
+      if (gateResult.decision === 'block') {
         allPassed = false;
         reasons.push(...gateResult.reasons);
       }
@@ -61,7 +59,7 @@ export class OracleGateAdapter implements OracleGate {
     return {
       passed: allPassed,
       verdicts: allVerdicts,
-      reason: allPassed ? undefined : reasons.join("; "),
+      reason: allPassed ? undefined : reasons.join('; '),
     };
   }
 }

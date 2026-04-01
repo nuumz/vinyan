@@ -371,9 +371,9 @@ Content-Type: application/json
 ```
 
 **Trust rules:**
-- Same confidence cap as A2A tasks: 0.5 (I13, `A2A_CONFIDENCE_CAP`)
+- Confidence capped via `clampFull(confidence, tier, "a2a", peerTrust)` — 4-level peer trust (untrusted=0.25, provisional=0.40, established=0.50, trusted=0.60)
 - All A2A verification results: `type: "uncertain"`
-- Uses `src/a2a/confidence-injector.ts` for consistent trust degradation
+- Uses `src/a2a/confidence-injector.ts` with parametric peer trust levels via `clampFull()`
 
 ### 5.3 Agent Card Enhancement
 
@@ -414,12 +414,15 @@ The complete trust model across all protocol layers:
 | Local probabilistic oracle | stdio | L1 | 0.7 | `known` | ✅ Implemented | `TIER_CAPS.probabilistic` in `src/oracle/tier-clamp.ts` |
 | Remote Vinyan oracle | WebSocket | L2 | 0.95 | `known` | ⚠️ Cap defined, transport not implemented | `TRANSPORT_CAPS.websocket` in `src/oracle/tier-clamp.ts` |
 | Remote third-party oracle | WebSocket | L2 | `conf × 0.8` | `uncertain` | ❌ Design only | — |
-| MCP tool (`local`) | stdio | L3 | 0.7 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.local` in `src/mcp/ecp-translation.ts` |
-| MCP tool (`network`) | stdio | L3 | 0.5 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.network` in `src/mcp/ecp-translation.ts` |
-| MCP tool (`remote`) | stdio | L3 | 0.3 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.remote` in `src/mcp/ecp-translation.ts` |
-| A2A agent | HTTP | L3 | 0.5 | `uncertain` | ✅ Implemented | `A2A_CONFIDENCE_CAP` in `src/a2a/confidence-injector.ts` |
+| MCP tool (`local`) | stdio | L3 | 0.7 | `uncertain` | ✅ Implemented | `clampFull("probabilistic", "stdio")` in `src/mcp/ecp-translation.ts` |
+| MCP tool (`network`) | stdio | L3 | 0.40 | `uncertain` | ✅ Implemented | `clampFull("probabilistic", "http", "provisional")` in `src/mcp/ecp-translation.ts` |
+| MCP tool (`remote`) | stdio | L3 | 0.25 | `uncertain` | ✅ Implemented | `clampFull("probabilistic", "a2a", "untrusted")` in `src/mcp/ecp-translation.ts` |
+| A2A peer (untrusted) | HTTP | L3 | 0.25 | `uncertain` | ✅ Implemented | `clampFull(tier, "a2a", "untrusted")` — `PEER_TRUST_CAPS.untrusted` |
+| A2A peer (provisional) | HTTP | L3 | 0.40 | `uncertain` | ✅ Implemented | `clampFull(tier, "a2a", "provisional")` |
+| A2A peer (established) | HTTP | L3 | 0.50 | `uncertain` | ✅ Implemented | `clampFull(tier, "a2a", "established")` |
+| A2A peer (trusted) | HTTP | L3 | 0.50 | `uncertain` | ✅ Implemented | `clampFull(tier, "a2a", "trusted")` — capped by transport=0.50 |
 
-> **Label mapping:** The MCP bridge code uses `TrustLevel = "local" | "network" | "remote"` (in `ecp-translation.ts`), while the config schema uses `"trusted" | "semi-trusted" | "untrusted"` (in `Phase5MCPConfigSchema`). The mapping is: `trusted` → `local` (0.7), `semi-trusted` → `network` (0.5), `untrusted` → `remote` (0.3). These vocabularies should be unified in a future cleanup.
+> **Trust vocabulary unified:** All trust levels use canonical `PeerTrustLevel` from `src/oracle/tier-clamp.ts`: `untrusted` (0.25), `provisional` (0.40), `established` (0.50), `trusted` (0.60). MCP bridge maps `local`→no peer trust, `network`→provisional, `remote`→untrusted via `clampFull()`. The config schema uses the same vocabulary: `"untrusted" | "provisional" | "established" | "trusted"`.
 
 **Key invariant:** Local deterministic evidence always outranks any remote or bridged evidence. This ensures A5 (Tiered Trust) holds regardless of protocol path.
 

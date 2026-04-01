@@ -4,10 +4,10 @@
  * Phase 5: Uses MigrationRunner for versioned schema management.
  * Path: <workspace>/.vinyan/vinyan.db
  */
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
-import { dirname } from "path";
-import { MigrationRunner, ALL_MIGRATIONS } from "./migrations/index.ts";
+import { Database } from 'bun:sqlite';
+import { mkdirSync } from 'fs';
+import { dirname } from 'path';
+import { ALL_MIGRATIONS, MigrationRunner } from './migrations/index.ts';
 
 export class VinyanDB {
   private db: Database;
@@ -17,8 +17,8 @@ export class VinyanDB {
     mkdirSync(dirname(dbPath), { recursive: true });
 
     this.db = new Database(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec('PRAGMA foreign_keys = ON');
 
     // Apply versioned migrations (TDD §20)
     const runner = new MigrationRunner();
@@ -32,9 +32,9 @@ export class VinyanDB {
   /** Flush WAL file to prevent unbounded growth in long-running sessions. */
   checkpoint(): void {
     try {
-      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (err) {
-      console.warn("[vinyan] WAL checkpoint failed:", err);
+      console.warn('[vinyan] WAL checkpoint failed:', err);
     }
   }
 

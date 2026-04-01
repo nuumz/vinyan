@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { VinyanConfigSchema } from "../../src/config/schema.ts";
+import { describe, expect, test } from 'bun:test';
+import { VinyanConfigSchema } from '../../src/config/schema.ts';
 
 // Minimal valid routing config (defaults: 0.2 < 0.4 < 0.7)
 const VALID_ROUTING = {
@@ -8,8 +8,8 @@ const VALID_ROUTING = {
   l2_max_risk: 0.7,
 };
 
-describe("VinyanConfigSchema — routing threshold ordering", () => {
-  test("default config passes validation (0.2 < 0.4 < 0.7)", () => {
+describe('VinyanConfigSchema — routing threshold ordering', () => {
+  test('default config passes validation (0.2 < 0.4 < 0.7)', () => {
     const result = VinyanConfigSchema.safeParse({
       phase1: {
         routing: VALID_ROUTING,
@@ -18,7 +18,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result.success).toBe(true);
   });
 
-  test("l0_max_risk > l1_max_risk fails validation", () => {
+  test('l0_max_risk > l1_max_risk fails validation', () => {
     const result = VinyanConfigSchema.safeParse({
       phase1: {
         routing: {
@@ -31,7 +31,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result.success).toBe(false);
   });
 
-  test("reversed ordering (l0 > l1 > l2) fails validation", () => {
+  test('reversed ordering (l0 > l1 > l2) fails validation', () => {
     const result = VinyanConfigSchema.safeParse({
       phase1: {
         routing: {
@@ -44,7 +44,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result.success).toBe(false);
   });
 
-  test("equal values fail validation (not strictly ordered)", () => {
+  test('equal values fail validation (not strictly ordered)', () => {
     // l0 === l1 violates strict ordering
     const result1 = VinyanConfigSchema.safeParse({
       phase1: {
@@ -70,7 +70,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result2.success).toBe(false);
   });
 
-  test("l1_max_risk > l2_max_risk fails validation", () => {
+  test('l1_max_risk > l2_max_risk fails validation', () => {
     const result = VinyanConfigSchema.safeParse({
       phase1: {
         routing: {
@@ -83,7 +83,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result.success).toBe(false);
   });
 
-  test("config without phase1 (phase 0 only) passes validation", () => {
+  test('config without phase1 (phase 0 only) passes validation', () => {
     const result = VinyanConfigSchema.safeParse({
       version: 1,
       oracles: {},
@@ -91,7 +91,7 @@ describe("VinyanConfigSchema — routing threshold ordering", () => {
     expect(result.success).toBe(true);
   });
 
-  test("valid non-default routing thresholds pass validation", () => {
+  test('valid non-default routing thresholds pass validation', () => {
     const result = VinyanConfigSchema.safeParse({
       phase1: {
         routing: {

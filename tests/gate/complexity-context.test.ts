@@ -1,17 +1,17 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { buildComplexityContext, computeQualityScore } from "../../src/gate/quality-score.ts";
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildComplexityContext, computeQualityScore } from '../../src/gate/quality-score.ts';
 
-describe("buildComplexityContext (P3.3 — QualityScore enrichment)", () => {
+describe('buildComplexityContext (P3.3 — QualityScore enrichment)', () => {
   let workspace: string;
 
   beforeAll(() => {
-    workspace = mkdtempSync(join(tmpdir(), "vinyan-cx-"));
+    workspace = mkdtempSync(join(tmpdir(), 'vinyan-cx-'));
     // File with branching logic
     writeFileSync(
-      join(workspace, "complex.ts"),
+      join(workspace, 'complex.ts'),
       `function check(x: number) {
   if (x > 0) {
     if (x > 10) {
@@ -30,55 +30,52 @@ describe("buildComplexityContext (P3.3 — QualityScore enrichment)", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  test("returns undefined for empty mutations", () => {
+  test('returns undefined for empty mutations', () => {
     const ctx = buildComplexityContext([], workspace);
     expect(ctx).toBeUndefined();
   });
 
-  test("reads original file and pairs with mutated content", () => {
+  test('reads original file and pairs with mutated content', () => {
     const ctx = buildComplexityContext(
-      [{ file: "complex.ts", content: "function check(x: number) { return x > 0 ? 'yes' : 'no'; }" }],
+      [{ file: 'complex.ts', content: "function check(x: number) { return x > 0 ? 'yes' : 'no'; }" }],
       workspace,
     );
     expect(ctx).toBeDefined();
-    expect(ctx!.originalSource).toContain("if (x > 0)");
+    expect(ctx!.originalSource).toContain('if (x > 0)');
     expect(ctx!.mutatedSource).toContain("? 'yes' : 'no'");
   });
 
-  test("new file (no original) returns empty original", () => {
-    const ctx = buildComplexityContext(
-      [{ file: "brand-new.ts", content: "export const a = 1;" }],
-      workspace,
-    );
+  test('new file (no original) returns empty original', () => {
+    const ctx = buildComplexityContext([{ file: 'brand-new.ts', content: 'export const a = 1;' }], workspace);
     expect(ctx).toBeDefined();
-    expect(ctx!.originalSource).toBe(""); // file doesn't exist
-    expect(ctx!.mutatedSource).toBe("export const a = 1;");
+    expect(ctx!.originalSource).toBe(''); // file doesn't exist
+    expect(ctx!.mutatedSource).toBe('export const a = 1;');
   });
 
-  test("simplification produces simplificationGain > 0 in QualityScore", () => {
+  test('simplification produces simplificationGain > 0 in QualityScore', () => {
     const ctx = buildComplexityContext(
-      [{ file: "complex.ts", content: "function check(x: number) { return x > 0 ? 'yes' : 'no'; }" }],
+      [{ file: 'complex.ts', content: "function check(x: number) { return x > 0 ? 'yes' : 'no'; }" }],
       workspace,
     );
     const qs = computeQualityScore(
-      { ast: { verified: true, confidence: 1, evidence: [], type: "known" as const, fileHashes: {}, duration_ms: 0 } },
+      { ast: { verified: true, confidence: 1, evidence: [], type: 'known' as const, fileHashes: {}, durationMs: 0 } },
       50,
       2000,
       ctx,
     );
     expect(qs.simplificationGain).toBeDefined();
     expect(qs.simplificationGain!).toBeGreaterThan(0);
-    expect(qs.phase).toBe("phase1");
-    expect(qs.dimensions_available).toBe(3);
+    expect(qs.phase).toBe('phase1');
+    expect(qs.dimensionsAvailable).toBe(3);
   });
 
-  test("new file gets neutral simplificationGain (0.5)", () => {
+  test('new file gets neutral simplificationGain (0.5)', () => {
     const ctx = buildComplexityContext(
-      [{ file: "new-file.ts", content: "function foo() { if (true) return 1; return 2; }" }],
+      [{ file: 'new-file.ts', content: 'function foo() { if (true) return 1; return 2; }' }],
       workspace,
     );
     const qs = computeQualityScore(
-      { ast: { verified: true, confidence: 1, evidence: [], type: "known" as const, fileHashes: {}, duration_ms: 0 } },
+      { ast: { verified: true, confidence: 1, evidence: [], type: 'known' as const, fileHashes: {}, durationMs: 0 } },
       50,
       2000,
       ctx,

@@ -1,13 +1,12 @@
-export {
-  type HypothesisTuple,
-  type OracleVerdict,
-  type OracleErrorCode,
-  type Evidence,
-  type Fact,
-  type QualityScore,
-} from "./types.ts";
-
-export { EventBus, createBus, type VinyanBus, type VinyanBusEvents, type BusEventName } from "./bus.ts";
+export { type BusEventName, createBus, EventBus, type VinyanBus, type VinyanBusEvents } from './bus.ts';
+export type {
+  Evidence,
+  Fact,
+  HypothesisTuple,
+  OracleErrorCode,
+  OracleVerdict,
+  QualityScore,
+} from './types.ts';
 
 /**
  * Build an OracleVerdict with required ECP fields defaulted.
@@ -15,13 +14,13 @@ export { EventBus, createBus, type VinyanBus, type VinyanBusEvents, type BusEven
  * Pass type='unknown' and lower confidence for heuristic/failed results.
  */
 export function buildVerdict(
-  fields: Omit<import("./types.ts").OracleVerdict, "type" | "confidence"> & {
-    type?: "known" | "unknown" | "uncertain" | "contradictory";
+  fields: Omit<import('./types.ts').OracleVerdict, 'type' | 'confidence'> & {
+    type?: 'known' | 'unknown' | 'uncertain' | 'contradictory';
     confidence?: number;
   },
-): import("./types.ts").OracleVerdict {
+): import('./types.ts').OracleVerdict {
   return {
-    type: "known",
+    type: 'known',
     confidence: 1.0,
     ...fields,
   };

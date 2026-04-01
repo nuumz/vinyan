@@ -7,12 +7,12 @@
  *
  * Source of truth: Plan Phase L1
  */
-import type { EventBus, VinyanBusEvents } from "../core/bus.ts";
-import { ECP_MIME_TYPE } from "./ecp-data-part.ts";
+import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
+import { ECP_MIME_TYPE } from './ecp-data-part.ts';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
-export type PeerHealthState = "connected" | "degraded" | "partitioned";
+export type PeerHealthState = 'connected' | 'degraded' | 'partitioned';
 
 export interface PeerHealthRecord {
   peerId: string;
@@ -20,7 +20,7 @@ export interface PeerHealthRecord {
   state: PeerHealthState;
   lastHeartbeatAt: number;
   consecutiveMisses: number;
-  latency_ms: number;
+  latencyMs: number;
 }
 
 export interface PeerHealthConfig {
@@ -52,10 +52,10 @@ export class PeerHealthMonitor {
     this.peers.set(peerId, {
       peerId,
       url,
-      state: "connected",
+      state: 'connected',
       lastHeartbeatAt: Date.now(),
       consecutiveMisses: 0,
-      latency_ms: 0,
+      latencyMs: 0,
     });
   }
 
@@ -82,7 +82,7 @@ export class PeerHealthMonitor {
 
   /** Get health state for a peer. */
   getState(peerId: string): PeerHealthState {
-    return this.peers.get(peerId)?.state ?? "partitioned";
+    return this.peers.get(peerId)?.state ?? 'partitioned';
   }
 
   /** Get all peer health records. */
@@ -108,41 +108,43 @@ export class PeerHealthMonitor {
 
     try {
       const body = JSON.stringify({
-        jsonrpc: "2.0",
+        jsonrpc: '2.0',
         id: `hb-${Date.now()}`,
-        method: "tasks/send",
+        method: 'tasks/send',
         params: {
           id: `hb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           message: {
-            role: "agent",
-            parts: [{
-              type: "data",
-              mimeType: ECP_MIME_TYPE,
-              data: {
-                ecp_version: 1,
-                message_type: "heartbeat",
-                epistemic_type: "known",
-                confidence: 1.0,
-                confidence_reported: true,
-                payload: {
-                  instance_id: this.config.instanceId,
-                  timestamp: Date.now(),
+            role: 'agent',
+            parts: [
+              {
+                type: 'data',
+                mimeType: ECP_MIME_TYPE,
+                data: {
+                  ecp_version: 1,
+                  message_type: 'heartbeat',
+                  epistemic_type: 'known',
+                  confidence: 1.0,
+                  confidence_reported: true,
+                  payload: {
+                    instance_id: this.config.instanceId,
+                    timestamp: Date.now(),
+                  },
                 },
               },
-            }],
+            ],
           },
         },
       });
 
       const response = await fetch(record.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body,
         signal: controller.signal,
       });
       clearTimeout(timer);
 
-      record.latency_ms = Date.now() - start;
+      record.latencyMs = Date.now() - start;
       return response.ok;
     } catch {
       clearTimeout(timer);
@@ -156,10 +158,10 @@ export class PeerHealthMonitor {
     if (heartbeatSuccess) {
       record.consecutiveMisses = 0;
       record.lastHeartbeatAt = Date.now();
-      record.state = "connected";
+      record.state = 'connected';
 
-      if (previousState !== "connected") {
-        this.bus?.emit("peer:connected", {
+      if (previousState !== 'connected') {
+        this.bus?.emit('peer:connected', {
           peerId: record.peerId,
           instanceId: this.config.instanceId,
           url: record.url,
@@ -169,13 +171,13 @@ export class PeerHealthMonitor {
       record.consecutiveMisses++;
 
       if (record.consecutiveMisses >= this.partitionedAfterMisses) {
-        record.state = "partitioned";
+        record.state = 'partitioned';
       } else if (record.consecutiveMisses >= this.degradedAfterMisses) {
-        record.state = "degraded";
+        record.state = 'degraded';
       }
 
-      if (record.state === "partitioned" && previousState !== "partitioned") {
-        this.bus?.emit("peer:disconnected", {
+      if (record.state === 'partitioned' && previousState !== 'partitioned') {
+        this.bus?.emit('peer:disconnected', {
           peerId: record.peerId,
           reason: `${record.consecutiveMisses} consecutive heartbeat failures`,
         });

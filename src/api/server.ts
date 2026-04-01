@@ -8,20 +8,21 @@
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;
-import type { VinyanBus } from "../core/bus.ts";
-import type { TaskInput, TaskResult } from "../orchestrator/types.ts";
-import type { SessionManager, Session, CompactionResult } from "./session-manager.ts";
-import { createAuthMiddleware, requiresAuth } from "../security/auth.ts";
-import { RateLimiter, classifyEndpoint } from "./rate-limiter.ts";
-import { createSSEStream } from "./sse.ts";
-import type { TraceStore } from "../db/trace-store.ts";
-import type { RuleStore } from "../db/rule-store.ts";
-import type { WorkerStore } from "../db/worker-store.ts";
-import type { WorldGraph } from "../world-graph/world-graph.ts";
-import type { MetricsCollector } from "../observability/metrics.ts";
-import { getSystemMetrics } from "../observability/metrics.ts";
-import { renderPrometheus } from "../observability/prometheus.ts";
-import { A2ABridge } from "../a2a/bridge.ts";
+
+import { A2ABridge } from '../a2a/bridge.ts';
+import type { VinyanBus } from '../core/bus.ts';
+import type { RuleStore } from '../db/rule-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import type { MetricsCollector } from '../observability/metrics.ts';
+import { getSystemMetrics } from '../observability/metrics.ts';
+import { renderPrometheus } from '../observability/prometheus.ts';
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
+import type { WorldGraph } from '../world-graph/world-graph.ts';
+import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
+import type { CompactionResult, Session, SessionManager } from './session-manager.ts';
+import { createSSEStream } from './sse.ts';
 
 export interface APIServerConfig {
   port: number;
@@ -80,7 +81,7 @@ export class VinyanAPIServer {
 
   private async handleRequest(req: Request): Promise<Response> {
     if (this.shuttingDown) {
-      return jsonResponse({ error: "Server is shutting down" }, 503);
+      return jsonResponse({ error: 'Server is shutting down' }, 503);
     }
 
     const url = new URL(req.url);
@@ -91,23 +92,16 @@ export class VinyanAPIServer {
     if (this.config.authRequired && requiresAuth(method, path)) {
       const authCtx = this.auth.authenticate(req);
       if (!authCtx.authenticated) {
-        return jsonResponse({ error: "Unauthorized" }, 401);
+        return jsonResponse({ error: 'Unauthorized' }, 401);
       }
 
       // Rate limiting
       if (this.config.rateLimitEnabled) {
         const category = classifyEndpoint(method, path);
         if (category) {
-          const { allowed, retryAfterSeconds } = this.rateLimiter.check(
-            authCtx.apiKey ?? "anonymous",
-            category,
-          );
+          const { allowed, retryAfterSeconds } = this.rateLimiter.check(authCtx.apiKey ?? 'anonymous', category);
           if (!allowed) {
-            return jsonResponse(
-              { error: "Rate limit exceeded" },
-              429,
-              { "Retry-After": String(retryAfterSeconds) },
-            );
+            return jsonResponse({ error: 'Rate limit exceeded' }, 429, { 'Retry-After': String(retryAfterSeconds) });
           }
         }
       }
@@ -115,105 +109,105 @@ export class VinyanAPIServer {
 
     // G2: Emit bus events for API request/response
     const startTime = performance.now();
-    this.deps.bus.emit("api:request", { method, path, taskId: extractTaskId(path) });
+    this.deps.bus.emit('api:request', { method, path, taskId: extractTaskId(path) });
 
     try {
       const response = await this.route(method, path, req);
-      this.deps.bus.emit("api:response", {
+      this.deps.bus.emit('api:response', {
         method,
         path,
         status: response.status,
-        duration_ms: Math.round(performance.now() - startTime),
+        durationMs: Math.round(performance.now() - startTime),
       });
       return response;
     } catch (err) {
-      console.error("[vinyan-api] Unhandled error:", err);
-      return jsonResponse({ error: "Internal server error" }, 500);
+      console.error('[vinyan-api] Unhandled error:', err);
+      return jsonResponse({ error: 'Internal server error' }, 500);
     }
   }
 
   private async route(method: string, path: string, req: Request): Promise<Response> {
     // ── Health & Metrics ──────────────────────────────────
-    if (method === "GET" && path === "/api/v1/health") {
-      return jsonResponse({ status: "ok", uptime_ms: process.uptime() * 1000 });
+    if (method === 'GET' && path === '/api/v1/health') {
+      return jsonResponse({ status: 'ok', uptime_ms: process.uptime() * 1000 });
     }
 
     // G1: Wire real Prometheus metrics
-    if (method === "GET" && path === "/api/v1/metrics") {
+    if (method === 'GET' && path === '/api/v1/metrics') {
       return this.handleMetrics(req);
     }
 
     // ── Tasks ─────────────────────────────────────────────
-    if (method === "POST" && path === "/api/v1/tasks") {
+    if (method === 'POST' && path === '/api/v1/tasks') {
       return this.handleSyncTask(req);
     }
 
-    if (method === "POST" && path === "/api/v1/tasks/async") {
+    if (method === 'POST' && path === '/api/v1/tasks/async') {
       return this.handleAsyncTask(req);
     }
 
-    if (method === "GET" && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
-      const taskId = path.split("/").pop()!;
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
+      const taskId = path.split('/').pop()!;
       return this.handleGetTask(taskId);
     }
 
-    if (method === "DELETE" && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
-      const taskId = path.split("/").pop()!;
+    if (method === 'DELETE' && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
+      const taskId = path.split('/').pop()!;
       return this.handleCancelTask(taskId);
     }
 
-    if (method === "GET" && path.match(/^\/api\/v1\/tasks\/[^/]+\/events$/)) {
-      const taskId = path.split("/")[4]!;
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/events$/)) {
+      const taskId = path.split('/')[4]!;
       return this.handleSSE(taskId);
     }
 
     // ── Sessions ──────────────────────────────────────────
-    if (method === "POST" && path === "/api/v1/sessions") {
+    if (method === 'POST' && path === '/api/v1/sessions') {
       return this.handleCreateSession(req);
     }
 
-    if (method === "GET" && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
-      const sessionId = path.split("/").pop()!;
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
+      const sessionId = path.split('/').pop()!;
       return this.handleGetSession(sessionId);
     }
 
-    if (method === "POST" && path.match(/^\/api\/v1\/sessions\/[^/]+\/compact$/)) {
-      const sessionId = path.split("/")[4]!;
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/compact$/)) {
+      const sessionId = path.split('/')[4]!;
       return this.handleCompactSession(sessionId);
     }
 
     // ── Read-only queries ─────────────────────────────────
-    if (method === "GET" && path === "/api/v1/workers") {
+    if (method === 'GET' && path === '/api/v1/workers') {
       const workers = this.deps.workerStore?.findActive() ?? [];
       return jsonResponse({ workers });
     }
 
-    if (method === "GET" && path === "/api/v1/rules") {
-      const rules = this.deps.ruleStore?.findByStatus("active") ?? [];
+    if (method === 'GET' && path === '/api/v1/rules') {
+      const rules = this.deps.ruleStore?.findByStatus('active') ?? [];
       return jsonResponse({ rules });
     }
 
-    if (method === "GET" && path === "/api/v1/facts") {
+    if (method === 'GET' && path === '/api/v1/facts') {
       return jsonResponse({ facts: [] }); // WorldGraph query — simplified for now
     }
 
     // ── A2A Protocol (PH5.6) ────────────────────────────────
-    if (method === "GET" && path === "/.well-known/agent.json") {
+    if (method === 'GET' && path === '/.well-known/agent.json') {
       return jsonResponse(this.a2aBridge.getAgentCard());
     }
 
-    if (method === "POST" && path === "/a2a") {
+    if (method === 'POST' && path === '/a2a') {
       return this.handleA2ARequest(req);
     }
 
-    return jsonResponse({ error: "Not found" }, 404);
+    return jsonResponse({ error: 'Not found' }, 404);
   }
 
   // ── Metrics Handler (G1: real Prometheus metrics) ────────────
 
   private handleMetrics(req: Request): Response {
     const url = new URL(req.url);
-    const format = url.searchParams.get("format");
+    const format = url.searchParams.get('format');
     const counters = this.deps.metricsCollector?.getCounters() ?? {};
 
     // Without traceStore, return basic counters
@@ -227,13 +221,13 @@ export class VinyanAPIServer {
       workerStore: this.deps.workerStore,
     });
 
-    if (format === "json") {
+    if (format === 'json') {
       return jsonResponse({ ...metrics, counters, tasks_in_flight: this.inFlightTasks.size });
     }
 
     // Default: Prometheus text exposition format
     return new Response(renderPrometheus(metrics, counters), {
-      headers: { "Content-Type": "text/plain; version=0.0.4" },
+      headers: { 'Content-Type': 'text/plain; version=0.0.4' },
     });
   }
 
@@ -249,7 +243,7 @@ export class VinyanAPIServer {
 
   // G4: Track tasks in sessions
   private async handleSyncTask(req: Request): Promise<Response> {
-    const body = await req.json() as Partial<TaskInput>;
+    const body = (await req.json()) as Partial<TaskInput>;
     const input = buildTaskInput(body);
 
     const session = this.getOrCreateDefaultSession();
@@ -262,7 +256,7 @@ export class VinyanAPIServer {
   }
 
   private async handleAsyncTask(req: Request): Promise<Response> {
-    const body = await req.json() as Partial<TaskInput>;
+    const body = (await req.json()) as Partial<TaskInput>;
     const input = buildTaskInput(body);
 
     const session = this.getOrCreateDefaultSession();
@@ -271,30 +265,32 @@ export class VinyanAPIServer {
     const promise = this.deps.executeTask(input);
     this.inFlightTasks.set(input.id, { promise });
 
-    promise.then((result) => {
-      this.deps.sessionManager.completeTask(session.id, input.id, result);
-      this.asyncResults.set(input.id, result);
-      this.inFlightTasks.delete(input.id);
-    }).catch(() => {
-      this.inFlightTasks.delete(input.id);
-    });
+    promise
+      .then((result) => {
+        this.deps.sessionManager.completeTask(session.id, input.id, result);
+        this.asyncResults.set(input.id, result);
+        this.inFlightTasks.delete(input.id);
+      })
+      .catch(() => {
+        this.inFlightTasks.delete(input.id);
+      });
 
-    return jsonResponse({ taskId: input.id, status: "accepted" }, 202);
+    return jsonResponse({ taskId: input.id, status: 'accepted' }, 202);
   }
 
   private handleGetTask(taskId: string): Response {
     // Check completed results
     const result = this.asyncResults.get(taskId);
     if (result) {
-      return jsonResponse({ taskId, status: "completed", result });
+      return jsonResponse({ taskId, status: 'completed', result });
     }
 
     // Check in-flight
     if (this.inFlightTasks.has(taskId)) {
-      return jsonResponse({ taskId, status: "running" });
+      return jsonResponse({ taskId, status: 'running' });
     }
 
-    return jsonResponse({ error: "Task not found" }, 404);
+    return jsonResponse({ error: 'Task not found' }, 404);
   }
 
   private handleCancelTask(taskId: string): Response {
@@ -302,9 +298,9 @@ export class VinyanAPIServer {
     if (inFlight) {
       inFlight.cancel?.();
       this.inFlightTasks.delete(taskId);
-      return jsonResponse({ taskId, status: "cancelled" });
+      return jsonResponse({ taskId, status: 'cancelled' });
     }
-    return jsonResponse({ error: "Task not found or already completed" }, 404);
+    return jsonResponse({ error: 'Task not found or already completed' }, 404);
   }
 
   private handleSSE(taskId: string): Response {
@@ -315,9 +311,9 @@ export class VinyanAPIServer {
 
     return new Response(stream, {
       headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
       },
     });
   }
@@ -325,26 +321,26 @@ export class VinyanAPIServer {
   // ── Session Handlers ────────────────────────────────────
 
   private async handleCreateSession(req: Request): Promise<Response> {
-    const body = await req.json() as { source?: string };
-    const session = this.deps.sessionManager.create(body.source ?? "api");
+    const body = (await req.json()) as { source?: string };
+    const session = this.deps.sessionManager.create(body.source ?? 'api');
     // G2: Emit session bus event
-    this.deps.bus.emit("session:created", { sessionId: session.id, source: body.source ?? "api" });
+    this.deps.bus.emit('session:created', { sessionId: session.id, source: body.source ?? 'api' });
     return jsonResponse({ session }, 201);
   }
 
   private handleGetSession(sessionId: string): Response {
     const session = this.deps.sessionManager.get(sessionId);
-    if (!session) return jsonResponse({ error: "Session not found" }, 404);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
     return jsonResponse({ session });
   }
 
   private handleCompactSession(sessionId: string): Response {
     const session = this.deps.sessionManager.get(sessionId);
-    if (!session) return jsonResponse({ error: "Session not found" }, 404);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
 
     const result = this.deps.sessionManager.compact(sessionId);
     // G2: Emit session compacted bus event
-    this.deps.bus.emit("session:compacted", { sessionId, taskCount: result.statistics.totalTasks });
+    this.deps.bus.emit('session:compacted', { sessionId, taskCount: result.statistics.totalTasks });
     return jsonResponse({ compaction: result });
   }
 
@@ -355,7 +351,7 @@ export class VinyanAPIServer {
       const existing = this.deps.sessionManager.get(this.defaultSessionId);
       if (existing) return existing;
     }
-    const session = this.deps.sessionManager.create("api");
+    const session = this.deps.sessionManager.create('api');
     this.defaultSessionId = session.id;
     return session;
   }
@@ -364,16 +360,14 @@ export class VinyanAPIServer {
 
   async stop(deadlineMs = 30_000): Promise<void> {
     this.shuttingDown = true;
-    console.log("[vinyan-api] Shutting down...");
+    console.log('[vinyan-api] Shutting down...');
 
     // 1. Stop accepting — handled by shuttingDown flag (returns 503)
 
     // 2. Drain in-flight tasks
     if (this.inFlightTasks.size > 0) {
       console.log(`[vinyan-api] Draining ${this.inFlightTasks.size} in-flight tasks...`);
-      const drainPromise = Promise.allSettled(
-        [...this.inFlightTasks.values()].map((t) => t.promise),
-      );
+      const drainPromise = Promise.allSettled([...this.inFlightTasks.values()].map((t) => t.promise));
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, deadlineMs));
       await Promise.race([drainPromise, timeout]);
     }
@@ -388,7 +382,7 @@ export class VinyanAPIServer {
     this.server?.stop();
     this.server = null;
 
-    console.log("[vinyan-api] Shutdown complete");
+    console.log('[vinyan-api] Shutdown complete');
   }
 
   getPort(): number {
@@ -402,15 +396,11 @@ export class VinyanAPIServer {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-function jsonResponse(
-  data: unknown,
-  status = 200,
-  extraHeaders?: Record<string, string>,
-): Response {
+function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
       ...extraHeaders,
     },
   });
@@ -419,8 +409,8 @@ function jsonResponse(
 function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
   return {
     id: partial.id ?? crypto.randomUUID(),
-    source: "api",
-    goal: partial.goal ?? "",
+    source: 'api',
+    goal: partial.goal ?? '',
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
     budget: partial.budget ?? {

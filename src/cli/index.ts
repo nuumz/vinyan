@@ -1,19 +1,20 @@
 /**
  * Vinyan CLI entry point.
  */
-import { init } from "./init.ts";
-import { join } from "path";
-import { runGate, type GateRequest, analyzeSessionDir, formatMetrics } from "../gate/index.ts";
-import { runAgentTask } from "./run.ts";
-import { runPatternsCommand } from "./patterns.ts";
-import { runStatusCommand, runMetricsCommand, runRulesCommand, runSkillsCommand } from "./status.ts";
+
+import { join } from 'path';
+import { analyzeSessionDir, formatMetrics, type GateRequest, runGate } from '../gate/index.ts';
+import { init } from './init.ts';
+import { runPatternsCommand } from './patterns.ts';
+import { runAgentTask } from './run.ts';
+import { runMetricsCommand, runRulesCommand, runSkillsCommand, runStatusCommand } from './status.ts';
 
 const command = process.argv[2];
 const workspacePath = process.argv[3] || process.cwd();
-const force = process.argv.includes("--force");
+const force = process.argv.includes('--force');
 
 switch (command) {
-  case "init": {
+  case 'init': {
     const result = init(workspacePath, force);
     if (result.created) {
       console.log(`Created ${result.configPath}`);
@@ -24,20 +25,20 @@ switch (command) {
     break;
   }
 
-  case "gate": {
+  case 'gate': {
     // Read JSON from stdin, run oracle gate, write verdict to stdout
-    const wsOverride = process.argv.includes("--workspace")
-      ? process.argv[process.argv.indexOf("--workspace") + 1]
+    const wsOverride = process.argv.includes('--workspace')
+      ? process.argv[process.argv.indexOf('--workspace') + 1]
       : undefined;
 
     const chunks: Buffer[] = [];
     for await (const chunk of Bun.stdin.stream()) {
       chunks.push(chunk as Buffer);
     }
-    const input = Buffer.concat(chunks).toString("utf-8").trim();
+    const input = Buffer.concat(chunks).toString('utf-8').trim();
 
     if (!input) {
-      console.error("Error: no JSON input on stdin");
+      console.error('Error: no JSON input on stdin');
       process.exit(2);
     }
 
@@ -45,7 +46,7 @@ switch (command) {
     try {
       request = JSON.parse(input) as GateRequest;
     } catch {
-      console.error("Error: invalid JSON on stdin");
+      console.error('Error: invalid JSON on stdin');
       process.exit(2);
     }
 
@@ -57,7 +58,7 @@ switch (command) {
     try {
       const verdict = await runGate(request);
       console.log(JSON.stringify(verdict));
-      process.exit(verdict.decision === "allow" ? 0 : 1);
+      process.exit(verdict.decision === 'allow' ? 0 : 1);
     } catch (err) {
       console.error(`Gate error: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(2);
@@ -65,52 +66,52 @@ switch (command) {
     break;
   }
 
-  case "analyze": {
+  case 'analyze': {
     // Analyze session logs and print metrics
-    const analyzeDir = process.argv[3] || join(workspacePath, ".vinyan", "sessions");
+    const analyzeDir = process.argv[3] || join(workspacePath, '.vinyan', 'sessions');
     const metrics = analyzeSessionDir(analyzeDir);
     console.log(formatMetrics(metrics));
     break;
   }
 
-  case "run": {
+  case 'run': {
     await runAgentTask(process.argv.slice(2));
     break;
   }
 
-  case "patterns": {
+  case 'patterns': {
     await runPatternsCommand(process.argv.slice(3));
     break;
   }
 
-  case "status": {
+  case 'status': {
     await runStatusCommand(workspacePath);
     break;
   }
 
-  case "metrics": {
+  case 'metrics': {
     await runMetricsCommand(workspacePath);
     break;
   }
 
-  case "rules": {
+  case 'rules': {
     await runRulesCommand(workspacePath);
     break;
   }
 
-  case "skills": {
+  case 'skills': {
     await runSkillsCommand(workspacePath);
     break;
   }
 
-  case "serve": {
-    const { serve } = await import("./serve.ts");
+  case 'serve': {
+    const { serve } = await import('./serve.ts');
     await serve(workspacePath);
     break;
   }
 
-  case "mcp": {
-    const { startMCPServer } = await import("./mcp.ts");
+  case 'mcp': {
+    const { startMCPServer } = await import('./mcp.ts');
     await startMCPServer(workspacePath);
     break;
   }

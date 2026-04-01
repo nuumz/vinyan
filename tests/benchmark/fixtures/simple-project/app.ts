@@ -1,10 +1,10 @@
-import { sum, product } from "./utils.ts";
-import { divide, PI } from "./math.ts";
-import type { User, Result } from "./types.ts";
+import { divide, PI } from './math.ts';
+import type { Result, User } from './types.ts';
+import { product, sum } from './utils.ts';
 
 export function calculateAverage(values: number[]): Result<number> {
   if (values.length === 0) {
-    return { ok: false, error: "Cannot average empty array" };
+    return { ok: false, error: 'Cannot average empty array' };
   }
   return { ok: true, value: divide(sum(values), values.length) };
 }

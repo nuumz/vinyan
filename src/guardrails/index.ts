@@ -1,12 +1,12 @@
-export { detectPromptInjection, INJECTION_PATTERNS } from "./prompt-injection.ts";
-export type { InjectionResult } from "./prompt-injection.ts";
-export { containsBypassAttempt, BYPASS_PATTERNS } from "./bypass-detection.ts";
-export type { BypassResult } from "./bypass-detection.ts";
-export { normalizeForScan, extractStrings } from "./text-utils.ts";
+export type { BypassResult } from './bypass-detection.ts';
+export { BYPASS_PATTERNS, containsBypassAttempt } from './bypass-detection.ts';
+export type { InjectionResult } from './prompt-injection.ts';
+export { detectPromptInjection, INJECTION_PATTERNS } from './prompt-injection.ts';
+export { extractStrings, normalizeForScan } from './text-utils.ts';
 
-import { detectPromptInjection, INJECTION_PATTERNS } from "./prompt-injection.ts";
-import { containsBypassAttempt, BYPASS_PATTERNS } from "./bypass-detection.ts";
-import { normalizeForScan } from "./text-utils.ts";
+import { BYPASS_PATTERNS, containsBypassAttempt } from './bypass-detection.ts';
+import { detectPromptInjection, INJECTION_PATTERNS } from './prompt-injection.ts';
+import { normalizeForScan } from './text-utils.ts';
 
 export interface SanitizeResult {
   cleaned: string;
@@ -34,7 +34,10 @@ export function sanitizeForPrompt(text: string): SanitizeResult {
   const allPatterns = [...INJECTION_PATTERNS, ...BYPASS_PATTERNS];
   for (const { pattern, label } of allPatterns) {
     if (detections.includes(label)) {
-      const globalPattern = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+      const globalPattern = new RegExp(
+        pattern.source,
+        pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+      );
       cleaned = cleaned.replace(globalPattern, `[REDACTED: ${label}]`);
     }
   }

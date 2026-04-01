@@ -7,7 +7,7 @@
  * Axiom: A7 (prediction error as learning signal)
  * Source: docs/design/world-model.md
  */
-import type { TaskInput, PerceptualHierarchy } from "./types.ts";
+import type { PerceptualHierarchy, TaskInput } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Causal Edge Types
@@ -15,12 +15,12 @@ import type { TaskInput, PerceptualHierarchy } from "./types.ts";
 
 /** Semantic causal edge types beyond 'imports'. */
 export type CausalEdgeType =
-  | "calls-method"
-  | "extends-class"
-  | "implements-interface"
-  | "uses-type"
-  | "test-covers"
-  | "re-exports";
+  | 'calls-method'
+  | 'extends-class'
+  | 'implements-interface'
+  | 'uses-type'
+  | 'test-covers'
+  | 're-exports';
 
 /** A causal edge between two symbols (or files when symbol is undefined). */
 export interface CausalEdge {
@@ -32,7 +32,7 @@ export interface CausalEdge {
   /** 1.0 for static analysis, <1.0 for trace-inferred edges */
   confidence: number;
   /** How the edge was discovered */
-  source: "static" | "inferred" | "trace-mined";
+  source: 'static' | 'inferred' | 'trace-mined';
 }
 
 // ---------------------------------------------------------------------------
@@ -48,9 +48,9 @@ export interface TestOutcomeDistribution {
 
 /** Prediction with uncertainty bounds (10th/50th/90th percentiles). */
 export interface PredictionDistribution {
-  lo: number;   // 10th percentile (optimistic)
-  mid: number;  // 50th percentile (median estimate)
-  hi: number;   // 90th percentile (pessimistic)
+  lo: number; // 10th percentile (optimistic)
+  mid: number; // 50th percentile (median estimate)
+  hi: number; // 90th percentile (pessimistic)
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ export interface OutcomePrediction {
   causalRiskFiles: CausalRiskEntry[];
 
   /** Which prediction method was used. */
-  basis: "heuristic" | "statistical" | "causal";
+  basis: 'heuristic' | 'statistical' | 'causal';
 
   /** Maximum causal chain depth used. */
   causalChainDepth: number;
@@ -91,7 +91,7 @@ export interface CausalRiskEntry {
   causalChain: Array<{
     fromFile: string;
     toFile: string;
-    edgeType: CausalEdgeType | "imports";
+    edgeType: CausalEdgeType | 'imports';
     fromSymbol?: string;
     toSymbol?: string;
   }>;
@@ -101,7 +101,7 @@ export interface CausalRiskEntry {
 /** Recorded outcome for calibration (written after VERIFY step). */
 export interface PredictionOutcome {
   predictionId: string;
-  actualTestResult: "pass" | "partial" | "fail";
+  actualTestResult: 'pass' | 'partial' | 'fail';
   actualBlastRadius: number;
   actualQuality: number;
   actualDuration: number;
@@ -112,14 +112,14 @@ export interface PredictionOutcome {
 // ---------------------------------------------------------------------------
 
 /** Causal coupling strength per edge type — higher = stronger coupling. */
-export const CAUSAL_EDGE_WEIGHTS: Record<CausalEdgeType | "imports", number> = {
-  "test-covers": 0.95,
-  "extends-class": 0.85,
-  "implements-interface": 0.80,
-  "calls-method": 0.60,
-  "uses-type": 0.40,
-  "re-exports": 0.30,
-  "imports": 0.20,
+export const CAUSAL_EDGE_WEIGHTS: Record<CausalEdgeType | 'imports', number> = {
+  'test-covers': 0.95,
+  'extends-class': 0.85,
+  'implements-interface': 0.8,
+  'calls-method': 0.6,
+  'uses-type': 0.4,
+  're-exports': 0.3,
+  imports: 0.2,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,10 +136,7 @@ export const CAUSAL_EDGE_WEIGHTS: Record<CausalEdgeType | "imports", number> = {
  * Data-gated: returns heuristic-only predictions until >= 100 traces exist.
  */
 export interface ForwardPredictor {
-  predictOutcome(
-    input: TaskInput,
-    perception: PerceptualHierarchy,
-  ): Promise<OutcomePrediction>;
+  predictOutcome(input: TaskInput, perception: PerceptualHierarchy): Promise<OutcomePrediction>;
 
   /** Record actual outcome and compute prediction error. Returns Brier score. */
   recordOutcome(outcome: PredictionOutcome): Promise<number>;
@@ -150,6 +147,6 @@ export interface ForwardPredictor {
     blastMAPE: number;
     qualityMAE: number;
     predictionCount: number;
-    basis: "heuristic" | "statistical" | "causal";
+    basis: 'heuristic' | 'statistical' | 'causal';
   };
 }

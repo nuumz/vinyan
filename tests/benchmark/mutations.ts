@@ -2,18 +2,18 @@
  * Benchmark mutation cases for Oracle Gate validation.
  * Each case defines a code mutation, which oracles to run, and expected outcome.
  */
-import { writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { join } from 'path';
 
 export interface MutationCase {
   id: string;
   description: string;
   workspace: string;
-  category: "valid" | "invalid";
+  category: 'valid' | 'invalid';
   setup: (workspace: string) => void;
   teardown: (workspace: string) => void;
-  expectedResult: "valid" | "invalid";
-  oracles: ("ast" | "type" | "dep")[];
+  expectedResult: 'valid' | 'invalid';
+  oracles: ('ast' | 'type' | 'dep')[];
 }
 
 // --- Helpers to snapshot and restore files ---
@@ -23,7 +23,7 @@ const snapshots = new Map<string, string>();
 function snapshot(workspace: string, relPath: string): void {
   const fullPath = join(workspace, relPath);
   if (existsSync(fullPath)) {
-    snapshots.set(fullPath, readFileSync(fullPath, "utf-8"));
+    snapshots.set(fullPath, readFileSync(fullPath, 'utf-8'));
   }
 }
 
@@ -59,31 +59,31 @@ function createNewFile(workspace: string, relPath: string, content: string): voi
 // VALID mutations — should NOT be blocked (test for false positives)
 // =============================================================================
 
-const validMutations: Omit<MutationCase, "workspace">[] = [
+const validMutations: Omit<MutationCase, 'workspace'>[] = [
   {
-    id: "V01",
-    description: "Add new exported function (no callers yet)",
-    category: "valid",
+    id: 'V01',
+    description: 'Add new exported function (no callers yet)',
+    category: 'valid',
     setup: (ws) => {
-      const original = readFileSync(join(ws, "math.ts"), "utf-8");
-      snapshot(ws, "math.ts");
+      const original = readFileSync(join(ws, 'math.ts'), 'utf-8');
+      snapshot(ws, 'math.ts');
       writeFileSync(
-        join(ws, "math.ts"),
-        original + "\nexport function square(n: number): number {\n  return n * n;\n}\n",
+        join(ws, 'math.ts'),
+        original + '\nexport function square(n: number): number {\n  return n * n;\n}\n',
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V02",
-    description: "Add optional parameter to function",
-    category: "valid",
+    id: 'V02',
+    description: 'Add optional parameter to function',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function add(a: number, b: number, c?: number): number {
   return a + b + (c ?? 0);
 }
@@ -105,18 +105,18 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V03",
-    description: "Rename local variable (no export change)",
-    category: "valid",
+    id: 'V03',
+    description: 'Rename local variable (no export change)',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "utils.ts",
+        'utils.ts',
         `import { add, multiply } from "./math.ts";
 
 export function sum(values: number[]): number {
@@ -137,18 +137,18 @@ export function clamp(value: number, min: number, max: number): number {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "utils.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'utils.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V04",
-    description: "Add new import that exists",
-    category: "valid",
+    id: 'V04',
+    description: 'Add new import that exists',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "server.ts",
+        'server.ts',
         `import { createUser } from "./app.ts";
 import { capitalize } from "./utils.ts";
 import type { Config } from "./types.ts";
@@ -166,18 +166,18 @@ export function startServer(config: Config = defaultConfig): void {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "server.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'server.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V05",
-    description: "Add return type annotation",
-    category: "valid",
+    id: 'V05',
+    description: 'Add return type annotation',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "utils.ts",
+        'utils.ts',
         `import { add, multiply } from "./math.ts";
 
 export function sum(values: number[]): number {
@@ -198,18 +198,18 @@ export function clamp(value: number, min: number, max: number): number {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "utils.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'utils.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V06",
-    description: "Extract inline logic to helper function",
-    category: "valid",
+    id: 'V06',
+    description: 'Extract inline logic to helper function',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -240,18 +240,18 @@ export function createUser(id: number, name: string, email: string): User {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V07",
-    description: "Add new file with new exports",
-    category: "valid",
+    id: 'V07',
+    description: 'Add new file with new exports',
+    category: 'valid',
     setup: (ws) => {
       createNewFile(
         ws,
-        "logger.ts",
+        'logger.ts',
         `export function log(message: string): void {
   console.log(\`[\${new Date().toISOString()}] \${message}\`);
 }
@@ -262,34 +262,34 @@ export function error(message: string): void {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "logger.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'logger.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V08",
-    description: "Add new interface to types file",
-    category: "valid",
+    id: 'V08',
+    description: 'Add new interface to types file',
+    category: 'valid',
     setup: (ws) => {
-      const original = readFileSync(join(ws, "types.ts"), "utf-8");
-      snapshot(ws, "types.ts");
+      const original = readFileSync(join(ws, 'types.ts'), 'utf-8');
+      snapshot(ws, 'types.ts');
       writeFileSync(
-        join(ws, "types.ts"),
-        original + "\nexport interface Session {\n  token: string;\n  expiresAt: number;\n}\n",
+        join(ws, 'types.ts'),
+        original + '\nexport interface Session {\n  token: string;\n  expiresAt: number;\n}\n',
       );
     },
-    teardown: (ws) => restore(ws, "types.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'types.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V09",
-    description: "Add default parameter value",
-    category: "valid",
+    id: 'V09',
+    description: 'Add default parameter value',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "utils.ts",
+        'utils.ts',
         `import { add, multiply } from "./math.ts";
 
 export function sum(values: number[]): number {
@@ -310,18 +310,18 @@ export function clamp(value: number, min: number = 0, max: number = 100): number
 `,
       );
     },
-    teardown: (ws) => restore(ws, "utils.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'utils.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V10",
-    description: "Add JSDoc comments to functions",
-    category: "valid",
+    id: 'V10',
+    description: 'Add JSDoc comments to functions',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `/** Add two numbers */
 export function add(a: number, b: number): number {
   return a + b;
@@ -347,18 +347,18 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V11",
-    description: "Change function implementation without changing signature",
-    category: "valid",
+    id: 'V11',
+    description: 'Change function implementation without changing signature',
+    category: 'valid',
     setup: (ws) => {
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function add(a: number, b: number): number {
   // Optimized implementation
   return Number(a) + Number(b);
@@ -381,42 +381,42 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V12",
-    description: "Add type guard function",
-    category: "valid",
+    id: 'V12',
+    description: 'Add type guard function',
+    category: 'valid',
     setup: (ws) => {
-      const original = readFileSync(join(ws, "types.ts"), "utf-8");
-      snapshot(ws, "types.ts");
+      const original = readFileSync(join(ws, 'types.ts'), 'utf-8');
+      snapshot(ws, 'types.ts');
       writeFileSync(
-        join(ws, "types.ts"),
+        join(ws, 'types.ts'),
         original +
           "\nexport function isUser(value: unknown): value is User {\n  return typeof value === 'object' && value !== null && 'id' in value && 'name' in value;\n}\n",
       );
     },
-    teardown: (ws) => restore(ws, "types.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'types.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "V13",
-    description: "Add enum declaration",
-    category: "valid",
+    id: 'V13',
+    description: 'Add enum declaration',
+    category: 'valid',
     setup: (ws) => {
-      const original = readFileSync(join(ws, "types.ts"), "utf-8");
-      snapshot(ws, "types.ts");
+      const original = readFileSync(join(ws, 'types.ts'), 'utf-8');
+      snapshot(ws, 'types.ts');
       writeFileSync(
-        join(ws, "types.ts"),
+        join(ws, 'types.ts'),
         original + "\nexport enum Status {\n  Active = 'active',\n  Inactive = 'inactive',\n}\n",
       );
     },
-    teardown: (ws) => restore(ws, "types.ts"),
-    expectedResult: "valid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'types.ts'),
+    expectedResult: 'valid',
+    oracles: ['ast', 'type'],
   },
 ];
 
@@ -424,15 +424,15 @@ export const PI = 3.14159;
 // INVALID mutations — should be caught (test for true positives)
 // =============================================================================
 
-const invalidMutations: Omit<MutationCase, "workspace">[] = [
+const invalidMutations: Omit<MutationCase, 'workspace'>[] = [
   {
-    id: "I01",
+    id: 'I01',
     description: "Reference function that doesn't exist",
-    category: "invalid",
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -461,18 +461,18 @@ export const result = nonExistentFunction(42);
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I02",
-    description: "Wrong number of arguments to function call",
-    category: "invalid",
+    id: 'I02',
+    description: 'Wrong number of arguments to function call',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -502,18 +502,18 @@ export const badCall = divide(1, 2, 3);
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I03",
-    description: "Import from non-existent module",
-    category: "invalid",
+    id: 'I03',
+    description: 'Import from non-existent module',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import { phantom } from "./phantom.ts";
@@ -540,18 +540,18 @@ export function createUser(id: number, name: string, email: string): User {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "I04",
-    description: "Type mismatch in function argument",
-    category: "invalid",
+    id: 'I04',
+    description: 'Type mismatch in function argument',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -579,19 +579,19 @@ export function createUser(id: number, name: string, email: string): User {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I05",
-    description: "Remove exported function still used by importers",
-    category: "invalid",
+    id: 'I05',
+    description: 'Remove exported function still used by importers',
+    category: 'invalid',
     setup: (ws) => {
       // Remove 'add' from math.ts but utils.ts still imports it
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function subtract(a: number, b: number): number {
   return a - b;
 }
@@ -609,19 +609,19 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["ast", "type", "dep"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['ast', 'type', 'dep'],
   },
   {
-    id: "I06",
-    description: "Change function signature breaking callers (add required param)",
-    category: "invalid",
+    id: 'I06',
+    description: 'Change function signature breaking callers (add required param)',
+    category: 'invalid',
     setup: (ws) => {
       // Change add to require 3 args, but callers (utils.ts) still call with 2
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function add(a: number, b: number, c: number): number {
   return a + b + c;
 }
@@ -643,19 +643,19 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["ast", "type", "dep"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['ast', 'type', 'dep'],
   },
   {
-    id: "I07",
-    description: "Add circular import",
-    category: "invalid",
+    id: 'I07',
+    description: 'Add circular import',
+    category: 'invalid',
     setup: (ws) => {
       // math.ts imports from utils.ts, and utils.ts already imports from math.ts
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `import { capitalize } from "./utils.ts";
 
 export function add(a: number, b: number): number {
@@ -681,18 +681,18 @@ export const label = capitalize("math");
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["dep"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['dep'],
   },
   {
-    id: "I08",
-    description: "Assign string to number variable",
-    category: "invalid",
+    id: 'I08',
+    description: 'Assign string to number variable',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -721,31 +721,31 @@ export function createUser(id: number, name: string, email: string): User {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I09",
-    description: "Delete file that others import",
-    category: "invalid",
+    id: 'I09',
+    description: 'Delete file that others import',
+    category: 'invalid',
     setup: (ws) => {
       // Remove math.ts — utils.ts, app.ts, server.ts all depend on it (directly or transitively)
-      removeFile(ws, "math.ts");
+      removeFile(ws, 'math.ts');
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["type", "dep"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type', 'dep'],
   },
   {
-    id: "I10",
-    description: "Rename export without updating importers",
-    category: "invalid",
+    id: 'I10',
+    description: 'Rename export without updating importers',
+    category: 'invalid',
     setup: (ws) => {
       // Rename 'add' to 'addNumbers' in math.ts but utils.ts still imports 'add'
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function addNumbers(a: number, b: number): number {
   return a + b;
 }
@@ -767,18 +767,18 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["ast", "type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['ast', 'type'],
   },
   {
-    id: "I11",
-    description: "Import non-exported symbol",
-    category: "invalid",
+    id: 'I11',
+    description: 'Import non-exported symbol',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "server.ts",
+        'server.ts',
         `import { createUser } from "./app.ts";
 import { internalHelper } from "./utils.ts";
 import type { Config } from "./types.ts";
@@ -796,18 +796,18 @@ export function startServer(config: Config = defaultConfig): void {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "server.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'server.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I12",
-    description: "Duplicate export name",
-    category: "invalid",
+    id: 'I12',
+    description: 'Duplicate export name',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "math.ts",
+        'math.ts',
         `export function add(a: number, b: number): number {
   return a + b;
 }
@@ -834,18 +834,18 @@ export const PI = 3.14159;
 `,
       );
     },
-    teardown: (ws) => restore(ws, "math.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'math.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I13",
-    description: "Return type mismatch (number returned as string)",
-    category: "invalid",
+    id: 'I13',
+    description: 'Return type mismatch (number returned as string)',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -876,18 +876,18 @@ export function getData(): string {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I14",
+    id: 'I14',
     description: "Use interface field that doesn't exist",
-    category: "invalid",
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -918,18 +918,18 @@ export function getUserRole(user: User): string {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I15",
-    description: "Return wrong type from function",
-    category: "invalid",
+    id: 'I15',
+    description: 'Return wrong type from function',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "utils.ts",
+        'utils.ts',
         `import { add, multiply } from "./math.ts";
 
 export function sum(values: number[]): number {
@@ -955,18 +955,18 @@ export function formatValue(n: number): string {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "utils.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'utils.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I16",
-    description: "Remove required field from object literal matching interface",
-    category: "invalid",
+    id: 'I16',
+    description: 'Remove required field from object literal matching interface',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -993,18 +993,18 @@ export function createUser(id: number, name: string, email: string): User {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
   {
-    id: "I17",
-    description: "Call method on possibly undefined value",
-    category: "invalid",
+    id: 'I17',
+    description: 'Call method on possibly undefined value',
+    category: 'invalid',
     setup: (ws) => {
       overwrite(
         ws,
-        "app.ts",
+        'app.ts',
         `import { sum, product } from "./utils.ts";
 import { divide, PI } from "./math.ts";
 import type { User, Result } from "./types.ts";
@@ -1035,18 +1035,15 @@ export function getFirst(arr: number[]): string {
 `,
       );
     },
-    teardown: (ws) => restore(ws, "app.ts"),
-    expectedResult: "invalid",
-    oracles: ["type"],
+    teardown: (ws) => restore(ws, 'app.ts'),
+    expectedResult: 'invalid',
+    oracles: ['type'],
   },
 ];
 
 /** Build all mutation cases bound to a specific workspace path. */
 export function buildMutationCases(workspace: string): MutationCase[] {
-  return [
-    ...validMutations.map((m) => ({ ...m, workspace })),
-    ...invalidMutations.map((m) => ({ ...m, workspace })),
-  ];
+  return [...validMutations.map((m) => ({ ...m, workspace })), ...invalidMutations.map((m) => ({ ...m, workspace }))];
 }
 
 export const VALID_COUNT = validMutations.length;

@@ -7,10 +7,11 @@
  *
  * Source of truth: spec/tdd.md §12B (Execution Traces), §16 (Core Loop Step 6: LEARN)
  */
-import type { WorldGraph } from "../world-graph/world-graph.ts";
-import type { TraceCollector } from "./core-loop.ts";
-import type { ExecutionTrace } from "./types.ts";
-import type { TraceStore } from "../db/trace-store.ts";
+
+import type { TraceStore } from '../db/trace-store.ts';
+import type { WorldGraph } from '../world-graph/world-graph.ts';
+import type { TraceCollector } from './core-loop.ts';
+import type { ExecutionTrace } from './types.ts';
 
 export class TraceCollectorImpl implements TraceCollector {
   private traces: ExecutionTrace[] = [];
@@ -30,13 +31,13 @@ export class TraceCollectorImpl implements TraceCollector {
       try {
         this.traceStore.insert(trace);
       } catch (err) {
-        console.warn("[vinyan] Trace INSERT failed:", err);
+        console.warn('[vinyan] Trace INSERT failed:', err);
       }
     }
 
     // On success, invalidate World Graph facts for affected files
     // so stale verified facts don't persist after mutations
-    if (trace.outcome === "success" && this.worldGraph) {
+    if (trace.outcome === 'success' && this.worldGraph) {
       for (const file of trace.affected_files) {
         try {
           this.worldGraph.invalidateByFile(file);

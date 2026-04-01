@@ -10,11 +10,11 @@
  *
  * Feature-flagged: enabled via OrchestratorConfig.llmProxy = true.
  */
-import { unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import type { LLMProvider, LLMRequest, LLMResponse } from "../types.ts";
-import type { LLMProviderRegistry } from "./provider-registry.ts";
+import { existsSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { LLMProvider, LLMRequest, LLMResponse } from '../types.ts';
+import type { LLMProviderRegistry } from './provider-registry.ts';
 
 export interface LLMProxyServer {
   socketPath: string;
@@ -30,16 +30,20 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
   const socketPath = join(tmpdir(), `vinyan-llm-proxy-${process.pid}-${Date.now()}.sock`);
 
   // Clean up stale socket file if it exists
-  try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch { /* ignore */ }
+  try {
+    if (existsSync(socketPath)) unlinkSync(socketPath);
+  } catch {
+    /* ignore */
+  }
 
   const server = Bun.listen({
     unix: socketPath,
     socket: {
       async data(socket, rawData) {
         try {
-          const text = typeof rawData === "string" ? rawData : new TextDecoder().decode(rawData);
+          const text = typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData);
           // Handle multiple newline-delimited messages in a single data event
-          const lines = text.split("\n").filter(l => l.trim());
+          const lines = text.split('\n').filter((l) => l.trim());
 
           for (const line of lines) {
             const request = JSON.parse(line) as LLMProxyRequest;
@@ -47,36 +51,40 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
             // Select provider by tier (matching worker-entry.ts logic)
             const provider = request.tier
               ? registry.selectByTier(request.tier)
-              : registry.selectForRoutingLevel((request.routingLevel ?? 1) as import("../types.ts").RoutingLevel);
+              : registry.selectForRoutingLevel((request.routingLevel ?? 1) as import('../types.ts').RoutingLevel);
 
             if (!provider) {
               const errorResponse: LLMProxyResponse = {
-                error: "No provider available",
+                error: 'No provider available',
               };
-              socket.write(JSON.stringify(errorResponse) + "\n");
+              socket.write(JSON.stringify(errorResponse) + '\n');
               continue;
             }
 
             try {
               const llmResponse = await provider.generate(request.llmRequest);
               const proxyResponse: LLMProxyResponse = { response: llmResponse };
-              socket.write(JSON.stringify(proxyResponse) + "\n");
+              socket.write(JSON.stringify(proxyResponse) + '\n');
             } catch (err) {
               const errorResponse: LLMProxyResponse = {
                 error: err instanceof Error ? err.message : String(err),
               };
-              socket.write(JSON.stringify(errorResponse) + "\n");
+              socket.write(JSON.stringify(errorResponse) + '\n');
             }
           }
         } catch (err) {
           const errorResponse: LLMProxyResponse = {
             error: `Proxy parse error: ${err instanceof Error ? err.message : String(err)}`,
           };
-          socket.write(JSON.stringify(errorResponse) + "\n");
+          socket.write(JSON.stringify(errorResponse) + '\n');
         }
       },
-      open() { /* connection accepted */ },
-      close() { /* connection closed */ },
+      open() {
+        /* connection accepted */
+      },
+      close() {
+        /* connection closed */
+      },
       error(_socket, error) {
         console.error(`[vinyan] LLM proxy socket error: ${error.message}`);
       },
@@ -87,7 +95,11 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
     socketPath,
     close() {
       server.stop(true);
-      try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch { /* ignore */ }
+      try {
+        if (existsSync(socketPath)) unlinkSync(socketPath);
+      } catch {
+        /* ignore */
+      }
     },
   };
 }
@@ -96,7 +108,7 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
  * Create an LLMProvider that proxies requests through a Unix domain socket
  * to the orchestrator's LLM proxy server. Used by worker subprocesses.
  */
-export function createProxyProvider(socketPath: string, tier: LLMProvider["tier"] = "balanced"): LLMProvider {
+export function createProxyProvider(socketPath: string, tier: LLMProvider['tier'] = 'balanced'): LLMProvider {
   return {
     id: `proxy/${tier}`,
     tier,
@@ -107,10 +119,10 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider["tier"
         const socket = Bun.connect({
           unix: socketPath,
           socket: {
-            data(_socket, rawData) {
+            data(socket, rawData) {
               try {
-                const text = typeof rawData === "string" ? rawData : new TextDecoder().decode(rawData);
-                const lines = text.split("\n").filter(l => l.trim());
+                const text = typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData);
+                const lines = text.split('\n').filter((l) => l.trim());
                 for (const line of lines) {
                   const parsed = JSON.parse(line) as LLMProxyResponse;
                   if (parsed.error) {
@@ -118,19 +130,21 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider["tier"
                   } else if (parsed.response) {
                     resolve(parsed.response);
                   }
-                  _socket.end();
+                  socket.end();
                 }
               } catch (err) {
                 reject(err);
               }
             },
             open(socket) {
-              socket.write(JSON.stringify(proxyRequest) + "\n");
+              socket.write(JSON.stringify(proxyRequest) + '\n');
             },
             error(_socket, error) {
               reject(error);
             },
-            close() { /* cleanup */ },
+            close() {
+              /* cleanup */
+            },
             connectError(_socket, error) {
               reject(error);
             },
@@ -151,7 +165,7 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider["tier"
 // ---------------------------------------------------------------------------
 
 interface LLMProxyRequest {
-  tier?: LLMProvider["tier"];
+  tier?: LLMProvider['tier'];
   routingLevel?: number;
   llmRequest: LLMRequest;
 }

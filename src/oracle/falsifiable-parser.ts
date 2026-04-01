@@ -8,8 +8,8 @@
  * Source of truth: spec/ecp-spec.md §4.5, Appendix D.3
  */
 
-export type FalsifiabilityScope = "file" | "dependency" | "env" | "config" | "time";
-export type FalsifiabilityEvent = "content-change" | "version-change" | "deletion" | "expiry";
+export type FalsifiabilityScope = 'file' | 'dependency' | 'env' | 'config' | 'time';
+export type FalsifiabilityEvent = 'content-change' | 'version-change' | 'deletion' | 'expiry';
 
 export interface FalsifiabilityCondition {
   scope: FalsifiabilityScope;
@@ -23,8 +23,8 @@ export interface ParsedCondition {
   valid: boolean;
 }
 
-const VALID_SCOPES = new Set<string>(["file", "dependency", "env", "config", "time"]);
-const VALID_EVENTS = new Set<string>(["content-change", "version-change", "deletion", "expiry"]);
+const VALID_SCOPES = new Set<string>(['file', 'dependency', 'env', 'config', 'time']);
+const VALID_EVENTS = new Set<string>(['content-change', 'version-change', 'deletion', 'expiry']);
 
 /**
  * Parse a single falsifiable_by string into a structured condition.
@@ -34,12 +34,12 @@ export function parseFalsifiableCondition(raw: string): ParsedCondition {
   // Format: scope:target:event
   // Target may contain colons (e.g. scoped npm packages @scope/pkg), so we split
   // on first colon (scope) and last colon (event), everything in between is the target.
-  const firstColon = raw.indexOf(":");
+  const firstColon = raw.indexOf(':');
   if (firstColon === -1) return { condition: null, raw, valid: false };
 
   const scope = raw.slice(0, firstColon);
   const rest = raw.slice(firstColon + 1);
-  const lastColon = rest.lastIndexOf(":");
+  const lastColon = rest.lastIndexOf(':');
   if (lastColon === -1) return { condition: null, raw, valid: false };
 
   const target = rest.slice(0, lastColon);
@@ -69,7 +69,7 @@ export function parseFalsifiableConditions(conditions: string[]): ParsedConditio
 export function extractFilePaths(conditions: ParsedCondition[]): string[] {
   const paths = new Set<string>();
   for (const c of conditions) {
-    if (c.condition?.scope === "file") paths.add(c.condition.target);
+    if (c.condition?.scope === 'file') paths.add(c.condition.target);
   }
   return [...paths];
 }

@@ -8,44 +8,44 @@
  *
  * Uses a small fixture workspace for realistic but fast testing.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import { verify as astVerify } from "../../src/oracle/ast/ast-verifier.ts";
-import { verify as depVerify } from "../../src/oracle/dep/dep-analyzer.ts";
-import type { HypothesisTuple } from "../../src/core/types.ts";
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import type { HypothesisTuple } from '../../src/core/types.ts';
+import { verify as astVerify } from '../../src/oracle/ast/ast-verifier.ts';
+import { verify as depVerify } from '../../src/oracle/dep/dep-analyzer.ts';
 
 let workspace: string;
 
 beforeAll(() => {
-  workspace = mkdtempSync(join(tmpdir(), "vinyan-oracle-bench-"));
-  mkdirSync(join(workspace, "src"), { recursive: true });
+  workspace = mkdtempSync(join(tmpdir(), 'vinyan-oracle-bench-'));
+  mkdirSync(join(workspace, 'src'), { recursive: true });
 
   // Create a small fixture workspace
   writeFileSync(
-    join(workspace, "src", "index.ts"),
+    join(workspace, 'src', 'index.ts'),
     `import { helper } from "./helper.ts";\nexport function main() { return helper(); }\n`,
   );
   writeFileSync(
-    join(workspace, "src", "helper.ts"),
+    join(workspace, 'src', 'helper.ts'),
     `export function helper() { return 42; }\nexport function unused() { return 0; }\n`,
   );
   writeFileSync(
-    join(workspace, "src", "utils.ts"),
+    join(workspace, 'src', 'utils.ts'),
     `import { helper } from "./helper.ts";\nexport const result = helper() + 1;\n`,
   );
   writeFileSync(
-    join(workspace, "tsconfig.json"),
+    join(workspace, 'tsconfig.json'),
     JSON.stringify({
       compilerOptions: {
-        target: "ESNext",
-        module: "ESNext",
-        moduleResolution: "bundler",
+        target: 'ESNext',
+        module: 'ESNext',
+        moduleResolution: 'bundler',
         strict: true,
         noEmit: true,
       },
-      include: ["src"],
+      include: ['src'],
     }),
   );
 });
@@ -69,7 +69,7 @@ async function benchmarkOracle(
   for (let i = 0; i < runs; i++) {
     const start = performance.now();
     const result = oracleFn(hypothesis);
-    if (result && typeof result.then === "function") await result;
+    if (result && typeof result.then === 'function') await result;
     latencies.push(performance.now() - start);
   }
 
@@ -84,42 +84,38 @@ async function benchmarkOracle(
   };
 }
 
-describe("Oracle Latency Smoke Tests", () => {
-  const RUNS = 20;
+describe('Oracle Latency Smoke Tests', () => {
+  const Runs = 20;
 
-  test(`AST oracle p99 ≤ 200ms (${RUNS} runs)`, async () => {
-    const stats = await benchmarkOracle(
-      astVerify,
-      makeHypothesis("src/helper.ts", "symbol-exists"),
-      RUNS,
+  test(`AST oracle p99 ≤ 200ms (${Runs} runs)`, async () => {
+    const stats = await benchmarkOracle(astVerify, makeHypothesis('src/helper.ts', 'symbol-exists'), Runs);
+    console.log(
+      `  AST: p99=${stats.p99.toFixed(1)}ms, median=${stats.median.toFixed(1)}ms, mean=${stats.mean.toFixed(1)}ms`,
     );
-    console.log(`  AST: p99=${stats.p99.toFixed(1)}ms, median=${stats.median.toFixed(1)}ms, mean=${stats.mean.toFixed(1)}ms`);
     expect(stats.p99).toBeLessThan(200);
   });
 
-  test(`Dep oracle p99 ≤ 500ms (${RUNS} runs)`, async () => {
-    const stats = await benchmarkOracle(
-      depVerify,
-      makeHypothesis("src/helper.ts", "blast-radius"),
-      RUNS,
+  test(`Dep oracle p99 ≤ 500ms (${Runs} runs)`, async () => {
+    const stats = await benchmarkOracle(depVerify, makeHypothesis('src/helper.ts', 'blast-radius'), Runs);
+    console.log(
+      `  Dep: p99=${stats.p99.toFixed(1)}ms, median=${stats.median.toFixed(1)}ms, mean=${stats.mean.toFixed(1)}ms`,
     );
-    console.log(`  Dep: p99=${stats.p99.toFixed(1)}ms, median=${stats.median.toFixed(1)}ms, mean=${stats.mean.toFixed(1)}ms`);
     expect(stats.p99).toBeLessThan(500);
   });
 
-  test("AST oracle returns valid verdict structure", () => {
-    const verdict = astVerify(makeHypothesis("src/helper.ts", "symbol-exists"));
-    expect(verdict).toHaveProperty("verified");
-    expect(typeof verdict.verified).toBe("boolean");
-    expect(verdict).toHaveProperty("evidence");
-    expect(typeof verdict.duration_ms).toBe("number");
+  test('AST oracle returns valid verdict structure', () => {
+    const verdict = astVerify(makeHypothesis('src/helper.ts', 'symbol-exists'));
+    expect(verdict).toHaveProperty('verified');
+    expect(typeof verdict.verified).toBe('boolean');
+    expect(verdict).toHaveProperty('evidence');
+    expect(typeof verdict.durationMs).toBe('number');
   });
 
-  test("Dep oracle returns valid verdict structure", async () => {
-    const verdict = await depVerify(makeHypothesis("src/helper.ts", "blast-radius"));
-    expect(verdict).toHaveProperty("verified");
-    expect(typeof verdict.verified).toBe("boolean");
-    expect(verdict).toHaveProperty("evidence");
-    expect(typeof verdict.duration_ms).toBe("number");
+  test('Dep oracle returns valid verdict structure', async () => {
+    const verdict = await depVerify(makeHypothesis('src/helper.ts', 'blast-radius'));
+    expect(verdict).toHaveProperty('verified');
+    expect(typeof verdict.verified).toBe('boolean');
+    expect(verdict).toHaveProperty('evidence');
+    expect(typeof verdict.durationMs).toBe('number');
   });
 });

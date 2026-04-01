@@ -8,9 +8,38 @@
  */
 
 const STOP_WORDS = new Set([
-  "the", "a", "an", "to", "from", "into", "for", "of", "with", "in", "on",
-  "by", "as", "and", "or", "is", "are", "was", "were", "be", "been", "being",
-  "that", "this", "it", "its", "at", "but", "not", "so", "if", "then",
+  'the',
+  'a',
+  'an',
+  'to',
+  'from',
+  'into',
+  'for',
+  'of',
+  'with',
+  'in',
+  'on',
+  'by',
+  'as',
+  'and',
+  'or',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'that',
+  'this',
+  'it',
+  'its',
+  'at',
+  'but',
+  'not',
+  'so',
+  'if',
+  'then',
 ]);
 
 /**
@@ -21,7 +50,7 @@ export function normalizeApproach(approach: string): string[] {
   return approach
     .toLowerCase()
     .split(/[\s\-_.,;:!?()[\]{}"'`/\\|+=<>@#$%^&*~]+/)
-    .filter(token => token.length > 1 && !STOP_WORDS.has(token))
+    .filter((token) => token.length > 1 && !STOP_WORDS.has(token))
     .sort();
 }
 

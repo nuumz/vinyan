@@ -15,27 +15,27 @@
  *
  * Source of truth: spec/tdd.md §12B (Sleep Cycle Algorithm)
  */
-import type { TraceStore } from "../db/trace-store.ts";
-import type { PatternStore } from "../db/pattern-store.ts";
-import type { ExtractedPattern, SleepCycleConfig, ExecutionTrace } from "../orchestrator/types.ts";
-import { wilsonLowerBound } from "./wilson.ts";
-import { simpleGlobMatch } from "../core/glob.ts";
-import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
-import type { SkillManager } from "../orchestrator/skill-manager.ts";
-import type { RuleStore } from "../db/rule-store.ts";
-import type { VinyanBus } from "../core/bus.ts";
-import type { EvolutionaryRule } from "../orchestrator/types.ts";
-import { generateRule } from "../evolution/rule-generator.ts";
-import { findFailureCorrelations, correlationToPattern } from "./cross-task-analyzer.ts";
-import { buildQualityLookup, analyzeCounterfactuals, summarizeByTaskType } from "../evolution/counterfactual.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import { simpleGlobMatch } from '../core/glob.ts';
+import type { PatternStore } from '../db/pattern-store.ts';
+import type { RuleStore } from '../db/rule-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
+import { generateRule } from '../evolution/rule-generator.ts';
+import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
+import type { SkillManager } from '../orchestrator/skill-manager.ts';
+import type { EvolutionaryRule, ExecutionTrace, ExtractedPattern, SleepCycleConfig } from '../orchestrator/types.ts';
+import { clusterByApproach } from './approach-similarity.ts';
+import { correlationToPattern, findFailureCorrelations } from './cross-task-analyzer.ts';
 import {
   computeDecay,
   createExperimentState,
-  recordCycleScore,
-  getActiveDecayFunction,
   type DecayExperimentState,
-} from "./decay-experiment.ts";
-import { clusterByApproach } from "./approach-similarity.ts";
+  getActiveDecayFunction,
+  recordCycleScore,
+} from './decay-experiment.ts';
+import { wilsonLowerBound } from './wilson.ts';
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
   interval_sessions: 20,
@@ -62,8 +62,8 @@ export class SleepCycleRunner {
   private skillManager?: SkillManager;
   private ruleStore?: RuleStore;
   private bus?: VinyanBus;
-  private workerStore?: import("../db/worker-store.ts").WorkerStore;
-  private workerLifecycle?: import("../orchestrator/worker-lifecycle.ts").WorkerLifecycle;
+  private workerStore?: import('../db/worker-store.ts').WorkerStore;
+  private workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -76,8 +76,8 @@ export class SleepCycleRunner {
     skillManager?: SkillManager;
     ruleStore?: RuleStore;
     bus?: VinyanBus;
-    workerStore?: import("../db/worker-store.ts").WorkerStore;
-    workerLifecycle?: import("../orchestrator/worker-lifecycle.ts").WorkerLifecycle;
+    workerStore?: import('../db/worker-store.ts').WorkerStore;
+    workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -104,7 +104,7 @@ export class SleepCycleRunner {
 
     // Check data gate
     const stats = this.gatherStats();
-    const gate = checkDataGate("sleep_cycle", stats, this.getThresholds());
+    const gate = checkDataGate('sleep_cycle', stats, this.getThresholds());
     if (!gate.satisfied) {
       return {
         cycleId,
@@ -127,7 +127,15 @@ export class SleepCycleRunner {
     if (!hasEnoughTraces) {
       const rulesPromoted = await this.backtestProbationRules(new Set());
       this.patternStore.recordCycleComplete(cycleId, traces.length, 0);
-      return { cycleId, patterns: [], tracesAnalyzed: traces.length, antiPatterns: 0, successPatterns: 0, decayedPatterns: 0, rulesPromoted };
+      return {
+        cycleId,
+        patterns: [],
+        tracesAnalyzed: traces.length,
+        antiPatterns: 0,
+        successPatterns: 0,
+        decayedPatterns: 0,
+        rulesPromoted,
+      };
     }
 
     // Group by task type signature
@@ -181,7 +189,7 @@ export class SleepCycleRunner {
       this.patternStore.insert(pattern);
 
       // Phase 2.5: Create skills from success patterns
-      if (pattern.type === "success-pattern" && pattern.approach && this.skillManager) {
+      if (pattern.type === 'success-pattern' && pattern.approach && this.skillManager) {
         const affectedFiles = this.extractAffectedFilesFromPattern(pattern, traces);
         const depConeHashes = this.skillManager.computeCurrentHashes(affectedFiles);
         const riskScore = this.estimatePatternRisk(pattern, traces);
@@ -207,14 +215,12 @@ export class SleepCycleRunner {
 
     // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
-      const { backtestRule, backtestWorkerAssignment } = await import("../evolution/backtester.ts");
+      const { backtestRule, backtestWorkerAssignment } = await import('../evolution/backtester.ts');
       const activeRules = this.ruleStore.findActive();
       for (const rule of activeRules) {
         const bt = this.getTracesForBacktest(rule);
         if (bt.length < 5) continue;
-        const result = rule.action === "assign-worker"
-          ? backtestWorkerAssignment(rule, bt)
-          : backtestRule(rule, bt);
+        const result = rule.action === 'assign-worker' ? backtestWorkerAssignment(rule, bt) : backtestRule(rule, bt);
         this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
 
         if (result.effectiveness <= 0) {
@@ -222,7 +228,7 @@ export class SleepCycleRunner {
           if (count >= 3) {
             this.ruleStore.retire(rule.id);
             rulesRetired++;
-            this.bus?.emit("evolution:ruleRetired", {
+            this.bus?.emit('evolution:ruleRetired', {
               ruleId: rule.id,
               reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
             });
@@ -242,7 +248,7 @@ export class SleepCycleRunner {
     // WorkerLifecycle emits its own bus events (worker:promoted, worker:demoted, etc.)
     if (this.workerLifecycle && this.workerStore) {
       // Evaluate probation workers for promotion
-      const probationWorkers = this.workerStore.findByStatus("probation");
+      const probationWorkers = this.workerStore.findByStatus('probation');
       for (const worker of probationWorkers) {
         this.workerLifecycle.evaluatePromotion(worker.id);
       }
@@ -261,11 +267,9 @@ export class SleepCycleRunner {
     // Apply decay to existing patterns
     const decayedCount = this.applyDecay();
 
-    this.patternStore.recordCycleComplete(
-      cycleId, traces.length, newPatterns.length,
-    );
+    this.patternStore.recordCycleComplete(cycleId, traces.length, newPatterns.length);
 
-    this.bus?.emit("sleep:cycleComplete", {
+    this.bus?.emit('sleep:cycleComplete', {
       cycleId,
       patternsFound: newPatterns.length,
       rulesGenerated,
@@ -277,8 +281,8 @@ export class SleepCycleRunner {
       cycleId,
       patterns: newPatterns,
       tracesAnalyzed: traces.length,
-      antiPatterns: newPatterns.filter(p => p.type === "anti-pattern").length,
-      successPatterns: newPatterns.filter(p => p.type === "success-pattern").length,
+      antiPatterns: newPatterns.filter((p) => p.type === 'anti-pattern').length,
+      successPatterns: newPatterns.filter((p) => p.type === 'success-pattern').length,
       decayedPatterns: decayedCount,
       rulesPromoted,
     };
@@ -297,10 +301,10 @@ export class SleepCycleRunner {
       if (total < this.config.pattern_min_frequency) continue;
 
       // Check minimum distinct sessions
-      const distinctSessions = new Set(approachTraces.map(t => t.session_id ?? t.taskId));
+      const distinctSessions = new Set(approachTraces.map((t) => t.session_id ?? t.taskId));
       if (distinctSessions.size < 3) continue;
 
-      const failures = approachTraces.filter(t => t.outcome === "failure" || t.outcome === "timeout").length;
+      const failures = approachTraces.filter((t) => t.outcome === 'failure' || t.outcome === 'timeout').length;
       const failRate = failures / total;
 
       // Raw threshold: ≥80%
@@ -311,10 +315,11 @@ export class SleepCycleRunner {
       if (wilsonLB < this.config.pattern_min_confidence) continue;
 
       // PH3.3: Capture routing level + model for proportional escalation and multi-condition rules
-      const failingTraces = approachTraces.filter(t => t.outcome === "failure");
-      const avgRoutingLevel = failingTraces.length > 0
-        ? Math.round(failingTraces.reduce((s, t) => s + t.routingLevel, 0) / failingTraces.length)
-        : 1;
+      const failingTraces = approachTraces.filter((t) => t.outcome === 'failure');
+      const avgRoutingLevel =
+        failingTraces.length > 0
+          ? Math.round(failingTraces.reduce((s, t) => s + t.routingLevel, 0) / failingTraces.length)
+          : 1;
       const modelCounts = new Map<string, number>();
       for (const t of failingTraces) {
         modelCounts.set(t.model_used, (modelCounts.get(t.model_used) ?? 0) + 1);
@@ -323,13 +328,13 @@ export class SleepCycleRunner {
 
       patterns.push({
         id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        type: "anti-pattern",
+        type: 'anti-pattern',
         description: `Approach "${approach}" fails ${(failRate * 100).toFixed(0)}% of the time on task type "${taskSig}"`,
         frequency: total,
         confidence: wilsonLB,
         taskTypeSignature: taskSig,
         approach,
-        sourceTraceIds: approachTraces.map(t => t.id),
+        sourceTraceIds: approachTraces.map((t) => t.id),
         createdAt: Date.now(),
         decayWeight: 1.0,
         routingLevel: avgRoutingLevel,
@@ -355,12 +360,11 @@ export class SleepCycleRunner {
     for (const [approach, approachTraces] of byApproach) {
       if (approachTraces.length < this.config.pattern_min_frequency) continue;
 
-      const qualityTraces = approachTraces.filter(t => t.qualityScore);
+      const qualityTraces = approachTraces.filter((t) => t.qualityScore);
       if (qualityTraces.length === 0) continue;
 
-      const avgQuality = qualityTraces.reduce(
-        (sum, t) => sum + (t.qualityScore?.composite ?? 0), 0,
-      ) / qualityTraces.length;
+      const avgQuality =
+        qualityTraces.reduce((sum, t) => sum + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length;
 
       approachStats.push({ approach, avgQuality, count: qualityTraces.length, traces: approachTraces });
     }
@@ -379,13 +383,13 @@ export class SleepCycleRunner {
         const loser = delta > 0 ? b : a;
 
         // Check minimum sessions
-        const winnerSessions = new Set(winner.traces.map(t => t.session_id ?? t.taskId));
+        const winnerSessions = new Set(winner.traces.map((t) => t.session_id ?? t.taskId));
         if (winnerSessions.size < 3) continue;
 
         // PH3.3: Real pairwise Wilson LB — compare individual trace pairs
         let actualWins = 0;
-        const winnerTraces = winner.traces.filter(t => t.qualityScore?.composite != null);
-        const loserTraces = loser.traces.filter(t => t.qualityScore?.composite != null);
+        const winnerTraces = winner.traces.filter((t) => t.qualityScore?.composite != null);
+        const loserTraces = loser.traces.filter((t) => t.qualityScore?.composite != null);
         for (const w of winnerTraces) {
           for (const l of loserTraces) {
             if ((w.qualityScore?.composite ?? 0) > (l.qualityScore?.composite ?? 0)) actualWins++;
@@ -398,7 +402,7 @@ export class SleepCycleRunner {
 
         patterns.push({
           id: `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          type: "success-pattern",
+          type: 'success-pattern',
           description: `Approach "${winner.approach}" outperforms "${loser.approach}" by ${(absDelta * 100).toFixed(0)}% on task type "${taskSig}"`,
           frequency: winner.count + loser.count,
           confidence: wilsonLB,
@@ -406,7 +410,7 @@ export class SleepCycleRunner {
           approach: winner.approach,
           comparedApproach: loser.approach,
           qualityDelta: absDelta,
-          sourceTraceIds: [...winner.traces.map(t => t.id), ...loser.traces.map(t => t.id)],
+          sourceTraceIds: [...winner.traces.map((t) => t.id), ...loser.traces.map((t) => t.id)],
           createdAt: Date.now(),
           decayWeight: 1.0,
         });
@@ -426,18 +430,20 @@ export class SleepCycleRunner {
     const activeFn = getActiveDecayFunction(this.decayExperiment);
 
     // Track surviving pattern counts for both functions this cycle (ratio = surviving/total)
-    let expSurviving = 0, plSurviving = 0, scoreCount = 0;
+    let expSurviving = 0,
+      plSurviving = 0,
+      scoreCount = 0;
 
     for (const pattern of existingPatterns) {
       const ageMs = Date.now() - pattern.createdAt;
       const ageCycles = ageMs / (this.config.interval_sessions * 60_000);
 
       // PH3.5: Compute both decay weights for experiment
-      const expWeight = computeDecay("exponential", ageCycles, halfLife);
-      const plWeight = computeDecay("power-law", ageCycles, halfLife);
+      const expWeight = computeDecay('exponential', ageCycles, halfLife);
+      const plWeight = computeDecay('power-law', ageCycles, halfLife);
 
       // Use the active function's weight
-      const newWeight = activeFn === "exponential" ? expWeight : plWeight;
+      const newWeight = activeFn === 'exponential' ? expWeight : plWeight;
 
       // Track per-cycle survival ratio (surviving/total, not cumulative confidence)
       if (expWeight > 0.1) expSurviving++;
@@ -467,7 +473,7 @@ export class SleepCycleRunner {
   private groupByTaskType(traces: ExecutionTrace[]): Map<string, ExecutionTrace[]> {
     const groups = new Map<string, ExecutionTrace[]>();
     for (const trace of traces) {
-      const sig = trace.task_type_signature ?? "unknown";
+      const sig = trace.task_type_signature ?? 'unknown';
       const group = groups.get(sig);
       if (group) {
         group.push(trace);
@@ -479,10 +485,7 @@ export class SleepCycleRunner {
   }
 
   private groupByApproach(traces: ExecutionTrace[]): Map<string, ExecutionTrace[]> {
-    return clusterByApproach(
-      traces,
-      (trace) => trace.approach || "default",
-    );
+    return clusterByApproach(traces, (trace) => trace.approach || 'default');
   }
 
   /**
@@ -522,10 +525,9 @@ export class SleepCycleRunner {
   private async backtestProbationRules(excludeIds: Set<string>): Promise<number> {
     if (!this.ruleStore) return 0;
 
-    const { backtestRule, backtestWorkerAssignment } = await import("../evolution/backtester.ts");
-    const { checkSafetyInvariants } = await import("../evolution/safety-invariants.ts");
-    const probationRules = this.ruleStore.findByStatus("probation")
-      .filter(r => !excludeIds.has(r.id));
+    const { backtestRule, backtestWorkerAssignment } = await import('../evolution/backtester.ts');
+    const { checkSafetyInvariants } = await import('../evolution/safety-invariants.ts');
+    const probationRules = this.ruleStore.findByStatus('probation').filter((r) => !excludeIds.has(r.id));
 
     let promoted = 0;
     for (const rule of probationRules) {
@@ -533,9 +535,10 @@ export class SleepCycleRunner {
       if (backtestTraces.length < 5) continue;
 
       // Route to appropriate backtest: worker assignment uses quality comparison, others use failure prevention
-      const result = rule.action === "assign-worker"
-        ? backtestWorkerAssignment(rule, backtestTraces)
-        : backtestRule(rule, backtestTraces);
+      const result =
+        rule.action === 'assign-worker'
+          ? backtestWorkerAssignment(rule, backtestTraces)
+          : backtestRule(rule, backtestTraces);
       this.ruleStore.updateEffectiveness(rule.id, result.effectiveness);
 
       if (result.pass) {
@@ -543,14 +546,16 @@ export class SleepCycleRunner {
         if (safety.safe) {
           this.ruleStore.activate(rule.id);
           promoted++;
-          this.bus?.emit("evolution:rulePromoted", {
-            ruleId: rule.id, taskSig: rule.condition.file_pattern ?? "*",
+          this.bus?.emit('evolution:rulePromoted', {
+            ruleId: rule.id,
+            taskSig: rule.condition.filePattern ?? '*',
           });
         }
       } else {
         this.ruleStore.retire(rule.id);
-        this.bus?.emit("evolution:ruleRetired", {
-          ruleId: rule.id, reason: `Failed backtest (effectiveness: ${result.effectiveness.toFixed(2)})`,
+        this.bus?.emit('evolution:ruleRetired', {
+          ruleId: rule.id,
+          reason: `Failed backtest (effectiveness: ${result.effectiveness.toFixed(2)})`,
         });
       }
     }
@@ -563,21 +568,21 @@ export class SleepCycleRunner {
     const condition = rule.condition;
 
     // No filtering conditions → use all traces
-    if (!condition.file_pattern && !condition.oracle_name && !condition.model_pattern) {
+    if (!condition.filePattern && !condition.oracleName && !condition.modelPattern) {
       return allTraces;
     }
 
-    const filtered = allTraces.filter(trace => {
-      if (condition.file_pattern) {
-        const pattern = condition.file_pattern;
-        const matches = trace.affected_files.some(f => simpleGlobMatch(pattern, f));
+    const filtered = allTraces.filter((trace) => {
+      if (condition.filePattern) {
+        const pattern = condition.filePattern;
+        const matches = trace.affected_files.some((f) => simpleGlobMatch(pattern, f));
         if (!matches) return false;
       }
-      if (condition.oracle_name) {
-        if (!Object.keys(trace.oracleVerdicts).includes(condition.oracle_name)) return false;
+      if (condition.oracleName) {
+        if (!Object.keys(trace.oracleVerdicts).includes(condition.oracleName)) return false;
       }
-      if (condition.model_pattern) {
-        if (!trace.model_used.includes(condition.model_pattern)) return false;
+      if (condition.modelPattern) {
+        if (!trace.model_used.includes(condition.modelPattern)) return false;
       }
       return true;
     });
@@ -597,7 +602,7 @@ export class SleepCycleRunner {
     // Group by task type → worker → traces
     const byTaskType = new Map<string, Map<string, ExecutionTrace[]>>();
     for (const trace of traces) {
-      const sig = trace.task_type_signature ?? "unknown";
+      const sig = trace.task_type_signature ?? 'unknown';
       const wid = trace.worker_id;
       if (!wid) continue;
 
@@ -623,18 +628,19 @@ export class SleepCycleRunner {
       for (const [workerId, workerTraces] of byWorker) {
         if (workerTraces.length < this.config.pattern_min_frequency) continue;
 
-        const qualityTraces = workerTraces.filter(t => t.qualityScore?.composite != null);
-        const avgQuality = qualityTraces.length > 0
-          ? qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length
-          : 0;
-        const successRate = workerTraces.filter(t => t.outcome === "success").length / workerTraces.length;
+        const qualityTraces = workerTraces.filter((t) => t.qualityScore?.composite != null);
+        const avgQuality =
+          qualityTraces.length > 0
+            ? qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length
+            : 0;
+        const successRate = workerTraces.filter((t) => t.outcome === 'success').length / workerTraces.length;
 
         workerStats.push({
           workerId,
           avgQuality,
           successRate,
           count: workerTraces.length,
-          traceIds: workerTraces.map(t => t.id),
+          traceIds: workerTraces.map((t) => t.id),
         });
       }
 
@@ -659,7 +665,7 @@ export class SleepCycleRunner {
 
         patterns.push({
           id: `wp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          type: "worker-performance",
+          type: 'worker-performance',
           description: `Worker "${best.workerId}" outperforms "${other.workerId}" by ${(delta * 100).toFixed(0)}% quality on task type "${taskSig}"`,
           frequency: best.count + other.count,
           confidence: wilsonLB,
@@ -708,10 +714,7 @@ export class SleepCycleRunner {
   /**
    * Extract unique affected files from traces that sourced a pattern.
    */
-  private extractAffectedFilesFromPattern(
-    pattern: ExtractedPattern,
-    allTraces: ExecutionTrace[],
-  ): string[] {
+  private extractAffectedFilesFromPattern(pattern: ExtractedPattern, allTraces: ExecutionTrace[]): string[] {
     const traceIdSet = new Set(pattern.sourceTraceIds);
     const files = new Set<string>();
     for (const trace of allTraces) {
@@ -726,10 +729,7 @@ export class SleepCycleRunner {
    * Estimate risk score for a pattern from its source traces.
    * Uses average risk_score from traces, falls back to routing-level proxy.
    */
-  private estimatePatternRisk(
-    pattern: ExtractedPattern,
-    allTraces: ExecutionTrace[],
-  ): number {
+  private estimatePatternRisk(pattern: ExtractedPattern, allTraces: ExecutionTrace[]): number {
     const traceIdSet = new Set(pattern.sourceTraceIds);
     const risks: number[] = [];
     for (const trace of allTraces) {

@@ -6,18 +6,19 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.5
  */
-import type { WorkerStore } from "../db/worker-store.ts";
-import type { CapabilityModel } from "./capability-model.ts";
-import type { VinyanBus } from "../core/bus.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import type { CapabilityModel } from './capability-model.ts';
 
 export interface FleetMetrics {
   activeWorkers: number;
   probationWorkers: number;
   demotedWorkers: number;
   retiredWorkers: number;
-  diversityScore: number;            // Gini coefficient of task allocation (0=equal, 1=monoculture)
-  capabilityCoverage: number;        // fraction of task types with ≥1 worker capability > 0.5
-  avgWorkerSpecialization: number;   // average variance of per-worker capability across task types
+  diversityScore: number; // Gini coefficient of task allocation (0=equal, 1=monoculture)
+  capabilityCoverage: number; // fraction of task types with ≥1 worker capability > 0.5
+  avgWorkerSpecialization: number; // average variance of per-worker capability across task types
   workerUtilization: Record<string, number>; // workerId → fraction of total tasks
 }
 
@@ -42,14 +43,11 @@ export function giniCoefficient(values: number[]): number {
 /**
  * Evaluate fleet health metrics.
  */
-export function evaluateFleet(
-  workerStore: WorkerStore,
-  capabilityModel?: CapabilityModel,
-): FleetMetrics {
+export function evaluateFleet(workerStore: WorkerStore, capabilityModel?: CapabilityModel): FleetMetrics {
   const active = workerStore.findActive();
-  const probation = workerStore.findByStatus("probation");
-  const demoted = workerStore.findByStatus("demoted");
-  const retired = workerStore.findByStatus("retired");
+  const probation = workerStore.findByStatus('probation');
+  const demoted = workerStore.findByStatus('demoted');
+  const retired = workerStore.findByStatus('retired');
 
   // Worker utilization — fraction of total tasks per worker
   const allWorkers = [...active, ...probation, ...demoted, ...retired];
@@ -70,7 +68,7 @@ export function evaluateFleet(
   }
 
   // Gini coefficient of active worker task counts
-  const activeTaskCounts = active.map(w => workerStore.getStats(w.id).totalTasks);
+  const activeTaskCounts = active.map((w) => workerStore.getStats(w.id).totalTasks);
   const diversityScore = giniCoefficient(activeTaskCounts);
 
   // Capability coverage — fraction of task types with good coverage
@@ -78,7 +76,7 @@ export function evaluateFleet(
   let avgSpecialization = 0;
 
   if (capabilityModel && active.length > 0) {
-    const allCapabilities = active.map(w => capabilityModel.getWorkerCapabilities(w.id));
+    const allCapabilities = active.map((w) => capabilityModel.getWorkerCapabilities(w.id));
     const allTaskTypes = new Set<string>();
     for (const caps of allCapabilities) {
       for (const c of caps) allTaskTypes.add(c.fingerprint);
@@ -87,8 +85,8 @@ export function evaluateFleet(
     if (allTaskTypes.size > 0) {
       let covered = 0;
       for (const taskType of allTaskTypes) {
-        const hasCoverage = allCapabilities.some(caps =>
-          caps.some(c => c.fingerprint === taskType && c.capability !== null && c.capability > 0.5)
+        const hasCoverage = allCapabilities.some((caps) =>
+          caps.some((c) => c.fingerprint === taskType && c.capability !== null && c.capability > 0.5),
         );
         if (hasCoverage) covered++;
       }
@@ -100,7 +98,7 @@ export function evaluateFleet(
       let totalVariance = 0;
       let workerCount = 0;
       for (const caps of allCapabilities) {
-        const scores = caps.filter(c => c.capability !== null).map(c => c.capability!);
+        const scores = caps.filter((c) => c.capability !== null).map((c) => c.capability!);
         if (scores.length >= 2) {
           const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
           const variance = scores.reduce((sum, s) => sum + (s - mean) ** 2, 0) / scores.length;
@@ -140,7 +138,7 @@ export function checkFleetConvergence(
 
   if (metrics.diversityScore > CONVERGENCE_GINI_THRESHOLD && metrics.activeWorkers > 1) {
     // Find dominant worker (highest utilization)
-    let dominantWorkerId = "";
+    let dominantWorkerId = '';
     let maxAllocation = 0;
     for (const [id, allocation] of Object.entries(metrics.workerUtilization)) {
       if (allocation > maxAllocation) {
@@ -149,7 +147,7 @@ export function checkFleetConvergence(
       }
     }
 
-    bus.emit("fleet:convergence_warning", {
+    bus.emit('fleet:convergence_warning', {
       giniScore: metrics.diversityScore,
       dominantWorkerId,
       allocation: maxAllocation,

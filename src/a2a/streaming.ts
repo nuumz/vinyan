@@ -6,34 +6,28 @@
  *
  * Source of truth: Plan Phase F1
  */
-import { z } from "zod";
+import { z } from 'zod';
 
 // ── Progress Update Schema ────────────────────────────────────────────
 
-export const EcpProgressUpdateSchema = z.object({
+export const ECPProgressUpdateSchema = z.object({
   ecp_version: z.literal(1),
-  message_type: z.literal("progress"),
+  message_type: z.literal('progress'),
   task_id: z.string(),
-  phase: z.enum([
-    "routing",
-    "oracle_dispatch",
-    "oracle_execution",
-    "aggregation",
-    "commit",
-  ]),
+  phase: z.enum(['routing', 'oracle_dispatch', 'oracle_execution', 'aggregation', 'commit']),
   progress_pct: z.number().min(0).max(100),
   oracle_name: z.string().optional(),
   estimated_remaining_ms: z.number().optional(),
   timestamp: z.number(),
 });
 
-export type EcpProgressUpdate = z.infer<typeof EcpProgressUpdateSchema>;
+export type ECPProgressUpdate = z.infer<typeof ECPProgressUpdateSchema>;
 
 // ── Partial Verdict Schema ────────────────────────────────────────────
 
-export const EcpPartialVerdictSchema = z.object({
+export const ECPPartialVerdictSchema = z.object({
   ecp_version: z.literal(1),
-  message_type: z.literal("partial_verdict"),
+  message_type: z.literal('partial_verdict'),
   task_id: z.string(),
   oracle_name: z.string(),
   verified: z.boolean(),
@@ -44,13 +38,13 @@ export const EcpPartialVerdictSchema = z.object({
   timestamp: z.number(),
 });
 
-export type EcpPartialVerdict = z.infer<typeof EcpPartialVerdictSchema>;
+export type ECPPartialVerdict = z.infer<typeof ECPPartialVerdictSchema>;
 
 // ── SSE Channel ───────────────────────────────────────────────────────
 
 export interface A2AStreamingChannel {
-  sendProgress(update: EcpProgressUpdate): void;
-  sendPartialVerdict(verdict: EcpPartialVerdict): void;
+  sendProgress(update: ECPProgressUpdate): void;
+  sendPartialVerdict(verdict: ECPPartialVerdict): void;
   close(): void;
   readonly closed: boolean;
 }
@@ -62,9 +56,7 @@ export interface A2AStreamingChannel {
  * - Progress updates are dropped when the stream buffer is full (non-essential).
  * - Partial verdicts are always queued (essential for correctness).
  */
-export function createA2AStreamingChannel(
-  controller: ReadableStreamDefaultController,
-): A2AStreamingChannel {
+export function createA2AStreamingChannel(controller: ReadableStreamDefaultController): A2AStreamingChannel {
   let isClosed = false;
 
   function send(eventType: string, data: unknown): boolean {
@@ -89,15 +81,15 @@ export function createA2AStreamingChannel(
   }
 
   return {
-    sendProgress(update: EcpProgressUpdate): void {
+    sendProgress(update: ECPProgressUpdate): void {
       // Drop progress under backpressure — non-essential
       if (hasBackpressure()) return;
-      send("progress", update);
+      send('progress', update);
     },
 
-    sendPartialVerdict(verdict: EcpPartialVerdict): void {
+    sendPartialVerdict(verdict: ECPPartialVerdict): void {
       // Always send verdicts — essential for correctness
-      send("partial_verdict", verdict);
+      send('partial_verdict', verdict);
     },
 
     close(): void {

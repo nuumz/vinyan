@@ -11,9 +11,9 @@
  *
  * Source of truth: spec/tdd.md §11, design/implementation-plan.md §2.1
  */
-import { resolve, isAbsolute } from "path";
-import { writeFileSync, lstatSync, mkdirSync, realpathSync } from "fs";
-import { dirname } from "path";
+
+import { lstatSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
+import { dirname, isAbsolute, resolve } from 'path';
 
 export interface ArtifactFile {
   /** Relative path within workspace */
@@ -31,12 +31,9 @@ export interface CommitResult {
  * Validate and apply artifact files to the workspace.
  * Returns which files were applied and which were rejected with reasons.
  */
-export function commitArtifacts(
-  workspace: string,
-  artifacts: ArtifactFile[],
-): CommitResult {
+export function commitArtifacts(workspace: string, artifacts: ArtifactFile[]): CommitResult {
   const applied: string[] = [];
-  const rejected: CommitResult["rejected"] = [];
+  const rejected: CommitResult['rejected'] = [];
 
   for (const artifact of artifacts) {
     const validation = validateArtifactPath(workspace, artifact.path);
@@ -64,18 +61,15 @@ export function commitArtifacts(
 /**
  * Validate a single artifact path against the 4-step safety protocol.
  */
-export function validateArtifactPath(
-  workspace: string,
-  artifactPath: string,
-): { valid: boolean; reason?: string } {
+export function validateArtifactPath(workspace: string, artifactPath: string): { valid: boolean; reason?: string } {
   // Step 1: Reject absolute paths
   if (isAbsolute(artifactPath)) {
     return { valid: false, reason: `Absolute path '${artifactPath}' is not allowed` };
   }
 
   // Step 2: Reject '..' segments (before resolution)
-  const segments = artifactPath.split("/");
-  if (segments.includes("..")) {
+  const segments = artifactPath.split('/');
+  if (segments.includes('..')) {
     return { valid: false, reason: `Path '${artifactPath}' contains '..' traversal` };
   }
 
@@ -88,7 +82,7 @@ export function validateArtifactPath(
     realWorkspace = workspace;
   }
   const absPath = resolve(realWorkspace, artifactPath);
-  const normalizedWorkspace = realWorkspace.endsWith("/") ? realWorkspace : realWorkspace + "/";
+  const normalizedWorkspace = realWorkspace.endsWith('/') ? realWorkspace : realWorkspace + '/';
   if (!absPath.startsWith(normalizedWorkspace) && absPath !== realWorkspace) {
     return { valid: false, reason: `Path '${artifactPath}' escapes workspace` };
   }
@@ -107,7 +101,7 @@ export function validateArtifactPath(
   try {
     const parentDir = dirname(absPath);
     const realParent = realpathSync(parentDir);
-    const normalizedParent = realParent.endsWith("/") ? realParent : realParent + "/";
+    const normalizedParent = realParent.endsWith('/') ? realParent : realParent + '/';
     if (!normalizedParent.startsWith(normalizedWorkspace) && realParent !== realWorkspace) {
       return { valid: false, reason: `Parent directory of '${artifactPath}' resolves outside workspace` };
     }

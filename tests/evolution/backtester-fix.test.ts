@@ -1,40 +1,37 @@
-import { describe, test, expect } from "bun:test";
-import { backtestRule } from "../../src/evolution/backtester.ts";
-import type { EvolutionaryRule, ExecutionTrace } from "../../src/orchestrator/types.ts";
+import { describe, expect, test } from 'bun:test';
+import { backtestRule } from '../../src/evolution/backtester.ts';
+import type { EvolutionaryRule, ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeTrace(
-  i: number,
-  overrides?: Partial<ExecutionTrace>,
-): ExecutionTrace {
+function makeTrace(i: number, overrides?: Partial<ExecutionTrace>): ExecutionTrace {
   return {
     id: `t-${i}`,
     taskId: `task-${i}`,
     timestamp: 1000 + i * 100,
     routingLevel: 1,
-    approach: "default",
+    approach: 'default',
     oracleVerdicts: { type: true },
-    model_used: "mock",
+    model_used: 'mock',
     tokens_consumed: 100,
-    duration_ms: 500,
-    outcome: "success",
-    affected_files: ["src/foo.ts"],
+    durationMs: 500,
+    outcome: 'success',
+    affected_files: ['src/foo.ts'],
     ...overrides,
   };
 }
 
 function makeGlobRule(filePattern: string): EvolutionaryRule {
   return {
-    id: "test-rule",
-    source: "sleep-cycle",
-    condition: { file_pattern: filePattern },
-    action: "escalate",
+    id: 'test-rule',
+    source: 'sleep-cycle',
+    condition: { filePattern: filePattern },
+    action: 'escalate',
     parameters: { toLevel: 2 },
     effectiveness: 0.5,
     specificity: 1,
-    status: "probation",
-    created_at: Date.now(),
+    status: 'probation',
+    createdAt: Date.now(),
   };
 }
 
@@ -45,7 +42,7 @@ function makeTraceSet(n: number, affectedFiles: string[]): ExecutionTrace[] {
   return Array.from({ length: n }, (_, i) => {
     const isValidationFailure = i >= splitIdx;
     return makeTrace(i, {
-      outcome: isValidationFailure ? "failure" : "success",
+      outcome: isValidationFailure ? 'failure' : 'success',
       affected_files: affectedFiles,
     });
   });
@@ -53,8 +50,8 @@ function makeTraceSet(n: number, affectedFiles: string[]): ExecutionTrace[] {
 
 // ── Anti-lookahead tests ──────────────────────────────────────────────────────
 
-describe("backtestRule — anti-lookahead", () => {
-  test("traces with duplicate timestamps at the split boundary are filtered from validation set", () => {
+describe('backtestRule — anti-lookahead', () => {
+  test('traces with duplicate timestamps at the split boundary are filtered from validation set', () => {
     // Build 10 traces where traces 8 and 9 share the same timestamp as trace 7
     // (the last training trace). After filtering, validation should be empty → pass: false.
     const sharedTimestamp = 1700;
@@ -62,16 +59,16 @@ describe("backtestRule — anti-lookahead", () => {
 
     // Traces 0–7: training set with distinct timestamps
     for (let i = 0; i < 8; i++) {
-      traces.push(makeTrace(i, { timestamp: 1000 + i * 100, outcome: "success" }));
+      traces.push(makeTrace(i, { timestamp: 1000 + i * 100, outcome: 'success' }));
     }
     // Traces 8–9: same timestamp as trace 7 (the boundary) → should be filtered
-    traces.push(makeTrace(8, { timestamp: sharedTimestamp, outcome: "failure" }));
-    traces.push(makeTrace(9, { timestamp: sharedTimestamp, outcome: "failure" }));
+    traces.push(makeTrace(8, { timestamp: sharedTimestamp, outcome: 'failure' }));
+    traces.push(makeTrace(9, { timestamp: sharedTimestamp, outcome: 'failure' }));
 
     // Confirm trace 7 has the sharedTimestamp
     traces[7]!.timestamp = sharedTimestamp;
 
-    const rule = makeGlobRule("*.ts");
+    const rule = makeGlobRule('*.ts');
     const result = backtestRule(rule, traces);
 
     // All validation traces share timestamp with training max → filtered out → validationSize=0 → pass=false
@@ -79,22 +76,22 @@ describe("backtestRule — anti-lookahead", () => {
     expect(result.validationSize).toBe(0);
   });
 
-  test("if all validation traces have same timestamp as training max, returns pass: false", () => {
+  test('if all validation traces have same timestamp as training max, returns pass: false', () => {
     const commonTimestamp = 9999;
     const traces: ExecutionTrace[] = [];
 
     // 8 training traces with increasing timestamps
     for (let i = 0; i < 8; i++) {
-      traces.push(makeTrace(i, { timestamp: 1000 + i * 100, outcome: "success" }));
+      traces.push(makeTrace(i, { timestamp: 1000 + i * 100, outcome: 'success' }));
     }
     // The last training trace has the same timestamp we'll use for validation
     traces[7]!.timestamp = commonTimestamp;
 
     // 2 validation traces with same timestamp as training max
-    traces.push(makeTrace(8, { timestamp: commonTimestamp, outcome: "failure" }));
-    traces.push(makeTrace(9, { timestamp: commonTimestamp, outcome: "failure" }));
+    traces.push(makeTrace(8, { timestamp: commonTimestamp, outcome: 'failure' }));
+    traces.push(makeTrace(9, { timestamp: commonTimestamp, outcome: 'failure' }));
 
-    const rule = makeGlobRule("*.ts");
+    const rule = makeGlobRule('*.ts');
     const result = backtestRule(rule, traces);
 
     expect(result.pass).toBe(false);
@@ -104,12 +101,12 @@ describe("backtestRule — anti-lookahead", () => {
 
 // ── Glob anchoring tests ──────────────────────────────────────────────────────
 
-describe("backtestRule — glob anchoring", () => {
-  test("pattern src/*.ts does NOT match bad-src/foo.ts", () => {
+describe('backtestRule — glob anchoring', () => {
+  test('pattern src/*.ts does NOT match bad-src/foo.ts', () => {
     // Build enough traces (≥5) so the backtester runs
     // All validation failures have bad-src/foo.ts — the rule should NOT apply → prevented=0 → pass=false
-    const traces = makeTraceSet(10, ["bad-src/foo.ts"]);
-    const rule = makeGlobRule("src/*.ts");
+    const traces = makeTraceSet(10, ['bad-src/foo.ts']);
+    const rule = makeGlobRule('src/*.ts');
     const result = backtestRule(rule, traces);
 
     // The glob should not match bad-src/foo.ts, so no failures are prevented
@@ -118,11 +115,11 @@ describe("backtestRule — glob anchoring", () => {
     expect(result.pass).toBe(false);
   });
 
-  test("pattern src/*.ts DOES match src/foo.ts", () => {
+  test('pattern src/*.ts DOES match src/foo.ts', () => {
     // Build enough traces (≥5) with files matching the pattern
     // All validation failures have src/foo.ts — the rule should apply → prevented > 0
-    const traces = makeTraceSet(10, ["src/foo.ts"]);
-    const rule = makeGlobRule("src/*.ts");
+    const traces = makeTraceSet(10, ['src/foo.ts']);
+    const rule = makeGlobRule('src/*.ts');
     const result = backtestRule(rule, traces);
 
     // The glob matches src/foo.ts

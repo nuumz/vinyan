@@ -11,7 +11,7 @@ export function multiply(x: number, y: number): number {
 }
 
 export function divide(numerator: number, denominator: number): number {
-  if (denominator === 0) throw new Error("Division by zero");
+  if (denominator === 0) throw new Error('Division by zero');
   return numerator / denominator;
 }
 

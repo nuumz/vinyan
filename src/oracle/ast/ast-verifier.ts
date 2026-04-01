@@ -1,9 +1,9 @@
-import ts from "typescript";
-import { readFileSync } from "fs";
-import { createHash } from "crypto";
-import { resolve, isAbsolute } from "path";
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
+import { isAbsolute, resolve } from 'path';
+import ts from 'typescript';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
 
 /**
  * AST Verifier — uses TypeScript Compiler API for deterministic AST analysis.
@@ -11,11 +11,11 @@ import { buildVerdict } from "../../core/index.ts";
  */
 
 function computeHash(filePath: string): string {
-  return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex');
 }
 
 function parseFile(filePath: string): ts.SourceFile {
-  const content = readFileSync(filePath, "utf-8");
+  const content = readFileSync(filePath, 'utf-8');
   return ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
 }
 
@@ -26,7 +26,7 @@ function getLineNumber(sf: ts.SourceFile, pos: number): number {
 function getSnippet(sf: ts.SourceFile, node: ts.Node): string {
   const text = node.getText(sf);
   // Truncate long snippets
-  return text.length > 120 ? text.slice(0, 117) + "..." : text;
+  return text.length > 120 ? text.slice(0, 117) + '...' : text;
 }
 
 /** Pattern: symbol-exists — verify a named symbol (function, class, variable, type) exists in the file. */
@@ -112,7 +112,7 @@ function verifyFunctionSignature(
         const mismatches = expectedParams.filter((ep, i) => actualParams[i] !== ep);
         if (mismatches.length > 0) {
           signatureMatches = false;
-          reason = `Param name mismatch: expected [${expectedParams.join(", ")}], found [${actualParams.join(", ")}]`;
+          reason = `Param name mismatch: expected [${expectedParams.join(', ')}], found [${actualParams.join(', ')}]`;
         }
       }
     }
@@ -155,9 +155,7 @@ function verifyImportExists(
 export function verify(hypothesis: HypothesisTuple): OracleVerdict {
   const startTime = performance.now();
   // Resolve target against workspace if relative
-  const filePath = isAbsolute(hypothesis.target)
-    ? hypothesis.target
-    : resolve(hypothesis.workspace, hypothesis.target);
+  const filePath = isAbsolute(hypothesis.target) ? hypothesis.target : resolve(hypothesis.workspace, hypothesis.target);
   const context = hypothesis.context ?? {};
 
   try {
@@ -169,17 +167,17 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
     if ((sf as any).parseDiagnostics?.length > 0) {
       return buildVerdict({
         verified: false,
-        type: "uncertain",
+        type: 'uncertain',
         confidence: 0.3,
         evidence: [],
         fileHashes,
         reason: `File has ${(sf as any).parseDiagnostics.length} parse error(s) — AST analysis unreliable`,
-        duration_ms: Math.round(performance.now() - startTime),
+        durationMs: Math.round(performance.now() - startTime),
       });
     }
 
     switch (hypothesis.pattern) {
-      case "symbol-exists": {
+      case 'symbol-exists': {
         const symbolName = context.symbolName as string;
         if (!symbolName) {
           return buildVerdict({
@@ -187,8 +185,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             evidence: [],
             fileHashes,
             reason: "context.symbolName is required for pattern 'symbol-exists'",
-            errorCode: "PARSE_ERROR",
-            duration_ms: Math.round(performance.now() - startTime),
+            errorCode: 'PARSE_ERROR',
+            durationMs: Math.round(performance.now() - startTime),
           });
         }
         const result = verifySymbolExists(sf, filePath, symbolName);
@@ -197,12 +195,12 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           evidence: result.evidence,
           fileHashes,
           reason: result.found ? undefined : `Symbol '${symbolName}' not found in ${filePath}`,
-          errorCode: result.found ? undefined : "SYMBOL_NOT_FOUND",
-          duration_ms: Math.round(performance.now() - startTime),
+          errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
+          durationMs: Math.round(performance.now() - startTime),
         });
       }
 
-      case "function-signature": {
+      case 'function-signature': {
         const functionName = context.functionName as string;
         if (!functionName) {
           return buildVerdict({
@@ -210,8 +208,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             evidence: [],
             fileHashes,
             reason: "context.functionName is required for pattern 'function-signature'",
-            errorCode: "PARSE_ERROR",
-            duration_ms: Math.round(performance.now() - startTime),
+            errorCode: 'PARSE_ERROR',
+            durationMs: Math.round(performance.now() - startTime),
           });
         }
         const result = verifyFunctionSignature(sf, filePath, functionName, context);
@@ -220,12 +218,12 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           evidence: result.evidence,
           fileHashes,
           reason: result.reason,
-          errorCode: !result.found ? "SYMBOL_NOT_FOUND" : undefined,
-          duration_ms: Math.round(performance.now() - startTime),
+          errorCode: !result.found ? 'SYMBOL_NOT_FOUND' : undefined,
+          durationMs: Math.round(performance.now() - startTime),
         });
       }
 
-      case "import-exists": {
+      case 'import-exists': {
         const moduleSpecifier = context.moduleSpecifier as string;
         if (!moduleSpecifier) {
           return buildVerdict({
@@ -233,8 +231,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             evidence: [],
             fileHashes,
             reason: "context.moduleSpecifier is required for pattern 'import-exists'",
-            errorCode: "PARSE_ERROR",
-            duration_ms: Math.round(performance.now() - startTime),
+            errorCode: 'PARSE_ERROR',
+            durationMs: Math.round(performance.now() - startTime),
           });
         }
         const result = verifyImportExists(sf, filePath, moduleSpecifier);
@@ -243,8 +241,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           evidence: result.evidence,
           fileHashes,
           reason: result.found ? undefined : `Import '${moduleSpecifier}' not found in ${filePath}`,
-          errorCode: result.found ? undefined : "SYMBOL_NOT_FOUND",
-          duration_ms: Math.round(performance.now() - startTime),
+          errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
+          durationMs: Math.round(performance.now() - startTime),
         });
       }
 
@@ -254,19 +252,19 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           evidence: [],
           fileHashes,
           reason: `Unknown pattern: '${hypothesis.pattern}'`,
-          duration_ms: Math.round(performance.now() - startTime),
+          durationMs: Math.round(performance.now() - startTime),
         });
     }
   } catch (err) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `AST verification failed: ${err instanceof Error ? err.message : String(err)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: Math.round(performance.now() - startTime),
+      errorCode: 'ORACLE_CRASH',
+      durationMs: Math.round(performance.now() - startTime),
     });
   }
 }

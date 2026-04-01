@@ -6,25 +6,25 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.3
  */
-import type { Database } from "bun:sqlite";
-import type { TaskFingerprint } from "./types.ts";
-import { fingerprintKey } from "./task-fingerprint.ts";
+import type { Database } from 'bun:sqlite';
+import { fingerprintKey } from './task-fingerprint.ts';
+import type { TaskFingerprint } from './types.ts';
 
 export interface CapabilityScore {
   workerId: string;
-  fingerprint: string;        // fingerprint key
+  fingerprint: string; // fingerprint key
   total: number;
   successes: number;
   failures: number;
-  capability: number | null;  // Wilson LB, null if < minTraces
-  negative: boolean;          // true if Wilson LB of failures > threshold
+  capability: number | null; // Wilson LB, null if < minTraces
+  negative: boolean; // true if Wilson LB of failures > threshold
   avgQuality: number;
 }
 
 export interface CapabilityModelConfig {
   db: Database;
-  minTraces: number;                    // default: 5
-  negativeCapabilityThreshold: number;  // default: 0.6
+  minTraces: number; // default: 5
+  negativeCapabilityThreshold: number; // default: 0.6
 }
 
 /**
@@ -34,9 +34,9 @@ function wilsonLowerBound(successes: number, total: number): number {
   if (total === 0) return 0;
   const z = 1.96;
   const p = successes / total;
-  const denominator = 1 + z * z / total;
-  const centre = p + z * z / (2 * total);
-  const spread = z * Math.sqrt((p * (1 - p) + z * z / (4 * total)) / total);
+  const denominator = 1 + (z * z) / total;
+  const centre = p + (z * z) / (2 * total);
+  const spread = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total);
   return (centre - spread) / denominator;
 }
 
@@ -66,7 +66,8 @@ export class CapabilityModel {
   getCapabilityByKey(workerId: string, fingerprintKey: string): CapabilityScore {
     // Query traces matching this worker and fingerprint key pattern
     // The task_type_signature is a superset of fingerprint key — we match the prefix
-    const row = this.db.prepare(`
+    const row = this.db
+      .prepare(`
       SELECT
         COUNT(*) as total,
         SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes,
@@ -74,7 +75,8 @@ export class CapabilityModel {
         AVG(quality_composite) as avg_quality
       FROM execution_traces
       WHERE worker_id = ? AND task_type_signature LIKE ?
-    `).get(workerId, `${fingerprintKey}%`) as {
+    `)
+      .get(workerId, `${fingerprintKey}%`) as {
       total: number;
       successes: number;
       failures: number;
@@ -86,14 +88,10 @@ export class CapabilityModel {
     const failures = row.failures;
 
     // Cold-start: < minTraces → capability null (A2: "I don't know")
-    const capability = total >= this.minTraces
-      ? wilsonLowerBound(successes, total)
-      : null;
+    const capability = total >= this.minTraces ? wilsonLowerBound(successes, total) : null;
 
     // Negative capability: Wilson LB of failure rate > threshold
-    const negative = total >= this.minTraces
-      ? wilsonLowerBound(failures, total) > this.negativeThreshold
-      : false;
+    const negative = total >= this.minTraces ? wilsonLowerBound(failures, total) > this.negativeThreshold : false;
 
     return {
       workerId,
@@ -111,7 +109,8 @@ export class CapabilityModel {
    * Get all capability scores for a worker across all observed task types.
    */
   getWorkerCapabilities(workerId: string): CapabilityScore[] {
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(`
       SELECT
         task_type_signature,
         COUNT(*) as total,
@@ -121,7 +120,8 @@ export class CapabilityModel {
       FROM execution_traces
       WHERE worker_id = ? AND task_type_signature IS NOT NULL
       GROUP BY task_type_signature
-    `).all(workerId) as Array<{
+    `)
+      .all(workerId) as Array<{
       task_type_signature: string;
       total: number;
       successes: number;
@@ -129,13 +129,10 @@ export class CapabilityModel {
       avg_quality: number | null;
     }>;
 
-    return rows.map(row => {
-      const capability = row.total >= this.minTraces
-        ? wilsonLowerBound(row.successes, row.total)
-        : null;
-      const negative = row.total >= this.minTraces
-        ? wilsonLowerBound(row.failures, row.total) > this.negativeThreshold
-        : false;
+    return rows.map((row) => {
+      const capability = row.total >= this.minTraces ? wilsonLowerBound(row.successes, row.total) : null;
+      const negative =
+        row.total >= this.minTraces ? wilsonLowerBound(row.failures, row.total) > this.negativeThreshold : false;
 
       return {
         workerId,

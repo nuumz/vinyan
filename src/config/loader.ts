@@ -1,23 +1,23 @@
 /**
  * Config Loader — reads vinyan.json, validates with Zod, returns typed config.
  */
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
-import { VinyanConfigSchema, type VinyanConfig } from "./schema.ts";
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { type VinyanConfig, VinyanConfigSchema } from './schema.ts';
 
 /**
  * Load vinyan.json from workspace root. Validates and applies defaults.
  * @throws Error with clear Zod error messages on invalid config.
  */
 export function loadConfig(workspacePath: string): VinyanConfig {
-  const configPath = join(workspacePath, "vinyan.json");
+  const configPath = join(workspacePath, 'vinyan.json');
 
   if (!existsSync(configPath)) {
     // Return defaults when no config file exists
     return VinyanConfigSchema.parse({});
   }
 
-  const raw = readFileSync(configPath, "utf-8");
+  const raw = readFileSync(configPath, 'utf-8');
 
   let parsed: unknown;
   try {
@@ -28,7 +28,7 @@ export function loadConfig(workspacePath: string): VinyanConfig {
 
   const result = VinyanConfigSchema.safeParse(parsed);
   if (!result.success) {
-    const issues = result.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n");
+    const issues = result.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid vinyan.json:\n${issues}`);
   }
 

@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import type { VinyanBusEvents } from "../../src/core/bus.ts";
+import { describe, expect, test } from 'bun:test';
+import type { VinyanBusEvents } from '../../src/core/bus.ts';
 
 // Import the ALL_EVENTS array via a re-export trick — audit-listener only exports
 // attachAuditListener, but we need ALL_EVENTS for coverage checking.
@@ -12,59 +12,56 @@ import type { VinyanBusEvents } from "../../src/core/bus.ts";
 // TypeScript erases interfaces at runtime, so we build the reference set manually
 // from the interface definition keys.
 const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
-  "task:start",
-  "task:complete",
-  "worker:dispatch",
-  "oracle:verdict",
-  "critic:verdict",
-  "trace:record",
-  "worker:complete",
-  "worker:error",
-  "shadow:enqueue",
-  "shadow:complete",
-  "shadow:failed",
-  "skill:match",
-  "skill:miss",
-  "skill:outcome",
-  "evolution:rulesApplied",
-  "evolution:rulePromoted",
-  "evolution:ruleRetired",
-  "sleep:cycleComplete",
-  "selfmodel:predict",
-  "graph:fact",
-  "circuit:open",
-  "circuit:close",
-  "tools:executed",
-  "task:escalate",
-  "task:timeout",
-  "task:approval_required",
-  "task:explore",
-  "guardrail:injection_detected",
-  "guardrail:bypass_detected",
-  "selfmodel:calibration_error",
-  "oracle:contradiction",
-  "decomposer:fallback",
-  "worker:registered",
-  "worker:promoted",
-  "worker:demoted",
-  "worker:reactivated",
-  "worker:selected",
-  "worker:exploration",
-  "fleet:convergence_warning",
-  "fleet:emergency_reactivation",
-  "fleet:diversity_enforced",
-  "task:uncertain",
-  "commit:rejected",
+  'task:start',
+  'task:complete',
+  'worker:dispatch',
+  'oracle:verdict',
+  'critic:verdict',
+  'trace:record',
+  'worker:complete',
+  'worker:error',
+  'shadow:enqueue',
+  'shadow:complete',
+  'shadow:failed',
+  'skill:match',
+  'skill:miss',
+  'skill:outcome',
+  'evolution:rulesApplied',
+  'evolution:rulePromoted',
+  'evolution:ruleRetired',
+  'sleep:cycleComplete',
+  'selfmodel:predict',
+  'graph:fact',
+  'circuit:open',
+  'circuit:close',
+  'tools:executed',
+  'task:escalate',
+  'task:timeout',
+  'task:approval_required',
+  'task:explore',
+  'guardrail:injection_detected',
+  'guardrail:bypass_detected',
+  'selfmodel:calibration_error',
+  'oracle:contradiction',
+  'decomposer:fallback',
+  'worker:registered',
+  'worker:promoted',
+  'worker:demoted',
+  'worker:reactivated',
+  'worker:selected',
+  'worker:exploration',
+  'fleet:convergence_warning',
+  'fleet:emergency_reactivation',
+  'fleet:diversity_enforced',
+  'task:uncertain',
+  'commit:rejected',
 ];
 
-describe("audit-listener ALL_EVENTS coverage", () => {
-  test("ALL_EVENTS includes every key from VinyanBusEvents", async () => {
+describe('audit-listener ALL_EVENTS coverage', () => {
+  test('ALL_EVENTS includes every key from VinyanBusEvents', async () => {
     // Dynamically import the module to get ALL_EVENTS from the source file
-    const { readFileSync } = await import("fs");
-    const source = readFileSync(
-      new URL("../../src/bus/audit-listener.ts", import.meta.url).pathname,
-      "utf-8",
-    );
+    const { readFileSync } = await import('fs');
+    const source = readFileSync(new URL('../../src/bus/audit-listener.ts', import.meta.url).pathname, 'utf-8');
 
     // Extract the ALL_EVENTS array contents from source
     const match = source.match(/ALL_EVENTS:\s*BusEventName\[\]\s*=\s*\[([\s\S]*?)\];/);
@@ -72,7 +69,7 @@ describe("audit-listener ALL_EVENTS coverage", () => {
 
     const arrayContent = match![1]!;
     // Extract all quoted strings
-    const eventNames = [...arrayContent.matchAll(/"([^"]+)"/g)].map(m => m[1]!);
+    const eventNames = [...arrayContent.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
 
     const auditSet = new Set(eventNames);
 
@@ -87,7 +84,7 @@ describe("audit-listener ALL_EVENTS coverage", () => {
     expect(missing).toEqual([]);
   });
 
-  test("ALL_BUS_EVENT_NAMES list is type-checked against VinyanBusEvents", () => {
+  test('ALL_BUS_EVENT_NAMES list is type-checked against VinyanBusEvents', () => {
     // This test ensures our reference list compiles — if VinyanBusEvents adds
     // a new key, TypeScript will NOT catch it automatically (we'd need a mapped type).
     // But the names are typed as keyof VinyanBusEvents, so any TYPO will be caught.

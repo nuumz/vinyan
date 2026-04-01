@@ -5,12 +5,12 @@
  * from the 6 schema files into a single versioned migration.
  * Safe for both fresh installs and existing Phase 4 databases.
  */
-import type { Database } from "bun:sqlite";
-import type { Migration } from "./migration-runner.ts";
+import type { Database } from 'bun:sqlite';
+import type { Migration } from './migration-runner.ts';
 
 export const migration001: Migration = {
   version: 1,
-  description: "Initial schema — Phase 0-4 baseline tables",
+  description: 'Initial schema — Phase 0-4 baseline tables',
   up(db: Database) {
     // ── Trace Store (Phase 1) ─────────────────────────────
     db.exec(`

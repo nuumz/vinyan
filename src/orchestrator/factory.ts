@@ -4,49 +4,49 @@
  * This is the single entry point for creating a fully-wired orchestrator.
  * Source of truth: spec/tdd.md §16 (Core Loop)
  */
-import { verify as depVerify } from "../oracle/dep/dep-analyzer.ts";
-import { executeTask, type OrchestratorDeps } from "./core-loop.ts";
-import type { TaskInput, TaskResult } from "./types.ts";
-import { createBus, type VinyanBus } from "../core/bus.ts";
-import { PerceptionAssemblerImpl } from "./perception.ts";
-import { RiskRouterImpl } from "./risk-router-adapter.ts";
-import { loadConfig } from "../config/loader.ts";
-import { SelfModelStub } from "./self-model-stub.ts";
-import { CalibratedSelfModel } from "./self-model.ts";
-import { TaskDecomposerStub } from "./task-decomposer-stub.ts";
-import { TaskDecomposerImpl } from "./task-decomposer.ts";
-import { WorkerPoolImpl } from "./worker/worker-pool.ts";
-import { LLMProviderRegistry } from "./llm/provider-registry.ts";
-import { registerOpenRouterProviders } from "./llm/openrouter-provider.ts";
-import { createAnthropicProvider } from "./llm/anthropic-provider.ts";
-import { OracleGateAdapter } from "./oracle-gate-adapter.ts";
-import { TraceCollectorImpl } from "./trace-collector.ts";
-import { VinyanDB } from "../db/vinyan-db.ts";
-import { TraceStore } from "../db/trace-store.ts";
-import { WorldGraph } from "../world-graph/world-graph.ts";
-import { attachTraceListener } from "../bus/trace-listener.ts";
-import { attachAuditListener } from "../bus/audit-listener.ts";
-import { join } from "path";
-import { PatternStore } from "../db/pattern-store.ts";
-import { ShadowStore } from "../db/shadow-store.ts";
-import { SkillStore } from "../db/skill-store.ts";
-import { RuleStore } from "../db/rule-store.ts";
-import { ShadowRunner } from "./shadow-runner.ts";
-import { SkillManager } from "./skill-manager.ts";
-import { SleepCycleRunner } from "../sleep-cycle/sleep-cycle.ts";
-import { ToolExecutor } from "./tools/tool-executor.ts";
-import { MetricsCollector } from "../observability/metrics.ts";
-import { WorkerStore } from "../db/worker-store.ts";
-import { WorkerSelector } from "./worker-selector.ts";
-import { WorkerLifecycle } from "./worker-lifecycle.ts";
-import { CapabilityModel } from "./capability-model.ts";
-import { LLMCriticImpl } from "./critic/llm-critic-impl.ts";
-import { LLMTestGeneratorImpl } from "./test-gen/llm-test-generator.ts";
-import { startLLMProxy } from "./llm/llm-proxy.ts";
-import { GapHDetector } from "../observability/gap-h-detector.ts";
-import { FileWatcher } from "../world-graph/file-watcher.ts";
-import type { WorkerProfile } from "./types.ts";
-import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
+
+import { join } from 'path';
+import { attachAuditListener } from '../bus/audit-listener.ts';
+import { attachTraceListener } from '../bus/trace-listener.ts';
+import { loadConfig } from '../config/loader.ts';
+import { createBus, type VinyanBus } from '../core/bus.ts';
+import { PatternStore } from '../db/pattern-store.ts';
+import { RuleStore } from '../db/rule-store.ts';
+import { ShadowStore } from '../db/shadow-store.ts';
+import { SkillStore } from '../db/skill-store.ts';
+import { TraceStore } from '../db/trace-store.ts';
+import { VinyanDB } from '../db/vinyan-db.ts';
+import { WorkerStore } from '../db/worker-store.ts';
+import { GapHDetector } from '../observability/gap-h-detector.ts';
+import { MetricsCollector } from '../observability/metrics.ts';
+import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
+import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
+import { FileWatcher } from '../world-graph/file-watcher.ts';
+import { WorldGraph } from '../world-graph/world-graph.ts';
+import { CapabilityModel } from './capability-model.ts';
+import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
+import type { DataGateStats, DataGateThresholds } from './data-gate.ts';
+import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { startLLMProxy } from './llm/llm-proxy.ts';
+import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
+import { LLMProviderRegistry } from './llm/provider-registry.ts';
+import { OracleGateAdapter } from './oracle-gate-adapter.ts';
+import { PerceptionAssemblerImpl } from './perception.ts';
+import { RiskRouterImpl } from './risk-router-adapter.ts';
+import { CalibratedSelfModel } from './self-model.ts';
+import { SelfModelStub } from './self-model-stub.ts';
+import { ShadowRunner } from './shadow-runner.ts';
+import { SkillManager } from './skill-manager.ts';
+import { TaskDecomposerImpl } from './task-decomposer.ts';
+import { TaskDecomposerStub } from './task-decomposer-stub.ts';
+import { LLMTestGeneratorImpl } from './test-gen/llm-test-generator.ts';
+import { ToolExecutor } from './tools/tool-executor.ts';
+import { TraceCollectorImpl } from './trace-collector.ts';
+import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
+import { WorkerPoolImpl } from './worker/worker-pool.ts';
+import { WorkerLifecycle } from './worker-lifecycle.ts';
+import { WorkerSelector } from './worker-selector.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -57,9 +57,9 @@ export interface OrchestratorConfig {
   /** Provide an existing bus instance (one is created if omitted). */
   bus?: VinyanBus;
   /** Override oracle gate (for testing escalation and fail-closed scenarios). */
-  oracleGate?: import("./core-loop.ts").OracleGate;
+  oracleGate?: import('./core-loop.ts').OracleGate;
   /** Override critic engine (for testing fail-closed behavior). */
-  criticEngine?: import("./critic/critic-engine.ts").CriticEngine;
+  criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
 }
@@ -67,7 +67,7 @@ export interface OrchestratorConfig {
 export interface Orchestrator {
   executeTask(input: TaskInput): Promise<TaskResult>;
   traceCollector: TraceCollectorImpl;
-  traceListener: { getMetrics: () => import("../bus/trace-listener.ts").TraceTelemetry; detach: () => void };
+  traceListener: { getMetrics: () => import('../bus/trace-listener.ts').TraceTelemetry; detach: () => void };
   bus: VinyanBus;
   shadowRunner?: ShadowRunner;
   skillManager?: SkillManager;
@@ -97,7 +97,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let db: VinyanDB | undefined;
   let traceStore: TraceStore | undefined;
   try {
-    db = new VinyanDB(join(workspace, ".vinyan", "vinyan.db"));
+    db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
     traceStore = new TraceStore(db.getDb());
   } catch {
     // SQLite unavailable — fall back to in-memory only
@@ -126,7 +126,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let worldGraph: WorldGraph | undefined;
   let fileWatcher: FileWatcher | undefined;
   try {
-    worldGraph = new WorldGraph(join(workspace, ".vinyan", "world-graph.db"));
+    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
     // A4: Watch workspace for external file changes — auto-invalidate stale facts
     fileWatcher = new FileWatcher(worldGraph, workspace);
     fileWatcher.start();
@@ -136,7 +136,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Load config to unify routing thresholds and Phase 4 governance parameters
   let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
-  let phase4Config: { probation_min_tasks: number; demotion_window_tasks: number; demotion_max_reentries: number; reentry_cooldown_sessions: number; epsilon_worker: number; diversity_cap_pct: number } | undefined;
+  let phase4Config:
+    | {
+        probation_min_tasks: number;
+        demotion_window_tasks: number;
+        demotion_max_reentries: number;
+        reentry_cooldown_sessions: number;
+        epsilon_worker: number;
+        diversity_cap_pct: number;
+      }
+    | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.phase1) {
@@ -146,7 +155,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     if (vinyanConfig.phase4) {
       phase4Config = vinyanConfig.phase4;
     }
-  } catch { /* config loading is best-effort */ }
+  } catch {
+    /* config loading is best-effort */
+  }
 
   // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
   let workerLifecycle: WorkerLifecycle | undefined;
@@ -162,15 +173,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
 
   // Phase 2 managers
-  const skillManager = skillStore
-    ? new SkillManager({ skillStore, workspace })
-    : undefined;
-  const shadowRunner = shadowStore
-    ? new ShadowRunner({ shadowStore, workspace })
-    : undefined;
-  const sleepCycleRunner = (patternStore && traceStore)
-    ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle })
-    : undefined;
+  const skillManager = skillStore ? new SkillManager({ skillStore, workspace }) : undefined;
+  const shadowRunner = shadowStore ? new ShadowRunner({ shadowStore, workspace }) : undefined;
+  const sleepCycleRunner =
+    patternStore && traceStore
+      ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle })
+      : undefined;
 
   // Shadow: startup recovery (A6 crash-safety)
   if (shadowRunner) {
@@ -183,17 +191,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {
-        console.warn("[vinyan] SQLite unavailable — using static self-model (no calibration)");
+        console.warn('[vinyan] SQLite unavailable — using static self-model (no calibration)');
         return new SelfModelStub();
       })();
-  const decomposer = registry.listProviders().length > 0
-    ? new TaskDecomposerImpl({ registry })
-    : (() => {
-        console.warn("[vinyan] No LLM providers — using single-node task decomposition");
-        return new TaskDecomposerStub();
-      })();
+  const decomposer =
+    registry.listProviders().length > 0
+      ? new TaskDecomposerImpl({ registry })
+      : (() => {
+          console.warn('[vinyan] No LLM providers — using single-node task decomposition');
+          return new TaskDecomposerStub();
+        })();
   // A6: Start LLM proxy for credential isolation if enabled
-  let llmProxy: import("./llm/llm-proxy.ts").LLMProxyServer | undefined;
+  let llmProxy: import('./llm/llm-proxy.ts').LLMProxyServer | undefined;
   if (config.llmProxy && (config.useSubprocess ?? true)) {
     llmProxy = startLLMProxy(registry);
   }
@@ -208,25 +217,23 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const toolExecutor = new ToolExecutor();
 
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
-  const criticProvider = registry.selectByTier("powerful") ?? registry.selectByTier("balanced");
+  const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
   const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
 
   // WP-3: TestGenerator — generative verification at L2+ (A1: separate LLM call from generator)
-  const testGenProvider = registry.selectByTier("balanced") ?? registry.selectByTier("powerful");
-  const testGenerator = testGenProvider
-    ? new LLMTestGeneratorImpl(testGenProvider, workspace)
-    : undefined;
+  const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
+  const testGenerator = testGenProvider ? new LLMTestGeneratorImpl(testGenProvider, workspace) : undefined;
 
   // Startup logging — confirm active components (P3.0 Gap 7)
   const components = [
     `self-model: ${selfModel.constructor.name}`,
     `decomposer: ${decomposer.constructor.name}`,
-    `skills: ${skillManager ? "enabled" : "disabled"}`,
-    `shadow: ${shadowRunner ? "enabled" : "disabled"}`,
-    `sleep-cycle: ${sleepCycleRunner ? "enabled" : "disabled"}`,
-    `rules: ${ruleStore ? "enabled" : "disabled"}`,
+    `skills: ${skillManager ? 'enabled' : 'disabled'}`,
+    `shadow: ${shadowRunner ? 'enabled' : 'disabled'}`,
+    `sleep-cycle: ${sleepCycleRunner ? 'enabled' : 'disabled'}`,
+    `rules: ${ruleStore ? 'enabled' : 'disabled'}`,
   ];
-  console.log(`[vinyan] Orchestrator initialized — ${components.join(", ")}`);
+  console.log(`[vinyan] Orchestrator initialized — ${components.join(', ')}`);
 
   // Phase 4: Capability-based worker selector
   let workerSelector: WorkerSelector | undefined;
@@ -251,8 +258,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       workerStore,
       capabilityModel,
       bus,
-      epsilonWorker: phase4Config?.epsilon_worker ?? 0.10,
-      diversityCapPct: phase4Config?.diversity_cap_pct ?? 0.70,
+      epsilonWorker: phase4Config?.epsilon_worker ?? 0.1,
+      diversityCapPct: phase4Config?.diversity_cap_pct ?? 0.7,
       gateStats: () => ({
         traceCount: traceStore?.count() ?? 0,
         distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,
@@ -294,15 +301,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus);
-  const detachAudit = attachAuditListener(bus, join(workspace, ".vinyan", "audit.jsonl"));
+  const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
 
   // GAP-H failure mode detection (G5: was dead code, now live)
   const gapHDetector = new GapHDetector(bus);
   const detachGapH = gapHDetector.attach();
 
   // A7: Cache predictions for shadow feedback loop (prediction is not persisted to DB)
-  const predictionCache = new Map<string, import("./types.ts").SelfModelPrediction>();
-  bus.on("selfmodel:predict", ({ prediction }: { prediction: import("./types.ts").SelfModelPrediction }) => {
+  const predictionCache = new Map<string, import('./types.ts').SelfModelPrediction>();
+  bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
     predictionCache.set(prediction.taskId, prediction);
     // Keep cache bounded
     if (predictionCache.size > 200) {
@@ -313,7 +320,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Shadow validation listener — update trace store and feed back to Self-Model (H3 + A7)
   if (shadowRunner && traceStore) {
-    bus.on("shadow:complete", ({ result }) => {
+    bus.on('shadow:complete', ({ result }) => {
       traceStore.updateShadowValidation(result.taskId, result);
       // A7: Feed shadow outcome back to Self-Model for calibration
       const cached = predictionCache.get(result.taskId);
@@ -321,12 +328,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         try {
           const shadowTrace = {
             taskId: result.taskId,
-            outcome: result.testsPassed ? "success" as const : "failure" as const,
-            duration_ms: result.duration_ms,
+            outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
+            durationMs: result.durationMs,
             qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
-          } as import("./types.ts").ExecutionTrace;
+          } as import('./types.ts').ExecutionTrace;
           selfModel.calibrate(cached, shadowTrace);
-        } catch { /* best-effort calibration */ }
+        } catch {
+          /* best-effort calibration */
+        }
       }
       predictionCache.delete(result.taskId);
     });
@@ -342,12 +351,21 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       try {
         const result = await shadowRunner.processNext();
         if (result) {
-          bus.emit("shadow:complete", {
-            job: { id: "", taskId: result.taskId, status: "done" as const, enqueuedAt: 0, retryCount: 0, maxRetries: 1 },
+          bus.emit('shadow:complete', {
+            job: {
+              id: '',
+              taskId: result.taskId,
+              status: 'done' as const,
+              enqueuedAt: 0,
+              retryCount: 0,
+              maxRetries: 1,
+            },
             result,
           });
         }
-      } catch { /* best-effort background processing */ }
+      } catch {
+        /* best-effort background processing */
+      }
     }, 10_000);
   }
 
@@ -358,7 +376,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
       // Trigger sleep cycle at interval (best-effort, never blocks main flow)
       if (sleepCycleRunner && sessionCount >= sleepCycleRunner.getInterval()) {
-        sleepCycleRunner.run().catch(() => { /* best-effort */ });
+        sleepCycleRunner.run().catch(() => {
+          /* best-effort */
+        });
         sessionCount = 0;
       }
 
@@ -395,20 +415,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 }
 
 /** Allowed model name prefixes — mirrors safety-invariants.ts MODEL_ALLOWLIST_PREFIXES. */
-const WORKER_MODEL_ALLOWLIST = ["claude-", "gpt-", "gemini-", "mock/", "openrouter/"];
+const WORKER_MODEL_ALLOWLIST = ['claude-', 'gpt-', 'gemini-', 'mock/', 'openrouter/'];
 
 /**
  * Auto-register existing LLM providers as WorkerProfiles.
  * Grandfathered as "active" — these are proven models from Phase 3.
  */
-function autoRegisterWorkers(
-  registry: LLMProviderRegistry,
-  workerStore: WorkerStore,
-  bus: VinyanBus,
-): void {
+function autoRegisterWorkers(registry: LLMProviderRegistry, workerStore: WorkerStore, bus: VinyanBus): void {
   for (const provider of registry.listProviders()) {
     // M12: Validate model against allowlist before registration
-    const allowlisted = WORKER_MODEL_ALLOWLIST.some(p => provider.id.startsWith(p));
+    const allowlisted = WORKER_MODEL_ALLOWLIST.some((p) => provider.id.startsWith(p));
     if (!allowlisted) {
       console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);
       continue;
@@ -423,15 +439,15 @@ function autoRegisterWorkers(
       config: {
         modelId: provider.id,
         temperature: 0.7,
-        systemPromptTemplate: "default",
+        systemPromptTemplate: 'default',
         maxContextTokens: provider.maxContextTokens,
       },
-      status: "active", // grandfathered — proven from Phase 3
+      status: 'active', // grandfathered — proven from Phase 3
       createdAt: Date.now(),
       demotionCount: 0,
     };
     workerStore.insert(profile);
-    bus.emit("worker:registered", { profile });
+    bus.emit('worker:registered', { profile });
   }
 }
 

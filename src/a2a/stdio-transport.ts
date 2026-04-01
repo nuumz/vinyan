@@ -6,10 +6,11 @@
  *
  * Source of truth: Plan Phase B1
  */
-import type { HypothesisTuple, OracleVerdict } from "../core/types.ts";
-import type { ECPTransport } from "./transport.ts";
-import { buildVerdict } from "../core/index.ts";
-import { OracleVerdictSchema } from "../oracle/protocol.ts";
+
+import { buildVerdict } from '../core/index.ts';
+import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
+import { OracleVerdictSchema } from '../oracle/protocol.ts';
+import type { ECPTransport } from './transport.ts';
 
 export interface StdioTransportConfig {
   /** Bun.spawn arguments — e.g. ["bun", "run", "path/to/oracle.ts"] or ["python", "oracle.py"] */
@@ -19,7 +20,7 @@ export interface StdioTransportConfig {
 }
 
 export class StdioTransport implements ECPTransport {
-  readonly transportType = "stdio" as const;
+  readonly transportType = 'stdio' as const;
   readonly connected = true;
   private config: StdioTransportConfig;
 
@@ -27,22 +28,22 @@ export class StdioTransport implements ECPTransport {
     this.config = config;
   }
 
-  async verify(hypothesis: HypothesisTuple, timeout_ms: number): Promise<OracleVerdict> {
+  async verify(hypothesis: HypothesisTuple, timeoutMs: number): Promise<OracleVerdict> {
     const startTime = performance.now();
     const { spawnArgs, oracleName } = this.config;
 
     const proc = Bun.spawn(spawnArgs, {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
 
-    const input = JSON.stringify(hypothesis) + "\n";
+    const input = JSON.stringify(hypothesis) + '\n';
     proc.stdin.write(input);
     proc.stdin.end();
 
-    const timeoutPromise = new Promise<"timeout">((resolve) => {
-      setTimeout(() => resolve("timeout"), timeout_ms);
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      setTimeout(() => resolve('timeout'), timeoutMs);
     });
 
     const processPromise = (async () => {
@@ -53,49 +54,49 @@ export class StdioTransport implements ECPTransport {
 
     const result = await Promise.race([processPromise, timeoutPromise]);
 
-    if (result === "timeout") {
+    if (result === 'timeout') {
       proc.kill();
       return buildVerdict({
         verified: false,
-        type: "unknown",
+        type: 'unknown',
         confidence: 0,
         evidence: [],
         fileHashes: {},
-        reason: `Oracle '${oracleName}' timed out after ${timeout_ms}ms`,
-        errorCode: "TIMEOUT",
-        duration_ms: timeout_ms,
+        reason: `Oracle '${oracleName}' timed out after ${timeoutMs}ms`,
+        errorCode: 'TIMEOUT',
+        durationMs: timeoutMs,
       });
     }
 
-    const duration_ms = Math.round(performance.now() - startTime);
+    const durationMs = Math.round(performance.now() - startTime);
 
     if (result.exitCode !== 0) {
       return buildVerdict({
         verified: false,
-        type: "unknown",
+        type: 'unknown',
         confidence: 0,
         evidence: [],
         fileHashes: {},
         reason: `Oracle '${oracleName}' exited with code ${result.exitCode}`,
-        errorCode: "ORACLE_CRASH",
-        duration_ms,
+        errorCode: 'ORACLE_CRASH',
+        durationMs,
       });
     }
 
     try {
       const raw = JSON.parse(result.stdout.trim());
       const verdict = OracleVerdictSchema.parse(raw);
-      return { ...verdict, oracleName, duration_ms };
+      return { ...verdict, oracleName, durationMs };
     } catch (err) {
       return buildVerdict({
         verified: false,
-        type: "unknown",
+        type: 'unknown',
         confidence: 0,
         evidence: [],
         fileHashes: {},
         reason: `Failed to parse oracle output: ${err instanceof Error ? err.message : String(err)}`,
-        errorCode: "PARSE_ERROR",
-        duration_ms,
+        errorCode: 'PARSE_ERROR',
+        durationMs,
       });
     }
   }

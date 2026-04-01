@@ -297,34 +297,47 @@ From Galileo's analysis of 1,642 execution traces across production multi-agent 
 
 ## 8. Recommendations for Vinyan
 
-### Layered Approach (aligned with existing spec §9)
+> **Update (2026-04-01):** VIIP has been removed. A2A v1.0 is now the sole transport for both Vinyan-to-Vinyan and external agent communication. ECP semantics ride inside A2A `data` parts with MIME `application/vnd.vinyan.ecp+json`. See `docs/spec/a2a-protocol.md` for the full specification.
+
+### Implemented Architecture
 
 ```
 ┌──────────────────────────────────────────┐
 │         Third-Party Agents               │
 │  (Google ADK, LangGraph, CrewAI, etc.)   │
 └──────────────┬───────────────────────────┘
-               │ A2A v1.0 (standard)
+               │ A2A v1.0 (standard JSON-RPC)
 ┌──────────────▼───────────────────────────┐
-│          A2A Bridge Layer                │
-│  (translate A2A ↔ ECP semantics)         │
-│  - Agent Card ↔ InstanceDescriptor       │
-│  - Task lifecycle ↔ task_delegate/result │
-│  - Confidence cap at 0.5 (untrusted)     │
+│        ECP-over-A2A Protocol             │
+│  - Agent Card with x-vinyan-ecp ext      │
+│  - ECP data parts (22 message types)     │
+│  - Confidence: clampFull(tier,transport, │
+│    peerTrust) — 4-level trust lifecycle  │
 └──────────────┬───────────────────────────┘
-               │ ECP (internal)
+               │ ECP semantics preserved
 ┌──────────────▼───────────────────────────┐
 │         Vinyan Instance                  │
-│  VIIP for Vinyan ↔ Vinyan                │
-│  (full epistemic semantics preserved)    │
+│  Peer discovery via Agent Cards          │
+│  Wilson LB trust progression             │
+│  Knowledge sharing (Tier 0 + Tier 2)     │
 └──────────────────────────────────────────┘
 ```
 
-1. **External interop:** Adopt A2A v1.0 standard for the bridge layer (PH5.6 in implementation-plan). Use official A2A JS SDK (`@a2a-js/sdk`).
-2. **Internal coordination:** Keep VIIP for Vinyan-to-Vinyan — ECP semantics are core value that A2A doesn't provide.
-3. **Discovery:** Consider adopting Agent Card format for Vinyan's public-facing capability description, even for VIIP peers.
-4. **Auth evolution:** Consider adding OAuth 2.0 support alongside Ed25519 for the A2A bridge layer.
-5. **Trust mapping:** `trusted → local (cap 0.7)`, `semi-trusted → network (cap 0.5)`, `untrusted → remote (cap 0.3)` — already defined in spec.
+### What was implemented (v1.0)
+
+1. **A2A as sole transport:** VIIP deleted. A2A v1.0 JSON-RPC handles transport. ECP data parts carry epistemic semantics inside A2A `data` message parts.
+2. **Unified trust vocabulary:** 4 levels — `untrusted` (0.25), `provisional` (0.40), `established` (0.50), `trusted` (0.60). Wilson LB progression with configurable thresholds.
+3. **Canonical clamping:** `clampFull()` applies tier, transport, and peer trust ceilings independently (minimum wins). Replaces all previous confidence cap mechanisms.
+4. **Peer discovery:** Agent Cards at `/.well-known/agent.json` with `x-vinyan-ecp` extension identifying Vinyan peers and their oracle capabilities.
+5. **Knowledge sharing:** Tier 0 (real-time file hash invalidation) + Tier 2 (batch pattern exchange on Sleep Cycle with 50% probation reduction).
+6. **Streaming schemas:** `ECPProgressUpdate` and `ECPPartialVerdict` Zod schemas with SSE channel and backpressure handling.
+7. **Infrastructure:** Peer health monitor (heartbeat state machine), remote bus adapter (event forwarding), full config schema.
+
+### Still recommended for future
+
+1. **Auth evolution:** Add OAuth 2.0 support alongside Ed25519 for enterprise deployments.
+2. **v1.1 coordination:** PROPOSE/AFFIRM/COMMIT/RETRACT primitives, intent declaration, distributed tracing.
+3. **v2.0 fleet scale:** Gossip-based knowledge propagation, cross-instance trust attestation sharing.
 
 ---
 

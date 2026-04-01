@@ -4,8 +4,8 @@
  * TDD §8: after_tool_call stores verified oracle verdicts as World Graph facts
  * and refreshes file hashes for affected files.
  */
-import type { OracleVerdict } from "../core/types.ts";
-import type { WorldGraph } from "../world-graph/world-graph.ts";
+import type { OracleVerdict } from '../core/types.ts';
+import type { WorldGraph } from '../world-graph/world-graph.ts';
 
 export interface ToolCallResult {
   toolName: string;
@@ -34,17 +34,17 @@ export async function afterToolCall(
   for (const [oracleName, verdict] of Object.entries(oracleVerdicts)) {
     if (!verdict.verified) continue;
 
-    const fileHash = verdict.fileHashes[primaryFile] ?? Object.values(verdict.fileHashes)[0] ?? "";
+    const fileHash = verdict.fileHashes[primaryFile] ?? Object.values(verdict.fileHashes)[0] ?? '';
 
     worldGraph.storeFact({
       target: primaryFile,
       pattern: `${oracleName}:${verdict.type}`,
       evidence: verdict.evidence,
-      oracle_name: oracleName,
-      file_hash: fileHash,
-      source_file: primaryFile,
-      verified_at: Date.now(),
-      session_id: sessionId,
+      oracleName: oracleName,
+      fileHash: fileHash,
+      sourceFile: primaryFile,
+      verifiedAt: Date.now(),
+      sessionId: sessionId,
       confidence: verdict.confidence,
     });
   }

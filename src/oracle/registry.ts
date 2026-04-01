@@ -1,7 +1,7 @@
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const Dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Oracle registry entry — either a path (bun run) or a custom command. */
 export interface OracleRegistryEntry {
@@ -12,20 +12,20 @@ export interface OracleRegistryEntry {
   /** Languages this oracle supports. */
   languages?: string[];
   /** Trust tier. */
-  tier?: "deterministic" | "heuristic" | "probabilistic" | "speculative";
+  tier?: 'deterministic' | 'heuristic' | 'probabilistic' | 'speculative';
   /** Transport type — how the oracle is invoked. */
-  transport?: "stdio" | "websocket" | "http" | "a2a";
+  transport?: 'stdio' | 'websocket' | 'http' | 'a2a';
   /** Timeout in ms. */
-  timeout_ms?: number;
+  timeoutMs?: number;
 }
 
 /** Built-in oracle paths (Phase 0-4). */
 const BUILTIN_ORACLES: Record<string, OracleRegistryEntry> = {
-  "ast-oracle": { path: resolve(__dirname, "ast/index.ts"), languages: ["typescript"], tier: "deterministic" },
-  "type-oracle": { path: resolve(__dirname, "type/index.ts"), languages: ["typescript"], tier: "deterministic" },
-  "dep-oracle": { path: resolve(__dirname, "dep/index.ts"), languages: ["typescript"], tier: "heuristic" },
-  "test-oracle": { path: resolve(__dirname, "test/index.ts"), languages: ["typescript"], tier: "deterministic" },
-  "lint-oracle": { path: resolve(__dirname, "lint/index.ts"), languages: ["typescript"], tier: "deterministic" },
+  'ast-oracle': { path: resolve(Dirname, 'ast/index.ts'), languages: ['typescript'], tier: 'deterministic' },
+  'type-oracle': { path: resolve(Dirname, 'type/index.ts'), languages: ['typescript'], tier: 'deterministic' },
+  'dep-oracle': { path: resolve(Dirname, 'dep/index.ts'), languages: ['typescript'], tier: 'heuristic' },
+  'test-oracle': { path: resolve(Dirname, 'test/index.ts'), languages: ['typescript'], tier: 'deterministic' },
+  'lint-oracle': { path: resolve(Dirname, 'lint/index.ts'), languages: ['typescript'], tier: 'deterministic' },
 };
 
 /** Dynamic oracle registry (Phase 5 — polyglot + plugins). */

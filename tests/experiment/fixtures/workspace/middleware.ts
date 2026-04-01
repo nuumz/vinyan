@@ -1,5 +1,5 @@
-import { AppError } from "./errors.ts";
-import { MAX_RETRIES, RETRY_DELAY_MS } from "./constants.ts";
+import { MAX_RETRIES, RETRY_DELAY_MS } from './constants.ts';
+import { AppError } from './errors.ts';
 
 export function withErrorHandler<T>(fn: () => T): T {
   try {
@@ -8,18 +8,11 @@ export function withErrorHandler<T>(fn: () => T): T {
     if (error instanceof AppError) {
       throw error;
     }
-    throw new AppError(
-      error instanceof Error ? error.message : "Unknown error",
-      "INTERNAL_ERROR",
-      500
-    );
+    throw new AppError(error instanceof Error ? error.message : 'Unknown error', 'INTERNAL_ERROR', 500);
   }
 }
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = MAX_RETRIES
-): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = MAX_RETRIES): Promise<T> {
   let lastError: Error | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {

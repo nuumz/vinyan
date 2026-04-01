@@ -6,9 +6,10 @@
  *
  * Source of truth: Plan Phase D2
  */
-import { A2AAgentCardSchema } from "./types.ts";
-import type { A2AAgentCard, VinyanECPExtension } from "./types.ts";
-import { isVinyanPeer, getECPExtension } from "./agent-card.ts";
+
+import { getECPExtension, isVinyanPeer } from './agent-card.ts';
+import type { A2AAgentCard, VinyanECPExtension } from './types.ts';
+import { A2AAgentCardSchema } from './types.ts';
 
 export interface DiscoveredPeer {
   url: string;
@@ -29,16 +30,13 @@ const DEFAULT_FETCH_TIMEOUT_MS = 5000;
  * Fetch and validate an Agent Card from a peer URL.
  * Returns null if unreachable or invalid.
  */
-export async function fetchAgentCard(
-  peerUrl: string,
-  config: PeerDiscoveryConfig = {},
-): Promise<A2AAgentCard | null> {
+export async function fetchAgentCard(peerUrl: string, config: PeerDiscoveryConfig = {}): Promise<A2AAgentCard | null> {
   const timeout = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const url = `${peerUrl.replace(/\/$/, "")}/.well-known/agent.json`;
+    const url = `${peerUrl.replace(/\/$/, '')}/.well-known/agent.json`;
     const response = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
 
@@ -57,10 +55,7 @@ export async function fetchAgentCard(
  * Discover peers from a list of URLs.
  * Returns all reachable peers with their Agent Cards.
  */
-export async function discoverPeers(
-  peerUrls: string[],
-  config: PeerDiscoveryConfig = {},
-): Promise<DiscoveredPeer[]> {
+export async function discoverPeers(peerUrls: string[], config: PeerDiscoveryConfig = {}): Promise<DiscoveredPeer[]> {
   const results = await Promise.allSettled(
     peerUrls.map(async (url) => {
       const card = await fetchAgentCard(url, config);
@@ -77,7 +72,7 @@ export async function discoverPeers(
   );
 
   return results
-    .filter((r): r is PromiseFulfilledResult<DiscoveredPeer | null> => r.status === "fulfilled")
+    .filter((r): r is PromiseFulfilledResult<DiscoveredPeer | null> => r.status === 'fulfilled')
     .map((r) => r.value)
     .filter((p): p is DiscoveredPeer => p !== null);
 }

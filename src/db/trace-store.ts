@@ -4,9 +4,9 @@
  * Denormalizes QualityScore into columns for efficient Sleep Cycle queries.
  * JSON-serializes complex fields (oracle_verdicts, affected_files, prediction_error).
  */
-import type { Database } from "bun:sqlite";
-import type { ExecutionTrace, ShadowValidationResult } from "../orchestrator/types.ts";
-import { ExecutionTraceRowSchema } from "./schemas.ts";
+import type { Database } from 'bun:sqlite';
+import type { ExecutionTrace, ShadowValidationResult } from '../orchestrator/types.ts';
+import { ExecutionTraceRowSchema } from './schemas.ts';
 
 export class TraceStore {
   private db: Database;
@@ -57,7 +57,7 @@ export class TraceStore {
       $quality_testmutation: qs?.testMutationScore ?? null,
       $model_used: trace.model_used,
       $tokens_consumed: trace.tokens_consumed,
-      $duration_ms: trace.duration_ms,
+      $duration_ms: trace.durationMs,
       $outcome: trace.outcome,
       $failure_reason: trace.failure_reason ?? null,
       $oracle_verdicts: JSON.stringify(trace.oracleVerdicts),
@@ -72,30 +72,28 @@ export class TraceStore {
   }
 
   findByTaskType(taskTypeSignature: string, limit = 100): ExecutionTrace[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM execution_traces WHERE task_type_signature = ? ORDER BY timestamp DESC LIMIT ?`,
-    ).all(taskTypeSignature, limit);
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE task_type_signature = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(taskTypeSignature, limit);
     return rows.map(rowToTrace);
   }
 
   findByOutcome(outcome: string, limit = 100): ExecutionTrace[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM execution_traces WHERE outcome = ? ORDER BY timestamp DESC LIMIT ?`,
-    ).all(outcome, limit);
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE outcome = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(outcome, limit);
     return rows.map(rowToTrace);
   }
 
   findRecent(limit = 50): ExecutionTrace[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM execution_traces ORDER BY timestamp DESC LIMIT ?`,
-    ).all(limit);
+    const rows = this.db.prepare(`SELECT * FROM execution_traces ORDER BY timestamp DESC LIMIT ?`).all(limit);
     return rows.map(rowToTrace);
   }
 
   findByTimeRange(from: number, to: number): ExecutionTrace[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM execution_traces WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`,
-    ).all(from, to);
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`)
+      .all(from, to);
     return rows.map(rowToTrace);
   }
 
@@ -105,18 +103,22 @@ export class TraceStore {
   }
 
   countDistinctTaskTypes(): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL`,
-    ).get() as { cnt: number };
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL`,
+      )
+      .get() as { cnt: number };
     return row.cnt;
   }
 
   /** Update a trace's shadow validation result (called after async shadow processing). */
   updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
-    this.db.prepare(
-      `UPDATE execution_traces SET shadow_validation = ?, validation_depth = 'structural_and_tests'
+    this.db
+      .prepare(
+        `UPDATE execution_traces SET shadow_validation = ?, validation_depth = 'structural_and_tests'
        WHERE task_id = ?`,
-    ).run(JSON.stringify(result), taskId);
+      )
+      .run(JSON.stringify(result), taskId);
   }
 }
 
@@ -125,7 +127,7 @@ export class TraceStore {
 function rowToTrace(row: any): ExecutionTrace {
   const validated = ExecutionTraceRowSchema.safeParse(row);
   if (!validated.success) {
-    console.warn("[vinyan] TraceStore: row failed Zod validation, using fallback", validated.error.message);
+    console.warn('[vinyan] TraceStore: row failed Zod validation, using fallback', validated.error.message);
   }
   const r = row;
   return {
@@ -140,20 +142,22 @@ function rowToTrace(row: any): ExecutionTrace {
     approach_description: row.approach_description ?? undefined,
     risk_score: row.risk_score ?? undefined,
     oracleVerdicts: JSON.parse(row.oracle_verdicts),
-    qualityScore: row.quality_composite != null
-      ? {
-          architecturalCompliance: row.quality_arch,
-          efficiency: row.quality_efficiency,
-          simplificationGain: row.quality_simplification ?? undefined,
-          testMutationScore: row.quality_testmutation ?? undefined,
-          composite: row.quality_composite,
-          dimensions_available: 2 + (row.quality_simplification != null ? 1 : 0) + (row.quality_testmutation != null ? 1 : 0),
-          phase: (row.quality_simplification != null ? "phase1" : "phase0") as "phase0" | "phase1" | "phase2",
-        }
-      : undefined,
+    qualityScore:
+      row.quality_composite != null
+        ? {
+            architecturalCompliance: row.quality_arch,
+            efficiency: row.quality_efficiency,
+            simplificationGain: row.quality_simplification ?? undefined,
+            testMutationScore: row.quality_testmutation ?? undefined,
+            composite: row.quality_composite,
+            dimensionsAvailable:
+              2 + (row.quality_simplification != null ? 1 : 0) + (row.quality_testmutation != null ? 1 : 0),
+            phase: (row.quality_simplification != null ? 'phase1' : 'phase0') as 'phase0' | 'phase1' | 'phase2',
+          }
+        : undefined,
     model_used: row.model_used,
     tokens_consumed: row.tokens_consumed,
-    duration_ms: row.duration_ms,
+    durationMs: row.duration_ms,
     outcome: row.outcome,
     failure_reason: row.failure_reason ?? undefined,
     affected_files: JSON.parse(row.affected_files),

@@ -5,10 +5,11 @@
  * A5 (Tiered Trust): All external MCP results get type='uncertain' with
  * confidence capped by trust level.
  */
-import type { OracleVerdict, Evidence } from "../core/types.ts";
-import { buildVerdict } from "../core/index.ts";
-import type { MCPToolResult } from "./types.ts";
-import { type PeerTrustLevel, PEER_TRUST_CAPS, clampFull } from "../oracle/tier-clamp.ts";
+
+import { buildVerdict } from '../core/index.ts';
+import type { Evidence, OracleVerdict } from '../core/types.ts';
+import { clampFull, PEER_TRUST_CAPS, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
+import type { MCPToolResult } from './types.ts';
 
 /**
  * MCP trust levels — maps to tier + transport + peer trust clamping.
@@ -17,24 +18,24 @@ import { type PeerTrustLevel, PEER_TRUST_CAPS, clampFull } from "../oracle/tier-
  * "network" = http transport, provisional peer → cap 0.40
  * "remote" = http transport, untrusted peer → cap 0.25
  */
-export type TrustLevel = "local" | "network" | "remote";
+export type McpSourceZone = 'local' | 'network' | 'remote';
 
-const TRUST_TO_TRANSPORT: Record<TrustLevel, string> = {
-  local: "stdio",
-  network: "http",
-  remote: "http",
+const TRUST_TO_TRANSPORT: Record<McpSourceZone, string> = {
+  local: 'stdio',
+  network: 'http',
+  remote: 'http',
 };
 
-const TRUST_TO_PEER: Record<TrustLevel, PeerTrustLevel | undefined> = {
+const TRUST_TO_PEER: Record<McpSourceZone, PeerTrustLevel | undefined> = {
   local: undefined,
-  network: "provisional",
-  remote: "untrusted",
+  network: 'provisional',
+  remote: 'untrusted',
 };
 
-/** Resolve max confidence for a TrustLevel using the canonical clamping pipeline. */
-function maxConfidenceForTrust(trustLevel: TrustLevel): number {
+/** Resolve max confidence for a McpSourceZone using the canonical clamping pipeline. */
+function maxConfidenceForTrust(trustLevel: McpSourceZone): number {
   // MCP sources always use "probabilistic" tier — external tools never get full confidence (A5)
-  return clampFull(1.0, "probabilistic", TRUST_TO_TRANSPORT[trustLevel], TRUST_TO_PEER[trustLevel]);
+  return clampFull(1.0, 'probabilistic', TRUST_TO_TRANSPORT[trustLevel], TRUST_TO_PEER[trustLevel]);
 }
 
 /**
@@ -44,16 +45,16 @@ function maxConfidenceForTrust(trustLevel: TrustLevel): number {
  * - verified=false → error text with reason
  */
 export function ecpToMcp(verdict: OracleVerdict): MCPToolResult {
-  if (verdict.type === "unknown") {
+  if (verdict.type === 'unknown') {
     return {
       content: [
         {
-          type: "text" as const,
+          type: 'text' as const,
           text: JSON.stringify({
             verified: null,
-            reason: "insufficient evidence",
+            reason: 'insufficient evidence',
             oracleName: verdict.oracleName,
-            duration_ms: verdict.duration_ms,
+            duration_ms: verdict.durationMs,
           }),
         },
       ],
@@ -66,7 +67,7 @@ export function ecpToMcp(verdict: OracleVerdict): MCPToolResult {
     type: verdict.type,
     confidence: verdict.confidence,
     evidence: verdict.evidence,
-    duration_ms: verdict.duration_ms,
+    duration_ms: verdict.durationMs,
   };
 
   if (verdict.oracleName) payload.oracleName = verdict.oracleName;
@@ -78,7 +79,7 @@ export function ecpToMcp(verdict: OracleVerdict): MCPToolResult {
   return {
     content: [
       {
-        type: "text" as const,
+        type: 'text' as const,
         text: JSON.stringify(payload),
       },
     ],
@@ -91,28 +92,25 @@ export function ecpToMcp(verdict: OracleVerdict): MCPToolResult {
  * A5: All external MCP results get type='uncertain' with confidence
  * capped by trust level. No external source can claim 'known'.
  */
-export function mcpToEcp(
-  result: MCPToolResult,
-  trustLevel: TrustLevel,
-): OracleVerdict {
+export function mcpToEcp(result: MCPToolResult, trustLevel: McpSourceZone): OracleVerdict {
   const maxConfidence = maxConfidenceForTrust(trustLevel);
 
   // Error results → verified=false
   if (result.isError) {
-    const errorText = result.content.map((c) => c.text).join("\n");
+    const errorText = result.content.map((c) => c.text).join('\n');
     return buildVerdict({
       verified: false,
-      type: "uncertain",
+      type: 'uncertain',
       confidence: maxConfidence,
       evidence: [],
       fileHashes: {},
       reason: errorText,
-      duration_ms: 0,
+      durationMs: 0,
     });
   }
 
   // Try to parse structured content from the MCP result
-  const textContent = result.content.map((c) => c.text).join("\n");
+  const textContent = result.content.map((c) => c.text).join('\n');
   let verified = true;
   let evidence: Evidence[] = [];
   let reason: string | undefined;
@@ -120,7 +118,7 @@ export function mcpToEcp(
 
   try {
     const parsed = JSON.parse(textContent);
-    if (typeof parsed.verified === "boolean") {
+    if (typeof parsed.verified === 'boolean') {
       verified = parsed.verified;
     } else if (parsed.verified === null) {
       verified = false;
@@ -128,10 +126,10 @@ export function mcpToEcp(
     if (Array.isArray(parsed.evidence)) {
       evidence = parsed.evidence;
     }
-    if (typeof parsed.reason === "string") {
+    if (typeof parsed.reason === 'string') {
       reason = parsed.reason;
     }
-    if (parsed.fileHashes && typeof parsed.fileHashes === "object") {
+    if (parsed.fileHashes && typeof parsed.fileHashes === 'object') {
       fileHashes = parsed.fileHashes;
     }
   } catch {
@@ -140,11 +138,11 @@ export function mcpToEcp(
 
   return buildVerdict({
     verified,
-    type: "uncertain", // A5: external sources never get 'known'
+    type: 'uncertain', // A5: external sources never get 'known'
     confidence: maxConfidence,
     evidence,
     fileHashes,
     reason,
-    duration_ms: 0,
+    durationMs: 0,
   });
 }

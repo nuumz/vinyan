@@ -6,27 +6,22 @@
  *
  * Source of truth: spec/tdd.md §12 (Self-Model), arch D11
  */
-import type { SelfModel } from "./core-loop.ts";
-import type { TaskInput, PerceptualHierarchy, SelfModelPrediction } from "./types.ts";
+import type { SelfModel } from './core-loop.ts';
+import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from './types.ts';
 
 export class SelfModelStub implements SelfModel {
-  async predict(
-    input: TaskInput,
-    perception: PerceptualHierarchy,
-  ): Promise<SelfModelPrediction> {
+  async predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction> {
     return {
       taskId: input.id,
       timestamp: Date.now(),
-      expectedTestResults: "partial",
+      expectedTestResults: 'partial',
       expectedBlastRadius: perception.dependencyCone.transitiveBlastRadius,
       expectedDuration: Math.min(input.budget.maxDurationMs / 2, 30_000),
       expectedQualityScore: 0.5,
-      uncertainAreas: perception.diagnostics.typeErrors.length > 0
-        ? ["type-errors-present"]
-        : [],
+      uncertainAreas: perception.diagnostics.typeErrors.length > 0 ? ['type-errors-present'] : [],
       confidence: 0.5,
       metaConfidence: 0.1, // forced < 0.3: no calibration data
-      basis: "static-heuristic",
+      basis: 'static-heuristic',
       calibrationDataPoints: 0,
     };
   }

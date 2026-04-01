@@ -8,14 +8,24 @@
  *
  * Source of truth: spec/tdd.md §18.1
  */
-import { resolve, isAbsolute } from "path";
-import { containsBypassAttempt } from "../../guardrails/index.ts";
-import type { ToolCall, IsolationLevel } from "../types.ts";
-import type { Tool, ToolContext, ToolValidationResult } from "./tool-interface.ts";
+import { isAbsolute, resolve } from 'path';
+import { containsBypassAttempt } from '../../guardrails/index.ts';
+import type { IsolationLevel, ToolCall } from '../types.ts';
+import type { Tool, ToolContext, ToolValidationResult } from './tool-interface.ts';
 
 const SHELL_ALLOWLIST = new Set([
-  "tsc", "bun", "eslint", "prettier", "git",
-  "cat", "head", "tail", "wc", "grep", "find", "ruff",
+  'tsc',
+  'bun',
+  'eslint',
+  'prettier',
+  'git',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'grep',
+  'find',
+  'ruff',
 ]);
 
 /**
@@ -32,28 +42,26 @@ const INTERPRETER_SAFE_PATTERNS: Record<string, RegExp> = {
 const DANGEROUS_SHELL_CHARS = /[;|&`$(){}><\n\\]/;
 
 /** Git subcommands that are destructive or have external side effects. */
-const DANGEROUS_GIT_SUBCOMMANDS = new Set(["push", "reset", "clean", "remote"]);
+const DANGEROUS_GIT_SUBCOMMANDS = new Set(['push', 'reset', 'clean', 'remote']);
 
 /** Dangerous flags for specific git subcommands. */
-const DANGEROUS_GIT_FLAGS = new Set(["--force", "-f", "--hard", "--mirror"]);
+const DANGEROUS_GIT_FLAGS = new Set(['--force', '-f', '--hard', '--mirror']);
 
 /** Arguments to reject for runtime executables that can run arbitrary code. */
-const RUNTIME_DANGEROUS_ARGS = new Set(["--eval", "-e", "eval"]);
+const RUNTIME_DANGEROUS_ARGS = new Set(['--eval', '-e', 'eval']);
 
-export function validateToolCall(
-  call: ToolCall,
-  tool: Tool,
-  context: ToolContext,
-): ToolValidationResult {
+export function validateToolCall(call: ToolCall, tool: Tool, context: ToolContext): ToolValidationResult {
   // 1. Isolation level check
   if (context.routingLevel < tool.minIsolationLevel) {
-    return { valid: false, reason: `Tool '${tool.name}' requires isolation level ${tool.minIsolationLevel}, current routing level is ${context.routingLevel}` };
+    return {
+      valid: false,
+      reason: `Tool '${tool.name}' requires isolation level ${tool.minIsolationLevel}, current routing level is ${context.routingLevel}`,
+    };
   }
 
   // 2. Path permission check (for file and search tools)
-  if (tool.category === "file_read" || tool.category === "file_write" || tool.category === "search") {
-    const filePath = call.parameters.file_path as string | undefined
-      ?? call.parameters.path as string | undefined;
+  if (tool.category === 'file_read' || tool.category === 'file_write' || tool.category === 'search') {
+    const filePath = (call.parameters.file_path as string | undefined) ?? (call.parameters.path as string | undefined);
     if (filePath) {
       // Reject absolute paths — agent must use workspace-relative paths
       if (isAbsolute(filePath)) {
@@ -61,18 +69,18 @@ export function validateToolCall(
       }
       const absPath = resolve(context.workspace, filePath);
       // Workspace containment — catches ../ traversal
-      if (!absPath.startsWith(context.workspace + "/") && absPath !== context.workspace) {
+      if (!absPath.startsWith(context.workspace + '/') && absPath !== context.workspace) {
         return { valid: false, reason: `Path '${filePath}' escapes workspace` };
       }
       if (context.allowedPaths.length > 0) {
-        const allowed = context.allowedPaths.some(p => {
+        const allowed = context.allowedPaths.some((p) => {
           const absAllowed = resolve(context.workspace, p);
           return absPath.startsWith(absAllowed);
         });
         if (!allowed) {
           return { valid: false, reason: `Path '${filePath}' is outside allowed paths` };
         }
-      } else if (tool.category === "file_write") {
+      } else if (tool.category === 'file_write') {
         // No allowedPaths + write tool → deny (zero-trust)
         return { valid: false, reason: `Write to '${filePath}' denied: no allowed paths configured` };
       }
@@ -80,7 +88,7 @@ export function validateToolCall(
   }
 
   // 3. Shell command allowlist + metacharacter + subcommand check
-  if (tool.name === "shell_exec") {
+  if (tool.name === 'shell_exec') {
     const command = call.parameters.command as string | undefined;
     if (command) {
       const trimmed = command.trim();
@@ -108,12 +116,12 @@ export function validateToolCall(
         return { valid: false, reason: `Shell command contains dangerous metacharacter` };
       }
       // Git subcommand validation — block destructive operations
-      if (firstWord === "git" && words.length > 1) {
+      if (firstWord === 'git' && words.length > 1) {
         const subcommand = words[1]!;
         if (DANGEROUS_GIT_SUBCOMMANDS.has(subcommand)) {
-          const hasDangerousFlag = words.slice(2).some(w => DANGEROUS_GIT_FLAGS.has(w));
-          if (subcommand === "push" || subcommand === "remote" || hasDangerousFlag) {
-            return { valid: false, reason: `Dangerous git operation: 'git ${words.slice(1).join(" ")}'` };
+          const hasDangerousFlag = words.slice(2).some((w) => DANGEROUS_GIT_FLAGS.has(w));
+          if (subcommand === 'push' || subcommand === 'remote' || hasDangerousFlag) {
+            return { valid: false, reason: `Dangerous git operation: 'git ${words.slice(1).join(' ')}'` };
           }
         }
       }
@@ -123,7 +131,7 @@ export function validateToolCall(
   // 4. Bypass pattern detection
   const bypass = containsBypassAttempt(call.parameters);
   if (bypass.detected) {
-    return { valid: false, reason: `Bypass attempt detected: ${bypass.patterns.join(", ")}` };
+    return { valid: false, reason: `Bypass attempt detected: ${bypass.patterns.join(', ')}` };
   }
 
   return { valid: true };

@@ -6,12 +6,11 @@
  *
  * Source of truth: spec/tdd.md §16.2 (Perceive step), arch D8
  */
-import { resolve, relative } from "path";
-import { buildDependencyGraph, computeBlastRadius } from "../oracle/dep/dep-analyzer.ts";
-import type { WorldGraph } from "../world-graph/world-graph.ts";
-import type { PerceptualHierarchy, RoutingLevel } from "./types.ts";
-import type { PerceptionAssembler } from "./core-loop.ts";
-import type { TaskInput } from "./types.ts";
+import { relative, resolve } from 'path';
+import { buildDependencyGraph, computeBlastRadius } from '../oracle/dep/dep-analyzer.ts';
+import type { WorldGraph } from '../world-graph/world-graph.ts';
+import type { PerceptionAssembler } from './core-loop.ts';
+import type { PerceptualHierarchy, RoutingLevel, TaskInput } from './types.ts';
 
 export interface PerceptionAssemblerConfig {
   workspace: string;
@@ -28,24 +27,30 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     this.workspace = config.workspace;
     this.worldGraph = config.worldGraph;
     this.availableTools = config.availableTools ?? [
-      "file_read", "file_write", "file_edit", "directory_list",
-      "search_grep", "shell_exec", "git_status", "git_diff",
+      'file_read',
+      'file_write',
+      'file_edit',
+      'directory_list',
+      'search_grep',
+      'shell_exec',
+      'git_status',
+      'git_diff',
     ];
   }
 
   async assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy> {
     const targetFiles = input.targetFiles ?? [];
-    const primaryFile = targetFiles[0] ?? "";
+    const primaryFile = targetFiles[0] ?? '';
 
     // Build dependency cones for ALL target files and merge
-    let allDirectImporters: string[] = [];
-    let allDirectImportees: string[] = [];
-    let allTransitiveImporters: string[] = [];
+    const allDirectImporters: string[] = [];
+    const allDirectImportees: string[] = [];
+    const allTransitiveImporters: string[] = [];
     let maxBlastRadius = 0;
-    let allTestFiles: string[] = [];
+    const allTestFiles: string[] = [];
 
     for (const tf of targetFiles) {
-      const abs = tf ? resolve(this.workspace, tf) : "";
+      const abs = tf ? resolve(this.workspace, tf) : '';
       if (!abs) continue;
       const cone = this.buildDependencyCone(abs, level);
       allDirectImporters.push(...cone.directImporters);
@@ -113,16 +118,20 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
             edges.push({ from: fromFile, to: toFile });
           }
         }
-        try { this.worldGraph.storeEdges(edges); } catch { /* best-effort */ }
+        try {
+          this.worldGraph.storeEdges(edges);
+        } catch {
+          /* best-effort */
+        }
       }
 
       // Forward deps: what the target imports
       const forwardDeps = graph.get(targetAbsolute) ?? new Set<string>();
-      const directImportees = Array.from(forwardDeps).map(f => relative(this.workspace, f));
+      const directImportees = Array.from(forwardDeps).map((f) => relative(this.workspace, f));
 
       // Reverse deps: what depends on the target
       const allDependents = computeBlastRadius(targetAbsolute, graph);
-      const allDependentsRel = allDependents.map(f => relative(this.workspace, f));
+      const allDependentsRel = allDependents.map((f) => relative(this.workspace, f));
 
       // Direct importers: files that directly import target (depth 1 only)
       const directImporters: string[] = [];
@@ -134,7 +143,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
 
       // Filter test files from the full blast radius
       const testPattern = /\.(test|spec)\.(ts|tsx|js|jsx)$/;
-      const affectedTestFiles = allDependentsRel.filter(f => testPattern.test(f));
+      const affectedTestFiles = allDependentsRel.filter((f) => testPattern.test(f));
 
       return {
         directImportees,
@@ -154,10 +163,10 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     }
   }
 
-  private queryVerifiedFacts(files: string[]): PerceptualHierarchy["verifiedFacts"] {
+  private queryVerifiedFacts(files: string[]): PerceptualHierarchy['verifiedFacts'] {
     if (!this.worldGraph) return [];
 
-    const facts: PerceptualHierarchy["verifiedFacts"] = [];
+    const facts: PerceptualHierarchy['verifiedFacts'] = [];
     for (const file of files) {
       if (!file) continue;
       try {
@@ -166,8 +175,8 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
           facts.push({
             target: f.target,
             pattern: f.pattern,
-            verified_at: f.verified_at,
-            hash: f.file_hash,
+            verified_at: f.verifiedAt,
+            hash: f.fileHash,
           });
         }
       } catch {
@@ -177,16 +186,16 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     return facts;
   }
 
-  private async runDiagnostics(): Promise<PerceptualHierarchy["diagnostics"]> {
+  private async runDiagnostics(): Promise<PerceptualHierarchy['diagnostics']> {
     const empty = { lintWarnings: [], typeErrors: [], failingTests: [] };
     try {
-      const proc = Bun.spawn(["tsc", "--noEmit", "--pretty", "false"], {
+      const proc = Bun.spawn(['tsc', '--noEmit', '--pretty', 'false'], {
         cwd: this.workspace,
-        stdout: "pipe",
-        stderr: "pipe",
+        stdout: 'pipe',
+        stderr: 'pipe',
       });
 
-      const timeoutPromise = new Promise<"timeout">(r => setTimeout(() => r("timeout"), 10_000));
+      const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 10_000));
       const processPromise = (async () => {
         const stdout = await new Response(proc.stdout).text();
         await proc.exited;
@@ -194,14 +203,14 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
       })();
 
       const result = await Promise.race([processPromise, timeoutPromise]);
-      if (result === "timeout") {
+      if (result === 'timeout') {
         proc.kill();
         return empty;
       }
 
       // Parse tsc output: "file(line,col): error TS1234: message"
-      const typeErrors: PerceptualHierarchy["diagnostics"]["typeErrors"] = [];
-      for (const line of result.split("\n")) {
+      const typeErrors: PerceptualHierarchy['diagnostics']['typeErrors'] = [];
+      for (const line of result.split('\n')) {
         const match = line.match(/^(.+)\((\d+),\d+\):\s+error\s+TS\d+:\s+(.+)$/);
         if (match) {
           typeErrors.push({ file: match[1]!, line: parseInt(match[2]!, 10), message: match[3]! });

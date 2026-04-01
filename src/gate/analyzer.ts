@@ -1,16 +1,16 @@
 /**
  * Session Analyzer — reads JSONL session logs and computes decision metrics.
  */
-import { readdirSync, readFileSync, existsSync } from "fs";
-import { join } from "path";
-import type { SessionLogEntry } from "./logger.ts";
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import type { SessionLogEntry } from './logger.ts';
 
 export interface SessionMetrics {
   totalDecisions: number;
   allowCount: number;
   blockCount: number;
   blockRate: number;
-  avgDuration_ms: number;
+  avgDurationMs: number;
   oracleBlockCounts: Record<string, number>;
   toolBreakdown: Record<string, { allow: number; block: number }>;
 }
@@ -23,12 +23,12 @@ export function analyzeSessionDir(sessionDir: string): SessionMetrics {
     return emptyMetrics();
   }
 
-  const files = readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl"));
+  const files = readdirSync(sessionDir).filter((f) => f.endsWith('.jsonl'));
   const entries: SessionLogEntry[] = [];
 
   for (const file of files) {
-    const content = readFileSync(join(sessionDir, file), "utf-8");
-    const lines = content.split("\n").filter((l) => l.trim().length > 0);
+    const content = readFileSync(join(sessionDir, file), 'utf-8');
+    const lines = content.split('\n').filter((l) => l.trim().length > 0);
     for (const line of lines) {
       try {
         entries.push(JSON.parse(line) as SessionLogEntry);
@@ -49,9 +49,9 @@ export function analyzeSessionFile(filePath: string): SessionMetrics {
     return emptyMetrics();
   }
 
-  const content = readFileSync(filePath, "utf-8");
+  const content = readFileSync(filePath, 'utf-8');
   const entries: SessionLogEntry[] = [];
-  const lines = content.split("\n").filter((l) => l.trim().length > 0);
+  const lines = content.split('\n').filter((l) => l.trim().length > 0);
   for (const line of lines) {
     try {
       entries.push(JSON.parse(line) as SessionLogEntry);
@@ -66,25 +66,25 @@ export function analyzeSessionFile(filePath: string): SessionMetrics {
 function computeMetrics(entries: SessionLogEntry[]): SessionMetrics {
   if (entries.length === 0) return emptyMetrics();
 
-  const allowCount = entries.filter((e) => e.decision === "allow").length;
-  const blockCount = entries.filter((e) => e.decision === "block").length;
-  const totalDuration = entries.reduce((sum, e) => sum + e.duration_ms, 0);
+  const allowCount = entries.filter((e) => e.decision === 'allow').length;
+  const blockCount = entries.filter((e) => e.decision === 'block').length;
+  const totalDuration = entries.reduce((sum, e) => sum + e.durationMs, 0);
 
   // Count oracle blocks from reasons
   const oracleBlockCounts: Record<string, number> = {};
   for (const entry of entries) {
-    if (entry.decision === "block") {
+    if (entry.decision === 'block') {
       for (const reason of entry.reasons) {
         const match = reason.match(/Oracle "(\w+)"/);
         if (match) {
           const name = match[1]!;
           oracleBlockCounts[name] = (oracleBlockCounts[name] ?? 0) + 1;
         }
-        if (reason.toLowerCase().includes("injection")) {
-          oracleBlockCounts["guardrail:injection"] = (oracleBlockCounts["guardrail:injection"] ?? 0) + 1;
+        if (reason.toLowerCase().includes('injection')) {
+          oracleBlockCounts['guardrail:injection'] = (oracleBlockCounts['guardrail:injection'] ?? 0) + 1;
         }
-        if (reason.toLowerCase().includes("bypass")) {
-          oracleBlockCounts["guardrail:bypass"] = (oracleBlockCounts["guardrail:bypass"] ?? 0) + 1;
+        if (reason.toLowerCase().includes('bypass')) {
+          oracleBlockCounts['guardrail:bypass'] = (oracleBlockCounts['guardrail:bypass'] ?? 0) + 1;
         }
       }
     }
@@ -104,7 +104,7 @@ function computeMetrics(entries: SessionLogEntry[]): SessionMetrics {
     allowCount,
     blockCount,
     blockRate: blockCount / entries.length,
-    avgDuration_ms: totalDuration / entries.length,
+    avgDurationMs: totalDuration / entries.length,
     oracleBlockCounts,
     toolBreakdown,
   };
@@ -116,7 +116,7 @@ function emptyMetrics(): SessionMetrics {
     allowCount: 0,
     blockCount: 0,
     blockRate: 0,
-    avgDuration_ms: 0,
+    avgDurationMs: 0,
     oracleBlockCounts: {},
     toolBreakdown: {},
   };
@@ -127,16 +127,16 @@ function emptyMetrics(): SessionMetrics {
  */
 export function formatMetrics(metrics: SessionMetrics): string {
   if (metrics.totalDecisions === 0) {
-    return "No session data found.";
+    return 'No session data found.';
   }
 
   const lines: string[] = [
     `Session Analysis`,
-    `${"─".repeat(40)}`,
+    `${'─'.repeat(40)}`,
     `Total decisions:  ${metrics.totalDecisions}`,
     `  Allowed:        ${metrics.allowCount} (${((metrics.allowCount / metrics.totalDecisions) * 100).toFixed(1)}%)`,
     `  Blocked:        ${metrics.blockCount} (${(metrics.blockRate * 100).toFixed(1)}%)`,
-    `  Avg latency:    ${metrics.avgDuration_ms.toFixed(0)}ms`,
+    `  Avg latency:    ${metrics.avgDurationMs.toFixed(0)}ms`,
     ``,
     `Block sources:`,
   ];
@@ -152,5 +152,5 @@ export function formatMetrics(metrics: SessionMetrics): string {
     }
   }
 
-  return lines.join("\n");
+  return lines.join('\n');
 }

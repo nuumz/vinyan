@@ -9,7 +9,7 @@
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export type DecayFunction = "exponential" | "power-law";
+export type DecayFunction = 'exponential' | 'power-law';
 
 export interface DecayExperimentState {
   currentWinner: DecayFunction;
@@ -32,8 +32,8 @@ export function computeDecay(fn: DecayFunction, ageCycles: number, halfLife: num
   if (ageCycles <= 0) return 1.0;
   if (halfLife <= 0) return 0;
 
-  if (fn === "exponential") {
-    return Math.pow(0.5, ageCycles / halfLife);
+  if (fn === 'exponential') {
+    return 0.5 ** (ageCycles / halfLife);
   }
   // power-law
   return 1 / (1 + ageCycles / halfLife);
@@ -44,7 +44,7 @@ export function computeDecay(fn: DecayFunction, ageCycles: number, halfLife: num
 /** Create a fresh experiment state. */
 export function createExperimentState(evaluationThreshold = 5): DecayExperimentState {
   return {
-    currentWinner: "exponential",
+    currentWinner: 'exponential',
     exponentialScore: 0,
     powerLawScore: 0,
     cyclesRun: 0,
@@ -75,9 +75,7 @@ export function recordCycleScore(
 
   // Evaluate after threshold cycles
   if (next.cyclesRun >= next.evaluationThreshold) {
-    next.currentWinner = next.exponentialScore >= next.powerLawScore
-      ? "exponential"
-      : "power-law";
+    next.currentWinner = next.exponentialScore >= next.powerLawScore ? 'exponential' : 'power-law';
     next.locked = true;
   }
 

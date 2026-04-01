@@ -1,6 +1,6 @@
-import { watch } from "chokidar";
-import type { WorldGraph } from "./world-graph.ts";
-import type { EventBus, VinyanBusEvents } from "../core/bus.ts";
+import { watch } from 'chokidar';
+import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
+import type { WorldGraph } from './world-graph.ts';
 
 export interface FileWatcherOptions {
   /** Glob patterns to ignore */
@@ -23,7 +23,7 @@ export class FileWatcher {
 
   /** Start watching the workspace for file changes. */
   start(): void {
-    const ignored = this.options.ignored ?? ["**/node_modules/**", "**/.git/**", "**/.vinyan/**"];
+    const ignored = this.options.ignored ?? ['**/node_modules/**', '**/.git/**', '**/.vinyan/**'];
     const debounceMs = this.options.debounceMs ?? 100;
 
     this.watcher = watch(this.workspacePath, {
@@ -43,8 +43,8 @@ export class FileWatcher {
           this.debounceTimers.delete(filePath);
           try {
             this.worldGraph.invalidateByFile(filePath);
-            const newHash = this.worldGraph.getFileHash(filePath) ?? "unknown";
-            this.options.bus?.emit("file:hashChanged", { filePath, newHash });
+            const newHash = this.worldGraph.getFileHash(filePath) ?? 'unknown';
+            this.options.bus?.emit('file:hashChanged', { filePath, newHash });
           } catch {
             // File may have been deleted between change event and hash computation
           }
@@ -52,13 +52,13 @@ export class FileWatcher {
       );
     };
 
-    this.watcher.on("change", handleChange);
-    this.watcher.on("add", handleChange);
-    this.watcher.on("unlink", (filePath: string) => {
+    this.watcher.on('change', handleChange);
+    this.watcher.on('add', handleChange);
+    this.watcher.on('unlink', (filePath: string) => {
       // On file deletion, remove its hash entry — facts with old hash remain but are stale
       try {
-        this.worldGraph.updateFileHash(filePath, "DELETED");
-        this.options.bus?.emit("file:hashChanged", { filePath, newHash: "DELETED" });
+        this.worldGraph.updateFileHash(filePath, 'DELETED');
+        this.options.bus?.emit('file:hashChanged', { filePath, newHash: 'DELETED' });
       } catch {
         // DB may be closed during shutdown — ignore
       }

@@ -7,16 +7,16 @@
  *
  * Source of truth: Plan Phase E2
  */
-import type { EventBus, VinyanBusEvents } from "../core/bus.ts";
-import type { ExtractedPattern, TaskFingerprint } from "../orchestrator/types.ts";
+import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import {
-  abstractPattern,
-  importAbstractPattern,
-  projectSimilarity,
-  classifyPortability,
   type AbstractPattern,
   type AbstractPatternExport,
-} from "../evolution/pattern-abstraction.ts";
+  abstractPattern,
+  classifyPortability,
+  importAbstractPattern,
+  projectSimilarity,
+} from '../evolution/pattern-abstraction.ts';
+import type { ExtractedPattern, TaskFingerprint } from '../orchestrator/types.ts';
 
 // ── Protocol types ────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ export interface KnowledgeOfferItem {
   type: string;
   fingerprint: TaskFingerprint;
   confidence: number;
-  portability: "universal" | "framework-specific" | "project-specific";
+  portability: 'universal' | 'framework-specific' | 'project-specific';
 }
 
 export interface KnowledgeAcceptance {
@@ -65,24 +65,21 @@ export class KnowledgeExchangeManager {
   }
 
   /** Subscribe to sleep:cycleComplete events. */
-  startListening(): void {
-    this.unsub = this.config.bus.on("sleep:cycleComplete", (_payload) => {
+  start(): void {
+    this.unsub = this.config.bus.on('sleep:cycleComplete', (_payload) => {
       // In a full implementation, this would trigger export to peers.
       // The actual export logic is handled by the caller who has peer URLs.
     });
   }
 
   /** Unsubscribe from bus events. */
-  stopListening(): void {
+  stop(): void {
     this.unsub?.();
     this.unsub = null;
   }
 
   /** Create an offer from extracted patterns for sharing with peers. */
-  createOffer(
-    patterns: ExtractedPattern[],
-    cycleId: string,
-  ): KnowledgeOffer {
+  createOffer(patterns: ExtractedPattern[], cycleId: string): KnowledgeOffer {
     const items: KnowledgeOfferItem[] = [];
 
     for (const p of patterns) {
@@ -112,7 +109,7 @@ export class KnowledgeExchangeManager {
 
     for (const item of offer.patterns) {
       // Reject project-specific patterns (cannot transfer)
-      if (item.portability === "project-specific") {
+      if (item.portability === 'project-specific') {
         rejected.push(item.id);
         continue;
       }
@@ -145,7 +142,7 @@ export class KnowledgeExchangeManager {
     }
 
     if (imported.length > 0) {
-      this.config.bus.emit("a2a:knowledgeImported", {
+      this.config.bus.emit('a2a:knowledgeImported', {
         peerId,
         patternsImported: imported.length,
         rulesImported: 0,

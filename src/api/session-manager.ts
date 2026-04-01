@@ -6,14 +6,14 @@
  *
  * Source of truth: spec/tdd.md §22.3, §22.4
  */
-import type { SessionStore, SessionRow, SessionTaskRow } from "../db/session-store.ts";
-import type { TaskInput, TaskResult, ExecutionTrace } from "../orchestrator/types.ts";
-import type { TraceStore } from "../db/trace-store.ts";
+import type { SessionRow, SessionStore, SessionTaskRow } from '../db/session-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 
 export interface Session {
   id: string;
   source: string;
-  status: SessionRow["status"];
+  status: SessionRow['status'];
   createdAt: number;
   taskCount: number;
 }
@@ -46,13 +46,13 @@ export class SessionManager {
       id,
       source,
       created_at: now,
-      status: "active",
+      status: 'active',
       working_memory_json: null,
       compaction_json: null,
       updated_at: now,
     });
 
-    return { id, source, status: "active", createdAt: now, taskCount: 0 };
+    return { id, source, status: 'active', createdAt: now, taskCount: 0 };
   }
 
   get(sessionId: string): Session | undefined {
@@ -73,7 +73,7 @@ export class SessionManager {
       session_id: sessionId,
       task_id: taskInput.id,
       task_input_json: JSON.stringify(taskInput),
-      status: "pending",
+      status: 'pending',
       result_json: null,
       created_at: Date.now(),
     });
@@ -83,7 +83,7 @@ export class SessionManager {
     this.sessionStore.updateTaskStatus(
       sessionId,
       taskId,
-      result.status === "completed" ? "completed" : "failed",
+      result.status === 'completed' ? 'completed' : 'failed',
       JSON.stringify(result),
     );
   }
@@ -95,7 +95,7 @@ export class SessionManager {
    */
   compact(sessionId: string): CompactionResult {
     const tasks = this.sessionStore.listSessionTasks(sessionId);
-    const completedTasks = tasks.filter((t) => t.status === "completed" || t.status === "failed");
+    const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
 
     // Compute statistics
     let totalDurationMs = 0;
@@ -108,10 +108,10 @@ export class SessionManager {
       if (task.result_json) {
         try {
           const result = JSON.parse(task.result_json) as TaskResult;
-          totalDurationMs += result.trace?.duration_ms ?? 0;
+          totalDurationMs += result.trace?.durationMs ?? 0;
           totalTokens += result.trace?.tokens_consumed ?? 0;
 
-          if (result.status === "completed") {
+          if (result.status === 'completed') {
             successes++;
             // Extract successful approach as pattern
             if (result.trace?.approach) {
@@ -168,7 +168,7 @@ export class SessionManager {
   suspendAll(): number {
     const active = this.sessionStore.listActiveSessions();
     for (const session of active) {
-      this.sessionStore.updateSessionStatus(session.id, "suspended");
+      this.sessionStore.updateSessionStatus(session.id, 'suspended');
     }
     return active.length;
   }

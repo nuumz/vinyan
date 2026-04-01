@@ -5,10 +5,10 @@
  *
  * Source of truth: spec/tdd.md §2 (Evolution Engine)
  */
-import type { Database } from "bun:sqlite";
-import type { EvolutionaryRule } from "../orchestrator/types.ts";
-import { simpleGlobMatch } from "../core/glob.ts";
-import { EvolutionaryRuleRowSchema } from "./schemas.ts";
+import type { Database } from 'bun:sqlite';
+import { simpleGlobMatch } from '../core/glob.ts';
+import type { EvolutionaryRule } from '../orchestrator/types.ts';
+import { EvolutionaryRuleRowSchema } from './schemas.ts';
 
 export interface RuleMatchContext {
   filePattern?: string;
@@ -42,25 +42,25 @@ export class RuleStore {
       $action: rule.action,
       $parameters: JSON.stringify(rule.parameters),
       $status: rule.status,
-      $created_at: rule.created_at,
+      $created_at: rule.createdAt,
       $effectiveness: rule.effectiveness,
       $specificity: rule.specificity,
       $superseded_by: rule.superseded_by ?? null,
-      $origin: rule.origin ?? "local",
+      $origin: rule.origin ?? 'local',
     });
   }
 
   findActive(): EvolutionaryRule[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM evolutionary_rules WHERE status = 'active' ORDER BY specificity DESC, effectiveness DESC`,
-    ).all();
+    const rows = this.db
+      .prepare(`SELECT * FROM evolutionary_rules WHERE status = 'active' ORDER BY specificity DESC, effectiveness DESC`)
+      .all();
     return rows.map(rowToRule);
   }
 
-  findByStatus(status: EvolutionaryRule["status"]): EvolutionaryRule[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM evolutionary_rules WHERE status = ? ORDER BY created_at DESC`,
-    ).all(status);
+  findByStatus(status: EvolutionaryRule['status']): EvolutionaryRule[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM evolutionary_rules WHERE status = ? ORDER BY created_at DESC`)
+      .all(status);
     return rows.map(rowToRule);
   }
 
@@ -70,38 +70,32 @@ export class RuleStore {
    */
   findMatching(context: RuleMatchContext): EvolutionaryRule[] {
     const active = this.findActive();
-    return active.filter(rule => matchesContext(rule, context));
+    return active.filter((rule) => matchesContext(rule, context));
   }
 
   updateEffectiveness(id: string, effectiveness: number): void {
-    this.db.prepare(
-      `UPDATE evolutionary_rules SET effectiveness = ? WHERE id = ?`,
-    ).run(effectiveness, id);
+    this.db.prepare(`UPDATE evolutionary_rules SET effectiveness = ? WHERE id = ?`).run(effectiveness, id);
   }
 
   retire(id: string, supersededBy?: string): void {
-    this.db.prepare(
-      `UPDATE evolutionary_rules SET status = 'retired', superseded_by = ? WHERE id = ?`,
-    ).run(supersededBy ?? null, id);
+    this.db
+      .prepare(`UPDATE evolutionary_rules SET status = 'retired', superseded_by = ? WHERE id = ?`)
+      .run(supersededBy ?? null, id);
   }
 
   activate(id: string): void {
-    this.db.prepare(
-      `UPDATE evolutionary_rules SET status = 'active' WHERE id = ?`,
-    ).run(id);
+    this.db.prepare(`UPDATE evolutionary_rules SET status = 'active' WHERE id = ?`).run(id);
   }
 
   count(): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM evolutionary_rules`,
-    ).get() as { cnt: number };
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM evolutionary_rules`).get() as { cnt: number };
     return row.cnt;
   }
 
-  countByStatus(status: EvolutionaryRule["status"]): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM evolutionary_rules WHERE status = ?`,
-    ).get(status) as { cnt: number };
+  countByStatus(status: EvolutionaryRule['status']): number {
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM evolutionary_rules WHERE status = ?`).get(status) as {
+      cnt: number;
+    };
     return row.cnt;
   }
 }
@@ -111,27 +105,27 @@ export class RuleStore {
 function matchesContext(rule: EvolutionaryRule, context: RuleMatchContext): boolean {
   const c = rule.condition;
 
-  if (c.file_pattern && context.filePattern) {
-    if (!simpleGlobMatch(c.file_pattern, context.filePattern)) return false;
-  } else if (c.file_pattern && !context.filePattern) {
+  if (c.filePattern && context.filePattern) {
+    if (!simpleGlobMatch(c.filePattern, context.filePattern)) return false;
+  } else if (c.filePattern && !context.filePattern) {
     return false;
   }
 
-  if (c.oracle_name && context.oracleName) {
-    if (c.oracle_name !== context.oracleName) return false;
-  } else if (c.oracle_name && !context.oracleName) {
+  if (c.oracleName && context.oracleName) {
+    if (c.oracleName !== context.oracleName) return false;
+  } else if (c.oracleName && !context.oracleName) {
     return false;
   }
 
-  if (c.risk_above !== undefined && context.riskScore !== undefined) {
-    if (context.riskScore <= c.risk_above) return false;
-  } else if (c.risk_above !== undefined && context.riskScore === undefined) {
+  if (c.riskAbove !== undefined && context.riskScore !== undefined) {
+    if (context.riskScore <= c.riskAbove) return false;
+  } else if (c.riskAbove !== undefined && context.riskScore === undefined) {
     return false;
   }
 
-  if (c.model_pattern && context.modelPattern) {
-    if (!context.modelPattern.includes(c.model_pattern)) return false;
-  } else if (c.model_pattern && !context.modelPattern) {
+  if (c.modelPattern && context.modelPattern) {
+    if (!context.modelPattern.includes(c.modelPattern)) return false;
+  } else if (c.modelPattern && !context.modelPattern) {
     return false;
   }
 
@@ -146,7 +140,7 @@ function rowToRule(row: unknown): EvolutionaryRule {
     return parsed.data as EvolutionaryRule;
   }
   // Fallback: best-effort deserialization (log warning for observability)
-  console.warn("[vinyan] RuleStore: row failed Zod validation, using fallback", parsed.error.message);
+  console.warn('[vinyan] RuleStore: row failed Zod validation, using fallback', parsed.error.message);
   const r = row as any;
   return {
     id: r.id,
@@ -155,10 +149,10 @@ function rowToRule(row: unknown): EvolutionaryRule {
     action: r.action,
     parameters: JSON.parse(r.parameters),
     status: r.status,
-    created_at: r.created_at,
+    createdAt: r.created_at,
     effectiveness: r.effectiveness,
     specificity: r.specificity,
     superseded_by: r.superseded_by ?? undefined,
-    origin: r.origin ?? "local",
+    origin: r.origin ?? 'local',
   };
 }

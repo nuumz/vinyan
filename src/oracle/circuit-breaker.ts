@@ -8,7 +8,7 @@
  * TDD §4: failureThreshold=3, resetTimeout=60s.
  */
 
-export type CircuitState = "closed" | "open" | "half-open";
+export type CircuitState = 'closed' | 'open' | 'half-open';
 
 interface CircuitEntry {
   state: CircuitState;
@@ -18,12 +18,12 @@ interface CircuitEntry {
 
 export interface CircuitBreakerConfig {
   failureThreshold: number;
-  resetTimeout_ms: number;
+  resetTimeoutMs: number;
 }
 
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
   failureThreshold: 3,
-  resetTimeout_ms: 60_000,
+  resetTimeoutMs: 60_000,
 };
 
 /**
@@ -45,10 +45,10 @@ export class OracleCircuitBreaker {
     const entry = this.circuits.get(oracleName);
     if (!entry) return false;
 
-    if (entry.state === "open") {
+    if (entry.state === 'open') {
       // Check if reset timer has elapsed → transition to half-open
-      if (now - entry.lastFailureAt >= this.config.resetTimeout_ms) {
-        entry.state = "half-open";
+      if (now - entry.lastFailureAt >= this.config.resetTimeoutMs) {
+        entry.state = 'half-open';
         return false; // allow one probe
       }
       return true; // still open
@@ -61,7 +61,7 @@ export class OracleCircuitBreaker {
   recordSuccess(oracleName: string): void {
     const entry = this.circuits.get(oracleName);
     if (entry) {
-      entry.state = "closed";
+      entry.state = 'closed';
       entry.failureCount = 0;
     }
   }
@@ -70,24 +70,24 @@ export class OracleCircuitBreaker {
   recordFailure(oracleName: string, now: number = Date.now()): void {
     let entry = this.circuits.get(oracleName);
     if (!entry) {
-      entry = { state: "closed", failureCount: 0, lastFailureAt: 0 };
+      entry = { state: 'closed', failureCount: 0, lastFailureAt: 0 };
       this.circuits.set(oracleName, entry);
     }
 
     entry.failureCount++;
     entry.lastFailureAt = now;
 
-    if (entry.state === "half-open") {
+    if (entry.state === 'half-open') {
       // Probe failed → back to open
-      entry.state = "open";
+      entry.state = 'open';
     } else if (entry.failureCount >= this.config.failureThreshold) {
-      entry.state = "open";
+      entry.state = 'open';
     }
   }
 
   /** Get current circuit state for an oracle. */
   getState(oracleName: string): CircuitState {
-    return this.circuits.get(oracleName)?.state ?? "closed";
+    return this.circuits.get(oracleName)?.state ?? 'closed';
   }
 
   /** Get all circuit states — used by health check. */

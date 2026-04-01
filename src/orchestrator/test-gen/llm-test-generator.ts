@@ -10,19 +10,19 @@
  *
  * Activation: L2+ routing levels, after Critic passes.
  */
-import { createHash } from "node:crypto";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import type { Evidence } from "../../core/types.ts";
-import type { LLMProvider, LLMRequest, PerceptualHierarchy } from "../types.ts";
-import type { WorkerProposal } from "../critic/critic-engine.ts";
-import type { TestGenerator, TestGenResult } from "./test-generator.ts";
+import { createHash } from 'node:crypto';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Evidence } from '../../core/types.ts';
+import type { WorkerProposal } from '../critic/critic-engine.ts';
+import type { LLMProvider, LLMRequest, PerceptualHierarchy } from '../types.ts';
+import type { TestGenerator, TestGenResult } from './test-generator.ts';
 
 interface GeneratedTest {
   name: string;
   code: string;
   targetFunction: string;
-  category: "happy-path" | "edge-case" | "regression" | "acceptance";
+  category: 'happy-path' | 'edge-case' | 'regression' | 'acceptance';
 }
 
 export class LLMTestGeneratorImpl implements TestGenerator {
@@ -31,10 +31,7 @@ export class LLMTestGeneratorImpl implements TestGenerator {
     private readonly workspace?: string,
   ) {}
 
-  async generateAndRun(
-    proposal: WorkerProposal,
-    perception: PerceptualHierarchy,
-  ): Promise<TestGenResult> {
+  async generateAndRun(proposal: WorkerProposal, perception: PerceptualHierarchy): Promise<TestGenResult> {
     // Step 1: Generate tests via LLM
     const request: LLMRequest = {
       systemPrompt: buildTestGenSystemPrompt(),
@@ -65,17 +62,14 @@ export class LLMTestGeneratorImpl implements TestGenerator {
       writeFileSync(testFile, testCode);
 
       // Run generated tests via Bun test runner (deterministic oracle — A1 compliance)
-      const proc = Bun.spawn(["bun", "test", testFile, "--timeout", "10000"], {
+      const proc = Bun.spawn(['bun', 'test', testFile, '--timeout', '10000'], {
         cwd: workspace,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { ...process.env, NODE_ENV: "test" },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { ...process.env, NODE_ENV: 'test' },
       });
 
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       const exitCode = await proc.exited;
 
       const results = parseTestResults(tests, exitCode, stdout + stderr);
@@ -84,7 +78,11 @@ export class LLMTestGeneratorImpl implements TestGenerator {
       return { generatedTests: tests, results, failures, tokensUsed };
     } finally {
       // Clean up temporary test file
-      try { if (existsSync(testFile)) unlinkSync(testFile); } catch { /* best-effort cleanup */ }
+      try {
+        if (existsSync(testFile)) unlinkSync(testFile);
+      } catch {
+        /* best-effort cleanup */
+      }
     }
   }
 }
@@ -120,15 +118,10 @@ Respond with a JSON array of test objects:
 - Respond ONLY with the JSON array, no markdown fences or other text`;
 }
 
-function buildTestGenUserPrompt(
-  proposal: WorkerProposal,
-  perception: PerceptualHierarchy,
-): string {
+function buildTestGenUserPrompt(proposal: WorkerProposal, perception: PerceptualHierarchy): string {
   const sections: string[] = [];
 
-  const mutationSummary = proposal.mutations
-    .map(m => `--- ${m.file} ---\n${m.content}`)
-    .join("\n\n");
+  const mutationSummary = proposal.mutations.map((m) => `--- ${m.file} ---\n${m.content}`).join('\n\n');
   sections.push(`[PROPOSED CODE]\n${mutationSummary}`);
 
   if (proposal.approach) {
@@ -140,10 +133,10 @@ Target: ${perception.taskTarget.file} — ${perception.taskTarget.description}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
 
   if (perception.diagnostics.failingTests.length > 0) {
-    sections.push(`[KNOWN FAILING TESTS]\n${perception.diagnostics.failingTests.join("\n")}`);
+    sections.push(`[KNOWN FAILING TESTS]\n${perception.diagnostics.failingTests.join('\n')}`);
   }
 
-  return sections.join("\n\n");
+  return sections.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -161,14 +154,14 @@ function parseGeneratedTests(content: string): GeneratedTest[] {
     const parsed = JSON.parse(jsonStr);
     if (!Array.isArray(parsed)) return [];
 
-    const validCategories = new Set(["happy-path", "edge-case", "regression", "acceptance"]);
+    const validCategories = new Set(['happy-path', 'edge-case', 'regression', 'acceptance']);
     const tests: GeneratedTest[] = [];
 
     for (const item of parsed) {
       if (
-        typeof item.name === "string" &&
-        typeof item.code === "string" &&
-        typeof item.targetFunction === "string" &&
+        typeof item.name === 'string' &&
+        typeof item.code === 'string' &&
+        typeof item.targetFunction === 'string' &&
         validCategories.has(item.category)
       ) {
         tests.push({
@@ -194,17 +187,17 @@ function assembleTestFile(tests: GeneratedTest[], proposal: WorkerProposal): str
   const imports = new Set<string>();
   for (const m of proposal.mutations) {
     // Generate relative import from test file (workspace root) to the mutated file
-    const importPath = m.file.startsWith("./") ? m.file : `./${m.file}`;
+    const importPath = m.file.startsWith('./') ? m.file : `./${m.file}`;
     imports.add(importPath);
   }
 
   const importLines = Array.from(imports)
-    .map(p => `import "${p}";`)
-    .join("\n");
+    .map((p) => `import "${p}";`)
+    .join('\n');
 
   const testCases = tests
-    .map(t => `  test("${t.name.replace(/"/g, '\\"')}", () => {\n    ${t.code}\n  });`)
-    .join("\n\n");
+    .map((t) => `  test("${t.name.replace(/"/g, '\\"')}", () => {\n    ${t.code}\n  });`)
+    .join('\n\n');
 
   return `// Auto-generated by Vinyan TestGenerator — ephemeral verification tests
 import { describe, test, expect } from "bun:test";
@@ -220,27 +213,27 @@ function parseTestResults(
   tests: GeneratedTest[],
   exitCode: number,
   output: string,
-): Array<{ name: string; passed: boolean; error?: string; duration_ms: number }> {
+): Array<{ name: string; passed: boolean; error?: string; durationMs: number }> {
   // If all tests passed (exit code 0), mark all as passed
   if (exitCode === 0) {
-    return tests.map(t => ({ name: t.name, passed: true, duration_ms: 0 }));
+    return tests.map((t) => ({ name: t.name, passed: true, durationMs: 0 }));
   }
 
   // Parse individual test results from output
-  return tests.map(t => {
+  return tests.map((t) => {
     // Check if test name appears in failure output
-    const escapedName = t.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const failPattern = new RegExp(`${escapedName}.*(?:fail|error|✗|×)`, "i");
+    const escapedName = t.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const failPattern = new RegExp(`${escapedName}.*(?:fail|error|✗|×)`, 'i');
     const failed = failPattern.test(output);
 
     // Extract error message if failed
     let error: string | undefined;
     if (failed) {
       const errorMatch = output.match(new RegExp(`${escapedName}[\\s\\S]*?(Error:.*?)(?:\\n\\n|$)`));
-      error = errorMatch?.[1] ?? "Test failed";
+      error = errorMatch?.[1] ?? 'Test failed';
     }
 
-    return { name: t.name, passed: !failed, error, duration_ms: 0 };
+    return { name: t.name, passed: !failed, error, durationMs: 0 };
   });
 }
 
@@ -249,10 +242,10 @@ function buildFailureEvidence(
   proposal: WorkerProposal,
 ): Array<{ name: string; error: string; evidence: Evidence }> {
   return results
-    .filter(r => !r.passed && r.error)
-    .map(r => {
-      const targetFile = proposal.mutations[0]?.file ?? "unknown";
-      const targetContent = proposal.mutations[0]?.content ?? "";
+    .filter((r) => !r.passed && r.error)
+    .map((r) => {
+      const targetFile = proposal.mutations[0]?.file ?? 'unknown';
+      const targetContent = proposal.mutations[0]?.content ?? '';
       return {
         name: r.name,
         error: r.error!,
@@ -260,7 +253,7 @@ function buildFailureEvidence(
           file: targetFile,
           line: 1,
           snippet: `Test "${r.name}" failed: ${r.error}`,
-          contentHash: createHash("sha256").update(targetContent).digest("hex"),
+          contentHash: createHash('sha256').update(targetContent).digest('hex'),
         },
       };
     });

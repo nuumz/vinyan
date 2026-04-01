@@ -19,8 +19,8 @@ const PERCENT_ENCODED_RE = /(%[0-9A-Fa-f]{2})+/g;
  * - Decode percent-encoded sequences
  */
 export function normalizeForScan(text: string): string {
-  let normalized = text.replace(ZERO_WIDTH_RE, "");
-  normalized = normalized.normalize("NFKC");
+  let normalized = text.replace(ZERO_WIDTH_RE, '');
+  normalized = normalized.normalize('NFKC');
   normalized = normalized.replace(PERCENT_ENCODED_RE, (match) => {
     try {
       return decodeURIComponent(match);
@@ -33,9 +33,9 @@ export function normalizeForScan(text: string): string {
 
 /** Recursively extract all string values from an object, normalizing each for scanning. */
 export function extractStrings(value: unknown): string[] {
-  if (typeof value === "string") return [normalizeForScan(value)];
+  if (typeof value === 'string') return [normalizeForScan(value)];
   if (Array.isArray(value)) return value.flatMap(extractStrings);
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === 'object') {
     return Object.values(value as Record<string, unknown>).flatMap(extractStrings);
   }
   return [];

@@ -10,10 +10,11 @@
  *
  * Source of truth: spec/tdd.md §16.2, foundation/concept.md §6
  */
-import type { OracleVerdict } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
-import type { LLMProvider, LLMRequest, TaskInput, PerceptualHierarchy } from "../types.ts";
-import type { CriticEngine, WorkerProposal, CriticResult } from "./critic-engine.ts";
+
+import { buildVerdict } from '../../core/index.ts';
+import type { OracleVerdict } from '../../core/types.ts';
+import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../types.ts';
+import type { CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -52,7 +53,7 @@ export class LLMCriticImpl implements CriticEngine {
     }
 
     // A5: Confidence = count of passed aspects / total aspects (NOT LLM self-assessment)
-    const passedCount = parsed.aspects.filter(a => a.passed).length;
+    const passedCount = parsed.aspects.filter((a) => a.passed).length;
     const confidence = parsed.aspects.length > 0 ? passedCount / parsed.aspects.length : 0.3;
 
     return {
@@ -115,13 +116,11 @@ function buildCriticUserPrompt(
   sections.push(`[TASK GOAL]\n${task.goal}`);
 
   if (acceptanceCriteria && acceptanceCriteria.length > 0) {
-    const criteria = acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
+    const criteria = acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
     sections.push(`[ACCEPTANCE CRITERIA]\n${criteria}`);
   }
 
-  const mutationSummary = proposal.mutations
-    .map(m => `--- ${m.file} ---\n${m.content}`)
-    .join("\n\n");
+  const mutationSummary = proposal.mutations.map((m) => `--- ${m.file} ---\n${m.content}`).join('\n\n');
   sections.push(`[PROPOSED MUTATIONS]\n${mutationSummary}`);
 
   if (proposal.approach) {
@@ -132,7 +131,7 @@ function buildCriticUserPrompt(
 Target: ${perception.taskTarget.file} — ${perception.taskTarget.description}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
 
-  return sections.join("\n\n");
+  return sections.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -154,23 +153,23 @@ function parseCriticResponse(content: string): ParsedCriticResponse | null {
     }
 
     const parsed = JSON.parse(jsonStr);
-    if (typeof parsed.approved !== "boolean") return null;
+    if (typeof parsed.approved !== 'boolean') return null;
     if (!Array.isArray(parsed.aspects)) return null;
 
     const aspects: Array<{ name: string; passed: boolean; explanation: string }> = [];
     for (const aspect of parsed.aspects) {
-      if (typeof aspect.name !== "string" || typeof aspect.passed !== "boolean") return null;
+      if (typeof aspect.name !== 'string' || typeof aspect.passed !== 'boolean') return null;
       aspects.push({
         name: aspect.name,
         passed: aspect.passed,
-        explanation: typeof aspect.explanation === "string" ? aspect.explanation : "",
+        explanation: typeof aspect.explanation === 'string' ? aspect.explanation : '',
       });
     }
 
     return {
       approved: parsed.approved,
       aspects,
-      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
     };
   } catch {
     return null;
@@ -182,19 +181,19 @@ function parseCriticResponse(content: string): ParsedCriticResponse | null {
 // ---------------------------------------------------------------------------
 
 const RUBRIC_ASPECTS = [
-  "requirement_coverage",
-  "logic_correctness",
-  "side_effects",
-  "completeness",
-  "consistency",
+  'requirement_coverage',
+  'logic_correctness',
+  'side_effects',
+  'completeness',
+  'consistency',
 ] as const;
 
 function failClosedResult(tokensUsed = { input: 0, output: 0 }): CriticResult {
   return {
     approved: false,
     confidence: 0.3,
-    aspects: RUBRIC_ASPECTS.map(name => ({ name, passed: false, explanation: "critic unavailable — fail-closed" })),
-    reason: "Critic response could not be parsed — fail-closed per A2 (uncertainty is not approval)",
+    aspects: RUBRIC_ASPECTS.map((name) => ({ name, passed: false, explanation: 'critic unavailable — fail-closed' })),
+    reason: 'Critic response could not be parsed — fail-closed per A2 (uncertainty is not approval)',
     verdicts: {},
     tokensUsed,
   };

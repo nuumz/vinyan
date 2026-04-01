@@ -8,9 +8,9 @@
  *
  * Activation: L2+ routing levels only, after Critic passes.
  */
-import type { Evidence } from "../../core/types.ts";
-import type { PerceptualHierarchy } from "../types.ts";
-import type { WorkerProposal } from "../critic/critic-engine.ts";
+import type { Evidence } from '../../core/types.ts';
+import type { WorkerProposal } from '../critic/critic-engine.ts';
+import type { PerceptualHierarchy } from '../types.ts';
 
 /** Result of test generation and execution */
 export interface TestGenResult {
@@ -18,13 +18,13 @@ export interface TestGenResult {
     name: string;
     code: string;
     targetFunction: string;
-    category: "happy-path" | "edge-case" | "regression" | "acceptance";
+    category: 'happy-path' | 'edge-case' | 'regression' | 'acceptance';
   }>;
   results: Array<{
     name: string;
     passed: boolean;
     error?: string;
-    duration_ms: number;
+    durationMs: number;
   }>;
   failures: Array<{
     name: string;
@@ -36,8 +36,5 @@ export interface TestGenResult {
 
 /** TestGenerator interface — stub for Phase 1B implementation */
 export interface TestGenerator {
-  generateAndRun(
-    proposal: WorkerProposal,
-    perception: PerceptualHierarchy,
-  ): Promise<TestGenResult>;
+  generateAndRun(proposal: WorkerProposal, perception: PerceptualHierarchy): Promise<TestGenResult>;
 }

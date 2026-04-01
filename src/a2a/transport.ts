@@ -7,15 +7,15 @@
  *
  * Source of truth: Plan Phase B1
  */
-import type { HypothesisTuple, OracleVerdict } from "../core/types.ts";
+import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 
 export interface ECPTransport {
   /** Execute a hypothesis verification and return the verdict. */
-  verify(hypothesis: HypothesisTuple, timeout_ms: number): Promise<OracleVerdict>;
+  verify(hypothesis: HypothesisTuple, timeoutMs: number): Promise<OracleVerdict>;
   /** Release any resources held by this transport. */
   close(): Promise<void>;
   /** Transport type identifier — used for confidence clamping (A5). */
-  readonly transportType: "stdio" | "http" | "a2a";
+  readonly transportType: 'stdio' | 'http' | 'a2a';
   /** Whether the transport is currently connected and usable. */
   readonly connected: boolean;
 }

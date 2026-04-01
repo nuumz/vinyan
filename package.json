@@ -4,7 +4,15 @@
   "type": "module",
   "license": "Apache-2.0",
   "private": true,
+  "scripts": {
+    "lint": "biome check src/ tests/",
+    "lint:fix": "biome check --write src/ tests/",
+    "format": "biome format --write src/ tests/",
+    "check": "tsc --noEmit && biome check src/ tests/",
+    "test": "bun test"
+  },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
     "@types/bun": "latest",
     "fast-check": "^4.6.0"
   },

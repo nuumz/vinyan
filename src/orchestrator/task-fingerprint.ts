@@ -8,33 +8,46 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.3
  */
-import type { TaskFingerprint, TaskInput, PerceptualHierarchy, ExecutionTrace } from "./types.ts";
+import type { ExecutionTrace, PerceptualHierarchy, TaskFingerprint, TaskInput } from './types.ts';
 
 /** Known framework patterns detected from import paths. */
 const FRAMEWORK_PATTERNS: Array<{ pattern: RegExp; marker: string }> = [
-  { pattern: /\breact\b/i, marker: "react" },
-  { pattern: /\bnext\b/i, marker: "next" },
-  { pattern: /\bexpress\b/i, marker: "express" },
-  { pattern: /\bfastify\b/i, marker: "fastify" },
-  { pattern: /\bzod\b/i, marker: "zod" },
-  { pattern: /\bprisma\b/i, marker: "prisma" },
-  { pattern: /\btailwind\b/i, marker: "tailwind" },
-  { pattern: /\bvue\b/i, marker: "vue" },
-  { pattern: /\bangular\b/i, marker: "angular" },
-  { pattern: /\bsvelte\b/i, marker: "svelte" },
-  { pattern: /\btypeorm\b/i, marker: "typeorm" },
-  { pattern: /\bdrizzle\b/i, marker: "drizzle" },
-  { pattern: /\bmongoose\b/i, marker: "mongoose" },
-  { pattern: /\bjest\b/i, marker: "jest" },
-  { pattern: /\bvitest\b/i, marker: "vitest" },
-  { pattern: /\bpytest\b/i, marker: "pytest" },
+  { pattern: /\breact\b/i, marker: 'react' },
+  { pattern: /\bnext\b/i, marker: 'next' },
+  { pattern: /\bexpress\b/i, marker: 'express' },
+  { pattern: /\bfastify\b/i, marker: 'fastify' },
+  { pattern: /\bzod\b/i, marker: 'zod' },
+  { pattern: /\bprisma\b/i, marker: 'prisma' },
+  { pattern: /\btailwind\b/i, marker: 'tailwind' },
+  { pattern: /\bvue\b/i, marker: 'vue' },
+  { pattern: /\bangular\b/i, marker: 'angular' },
+  { pattern: /\bsvelte\b/i, marker: 'svelte' },
+  { pattern: /\btypeorm\b/i, marker: 'typeorm' },
+  { pattern: /\bdrizzle\b/i, marker: 'drizzle' },
+  { pattern: /\bmongoose\b/i, marker: 'mongoose' },
+  { pattern: /\bjest\b/i, marker: 'jest' },
+  { pattern: /\bvitest\b/i, marker: 'vitest' },
+  { pattern: /\bpytest\b/i, marker: 'pytest' },
 ];
 
 /** Common action verbs extracted from task goal text. */
 const ACTION_VERBS = [
-  "refactor", "fix", "add", "remove", "update", "test",
-  "rename", "move", "extract", "inline", "optimize",
-  "migrate", "convert", "implement", "delete", "create",
+  'refactor',
+  'fix',
+  'add',
+  'remove',
+  'update',
+  'test',
+  'rename',
+  'move',
+  'extract',
+  'inline',
+  'optimize',
+  'migrate',
+  'convert',
+  'implement',
+  'delete',
+  'create',
 ];
 
 /**
@@ -63,14 +76,11 @@ export function computeFingerprint(
   const traceCount = options?.traceCount ?? 0;
 
   // Data-gated dimension: frameworkMarkers (200+ traces)
-  const frameworkMarkers = (traceCount >= 200 && perception)
-    ? detectFrameworkMarkers(perception)
-    : undefined;
+  const frameworkMarkers = traceCount >= 200 && perception ? detectFrameworkMarkers(perception) : undefined;
 
   // Data-gated dimension: oracleFailurePattern (500+ traces)
-  const oracleFailurePattern = (traceCount >= 500 && options?.oracleFailurePattern)
-    ? options.oracleFailurePattern
-    : undefined;
+  const oracleFailurePattern =
+    traceCount >= 500 && options?.oracleFailurePattern ? options.oracleFailurePattern : undefined;
 
   return {
     actionVerb,
@@ -85,10 +95,7 @@ export function computeFingerprint(
  * Compute the most-frequently-failing oracle for a given task type signature from traces.
  * Returns the oracle name or undefined if no dominant failure exists.
  */
-export function computeOracleFailurePattern(
-  traces: ExecutionTrace[],
-  taskTypeSignature: string,
-): string | undefined {
+export function computeOracleFailurePattern(traces: ExecutionTrace[], taskTypeSignature: string): string | undefined {
   const oracleFails = new Map<string, number>();
   for (const trace of traces) {
     if (trace.task_type_signature !== taskTypeSignature) continue;
@@ -130,7 +137,7 @@ function extractActionVerb(goal: string): string {
   for (const verb of ACTION_VERBS) {
     if (lower.includes(verb)) return verb;
   }
-  return "unknown";
+  return 'unknown';
 }
 
 /**
@@ -139,7 +146,7 @@ function extractActionVerb(goal: string): string {
 function extractFileExtensions(targetFiles: string[]): string[] {
   const exts = new Set<string>();
   for (const file of targetFiles) {
-    const dot = file.lastIndexOf(".");
+    const dot = file.lastIndexOf('.');
     if (dot >= 0) {
       exts.add(file.slice(dot));
     }
@@ -150,15 +157,13 @@ function extractFileExtensions(targetFiles: string[]): string[] {
 /**
  * Compute blast radius bucket from perception data.
  */
-function computeBlastBucket(
-  perception?: PerceptualHierarchy,
-): TaskFingerprint["blastRadiusBucket"] {
-  if (!perception) return "single";
+function computeBlastBucket(perception?: PerceptualHierarchy): TaskFingerprint['blastRadiusBucket'] {
+  if (!perception) return 'single';
   const radius = perception.dependencyCone.transitiveBlastRadius;
-  if (radius <= 1) return "single";
-  if (radius <= 5) return "small";
-  if (radius <= 20) return "medium";
-  return "large";
+  if (radius <= 1) return 'single';
+  if (radius <= 5) return 'small';
+  if (radius <= 20) return 'medium';
+  return 'large';
 }
 
 /**
@@ -166,5 +171,5 @@ function computeBlastBucket(
  * Deterministic for same fingerprint.
  */
 export function fingerprintKey(fp: TaskFingerprint): string {
-  return `${fp.actionVerb}::${fp.fileExtensions.join(",")}::${fp.blastRadiusBucket}`;
+  return `${fp.actionVerb}::${fp.fileExtensions.join(',')}::${fp.blastRadiusBucket}`;
 }

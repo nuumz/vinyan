@@ -4,9 +4,10 @@
  *
  * Runs `pyright --outputjson` on the target file or workspace.
  */
-import { HypothesisTupleSchema } from "../protocol.ts";
-import { buildVerdict } from "../../core/index.ts";
-import { parsePyrightOutput } from "./pyright-mapper.ts";
+
+import { buildVerdict } from '../../core/index.ts';
+import { HypothesisTupleSchema } from '../protocol.ts';
+import { parsePyrightOutput } from './pyright-mapper.ts';
 
 const PYRIGHT_TIMEOUT_MS = 60_000;
 
@@ -17,16 +18,16 @@ const startTime = performance.now();
 
 // Determine target: specific file or whole workspace
 const target = hypothesis.target || hypothesis.workspace;
-const args = ["--outputjson", target];
+const args = ['--outputjson', target];
 
-const proc = Bun.spawn(["pyright", ...args], {
+const proc = Bun.spawn(['pyright', ...args], {
   cwd: hypothesis.workspace,
-  stdout: "pipe",
-  stderr: "pipe",
+  stdout: 'pipe',
+  stderr: 'pipe',
 });
 
-const timeoutPromise = new Promise<"timeout">((resolve) => {
-  setTimeout(() => resolve("timeout"), PYRIGHT_TIMEOUT_MS);
+const timeoutPromise = new Promise<'timeout'>((resolve) => {
+  setTimeout(() => resolve('timeout'), PYRIGHT_TIMEOUT_MS);
 });
 
 const processPromise = (async () => {
@@ -36,21 +37,21 @@ const processPromise = (async () => {
 })();
 
 const result = await Promise.race([processPromise, timeoutPromise]);
-const duration_ms = Math.round(performance.now() - startTime);
+const durationMs = Math.round(performance.now() - startTime);
 
-if (result === "timeout") {
+if (result === 'timeout') {
   proc.kill();
   const verdict = buildVerdict({
     verified: false,
-    type: "uncertain",
+    type: 'uncertain',
     confidence: 0.2,
     evidence: [],
     fileHashes: {},
     reason: `Pyright timed out after ${PYRIGHT_TIMEOUT_MS}ms`,
-    errorCode: "TIMEOUT",
-    duration_ms,
+    errorCode: 'TIMEOUT',
+    durationMs,
   });
-  process.stdout.write(JSON.stringify(verdict) + "\n");
+  process.stdout.write(JSON.stringify(verdict) + '\n');
 } else {
   // Pyright exits non-zero when type errors exist -- that's normal, not a crash.
   // Only treat it as a crash if stdout is empty (no JSON output).
@@ -58,17 +59,17 @@ if (result === "timeout") {
     const stderr = await new Response(proc.stderr).text();
     const verdict = buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Pyright produced no output (exit ${result.exitCode}): ${stderr.slice(0, 500)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms,
+      errorCode: 'ORACLE_CRASH',
+      durationMs,
     });
-    process.stdout.write(JSON.stringify(verdict) + "\n");
+    process.stdout.write(JSON.stringify(verdict) + '\n');
   } else {
-    const verdict = parsePyrightOutput(result.stdout.trim(), duration_ms);
-    process.stdout.write(JSON.stringify(verdict) + "\n");
+    const verdict = parsePyrightOutput(result.stdout.trim(), durationMs);
+    process.stdout.write(JSON.stringify(verdict) + '\n');
   }
 }

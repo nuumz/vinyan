@@ -9,8 +9,9 @@
  *
  * Source of truth: Plan Phase D3
  */
-import { wilsonLowerBound } from "../sleep-cycle/wilson.ts";
-import { PEER_TRUST_CAPS, type PeerTrustLevel } from "../oracle/tier-clamp.ts";
+
+import { PEER_TRUST_CAPS, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
+import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
 
 export interface PeerTrustRecord {
   peerId: string;
@@ -42,14 +43,14 @@ export interface PeerTrustConfig {
 
 export const DEFAULT_PEER_TRUST_CONFIG: PeerTrustConfig = {
   promotionMinInteractions: 10,
-  untrustedPromotionLB: 0.60,
-  provisionalPromotionLB: 0.70,
-  establishedPromotionLB: 0.80,
+  untrustedPromotionLB: 0.6,
+  provisionalPromotionLB: 0.7,
+  establishedPromotionLB: 0.8,
   demotionConsecutiveFailures: 5,
   inactivityDecayMs: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
 
-const TRUST_LEVELS: PeerTrustLevel[] = ["untrusted", "provisional", "established", "trusted"];
+const TRUST_LEVELS: PeerTrustLevel[] = ['untrusted', 'provisional', 'established', 'trusted'];
 
 export class PeerTrustManager {
   private peers = new Map<string, PeerTrustRecord>();
@@ -67,7 +68,7 @@ export class PeerTrustManager {
     const record: PeerTrustRecord = {
       peerId,
       instanceId,
-      trustLevel: "untrusted",
+      trustLevel: 'untrusted',
       interactions: 0,
       accurate: 0,
       wilsonLB: 0,
@@ -108,7 +109,7 @@ export class PeerTrustManager {
 
   /** Get the current trust level for a peer. */
   getTrustLevel(peerId: string): PeerTrustLevel {
-    return this.peers.get(peerId)?.trustLevel ?? "untrusted";
+    return this.peers.get(peerId)?.trustLevel ?? 'untrusted';
   }
 
   /** Get the confidence cap for a peer. */
@@ -132,7 +133,7 @@ export class PeerTrustManager {
     const decayed: string[] = [];
 
     for (const record of this.peers.values()) {
-      if (record.trustLevel === "untrusted") continue;
+      if (record.trustLevel === 'untrusted') continue;
 
       const inactive = now - record.lastInteraction;
       if (inactive >= this.config.inactivityDecayMs) {
@@ -175,10 +176,14 @@ export class PeerTrustManager {
 
   private getPromotionThreshold(currentLevel: PeerTrustLevel): number {
     switch (currentLevel) {
-      case "untrusted": return this.config.untrustedPromotionLB;
-      case "provisional": return this.config.provisionalPromotionLB;
-      case "established": return this.config.establishedPromotionLB;
-      case "trusted": return 1.0; // can't promote beyond trusted
+      case 'untrusted':
+        return this.config.untrustedPromotionLB;
+      case 'provisional':
+        return this.config.provisionalPromotionLB;
+      case 'established':
+        return this.config.establishedPromotionLB;
+      case 'trusted':
+        return 1.0; // can't promote beyond trusted
     }
   }
 }

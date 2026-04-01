@@ -6,27 +6,27 @@
  *
  * Pipeline: guardrails → config → oracles → aggregate → verdict
  */
-import { createHash } from "crypto";
-import { loadConfig } from "../config/loader.ts";
-import { clampByTier } from "../oracle/tier-clamp.ts";
-import { detectPromptInjection, containsBypassAttempt } from "../guardrails/index.ts";
-import { verify as astVerify } from "../oracle/ast/ast-verifier.ts";
-import { verify as typeVerify } from "../oracle/type/type-verifier.ts";
-import { verify as depVerify } from "../oracle/dep/dep-analyzer.ts";
-import { verify as testVerify } from "../oracle/test/test-verifier.ts";
-import { verify as lintVerify } from "../oracle/lint/lint-verifier.ts";
-import type { HypothesisTuple, OracleVerdict, QualityScore } from "../core/types.ts";
-import { buildVerdict } from "../core/index.ts";
-import { logDecision, type SessionLogEntry } from "./logger.ts";
-import { isMutatingTool } from "./tool-classifier.ts";
-import { calculateRiskScore, getIrreversibilityScore, SEALED_ENVIRONMENT } from "./risk-router.ts";
-import type { RiskFactors } from "../orchestrator/types.ts";
-import { computeQualityScore } from "./quality-score.ts";
-import type { ComplexityContext, TestContext } from "./quality-score.ts";
-import { resolveConflicts } from "./conflict-resolver.ts";
-import { OracleCircuitBreaker } from "../oracle/circuit-breaker.ts";
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
+import { loadConfig } from '../config/loader.ts';
+import { buildVerdict } from '../core/index.ts';
+import type { HypothesisTuple, OracleVerdict, QualityScore } from '../core/types.ts';
+import { containsBypassAttempt, detectPromptInjection } from '../guardrails/index.ts';
+import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
+import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
+import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
+import { verify as lintVerify } from '../oracle/lint/lint-verifier.ts';
+import { verify as testVerify } from '../oracle/test/test-verifier.ts';
+import { clampByTier } from '../oracle/tier-clamp.ts';
+import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
+import type { RiskFactors } from '../orchestrator/types.ts';
+import { resolveConflicts } from './conflict-resolver.ts';
+import { logDecision, type SessionLogEntry } from './logger.ts';
+import type { ComplexityContext, TestContext } from './quality-score.ts';
+import { computeQualityScore } from './quality-score.ts';
+import { calculateRiskScore, getIrreversibilityScore, SEALED_ENVIRONMENT } from './risk-router.ts';
+import { isMutatingTool } from './tool-classifier.ts';
 
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
@@ -39,16 +39,13 @@ const circuitBreaker = new OracleCircuitBreaker();
 const oracleAccuracyTracker = new Map<string, { total: number; correct: number }>();
 
 /** Update accuracy tracker after gate resolution. */
-function updateOracleAccuracy(
-  oracleResults: Record<string, OracleVerdict>,
-  finalDecision: "allow" | "block",
-): void {
+function updateOracleAccuracy(oracleResults: Record<string, OracleVerdict>, finalDecision: 'allow' | 'block'): void {
   for (const [name, verdict] of Object.entries(oracleResults)) {
     const entry = oracleAccuracyTracker.get(name) ?? { total: 0, correct: 0 };
     entry.total++;
     // Oracle is "correct" if it agrees with the final decision
     const oracleBlocked = !verdict.verified;
-    const decisionBlocked = finalDecision === "block";
+    const decisionBlocked = finalDecision === 'block';
     if (oracleBlocked === decisionBlocked) entry.correct++;
     oracleAccuracyTracker.set(name, entry);
   }
@@ -78,13 +75,13 @@ export interface GateRequest {
   riskScore?: number;
 }
 
-export type GateDecision = "allow" | "block";
+export type GateDecision = 'allow' | 'block';
 
 export interface GateVerdict {
   decision: GateDecision;
   reasons: string[];
   oracle_results: Record<string, OracleVerdict>;
-  duration_ms: number;
+  durationMs: number;
   qualityScore?: QualityScore;
   /** Risk score used for oracle tier selection (0.0-1.0). Present when risk-tiered mode is active. */
   riskScore?: number;
@@ -103,23 +100,23 @@ interface OracleEntry {
 }
 
 const ORACLE_ENTRIES: Record<string, OracleEntry> = {
-  ast: { verify: astVerify, defaultPattern: "symbol-exists", requiresContext: true },
-  type: { verify: typeVerify, defaultPattern: "type-check", requiresContext: false },
-  dep: { verify: depVerify, defaultPattern: "dependency-check", requiresContext: false },
-  test: { verify: testVerify, defaultPattern: "test-pass", requiresContext: false },
-  lint: { verify: lintVerify, defaultPattern: "lint-clean", requiresContext: false },
+  ast: { verify: astVerify, defaultPattern: 'symbol-exists', requiresContext: true },
+  type: { verify: typeVerify, defaultPattern: 'type-check', requiresContext: false },
+  dep: { verify: depVerify, defaultPattern: 'dependency-check', requiresContext: false },
+  test: { verify: testVerify, defaultPattern: 'test-pass', requiresContext: false },
+  lint: { verify: lintVerify, defaultPattern: 'lint-clean', requiresContext: false },
 };
 
 /** Oracles that are informational-only — never block the gate. */
-const INFORMATIONAL_ORACLES = new Set(["dep"]);
+const INFORMATIONAL_ORACLES = new Set(['dep']);
 
 /** Oracle tier classification for risk-tiered verification (TDD §8). */
-const ORACLE_TIERS: Record<string, "structural" | "full"> = {
-  ast: "structural",
-  type: "structural",
-  dep: "structural",
-  lint: "structural",
-  test: "full",
+const ORACLE_TIERS: Record<string, 'structural' | 'full'> = {
+  ast: 'structural',
+  type: 'structural',
+  dep: 'structural',
+  lint: 'structural',
+  test: 'full',
 };
 
 // ── Gate logic ──────────────────────────────────────────────────
@@ -132,20 +129,20 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   // ① Guardrails — scan params for injection / bypass
   const injection = detectPromptInjection(request.params);
   if (injection.detected) {
-    reasons.push(`Prompt injection detected: ${injection.patterns.join(", ")}`);
+    reasons.push(`Prompt injection detected: ${injection.patterns.join(', ')}`);
   }
 
   const bypass = containsBypassAttempt(request.params);
   if (bypass.detected) {
-    reasons.push(`Bypass attempt detected: ${bypass.patterns.join(", ")}`);
+    reasons.push(`Bypass attempt detected: ${bypass.patterns.join(', ')}`);
   }
 
   if (reasons.length > 0) {
     const verdict: GateVerdict = {
-      decision: "block",
+      decision: 'block',
       reasons,
       oracle_results: oracleResults,
-      duration_ms: performance.now() - start,
+      durationMs: performance.now() - start,
     };
     await safeLog(request, verdict);
     return verdict;
@@ -154,10 +151,10 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   // ①½ Read-only tool short-circuit — skip oracles (no mutation to verify)
   if (!isMutatingTool(request.tool)) {
     const verdict: GateVerdict = {
-      decision: "allow",
+      decision: 'allow',
       reasons: [],
       oracle_results: {},
-      duration_ms: performance.now() - start,
+      durationMs: performance.now() - start,
     };
     await safeLog(request, verdict);
     return verdict;
@@ -186,9 +183,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   const config = loadConfig(request.params.workspace);
 
   // ③ Build hypotheses and run enabled oracles
-  const oracleEntries = Object.entries(config.oracles).filter(
-    ([name, conf]) => conf.enabled && ORACLE_ENTRIES[name],
-  );
+  const oracleEntries = Object.entries(config.oracles).filter(([name, conf]) => conf.enabled && ORACLE_ENTRIES[name]);
 
   // Run all enabled oracles concurrently (skip context-dependent, circuit-open, and risk-excluded oracles)
   const riskTieringActive = request.riskScore != null;
@@ -200,9 +195,9 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
         if (circuitBreaker.shouldSkip(name)) return false; // circuit open → exclude
         // Risk-tiered filtering (TDD §8) — only when explicitly opted in
         if (riskTieringActive && riskScore != null) {
-          const tier = ORACLE_TIERS[name] ?? "structural";
-          if (riskScore < 0.2) return false;                        // hash-only → skip all oracles
-          if (riskScore < 0.4 && tier === "full") return false;     // structural → skip test oracle
+          const tier = ORACLE_TIERS[name] ?? 'structural';
+          if (riskScore < 0.2) return false; // hash-only → skip all oracles
+          if (riskScore < 0.4 && tier === 'full') return false; // structural → skip test oracle
         }
         return true;
       })
@@ -210,7 +205,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
         const entry = ORACLE_ENTRIES[name]!;
         const oracleConf = config.oracles[name];
         const timeoutMs = oracleConf?.timeout_ms ?? 30_000;
-        const timeoutBehavior = oracleConf?.timeout_behavior ?? "block";
+        const timeoutBehavior = oracleConf?.timeout_behavior ?? 'block';
 
         const hypothesis: HypothesisTuple = {
           target: request.params.file_path,
@@ -219,25 +214,25 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           workspace: request.params.workspace,
         };
         try {
-          const timeoutPromise = new Promise<"__timeout__">((resolve) =>
-            setTimeout(() => resolve("__timeout__"), timeoutMs),
+          const timeoutPromise = new Promise<'__timeout__'>((resolve) =>
+            setTimeout(() => resolve('__timeout__'), timeoutMs),
           );
           const raceResult = await Promise.race([entry.verify(hypothesis), timeoutPromise]);
 
-          if (raceResult === "__timeout__") {
+          if (raceResult === '__timeout__') {
             circuitBreaker.recordFailure(name);
-            if (timeoutBehavior === "warn") {
+            if (timeoutBehavior === 'warn') {
               return { name, result: null };
             }
             const timeoutResult: OracleVerdict = buildVerdict({
               verified: false,
-              type: "unknown",
+              type: 'unknown',
               confidence: 0,
               evidence: [],
               fileHashes: {},
               reason: `Oracle "${name}" timed out after ${timeoutMs}ms`,
-              errorCode: "TIMEOUT",
-              duration_ms: timeoutMs,
+              errorCode: 'TIMEOUT',
+              durationMs: timeoutMs,
             });
             return { name, result: timeoutResult };
           }
@@ -250,20 +245,20 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           }
 
           // ECP §4.4 (A5): Clamp confidence by oracle trust tier
-          const oracleTier = config.oracles[name]?.tier ?? "deterministic";
+          const oracleTier = config.oracles[name]?.tier ?? 'deterministic';
           const clampedResult = { ...raceResult, confidence: clampByTier(raceResult.confidence, oracleTier) };
           return { name, result: clampedResult };
         } catch (err) {
           circuitBreaker.recordFailure(name);
           const errorResult: OracleVerdict = buildVerdict({
             verified: false,
-            type: "unknown",
+            type: 'unknown',
             confidence: 0,
             evidence: [],
             fileHashes: {},
             reason: `Oracle "${name}" crashed: ${err instanceof Error ? err.message : String(err)}`,
-            errorCode: "ORACLE_CRASH",
-            duration_ms: 0,
+            errorCode: 'ORACLE_CRASH',
+            durationMs: 0,
           });
           return { name, result: errorResult };
         }
@@ -279,25 +274,25 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
   const resolved = resolveConflicts(oracleResults, {
     oracleTiers: Object.fromEntries(
-      Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? "deterministic"]),
+      Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'deterministic']),
     ),
     oracleAccuracy: oracleAccuracyTracker.size > 0 ? Object.fromEntries(oracleAccuracyTracker) : undefined,
     informationalOracles: INFORMATIONAL_ORACLES,
   });
   reasons.push(...resolved.reasons);
 
-  const decision: GateDecision = reasons.length > 0 ? "block" : "allow";
+  const decision: GateDecision = reasons.length > 0 ? 'block' : 'allow';
 
   // Update oracle accuracy tracker with this gate run's results
   updateOracleAccuracy(oracleResults, decision);
-  const duration_ms = performance.now() - start;
+  const durationMs = performance.now() - start;
 
   // Build complexity context for QualityScore Phase 1 dimensions
   let complexityContext: ComplexityContext | undefined;
   if (request.params.content && request.params.file_path) {
     try {
       const absPath = resolve(request.params.workspace, request.params.file_path);
-      const originalSource = existsSync(absPath) ? readFileSync(absPath, "utf-8") : "";
+      const originalSource = existsSync(absPath) ? readFileSync(absPath, 'utf-8') : '';
       complexityContext = { originalSource, mutatedSource: request.params.content };
     } catch {
       // Complexity context is best-effort
@@ -306,22 +301,29 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
 
   // Build test context from test oracle results
   let testContext: TestContext | undefined;
-  if (oracleResults["test"]) {
-    testContext = { testsExist: true, testsPassed: oracleResults["test"].verified };
+  if (oracleResults['test']) {
+    testContext = { testsExist: true, testsPassed: oracleResults['test'].verified };
   }
 
   // Build oracle tier map from config for A5 tier-weighted quality scoring
   const oracleTiers: Record<string, string> = {};
   for (const [name, conf] of Object.entries(config.oracles)) {
-    oracleTiers[name] = conf.tier ?? "deterministic";
+    oracleTiers[name] = conf.tier ?? 'deterministic';
   }
 
   const verdict: GateVerdict = {
     decision,
     reasons,
     oracle_results: oracleResults,
-    duration_ms,
-    qualityScore: computeQualityScore(oracleResults, duration_ms, undefined, complexityContext, testContext, oracleTiers),
+    durationMs,
+    qualityScore: computeQualityScore(
+      oracleResults,
+      durationMs,
+      undefined,
+      complexityContext,
+      testContext,
+      oracleTiers,
+    ),
     riskScore,
   };
 
@@ -335,7 +337,7 @@ async function safeLog(request: GateRequest, verdict: GateVerdict): Promise<void
   try {
     // Collect blocking verdicts for FP tracking
     const blockedVerdicts =
-      verdict.decision === "block"
+      verdict.decision === 'block'
         ? Object.entries(verdict.oracle_results)
             .filter(([name, v]) => !v.verified && !INFORMATIONAL_ORACLES.has(name))
             .map(([, v]) => v)
@@ -343,17 +345,17 @@ async function safeLog(request: GateRequest, verdict: GateVerdict): Promise<void
 
     // Content hash for mutation dedup
     const hashInput = request.params.content ?? request.params.file_path;
-    const mutationHash = createHash("sha256").update(hashInput).digest("hex");
+    const mutationHash = createHash('sha256').update(hashInput).digest('hex');
 
     const entry: SessionLogEntry = {
       timestamp: new Date().toISOString(),
-      session_id: request.session_id ?? "default",
+      session_id: request.session_id ?? 'default',
       tool: request.tool,
       file_path: request.params.file_path,
       decision: verdict.decision,
       reasons: verdict.reasons,
       oracle_results: verdict.oracle_results,
-      duration_ms: verdict.duration_ms,
+      durationMs: verdict.durationMs,
       blocked_verdicts: blockedVerdicts,
       mutation_hash: mutationHash,
     };

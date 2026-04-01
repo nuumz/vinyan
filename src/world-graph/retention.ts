@@ -4,7 +4,7 @@
  * TDD §5: maxAgeDays=30, keepLastSessions=10, maxFactCount=50,000.
  * Runs every N storeFact() calls (default: 100).
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from 'bun:sqlite';
 
 export interface RetentionConfig {
   maxAgeDays: number;
@@ -20,7 +20,7 @@ export const DEFAULT_RETENTION: RetentionConfig = {
 
 /** Run retention policy. Returns number of fact rows deleted (excludes CASCADE junction rows). */
 export function runRetention(db: Database, config: RetentionConfig = DEFAULT_RETENTION): number {
-  const countFacts = () => (db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number }).cnt;
+  const countFacts = () => (db.query('SELECT COUNT(*) as cnt FROM facts').get() as { cnt: number }).cnt;
 
   const beforeAll = countFacts();
 
@@ -41,12 +41,12 @@ export function runRetention(db: Database, config: RetentionConfig = DEFAULT_RET
   const cutoff = Date.now() - config.maxAgeDays * 24 * 60 * 60 * 1000;
 
   if (protectedIds.size > 0) {
-    const placeholders = [...protectedIds].map(() => "?").join(",");
+    const placeholders = [...protectedIds].map(() => '?').join(',');
     db.query(
       `DELETE FROM facts WHERE verified_at < ? AND (session_id IS NULL OR session_id NOT IN (${placeholders}))`,
     ).run(cutoff, ...protectedIds);
   } else {
-    db.query("DELETE FROM facts WHERE verified_at < ?").run(cutoff);
+    db.query('DELETE FROM facts WHERE verified_at < ?').run(cutoff);
   }
 
   // Step 3: Hard cap — if still over maxFactCount, delete oldest beyond cap

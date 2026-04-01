@@ -6,9 +6,9 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.1
  */
-import type { Database } from "bun:sqlite";
-import type { WorkerProfile, WorkerProfileStatus, WorkerStats, WorkerConfig } from "../orchestrator/types.ts";
-import { WorkerProfileRowSchema } from "./schemas.ts";
+import type { Database } from 'bun:sqlite';
+import type { WorkerConfig, WorkerProfile, WorkerProfileStatus, WorkerStats } from '../orchestrator/types.ts';
+import { WorkerProfileRowSchema } from './schemas.ts';
 
 export class WorkerStore {
   private db: Database;
@@ -38,7 +38,7 @@ export class WorkerStore {
       $model_version: profile.config.modelVersion ?? null,
       $temperature: profile.config.temperature,
       $tool_allowlist: profile.config.toolAllowlist ? JSON.stringify(profile.config.toolAllowlist) : null,
-      $system_prompt_tpl: profile.config.systemPromptTemplate ?? "default",
+      $system_prompt_tpl: profile.config.systemPromptTemplate ?? 'default',
       $max_context_tokens: profile.config.maxContextTokens ?? null,
       $status: profile.status,
       $created_at: profile.createdAt,
@@ -50,91 +50,79 @@ export class WorkerStore {
   }
 
   findById(id: string): WorkerProfile | null {
-    const row = this.db.prepare(
-      `SELECT * FROM worker_profiles WHERE id = ?`,
-    ).get(id);
+    const row = this.db.prepare(`SELECT * FROM worker_profiles WHERE id = ?`).get(id);
     return row ? rowToProfile(row) : null;
   }
 
   findByStatus(status: WorkerProfileStatus): WorkerProfile[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM worker_profiles WHERE status = ? ORDER BY created_at ASC`,
-    ).all(status);
+    const rows = this.db.prepare(`SELECT * FROM worker_profiles WHERE status = ? ORDER BY created_at ASC`).all(status);
     return rows.map(rowToProfile);
   }
 
   findActive(): WorkerProfile[] {
-    return this.findByStatus("active");
+    return this.findByStatus('active');
   }
 
   findAll(): WorkerProfile[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM worker_profiles ORDER BY created_at ASC`,
-    ).all();
+    const rows = this.db.prepare(`SELECT * FROM worker_profiles ORDER BY created_at ASC`).all();
     return rows.map(rowToProfile);
   }
 
   findByModelId(modelId: string): WorkerProfile[] {
-    const rows = this.db.prepare(
-      `SELECT * FROM worker_profiles WHERE model_id = ? ORDER BY created_at ASC`,
-    ).all(modelId);
+    const rows = this.db
+      .prepare(`SELECT * FROM worker_profiles WHERE model_id = ? ORDER BY created_at ASC`)
+      .all(modelId);
     return rows.map(rowToProfile);
   }
 
   /** Update worker status with appropriate timestamp fields. */
-  updateStatus(
-    id: string,
-    status: WorkerProfileStatus,
-    reason?: string,
-  ): void {
+  updateStatus(id: string, status: WorkerProfileStatus, reason?: string): void {
     const now = Date.now();
     switch (status) {
-      case "active":
-        this.db.prepare(
-          `UPDATE worker_profiles SET status = ?, promoted_at = ? WHERE id = ?`,
-        ).run(status, now, id);
+      case 'active':
+        this.db.prepare(`UPDATE worker_profiles SET status = ?, promoted_at = ? WHERE id = ?`).run(status, now, id);
         break;
-      case "demoted":
-        this.db.prepare(
-          `UPDATE worker_profiles SET status = ?, demoted_at = ?, demotion_reason = ?, demotion_count = demotion_count + 1 WHERE id = ?`,
-        ).run(status, now, reason ?? null, id);
+      case 'demoted':
+        this.db
+          .prepare(
+            `UPDATE worker_profiles SET status = ?, demoted_at = ?, demotion_reason = ?, demotion_count = demotion_count + 1 WHERE id = ?`,
+          )
+          .run(status, now, reason ?? null, id);
         break;
-      case "retired":
-        this.db.prepare(
-          `UPDATE worker_profiles SET status = ?, demoted_at = ?, demotion_reason = ? WHERE id = ?`,
-        ).run(status, now, reason ?? "permanent retirement", id);
+      case 'retired':
+        this.db
+          .prepare(`UPDATE worker_profiles SET status = ?, demoted_at = ?, demotion_reason = ? WHERE id = ?`)
+          .run(status, now, reason ?? 'permanent retirement', id);
         break;
       default:
-        this.db.prepare(
-          `UPDATE worker_profiles SET status = ? WHERE id = ?`,
-        ).run(status, id);
+        this.db.prepare(`UPDATE worker_profiles SET status = ? WHERE id = ?`).run(status, id);
     }
     this.statsCache.delete(id);
   }
 
   /** Reset demoted worker back to probation (re-enrollment). */
   reEnroll(id: string): void {
-    this.db.prepare(
-      `UPDATE worker_profiles SET status = 'probation', promoted_at = NULL, demoted_at = NULL, demotion_reason = NULL WHERE id = ?`,
-    ).run(id);
+    this.db
+      .prepare(
+        `UPDATE worker_profiles SET status = 'probation', promoted_at = NULL, demoted_at = NULL, demotion_reason = NULL WHERE id = ?`,
+      )
+      .run(id);
     this.statsCache.delete(id);
   }
 
   countByStatus(status: WorkerProfileStatus): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM worker_profiles WHERE status = ?`,
-    ).get(status) as { cnt: number };
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM worker_profiles WHERE status = ?`).get(status) as {
+      cnt: number;
+    };
     return row.cnt;
   }
 
   countActive(): number {
-    return this.countByStatus("active");
+    return this.countByStatus('active');
   }
 
   count(): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM worker_profiles`,
-    ).get() as { cnt: number };
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM worker_profiles`).get() as { cnt: number };
     return row.cnt;
   }
 
@@ -167,7 +155,8 @@ export class WorkerStore {
    * Used by WorkerLifecycle for demotion checks (rolling 30 tasks per plan PH4.2).
    */
   getRecentStats(workerId: string, limit: number): WorkerStats {
-    const agg = this.db.prepare(`
+    const agg = this.db
+      .prepare(`
       SELECT
         COUNT(*) as total_tasks,
         AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
@@ -182,7 +171,8 @@ export class WorkerStore {
         ORDER BY timestamp DESC
         LIMIT ?
       )
-    `).get(workerId, limit) as {
+    `)
+      .get(workerId, limit) as {
       total_tasks: number;
       success_rate: number | null;
       avg_quality: number | null;
@@ -195,7 +185,7 @@ export class WorkerStore {
       totalTasks: agg.total_tasks,
       successRate: agg.success_rate ?? 0,
       avgQualityScore: agg.avg_quality ?? 0,
-      avgDuration_ms: agg.avg_duration ?? 0,
+      avgDurationMs: agg.avg_duration ?? 0,
       avgTokenCost: agg.avg_tokens ?? 0,
       taskTypeBreakdown: {},
       lastActiveAt: agg.last_active_at ?? 0,
@@ -207,7 +197,8 @@ export class WorkerStore {
    * Used by WorkerLifecycle for scoped safety-violation checks during probation.
    */
   getStatsSince(workerId: string, sinceTimestamp: number): WorkerStats {
-    const agg = this.db.prepare(`
+    const agg = this.db
+      .prepare(`
       SELECT
         COUNT(*) as total_tasks,
         AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
@@ -217,7 +208,8 @@ export class WorkerStore {
         MAX(timestamp) as last_active_at
       FROM execution_traces
       WHERE worker_id = ? AND timestamp >= ?
-    `).get(workerId, sinceTimestamp) as {
+    `)
+      .get(workerId, sinceTimestamp) as {
       total_tasks: number;
       success_rate: number | null;
       avg_quality: number | null;
@@ -230,7 +222,7 @@ export class WorkerStore {
       totalTasks: agg.total_tasks,
       successRate: agg.success_rate ?? 0,
       avgQualityScore: agg.avg_quality ?? 0,
-      avgDuration_ms: agg.avg_duration ?? 0,
+      avgDurationMs: agg.avg_duration ?? 0,
       avgTokenCost: agg.avg_tokens ?? 0,
       taskTypeBreakdown: {},
       lastActiveAt: agg.last_active_at ?? 0,
@@ -242,23 +234,24 @@ export class WorkerStore {
    * Used for session-based cooldown in WorkerLifecycle.
    */
   countTracesSince(workerId: string, sinceTimestamp: number): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM execution_traces WHERE worker_id = ? AND timestamp >= ?`,
-    ).get(workerId, sinceTimestamp) as { cnt: number };
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM execution_traces WHERE worker_id = ? AND timestamp >= ?`)
+      .get(workerId, sinceTimestamp) as { cnt: number };
     return row.cnt;
   }
 
   /** Count distinct worker_ids in recent traces (for data gate). */
   countDistinctWorkerIds(): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(DISTINCT worker_id) as cnt FROM execution_traces WHERE worker_id IS NOT NULL`,
-    ).get() as { cnt: number };
+    const row = this.db
+      .prepare(`SELECT COUNT(DISTINCT worker_id) as cnt FROM execution_traces WHERE worker_id IS NOT NULL`)
+      .get() as { cnt: number };
     return row.cnt;
   }
 
   private computeStats(workerId: string): WorkerStats {
     // Aggregate stats
-    const agg = this.db.prepare(`
+    const agg = this.db
+      .prepare(`
       SELECT
         COUNT(*) as total_tasks,
         AVG(CASE WHEN outcome = 'success' THEN 1.0 ELSE 0.0 END) as success_rate,
@@ -267,7 +260,8 @@ export class WorkerStore {
         AVG(tokens_consumed) as avg_tokens,
         MAX(timestamp) as last_active_at
       FROM execution_traces WHERE worker_id = ?
-    `).get(workerId) as {
+    `)
+      .get(workerId) as {
       total_tasks: number;
       success_rate: number | null;
       avg_quality: number | null;
@@ -277,7 +271,8 @@ export class WorkerStore {
     };
 
     // Task type breakdown
-    const breakdown = this.db.prepare(`
+    const breakdown = this.db
+      .prepare(`
       SELECT
         task_type_signature,
         COUNT(*) as count,
@@ -287,7 +282,8 @@ export class WorkerStore {
       FROM execution_traces
       WHERE worker_id = ? AND task_type_signature IS NOT NULL
       GROUP BY task_type_signature
-    `).all(workerId) as Array<{
+    `)
+      .all(workerId) as Array<{
       task_type_signature: string;
       count: number;
       success_rate: number;
@@ -295,7 +291,7 @@ export class WorkerStore {
       avg_tokens: number;
     }>;
 
-    const taskTypeBreakdown: WorkerStats["taskTypeBreakdown"] = {};
+    const taskTypeBreakdown: WorkerStats['taskTypeBreakdown'] = {};
     for (const row of breakdown) {
       taskTypeBreakdown[row.task_type_signature] = {
         count: row.count,
@@ -309,7 +305,7 @@ export class WorkerStore {
       totalTasks: agg.total_tasks,
       successRate: agg.success_rate ?? 0,
       avgQualityScore: agg.avg_quality ?? 0,
-      avgDuration_ms: agg.avg_duration ?? 0,
+      avgDurationMs: agg.avg_duration ?? 0,
       avgTokenCost: agg.avg_tokens ?? 0,
       taskTypeBreakdown,
       lastActiveAt: agg.last_active_at ?? 0,
@@ -323,14 +319,14 @@ function rowToProfile(row: unknown): WorkerProfile {
   const parsed = WorkerProfileRowSchema.safeParse(row);
   const r = parsed.success ? parsed.data : (row as any);
   if (!parsed.success) {
-    console.warn("[vinyan] WorkerStore: row failed Zod validation, using fallback", parsed.error.message);
+    console.warn('[vinyan] WorkerStore: row failed Zod validation, using fallback', parsed.error.message);
   }
 
   const config: WorkerConfig = {
     modelId: r.model_id,
     modelVersion: r.model_version ?? undefined,
     temperature: r.temperature,
-    toolAllowlist: parsed.success ? r.tool_allowlist : (r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined),
+    toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
     systemPromptTemplate: r.system_prompt_tpl ?? undefined,
     maxContextTokens: r.max_context_tokens ?? undefined,
   };

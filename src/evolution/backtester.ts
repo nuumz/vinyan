@@ -7,14 +7,15 @@
  *
  * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
-import type { EvolutionaryRule, ExecutionTrace } from "../orchestrator/types.ts";
-import { simpleGlobMatch } from "../core/glob.ts";
+
+import { simpleGlobMatch } from '../core/glob.ts';
+import type { EvolutionaryRule, ExecutionTrace } from '../orchestrator/types.ts';
 
 export interface BacktestResult {
   pass: boolean;
   effectiveness: number;
-  prevented: number;       // failures that would have been prevented
-  falsePositives: number;  // successes that would have been blocked
+  prevented: number; // failures that would have been prevented
+  falsePositives: number; // successes that would have been blocked
   totalFailures: number;
   totalSuccesses: number;
   trainingSize: number;
@@ -31,10 +32,7 @@ export interface BacktestResult {
  * 4. Count how many validation-set successes the rule would have blocked
  * 5. Pass if prevented ≥ 50% of failures AND falsePositives === 0
  */
-export function backtestRule(
-  rule: EvolutionaryRule,
-  traces: ExecutionTrace[],
-): BacktestResult {
+export function backtestRule(rule: EvolutionaryRule, traces: ExecutionTrace[]): BacktestResult {
   if (traces.length < 5) {
     return {
       pass: false,
@@ -61,7 +59,7 @@ export function backtestRule(
   const validationMinTime = validation[0]?.timestamp ?? 0;
   if (validationMinTime <= trainingMaxTime && validation.length > 0 && training.length > 0) {
     // Filter out validation traces that overlap with training (duplicate timestamps)
-    validation = validation.filter(t => t.timestamp > trainingMaxTime);
+    validation = validation.filter((t) => t.timestamp > trainingMaxTime);
     if (validation.length === 0) {
       return {
         pass: false,
@@ -77,8 +75,8 @@ export function backtestRule(
   }
 
   // Count failures and successes in validation set
-  const failures = validation.filter(t => t.outcome === "failure");
-  const successes = validation.filter(t => t.outcome === "success");
+  const failures = validation.filter((t) => t.outcome === 'failure');
+  const successes = validation.filter((t) => t.outcome === 'success');
 
   // Simulate rule application: would this rule have affected each trace?
   let prevented = 0;
@@ -124,23 +122,23 @@ export function backtestRule(
 function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean {
   const c = rule.condition;
 
-  if (c.file_pattern) {
-    const matches = trace.affected_files.some(f => simpleGlobMatch(c.file_pattern!, f));
+  if (c.filePattern) {
+    const matches = trace.affected_files.some((f) => simpleGlobMatch(c.filePattern!, f));
     if (!matches) return false;
   }
 
-  if (c.oracle_name) {
+  if (c.oracleName) {
     const oracleNames = Object.keys(trace.oracleVerdicts);
-    if (!oracleNames.includes(c.oracle_name)) return false;
+    if (!oracleNames.includes(c.oracleName)) return false;
   }
 
-  if (c.risk_above !== undefined) {
+  if (c.riskAbove !== undefined) {
     const riskScore = trace.risk_score ?? 0;
-    if (riskScore <= c.risk_above) return false;
+    if (riskScore <= c.riskAbove) return false;
   }
 
-  if (c.model_pattern) {
-    if (!trace.model_used.includes(c.model_pattern)) return false;
+  if (c.modelPattern) {
+    if (!trace.model_used.includes(c.modelPattern)) return false;
   }
 
   return true;
@@ -158,9 +156,7 @@ export function computeQualityImpact(
   const nonMatchingAtTarget: number[] = [];
 
   // Determine target level from rule parameters
-  const targetLevel = typeof rule.parameters.toLevel === "number"
-    ? rule.parameters.toLevel
-    : undefined;
+  const targetLevel = typeof rule.parameters.toLevel === 'number' ? rule.parameters.toLevel : undefined;
 
   for (const trace of traces) {
     const quality = trace.qualityScore?.composite;
@@ -179,9 +175,10 @@ export function computeQualityImpact(
 
   const avgBefore = matching.reduce((a, b) => a + b, 0) / matching.length;
   // Estimate "after" from traces at target level, or use avgBefore if no data
-  const avgAfter = nonMatchingAtTarget.length > 0
-    ? nonMatchingAtTarget.reduce((a, b) => a + b, 0) / nonMatchingAtTarget.length
-    : avgBefore;
+  const avgAfter =
+    nonMatchingAtTarget.length > 0
+      ? nonMatchingAtTarget.reduce((a, b) => a + b, 0) / nonMatchingAtTarget.length
+      : avgBefore;
 
   return {
     avgQualityBefore: avgBefore,
@@ -198,32 +195,46 @@ export function computeQualityImpact(
  *
  * Pass criteria: assigned worker's avg quality ≥ fleet average for matching tasks.
  */
-export function backtestWorkerAssignment(
-  rule: EvolutionaryRule,
-  traces: ExecutionTrace[],
-): BacktestResult {
-  if (traces.length < 5 || rule.action !== "assign-worker") {
+export function backtestWorkerAssignment(rule: EvolutionaryRule, traces: ExecutionTrace[]): BacktestResult {
+  if (traces.length < 5 || rule.action !== 'assign-worker') {
     return {
-      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
-      totalFailures: 0, totalSuccesses: 0, trainingSize: 0, validationSize: 0,
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: 0,
+      validationSize: 0,
     };
   }
 
-  const workerId = typeof rule.parameters.workerId === "string"
-    ? rule.parameters.workerId : undefined;
+  const workerId = typeof rule.parameters.workerId === 'string' ? rule.parameters.workerId : undefined;
   if (!workerId) {
     return {
-      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
-      totalFailures: 0, totalSuccesses: 0, trainingSize: 0, validationSize: 0,
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: 0,
+      validationSize: 0,
     };
   }
 
   // Filter traces that match the rule's condition (task type / file pattern)
-  const matching = traces.filter(t => wouldRuleApply(rule, t));
+  const matching = traces.filter((t) => wouldRuleApply(rule, t));
   if (matching.length < 5) {
     return {
-      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
-      totalFailures: 0, totalSuccesses: 0, trainingSize: matching.length, validationSize: 0,
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: matching.length,
+      validationSize: 0,
     };
   }
 
@@ -234,14 +245,20 @@ export function backtestWorkerAssignment(
 
   if (validation.length === 0) {
     return {
-      pass: false, effectiveness: 0, prevented: 0, falsePositives: 0,
-      totalFailures: 0, totalSuccesses: 0, trainingSize: splitIndex, validationSize: 0,
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: splitIndex,
+      validationSize: 0,
     };
   }
 
   // Compare assigned worker quality vs others in validation set
-  const workerTraces = validation.filter(t => t.worker_id === workerId);
-  const otherTraces = validation.filter(t => t.worker_id !== workerId);
+  const workerTraces = validation.filter((t) => t.worker_id === workerId);
+  const otherTraces = validation.filter((t) => t.worker_id !== workerId);
 
   const workerAvgQuality = avgQuality(workerTraces);
   const otherAvgQuality = avgQuality(otherTraces);
@@ -256,10 +273,10 @@ export function backtestWorkerAssignment(
   return {
     pass,
     effectiveness,
-    prevented: workerTraces.filter(t => t.outcome === "success").length,
+    prevented: workerTraces.filter((t) => t.outcome === 'success').length,
     falsePositives: 0,
-    totalFailures: validation.filter(t => t.outcome === "failure").length,
-    totalSuccesses: validation.filter(t => t.outcome === "success").length,
+    totalFailures: validation.filter((t) => t.outcome === 'failure').length,
+    totalSuccesses: validation.filter((t) => t.outcome === 'success').length,
     trainingSize: splitIndex,
     validationSize: validation.length,
   };
@@ -267,8 +284,7 @@ export function backtestWorkerAssignment(
 
 function avgQuality(traces: ExecutionTrace[]): number {
   if (traces.length === 0) return 0;
-  const qualityTraces = traces.filter(t => t.qualityScore?.composite != null);
+  const qualityTraces = traces.filter((t) => t.qualityScore?.composite != null);
   if (qualityTraces.length === 0) return 0;
   return qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length;
 }
-

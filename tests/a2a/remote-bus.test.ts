@@ -1,22 +1,22 @@
 /**
  * Remote Bus Adapter tests — Phase L3.
  */
-import { describe, test, expect } from "bun:test";
-import { RemoteBusAdapter, DEFAULT_FORWARDED_EVENTS } from "../../src/a2a/remote-bus.ts";
-import { EventBus, type VinyanBusEvents } from "../../src/core/bus.ts";
-import { ECP_MIME_TYPE } from "../../src/a2a/ecp-data-part.ts";
+import { describe, expect, test } from 'bun:test';
+import { ECP_MIME_TYPE } from '../../src/a2a/ecp-data-part.ts';
+import { DEFAULT_FORWARDED_EVENTS, RemoteBusAdapter } from '../../src/a2a/remote-bus.ts';
+import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function makeBus(): EventBus<VinyanBusEvents> {
   return new EventBus<VinyanBusEvents>();
 }
 
-describe("RemoteBusAdapter", () => {
-  test("subscribes to default forwarded events on start", () => {
+describe('RemoteBusAdapter', () => {
+  test('subscribes to default forwarded events on start', () => {
     const bus = makeBus();
     const adapter = new RemoteBusAdapter({
       bus,
       peerUrls: [],
-      instanceId: "inst-001",
+      instanceId: 'inst-001',
     });
 
     adapter.start();
@@ -25,7 +25,7 @@ describe("RemoteBusAdapter", () => {
     adapter.stop();
   });
 
-  test("forwards event to peer URL on emit", async () => {
+  test('forwards event to peer URL on emit', async () => {
     const bus = makeBus();
     const received: any[] = [];
 
@@ -34,7 +34,7 @@ describe("RemoteBusAdapter", () => {
       async fetch(req) {
         const body = await req.json();
         received.push(body);
-        return Response.json({ jsonrpc: "2.0", id: (body as any).id, result: {} });
+        return Response.json({ jsonrpc: '2.0', id: (body as any).id, result: {} });
       },
     });
 
@@ -42,21 +42,21 @@ describe("RemoteBusAdapter", () => {
       const adapter = new RemoteBusAdapter({
         bus,
         peerUrls: [`http://localhost:${server.port}`],
-        instanceId: "inst-001",
+        instanceId: 'inst-001',
       });
 
       adapter.start();
-      bus.emit("file:hashChanged", { filePath: "/src/app.ts", newHash: "abc" });
+      bus.emit('file:hashChanged', { filePath: '/src/app.ts', newHash: 'abc' });
 
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       expect(received).toHaveLength(1);
       const body = received[0];
-      expect(body.method).toBe("tasks/send");
+      expect(body.method).toBe('tasks/send');
       const data = body.params.message.parts[0].data;
-      expect(data.message_type).toBe("knowledge_transfer");
-      expect(data.payload.bus_event).toBe("file:hashChanged");
-      expect(data.payload.data.filePath).toBe("/src/app.ts");
+      expect(data.message_type).toBe('knowledge_transfer');
+      expect(data.payload.bus_event).toBe('file:hashChanged');
+      expect(data.payload.data.filePath).toBe('/src/app.ts');
 
       adapter.stop();
     } finally {
@@ -64,7 +64,7 @@ describe("RemoteBusAdapter", () => {
     }
   });
 
-  test("does not forward non-configured events", async () => {
+  test('does not forward non-configured events', async () => {
     const bus = makeBus();
     let requestCount = 0;
 
@@ -73,7 +73,7 @@ describe("RemoteBusAdapter", () => {
       async fetch(req) {
         requestCount++;
         const body = await req.json();
-        return Response.json({ jsonrpc: "2.0", id: (body as any).id, result: {} });
+        return Response.json({ jsonrpc: '2.0', id: (body as any).id, result: {} });
       },
     });
 
@@ -81,14 +81,14 @@ describe("RemoteBusAdapter", () => {
       const adapter = new RemoteBusAdapter({
         bus,
         peerUrls: [`http://localhost:${server.port}`],
-        instanceId: "inst-001",
+        instanceId: 'inst-001',
       });
 
       adapter.start();
       // task:start is NOT in default forwarded events
-      bus.emit("task:start", { input: {} as any, routing: {} as any });
+      bus.emit('task:start', { input: {} as any, routing: {} as any });
 
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(requestCount).toBe(0);
       adapter.stop();
@@ -97,7 +97,7 @@ describe("RemoteBusAdapter", () => {
     }
   });
 
-  test("stop unsubscribes — subsequent events not forwarded", async () => {
+  test('stop unsubscribes — subsequent events not forwarded', async () => {
     const bus = makeBus();
     let requestCount = 0;
 
@@ -106,7 +106,7 @@ describe("RemoteBusAdapter", () => {
       async fetch(req) {
         requestCount++;
         const body = await req.json();
-        return Response.json({ jsonrpc: "2.0", id: (body as any).id, result: {} });
+        return Response.json({ jsonrpc: '2.0', id: (body as any).id, result: {} });
       },
     });
 
@@ -114,14 +114,14 @@ describe("RemoteBusAdapter", () => {
       const adapter = new RemoteBusAdapter({
         bus,
         peerUrls: [`http://localhost:${server.port}`],
-        instanceId: "inst-001",
+        instanceId: 'inst-001',
       });
 
       adapter.start();
       adapter.stop();
 
-      bus.emit("file:hashChanged", { filePath: "/src/test.ts", newHash: "xyz" });
-      await new Promise(resolve => setTimeout(resolve, 200));
+      bus.emit('file:hashChanged', { filePath: '/src/test.ts', newHash: 'xyz' });
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(requestCount).toBe(0);
     } finally {
@@ -129,22 +129,22 @@ describe("RemoteBusAdapter", () => {
     }
   });
 
-  test("custom forwardedEvents override defaults", () => {
+  test('custom forwardedEvents override defaults', () => {
     const bus = makeBus();
     const adapter = new RemoteBusAdapter({
       bus,
       peerUrls: [],
-      instanceId: "inst-001",
-      forwardedEvents: ["oracle:verdict", "circuit:open"],
+      instanceId: 'inst-001',
+      forwardedEvents: ['oracle:verdict', 'circuit:open'],
     });
 
     adapter.start();
     const forwarded = adapter.getForwardedEvents();
-    expect(forwarded).toEqual(["oracle:verdict", "circuit:open"]);
+    expect(forwarded).toEqual(['oracle:verdict', 'circuit:open']);
     adapter.stop();
   });
 
-  test("failure to one peer does not block others", async () => {
+  test('failure to one peer does not block others', async () => {
     const bus = makeBus();
     let successCount = 0;
 
@@ -153,7 +153,7 @@ describe("RemoteBusAdapter", () => {
       async fetch(req) {
         successCount++;
         const body = await req.json();
-        return Response.json({ jsonrpc: "2.0", id: (body as any).id, result: {} });
+        return Response.json({ jsonrpc: '2.0', id: (body as any).id, result: {} });
       },
     });
 
@@ -161,16 +161,16 @@ describe("RemoteBusAdapter", () => {
       const adapter = new RemoteBusAdapter({
         bus,
         peerUrls: [
-          "http://localhost:19992", // unreachable
+          'http://localhost:19992', // unreachable
           `http://localhost:${server.port}`,
         ],
-        instanceId: "inst-001",
+        instanceId: 'inst-001',
       });
 
       adapter.start();
-      bus.emit("file:hashChanged", { filePath: "/src/x.ts", newHash: "abc" });
+      bus.emit('file:hashChanged', { filePath: '/src/x.ts', newHash: 'abc' });
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(successCount).toBe(1);
       adapter.stop();

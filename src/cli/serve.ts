@@ -4,26 +4,27 @@
  * Creates an Orchestrator and wraps it with the HTTP API server.
  * SIGTERM/SIGINT trigger graceful shutdown.
  */
-import { createOrchestrator } from "../orchestrator/factory.ts";
-import { VinyanAPIServer } from "../api/server.ts";
-import { SessionManager } from "../api/session-manager.ts";
-import { SessionStore } from "../db/session-store.ts";
-import { VinyanDB } from "../db/vinyan-db.ts";
-import { join } from "path";
+
+import { join } from 'path';
+import { VinyanAPIServer } from '../api/server.ts';
+import { SessionManager } from '../api/session-manager.ts';
+import { SessionStore } from '../db/session-store.ts';
+import { VinyanDB } from '../db/vinyan-db.ts';
+import { createOrchestrator } from '../orchestrator/factory.ts';
 
 export async function serve(workspace: string): Promise<void> {
   const orchestrator = createOrchestrator({ workspace });
 
   // Set up session store
-  const db = new VinyanDB(join(workspace, ".vinyan", "vinyan.db"));
+  const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
 
   const server = new VinyanAPIServer(
     {
       port: 3927,
-      bind: "127.0.0.1",
-      tokenPath: join(workspace, ".vinyan", "api-token"),
+      bind: '127.0.0.1',
+      tokenPath: join(workspace, '.vinyan', 'api-token'),
       authRequired: true,
       rateLimitEnabled: true,
     },
@@ -55,6 +56,6 @@ export async function serve(workspace: string): Promise<void> {
     process.exit(0);
   };
 
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }

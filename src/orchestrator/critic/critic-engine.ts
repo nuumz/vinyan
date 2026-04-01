@@ -10,9 +10,8 @@
  *
  * Activation: L2+ routing levels only, after structural oracles pass.
  */
-import type { Evidence } from "../../core/types.ts";
-import type { OracleVerdict } from "../../core/types.ts";
-import type { TaskInput, PerceptualHierarchy } from "../types.ts";
+import type { Evidence, OracleVerdict } from '../../core/types.ts';
+import type { PerceptualHierarchy, TaskInput } from '../types.ts';
 
 /** Worker proposal — the output the Critic reviews */
 export interface WorkerProposal {

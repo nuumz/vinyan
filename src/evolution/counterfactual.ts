@@ -10,8 +10,8 @@
  *
  * Source of truth: design/implementation-plan.md §PH3.6
  */
-import type { ExecutionTrace, EvolutionaryRule, RoutingLevel } from "../orchestrator/types.ts";
-import { wilsonLowerBound } from "../sleep-cycle/wilson.ts";
+import type { EvolutionaryRule, ExecutionTrace, RoutingLevel } from '../orchestrator/types.ts';
+import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ export interface CounterfactualResult {
 
 export interface CounterfactualSummary {
   taskTypeSignature: string;
-  direction: "up" | "down" | "none";
+  direction: 'up' | 'down' | 'none';
   avgDelta: number;
   sampleSize: number;
   confidence: number; // Wilson LB of proportion with positive delta
@@ -45,7 +45,7 @@ export function buildQualityLookup(
   const lookup = new Map<string, Map<number, { sum: number; count: number }>>();
 
   for (const t of traces) {
-    const sig = t.task_type_signature ?? "unknown";
+    const sig = t.task_type_signature ?? 'unknown';
     const quality = t.qualityScore?.composite;
     if (quality == null) continue;
 
@@ -88,7 +88,7 @@ export function analyzeCounterfactuals(
   const results: CounterfactualResult[] = [];
 
   for (const trace of traces) {
-    const sig = trace.task_type_signature ?? "unknown";
+    const sig = trace.task_type_signature ?? 'unknown';
     const actualQuality = trace.qualityScore?.composite;
     if (actualQuality == null) continue;
     if (trace.routingLevel >= 3) continue; // Already max level
@@ -137,34 +137,34 @@ export function summarizeByTaskType(
   for (const [taskSig, typeResults] of byType) {
     if (typeResults.length < minSampleSize) continue;
 
-    const positiveDeltas = typeResults.filter(r => r.delta > 0).length;
+    const positiveDeltas = typeResults.filter((r) => r.delta > 0).length;
     const avgDelta = typeResults.reduce((s, r) => s + r.delta, 0) / typeResults.length;
     const lb = wilsonLowerBound(positiveDeltas, typeResults.length);
 
-    let direction: "up" | "down" | "none" = "none";
+    let direction: 'up' | 'down' | 'none' = 'none';
     let suggestedRule: EvolutionaryRule | undefined;
 
     if (lb >= minWilsonLB && avgDelta > 0) {
-      direction = "up";
+      direction = 'up';
       // Generate adjust-threshold rule to route higher for this task type
-      const filePattern = taskSig.split("::").pop() ?? "*";
+      const filePattern = taskSig.split('::').pop() ?? '*';
       suggestedRule = {
         id: `cf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        source: "sleep-cycle",
-        condition: { file_pattern: filePattern },
-        action: "adjust-threshold",
+        source: 'sleep-cycle',
+        condition: { filePattern: filePattern },
+        action: 'adjust-threshold',
         parameters: {
           riskThreshold: 0.3, // Lower threshold → routes higher more easily
           reason: `Counterfactual analysis: routing UP improves quality by ${(avgDelta * 100).toFixed(0)}% for ${taskSig}`,
-          sourceAnalysis: "counterfactual",
+          sourceAnalysis: 'counterfactual',
         },
-        status: "probation",
-        created_at: Date.now(),
+        status: 'probation',
+        createdAt: Date.now(),
         effectiveness: 0,
         specificity: 1,
       };
     } else if (avgDelta < -0.1) {
-      direction = "down";
+      direction = 'down';
     }
 
     summaries.push({

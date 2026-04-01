@@ -1,3 +1,3 @@
-export { loadConfig } from "./loader.ts";
-export { VinyanConfigSchema } from "./schema.ts";
-export type { VinyanConfig, OracleConfig } from "./schema.ts";
+export { loadConfig } from './loader.ts';
+export type { OracleConfig, VinyanConfig } from './schema.ts';
+export { VinyanConfigSchema } from './schema.ts';

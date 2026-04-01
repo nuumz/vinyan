@@ -6,12 +6,12 @@
  *
  * Source of truth: spec/tdd.md §6, §16.2
  */
-import { existsSync } from "fs";
-import { join, dirname, basename } from "path";
-import type { HypothesisTuple } from "../core/types.ts";
-import { calculateRiskScore, routeByRisk, detectEnvironment, type RoutingThresholds } from "../gate/risk-router.ts";
-import type { RiskFactors, RoutingLevel, RoutingDecision, TaskInput } from "./types.ts";
-import type { RiskRouter } from "./core-loop.ts";
+import { existsSync } from 'fs';
+import { basename, dirname, join } from 'path';
+import type { HypothesisTuple } from '../core/types.ts';
+import { calculateRiskScore, detectEnvironment, type RoutingThresholds, routeByRisk } from '../gate/risk-router.ts';
+import type { RiskRouter } from './core-loop.ts';
+import type { RiskFactors, RoutingDecision, RoutingLevel, TaskInput } from './types.ts';
 
 type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: string }[] }>;
 
@@ -19,14 +19,13 @@ type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: st
 export function computeFileVolatility(filePath: string, workspace: string): number {
   try {
     // Fast-path: skip git spawn if workspace isn't a git repo
-    if (!existsSync(join(workspace, ".git"))) return 0;
-    const result = Bun.spawnSync(
-      ["git", "log", "--oneline", "--since=30 days ago", "--", filePath],
-      { cwd: workspace },
-    );
+    if (!existsSync(join(workspace, '.git'))) return 0;
+    const result = Bun.spawnSync(['git', 'log', '--oneline', '--since=30 days ago', '--', filePath], {
+      cwd: workspace,
+    });
     if (result.exitCode !== 0) return 0;
     const stdout = new TextDecoder().decode(result.stdout).trim();
-    const lines = stdout.split("\n").filter(l => l.length > 0);
+    const lines = stdout.split('\n').filter((l) => l.length > 0);
     return Math.min(1.0, lines.length / 30);
   } catch {
     return 0;
@@ -35,15 +34,15 @@ export function computeFileVolatility(filePath: string, workspace: string): numb
 
 /** Check if test files exist for the target file. Returns 0.8 if any found, 0.0 if none. */
 export function computeTestCoverage(filePath: string, workspace: string): number {
-  const name = basename(filePath).replace(/\.(ts|tsx|js|jsx)$/, "");
+  const name = basename(filePath).replace(/\.(ts|tsx|js|jsx)$/, '');
   const dir = dirname(filePath);
   const candidates = [
     join(workspace, dir, `${name}.test.ts`),
     join(workspace, dir, `${name}.spec.ts`),
-    join(workspace, "tests", dir.replace(/^src\/?/, ""), `${name}.test.ts`),
-    join(workspace, "tests", `${name}.test.ts`),
+    join(workspace, 'tests', dir.replace(/^src\/?/, ''), `${name}.test.ts`),
+    join(workspace, 'tests', `${name}.test.ts`),
   ];
-  return candidates.some(f => existsSync(f)) ? 0.8 : 0.0;
+  return candidates.some((f) => existsSync(f)) ? 0.8 : 0.0;
 }
 
 export class RiskRouterImpl implements RiskRouter {
@@ -65,7 +64,7 @@ export class RiskRouterImpl implements RiskRouter {
       try {
         const verdict = await this.depVerify({
           target: input.targetFiles[0]!,
-          pattern: "dependency-check",
+          pattern: 'dependency-check',
           workspace: this.workspace,
         });
         blastRadius = verdict.evidence.length;

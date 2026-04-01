@@ -1,105 +1,99 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, symlinkSync, readFileSync, rmSync, mkdirSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import { commitArtifacts, validateArtifactPath } from "../../../src/orchestrator/worker/artifact-commit.ts";
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { commitArtifacts, validateArtifactPath } from '../../../src/orchestrator/worker/artifact-commit.ts';
 
 let tempDir: string;
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), "vinyan-artifact-"));
-  mkdirSync(join(tempDir, "src"), { recursive: true });
-  writeFileSync(join(tempDir, "src", "existing.ts"), "original content");
+  tempDir = mkdtempSync(join(tmpdir(), 'vinyan-artifact-'));
+  mkdirSync(join(tempDir, 'src'), { recursive: true });
+  writeFileSync(join(tempDir, 'src', 'existing.ts'), 'original content');
 });
 
 afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe("validateArtifactPath", () => {
-  test("accepts relative path within workspace", () => {
-    expect(validateArtifactPath(tempDir, "src/foo.ts").valid).toBe(true);
+describe('validateArtifactPath', () => {
+  test('accepts relative path within workspace', () => {
+    expect(validateArtifactPath(tempDir, 'src/foo.ts').valid).toBe(true);
   });
 
-  test("rejects absolute path", () => {
-    const result = validateArtifactPath(tempDir, "/etc/passwd");
+  test('rejects absolute path', () => {
+    const result = validateArtifactPath(tempDir, '/etc/passwd');
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain("Absolute path");
+    expect(result.reason).toContain('Absolute path');
   });
 
   test("rejects path with '..' traversal", () => {
-    const result = validateArtifactPath(tempDir, "src/../../etc/passwd");
+    const result = validateArtifactPath(tempDir, 'src/../../etc/passwd');
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain("..");
+    expect(result.reason).toContain('..');
   });
 
-  test("rejects path that escapes workspace after resolution", () => {
+  test('rejects path that escapes workspace after resolution', () => {
     // Path without '..' but still escapes (edge case)
-    const result = validateArtifactPath(tempDir, "src/../../outside");
+    const result = validateArtifactPath(tempDir, 'src/../../outside');
     expect(result.valid).toBe(false);
   });
 
-  test("rejects symlink target", () => {
-    const linkPath = join(tempDir, "src", "link.ts");
-    symlinkSync(join(tempDir, "src", "existing.ts"), linkPath);
+  test('rejects symlink target', () => {
+    const linkPath = join(tempDir, 'src', 'link.ts');
+    symlinkSync(join(tempDir, 'src', 'existing.ts'), linkPath);
 
-    const result = validateArtifactPath(tempDir, "src/link.ts");
+    const result = validateArtifactPath(tempDir, 'src/link.ts');
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain("symlink");
+    expect(result.reason).toContain('symlink');
   });
 
   test("accepts new file (doesn't exist yet)", () => {
-    expect(validateArtifactPath(tempDir, "src/new-file.ts").valid).toBe(true);
+    expect(validateArtifactPath(tempDir, 'src/new-file.ts').valid).toBe(true);
   });
 
-  test("accepts nested new path", () => {
-    expect(validateArtifactPath(tempDir, "src/deep/nested/file.ts").valid).toBe(true);
+  test('accepts nested new path', () => {
+    expect(validateArtifactPath(tempDir, 'src/deep/nested/file.ts').valid).toBe(true);
   });
 });
 
-describe("commitArtifacts", () => {
-  test("applies valid artifacts to workspace", () => {
-    const result = commitArtifacts(tempDir, [
-      { path: "src/new.ts", content: "export const x = 1;\n" },
-    ]);
+describe('commitArtifacts', () => {
+  test('applies valid artifacts to workspace', () => {
+    const result = commitArtifacts(tempDir, [{ path: 'src/new.ts', content: 'export const x = 1;\n' }]);
 
-    expect(result.applied).toEqual(["src/new.ts"]);
+    expect(result.applied).toEqual(['src/new.ts']);
     expect(result.rejected).toHaveLength(0);
-    expect(readFileSync(join(tempDir, "src/new.ts"), "utf-8")).toBe("export const x = 1;\n");
+    expect(readFileSync(join(tempDir, 'src/new.ts'), 'utf-8')).toBe('export const x = 1;\n');
   });
 
-  test("creates nested directories as needed", () => {
-    const result = commitArtifacts(tempDir, [
-      { path: "src/deep/nested/file.ts", content: "content" },
-    ]);
+  test('creates nested directories as needed', () => {
+    const result = commitArtifacts(tempDir, [{ path: 'src/deep/nested/file.ts', content: 'content' }]);
 
-    expect(result.applied).toEqual(["src/deep/nested/file.ts"]);
-    expect(readFileSync(join(tempDir, "src/deep/nested/file.ts"), "utf-8")).toBe("content");
+    expect(result.applied).toEqual(['src/deep/nested/file.ts']);
+    expect(readFileSync(join(tempDir, 'src/deep/nested/file.ts'), 'utf-8')).toBe('content');
   });
 
-  test("rejects unsafe paths and applies safe ones", () => {
+  test('rejects unsafe paths and applies safe ones', () => {
     const result = commitArtifacts(tempDir, [
-      { path: "src/safe.ts", content: "safe" },
-      { path: "/etc/passwd", content: "hacked" },
-      { path: "src/../../../escape.ts", content: "evil" },
+      { path: 'src/safe.ts', content: 'safe' },
+      { path: '/etc/passwd', content: 'hacked' },
+      { path: 'src/../../../escape.ts', content: 'evil' },
     ]);
 
-    expect(result.applied).toEqual(["src/safe.ts"]);
+    expect(result.applied).toEqual(['src/safe.ts']);
     expect(result.rejected).toHaveLength(2);
-    expect(result.rejected[0]!.reason).toContain("Absolute");
-    expect(result.rejected[1]!.reason).toContain("..");
+    expect(result.rejected[0]!.reason).toContain('Absolute');
+    expect(result.rejected[1]!.reason).toContain('..');
   });
 
-  test("overwrites existing file", () => {
-    const result = commitArtifacts(tempDir, [
-      { path: "src/existing.ts", content: "new content" },
-    ]);
+  test('overwrites existing file', () => {
+    const result = commitArtifacts(tempDir, [{ path: 'src/existing.ts', content: 'new content' }]);
 
-    expect(result.applied).toEqual(["src/existing.ts"]);
-    expect(readFileSync(join(tempDir, "src/existing.ts"), "utf-8")).toBe("new content");
+    expect(result.applied).toEqual(['src/existing.ts']);
+    expect(readFileSync(join(tempDir, 'src/existing.ts'), 'utf-8')).toBe('new content');
   });
 
-  test("empty artifacts returns empty result", () => {
+  test('empty artifacts returns empty result', () => {
     const result = commitArtifacts(tempDir, []);
     expect(result.applied).toHaveLength(0);
     expect(result.rejected).toHaveLength(0);

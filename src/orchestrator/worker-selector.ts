@@ -9,16 +9,12 @@
  *
  * Source of truth: design/implementation-plan.md §Phase 4.4
  */
-import type {
-  TaskFingerprint,
-  RoutingLevel,
-  WorkerSelectionResult,
-  WorkerProfile,
-} from "./types.ts";
-import type { WorkerStore } from "../db/worker-store.ts";
-import { CapabilityModel } from "./capability-model.ts";
-import { checkDataGate, type DataGateStats, type DataGateThresholds } from "./data-gate.ts";
-import type { VinyanBus } from "../core/bus.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import type { CapabilityModel } from './capability-model.ts';
+import { checkDataGate, type DataGateStats, type DataGateThresholds } from './data-gate.ts';
+import type { RoutingLevel, TaskFingerprint, WorkerProfile, WorkerSelectionResult } from './types.ts';
 
 /** Default cycle duration for staleness penalty (10 minutes). */
 const DEFAULT_CYCLE_DURATION_MS = 600_000;
@@ -27,11 +23,11 @@ export interface WorkerSelectorConfig {
   workerStore: WorkerStore;
   capabilityModel: CapabilityModel;
   bus?: VinyanBus;
-  epsilonWorker: number;             // default: 0.10
-  diversityCapPct: number;           // default: 0.70 (matches I11 WORKER_DIVERSITY_CAP)
-  gateStats: () => DataGateStats;    // lazy — recomputed each call
+  epsilonWorker: number; // default: 0.10
+  diversityCapPct: number; // default: 0.70 (matches I11 WORKER_DIVERSITY_CAP)
+  gateStats: () => DataGateStats; // lazy — recomputed each call
   gateThresholds: DataGateThresholds;
-  cycleDurationMs?: number;          // default: 600_000 (10 min)
+  cycleDurationMs?: number; // default: 600_000 (10 min)
 }
 
 export class WorkerSelector {
@@ -67,13 +63,12 @@ export class WorkerSelector {
     taskId?: string,
   ): WorkerSelectionResult {
     // Check data gate — fallback to tier if insufficient data
-    const gate = checkDataGate("fleet_routing", this.getStats(), this.thresholds);
+    const gate = checkDataGate('fleet_routing', this.getStats(), this.thresholds);
     if (!gate.satisfied) {
       return this.tierFallback(routingLevel);
     }
 
-    const candidates = this.store.findActive()
-      .filter(w => !excludeWorkerIds?.includes(w.id));
+    const candidates = this.store.findActive().filter((w) => !excludeWorkerIds?.includes(w.id));
 
     if (candidates.length === 0) {
       return this.tierFallback(routingLevel);
@@ -86,17 +81,18 @@ export class WorkerSelector {
 
     // Check fleet-level uncertainty (A2: "I don't know")
     const { maxCapability } = this.capModel.getMaxCapabilityForFingerprint(
-      candidates.map(c => c.id), fingerprint,
+      candidates.map((c) => c.id),
+      fingerprint,
     );
     if (maxCapability < 0.3 && maxCapability > 0) {
-      this.bus?.emit("task:uncertain", {
-        taskId: taskId ?? "",
-        reason: "All workers below capability threshold",
+      this.bus?.emit('task:uncertain', {
+        taskId: taskId ?? '',
+        reason: 'All workers below capability threshold',
         maxCapability,
       });
       return {
-        selectedWorkerId: "",
-        reason: "uncertain",
+        selectedWorkerId: '',
+        reason: 'uncertain',
         score: 0,
         alternatives: [],
         explorationTriggered: false,
@@ -107,13 +103,15 @@ export class WorkerSelector {
     }
 
     // Score all candidates
-    const scored = candidates.map(w => ({
-      worker: w,
-      score: this.scoreWorker(w, fingerprint, budget),
-    })).sort((a, b) => b.score - a.score);
+    const scored = candidates
+      .map((w) => ({
+        worker: w,
+        score: this.scoreWorker(w, fingerprint, budget),
+      }))
+      .sort((a, b) => b.score - a.score);
 
     const selected = scored[0]!;
-    const alternatives = scored.slice(1).map(s => ({
+    const alternatives = scored.slice(1).map((s) => ({
       workerId: s.worker.id,
       score: s.score,
     }));
@@ -122,17 +120,17 @@ export class WorkerSelector {
     const selectionResult = this.enforceDiversityFloor(scored, fingerprint, budget, taskId);
     if (selectionResult) return selectionResult;
 
-    this.bus?.emit("worker:selected", {
-      taskId: taskId ?? "",
+    this.bus?.emit('worker:selected', {
+      taskId: taskId ?? '',
       workerId: selected.worker.id,
-      reason: "capability-score",
+      reason: 'capability-score',
       score: selected.score,
       alternatives: alternatives.length,
     });
 
     return {
       selectedWorkerId: selected.worker.id,
-      reason: "capability-score",
+      reason: 'capability-score',
       score: selected.score,
       alternatives,
       explorationTriggered: false,
@@ -164,9 +162,7 @@ export class WorkerSelector {
     const quality = stats.avgQualityScore || 0.5;
 
     // Cost efficiency: 1 - (avgTokens / budget), clamped
-    const costRatio = budget.maxTokens > 0
-      ? stats.avgTokenCost / budget.maxTokens
-      : 0;
+    const costRatio = budget.maxTokens > 0 ? stats.avgTokenCost / budget.maxTokens : 0;
     const costEfficiency = Math.max(0.1, Math.min(1.0, 1 - costRatio));
 
     // Layer C: Staleness penalty — 0.9× per cycle without new traces
@@ -174,12 +170,12 @@ export class WorkerSelector {
     if (stats.lastActiveAt > 0) {
       const cyclesSinceActive = Math.floor((Date.now() - stats.lastActiveAt) / this.cycleDurationMs);
       if (cyclesSinceActive > 0) {
-        stalenessPenalty = Math.pow(0.9, cyclesSinceActive);
+        stalenessPenalty = 0.9 ** cyclesSinceActive;
       }
     }
 
     // Weighted product with exponents × staleness
-    return Math.pow(capability, 2) * Math.pow(quality, 1) * Math.pow(costEfficiency, 0.5) * stalenessPenalty;
+    return capability ** 2 * quality ** 1 * costEfficiency ** 0.5 * stalenessPenalty;
   }
 
   private exploreRandomWorker(
@@ -189,10 +185,12 @@ export class WorkerSelector {
     taskId?: string,
   ): WorkerSelectionResult {
     // Pick random candidate (excluding the one that would be selected by score)
-    const scored = candidates.map(w => ({
-      worker: w,
-      score: this.scoreWorker(w, fingerprint, budget),
-    })).sort((a, b) => b.score - a.score);
+    const scored = candidates
+      .map((w) => ({
+        worker: w,
+        score: this.scoreWorker(w, fingerprint, budget),
+      }))
+      .sort((a, b) => b.score - a.score);
 
     const defaultWorker = scored[0]!;
     const others = scored.slice(1);
@@ -201,7 +199,7 @@ export class WorkerSelector {
       // Only one candidate — no exploration possible
       return {
         selectedWorkerId: defaultWorker.worker.id,
-        reason: "capability-score",
+        reason: 'capability-score',
         score: defaultWorker.score,
         alternatives: [],
         explorationTriggered: false,
@@ -210,7 +208,7 @@ export class WorkerSelector {
     }
 
     // Layer A: Weight inversely by task count — underserved workers get more exploration
-    const weights = others.map(s => {
+    const weights = others.map((s) => {
       const wStats = this.store.getStats(s.worker.id);
       return 1 / (wStats.totalTasks + 1);
     });
@@ -219,21 +217,24 @@ export class WorkerSelector {
     let selectedIdx = 0;
     for (let i = 0; i < weights.length; i++) {
       roll -= weights[i]!;
-      if (roll <= 0) { selectedIdx = i; break; }
+      if (roll <= 0) {
+        selectedIdx = i;
+        break;
+      }
     }
     const selected = others[selectedIdx]!;
 
-    this.bus?.emit("worker:exploration", {
-      taskId: taskId ?? "",
+    this.bus?.emit('worker:exploration', {
+      taskId: taskId ?? '',
       selectedWorkerId: selected.worker.id,
       defaultWorkerId: defaultWorker.worker.id,
     });
 
     return {
       selectedWorkerId: selected.worker.id,
-      reason: "exploration",
+      reason: 'exploration',
       score: selected.score,
-      alternatives: scored.map(s => ({ workerId: s.worker.id, score: s.score })),
+      alternatives: scored.map((s) => ({ workerId: s.worker.id, score: s.score })),
       explorationTriggered: true,
       dataGateMet: true,
     };
@@ -268,26 +269,28 @@ export class WorkerSelector {
 
     // Top worker exceeds diversity cap — select next best
     const next = scored[1]!;
-    this.bus?.emit("fleet:diversity_enforced", {
+    this.bus?.emit('fleet:diversity_enforced', {
       workerId: topWorker.worker.id,
       boostAmount: next.score,
     });
-    this.bus?.emit("worker:selected", {
-      taskId: taskId ?? "",
+    this.bus?.emit('worker:selected', {
+      taskId: taskId ?? '',
       workerId: next.worker.id,
-      reason: "diversity-floor",
+      reason: 'diversity-floor',
       score: next.score,
       alternatives: scored.length - 1,
     });
 
     return {
       selectedWorkerId: next.worker.id,
-      reason: "capability-score",
+      reason: 'capability-score',
       score: next.score,
-      alternatives: scored.filter((_, i) => i !== 1).map(s => ({
-        workerId: s.worker.id,
-        score: s.score,
-      })),
+      alternatives: scored
+        .filter((_, i) => i !== 1)
+        .map((s) => ({
+          workerId: s.worker.id,
+          score: s.score,
+        })),
       explorationTriggered: false,
       dataGateMet: true,
     };
@@ -296,11 +299,11 @@ export class WorkerSelector {
   private tierFallback(routingLevel: RoutingLevel): WorkerSelectionResult {
     // No specific worker — let worker pool use tier-based selection
     const activeWorkers = this.store.findActive();
-    const workerId = activeWorkers.length > 0 ? activeWorkers[0]!.id : "";
+    const workerId = activeWorkers.length > 0 ? activeWorkers[0]!.id : '';
 
     return {
       selectedWorkerId: workerId,
-      reason: "tier-fallback",
+      reason: 'tier-fallback',
       score: 0,
       alternatives: [],
       explorationTriggered: false,

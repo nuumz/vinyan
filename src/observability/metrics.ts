@@ -6,15 +6,16 @@
  *
  * Source of truth: design/implementation-plan.md §P3.6
  */
-import type { TraceStore } from "../db/trace-store.ts";
-import type { RuleStore } from "../db/rule-store.ts";
-import type { SkillStore } from "../db/skill-store.ts";
-import type { PatternStore } from "../db/pattern-store.ts";
-import type { ShadowStore } from "../db/shadow-store.ts";
-import type { WorkerStore } from "../db/worker-store.ts";
-import { checkDataGate, type DataGateStats, type DataGateThresholds } from "../orchestrator/data-gate.ts";
-import { generatePhase3Report, type EvolutionMetrics } from "./phase3-report.ts";
-import type { VinyanBus } from "../core/bus.ts";
+
+import type { VinyanBus } from '../core/bus.ts';
+import type { PatternStore } from '../db/pattern-store.ts';
+import type { RuleStore } from '../db/rule-store.ts';
+import type { ShadowStore } from '../db/shadow-store.ts';
+import type { SkillStore } from '../db/skill-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
+import { type EvolutionMetrics, generatePhase3Report } from './phase3-report.ts';
 
 export interface MetricsDeps {
   traceStore: TraceStore;
@@ -89,15 +90,14 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
   const distinctTaskTypes = traceStore.countDistinctTaskTypes();
   const recentTraces = traceStore.findRecent(1000);
 
-  const successCount = recentTraces.filter(t => t.outcome === "success").length;
+  const successCount = recentTraces.filter((t) => t.outcome === 'success').length;
   const successRate = recentTraces.length > 0 ? successCount / recentTraces.length : 0;
 
   const qualityScores = recentTraces
-    .filter(t => t.qualityScore?.composite != null)
-    .map(t => t.qualityScore!.composite);
-  const avgQualityComposite = qualityScores.length > 0
-    ? qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length
-    : 0;
+    .filter((t) => t.qualityScore?.composite != null)
+    .map((t) => t.qualityScore!.composite);
+  const avgQualityComposite =
+    qualityScores.length > 0 ? qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length : 0;
 
   const routingDistribution: Record<number, number> = {};
   for (const t of recentTraces) {
@@ -106,13 +106,13 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
 
   // Rule stats
   const activeRules = ruleStore?.findActive() ?? [];
-  const probationRules = ruleStore?.findByStatus("probation") ?? [];
-  const retiredRules = ruleStore?.findByStatus("retired") ?? [];
+  const probationRules = ruleStore?.findByStatus('probation') ?? [];
+  const retiredRules = ruleStore?.findByStatus('retired') ?? [];
 
   // Skill stats
   const activeSkills = skillStore?.findActive() ?? [];
-  const probationSkills = skillStore?.findByStatus("probation") ?? [];
-  const demotedSkills = skillStore?.findByStatus("demoted") ?? [];
+  const probationSkills = skillStore?.findByStatus('probation') ?? [];
+  const demotedSkills = skillStore?.findByStatus('demoted') ?? [];
 
   // Pattern / sleep cycle stats
   const totalPatterns = patternStore?.count() ?? 0;
@@ -124,9 +124,9 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
   // Worker stats (Phase 4)
   const workerTotal = workerStore?.count() ?? 0;
   const workerActive = workerStore?.countActive() ?? 0;
-  const workerProbation = workerStore?.countByStatus("probation") ?? 0;
-  const workerDemoted = workerStore?.countByStatus("demoted") ?? 0;
-  const workerRetired = workerStore?.countByStatus("retired") ?? 0;
+  const workerProbation = workerStore?.countByStatus('probation') ?? 0;
+  const workerDemoted = workerStore?.countByStatus('demoted') ?? 0;
+  const workerRetired = workerStore?.countByStatus('retired') ?? 0;
   const workerTraceDiversity = workerStore?.countDistinctWorkerIds() ?? 0;
 
   // Data gates
@@ -149,13 +149,13 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
       routingDistribution,
     },
     rules: {
-      total: (ruleStore?.count() ?? 0),
+      total: ruleStore?.count() ?? 0,
       active: activeRules.length,
       probation: probationRules.length,
       retired: retiredRules.length,
     },
     skills: {
-      total: (skillStore?.count() ?? 0),
+      total: skillStore?.count() ?? 0,
       active: activeSkills.length,
       probation: probationSkills.length,
       demoted: demotedSkills.length,
@@ -176,10 +176,10 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
       traceDiversity: workerTraceDiversity,
     },
     dataGates: {
-      sleepCycle: checkDataGate("sleep_cycle", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
-      skillFormation: checkDataGate("skill_formation", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
-      evolutionEngine: checkDataGate("evolution_engine", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
-      fleetRouting: checkDataGate("fleet_routing", gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
+      sleepCycle: checkDataGate('sleep_cycle', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
+      skillFormation: checkDataGate('skill_formation', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
+      evolutionEngine: checkDataGate('evolution_engine', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
+      fleetRouting: checkDataGate('fleet_routing', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
     },
     evolution: generatePhase3Report({ traceStore, ruleStore, skillStore, patternStore }),
   };
@@ -197,22 +197,22 @@ export class MetricsCollector {
   /** Attach to a bus and start counting events. Returns detach function. */
   attach(bus: VinyanBus): () => void {
     const unsubs = [
-      bus.on("guardrail:injection_detected", () => this.inc("guardrail.injection")),
-      bus.on("guardrail:bypass_detected", () => this.inc("guardrail.bypass")),
-      bus.on("circuit:open", () => this.inc("circuit.open")),
-      bus.on("selfmodel:calibration_error", () => this.inc("selfmodel.calibration_error")),
-      bus.on("oracle:contradiction", () => this.inc("oracle.contradiction")),
-      bus.on("decomposer:fallback", () => this.inc("decomposer.fallback")),
+      bus.on('guardrail:injection_detected', () => this.inc('guardrail.injection')),
+      bus.on('guardrail:bypass_detected', () => this.inc('guardrail.bypass')),
+      bus.on('circuit:open', () => this.inc('circuit.open')),
+      bus.on('selfmodel:calibration_error', () => this.inc('selfmodel.calibration_error')),
+      bus.on('oracle:contradiction', () => this.inc('oracle.contradiction')),
+      bus.on('decomposer:fallback', () => this.inc('decomposer.fallback')),
       // Phase 5: Observability, API, and GAP-H events (G3)
-      bus.on("observability:alert", () => this.inc("observability.alert")),
-      bus.on("memory:eviction_warning", () => this.inc("memory.eviction")),
-      bus.on("context:verdict_omitted", () => this.inc("context.verdict_omitted")),
-      bus.on("selfmodel:systematic_miscalibration", () => this.inc("selfmodel.miscalibration")),
-      bus.on("api:request", () => this.inc("api.request")),
-      bus.on("session:created", () => this.inc("session.created")),
-      bus.on("oracle:verdict", () => this.inc("oracle.verdict")),
+      bus.on('observability:alert', () => this.inc('observability.alert')),
+      bus.on('memory:eviction_warning', () => this.inc('memory.eviction')),
+      bus.on('context:verdict_omitted', () => this.inc('context.verdict_omitted')),
+      bus.on('selfmodel:systematic_miscalibration', () => this.inc('selfmodel.miscalibration')),
+      bus.on('api:request', () => this.inc('api.request')),
+      bus.on('session:created', () => this.inc('session.created')),
+      bus.on('oracle:verdict', () => this.inc('oracle.verdict')),
     ];
-    return () => unsubs.forEach(fn => fn());
+    return () => unsubs.forEach((fn) => fn());
   }
 
   inc(key: string): void {

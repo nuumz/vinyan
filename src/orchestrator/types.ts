@@ -5,7 +5,7 @@
  * These types define the Orchestrator's type system. Phase 0 code does not import these;
  * they exist to enable Phase 1 development without modifying Phase 0 interfaces.
  */
-import type { OracleVerdict, QualityScore, Evidence } from "../core/types.ts";
+import type { Evidence, OracleVerdict, QualityScore } from '../core/types.ts';
 
 // ---------------------------------------------------------------------------
 // Routing
@@ -29,11 +29,11 @@ export interface RoutingDecision {
   level: RoutingLevel;
   model: string | null; // null for L0 (cached/skip)
   budgetTokens: number;
-  latencyBudget_ms: number;
-  mandatoryOracles?: string[];       // Phase 2.6: require-oracle rules add entries here
-  riskThresholdOverride?: number;    // Phase 2.6: adjust-threshold rules set this
-  workerId?: string;                 // Phase 4.4: selected worker profile ID
-  riskScore?: number;                // WP-4: computed risk score (0.0-1.0)
+  latencyBudgetMs: number;
+  mandatoryOracles?: string[]; // Phase 2.6: require-oracle rules add entries here
+  riskThresholdOverride?: number; // Phase 2.6: adjust-threshold rules set this
+  workerId?: string; // Phase 4.4: selected worker profile ID
+  riskScore?: number; // WP-4: computed risk score (0.0-1.0)
 }
 
 /** Input factors for risk scoring (→ TDD §6) */
@@ -44,7 +44,7 @@ export interface RiskFactors {
   fileVolatility: number; // git commits in last 30 days
   irreversibility: number; // 0.0–1.0 (see §6 Irreversibility Scoring)
   hasSecurityImplication: boolean;
-  environmentType: "development" | "staging" | "production";
+  environmentType: 'development' | 'staging' | 'production';
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ export interface RiskFactors {
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
   id: string;
-  source: "cli" | "api" | "mcp" | "a2a";
+  source: 'cli' | 'api' | 'mcp' | 'a2a';
   goal: string; // Natural language task description
   targetFiles?: string[]; // Optional explicit scope
   constraints?: string[]; // User-specified constraints
@@ -69,7 +69,7 @@ export interface TaskInput {
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;
-  status: "completed" | "failed" | "escalated" | "uncertain";
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain';
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -78,7 +78,7 @@ export interface TaskResult {
   trace: ExecutionTrace;
   qualityScore?: QualityScore;
   escalationReason?: string; // If status === 'escalated'
-  notes?: string[];          // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
+  notes?: string[]; // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
   contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
 }
 
@@ -116,7 +116,7 @@ export interface PerceptualHierarchy {
     os: string;
     availableTools: string[];
   };
-  frameworkMarkers?: string[];  // Phase 4: detected frameworks (e.g., 'react', 'express')
+  frameworkMarkers?: string[]; // Phase 4: detected frameworks (e.g., 'react', 'express')
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */
@@ -152,14 +152,14 @@ export interface WorkingMemoryState {
 export interface SelfModelPrediction {
   taskId: string;
   timestamp: number;
-  expectedTestResults: "pass" | "fail" | "partial";
+  expectedTestResults: 'pass' | 'fail' | 'partial';
   expectedBlastRadius: number;
   expectedDuration: number;
   expectedQualityScore: number;
   uncertainAreas: string[];
   confidence: number; // 0.0–1.0
   metaConfidence: number; // forced < 0.3 when < 10 observations
-  basis: "static-heuristic" | "trace-calibrated" | "hybrid";
+  basis: 'static-heuristic' | 'trace-calibrated' | 'hybrid';
   calibrationDataPoints: number;
   /** S1: Cold-start safeguard — force minimum routing level for first N tasks */
   forceMinLevel?: number;
@@ -172,7 +172,7 @@ export interface PredictionError {
   taskId: string;
   predicted: SelfModelPrediction;
   actual: {
-    testResults: "pass" | "fail" | "partial";
+    testResults: 'pass' | 'fail' | 'partial';
     blastRadius: number;
     duration: number;
     qualityScore: number;
@@ -192,10 +192,10 @@ export interface PredictionError {
 
 /** L2 container workspace configuration — two-layer mount strategy */
 export interface ContainerWorkspace {
-  workspaceMount: string;      // host path, mounted :ro
-  overlayDir: string;          // ephemeral writable layer (host tmpdir)
-  ipcDir: string;              // IPC channel dir (host tmpdir)
-  containerId?: string;        // docker container ID for kill
+  workspaceMount: string; // host path, mounted :ro
+  overlayDir: string; // ephemeral writable layer (host tmpdir)
+  ipcDir: string; // IPC channel dir (host tmpdir)
+  containerId?: string; // docker container ID for kill
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ export interface ContainerWorkspace {
 export interface ShadowJob {
   id: string;
   taskId: string;
-  status: "pending" | "running" | "done" | "failed";
+  status: 'pending' | 'running' | 'done' | 'failed';
   enqueuedAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -230,9 +230,9 @@ export interface ShadowValidationResult {
     qualityScore: QualityScore;
     betterThanOnline: boolean;
   }>;
-  duration_ms: number;
+  durationMs: number;
   timestamp: number;
-  alternativeWorkerId?: string;     // PH4.2: probation worker that produced this shadow result
+  alternativeWorkerId?: string; // PH4.2: probation worker that produced this shadow result
 }
 
 // ---------------------------------------------------------------------------
@@ -241,13 +241,13 @@ export interface ShadowValidationResult {
 
 /** Data gate metric types for progressive feature activation */
 export type DataGateMetric =
-  | "trace_count"
-  | "distinct_task_types"
-  | "patterns_extracted"
-  | "active_skills"
-  | "sleep_cycles_run"
-  | "active_workers"              // Phase 4: registered active worker profiles
-  | "worker_trace_diversity";     // Phase 4: traces with >1 distinct model_used
+  | 'trace_count'
+  | 'distinct_task_types'
+  | 'patterns_extracted'
+  | 'active_skills'
+  | 'sleep_cycles_run'
+  | 'active_workers' // Phase 4: registered active worker profiles
+  | 'worker_trace_diversity'; // Phase 4: traces with >1 distinct model_used
 
 /** Data sufficiency gate — checked before Phase 2 sub-feature activation */
 export interface DataGate {
@@ -267,34 +267,34 @@ export interface DataGate {
 /** Pattern extracted by Sleep Cycle analysis */
 export interface ExtractedPattern {
   id: string;
-  type: "anti-pattern" | "success-pattern" | "worker-performance";
+  type: 'anti-pattern' | 'success-pattern' | 'worker-performance';
   description: string;
-  frequency: number;                     // occurrence count in traces
-  confidence: number;                    // Wilson score lower bound
-  taskTypeSignature: string;             // task pattern for matching
-  approach?: string;                     // for success patterns: the winning approach
-  comparedApproach?: string;             // for success patterns: the losing approach
-  qualityDelta?: number;                 // composite improvement
-  sourceTraceIds: string[];              // provenance
+  frequency: number; // occurrence count in traces
+  confidence: number; // Wilson score lower bound
+  taskTypeSignature: string; // task pattern for matching
+  approach?: string; // for success patterns: the winning approach
+  comparedApproach?: string; // for success patterns: the losing approach
+  qualityDelta?: number; // composite improvement
+  sourceTraceIds: string[]; // provenance
   createdAt: number;
-  expiresAt?: number;                    // decay TTL
-  decayWeight: number;                   // current weight after exponential decay
-  routingLevel?: number;                 // PH3.3: level at which failure occurred (for proportional escalation)
-  oracleName?: string;                   // PH3.3: oracle that flagged the issue (multi-condition rules)
-  riskAbove?: number;                    // PH3.3: risk threshold context
-  modelPattern?: string;                 // PH3.3: model that exhibited the pattern
-  derivedFrom?: string;                  // PH3.5: parent pattern ID (lineage tracking)
-  workerId?: string;                     // PH4: worker that exhibited the pattern
-  comparedWorkerId?: string;             // PH4: worker compared against (for worker-performance)
+  expiresAt?: number; // decay TTL
+  decayWeight: number; // current weight after exponential decay
+  routingLevel?: number; // PH3.3: level at which failure occurred (for proportional escalation)
+  oracleName?: string; // PH3.3: oracle that flagged the issue (multi-condition rules)
+  riskAbove?: number; // PH3.3: risk threshold context
+  modelPattern?: string; // PH3.3: model that exhibited the pattern
+  derivedFrom?: string; // PH3.5: parent pattern ID (lineage tracking)
+  workerId?: string; // PH4: worker that exhibited the pattern
+  comparedWorkerId?: string; // PH4: worker compared against (for worker-performance)
 }
 
 /** Sleep Cycle configuration */
 export interface SleepCycleConfig {
-  interval_sessions: number;             // default: 20
-  min_traces_for_analysis: number;       // minimum traces before analysis runs
-  pattern_min_frequency: number;         // minimum occurrences to extract pattern
-  pattern_min_confidence: number;        // statistical threshold (Wilson LB)
-  decay_half_life_sessions: number;      // pattern relevance decay
+  interval_sessions: number; // default: 20
+  min_traces_for_analysis: number; // minimum traces before analysis runs
+  pattern_min_frequency: number; // minimum occurrences to extract pattern
+  pattern_min_confidence: number; // statistical threshold (Wilson LB)
+  decay_half_life_sessions: number; // pattern relevance decay
 }
 
 // ---------------------------------------------------------------------------
@@ -303,18 +303,18 @@ export interface SleepCycleConfig {
 
 /** Cached solution pattern — L0 Reflex shortcut */
 export interface CachedSkill {
-  taskSignature: string;                 // pattern hash for matching
-  approach: string;                      // proven strategy
-  successRate: number;                   // must be >= min_effectiveness (default: 0.7)
-  status: "probation" | "active" | "demoted";
-  probationRemaining: number;            // sessions until promotion (default: 10)
+  taskSignature: string; // pattern hash for matching
+  approach: string; // proven strategy
+  successRate: number; // must be >= min_effectiveness (default: 0.7)
+  status: 'probation' | 'active' | 'demoted';
+  probationRemaining: number; // sessions until promotion (default: 10)
   usageCount: number;
   riskAtCreation: number;
   depConeHashes: Record<string, string>; // file → hash at skill creation time
-  lastVerifiedAt: number;                // timestamp of last full re-verification
-  verificationProfile: "hash-only" | "structural" | "full";
-  confidence?: number;                   // PH3.4: fuzzy match confidence (omitted = exact match)
-  origin?: "local" | "a2a" | "mcp";     // PH5: instance provenance
+  lastVerifiedAt: number; // timestamp of last full re-verification
+  verificationProfile: 'hash-only' | 'structural' | 'full';
+  confidence?: number; // PH3.4: fuzzy match confidence (omitted = exact match)
+  origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
 }
 
 // ---------------------------------------------------------------------------
@@ -324,21 +324,21 @@ export interface CachedSkill {
 /** Evolution Engine output — pattern-mined rules */
 export interface EvolutionaryRule {
   id: string;
-  source: "sleep-cycle" | "manual";
+  source: 'sleep-cycle' | 'manual';
   condition: {
-    file_pattern?: string;
-    oracle_name?: string;
-    risk_above?: number;
-    model_pattern?: string;
+    filePattern?: string;
+    oracleName?: string;
+    riskAbove?: number;
+    modelPattern?: string;
   };
-  action: "escalate" | "require-oracle" | "prefer-model" | "adjust-threshold" | "assign-worker";
+  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker';
   parameters: Record<string, unknown>;
-  status: "probation" | "active" | "retired";
-  created_at: number;
+  status: 'probation' | 'active' | 'retired';
+  createdAt: number;
   effectiveness: number;
-  specificity: number;                   // count of non-null condition fields
-  superseded_by?: string;                // rule ID that replaced this via conflict resolution
-  origin?: "local" | "a2a" | "mcp";     // PH5: instance provenance
+  specificity: number; // count of non-null condition fields
+  superseded_by?: string; // rule ID that replaced this via conflict resolution
+  origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
 }
 
 // ---------------------------------------------------------------------------
@@ -349,35 +349,35 @@ export interface EvolutionaryRule {
 export interface ExecutionTrace {
   id: string;
   taskId: string;
-  session_id?: string;                     // Session grouping for multi-step tasks
-  worker_id?: string;                      // Which worker executed this step
+  session_id?: string; // Session grouping for multi-step tasks
+  worker_id?: string; // Which worker executed this step
   timestamp: number;
   routingLevel: RoutingLevel;
-  action?: string;                         // Specific action taken (e.g., 'file_write', 'refactor')
-  approach: string;                        // Brief description of the approach
-  approach_description?: string;           // Detailed explanation for Evolution Engine
-  risk_score?: number;                     // Risk score at time of execution
-  task_type_signature?: string;            // Sleep Cycle grouping key (goal pattern + file pattern)
+  action?: string; // Specific action taken (e.g., 'file_write', 'refactor')
+  approach: string; // Brief description of the approach
+  approach_description?: string; // Detailed explanation for Evolution Engine
+  risk_score?: number; // Risk score at time of execution
+  task_type_signature?: string; // Sleep Cycle grouping key (goal pattern + file pattern)
   oracleVerdicts: Record<string, boolean>; // oracle_name → pass/fail
   qualityScore?: QualityScore;
   prediction?: SelfModelPrediction;
-  predictionError?: PredictionError;       // Full prediction error, not just a number
-  success_pattern_tag?: string;            // Tag for Evolution Engine pattern extraction
+  predictionError?: PredictionError; // Full prediction error, not just a number
+  success_pattern_tag?: string; // Tag for Evolution Engine pattern extraction
   model_used: string;
   tokens_consumed: number;
-  duration_ms: number;
-  outcome: "success" | "failure" | "timeout" | "escalated";
+  durationMs: number;
+  outcome: 'success' | 'failure' | 'timeout' | 'escalated';
   failure_reason?: string;
   affected_files: string[];
   // Phase 2.2 — shadow validation (async, post-commit)
   shadow_validation?: ShadowValidationResult;
-  validation_depth?: "structural" | "structural_and_tests" | "full_shadow";
-  exploration?: boolean;                   // PH3.6: true if epsilon-greedy exploration was used
-  oracleFailurePattern?: string;           // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
-  framework_markers?: string[];            // PH4: detected framework markers (e.g., 'react', 'express')
+  validation_depth?: 'structural' | 'structural_and_tests' | 'full_shadow';
+  exploration?: boolean; // PH3.6: true if epsilon-greedy exploration was used
+  oracleFailurePattern?: string; // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
+  framework_markers?: string[]; // PH4: detected framework markers (e.g., 'react', 'express')
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
-  correlationId?: string;                  // WP-5: cross-instance request tracing
-  sourceInstanceId?: string;               // WP-5: originating instance ID
+  correlationId?: string; // WP-5: cross-instance request tracing
+  sourceInstanceId?: string; // WP-5: originating instance ID
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +437,7 @@ export interface WorkerOutput {
   proposedToolCalls: ToolCall[];
   uncertainties: string[];
   tokensConsumed: number;
-  duration_ms: number;
+  durationMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,11 +455,11 @@ export interface ToolCall {
 export interface ToolResult {
   callId: string;
   tool: string;
-  status: "success" | "error" | "denied";
+  status: 'success' | 'error' | 'denied';
   output?: unknown;
   error?: string;
   evidence?: Evidence; // For A4 compliance — file tools produce content hashes
-  duration_ms: number;
+  durationMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,10 +469,10 @@ export interface ToolResult {
 /** LLM provider abstraction */
 export interface LLMProvider {
   id: string;
-  tier: "fast" | "balanced" | "powerful";
-  capabilities?: string[];                 // e.g., ['tool_use', 'vision', 'long_context']
-  maxContextTokens?: number;               // Provider's context window size
-  supportsToolUse?: boolean;               // Whether provider supports tool_use stop reason
+  tier: 'fast' | 'balanced' | 'powerful';
+  capabilities?: string[]; // e.g., ['tool_use', 'vision', 'long_context']
+  maxContextTokens?: number; // Provider's context window size
+  supportsToolUse?: boolean; // Whether provider supports tool_use stop reason
   generate(request: LLMRequest): Promise<LLMResponse>;
 }
 
@@ -495,7 +495,7 @@ export interface LLMResponse {
   toolCalls: ToolCall[];
   tokensUsed: { input: number; output: number };
   model: string;
-  stopReason: "end_turn" | "tool_use" | "max_tokens";
+  stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
 }
 
 // ---------------------------------------------------------------------------
@@ -503,27 +503,27 @@ export interface LLMResponse {
 // ---------------------------------------------------------------------------
 
 /** Worker profile status lifecycle: probation → active → demoted → retired */
-export type WorkerProfileStatus = "probation" | "active" | "demoted" | "retired";
+export type WorkerProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
 
 /** First-class worker identity — pairs config with empirical performance data */
 export interface WorkerProfile {
-  id: string;                              // "worker-{modelBase}-{tempBucket}-{hash(config)}"
+  id: string; // "worker-{modelBase}-{tempBucket}-{hash(config)}"
   config: WorkerConfig;
   status: WorkerProfileStatus;
   createdAt: number;
   promotedAt?: number;
   demotedAt?: number;
   demotionReason?: string;
-  demotionCount: number;                   // 3 demotions = permanent retirement
+  demotionCount: number; // 3 demotions = permanent retirement
 }
 
 /** Worker configuration — identity dimensions */
 export interface WorkerConfig {
-  modelId: string;                         // base model name, e.g., "claude-sonnet"
-  modelVersion?: string;                   // specific version for audit trail
-  temperature: number;                     // quantized to 0.1 increments
-  toolAllowlist?: string[];                // if empty/undefined, all tools allowed
-  systemPromptTemplate?: string;           // template ID or "default"
+  modelId: string; // base model name, e.g., "claude-sonnet"
+  modelVersion?: string; // specific version for audit trail
+  temperature: number; // quantized to 0.1 increments
+  toolAllowlist?: string[]; // if empty/undefined, all tools allowed
+  systemPromptTemplate?: string; // template ID or "default"
   maxContextTokens?: number;
 }
 
@@ -532,14 +532,17 @@ export interface WorkerStats {
   totalTasks: number;
   successRate: number;
   avgQualityScore: number;
-  avgDuration_ms: number;
+  avgDurationMs: number;
   avgTokenCost: number;
-  taskTypeBreakdown: Record<string, {
-    count: number;
-    successRate: number;
-    avgQuality: number;
-    avgTokens: number;
-  }>;
+  taskTypeBreakdown: Record<
+    string,
+    {
+      count: number;
+      successRate: number;
+      avgQuality: number;
+      avgTokens: number;
+    }
+  >;
   lastActiveAt: number;
 }
 
@@ -549,11 +552,11 @@ export interface WorkerStats {
 
 /** 5-dimension task fingerprint for capability matching */
 export interface TaskFingerprint {
-  actionVerb: string;                      // e.g., "refactor", "fix", "add", "test"
-  fileExtensions: string[];                // e.g., [".ts", ".tsx"]
-  blastRadiusBucket: "single" | "small" | "medium" | "large"; // 1, 2-5, 6-20, 21+
-  frameworkMarkers?: string[];             // e.g., ["react", "express", "zod"]
-  oracleFailurePattern?: string;           // e.g., "type-fails", "test-fails"
+  actionVerb: string; // e.g., "refactor", "fix", "add", "test"
+  fileExtensions: string[]; // e.g., [".ts", ".tsx"]
+  blastRadiusBucket: 'single' | 'small' | 'medium' | 'large'; // 1, 2-5, 6-20, 21+
+  frameworkMarkers?: string[]; // e.g., ["react", "express", "zod"]
+  oracleFailurePattern?: string; // e.g., "type-fails", "test-fails"
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +566,7 @@ export interface TaskFingerprint {
 /** Result of capability-based worker selection — audit trail */
 export interface WorkerSelectionResult {
   selectedWorkerId: string;
-  reason: "capability-score" | "exploration" | "tier-fallback" | "assign-worker-rule" | "uncertain";
+  reason: 'capability-score' | 'exploration' | 'tier-fallback' | 'assign-worker-rule' | 'uncertain';
   score: number;
   alternatives: Array<{
     workerId: string;
@@ -571,6 +574,6 @@ export interface WorkerSelectionResult {
   }>;
   explorationTriggered: boolean;
   dataGateMet: boolean;
-  maxCapability?: number;    // Phase 4: fleet max capability for this fingerprint
-  isUncertain?: boolean;     // Phase 4: true if all workers below capability threshold (A2)
+  maxCapability?: number; // Phase 4: fleet max capability for this fingerprint
+  isUncertain?: boolean; // Phase 4: true if all workers below capability threshold (A2)
 }

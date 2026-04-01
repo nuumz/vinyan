@@ -7,10 +7,10 @@
  * Composite weights adapt to available dimensions.
  * Source of truth: spec/tdd.md §10 D10
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type { QualityScore, OracleVerdict } from "../core/types.ts";
-import { computeCyclomaticComplexity } from "./complexity.ts";
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { OracleVerdict, QualityScore } from '../core/types.ts';
+import { computeCyclomaticComplexity } from './complexity.ts';
 
 export interface ComplexityContext {
   originalSource?: string;
@@ -32,8 +32,8 @@ const TIER_WEIGHTS: Record<string, number> = {
 
 export function computeQualityScore(
   oracleResults: Record<string, OracleVerdict>,
-  gateDuration_ms: number,
-  latencyBudget_ms: number = 2000,
+  gateDurationMs: number,
+  latencyBudgetMs: number = 2000,
   complexityContext?: ComplexityContext,
   testContext?: TestContext,
   /** Map oracle name → tier string for A5 weighted scoring. */
@@ -48,7 +48,7 @@ export function computeQualityScore(
     let weightedSum = 0;
     let totalWeight = 0;
     for (const [name, verdict] of entries) {
-      const tier = oracleTiers[name] ?? "deterministic";
+      const tier = oracleTiers[name] ?? 'deterministic';
       const weight = TIER_WEIGHTS[tier] ?? 1.0;
       weightedSum += (verdict.verified ? 1 : 0) * weight;
       totalWeight += weight;
@@ -59,7 +59,7 @@ export function computeQualityScore(
   }
 
   // Dimension 2: efficiency (latency vs budget)
-  const efficiency = Math.max(0, Math.min(1, 1 - gateDuration_ms / latencyBudget_ms));
+  const efficiency = Math.max(0, Math.min(1, 1 - gateDurationMs / latencyBudgetMs));
 
   // Dimension 3: simplificationGain (cyclomatic complexity reduction)
   let simplificationGain: number | undefined;
@@ -88,30 +88,21 @@ export function computeQualityScore(
   // Composite — weights adapt to available dimensions
   const dims = 2 + (simplificationGain != null ? 1 : 0) + (testMutationScore != null ? 1 : 0);
   let composite: number;
-  let phase: QualityScore["phase"];
+  let phase: QualityScore['phase'];
 
   if (dims === 4) {
     composite =
-      architecturalCompliance * 0.30 +
-      efficiency * 0.20 +
-      simplificationGain! * 0.25 +
-      testMutationScore! * 0.25;
-    phase = "phase1";
+      architecturalCompliance * 0.3 + efficiency * 0.2 + simplificationGain! * 0.25 + testMutationScore! * 0.25;
+    phase = 'phase1';
   } else if (dims === 3 && simplificationGain != null) {
-    composite =
-      architecturalCompliance * 0.35 +
-      efficiency * 0.25 +
-      simplificationGain * 0.40;
-    phase = "phase1";
+    composite = architecturalCompliance * 0.35 + efficiency * 0.25 + simplificationGain * 0.4;
+    phase = 'phase1';
   } else if (dims === 3 && testMutationScore != null) {
-    composite =
-      architecturalCompliance * 0.35 +
-      efficiency * 0.25 +
-      testMutationScore * 0.40;
-    phase = "phase1";
+    composite = architecturalCompliance * 0.35 + efficiency * 0.25 + testMutationScore * 0.4;
+    phase = 'phase1';
   } else {
     composite = architecturalCompliance * 0.6 + efficiency * 0.4;
-    phase = "phase0";
+    phase = 'phase0';
   }
 
   return {
@@ -120,7 +111,7 @@ export function computeQualityScore(
     ...(simplificationGain != null ? { simplificationGain } : {}),
     ...(testMutationScore != null ? { testMutationScore } : {}),
     composite,
-    dimensions_available: dims,
+    dimensionsAvailable: dims,
     phase,
   };
 }
@@ -141,14 +132,14 @@ export function buildComplexityContext(
   for (const m of mutations) {
     mutated.push(m.content);
     try {
-      originals.push(readFileSync(join(workspace, m.file), "utf-8"));
+      originals.push(readFileSync(join(workspace, m.file), 'utf-8'));
     } catch {
-      originals.push(""); // new file — neutral
+      originals.push(''); // new file — neutral
     }
   }
 
   return {
-    originalSource: originals.join("\n"),
-    mutatedSource: mutated.join("\n"),
+    originalSource: originals.join('\n'),
+    mutatedSource: mutated.join('\n'),
   };
 }

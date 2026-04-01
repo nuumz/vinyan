@@ -7,11 +7,11 @@ const hypothesis = JSON.parse(input);
 
 const verdict = {
   verified: true,
-  type: "known",
+  type: 'known',
   confidence: 1.0,
   evidence: [{ file: hypothesis.target, line: 1, snippet: `echo: ${hypothesis.pattern}` }],
-  fileHashes: { [hypothesis.target]: "test-hash" },
-  duration_ms: 1,
+  fileHashes: { [hypothesis.target]: 'test-hash' },
+  durationMs: 1,
 };
 
-process.stdout.write(JSON.stringify(verdict) + "\n");
+process.stdout.write(JSON.stringify(verdict) + '\n');

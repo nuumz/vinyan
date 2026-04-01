@@ -8,9 +8,10 @@
  * Follows oracle/runner.ts IPC pattern: JSON stdin → JSON stdout.
  * Source of truth: spec/tdd.md §16.3 (Worker lifecycle)
  */
-import { WorkerInputSchema, WorkerOutputSchema } from "../protocol.ts";
-import { LLMProviderRegistry } from "../llm/provider-registry.ts";
-import { assemblePrompt } from "../llm/prompt-assembler.ts";
+
+import { assemblePrompt } from '../llm/prompt-assembler.ts';
+import { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 
 async function main() {
   const rawChunks: Uint8Array[] = [];
@@ -39,14 +40,14 @@ async function main() {
   const proxySocket = process.env.VINYAN_LLM_PROXY_SOCKET;
 
   if (proxySocket) {
-    const { createProxyProvider } = await import("../llm/llm-proxy.ts");
-    registry.register(createProxyProvider(proxySocket, "fast"));
-    registry.register(createProxyProvider(proxySocket, "balanced"));
-    registry.register(createProxyProvider(proxySocket, "powerful"));
+    const { createProxyProvider } = await import('../llm/llm-proxy.ts');
+    registry.register(createProxyProvider(proxySocket, 'fast'));
+    registry.register(createProxyProvider(proxySocket, 'balanced'));
+    registry.register(createProxyProvider(proxySocket, 'powerful'));
   } else {
     // Legacy: direct API key access (same priority as factory.ts)
     try {
-      const { registerOpenRouterProviders } = await import("../llm/openrouter-provider.ts");
+      const { registerOpenRouterProviders } = await import('../llm/openrouter-provider.ts');
       registerOpenRouterProviders(registry);
     } catch {
       // OpenRouter not available
@@ -54,7 +55,7 @@ async function main() {
 
     if (registry.listProviders().length === 0) {
       try {
-        const { createAnthropicProvider } = await import("../llm/anthropic-provider.ts");
+        const { createAnthropicProvider } = await import('../llm/anthropic-provider.ts');
         const provider = createAnthropicProvider();
         if (provider) registry.register(provider);
       } catch {
@@ -76,17 +77,12 @@ async function main() {
       proposedToolCalls: [],
       uncertainties: [`No LLM provider available for routing level ${input.routingLevel}`],
       tokensConsumed: 0,
-      duration_ms: 0,
+      durationMs: 0,
     });
     return;
   }
 
-  const { systemPrompt, userPrompt } = assemblePrompt(
-    input.goal,
-    input.perception,
-    input.workingMemory,
-    input.plan,
-  );
+  const { systemPrompt, userPrompt } = assemblePrompt(input.goal, input.perception, input.workingMemory, input.plan);
 
   const startTime = performance.now();
 
@@ -96,7 +92,7 @@ async function main() {
     maxTokens: input.budget.maxTokens,
   });
 
-  const duration_ms = Math.round(performance.now() - startTime);
+  const durationMs = Math.round(performance.now() - startTime);
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
 
   let output;
@@ -108,7 +104,7 @@ async function main() {
       proposedToolCalls: parsed.proposedToolCalls ?? response.toolCalls ?? [],
       uncertainties: parsed.uncertainties ?? [],
       tokensConsumed: tokens,
-      duration_ms,
+      durationMs,
     };
   } catch {
     output = {
@@ -117,7 +113,7 @@ async function main() {
       proposedToolCalls: [],
       uncertainties: [],
       tokensConsumed: tokens,
-      duration_ms,
+      durationMs,
     };
   }
 
@@ -126,10 +122,10 @@ async function main() {
 
 function writeOutput(output: unknown): void {
   const validated = WorkerOutputSchema.parse(output);
-  process.stdout.write(JSON.stringify(validated) + "\n");
+  process.stdout.write(JSON.stringify(validated) + '\n');
 }
 
-main().catch(err => {
-  process.stderr.write(String(err) + "\n");
+main().catch((err) => {
+  process.stderr.write(String(err) + '\n');
   process.exit(1);
 });

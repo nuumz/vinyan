@@ -13,12 +13,12 @@
  * Baseline: without oracle gate, incorrect mutations pass through unchecked (100% pass-through).
  * Target: Oracle gate catches ≥30% of structural hallucinations with 0% false positives.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { resolve, join } from "path";
-import { cpSync, rmSync, writeFileSync, mkdirSync } from "fs";
-import { tmpdir } from "os";
-import { runGate, type GateRequest } from "../../src/gate/index.ts";
-import { CODING_TASKS, TASK_COUNT, type CodingTask } from "./tasks.ts";
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import { type GateRequest, runGate } from '../../src/gate/index.ts';
+import { CODING_TASKS, type CodingTask, TASK_COUNT } from './tasks.ts';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ interface TaskResult {
   correctAllowed: boolean;
   incorrectReasons: string[];
   correctReasons: string[];
-  duration_ms: number;
+  durationMs: number;
 }
 
 interface CategorySummary {
@@ -43,7 +43,7 @@ interface CategorySummary {
 
 // ── Test infrastructure ────────────────────────────────────────
 
-const fixtureDir = resolve(import.meta.dir, "fixtures/workspace");
+const fixtureDir = resolve(import.meta.dir, 'fixtures/workspace');
 let tempRoot: string;
 
 beforeAll(() => {
@@ -63,7 +63,7 @@ function createFreshWorkspace(taskId: string): string {
 
 function makeGateRequest(workspace: string, filePath: string, content?: string): GateRequest {
   return {
-    tool: "write_file",
+    tool: 'write_file',
     params: { file_path: filePath, workspace, content },
     session_id: `experiment-${Date.now()}`,
   };
@@ -87,20 +87,20 @@ async function evaluateTask(task: CodingTask): Promise<TaskResult> {
   return {
     id: task.id,
     category: task.errorCategory,
-    incorrectBlocked: incorrectVerdict.decision === "block",
-    correctAllowed: correctVerdict.decision === "allow",
+    incorrectBlocked: incorrectVerdict.decision === 'block',
+    correctAllowed: correctVerdict.decision === 'allow',
     incorrectReasons: incorrectVerdict.reasons,
     correctReasons: correctVerdict.reasons,
-    duration_ms: performance.now() - start,
+    durationMs: performance.now() - start,
   };
 }
 
 // ── Main experiment ────────────────────────────────────────────
 
-describe("Phase 0 A/B Experiment — Oracle Gate Effectiveness", () => {
+describe('Phase 0 A/B Experiment — Oracle Gate Effectiveness', () => {
   const results: TaskResult[] = [];
 
-  test("task count matches expected", () => {
+  test('task count matches expected', () => {
     expect(CODING_TASKS.length).toBe(TASK_COUNT);
     expect(TASK_COUNT).toBe(50);
   });
@@ -113,22 +113,24 @@ describe("Phase 0 A/B Experiment — Oracle Gate Effectiveness", () => {
 
       // Correct mutations must always be ALLOWED (zero false positives)
       if (!result.correctAllowed) {
-        console.warn(`  ⚠ FALSE POSITIVE: ${task.id} correct mutation was blocked: ${result.correctReasons.join(", ")}`);
+        console.warn(
+          `  ⚠ FALSE POSITIVE: ${task.id} correct mutation was blocked: ${result.correctReasons.join(', ')}`,
+        );
       }
       expect(result.correctAllowed).toBe(true);
     }, 30_000);
   }
 
   // Summary test — runs last, prints the experiment report
-  test("experiment summary — ≥30% catch rate, 0% false positives", () => {
+  test('experiment summary — ≥30% catch rate, 0% false positives', () => {
     // Ensure all 50 tasks ran
     expect(results.length).toBe(TASK_COUNT);
 
     // ── Compute metrics ──
     const totalBlocked = results.filter((r) => r.incorrectBlocked).length;
-    const totalFP = results.filter((r) => !r.correctAllowed).length;
+    const totalFp = results.filter((r) => !r.correctAllowed).length;
     const catchRate = totalBlocked / TASK_COUNT;
-    const fpRate = totalFP / TASK_COUNT;
+    const fpRate = totalFp / TASK_COUNT;
     const baselineCatchRate = 0; // No gate = everything passes through
     const reductionDelta = catchRate - baselineCatchRate;
 
@@ -165,43 +167,53 @@ describe("Phase 0 A/B Experiment — Oracle Gate Effectiveness", () => {
     const missed = results.filter((r) => !r.incorrectBlocked);
 
     // ── Print report ──
-    console.log("\n");
-    console.log("╔══════════════════════════════════════════════════════╗");
-    console.log("║   VINYAN PHASE 0 — A/B EXPERIMENT RESULTS          ║");
-    console.log("╠══════════════════════════════════════════════════════╣");
+    console.log('\n');
+    console.log('╔══════════════════════════════════════════════════════╗');
+    console.log('║   VINYAN PHASE 0 — A/B EXPERIMENT RESULTS          ║');
+    console.log('╠══════════════════════════════════════════════════════╣');
     console.log(`║  Total tasks:           ${TASK_COUNT.toString().padStart(4)}                         ║`);
-    console.log(`║  Incorrect blocked:     ${totalBlocked.toString().padStart(4)} (${(catchRate * 100).toFixed(1)}%)                  ║`);
-    console.log(`║  False positives:       ${totalFP.toString().padStart(4)} (${(fpRate * 100).toFixed(1)}%)                   ║`);
+    console.log(
+      `║  Incorrect blocked:     ${totalBlocked.toString().padStart(4)} (${(catchRate * 100).toFixed(1)}%)                  ║`,
+    );
+    console.log(
+      `║  False positives:       ${totalFp.toString().padStart(4)} (${(fpRate * 100).toFixed(1)}%)                   ║`,
+    );
     console.log(`║  Baseline catch rate:   ${(baselineCatchRate * 100).toFixed(1)}%                        ║`);
     console.log(`║  Gate catch rate:       ${(catchRate * 100).toFixed(1)}%                        ║`);
     console.log(`║  Δ Reduction:           ${(reductionDelta * 100).toFixed(1)}%                        ║`);
-    console.log("╠══════════════════════════════════════════════════════╣");
-    console.log("║  Per-Category Breakdown                             ║");
-    console.log("╠══════════════════════════════════════════════════════╣");
+    console.log('╠══════════════════════════════════════════════════════╣');
+    console.log('║  Per-Category Breakdown                             ║');
+    console.log('╠══════════════════════════════════════════════════════╣');
     for (const s of catSummaries) {
-      console.log(`║  ${s.category.padEnd(22)} ${s.blocked}/${s.total} caught (${s.catchRate.padStart(4)})  FP: ${s.falsePositives}  ║`);
+      console.log(
+        `║  ${s.category.padEnd(22)} ${s.blocked}/${s.total} caught (${s.catchRate.padStart(4)})  FP: ${s.falsePositives}  ║`,
+      );
     }
-    console.log("╠══════════════════════════════════════════════════════╣");
-    console.log("║  Per-Oracle Contribution                            ║");
-    console.log("╠══════════════════════════════════════════════════════╣");
+    console.log('╠══════════════════════════════════════════════════════╣');
+    console.log('║  Per-Oracle Contribution                            ║');
+    console.log('╠══════════════════════════════════════════════════════╣');
     for (const [oracle, count] of Object.entries(oracleBlocks).sort((a, b) => b[1] - a[1])) {
       console.log(`║  ${oracle.padEnd(22)} ${count.toString().padStart(3)} blocks                     ║`);
     }
     if (missed.length > 0 && missed.length <= 15) {
-      console.log("╠══════════════════════════════════════════════════════╣");
-      console.log("║  Missed (not caught by gate)                        ║");
-      console.log("╠══════════════════════════════════════════════════════╣");
+      console.log('╠══════════════════════════════════════════════════════╣');
+      console.log('║  Missed (not caught by gate)                        ║');
+      console.log('╠══════════════════════════════════════════════════════╣');
       for (const m of missed) {
-        console.log(`║  ${m.id} [${m.category}]`.padEnd(55) + "║");
+        console.log(`║  ${m.id} [${m.category}]`.padEnd(55) + '║');
       }
     }
-    console.log("╠══════════════════════════════════════════════════════╣");
-    console.log(`║  VERDICT: ${reductionDelta >= 0.3 ? "✅ PASS" : "❌ FAIL"} — Gate ${reductionDelta >= 0.3 ? "meets" : "does NOT meet"} ≥30% target     ║`);
-    console.log(`║  FP:      ${totalFP === 0 ? "✅ PASS" : "❌ FAIL"} — ${totalFP === 0 ? "Zero" : totalFP + " "} false positives               ║`);
-    console.log("╚══════════════════════════════════════════════════════╝");
+    console.log('╠══════════════════════════════════════════════════════╣');
+    console.log(
+      `║  VERDICT: ${reductionDelta >= 0.3 ? '✅ PASS' : '❌ FAIL'} — Gate ${reductionDelta >= 0.3 ? 'meets' : 'does NOT meet'} ≥30% target     ║`,
+    );
+    console.log(
+      `║  FP:      ${totalFp === 0 ? '✅ PASS' : '❌ FAIL'} — ${totalFp === 0 ? 'Zero' : totalFp + ' '} false positives               ║`,
+    );
+    console.log('╚══════════════════════════════════════════════════════╝');
 
     // ── Assertions ──
     expect(catchRate).toBeGreaterThanOrEqual(0.3);
-    expect(totalFP).toBe(0);
+    expect(totalFp).toBe(0);
   });
 });

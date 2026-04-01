@@ -12,7 +12,7 @@
  *
  * Axiom compliance: A5 (Tiered Trust), A3 (Deterministic Governance — rule-based, no LLM).
  */
-import type { OracleVerdict } from "../core/types.ts";
+import type { OracleVerdict } from '../core/types.ts';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ export interface ConflictResolution {
 
 export interface ResolvedGateResult {
   /** Final aggregated decision. */
-  decision: "allow" | "block";
+  decision: 'allow' | 'block';
   /** Reasons for blocking (empty if allow). */
   reasons: string[];
   /** Resolution details for any conflicts that were resolved. */
@@ -57,18 +57,18 @@ export interface ResolverConfig {
 // ── Domain classification ───────────────────────────────────────
 
 /** Oracle domain groups — same-domain conflicts need resolution, cross-domain don't. */
-type OracleDomain = "structural" | "quality" | "functional";
+type OracleDomain = 'structural' | 'quality' | 'functional';
 
 const ORACLE_DOMAINS: Record<string, OracleDomain> = {
-  ast: "structural",
-  type: "structural",
-  dep: "structural",
-  lint: "quality",
-  test: "functional",
+  ast: 'structural',
+  type: 'structural',
+  dep: 'structural',
+  lint: 'quality',
+  test: 'functional',
 };
 
 function getOracleDomain(name: string): OracleDomain {
-  return ORACLE_DOMAINS[name] ?? "structural";
+  return ORACLE_DOMAINS[name] ?? 'structural';
 }
 
 // ── Tier ranking ────────────────────────────────────────────────
@@ -119,10 +119,10 @@ export function resolveConflicts(
   if (passed.length === 0 || failed.length === 0) {
     for (const name of failed) {
       const verdict = oracleResults[name]!;
-      reasons.push(`Oracle "${name}" rejected: ${verdict.reason ?? "no reason given"}`);
+      reasons.push(`Oracle "${name}" rejected: ${verdict.reason ?? 'no reason given'}`);
     }
     return {
-      decision: reasons.length > 0 ? "block" : "allow",
+      decision: reasons.length > 0 ? 'block' : 'allow',
       reasons,
       resolutions: [],
       hasContradiction: false,
@@ -136,12 +136,7 @@ export function resolveConflicts(
     let overriddenByAny = false;
 
     for (const passName of passed) {
-      const resolution = resolveConflictPair(
-        passName,
-        failName,
-        oracleResults,
-        config,
-      );
+      const resolution = resolveConflictPair(passName, failName, oracleResults, config);
       resolutions.push(resolution);
 
       if (resolution.resolvedAtStep < 5 && resolution.winner === passName) {
@@ -163,17 +158,17 @@ export function resolveConflicts(
   for (const name of failed) {
     if (overridden.has(name)) continue;
     const verdict = oracleResults[name]!;
-    reasons.push(`Oracle "${name}" rejected: ${verdict.reason ?? "no reason given"}`);
+    reasons.push(`Oracle "${name}" rejected: ${verdict.reason ?? 'no reason given'}`);
   }
 
   // If all failures were overridden by higher-trust passes, allow
   // If any contradiction escalated (step 5), block conservatively
   if (hasContradiction) {
-    reasons.push("Unresolved oracle contradiction — escalated to contradictory state");
+    reasons.push('Unresolved oracle contradiction — escalated to contradictory state');
   }
 
   return {
-    decision: reasons.length > 0 ? "block" : "allow",
+    decision: reasons.length > 0 ? 'block' : 'allow',
     reasons,
     resolutions,
     hasContradiction,
@@ -208,8 +203,8 @@ function resolveConflictPair(
   }
 
   // Step 2: Confidence comparison — higher tier wins (A5)
-  const passTier = config.oracleTiers[passName] ?? "deterministic";
-  const failTier = config.oracleTiers[failName] ?? "deterministic";
+  const passTier = config.oracleTiers[passName] ?? 'deterministic';
+  const failTier = config.oracleTiers[failName] ?? 'deterministic';
   const passPriority = getTierPriority(passTier);
   const failPriority = getTierPriority(failTier);
 

@@ -7,9 +7,9 @@
  *
  * Source of truth: Plan Phase E1
  */
-import type { EventBus, VinyanBusEvents } from "../core/bus.ts";
-import { ECP_MIME_TYPE, type ECPDataPart } from "./ecp-data-part.ts";
-import { wrapAsA2ADataPart } from "./ecp-a2a-translation.ts";
+import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
+import { wrapAsA2ADataPart } from './ecp-a2a-translation.ts';
+import { ECP_MIME_TYPE, type ECPDataPart } from './ecp-data-part.ts';
 
 export interface FileInvalidationRelayConfig {
   bus: EventBus<VinyanBusEvents>;
@@ -24,7 +24,7 @@ export class FileInvalidationRelay {
 
   /** Start listening for file:hashChanged events and forwarding to peers. */
   start(): void {
-    this.unsub = this.config.bus.on("file:hashChanged", (payload) => {
+    this.unsub = this.config.bus.on('file:hashChanged', (payload) => {
       void this.relayToAllPeers(payload);
     });
   }
@@ -39,12 +39,12 @@ export class FileInvalidationRelay {
   buildECPDataPart(filePath: string, newHash: string): ECPDataPart {
     return {
       ecp_version: 1,
-      message_type: "knowledge_transfer",
-      epistemic_type: "known",
+      message_type: 'knowledge_transfer',
+      epistemic_type: 'known',
       confidence: 1.0,
       confidence_reported: true,
       payload: {
-        type: "file_invalidation",
+        type: 'file_invalidation',
         filePath,
         newHash,
         instance_id: this.config.instanceId,
@@ -58,13 +58,13 @@ export class FileInvalidationRelay {
     const a2aPart = wrapAsA2ADataPart(ecpPart);
 
     const body = JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id: `file-inv-${Date.now()}`,
-      method: "tasks/send",
+      method: 'tasks/send',
       params: {
         id: `file-inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         message: {
-          role: "agent",
+          role: 'agent',
           parts: [a2aPart],
         },
       },
@@ -76,8 +76,8 @@ export class FileInvalidationRelay {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 3000);
           await fetch(peerUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body,
             signal: controller.signal,
           });

@@ -1,38 +1,38 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import { verify } from "../../../src/oracle/lint/lint-verifier.ts";
-import type { HypothesisTuple } from "../../../src/core/types.ts";
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import type { HypothesisTuple } from '../../../src/core/types.ts';
+import { verify } from '../../../src/oracle/lint/lint-verifier.ts';
 
-describe("lint-oracle", () => {
+describe('lint-oracle', () => {
   let workspace: string;
 
   beforeAll(() => {
-    workspace = mkdtempSync(join(tmpdir(), "vinyan-lint-oracle-"));
-    writeFileSync(join(workspace, "clean.ts"), "export const x = 1;\n");
+    workspace = mkdtempSync(join(tmpdir(), 'vinyan-lint-oracle-'));
+    writeFileSync(join(workspace, 'clean.ts'), 'export const x = 1;\n');
   });
 
   afterAll(() => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  test("returns verified=true with note when no linter configured", async () => {
+  test('returns verified=true with note when no linter configured', async () => {
     const hypothesis: HypothesisTuple = {
-      target: "clean.ts",
-      pattern: "lint-clean",
+      target: 'clean.ts',
+      pattern: 'lint-clean',
       workspace,
     };
     const verdict = await verify(hypothesis);
     expect(verdict.verified).toBe(true);
     expect(verdict.confidence).toBe(0.5);
-    expect(verdict.reason).toContain("No linter configured");
+    expect(verdict.reason).toContain('No linter configured');
   });
 
-  test("returns verified=true when target file not found (no linter)", async () => {
+  test('returns verified=true when target file not found (no linter)', async () => {
     const hypothesis: HypothesisTuple = {
-      target: "nonexistent.ts",
-      pattern: "lint-clean",
+      target: 'nonexistent.ts',
+      pattern: 'lint-clean',
       workspace,
     };
     const verdict = await verify(hypothesis);
@@ -41,17 +41,17 @@ describe("lint-oracle", () => {
     expect(verdict.confidence).toBeLessThan(1.0);
   });
 
-  test("has correct verdict structure", async () => {
+  test('has correct verdict structure', async () => {
     const hypothesis: HypothesisTuple = {
-      target: "clean.ts",
-      pattern: "lint-clean",
+      target: 'clean.ts',
+      pattern: 'lint-clean',
       workspace,
     };
     const verdict = await verify(hypothesis);
     // WP-4: lint returns "uncertain" when no linter is configured (A2 compliance)
-    expect(["known", "uncertain"]).toContain(verdict.type);
-    expect(typeof verdict.duration_ms).toBe("number");
-    expect(verdict.duration_ms).toBeGreaterThan(0);
+    expect(['known', 'uncertain']).toContain(verdict.type);
+    expect(typeof verdict.durationMs).toBe('number');
+    expect(verdict.durationMs).toBeGreaterThan(0);
     expect(Array.isArray(verdict.evidence)).toBe(true);
   });
 });

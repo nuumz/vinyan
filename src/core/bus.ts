@@ -6,142 +6,168 @@
  *
  * Source of truth: design/implementation-plan.md §1C.4
  */
-import type { OracleVerdict, Fact } from "./types.ts";
+
+import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type {
-  TaskInput,
-  TaskResult,
-  RoutingDecision,
-  ExecutionTrace,
-  SelfModelPrediction,
-  WorkerOutput,
-  ShadowJob,
-  ShadowValidationResult,
   CachedSkill,
   EvolutionaryRule,
+  ExecutionTrace,
+  RoutingDecision,
+  SelfModelPrediction,
+  ShadowJob,
+  ShadowValidationResult,
+  TaskInput,
+  TaskResult,
   ToolResult,
+  WorkerOutput,
   WorkerProfile,
-} from "../orchestrator/types.ts";
-import type { PeerTrustLevel } from "../oracle/tier-clamp.ts";
+} from '../orchestrator/types.ts';
+import type { Fact, OracleVerdict } from './types.ts';
 
 // ── Event Map ────────────────────────────────────────────────────────
 
 export interface VinyanBusEvents {
   // Spec-required (§1C.4)
-  "task:start": { input: TaskInput; routing: RoutingDecision };
-  "task:complete": { result: TaskResult };
-  "worker:dispatch": { taskId: string; routing: RoutingDecision };
-  "oracle:verdict": { taskId: string; oracleName: string; verdict: OracleVerdict };
-  "critic:verdict": { taskId: string; accepted: boolean; confidence: number; reason?: string };
-  "trace:record": { trace: ExecutionTrace };
+  'task:start': { input: TaskInput; routing: RoutingDecision };
+  'task:complete': { result: TaskResult };
+  'worker:dispatch': { taskId: string; routing: RoutingDecision };
+  'oracle:verdict': { taskId: string; oracleName: string; verdict: OracleVerdict };
+  'critic:verdict': { taskId: string; accepted: boolean; confidence: number; reason?: string };
+  'trace:record': { trace: ExecutionTrace };
 
   // Worker lifecycle
-  "worker:complete": { taskId: string; output: WorkerOutput; duration_ms: number };
-  "worker:error": { taskId: string; error: string; routing: RoutingDecision };
+  'worker:complete': { taskId: string; output: WorkerOutput; durationMs: number };
+  'worker:error': { taskId: string; error: string; routing: RoutingDecision };
 
   // Shadow validation (Phase 2.2)
-  "shadow:enqueue": { job: ShadowJob };
-  "shadow:complete": { job: ShadowJob; result: ShadowValidationResult };
-  "shadow:failed": { job: ShadowJob; error: string };
+  'shadow:enqueue': { job: ShadowJob };
+  'shadow:complete': { job: ShadowJob; result: ShadowValidationResult };
+  'shadow:failed': { job: ShadowJob; error: string };
 
   // Skill Formation (Phase 2.5)
-  "skill:match": { taskId: string; skill: CachedSkill };
-  "skill:miss": { taskId: string; taskSignature: string };
-  "skill:outcome": { taskId: string; skill: CachedSkill; success: boolean };
+  'skill:match': { taskId: string; skill: CachedSkill };
+  'skill:miss': { taskId: string; taskSignature: string };
+  'skill:outcome': { taskId: string; skill: CachedSkill; success: boolean };
 
   // Evolution Engine (Phase 2.6)
-  "evolution:rulesApplied": { taskId: string; rules: EvolutionaryRule[] };
-  "evolution:rulePromoted": { ruleId: string; taskSig: string };
-  "evolution:ruleRetired": { ruleId: string; reason: string };
+  'evolution:rulesApplied': { taskId: string; rules: EvolutionaryRule[] };
+  'evolution:rulePromoted': { ruleId: string; taskSig: string };
+  'evolution:ruleRetired': { ruleId: string; reason: string };
 
   // Sleep Cycle (Phase 2.4)
-  "sleep:cycleComplete": { cycleId: string; patternsFound: number; rulesGenerated: number; skillsCreated: number; rulesPromoted: number };
+  'sleep:cycleComplete': {
+    cycleId: string;
+    patternsFound: number;
+    rulesGenerated: number;
+    skillsCreated: number;
+    rulesPromoted: number;
+  };
 
   // Self-Model (Phase 1C.1)
-  "selfmodel:predict": { prediction: SelfModelPrediction };
+  'selfmodel:predict': { prediction: SelfModelPrediction };
 
   // World Graph
-  "graph:fact": { fact: Fact };
+  'graph:fact': { fact: Fact };
 
   // Circuit breaker
-  "circuit:open": { oracleName: string; failureCount: number };
-  "circuit:close": { oracleName: string };
+  'circuit:open': { oracleName: string; failureCount: number };
+  'circuit:close': { oracleName: string };
 
   // Tool execution (Phase 2 — G1)
-  "tools:executed": { taskId: string; results: ToolResult[] };
+  'tools:executed': { taskId: string; results: ToolResult[] };
 
   // Task lifecycle extensions
-  "task:escalate": { taskId: string; fromLevel: number; toLevel: number; reason: string };
-  "task:timeout": { taskId: string; elapsed_ms: number; budget_ms: number };
+  'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
+  'task:timeout': { taskId: string; elapsed_ms: number; budget_ms: number };
 
   // Human approval gate (A6: zero-trust for high-risk production tasks)
-  "task:approval_required": { taskId: string; riskScore: number; reason: string };
+  'task:approval_required': { taskId: string; riskScore: number; reason: string };
 
   // PH3.6: Epsilon-greedy exploration
-  "task:explore": { taskId: string; fromLevel: number; toLevel: number };
+  'task:explore': { taskId: string; fromLevel: number; toLevel: number };
 
   // Guardrail detections
-  "guardrail:injection_detected": { field: string; patterns: string[] };
-  "guardrail:bypass_detected": { field: string; patterns: string[] };
-  "guardrail:violation": { workerId: string; type: string; details?: string };
+  'guardrail:injection_detected': { field: string; patterns: string[] };
+  'guardrail:bypass_detected': { field: string; patterns: string[] };
+  'guardrail:violation': { workerId: string; type: string; details?: string };
 
   // Self-model calibration
-  "selfmodel:calibration_error": { taskId: string; error: string };
+  'selfmodel:calibration_error': { taskId: string; error: string };
 
   // Oracle contradiction detection (A1: epistemic separation surfaces disagreements)
-  "oracle:contradiction": { taskId: string; passed: string[]; failed: string[] };
+  'oracle:contradiction': { taskId: string; passed: string[]; failed: string[] };
 
   // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
-  "oracle:deliberation_request": { taskId: string; oracleName: string; reason: string; suggestedBudget: number };
+  'oracle:deliberation_request': { taskId: string; oracleName: string; reason: string; suggestedBudget: number };
 
   // DAG decomposition fallback (A3: deterministic governance transparency)
-  "decomposer:fallback": { taskId: string };
+  'decomposer:fallback': { taskId: string };
 
   // Worker lifecycle (Phase 4.2)
-  "worker:registered": { profile: WorkerProfile };
-  "worker:promoted": { workerId: string; afterTasks: number; successRate: number };
-  "worker:demoted": { workerId: string; reason: string; permanent: boolean };
-  "worker:reactivated": { workerId: string; previousDemotionCount: number };
+  'worker:registered': { profile: WorkerProfile };
+  'worker:promoted': { workerId: string; afterTasks: number; successRate: number };
+  'worker:demoted': { workerId: string; reason: string; permanent: boolean };
+  'worker:reactivated': { workerId: string; previousDemotionCount: number };
 
   // Worker selection (Phase 4.4)
-  "worker:selected": { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
-  "worker:exploration": { taskId: string; selectedWorkerId: string; defaultWorkerId: string };
+  'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
+  'worker:exploration': { taskId: string; selectedWorkerId: string; defaultWorkerId: string };
 
   // Fleet governance (Phase 4.5)
-  "fleet:convergence_warning": { giniScore: number; dominantWorkerId: string; allocation: number };
-  "fleet:emergency_reactivation": { workerId: string; reason: string };
-  "fleet:diversity_enforced": { workerId: string; boostAmount: number };
+  'fleet:convergence_warning': { giniScore: number; dominantWorkerId: string; allocation: number };
+  'fleet:emergency_reactivation': { workerId: string; reason: string };
+  'fleet:diversity_enforced': { workerId: string; boostAmount: number };
 
   // Fleet-level uncertainty — GAP-H UC-7 (Phase 4.4)
-  "task:uncertain": { taskId: string; reason: string; maxCapability: number };
+  'task:uncertain': { taskId: string; reason: string; maxCapability: number };
 
   // Artifact commit (Phase 1 — A6: orchestrator disposes)
-  "commit:rejected": { taskId: string; rejected: Array<{ path: string; reason: string }> };
+  'commit:rejected': { taskId: string; rejected: Array<{ path: string; reason: string }> };
 
   // Observability — GAP-H failure mode detection (Phase 5.15)
-  "memory:eviction_warning": { taskId: string; evictionCount: number; memoryPressure: number };
-  "context:verdict_omitted": { taskId: string; oracleName: string; reason: string };
-  "selfmodel:systematic_miscalibration": { taskId: string; biasDirection: "over" | "under"; magnitude: number; windowSize: number };
-  "observability:alert": { detector: string; severity: "warning" | "critical"; message: string; metadata?: Record<string, unknown> };
+  'memory:eviction_warning': { taskId: string; evictionCount: number; memoryPressure: number };
+  'context:verdict_omitted': { taskId: string; oracleName: string; reason: string };
+  'selfmodel:systematic_miscalibration': {
+    taskId: string;
+    biasDirection: 'over' | 'under';
+    magnitude: number;
+    windowSize: number;
+  };
+  'observability:alert': {
+    detector: string;
+    severity: 'warning' | 'critical';
+    message: string;
+    metadata?: Record<string, unknown>;
+  };
 
   // API & Session events (Phase 5.1)
-  "api:request": { method: string; path: string; taskId?: string };
-  "api:response": { method: string; path: string; status: number; duration_ms: number };
-  "session:created": { sessionId: string; source: string };
-  "session:compacted": { sessionId: string; taskCount: number };
+  'api:request': { method: string; path: string; taskId?: string };
+  'api:response': { method: string; path: string; status: number; durationMs: number };
+  'session:created': { sessionId: string; source: string };
+  'session:compacted': { sessionId: string; taskCount: number };
 
   // Phase E: File invalidation relay
-  "file:hashChanged": { filePath: string; newHash: string; previousHash?: string };
+  'file:hashChanged': { filePath: string; newHash: string; previousHash?: string };
 
   // Phase D/E/L: Peer lifecycle
-  "peer:connected": { peerId: string; instanceId: string; url: string };
-  "peer:disconnected": { peerId: string; reason: string };
-  "peer:trustChanged": { peerId: string; from: PeerTrustLevel; to: PeerTrustLevel; trigger: string };
+  'peer:connected': { peerId: string; instanceId: string; url: string };
+  'peer:disconnected': { peerId: string; reason: string };
+  'peer:trustChanged': { peerId: string; from: PeerTrustLevel; to: PeerTrustLevel; trigger: string };
 
   // Phase E: A2A knowledge events
-  "a2a:verdictReceived": { peerId: string; oracleName: string; confidence: number };
-  "a2a:knowledgeImported": { peerId: string; patternsImported: number; rulesImported: number };
-  "a2a:knowledgeOffered": { peerId: string; patternCount: number };
-  "a2a:knowledgeAccepted": { peerId: string; acceptedCount: number };
+  'a2a:verdictReceived': { peerId: string; oracleName: string; confidence: number };
+  'a2a:knowledgeImported': { peerId: string; patternsImported: number; rulesImported: number };
+  'a2a:knowledgeOffered': { peerId: string; patternCount: number };
+  'a2a:knowledgeAccepted': { peerId: string; acceptedCount: number };
+
+  // Phase v1.1: Coordination
+  'a2a:proposalReceived': { peerId: string; proposalId: string; proposalType: string };
+  'a2a:commitmentFailed': { peerId: string; commitmentId: string; reason: string };
+  'a2a:retractionReceived': { peerId: string; retractionId: string; targetId: string; severity: string };
+  'a2a:feedbackReceived': { peerId: string; feedbackId: string; targetId: string; outcome: string };
+  'a2a:intentDeclared': { peerId: string; intentId: string; targets: string[]; action: string };
+  'a2a:intentConflict': { peerId: string; intentId: string; conflictingIntentId: string };
+  'a2a:capabilityUpdated': { peerId: string; instanceId: string; capabilityVersion: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────
@@ -159,19 +185,14 @@ export class EventBus<Events extends {}> {
     this.maxListeners = options?.maxListeners ?? 10;
   }
 
-  on<K extends keyof Events & string>(
-    event: K,
-    handler: Handler<Events[K]>,
-  ): () => void {
+  on<K extends keyof Events & string>(event: K, handler: Handler<Events[K]>): () => void {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
       this.listeners.set(event, set);
     }
     if (set.size >= this.maxListeners) {
-      console.warn(
-        `[vinyan-bus] "${event}" has ${set.size} listeners (max: ${this.maxListeners}). Possible leak.`,
-      );
+      console.warn(`[vinyan-bus] "${event}" has ${set.size} listeners (max: ${this.maxListeners}). Possible leak.`);
     }
     set.add(handler as Handler<never>);
     return () => {
@@ -179,10 +200,7 @@ export class EventBus<Events extends {}> {
     };
   }
 
-  once<K extends keyof Events & string>(
-    event: K,
-    handler: Handler<Events[K]>,
-  ): () => void {
+  once<K extends keyof Events & string>(event: K, handler: Handler<Events[K]>): () => void {
     const unsub = this.on(event, ((payload: Events[K]) => {
       unsub();
       handler(payload);

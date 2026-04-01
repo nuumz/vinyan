@@ -3,12 +3,12 @@
  *
  * Source of truth: spec/tdd.md §22.5
  */
-import type { Database } from "bun:sqlite";
-import type { Migration } from "./migration-runner.ts";
+import type { Database } from 'bun:sqlite';
+import type { Migration } from './migration-runner.ts';
 
 export const migration002: Migration = {
   version: 2,
-  description: "Add session_store and session_tasks for API server",
+  description: 'Add session_store and session_tasks for API server',
   up(db: Database) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS session_store (

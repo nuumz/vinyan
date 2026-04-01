@@ -7,13 +7,14 @@
  *
  * Source of truth: design/implementation-plan.md §PH3.7
  */
-import type { TraceStore } from "../db/trace-store.ts";
-import type { RuleStore } from "../db/rule-store.ts";
-import type { SkillStore } from "../db/skill-store.ts";
-import type { PatternStore } from "../db/pattern-store.ts";
-import type { WorkerStore } from "../db/worker-store.ts";
-import type { CapabilityModel } from "../orchestrator/capability-model.ts";
-import { evaluateFleet, type FleetMetrics } from "../orchestrator/fleet-evaluator.ts";
+
+import type { PatternStore } from '../db/pattern-store.ts';
+import type { RuleStore } from '../db/rule-store.ts';
+import type { SkillStore } from '../db/skill-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
+import type { CapabilityModel } from '../orchestrator/capability-model.ts';
+import { evaluateFleet, type FleetMetrics } from '../orchestrator/fleet-evaluator.ts';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -80,9 +81,7 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
   // findRecent returns DESC — reverse to get chronological order for trend
   const chronological = [...recentTraces].reverse();
   const qualityTrend = computeQualityTrend(
-    chronological
-      .filter(t => t.qualityScore?.composite != null)
-      .map(t => t.qualityScore!.composite),
+    chronological.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite),
   );
 
   // Routing efficiency: % resolved without escalation
@@ -93,22 +92,22 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
       taskOutcomes.set(t.taskId, {
         initial: t.routingLevel,
         final: t.routingLevel,
-        escalated: t.outcome === "escalated",
+        escalated: t.outcome === 'escalated',
       });
     } else {
       existing.final = t.routingLevel;
-      if (t.outcome === "escalated") existing.escalated = true;
+      if (t.outcome === 'escalated') existing.escalated = true;
     }
   }
   const totalTasks = taskOutcomes.size;
-  const resolvedAtInitial = [...taskOutcomes.values()].filter(t => t.initial === t.final && !t.escalated).length;
-  const escalatedCount = [...taskOutcomes.values()].filter(t => t.escalated).length;
+  const resolvedAtInitial = [...taskOutcomes.values()].filter((t) => t.initial === t.final && !t.escalated).length;
+  const escalatedCount = [...taskOutcomes.values()].filter((t) => t.escalated).length;
   const routingEfficiency = totalTasks > 0 ? resolvedAtInitial / totalTasks : 0;
   const escalationRate = totalTasks > 0 ? escalatedCount / totalTasks : 0;
 
   // ── Exploration metrics (PH3.6) ──
-  const explorationTraces = chronological.filter(t => t.exploration);
-  const normalTraces = chronological.filter(t => !t.exploration);
+  const explorationTraces = chronological.filter((t) => t.exploration);
+  const normalTraces = chronological.filter((t) => !t.exploration);
   const explorationRate = chronological.length > 0 ? explorationTraces.length / chronological.length : 0;
   const explorationAvgQuality = avgQualityOf(explorationTraces);
   const normalAvgQuality = avgQualityOf(normalTraces);
@@ -116,40 +115,39 @@ export function generatePhase3Report(deps: Phase3ReportDeps): EvolutionMetrics {
 
   // ── Rule metrics ──
   const activeRules = ruleStore?.findActive() ?? [];
-  const retiredRules = ruleStore?.findByStatus("retired") ?? [];
+  const retiredRules = ruleStore?.findByStatus('retired') ?? [];
   const allRulesCount = ruleStore?.count() ?? 0;
-  const activeRuleAvgEffectiveness = activeRules.length > 0
-    ? activeRules.reduce((s, r) => s + r.effectiveness, 0) / activeRules.length
-    : 0;
+  const activeRuleAvgEffectiveness =
+    activeRules.length > 0 ? activeRules.reduce((s, r) => s + r.effectiveness, 0) / activeRules.length : 0;
   const activePlusRetired = activeRules.length + retiredRules.length;
-  const backtestPassRate = activePlusRetired > 0
-    ? activeRules.length / activePlusRetired
-    : 0;
+  const backtestPassRate = activePlusRetired > 0 ? activeRules.length / activePlusRetired : 0;
 
   // Effective rules: active with effectiveness > 0.3
-  const effectiveRules = activeRules.filter(r => r.effectiveness > 0.3);
+  const effectiveRules = activeRules.filter((r) => r.effectiveness > 0.3);
 
   // ── Skill metrics ──
   const activeSkills = skillStore?.findActive() ?? [];
-  const demotedSkills = skillStore?.findByStatus("demoted") ?? [];
+  const demotedSkills = skillStore?.findByStatus('demoted') ?? [];
   const totalSkills = skillStore?.count() ?? 0;
-  const highPerfSkills = activeSkills.filter(s => s.successRate > 0.7);
+  const highPerfSkills = activeSkills.filter((s) => s.successRate > 0.7);
 
   // Skill hit rate: approximated from traces with matched skills
   // (we can't directly measure this without bus events, so use active count / task count)
-  const skillHitRate = totalTasks > 0 && activeSkills.length > 0
-    ? Math.min(1, activeSkills.reduce((s, sk) => s + sk.usageCount, 0) / Math.max(1, traceStore.count()))
-    : 0;
+  const skillHitRate =
+    totalTasks > 0 && activeSkills.length > 0
+      ? Math.min(1, activeSkills.reduce((s, sk) => s + sk.usageCount, 0) / Math.max(1, traceStore.count()))
+      : 0;
 
   // ── Self-Model metrics ──
   // Global accuracy from prediction errors in recent traces
-  const tracesWithPredError = recentTraces.filter(t => t.predictionError);
-  const globalAccuracy = tracesWithPredError.length > 0
-    ? tracesWithPredError.filter(t => {
-        const err = t.predictionError!;
-        return err.error.composite < 0.3;
-      }).length / tracesWithPredError.length
-    : 0;
+  const tracesWithPredError = recentTraces.filter((t) => t.predictionError);
+  const globalAccuracy =
+    tracesWithPredError.length > 0
+      ? tracesWithPredError.filter((t) => {
+          const err = t.predictionError!;
+          return err.error.composite < 0.3;
+        }).length / tracesWithPredError.length
+      : 0;
 
   // ── Sleep cycle metrics ──
   const sleepCyclesRun = patternStore?.countCycleRuns() ?? 0;
@@ -208,7 +206,10 @@ export function computeQualityTrend(scores: number[]): number {
   const n = scores.length;
   if (n < 2) return 0;
 
-  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  let sumX = 0,
+    sumY = 0,
+    sumXY = 0,
+    sumX2 = 0;
   for (let i = 0; i < n; i++) {
     sumX += i;
     sumY += scores[i]!;
@@ -252,19 +253,17 @@ function computePhase4Readiness(stats: {
   };
 
   return {
-    ready: Object.values(conditions).every(c => c.met),
+    ready: Object.values(conditions).every((c) => c.met),
     conditions,
   };
 }
 
 function avgQualityOf(traces: { qualityScore?: { composite: number } }[]): number {
-  const scores = traces.filter(t => t.qualityScore?.composite != null).map(t => t.qualityScore!.composite);
+  const scores = traces.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite);
   return scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 }
 
-function computeBasisDistribution(
-  params?: Map<string, { basis: string }>,
-): Record<string, number> {
+function computeBasisDistribution(params?: Map<string, { basis: string }>): Record<string, number> {
   if (!params || params.size === 0) return {};
   const dist: Record<string, number> = {};
   for (const p of params.values()) {

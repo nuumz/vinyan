@@ -6,7 +6,7 @@
 
 export interface RateLimitConfig {
   defaultBucketSize: number;
-  defaultRefillRate: number;  // tokens per second
+  defaultRefillRate: number; // tokens per second
   endpointOverrides: Record<string, { bucketSize: number; refillRate: number }>;
 }
 
@@ -41,7 +41,7 @@ export class RateLimiter {
    * @returns { allowed, retryAfterSeconds }
    */
   check(key: string, category?: string): { allowed: boolean; retryAfterSeconds: number } {
-    const bucketKey = `${key}:${category ?? "default"}`;
+    const bucketKey = `${key}:${category ?? 'default'}`;
     const { bucketSize, refillRate } = this.getLimits(category);
 
     let bucket = this.buckets.get(bucketKey);
@@ -85,18 +85,18 @@ export class RateLimiter {
 
 /** Classify an endpoint path to a rate-limit category. */
 export function classifyEndpoint(method: string, path: string): string | undefined {
-  if (method === "POST" && (path === "/api/v1/tasks" || path === "/api/v1/tasks/async")) {
-    return "task_submit";
+  if (method === 'POST' && (path === '/api/v1/tasks' || path === '/api/v1/tasks/async')) {
+    return 'task_submit';
   }
-  if (method === "GET" && path.startsWith("/api/v1/tasks/")) {
-    return "task_query";
+  if (method === 'GET' && path.startsWith('/api/v1/tasks/')) {
+    return 'task_query';
   }
-  if (path.startsWith("/api/v1/sessions")) {
-    return "session_mgmt";
+  if (path.startsWith('/api/v1/sessions')) {
+    return 'session_mgmt';
   }
   // Health and metrics are not rate-limited
-  if (path === "/api/v1/health" || path === "/api/v1/metrics") {
+  if (path === '/api/v1/health' || path === '/api/v1/metrics') {
     return undefined;
   }
-  return "default";
+  return 'default';
 }

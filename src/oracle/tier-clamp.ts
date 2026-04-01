@@ -30,9 +30,9 @@ const TRANSPORT_CAPS: Record<string, number> = {
 /** Peer trust caps — empirical (Wilson LB), NOT declared. Even trusted remote caps at 0.60. */
 export const PEER_TRUST_CAPS = {
   untrusted: 0.25,
-  provisional: 0.40,
-  established: 0.50,
-  trusted: 0.60,
+  provisional: 0.4,
+  established: 0.5,
+  trusted: 0.6,
 } as const;
 
 export type PeerTrustLevel = keyof typeof PEER_TRUST_CAPS;
@@ -46,7 +46,7 @@ export function clampByTier(confidence: number, tier?: string): number {
 
 /** Apply transport-level trust degradation (Protocol Architecture §3). */
 export function clampByTransport(confidence: number, transport?: string): number {
-  if (!transport || transport === "stdio") return confidence;
+  if (!transport || transport === 'stdio') return confidence;
   const cap = TRANSPORT_CAPS[transport] ?? 1.0;
   return Math.min(confidence, cap);
 }
@@ -62,16 +62,6 @@ export function clampByPeerTrust(confidence: number, peerTrust?: PeerTrustLevel)
  * Full ECP confidence adjustment: tier × transport × peer trust.
  * Takes the minimum across all applicable ceilings.
  */
-export function clampFull(
-  confidence: number,
-  tier?: string,
-  transport?: string,
-  peerTrust?: PeerTrustLevel,
-): number {
+export function clampFull(confidence: number, tier?: string, transport?: string, peerTrust?: PeerTrustLevel): number {
   return clampByPeerTrust(clampByTransport(clampByTier(confidence, tier), transport), peerTrust);
-}
-
-/** @deprecated Use clampFull() instead. Kept for backward compatibility. */
-export function clampConfidence(confidence: number, tier?: string, transport?: string): number {
-  return clampByTransport(clampByTier(confidence, tier), transport);
 }

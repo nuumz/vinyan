@@ -2,10 +2,10 @@
  * JSONL Session Logger — append-only log of gate decisions.
  * Each decision is one JSON line in `.vinyan/sessions/{session_id}.jsonl`.
  */
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from "fs";
-import { join } from "path";
-import type { GateDecision } from "./gate.ts";
-import type { OracleVerdict } from "../core/types.ts";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import type { OracleVerdict } from '../core/types.ts';
+import type { GateDecision } from './gate.ts';
 
 export interface SessionLogEntry {
   timestamp: string;
@@ -15,7 +15,7 @@ export interface SessionLogEntry {
   decision: GateDecision;
   reasons: string[];
   oracle_results: Record<string, OracleVerdict>;
-  duration_ms: number;
+  durationMs: number;
   /** Specific verdicts that caused blocking — for false-positive tracking. */
   blocked_verdicts?: OracleVerdict[];
   /** Content hash of the mutation for dedup/FP tracking. */
@@ -27,12 +27,12 @@ export interface SessionLogEntry {
  * Creates the directory structure if it doesn't exist.
  */
 export async function logDecision(workspace: string, entry: SessionLogEntry): Promise<void> {
-  const sessionDir = join(workspace, ".vinyan", "sessions");
+  const sessionDir = join(workspace, '.vinyan', 'sessions');
   mkdirSync(sessionDir, { recursive: true });
 
   const logPath = join(sessionDir, `${entry.session_id}.jsonl`);
-  const line = JSON.stringify(entry) + "\n";
-  appendFileSync(logPath, line, "utf-8");
+  const line = JSON.stringify(entry) + '\n';
+  appendFileSync(logPath, line, 'utf-8');
 }
 
 /**
@@ -41,9 +41,9 @@ export async function logDecision(workspace: string, entry: SessionLogEntry): Pr
 export function readSessionLog(logPath: string): SessionLogEntry[] {
   if (!existsSync(logPath)) return [];
 
-  const content = readFileSync(logPath, "utf-8");
+  const content = readFileSync(logPath, 'utf-8');
   return content
-    .split("\n")
+    .split('\n')
     .filter((line: string) => line.trim().length > 0)
     .map((line: string) => JSON.parse(line) as SessionLogEntry);
 }

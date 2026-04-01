@@ -6,7 +6,7 @@
  *
  * Source of truth: spec/tdd.md §1C.4
  */
-import type { VinyanBus } from "../core/bus.ts";
+import type { VinyanBus } from '../core/bus.ts';
 
 export interface TraceTelemetry {
   totalTraces: number;
@@ -15,7 +15,7 @@ export interface TraceTelemetry {
   escalationCount: number;
   timeoutCount: number;
   avgQualityComposite: number;
-  avgDuration_ms: number;
+  avgDurationMs: number;
   byRoutingLevel: Record<number, { total: number; success: number }>;
 }
 
@@ -30,7 +30,7 @@ export function attachTraceListener(bus: VinyanBus): {
     escalationCount: 0,
     timeoutCount: 0,
     avgQualityComposite: 0,
-    avgDuration_ms: 0,
+    avgDurationMs: 0,
     byRoutingLevel: {},
   };
 
@@ -38,15 +38,23 @@ export function attachTraceListener(bus: VinyanBus): {
   let qualityCount = 0;
   let durationSum = 0;
 
-  const detach = bus.on("trace:record", ({ trace }) => {
+  const detach = bus.on('trace:record', ({ trace }) => {
     metrics.totalTraces++;
 
     // Outcome counts
     switch (trace.outcome) {
-      case "success": metrics.successCount++; break;
-      case "failure": metrics.failureCount++; break;
-      case "escalated": metrics.escalationCount++; break;
-      case "timeout": metrics.timeoutCount++; break;
+      case 'success':
+        metrics.successCount++;
+        break;
+      case 'failure':
+        metrics.failureCount++;
+        break;
+      case 'escalated':
+        metrics.escalationCount++;
+        break;
+      case 'timeout':
+        metrics.timeoutCount++;
+        break;
     }
 
     // Quality average (only when available)
@@ -57,8 +65,8 @@ export function attachTraceListener(bus: VinyanBus): {
     }
 
     // Duration average
-    durationSum += trace.duration_ms;
-    metrics.avgDuration_ms = durationSum / metrics.totalTraces;
+    durationSum += trace.durationMs;
+    metrics.avgDurationMs = durationSum / metrics.totalTraces;
 
     // Per routing level breakdown
     const level = trace.routingLevel;
@@ -66,7 +74,7 @@ export function attachTraceListener(bus: VinyanBus): {
       metrics.byRoutingLevel[level] = { total: 0, success: 0 };
     }
     metrics.byRoutingLevel[level]!.total++;
-    if (trace.outcome === "success") {
+    if (trace.outcome === 'success') {
       metrics.byRoutingLevel[level]!.success++;
     }
   });

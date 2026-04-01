@@ -7,8 +7,8 @@
  *
  * Source of truth: design/implementation-plan.md §PH3.5
  */
-import type { ExecutionTrace, ExtractedPattern } from "../orchestrator/types.ts";
-import { wilsonLowerBound } from "./wilson.ts";
+import type { ExecutionTrace, ExtractedPattern } from '../orchestrator/types.ts';
+import { wilsonLowerBound } from './wilson.ts';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ export function findFailureCorrelations(
   maxResults = 10,
 ): CorrelationResult[] {
   // Build attribute tuples per trace
-  const tuples = traces.map(t => ({
+  const tuples = traces.map((t) => ({
     trace: t,
     model: t.model_used,
     routingLevel: t.routingLevel,
@@ -49,7 +49,7 @@ export function findFailureCorrelations(
   }));
 
   // Generate all 2-attribute combination groups
-  const attrKeys = ["model", "routingLevel", "blastRadiusBucket", "oracleVerdictPattern"] as const;
+  const attrKeys = ['model', 'routingLevel', 'blastRadiusBucket', 'oracleVerdictPattern'] as const;
   const results: CorrelationResult[] = [];
 
   for (let i = 0; i < attrKeys.length; i++) {
@@ -72,9 +72,7 @@ export function findFailureCorrelations(
       for (const [, group] of groups) {
         if (group.length < minSampleSize) continue;
 
-        const failures = group.filter(t =>
-          t.trace.outcome === "failure" || t.trace.outcome === "timeout",
-        ).length;
+        const failures = group.filter((t) => t.trace.outcome === 'failure' || t.trace.outcome === 'timeout').length;
         const failRate = failures / group.length;
         if (failRate < 0.5) continue; // Minimum meaningful fail rate
 
@@ -91,7 +89,7 @@ export function findFailureCorrelations(
           failRate,
           sampleSize: group.length,
           wilsonLB: lb,
-          sourceTraceIds: group.map(t => t.trace.id),
+          sourceTraceIds: group.map((t) => t.trace.id),
         });
       }
     }
@@ -106,18 +104,15 @@ export function findFailureCorrelations(
  * Convert a CorrelationResult to an ExtractedPattern for integration
  * with the existing rule generation pipeline.
  */
-export function correlationToPattern(
-  result: CorrelationResult,
-  derivedFrom?: string,
-): ExtractedPattern {
+export function correlationToPattern(result: CorrelationResult, derivedFrom?: string): ExtractedPattern {
   const comboDesc = Object.entries(result.combo)
     .filter(([, v]) => v != null)
     .map(([k, v]) => `${k}=${v}`)
-    .join(", ");
+    .join(', ');
 
   return {
     id: `xp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    type: "anti-pattern",
+    type: 'anti-pattern',
     description: `Cross-task failure correlation: ${comboDesc} → ${(result.failRate * 100).toFixed(0)}% fail rate`,
     frequency: result.sampleSize,
     confidence: result.wilsonLB,
@@ -134,10 +129,10 @@ export function correlationToPattern(
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function blastBucket(fileCount: number): string {
-  if (fileCount <= 1) return "single";
-  if (fileCount <= 3) return "small";
-  if (fileCount <= 10) return "medium";
-  return "large";
+  if (fileCount <= 1) return 'single';
+  if (fileCount <= 3) return 'small';
+  if (fileCount <= 10) return 'medium';
+  return 'large';
 }
 
 function dominantFailedOracle(verdicts: Record<string, boolean>): string | undefined {

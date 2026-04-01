@@ -1,9 +1,9 @@
-import * as ts from "typescript";
-import { readFileSync, readdirSync, statSync } from "fs";
-import { join, resolve, relative, dirname } from "path";
-import { createHash } from "crypto";
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
+import { createHash } from 'crypto';
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
+import * as ts from 'typescript';
+import { buildVerdict } from '../../core/index.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
 
 /**
  * Dependency Analyzer — scans workspace TS files, builds import graph,
@@ -14,11 +14,11 @@ import { buildVerdict } from "../../core/index.ts";
 function collectTsFiles(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...collectTsFiles(full));
-    } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
       files.push(full);
     }
   }
@@ -27,7 +27,7 @@ function collectTsFiles(dir: string): string[] {
 
 /** Extract import specifiers from a TS source file. */
 function extractImports(filePath: string): string[] {
-  const content = readFileSync(filePath, "utf-8");
+  const content = readFileSync(filePath, 'utf-8');
   const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
   const imports: string[] = [];
 
@@ -49,8 +49,8 @@ function extractImports(filePath: string): string[] {
 function loadPathAliases(workspace: string): Map<string, string> {
   const aliases = new Map<string, string>();
   try {
-    const tsconfigPath = join(workspace, "tsconfig.json");
-    const raw = readFileSync(tsconfigPath, "utf-8");
+    const tsconfigPath = join(workspace, 'tsconfig.json');
+    const raw = readFileSync(tsconfigPath, 'utf-8');
     const tsconfig = JSON.parse(raw);
     const paths = tsconfig?.compilerOptions?.paths as Record<string, string[]> | undefined;
     const baseUrl = tsconfig?.compilerOptions?.baseUrl as string | undefined;
@@ -60,8 +60,8 @@ function loadPathAliases(workspace: string): Map<string, string> {
       for (const [pattern, targets] of Object.entries(paths)) {
         if (targets.length === 0) continue;
         // Handle "alias/*" → ["src/*"] pattern
-        const aliasPrefix = pattern.replace(/\/?\*$/, "");
-        const targetDir = targets[0]!.replace(/\/?\*$/, "");
+        const aliasPrefix = pattern.replace(/\/?\*$/, '');
+        const targetDir = targets[0]!.replace(/\/?\*$/, '');
         aliases.set(aliasPrefix, resolve(base, targetDir));
       }
     }
@@ -72,10 +72,15 @@ function loadPathAliases(workspace: string): Map<string, string> {
 }
 
 /** Resolve an import specifier to an absolute file path. */
-function resolveImport(specifier: string, fromFile: string, workspace: string, pathAliases: Map<string, string>): string | null {
+function resolveImport(
+  specifier: string,
+  fromFile: string,
+  workspace: string,
+  pathAliases: Map<string, string>,
+): string | null {
   let base: string;
 
-  if (specifier.startsWith(".")) {
+  if (specifier.startsWith('.')) {
     // Relative import
     const dir = dirname(fromFile);
     base = resolve(dir, specifier);
@@ -83,8 +88,8 @@ function resolveImport(specifier: string, fromFile: string, workspace: string, p
     // Try path aliases
     let matched = false;
     for (const [prefix, targetDir] of pathAliases) {
-      if (specifier === prefix || specifier.startsWith(prefix + "/")) {
-        const rest = specifier === prefix ? "" : specifier.slice(prefix.length + 1);
+      if (specifier === prefix || specifier.startsWith(prefix + '/')) {
+        const rest = specifier === prefix ? '' : specifier.slice(prefix.length + 1);
         base = rest ? join(targetDir, rest) : targetDir;
         matched = true;
         break;
@@ -175,13 +180,13 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     } catch {
       return buildVerdict({
         verified: false,
-        type: "unknown",
+        type: 'unknown',
         confidence: 0,
         evidence: [],
         fileHashes: {},
         reason: `Target file not found: ${target}`,
-        errorCode: "SYMBOL_NOT_FOUND",
-        duration_ms: performance.now() - startTime,
+        errorCode: 'SYMBOL_NOT_FOUND',
+        durationMs: performance.now() - startTime,
       });
     }
 
@@ -190,13 +195,13 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
 
     // Compute file hash
     const content = readFileSync(targetAbsolute);
-    const fileHash = createHash("sha256").update(content).digest("hex");
+    const fileHash = createHash('sha256').update(content).digest('hex');
 
     // A2: Check for unresolvable imports — emit "uncertain" if evidence is inconclusive
     const targetImports = extractImports(targetAbsolute);
     const pathAliases = loadPathAliases(workspace);
-    const unresolved = targetImports.filter(spec =>
-      !spec.startsWith(".") ? false : resolveImport(spec, targetAbsolute, workspace, pathAliases) === null,
+    const unresolved = targetImports.filter((spec) =>
+      !spec.startsWith('.') ? false : resolveImport(spec, targetAbsolute, workspace, pathAliases) === null,
     );
 
     const evidence: Evidence[] = dependents.map((dep) => ({
@@ -211,12 +216,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     if (unresolved.length > 0) {
       return buildVerdict({
         verified: true,
-        type: "uncertain",
+        type: 'uncertain',
         confidence: 0.5,
         evidence,
         fileHashes: { [target]: fileHash },
-        reason: `Blast radius: ${blastRadius} file(s), but ${unresolved.length} import(s) unresolvable: ${unresolved.join(", ")}`,
-        duration_ms: performance.now() - startTime,
+        reason: `Blast radius: ${blastRadius} file(s), but ${unresolved.length} import(s) unresolvable: ${unresolved.join(', ')}`,
+        durationMs: performance.now() - startTime,
       });
     }
 
@@ -225,18 +230,18 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       evidence,
       fileHashes: { [target]: fileHash },
       reason: `Blast radius: ${blastRadius} file(s) depend on ${target}`,
-      duration_ms: performance.now() - startTime,
+      durationMs: performance.now() - startTime,
     });
   } catch (error) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `dep-oracle error: ${error instanceof Error ? error.message : String(error)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: performance.now() - startTime,
+      errorCode: 'ORACLE_CRASH',
+      durationMs: performance.now() - startTime,
     });
   }
 }

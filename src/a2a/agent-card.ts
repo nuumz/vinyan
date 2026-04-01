@@ -7,8 +7,8 @@
  *
  * Source of truth: Plan Phase D1
  */
-import { listOracles, getOracleEntry } from "../oracle/registry.ts";
-import type { A2AAgentCard, VinyanECPExtension } from "./types.ts";
+import { getOracleEntry, listOracles } from '../oracle/registry.ts';
+import type { A2AAgentCard, VinyanECPExtension } from './types.ts';
 
 export interface AgentCardIdentity {
   instanceId: string;
@@ -16,11 +16,7 @@ export interface AgentCardIdentity {
 }
 
 /** Default features advertised by a Vinyan instance. */
-const DEFAULT_FEATURES = [
-  "knowledge_sharing",
-  "feedback_loop",
-  "file_invalidation",
-] as const;
+const DEFAULT_FEATURES = ['knowledge_sharing', 'feedback_loop', 'file_invalidation'] as const;
 
 export interface AgentCardOptions {
   streaming?: boolean;
@@ -41,15 +37,15 @@ export function generateAgentCard(
       id: name,
       name: `Vinyan ${name}`,
       description: `Run ${name} verification oracle`,
-      tags: entry?.languages ?? ["typescript"],
+      tags: entry?.languages ?? ['typescript'],
     };
   });
 
   const card: A2AAgentCard = {
-    name: "Vinyan ENS",
-    description: "Epistemic Nervous System — verification oracles for code analysis",
+    name: 'Vinyan ENS',
+    description: 'Epistemic Nervous System — verification oracles for code analysis',
     url: baseUrl,
-    version: "5.0.0",
+    version: '5.0.0',
     capabilities: {
       streaming: options.streaming ?? false,
       pushNotifications: false,
@@ -63,13 +59,13 @@ export function generateAgentCard(
       const entry = getOracleEntry(name);
       return {
         name,
-        tier: entry?.tier ?? "heuristic" as const,
-        languages: entry?.languages ?? ["typescript"],
+        tier: entry?.tier ?? ('heuristic' as const),
+        languages: entry?.languages ?? ['typescript'],
       };
     });
 
-    card["x-vinyan-ecp"] = {
-      protocol: "vinyan-ecp",
+    card['x-vinyan-ecp'] = {
+      protocol: 'vinyan-ecp',
       ecp_version: 1,
       instance_id: identity.instanceId,
       public_key: identity.publicKey,
@@ -84,10 +80,10 @@ export function generateAgentCard(
 
 /** Check if an Agent Card belongs to a Vinyan peer. */
 export function isVinyanPeer(card: A2AAgentCard): boolean {
-  return card["x-vinyan-ecp"]?.protocol === "vinyan-ecp";
+  return card['x-vinyan-ecp']?.protocol === 'vinyan-ecp';
 }
 
 /** Extract the ECP extension from an Agent Card. Returns null for non-Vinyan peers. */
 export function getECPExtension(card: A2AAgentCard): VinyanECPExtension | null {
-  return card["x-vinyan-ecp"] ?? null;
+  return card['x-vinyan-ecp'] ?? null;
 }

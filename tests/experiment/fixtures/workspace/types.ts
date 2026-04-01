@@ -1,5 +1,5 @@
-export type UserRole = "admin" | "user";
-export type OrderStatus = "pending" | "shipped" | "delivered";
+export type UserRole = 'admin' | 'user';
+export type OrderStatus = 'pending' | 'shipped' | 'delivered';
 
 export interface User {
   id: number;

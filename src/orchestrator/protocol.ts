@@ -6,23 +6,14 @@
  *
  * Source of truth: spec/tdd.md §11 (Worker IPC), §16.3 (Worker lifecycle)
  */
-import { z } from "zod/v4";
-import { EvidenceSchema } from "../oracle/protocol.ts";
+import { z } from 'zod/v4';
+import { EvidenceSchema } from '../oracle/protocol.ts';
 
 // ── Routing enums ────────────────────────────────────────────────────
 
-export const RoutingLevelSchema = z.union([
-  z.literal(0),
-  z.literal(1),
-  z.literal(2),
-  z.literal(3),
-]);
+export const RoutingLevelSchema = z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]);
 
-export const IsolationLevelSchema = z.union([
-  z.literal(0),
-  z.literal(1),
-  z.literal(2),
-]);
+export const IsolationLevelSchema = z.union([z.literal(0), z.literal(1), z.literal(2)]);
 
 // ── ToolCall / ToolResult ────────────────────────────────────────────
 
@@ -35,11 +26,11 @@ export const ToolCallSchema = z.object({
 export const ToolResultSchema = z.object({
   callId: z.string(),
   tool: z.string(),
-  status: z.enum(["success", "error", "denied"]),
+  status: z.enum(['success', 'error', 'denied']),
   output: z.unknown().optional(),
   error: z.string().optional(),
   evidence: EvidenceSchema.optional(),
-  duration_ms: z.number(),
+  durationMs: z.number(),
 });
 
 // ── PerceptualHierarchy ──────────────────────────────────────────────
@@ -174,7 +165,7 @@ export const WorkerOutputSchema = z.object({
   proposedToolCalls: z.array(ToolCallSchema),
   uncertainties: z.array(z.string()),
   tokensConsumed: z.number(),
-  duration_ms: z.number(),
+  durationMs: z.number(),
 });
 
 // ── TaskInput (CLI/API entry point) ──────────────────────────────────
@@ -187,7 +178,7 @@ const TaskBudgetSchema = z.object({
 
 export const TaskInputSchema = z.object({
   id: z.string(),
-  source: z.enum(["cli", "api", "mcp", "a2a"]),
+  source: z.enum(['cli', 'api', 'mcp', 'a2a']),
   goal: z.string(),
   targetFiles: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),

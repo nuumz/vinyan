@@ -89,6 +89,9 @@ export interface VinyanBusEvents {
   // Oracle contradiction detection (A1: epistemic separation surfaces disagreements)
   "oracle:contradiction": { taskId: string; passed: string[]; failed: string[] };
 
+  // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
+  "oracle:deliberation_request": { taskId: string; oracleName: string; reason: string; suggestedBudget: number };
+
   // DAG decomposition fallback (A3: deterministic governance transparency)
   "decomposer:fallback": { taskId: string };
 

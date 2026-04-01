@@ -441,6 +441,18 @@ export async function executeTask(
         });
       }
 
+      // ── ECP §7.3: Surface deliberation requests from oracles (A2) ──
+      for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
+        if (verdict.deliberation_request) {
+          deps.bus?.emit("oracle:deliberation_request", {
+            taskId: input.id,
+            oracleName,
+            reason: verdict.deliberation_request.reason,
+            suggestedBudget: verdict.deliberation_request.suggestedBudget,
+          });
+        }
+      }
+
       // ── Oracle failure pattern (WP-5: lightweight fingerprint for trace analysis) ──
       const oracleFailurePattern = failedOracles.length > 0
         ? failedOracles.sort().join("+")

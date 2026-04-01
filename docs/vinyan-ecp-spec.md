@@ -583,7 +583,7 @@ Group verdicts by trust tier. The current implementation in `src/gate/conflict-r
 - **Step 2: Tier priority** — Deterministic verdict overrides heuristic overrides probabilistic (A5).
 - **Step 3: Evidence count** — Verdict with more evidence items wins.
 - **Step 4: Historical accuracy** — Oracle with better track record (correct/total ratio) wins.
-- **Step 5: Escalate** — If resolution fails, produce `type: "contradictory"` and emit event.
+- **Step 5: Escalate** — If resolution fails, set `hasContradiction: true` on the aggregate result and apply conservative default (failure wins). The downstream gate pipeline uses this flag to produce `type: "contradictory"` on the combined verdict.
 
 **Phase 2: Dempster-Shafer Combination (within same tier)**
 
@@ -636,7 +636,7 @@ Orchestrator behavior:
 Each Vinyan instance has a unique Ed25519 keypair:
 
 - **Public key**: Shared with peers for identity verification. Hash of public key serves as `instance_id`.
-- **Private key**: Never transmitted. Stored at `~/.vinyan/instance-key.json` with mode `0o600`.
+- **Private key**: Never transmitted. Stored at a caller-supplied path (convention: `~/.vinyan/instance-key.json`) with mode `0o600`. The path is a parameter to `loadOrCreateIdentity()`, not hardcoded.
 - **Generated**: On first run via `crypto.subtle.generateKey("Ed25519")`.
 
 Reference: `src/security/instance-identity.ts`
@@ -659,7 +659,7 @@ The receiver verifies:
 
 | Context | Method | Details |
 |:--------|:-------|:--------|
-| Local API | Bearer token | Auto-generated 256-bit token at `~/.vinyan/api-token`. Constant-time comparison. |
+| Local API | Bearer token | Auto-generated 256-bit token at `<workspace>/.vinyan/api-token` (workspace-relative, see `src/cli/serve.ts:26`). Constant-time comparison via `timingSafeEqual`. |
 | Network (instance-to-instance) | Ed25519 signature + optional mTLS | Per-message signing. mTLS for transport-level encryption. |
 | MCP (stdio) | Implicit trust | Local subprocess — no authentication needed. Trust controlled by spawn permissions. |
 

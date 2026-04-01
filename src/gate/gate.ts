@@ -8,6 +8,7 @@
  */
 import { createHash } from "crypto";
 import { loadConfig } from "../config/loader.ts";
+import { clampByTier } from "../oracle/tier-clamp.ts";
 import { detectPromptInjection, containsBypassAttempt } from "../guardrails/index.ts";
 import { verify as astVerify } from "../oracle/ast/ast-verifier.ts";
 import { verify as typeVerify } from "../oracle/type/type-verifier.ts";
@@ -248,7 +249,10 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
             circuitBreaker.recordSuccess(name);
           }
 
-          return { name, result: raceResult };
+          // ECP §4.4 (A5): Clamp confidence by oracle trust tier
+          const oracleTier = config.oracles[name]?.tier ?? "deterministic";
+          const clampedResult = { ...raceResult, confidence: clampByTier(raceResult.confidence, oracleTier) };
+          return { name, result: clampedResult };
         } catch (err) {
           circuitBreaker.recordFailure(name);
           const errorResult: OracleVerdict = buildVerdict({

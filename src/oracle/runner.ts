@@ -2,6 +2,7 @@ import type { HypothesisTuple, OracleVerdict } from "../core/types.ts";
 import { buildVerdict } from "../core/index.ts";
 import { OracleVerdictSchema } from "./protocol.ts";
 import { getOraclePath, getOracleEntry } from "./registry.ts";
+import { clampByTier } from "./tier-clamp.ts";
 
 export interface RunOracleOptions {
   timeout_ms?: number;
@@ -107,14 +108,17 @@ export async function runOracle(
     const raw = JSON.parse(result.stdout.trim());
     const verdict = OracleVerdictSchema.parse(raw);
 
+    // ECP §4.4 (A5): Clamp confidence by engine trust tier before any downstream use
+    const clampedConfidence = clampByTier(verdict.confidence, entry?.tier);
+
     // A2: Distinguish genuine epistemic uncertainty from errors.
     // If oracle reports low confidence, use 'uncertain' (valid epistemic state)
     // rather than treating it as an error path.
-    if (!verdict.verified && verdict.confidence > 0 && verdict.confidence < 0.5 && verdict.type === "unknown") {
-      return { ...verdict, type: "uncertain" as const, oracleName, duration_ms };
+    if (!verdict.verified && clampedConfidence > 0 && clampedConfidence < 0.5 && verdict.type === "unknown") {
+      return { ...verdict, type: "uncertain" as const, confidence: clampedConfidence, oracleName, duration_ms };
     }
 
-    return { ...verdict, oracleName, duration_ms };
+    return { ...verdict, confidence: clampedConfidence, oracleName, duration_ms };
   } catch (err) {
     return buildVerdict({
       verified: false,

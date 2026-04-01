@@ -524,7 +524,7 @@ belief_interval?: {
 
 ### 9.2 Multi-Oracle Aggregation: Dempster's Rule of Combination
 
-**Current:** `src/gate/conflict-resolver.ts` uses a 5-step deterministic algorithm: (1) domain separation — cross-domain conflicts are both valid, (2) tier priority — deterministic > heuristic > probabilistic (A5), (3) evidence count — more evidence items wins, (4) historical accuracy — oracle with better track record wins, (5) escalation — emit `type: "contradictory"`. This is a priority heuristic, not a mathematically grounded combination rule.
+**Current:** `src/gate/conflict-resolver.ts` uses a 5-step deterministic algorithm: (1) domain separation — cross-domain conflicts are both valid, (2) tier priority — deterministic > heuristic > probabilistic (A5), (3) evidence count — more evidence items wins, (4) historical accuracy — oracle with better track record wins, (5) escalation — set `hasContradiction: true` on aggregate result, apply conservative default (failure wins). This is a priority heuristic, not a mathematically grounded combination rule.
 
 **Problem:** When 3+ oracles with overlapping domains produce verdicts, the current heuristic doesn't have a formal way to strengthen or weaken combined confidence.
 

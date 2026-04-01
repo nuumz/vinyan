@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS facts (
   source_file TEXT NOT NULL,
   verified_at INTEGER NOT NULL,
   session_id  TEXT,
-  confidence  REAL DEFAULT 1.0
+  confidence  REAL DEFAULT 1.0,
+  valid_until  INTEGER,
+  decay_model  TEXT DEFAULT 'none'
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_target ON facts(target);
@@ -48,6 +50,16 @@ BEGIN
     SELECT fact_id FROM fact_evidence_files WHERE file_path = NEW.path
   ) AND source_file != NEW.path;
 END;
+
+CREATE TABLE IF NOT EXISTS falsifiable_conditions (
+  fact_id        TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+  scope          TEXT NOT NULL,
+  target         TEXT NOT NULL,
+  event          TEXT NOT NULL,
+  raw_condition  TEXT NOT NULL,
+  PRIMARY KEY (fact_id, raw_condition)
+);
+CREATE INDEX IF NOT EXISTS idx_fc_scope_target ON falsifiable_conditions(scope, target);
 
 CREATE TABLE IF NOT EXISTS dependency_edges (
   from_file TEXT NOT NULL,

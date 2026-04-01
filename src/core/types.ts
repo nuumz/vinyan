@@ -114,4 +114,8 @@ export interface Fact {
   verified_at: number;
   session_id?: string;
   confidence: number;
+  /** Epoch ms — fact evidence expires after this time (from oracle temporal_context). ECP spec §3.6. */
+  valid_until?: number;
+  /** How confidence decays over time (from oracle temporal_context). ECP spec §3.6. */
+  decay_model?: "linear" | "step" | "none";
 }

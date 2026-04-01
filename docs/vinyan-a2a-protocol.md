@@ -3,7 +3,9 @@
 > **Version:** 1.0 | **Phase:** 5 | **Audience:** AI Agent (Copilot/Claude)
 >
 > **This document owns:** Inter-instance communication protocol for Vinyan multi-instance coordination.
-> **Cross-reference:** [vinyan-concept.md](vinyan-concept.md) §2.4 (Network ECP), §11 (Multi-Instance Coordination), [vinyan-architecture.md](vinyan-architecture.md) D17, [vinyan-tdd.md](vinyan-tdd.md) §20–§23.
+> **Cross-reference:** [vinyan-concept.md](vinyan-concept.md) §2.4 (Network ECP), §11 (Multi-Instance Coordination), [vinyan-architecture.md](vinyan-architecture.md) Decision 17, [vinyan-tdd.md](vinyan-tdd.md) §20–§23.
+>
+> **Implementation status:** This document specifies the VIIP protocol design for Phase 5. Currently, only instance identity signing (`src/security/instance-identity.ts`) and configuration schema stubs (`src/config/schema.ts` — `Phase5InstancesConfigSchema`) are implemented. All message types (`VIIPEnvelope`, `VIIPMessageType`), WebSocket transport, handshake/heartbeat handlers, task delegation, oracle verification, and knowledge sharing are **specification-only** — no runtime implementation exists in the codebase.
 
 ---
 
@@ -161,7 +163,7 @@ The `correlation_id` field enables distributed tracing across instances (see als
 ```typescript
 {
   hypothesis_target: string;
-  verdicts: Record<string, OracleVerdict>;  // confidence pre-capped at 0.95 (I13)
+  verdicts: Record<string, OracleVerdict>;  // confidence pre-capped at 0.95 per TDD §23.4 (not yet implemented — A2A bridge uses separate A2A_CONFIDENCE_CAP = 0.5)
 }
 ```
 
@@ -230,7 +232,7 @@ Subset of bus events forwarded to peers (configurable):
 
 ### 4.1 Instance Identity
 
-Each instance generates an Ed25519 keypair on first run, stored in `~/.vinyan/instance-key.pem`. The public key is published in `InstanceDescriptor.public_key`.
+Each instance generates an Ed25519 keypair on first run, stored in `~/.vinyan/instance-key.json` (JSON format, not PEM — see `src/security/instance-identity.ts`). The public key is published in `InstanceDescriptor.public_key`.
 
 ### 4.2 Message Authentication
 
@@ -313,15 +315,28 @@ Receivers maintain a bounded set of recently seen `message_id` values:
 
 ## 8. Configuration
 
+### Implemented fields (`Phase5InstancesConfigSchema` in `src/config/schema.ts`)
+
 ```yaml
-# vinyan.json → phase5.instances
+# vinyan.json → phase5.instances — these fields exist in the schema today
 instances:
   enabled: false                     # default: single-instance mode
-  instance_id: ""                    # auto-generated UUIDv4 on first run
   listen_port: 3928                  # VIIP WebSocket port
+  heartbeat_interval_ms: 15000
+  heartbeat_timeout_ms: 45000
   peers:
     - url: "wss://instance-b:3928/vinyan/ecp"
       trust_level: "untrusted"       # untrusted | semi-trusted | trusted
+```
+
+### Planned fields (specification-only — not yet in schema)
+
+```yaml
+# These fields are part of the VIIP specification but do NOT exist in
+# Phase5InstancesConfigSchema yet. They will be added when VIIP runtime
+# implementation begins.
+instances:
+  instance_id: ""                    # auto-generated UUIDv4 on first run
   discovery:
     mode: "static"                   # static | descriptor_poll
     poll_interval_ms: 60000          # for descriptor_poll mode
@@ -333,8 +348,6 @@ instances:
     enabled: false
     timeout_ms: 60000
     max_concurrent: 5
-  heartbeat_interval_ms: 15000
-  heartbeat_timeout_ms: 45000
 ```
 
 ---
@@ -353,3 +366,5 @@ Vinyan's inter-instance protocol (VIIP) is distinct from the external A2A protoc
 | Governance | Advisory coordination | Standard task delegation |
 
 The A2A bridge translates between A2A's task/artifact model and Vinyan's ECP model. VIIP preserves ECP semantics natively.
+
+> **Note on trust vocabulary:** This document and the config schema use `"untrusted" | "semi-trusted" | "trusted"` for trust levels. The MCP bridge code (`src/mcp/ecp-translation.ts`) uses a different vocabulary: `"local" | "network" | "remote"` as `TrustLevel`. The mapping is: `trusted` → `local` (cap 0.7), `semi-trusted` → `network` (cap 0.5), `untrusted` → `remote` (cap 0.3). These two vocabularies should be unified in a future cleanup.

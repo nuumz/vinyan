@@ -99,7 +99,7 @@ const Phase4ConfigSchema = z.object({
   demotion_max_reentries: z.number().min(0).default(3),
   reentry_cooldown_sessions: z.number().positive().default(50),
   epsilon_worker: z.number().min(0.03).max(0.30).default(0.10),
-  diversity_floor_pct: z.number().min(0.05).max(0.50).default(0.15),
+  diversity_cap_pct: z.number().min(0.05).max(0.95).default(0.70),
   max_active_workers: z.number().positive().default(10),
   capability_min_traces: z.number().positive().default(5),
   negative_capability_threshold: z.number().min(0).max(1).default(0.6),

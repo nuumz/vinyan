@@ -40,6 +40,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private workspace: string;
   private useSubprocess: boolean;
   private workerEntryPath: string;
+  private dockerAvailable: boolean | null = null;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry;
@@ -76,8 +77,17 @@ export class WorkerPoolImpl implements WorkerPool {
     // L2/L3: container dispatch when isolation level = 2
     // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
     if (workerInput.isolationLevel === 2 && this.useSubprocess) {
-      const output = await this.dispatchContainer(workerInput, routing);
-      return this.toWorkerResult(output, startTime);
+      // Pre-flight: check Docker availability (cached after first check)
+      if (this.dockerAvailable === null) {
+        this.dockerAvailable = this.checkDockerAvailable();
+      }
+      if (!this.dockerAvailable) {
+        console.warn("[vinyan] A6 WARNING: Docker unavailable — falling back to subprocess isolation. L2/L3 container isolation degraded.");
+        // Fall through to subprocess dispatch below
+      } else {
+        const output = await this.dispatchContainer(workerInput, routing);
+        return this.toWorkerResult(output, startTime);
+      }
     }
 
     const output = this.useSubprocess
@@ -300,6 +310,16 @@ export class WorkerPoolImpl implements WorkerPool {
       return createUnifiedDiff(file, original, newContent);
     } catch {
       return createUnifiedDiff(file, "", newContent);
+    }
+  }
+
+  /** Check if Docker is available on this system. Result is cached. */
+  private checkDockerAvailable(): boolean {
+    try {
+      const result = Bun.spawnSync(["docker", "info"], { stdout: "pipe", stderr: "pipe" });
+      return result.exitCode === 0;
+    } catch {
+      return false;
     }
   }
 }

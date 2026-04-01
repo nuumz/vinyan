@@ -193,4 +193,63 @@ describe("detectEnvironment", () => {
     expect(detectEnvironment()).toBe("development");
     if (original) process.env.NODE_ENV = original;
   });
+
+  test("NODE_ENV=production → production", () => {
+    const original = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    expect(detectEnvironment()).toBe("production");
+    if (original) process.env.NODE_ENV = original;
+    else delete process.env.NODE_ENV;
+  });
+
+  test("NODE_ENV=prod → production", () => {
+    const original = process.env.NODE_ENV;
+    process.env.NODE_ENV = "prod";
+    expect(detectEnvironment()).toBe("production");
+    if (original) process.env.NODE_ENV = original;
+    else delete process.env.NODE_ENV;
+  });
+
+  test("NODE_ENV=stg → staging", () => {
+    const original = process.env.NODE_ENV;
+    process.env.NODE_ENV = "stg";
+    expect(detectEnvironment()).toBe("staging");
+    if (original) process.env.NODE_ENV = original;
+    else delete process.env.NODE_ENV;
+  });
+
+  test("NODE_ENV=staging → staging", () => {
+    const original = process.env.NODE_ENV;
+    process.env.NODE_ENV = "staging";
+    expect(detectEnvironment()).toBe("staging");
+    if (original) process.env.NODE_ENV = original;
+    else delete process.env.NODE_ENV;
+  });
+});
+
+describe("routeByRisk — production boundary", () => {
+  test("low risk + production → minimum L2", () => {
+    const decision = routeByRisk(0.1, 1, undefined, "production");
+    expect(decision.level).toBeGreaterThanOrEqual(2);
+  });
+
+  test("medium risk + production → at least L2", () => {
+    const decision = routeByRisk(0.5, 1, undefined, "production");
+    expect(decision.level).toBeGreaterThanOrEqual(2);
+  });
+
+  test("high risk + production → L3 (above L2 already)", () => {
+    const decision = routeByRisk(0.8, 1, undefined, "production");
+    expect(decision.level).toBe(3);
+  });
+
+  test("low risk + development → L0 (no floor)", () => {
+    const decision = routeByRisk(0.1, 0, undefined, "development");
+    expect(decision.level).toBe(0);
+  });
+
+  test("no environment specified → no floor applied", () => {
+    const decision = routeByRisk(0.1, 0);
+    expect(decision.level).toBe(0);
+  });
 });

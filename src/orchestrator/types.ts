@@ -79,6 +79,7 @@ export interface TaskResult {
   qualityScore?: QualityScore;
   escalationReason?: string; // If status === 'escalated'
   notes?: string[];          // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
+  contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
 }
 
 // ---------------------------------------------------------------------------

@@ -81,6 +81,7 @@ export interface VinyanBusEvents {
   // Guardrail detections
   "guardrail:injection_detected": { field: string; patterns: string[] };
   "guardrail:bypass_detected": { field: string; patterns: string[] };
+  "guardrail:violation": { workerId: string; type: string; details?: string };
 
   // Self-model calibration
   "selfmodel:calibration_error": { taskId: string; error: string };

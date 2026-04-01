@@ -42,13 +42,13 @@ export class LLMCriticImpl implements CriticEngine {
     try {
       response = await this.provider.generate(request);
     } catch {
-      return failOpenResult();
+      return failClosedResult();
     }
 
     const tokensUsed = response.tokensUsed;
     const parsed = parseCriticResponse(response.content);
     if (!parsed) {
-      return failOpenResult(tokensUsed);
+      return failClosedResult(tokensUsed);
     }
 
     // A5: Confidence = count of passed aspects / total aspects (NOT LLM self-assessment)
@@ -178,7 +178,7 @@ function parseCriticResponse(content: string): ParsedCriticResponse | null {
 }
 
 // ---------------------------------------------------------------------------
-// Fail-open fallback
+// Fail-closed fallback (A2: "I don't know" is a valid state, not approval)
 // ---------------------------------------------------------------------------
 
 const RUBRIC_ASPECTS = [
@@ -189,12 +189,12 @@ const RUBRIC_ASPECTS = [
   "consistency",
 ] as const;
 
-function failOpenResult(tokensUsed = { input: 0, output: 0 }): CriticResult {
+function failClosedResult(tokensUsed = { input: 0, output: 0 }): CriticResult {
   return {
-    approved: true,
+    approved: false,
     confidence: 0.3,
-    aspects: RUBRIC_ASPECTS.map(name => ({ name, passed: true, explanation: "parse failure — fail-open" })),
-    reason: "Critic response could not be parsed — fail-open with low confidence",
+    aspects: RUBRIC_ASPECTS.map(name => ({ name, passed: false, explanation: "critic unavailable — fail-closed" })),
+    reason: "Critic response could not be parsed — fail-closed per A2 (uncertainty is not approval)",
     verdicts: {},
     tokensUsed,
   };

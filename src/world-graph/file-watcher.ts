@@ -51,7 +51,11 @@ export class FileWatcher {
     this.watcher.on("add", handleChange);
     this.watcher.on("unlink", (filePath: string) => {
       // On file deletion, remove its hash entry — facts with old hash remain but are stale
-      this.worldGraph.updateFileHash(filePath, "DELETED");
+      try {
+        this.worldGraph.updateFileHash(filePath, "DELETED");
+      } catch {
+        // DB may be closed during shutdown — ignore
+      }
     });
   }
 

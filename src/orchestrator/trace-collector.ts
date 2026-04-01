@@ -56,6 +56,13 @@ export class TraceCollectorImpl implements TraceCollector {
   }
 
   getTraceCount(): number {
+    if (this.traceStore) {
+      try {
+        return this.traceStore.count();
+      } catch {
+        // Fall back to in-memory count
+      }
+    }
     return this.traces.length;
   }
 }

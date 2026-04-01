@@ -77,7 +77,7 @@ export const ExecutionTraceRowSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   affected_files: z.string(),
   prediction_error: z.string().nullable().optional(),
-  validation_depth: z.number().nullable().optional(),
+  validation_depth: z.enum(["structural", "structural_and_tests", "full_shadow"]).nullable().optional(),
   shadow_validation: z.string().nullable().optional(),
   exploration: z.unknown().nullable().optional(),
   framework_markers: z.string().nullable().optional(),

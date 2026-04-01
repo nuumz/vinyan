@@ -514,6 +514,81 @@ Vinyan Concept มี theoretical advantage ที่ไม่มีใครม
 
 ---
 
+## 9.5 ECP — Competitive Protocol Positioning (2026-04-01 Update)
+
+> **Context:** Vinyan's Phase 5 design decision: make ECP (Epistemic Communication Protocol) a publishable standard, not just an internal protocol. MCP and A2A become bridge layers. This section analyzes ECP's competitive position among AI communication protocols.
+
+### Protocol Landscape (April 2026)
+
+| Protocol | Author | Purpose | Epistemic Semantics | Transport |
+|:---------|:-------|:--------|:------------------:|:----------|
+| **MCP** | Anthropic | LLM → Tool invocation | ❌ None | stdio, HTTP |
+| **A2A** | Google | Agent ↔ Agent task delegation | ❌ None | HTTP JSON-RPC |
+| **LSP** | Microsoft | Editor ↔ Language server | ⚠️ Severity only | stdio, pipe |
+| **OpenAI Function Calling** | OpenAI | LLM → Structured output | ❌ None | HTTP |
+| **LangChain Tool Protocol** | LangChain | LLM → Tool chain | ❌ None | In-process |
+| **ECP** | Vinyan | RE ↔ RE epistemic verification | ✅ Full | stdio (implemented), WS + HTTP (spec) |
+
+### What ECP Has That No One Else Does
+
+| Capability | ECP | Closest Alternative | Gap |
+|:-----------|:----|:-------------------|:----|
+| Confidence as structured number [0,1] | ✅ Built into every verdict | None — all protocols treat results as opaque | Complete gap |
+| "I don't know" as protocol state | ✅ `type: "unknown"` triggers uncertainty reduction | MCP: error or empty result | Semantic gap |
+| Evidence chains with content hashes | ✅ `Evidence[]` + `fileHashes` (SHA-256, A4) | LSP: diagnostic locations | Provenance gap |
+| Falsifiability conditions | ✅ `falsifiable_by` enables proactive re-verification | None | Complete gap |
+| Trust tiers (deterministic > heuristic > probabilistic) | ✅ 4 tiers with confidence caps | None | Complete gap |
+| Temporal validity with decay models | ✅ `temporal_context` with TTL | None | Complete gap |
+| Deliberation negotiation | ✅ Engine can request more compute | None | Complete gap |
+| Contradiction resolution | ✅ 5-step deterministic resolution (A3) | None | Complete gap |
+
+### Strategic Position
+
+ECP does not compete with MCP or A2A — it addresses a **different layer**:
+
+```
+Application Layer:   Task execution (A2A), tool invocation (MCP)
+                     ↕ bridge protocols (translation + trust degradation)
+Epistemic Layer:     Verification, confidence, evidence (ECP)     ← Vinyan's unique layer
+                     ↕ content addressing (SHA-256)
+Truth Layer:         World Graph (content-addressed facts)
+```
+
+**No existing protocol occupies the Epistemic Layer.** This is Vinyan's strategic moat. MCP tells you "the tool returned X." ECP tells you "the tool returned X with confidence 0.85, supported by evidence at file:line, bound to content hash abc123, valid until timestamp T, falsifiable if file Y changes."
+
+### Adoption Strategy
+
+1. **Level 0 is trivially easy** — Any CLI tool can become an ECP oracle in 15 lines of code. Lower barrier than MCP SDK.
+2. **Oracle SDK** — Publish `@vinyan/oracle-sdk` (npm) and `vinyan-oracle-sdk` (PyPI) for guided adoption.
+3. **MCP/A2A as on-ramps** — Agents already using MCP can use Vinyan through the bridge, then migrate to ECP-native as they see value.
+4. **Conformance levels** — Level 0→1→2→3 lets systems adopt incrementally.
+
+### Research Validation (April 2026)
+
+Cross-referencing ECP design against academic literature and production systems:
+
+| ECP Design Decision | Academic Validation | Production Validation |
+|:--------------------|:-------------------|:---------------------|
+| A1: Generation ≠ Verification | Byzantine fault tolerance theory — consensus requires independent verification | No production agent (Cursor/Copilot/Devin) implements this separation |
+| A2: "I don't know" as state | Chain-of-Verification (2024) — LLMs must externalize uncertainty | No protocol supports this; all treat non-response as error |
+| A5: Tiered Trust | LLM confidence poorly calibrated (Kadavath 2022, Xiong 2024) — tiers essential | Salesforce Einstein Trust Layer (closest, but not open protocol) |
+| Scalar confidence model | Dempster-Shafer theory suggests belief/plausibility intervals richer | No system uses structured confidence at protocol level |
+| Multi-oracle aggregation | Dempster's rule of combination for independent evidence | All production systems use single-model or simple voting |
+
+**Key insight:** ECP occupies an *unclaimed semantic layer* validated by both theory and practice. No existing protocol or production system provides epistemic semantics — this is Vinyan's strategic moat.
+
+**Identified ECP v2 extensions from research:**
+1. **Belief intervals** — `[Bel, Pl]` tuple for richer uncertainty representation (Dempster-Shafer)
+2. **Merkle-chained evidence** — tamper-proof evidence chains (Certificate Transparency pattern)
+3. **Hypothesis constraints** — declarative verification requirements (SHACL/RAIL pattern)
+4. **Fact distribution protocol** — gossip + k-confirmation for fleet-verified facts
+5. **OTel `gen_ai.verdict.*` conventions** — epistemic observability standard (contribution opportunity)
+
+**Full specification:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md)
+**Protocol architecture:** [vinyan-protocol-architecture.md](vinyan-protocol-architecture.md)
+
+---
+
 ## 10. AGI/ASI Readiness — Vinyan เทียบกับ 15 ข้อตกลงร่วมของ AGI Architecture
 
 > **Source**: "AGI Architectures: What We Can Agree On" (Bareš, Intelligence Strategy Foundation, Oct 2025) — สังเคราะห์จาก MuZero, AIXI, DreamerV3, AlphaZero, JEPA, RETRO, NeuroDream, Gödel Machine, OpenCog Hyperon ฯลฯ แล้วสรุป 15 structural requirements ที่ทุก AGI architecture ต้องมี
@@ -789,6 +864,31 @@ Vinyan ต้องเพิ่ม:
 > **Remaining ~10%: GAP-G (cross-domain), GAP-H (failure mode coverage), และ full causal world model + metacognitive routing ที่เป็น Phase 2+ research**
 >
 > **ไม่พบ architectural flaw ที่ต้อง redesign** — gaps ทั้งหมดเป็น **additions** ไม่ใช่ corrections NeurSymbolic thesis, Zero-Trust protocol, และ Oracle framework ยืนได้ทั้งหมด
+
+### 10.6 Expert Panel Review Findings (April 2026)
+
+> **Full review:** [vinyan-expert-review.md](vinyan-expert-review.md) — 5 expert agents (Systems Architect, Protocol Expert, AI/ML Expert, Security Expert, Pragmatic Engineer) independently analyzed the full TDD, concept, architecture, ECP spec, gap analysis, and source code.
+
+**Summary of findings that refine or extend the §10.5 verdict:**
+
+| ID | Domain | Severity | Finding | Gap Ref | Status |
+|----|--------|----------|---------|---------|--------|
+| ER-1 | Architecture | HIGH | Core Loop is 616-line God Function — no crash recovery, no checkpoints | — (new) | → TDD Q11 |
+| ER-2 | Architecture | HIGH | Synchronous EventBus blocks L0 100ms budget with telemetry I/O | — (new) | → TDD Q14, Q19 |
+| ER-3 | Security | HIGH | API keys forwarded to worker subprocesses, violating A6 spirit | — (new) | → TDD Q12 |
+| ER-4 | Security | HIGH | Shadow runner has no OS-level isolation (same user, full fs/network) | GAP-H | → TDD Q20 |
+| ER-5 | AI/ML | HIGH | Critic fails open (approved:true on error) — violates A2 | — (new) | **Tier 1 fix** |
+| ER-6 | AI/ML | HIGH | Evolution Engine groups by exact approach string — learning signal destroyed | GAP-C | → TDD Q13 |
+| ER-7 | Protocol | CRITICAL | ECP spec says JSON-RPC 2.0 but implementation uses raw JSON | — (new) | → ECP Appendix D |
+| ER-8 | Protocol | HIGH | `confidence` conflates tier reliability with engine certainty | — (new) | → ECP Appendix D |
+| ER-9 | Protocol | HIGH | `falsifiable_by` has no formal grammar — ecosystem fragmentation risk | — (new) | → ECP Appendix D |
+| ER-10 | Pragmatic | HIGH | Zero production users or external benchmarks (SWE-bench) | — (new) | → TDD Q17, Q18 |
+| ER-11 | Security | MEDIUM | Auth token comparison not timing-safe (`===` instead of `timingSafeEqual`) | GAP-I | **Tier 1 fix** |
+| ER-12 | Security | MEDIUM | Guardrail `sanitizeForPrompt` only replaces first pattern occurrence | GAP-I | **Tier 1 fix** |
+
+**Verdict update:** The original §10.5 assessment ("no architectural flaw requiring redesign") holds. Expert findings are predominantly **implementation gaps** (API keys, crash recovery, timing safety) and **protocol maturity gaps** (spec-implementation divergence, grammar formalization), not architectural flaws. The core thesis (A1 epistemic separation, A4 content-addressed truth, A6 zero-trust execution) is validated as structurally sound.
+
+**New concern not in original verdict:** The A3 (Deterministic Governance) boundary is thinner than documented. Task decomposition (LLM-generated) and Critic (LLM veto at L2+) place LLMs in the governance-adjacent path. Expert consensus suggests reframing A3 as: *"All decisions that gate state mutations are grounded in deterministic or heuristic evidence. LLM signals are inputs, never sole deciders."*
 
 ---
 

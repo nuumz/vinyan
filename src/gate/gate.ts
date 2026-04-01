@@ -30,6 +30,34 @@ import { resolve } from "path";
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
 
+/**
+ * Module-level oracle accuracy tracker — aggregates verdict correctness over time.
+ * Used by conflict resolver step 4 (historical accuracy comparison).
+ * "Correct" means the oracle verdict aligned with the final gate decision.
+ */
+const oracleAccuracyTracker = new Map<string, { total: number; correct: number }>();
+
+/** Update accuracy tracker after gate resolution. */
+function updateOracleAccuracy(
+  oracleResults: Record<string, OracleVerdict>,
+  finalDecision: "allow" | "block",
+): void {
+  for (const [name, verdict] of Object.entries(oracleResults)) {
+    const entry = oracleAccuracyTracker.get(name) ?? { total: 0, correct: 0 };
+    entry.total++;
+    // Oracle is "correct" if it agrees with the final decision
+    const oracleBlocked = !verdict.verified;
+    const decisionBlocked = finalDecision === "block";
+    if (oracleBlocked === decisionBlocked) entry.correct++;
+    oracleAccuracyTracker.set(name, entry);
+  }
+}
+
+/** Exported for testing and external consumers. */
+export function getOracleAccuracy(): Record<string, { total: number; correct: number }> {
+  return Object.fromEntries(oracleAccuracyTracker);
+}
+
 // ── Public types ────────────────────────────────────────────────
 
 export interface GateRequest {
@@ -249,11 +277,15 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     oracleTiers: Object.fromEntries(
       Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? "deterministic"]),
     ),
+    oracleAccuracy: oracleAccuracyTracker.size > 0 ? Object.fromEntries(oracleAccuracyTracker) : undefined,
     informationalOracles: INFORMATIONAL_ORACLES,
   });
   reasons.push(...resolved.reasons);
 
   const decision: GateDecision = reasons.length > 0 ? "block" : "allow";
+
+  // Update oracle accuracy tracker with this gate run's results
+  updateOracleAccuracy(oracleResults, decision);
   const duration_ms = performance.now() - start;
 
   // Build complexity context for QualityScore Phase 1 dimensions

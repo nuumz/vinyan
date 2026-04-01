@@ -191,5 +191,6 @@ export const TaskInputSchema = z.object({
   goal: z.string(),
   targetFiles: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
   budget: TaskBudgetSchema,
 });

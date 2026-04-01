@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import type { CriticEngine, CriticResult, WorkerProposal } from "../../../src/orchestrator/critic/critic-engine.ts";
 import type { TaskInput, PerceptualHierarchy } from "../../../src/orchestrator/types.ts";
+import { LLMCriticImpl } from "../../../src/orchestrator/critic/llm-critic-impl.ts";
+import type { LLMProvider } from "../../../src/orchestrator/types.ts";
 
 /** Minimal mock implementation to verify the interface contract */
 function createMockCritic(result: Partial<CriticResult> = {}): CriticEngine {
@@ -95,5 +97,59 @@ describe("CriticEngine interface contract", () => {
       ["all tests pass", "no new lint warnings"],
     );
     expect(result.approved).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LLMCriticImpl fail-closed behavior (A2 compliance)
+// ---------------------------------------------------------------------------
+
+function makeThrowingProvider(): LLMProvider {
+  return {
+    generate: async () => { throw new Error("provider unavailable"); },
+  } as unknown as LLMProvider;
+}
+
+function makeUnparseableProvider(): LLMProvider {
+  return {
+    generate: async () => ({
+      content: "this is not valid JSON at all",
+      tokensUsed: { input: 50, output: 20 },
+    }),
+  } as unknown as LLMProvider;
+}
+
+describe("LLMCriticImpl fail-closed behavior", () => {
+  test("returns approved=false when LLM provider throws", async () => {
+    const critic = new LLMCriticImpl(makeThrowingProvider());
+    const result = await critic.review(makeProposal(), makeTask(), makePerception());
+    expect(result.approved).toBe(false);
+    expect(result.confidence).toBe(0.3);
+    expect(result.reason).toContain("fail-closed");
+  });
+
+  test("returns approved=false when LLM response is unparseable", async () => {
+    const critic = new LLMCriticImpl(makeUnparseableProvider());
+    const result = await critic.review(makeProposal(), makeTask(), makePerception());
+    expect(result.approved).toBe(false);
+    expect(result.confidence).toBe(0.3);
+    expect(result.reason).toContain("fail-closed");
+  });
+
+  test("all aspects are passed=false on failure", async () => {
+    const critic = new LLMCriticImpl(makeThrowingProvider());
+    const result = await critic.review(makeProposal(), makeTask(), makePerception());
+    expect(result.aspects.length).toBe(5);
+    for (const aspect of result.aspects) {
+      expect(aspect.passed).toBe(false);
+      expect(aspect.explanation).toContain("fail-closed");
+    }
+  });
+
+  test("tokens are tracked even on parse failure", async () => {
+    const critic = new LLMCriticImpl(makeUnparseableProvider());
+    const result = await critic.review(makeProposal(), makeTask(), makePerception());
+    expect(result.tokensUsed.input).toBe(50);
+    expect(result.tokensUsed.output).toBe(20);
   });
 });

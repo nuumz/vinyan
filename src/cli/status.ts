@@ -11,6 +11,7 @@ import { RuleStore } from "../db/rule-store.ts";
 import { SkillStore } from "../db/skill-store.ts";
 import { PatternStore } from "../db/pattern-store.ts";
 import { ShadowStore } from "../db/shadow-store.ts";
+import { WorkerStore } from "../db/worker-store.ts";
 import { getSystemMetrics } from "../observability/metrics.ts";
 
 function openDB(workspace: string): VinyanDB | null {
@@ -38,12 +39,15 @@ export async function runStatusCommand(workspace: string): Promise<void> {
     const patternStore = new PatternStore(raw);
     const shadowStore = new ShadowStore(raw);
 
+    const workerStore = new WorkerStore(raw);
+
     const m = getSystemMetrics({
       traceStore,
       ruleStore,
       skillStore,
       patternStore,
       shadowStore,
+      workerStore,
     });
 
     console.log("=== Vinyan System Status ===\n");
@@ -64,6 +68,12 @@ export async function runStatusCommand(workspace: string): Promise<void> {
     console.log(`  Total: ${m.patterns.total}  Sleep cycles run: ${m.patterns.sleepCyclesRun}`);
 
     console.log(`\nShadow queue: ${m.shadow.queueDepth} pending`);
+
+    // Workers section
+    if (m.workers) {
+      console.log("\nWorkers:");
+      console.log(`  Active: ${m.workers.active}  Probation: ${m.workers.probation}  Demoted: ${m.workers.demoted}  Retired: ${m.workers.retired}  Total: ${m.workers.total}`);
+    }
 
     console.log("\nData gates:");
     console.log(`  Sleep cycle:      ${m.dataGates.sleepCycle ? "READY" : "not ready"}`);

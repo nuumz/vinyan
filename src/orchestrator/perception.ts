@@ -34,31 +34,50 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
   }
 
   async assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy> {
-    const targetFile = input.targetFiles?.[0] ?? "";
-    const targetAbsolute = targetFile ? resolve(this.workspace, targetFile) : "";
+    const targetFiles = input.targetFiles ?? [];
+    const primaryFile = targetFiles[0] ?? "";
 
-    // Build dependency cone
-    const { directImportees, directImporters, transitiveImporters, transitiveBlastRadius, affectedTestFiles } =
-      this.buildDependencyCone(targetAbsolute, level);
+    // Build dependency cones for ALL target files and merge
+    let allDirectImporters: string[] = [];
+    let allDirectImportees: string[] = [];
+    let allTransitiveImporters: string[] = [];
+    let maxBlastRadius = 0;
+    let allTestFiles: string[] = [];
 
-    // Query World Graph for verified facts
-    const verifiedFacts = this.queryVerifiedFacts(
-      [targetFile, ...directImporters, ...directImportees],
-    );
+    for (const tf of targetFiles) {
+      const abs = tf ? resolve(this.workspace, tf) : "";
+      if (!abs) continue;
+      const cone = this.buildDependencyCone(abs, level);
+      allDirectImporters.push(...cone.directImporters);
+      allDirectImportees.push(...cone.directImportees);
+      allTransitiveImporters.push(...(cone.transitiveImporters ?? []));
+      maxBlastRadius = Math.max(maxBlastRadius, cone.transitiveBlastRadius);
+      allTestFiles.push(...(cone.affectedTestFiles ?? []));
+    }
+
+    // Deduplicate
+    const directImporters = [...new Set(allDirectImporters)];
+    const directImportees = [...new Set(allDirectImportees)];
+    const transitiveImporters = [...new Set(allTransitiveImporters)];
+    const affectedTestFiles = [...new Set(allTestFiles)];
+
+    // Query World Graph for verified facts from all files in merged cone
+    const factTargets = [...new Set([...targetFiles, ...directImporters, ...directImportees])];
+    const verifiedFacts = this.queryVerifiedFacts(factTargets);
 
     // Run diagnostics
     const diagnostics = await this.runDiagnostics();
 
     return {
       taskTarget: {
-        file: targetFile,
+        file: primaryFile,
         symbol: undefined,
         description: input.goal,
       },
       dependencyCone: {
         directImporters,
         directImportees,
-        transitiveBlastRadius,
+        transitiveBlastRadius: maxBlastRadius,
         transitiveImporters: level >= 2 ? transitiveImporters : undefined,
         affectedTestFiles: level >= 2 ? affectedTestFiles : undefined,
       },

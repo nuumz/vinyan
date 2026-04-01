@@ -28,6 +28,7 @@ import { WorkingMemory } from "./working-memory.ts";
 import type { VinyanBus } from "../core/bus.ts";
 import { computeQualityScore, buildComplexityContext } from "../gate/quality-score.ts";
 import { commitArtifacts } from "./worker/artifact-commit.ts";
+import { resolve as resolvePath } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -370,6 +371,26 @@ export async function executeTask(
           error: String(dispatchErr),
           routing,
         });
+        // Record failure trace so dispatch errors are visible to Sleep Cycle and audit
+        const dispatchFailTrace: ExecutionTrace = {
+          id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
+          taskId: input.id,
+          worker_id: routing.workerId ?? routing.model ?? "unknown",
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: "dispatch-error",
+          oracleVerdicts: {},
+          model_used: routing.model ?? "none",
+          tokens_consumed: 0,
+          duration_ms: Date.now() - startTime,
+          outcome: "failure",
+          failure_reason: `Worker dispatch failed: ${String(dispatchErr)}`,
+          affected_files: input.targetFiles ?? [],
+          workerSelectionAudit: workerSelection ?? lastWorkerSelection,
+          exploration: explorationFlag || undefined,
+        };
+        await deps.traceCollector.record(dispatchFailTrace);
+        deps.bus?.emit("trace:record", { trace: dispatchFailTrace });
         throw dispatchErr;
       }
 
@@ -447,6 +468,10 @@ export async function executeTask(
       const filePattern = (input.targetFiles ?? []).sort().join(",") || "*";
       const taskTypeSignature = `${input.goal.slice(0, 50)}::${filePattern}`;
 
+      // PH4: Detect framework markers for capability routing (always compute, data-gate only in fingerprint)
+      const { detectFrameworkMarkers } = await import("./task-fingerprint.ts");
+      const frameworkMarkers = detectFrameworkMarkers(perception);
+
       const trace: ExecutionTrace = {
         id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
         taskId: input.id,
@@ -474,6 +499,7 @@ export async function executeTask(
         oracleFailurePattern,
         exploration: explorationFlag || undefined,
         workerSelectionAudit: workerSelection,
+        framework_markers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
       };
 
       // Calibrate self-model BEFORE recording — so predictionError is included in single insert
@@ -617,7 +643,7 @@ export async function executeTask(
         if (deps.worldGraph && deps.workspace && commitResult && commitResult.applied.length > 0) {
           try {
             for (const file of commitResult.applied) {
-              const absPath = require("path").resolve(deps.workspace, file);
+              const absPath = resolvePath(deps.workspace, file);
               const hash = deps.worldGraph.computeFileHash(absPath);
               deps.worldGraph.storeFact({
                 target: file,
@@ -647,6 +673,11 @@ export async function executeTask(
         const appliedMutations = workerResult.mutations.filter(m => appliedSet.has(m.file));
         const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
 
+        // Surface contradiction state if oracles disagreed
+        const contradictions = (passedOracles.length > 0 && failedOracles.length > 0)
+          ? [`Oracle contradiction: passed=[${passedOracles.join(",")}] failed=[${failedOracles.join(",")}]`]
+          : undefined;
+
         const successResult: TaskResult = {
           id: input.id,
           status: allRejected ? "failed" : "completed",
@@ -660,6 +691,7 @@ export async function executeTask(
           notes: commitResult?.rejected.length
             ? [`Rejected files: ${commitResult.rejected.map(r => `${r.path} (${r.reason})`).join(", ")}`]
             : undefined,
+          contradictions,
         };
         // ── Shadow Enqueue (Phase 2.2) — A6 crash-safety ──────────
         if (deps.shadowRunner && routing.level >= 2) {

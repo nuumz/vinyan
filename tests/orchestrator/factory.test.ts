@@ -1,0 +1,153 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import { WorkerStore } from "../../src/db/worker-store.ts";
+import { WORKER_SCHEMA_SQL } from "../../src/db/worker-schema.ts";
+import { LLMProviderRegistry } from "../../src/orchestrator/llm/provider-registry.ts";
+import { createBus } from "../../src/core/bus.ts";
+import type { WorkerProfile } from "../../src/orchestrator/types.ts";
+import type { LLMProvider, LLMRequest } from "../../src/orchestrator/types.ts";
+
+// Re-implement autoRegisterWorkers test harness — the function is module-private,
+// so we test the behavior by mimicking its logic against real stores.
+
+const WORKER_MODEL_ALLOWLIST = ["claude-", "gpt-", "gemini-", "mock/", "openrouter/"];
+
+function mockLLMProvider(id: string): LLMProvider {
+  return {
+    name: id,
+    generate: async (_req: LLMRequest) => ({ content: "", tokensUsed: { input: 0, output: 0 } }),
+    supportedModels: () => [id],
+    id,
+    maxContextTokens: 100_000,
+  } as any;
+}
+
+describe("autoRegisterWorkers logic", () => {
+  let db: Database;
+  let workerStore: WorkerStore;
+  let bus: ReturnType<typeof createBus>;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.exec(WORKER_SCHEMA_SQL);
+    workerStore = new WorkerStore(db);
+    bus = createBus();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  test("allowlisted model (claude-sonnet) → registered as active worker", () => {
+    const registry = new LLMProviderRegistry();
+    const provider = mockLLMProvider("claude-sonnet-4");
+    registry.register(provider);
+
+    // Simulate autoRegisterWorkers logic
+    for (const p of registry.listProviders()) {
+      const allowlisted = WORKER_MODEL_ALLOWLIST.some(prefix => p.id.startsWith(prefix));
+      if (!allowlisted) continue;
+      const workerId = `worker-${p.id}`;
+      const existing = workerStore.findById(workerId);
+      if (existing) continue;
+      const profile: WorkerProfile = {
+        id: workerId,
+        config: { modelId: p.id, temperature: 0.7, systemPromptTemplate: "default", maxContextTokens: p.maxContextTokens },
+        status: "active",
+        createdAt: Date.now(),
+        demotionCount: 0,
+      };
+      workerStore.insert(profile);
+    }
+
+    const worker = workerStore.findById("worker-claude-sonnet-4");
+    expect(worker).toBeDefined();
+    expect(worker!.status).toBe("active");
+  });
+
+  test("non-allowlisted model → skipped", () => {
+    const registry = new LLMProviderRegistry();
+    const provider = mockLLMProvider("custom-model-v1");
+    registry.register(provider);
+
+    for (const p of registry.listProviders()) {
+      const allowlisted = WORKER_MODEL_ALLOWLIST.some(prefix => p.id.startsWith(prefix));
+      if (!allowlisted) continue;
+      const workerId = `worker-${p.id}`;
+      const existing = workerStore.findById(workerId);
+      if (existing) continue;
+      workerStore.insert({
+        id: workerId,
+        config: { modelId: p.id, temperature: 0.7, systemPromptTemplate: "default", maxContextTokens: 100_000 },
+        status: "active",
+        createdAt: Date.now(),
+        demotionCount: 0,
+      });
+    }
+
+    const worker = workerStore.findById("worker-custom-model-v1");
+    expect(worker).toBeNull();
+  });
+
+  test("re-registration of existing worker → no duplicate", () => {
+    const registry = new LLMProviderRegistry();
+    const provider = mockLLMProvider("claude-haiku");
+    registry.register(provider);
+
+    // First registration
+    workerStore.insert({
+      id: "worker-claude-haiku",
+      config: { modelId: "claude-haiku", temperature: 0.5, systemPromptTemplate: "custom", maxContextTokens: 50_000 },
+      status: "active",
+      createdAt: Date.now(),
+      demotionCount: 0,
+    });
+
+    // Simulate re-registration — should skip
+    for (const p of registry.listProviders()) {
+      const allowlisted = WORKER_MODEL_ALLOWLIST.some(prefix => p.id.startsWith(prefix));
+      if (!allowlisted) continue;
+      const workerId = `worker-${p.id}`;
+      const existing = workerStore.findById(workerId);
+      if (existing) continue;
+      workerStore.insert({
+        id: workerId,
+        config: { modelId: p.id, temperature: 0.7, systemPromptTemplate: "default", maxContextTokens: 100_000 },
+        status: "active",
+        createdAt: Date.now(),
+        demotionCount: 0,
+      });
+    }
+
+    // Original config preserved (temperature=0.5, not overwritten to 0.7)
+    const worker = workerStore.findById("worker-claude-haiku");
+    expect(worker).toBeDefined();
+    expect(worker!.config.temperature).toBe(0.5);
+  });
+
+  test("multiple providers: only allowlisted ones registered", () => {
+    const registry = new LLMProviderRegistry();
+    registry.register(mockLLMProvider("claude-opus"));
+    registry.register(mockLLMProvider("gpt-4-turbo"));
+    registry.register(mockLLMProvider("unknown-model"));
+
+    for (const p of registry.listProviders()) {
+      const allowlisted = WORKER_MODEL_ALLOWLIST.some(prefix => p.id.startsWith(prefix));
+      if (!allowlisted) continue;
+      const workerId = `worker-${p.id}`;
+      const existing = workerStore.findById(workerId);
+      if (existing) continue;
+      workerStore.insert({
+        id: workerId,
+        config: { modelId: p.id, temperature: 0.7, systemPromptTemplate: "default", maxContextTokens: 100_000 },
+        status: "active",
+        createdAt: Date.now(),
+        demotionCount: 0,
+      });
+    }
+
+    expect(workerStore.findById("worker-claude-opus")).toBeDefined();
+    expect(workerStore.findById("worker-gpt-4-turbo")).toBeDefined();
+    expect(workerStore.findById("worker-unknown-model")).toBeNull();
+  });
+});

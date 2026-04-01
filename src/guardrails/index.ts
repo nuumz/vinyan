@@ -29,12 +29,13 @@ export function sanitizeForPrompt(text: string): SanitizeResult {
     return { cleaned: text, detections: [] };
   }
 
-  // Replace matched patterns in the normalized text
+  // Replace ALL occurrences of matched patterns in the normalized text
   let cleaned = normalized;
   const allPatterns = [...INJECTION_PATTERNS, ...BYPASS_PATTERNS];
   for (const { pattern, label } of allPatterns) {
     if (detections.includes(label)) {
-      cleaned = cleaned.replace(pattern, `[REDACTED: ${label}]`);
+      const globalPattern = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+      cleaned = cleaned.replace(globalPattern, `[REDACTED: ${label}]`);
     }
   }
 

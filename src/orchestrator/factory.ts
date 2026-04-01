@@ -42,6 +42,7 @@ import { WorkerLifecycle } from "./worker-lifecycle.ts";
 import { CapabilityModel } from "./capability-model.ts";
 import { LLMCriticImpl } from "./critic/llm-critic-impl.ts";
 import { GapHDetector } from "../observability/gap-h-detector.ts";
+import { FileWatcher } from "../world-graph/file-watcher.ts";
 import type { WorkerProfile } from "./types.ts";
 import type { DataGateStats, DataGateThresholds } from "./data-gate.ts";
 
@@ -117,11 +118,29 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Set up WorldGraph for fact invalidation (A4: content-addressed truth)
   let worldGraph: WorldGraph | undefined;
+  let fileWatcher: FileWatcher | undefined;
   try {
     worldGraph = new WorldGraph(join(workspace, ".vinyan", "world-graph.db"));
+    // A4: Watch workspace for external file changes — auto-invalidate stale facts
+    fileWatcher = new FileWatcher(worldGraph, workspace);
+    fileWatcher.start();
   } catch {
     // WorldGraph unavailable — fact invalidation disabled
   }
+
+  // Load config to unify routing thresholds and Phase 4 governance parameters
+  let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
+  let phase4Config: { probation_min_tasks: number; demotion_window_tasks: number; demotion_max_reentries: number; reentry_cooldown_sessions: number; epsilon_worker: number; diversity_cap_pct: number } | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    if (vinyanConfig.phase1) {
+      const r = vinyanConfig.phase1.routing;
+      routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
+    }
+    if (vinyanConfig.phase4) {
+      phase4Config = vinyanConfig.phase4;
+    }
+  } catch { /* config loading is best-effort */ }
 
   // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
   let workerLifecycle: WorkerLifecycle | undefined;
@@ -129,10 +148,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerLifecycle = new WorkerLifecycle({
       workerStore,
       bus,
-      probationMinTasks: 30,
-      demotionWindowTasks: 30,
-      demotionMaxReentries: 3,
-      reentryCooldownSessions: 50,
+      probationMinTasks: phase4Config?.probation_min_tasks ?? 30,
+      demotionWindowTasks: phase4Config?.demotion_window_tasks ?? 30,
+      demotionMaxReentries: phase4Config?.demotion_max_reentries ?? 3,
+      reentryCooldownSessions: phase4Config?.reentry_cooldown_sessions ?? 50,
     });
   }
 
@@ -152,17 +171,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const recovered = shadowRunner.recover();
     if (recovered > 0) console.warn(`[vinyan] Recovered ${recovered} stale shadow jobs`);
   }
-
-  // Wire all dependencies
-  // Load config to unify routing thresholds between config and gate (Gap #14)
-  let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
-  try {
-    const vinyanConfig = loadConfig(workspace);
-    if (vinyanConfig.phase1) {
-      const r = vinyanConfig.phase1.routing;
-      routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
-    }
-  } catch { /* config loading is best-effort */ }
 
   const perception = new PerceptionAssemblerImpl({ workspace });
   const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
@@ -219,14 +227,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       evolution_min_active_skills: 1,
       evolution_min_sleep_cycles: 3,
       fleet_min_active_workers: 2,
-      fleet_min_worker_trace_diversity: 100,
+      fleet_min_worker_trace_diversity: 2,
     };
     workerSelector = new WorkerSelector({
       workerStore,
       capabilityModel,
       bus,
-      epsilonWorker: 0.10,
-      diversityCapPct: 0.70,
+      epsilonWorker: phase4Config?.epsilon_worker ?? 0.10,
+      diversityCapPct: phase4Config?.diversity_cap_pct ?? 0.70,
       gateStats: () => ({
         traceCount: traceStore?.count() ?? 0,
         distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,
@@ -273,10 +281,35 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const gapHDetector = new GapHDetector(bus);
   const detachGapH = gapHDetector.attach();
 
-  // Shadow validation listener — update trace store when shadow processing completes (H3)
+  // A7: Cache predictions for shadow feedback loop (prediction is not persisted to DB)
+  const predictionCache = new Map<string, import("./types.ts").SelfModelPrediction>();
+  bus.on("selfmodel:predict", ({ prediction }: { prediction: import("./types.ts").SelfModelPrediction }) => {
+    predictionCache.set(prediction.taskId, prediction);
+    // Keep cache bounded
+    if (predictionCache.size > 200) {
+      const oldest = predictionCache.keys().next().value;
+      if (oldest) predictionCache.delete(oldest);
+    }
+  });
+
+  // Shadow validation listener — update trace store and feed back to Self-Model (H3 + A7)
   if (shadowRunner && traceStore) {
     bus.on("shadow:complete", ({ result }) => {
       traceStore.updateShadowValidation(result.taskId, result);
+      // A7: Feed shadow outcome back to Self-Model for calibration
+      const cached = predictionCache.get(result.taskId);
+      if (cached && 'calibrate' in selfModel) {
+        try {
+          const shadowTrace = {
+            taskId: result.taskId,
+            outcome: result.testsPassed ? "success" as const : "failure" as const,
+            duration_ms: result.duration_ms,
+            qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
+          } as import("./types.ts").ExecutionTrace;
+          selfModel.calibrate(cached, shadowTrace);
+        } catch { /* best-effort calibration */ }
+      }
+      predictionCache.delete(result.taskId);
     });
   }
 
@@ -331,6 +364,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);
+      fileWatcher?.stop();
       detachGapH();
       detachMetrics();
       traceListenerHandle.detach();

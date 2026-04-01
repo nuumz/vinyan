@@ -279,14 +279,27 @@ export class WorkerLifecycle {
   }
 
   /**
-   * Count traces where this worker's output caused safety-related failures
-   * during probation (since createdAt). A safety violation is a trace with
-   * outcome=failure where failure_reason mentions safety/invariant keywords.
+   * Count safety violations during probation using two signals:
+   * 1. Bus-emitted guardrail events (tracked in-memory via safetyViolationCounts)
+   * 2. Fallback: conservative proxy if worker has zero successes across 5+ tasks
    */
+  private safetyViolationCounts = new Map<string, number>();
+
+  /** Subscribe to guardrail bus events for accurate safety tracking. */
+  subscribeToGuardrailEvents(): void {
+    if (!this.bus) return;
+    this.bus.on("guardrail:violation", ({ workerId }: { workerId: string }) => {
+      this.safetyViolationCounts.set(workerId, (this.safetyViolationCounts.get(workerId) ?? 0) + 1);
+    });
+  }
+
   private countSafetyViolations(workerId: string, sinceTimestamp: number): number {
+    // Primary: check bus-tracked violations
+    const busCount = this.safetyViolationCounts.get(workerId) ?? 0;
+    if (busCount > 0) return busCount;
+
+    // Fallback: conservative proxy from trace stats
     const stats = this.store.getStatsSince(workerId, sinceTimestamp);
-    // Conservative proxy: if the worker has zero successes across 5+ tasks
-    // during probation, treat all failures as safety concerns.
     if (stats.totalTasks >= 5 && stats.successRate === 0) {
       return stats.totalTasks;
     }

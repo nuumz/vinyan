@@ -46,7 +46,7 @@ AFTER UPDATE OF current_hash ON file_hashes
 BEGIN
   DELETE FROM facts WHERE id IN (
     SELECT fact_id FROM fact_evidence_files WHERE file_path = NEW.path
-  ) AND source_file != NEW.path AND file_hash != NEW.current_hash;
+  ) AND source_file != NEW.path;
 END;
 
 CREATE TABLE IF NOT EXISTS dependency_edges (

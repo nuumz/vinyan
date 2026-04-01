@@ -8,7 +8,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
-import { randomBytes } from "crypto";
+import { randomBytes, timingSafeEqual } from "crypto";
 import type { AuthContext } from "./types.ts";
 
 /**
@@ -39,7 +39,7 @@ export function createAuthMiddleware(tokenPath: string): {
       }
 
       const provided = match[1].trim();
-      if (provided === token) {
+      if (safeCompare(provided, token)) {
         return { authenticated: true, apiKey: provided, source: "bearer" };
       }
 
@@ -50,6 +50,12 @@ export function createAuthMiddleware(tokenPath: string): {
       return token;
     },
   };
+}
+
+/** Constant-time string comparison to prevent timing side-channel attacks. */
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 /**

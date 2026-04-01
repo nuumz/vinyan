@@ -27,6 +27,7 @@ import type { VinyanBus } from "../core/bus.ts";
 import type { EvolutionaryRule } from "../orchestrator/types.ts";
 import { generateRule } from "../evolution/rule-generator.ts";
 import { findFailureCorrelations, correlationToPattern } from "./cross-task-analyzer.ts";
+import { buildQualityLookup, analyzeCounterfactuals, summarizeByTaskType } from "../evolution/counterfactual.ts";
 import {
   computeDecay,
   createExperimentState,
@@ -162,6 +163,18 @@ export class SleepCycleRunner {
     let skillsCreated = 0;
     let rulesGenerated = 0;
     const newRuleIds = new Set<string>();
+
+    // PH3: Counterfactual routing analysis — generate adjust-threshold rules
+    const qualityLookup = buildQualityLookup(traces);
+    const cfResults = analyzeCounterfactuals(traces, qualityLookup);
+    const cfSummaries = summarizeByTaskType(cfResults);
+    for (const summary of cfSummaries) {
+      if (summary.suggestedRule && this.ruleStore) {
+        this.ruleStore.insert(summary.suggestedRule);
+        newRuleIds.add(summary.suggestedRule.id);
+        rulesGenerated++;
+      }
+    }
 
     for (const pattern of newPatterns) {
       this.patternStore.insert(pattern);
@@ -411,8 +424,8 @@ export class SleepCycleRunner {
     const halfLife = this.config.decay_half_life_sessions;
     const activeFn = getActiveDecayFunction(this.decayExperiment);
 
-    // Track scores for both functions this cycle
-    let expTotal = 0, plTotal = 0, scoreCount = 0;
+    // Track surviving pattern counts for both functions this cycle (ratio = surviving/total)
+    let expSurviving = 0, plSurviving = 0, scoreCount = 0;
 
     for (const pattern of existingPatterns) {
       const ageMs = Date.now() - pattern.createdAt;
@@ -425,9 +438,9 @@ export class SleepCycleRunner {
       // Use the active function's weight
       const newWeight = activeFn === "exponential" ? expWeight : plWeight;
 
-      // Track scores: surviving patterns (weight > 0.1) score by confidence
-      if (expWeight > 0.1) expTotal += pattern.confidence;
-      if (plWeight > 0.1) plTotal += pattern.confidence;
+      // Track per-cycle survival ratio (surviving/total, not cumulative confidence)
+      if (expWeight > 0.1) expSurviving++;
+      if (plWeight > 0.1) plSurviving++;
       scoreCount++;
 
       if (Math.abs(newWeight - pattern.decayWeight) > 0.01) {
@@ -436,12 +449,12 @@ export class SleepCycleRunner {
       }
     }
 
-    // Update experiment with this cycle's scores
+    // Update experiment with this cycle's per-cycle survival ratio
     if (scoreCount > 0 && !this.decayExperiment.locked) {
       this.decayExperiment = recordCycleScore(
         this.decayExperiment,
-        expTotal / scoreCount,
-        plTotal / scoreCount,
+        expSurviving / scoreCount,
+        plSurviving / scoreCount,
       );
     }
 
@@ -643,14 +656,11 @@ export class SleepCycleRunner {
         const delta = best.avgQuality - other.avgQuality;
         if (delta < 0.15) continue;
 
-        // Wilson LB significance check on pairwise comparison
-        const totalPairs = best.count * other.count;
-        if (totalPairs === 0) continue;
-        // Simple: check if best's success rate is significantly better
-        const wilsonLB = wilsonLowerBound(
-          Math.round(best.successRate * best.count),
-          best.count,
-        );
+        // Wilson LB significance: pairwise comparison (best wins / total comparisons)
+        const pairwiseWins = Math.round(best.successRate * best.count);
+        const pairwiseTotal = best.count + other.count;
+        if (pairwiseTotal === 0) continue;
+        const wilsonLB = wilsonLowerBound(pairwiseWins, pairwiseTotal);
         if (wilsonLB < 0.15) continue;
 
         patterns.push({

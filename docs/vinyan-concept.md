@@ -162,6 +162,37 @@ interface ECPNetworkEnvelope {
 
 This ensures A5 (Tiered Trust) holds across network boundaries — local evidence always outranks remote evidence of the same tier.
 
+### 2.5 ECP as Publishable Standard
+
+ECP is designed to be a **publishable protocol specification** — not an internal Vinyan detail but a standard that external systems can implement to participate in the Epistemic Nervous System.
+
+**Three-layer protocol stack:**
+
+| Layer | Transport | Purpose | Status |
+|:------|:----------|:--------|:-------|
+| Layer 1: ECP Local | stdio (subprocess) | Local oracle invocation | Production (Phase 0+) |
+| Layer 2: ECP Network | WebSocket / HTTP | Remote oracle, cross-instance | Design (Phase 5) |
+| Layer 3: Bridges | MCP, A2A, LSP | External ecosystem integration | Partial (Phase 5) |
+
+**Conformance levels** enable incremental adoption:
+
+| Level | What's Required | Who |
+|:------|:---------------|:----|
+| Level 0 (Minimal) | stdin/stdout JSON: `HypothesisTuple` → `OracleVerdict` | Any CLI tool wrapper |
+| Level 1 (Standard) | + capability advertisement, health/heartbeat, full epistemic types | Production oracle |
+| Level 2 (Full) | + network transport, temporal context, deliberation | Remote service |
+| Level 3 (Platform) | + cross-instance coordination, knowledge sharing | Vinyan peer instance |
+
+A Level 0 oracle can be built in 15 lines of any language. This low barrier-to-entry is intentional: the ENS grows by making it trivial for external verification systems (security scanners, compliance tools, domain experts) to join the network as ECP-native Reasoning Engines.
+
+**MCP and A2A are bridge layers, not the primary interface.** External agents that speak MCP or A2A interact with Vinyan through translation bridges that enforce trust degradation (§2.3). ECP-native engines get full epistemic semantics without translation loss.
+
+**Full specification:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md) — message format, epistemic semantics, transport bindings, security model, versioning, conformance levels.
+
+**Oracle SDK:** [vinyan-oracle-sdk.md](vinyan-oracle-sdk.md) — developer guide for building ECP-compatible Reasoning Engines.
+
+**Protocol architecture:** [vinyan-protocol-architecture.md](vinyan-protocol-architecture.md) — transport abstraction, remote oracle pattern, bridge evolution, trust degradation matrix.
+
 ---
 
 ## 3. Reasoning Engine Model
@@ -537,7 +568,7 @@ Instance A                          Instance B
 | **2** | Multi-Worker Isolation + Skill Formation | OS-level processes / containers + Shadow Execution + **Pattern-based optimization** (Sleep Cycle extracts failure patterns from traces → threshold adjustments + Level 0 skill cache with probation/promotion). Realistic expectation: 2–3 high-frequency anti-patterns from first 200 tasks. | A3, A6 (hardened) |
 | **3** | Full Self-Improvement | Sleep Cycle (full pattern mining + counterfactual generation) + trace-calibrated Self-Model (replaces static heuristics) + bounded rule modification. **Research-grade** — depends on data volume and evaluation methodology. | A7 (full loop) |
 | **4** | Fleet Governance | Meritocratic worker profiles + capability-based routing | All axioms at scale |
-| **5** | Complete ENS | Full Epistemic Nervous System: standalone platform (API server, terminal UI, web dashboard, VS Code extension), multi-instance coordination via ECP network transport (§2.4, §11), cross-language oracle support (Python/Go/Rust), A2A + MCP protocol bridges. See [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md). | All axioms at platform scale |
+| **5** | Complete ENS | Full Epistemic Nervous System: standalone platform (API server, terminal UI, web dashboard, VS Code extension), multi-instance coordination via ECP network transport (§2.4, §2.5, §11), cross-language oracle support (Python/Go/Rust), **ECP as publishable protocol standard** ([vinyan-ecp-spec.md](vinyan-ecp-spec.md)), Oracle SDK for external developers ([vinyan-oracle-sdk.md](vinyan-oracle-sdk.md)), A2A + MCP protocol bridges as Layer 3 ([vinyan-protocol-architecture.md](vinyan-protocol-architecture.md)). See [vinyan-a2a-protocol.md](vinyan-a2a-protocol.md). | All axioms at platform scale |
 
 ### 12.1 Phase 0 — Oracle Gate MVP (Concrete Specification)
 

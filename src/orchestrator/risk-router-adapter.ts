@@ -91,7 +91,7 @@ export class RiskRouterImpl implements RiskRouter {
     };
 
     const score = calculateRiskScore(factors);
-    const decision = routeByRisk(score, blastRadius, this.thresholds);
+    const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType);
     decision.riskScore = score;
 
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)

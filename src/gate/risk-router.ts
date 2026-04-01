@@ -58,7 +58,7 @@ export function getIrreversibilityScore(toolName: string): number {
 export function detectEnvironment(): "development" | "staging" | "production" {
   const env = process.env.NODE_ENV ?? process.env.VINYAN_ENV ?? "";
   if (env === "production" || env === "prod") return "production";
-  if (env === "staging" || env === "stage") return "staging";
+  if (env === "staging" || env === "stg") return "staging";
   return "development";
 }
 
@@ -110,6 +110,7 @@ export function routeByRisk(
   riskScore: number,
   blastRadius: number,
   thresholds: RoutingThresholds = DEFAULT_THRESHOLDS,
+  environmentType?: string,
 ): RoutingDecision {
   let level: RoutingLevel;
 
@@ -121,6 +122,11 @@ export function routeByRisk(
   // Hard floor: blast radius > 1 file → minimum L1
   if (blastRadius > 1 && level < 1) {
     level = 1;
+  }
+
+  // Production boundary: minimum L2 (TDD §7)
+  if (environmentType === "production" && level < 2) {
+    level = 2;
   }
 
   // Map level to model + budget (latency budgets sized for remote LLM APIs)

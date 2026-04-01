@@ -38,6 +38,11 @@ export function generateRules(patterns: ExtractedPattern[]): EvolutionaryRule[] 
   for (const pattern of patterns) {
     const rule = generateRule(pattern);
     if (rule) rules.push(rule);
+    // Anti-patterns with high-confidence oracle involvement also generate require-oracle rules
+    if (pattern.type === "anti-pattern") {
+      const oracleRule = generateOracleRequirementRule(pattern);
+      if (oracleRule) rules.push(oracleRule);
+    }
   }
   return rules;
 }
@@ -147,6 +152,41 @@ function generateWorkerAssignmentRule(pattern: ExtractedPattern): EvolutionaryRu
     created_at: Date.now(),
     effectiveness: 0,
     specificity,
+  };
+}
+
+/**
+ * Generate a require-oracle rule from an anti-pattern that consistently involves
+ * a specific oracle. Triggers when confidence >= 0.7 and oracleName is set.
+ * This ensures the oracle is always run for matching task types.
+ */
+function generateOracleRequirementRule(pattern: ExtractedPattern): EvolutionaryRule | null {
+  if (!pattern.oracleName || pattern.confidence < 0.7) return null;
+
+  const condition: EvolutionaryRule["condition"] = {};
+  let specificity = 0;
+
+  const filePattern = extractFilePattern(pattern.taskTypeSignature);
+  if (filePattern && filePattern !== "*") {
+    condition.file_pattern = filePattern;
+    specificity++;
+  }
+  if (pattern.riskAbove != null) { condition.risk_above = pattern.riskAbove; specificity++; }
+
+  return {
+    id: `rule-oracle-${pattern.id}`,
+    source: "sleep-cycle",
+    condition,
+    action: "require-oracle",
+    parameters: {
+      oracleName: pattern.oracleName,
+      reason: `Anti-pattern "${pattern.description}" detected — require ${pattern.oracleName} oracle for matching tasks`,
+      sourcePatternId: pattern.id,
+    },
+    status: "probation",
+    created_at: Date.now(),
+    effectiveness: 0,
+    specificity: specificity + 1, // +1 for the oracle itself
   };
 }
 

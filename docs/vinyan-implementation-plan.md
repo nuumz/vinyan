@@ -2611,15 +2611,79 @@ Tier 3 — Cross-Language (independent of Tier 1/2):
                                 ├── PH5.12 (Go/gopls)
                                 └── PH5.13 (Rust/rust-analyzer)
 
+Tier 4 — ECP Ecosystem (2026-04-01 addition):
+  PH5.17 (Oracle SDK) — packages for TS + Python oracle development
+  PH5.18 (ECP Network Transport) — WebSocket + HTTP transport abstraction
+  PH5.19 (ECP Spec Publication) — formalize ECP as standalone spec
+
 Cross-Cutting:
   PH5.15 (Observability Extension) — parallel with any component
 ```
 
-**Execution order (dependency DAG):**
+##### PH5.17 — Oracle SDK Packages `[M]` (2026-04-01 addition)
+
+**Purpose:** Publish SDK packages that make it trivial for external developers to build ECP-compatible Reasoning Engines. Lower the barrier to Level 0 ECP conformance to ~15 lines of code.
+
+**Deliverables:**
+- `@vinyan/oracle-sdk` (npm) — TypeScript SDK: `HypothesisTupleSchema`, `OracleVerdictSchema`, `buildVerdict()`, test utilities
+- `vinyan-oracle-sdk` (PyPI) — Python SDK: Pydantic models mirroring Zod schemas, `build_verdict()`, test utilities
+- `vinyan oracle test <name>` CLI command for manual oracle testing
+
+**Key files:** New `packages/oracle-sdk-ts/`, `packages/oracle-sdk-python/`
+**Extends:** `src/oracle/protocol.ts` (extract schemas), `src/core/index.ts` (extract `buildVerdict`)
+**Dependencies:** ECP spec finalized ([vinyan-ecp-spec.md](vinyan-ecp-spec.md))
+**Design guide:** [vinyan-oracle-sdk.md](vinyan-oracle-sdk.md)
+
+---
+
+##### PH5.18 — ECP Network Transport `[L]` (2026-04-01 addition)
+
+**Purpose:** Implement the transport abstraction layer so `OracleRunner` becomes transport-agnostic. Foundation for remote oracles and cross-instance communication.
+
+**Key work:**
+1. Define `ECPTransport` interface: `verify(hypothesis, timeout) → verdict`, `close()`, `transportType`
+2. Extract current `Bun.spawn()` logic into `StdioTransport` class
+3. Implement `WebSocketTransport` (persistent connection, heartbeat, reconnection)
+4. Implement `HttpTransport` (stateless POST `/ecp/v1/verify`)
+5. Add transport resolution in runner: `entry.transport` → resolve to correct `ECPTransport` implementation
+6. Add `transport?: "stdio" | "websocket" | "http"` and `endpoint?: string` to `OracleRegistryEntry`
+
+**Key files:**
+- Modify: `src/oracle/runner.ts` (transport resolution)
+- Modify: `src/oracle/registry.ts` (transport + endpoint fields)
+- New: `src/oracle/transport/types.ts`, `src/oracle/transport/stdio.ts`, `src/oracle/transport/websocket.ts`, `src/oracle/transport/http.ts`
+
+**Dependencies:** PH5.14 (Security — Ed25519 signing for network messages)
+**Design spec:** [vinyan-ecp-spec.md](vinyan-ecp-spec.md) §5, [vinyan-protocol-architecture.md](vinyan-protocol-architecture.md) §2-§3
+
+---
+
+##### PH5.19 — ECP Specification Publication `[S]` (2026-04-01 addition)
+
+**Purpose:** Formalize ECP as a standalone, publishable protocol specification. External developers and projects can implement ECP without depending on Vinyan source code.
+
+**Deliverables:**
+- Finalize [vinyan-ecp-spec.md](vinyan-ecp-spec.md) with community review
+- Publish ECP conformance test suite (Level 0–3 validation)
+- Add ECP version negotiation to `src/core/types.ts`
+
+**Dependencies:** PH5.17 (Oracle SDK validates spec is implementable), PH5.18 (network transport validates spec §5)
+
+---
+
+**Execution order (dependency DAG) — Updated 2026-04-01:**
 1. **PH5.16** → PH5.0 → PH5.14 (sequential — migration before cleanup before security)
-2. **PH5.1** (requires PH5.14 for auth) → PH5.2 + PH5.3 + PH5.4 + PH5.5 + PH5.6 (parallel)
-3. **PH5.7** (requires PH5.1 for HTTP infra) → PH5.8 → PH5.9 (sequential — critical path)
-4. **PH5.10** → PH5.11 + PH5.12 + PH5.13 (parallel, fully independent of streams 1-3)
+2. **PH5.18** (ECP Transport, requires PH5.14) — foundation for remote oracles
+3. **PH5.1** (requires PH5.14 for auth) → PH5.2 + PH5.3 + PH5.4 + PH5.5 + PH5.6 (parallel)
+4. **PH5.17** (Oracle SDK, parallel with PH5.1)
+5. **PH5.7** (requires PH5.18 for transport) → PH5.8 → PH5.9 (sequential — critical path)
+6. **PH5.10** → PH5.11 + PH5.12 + PH5.13 (parallel, fully independent)
+7. **PH5.19** (ECP Spec, requires PH5.17 + PH5.18 to validate)
+
+**Key ordering changes (2026-04-01):**
+- PH5.18 (ECP Transport) inserted as **Tier 1** prerequisite — transport abstraction is the foundation for everything
+- PH5.17 (Oracle SDK) runs parallel with PH5.1 — independent deliverable
+- PH5.19 (ECP Spec) is the final deliverable — validates that the spec is implementable
 
 **Key ordering fixes (from gap analysis):**
 - PH5.16 (Migration) moved from last to **first** — all schema changes depend on versioned migrations (G5-019 CRITICAL)

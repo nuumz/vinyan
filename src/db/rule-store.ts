@@ -26,10 +26,10 @@ export class RuleStore {
     this.insertStmt = db.prepare(`
       INSERT OR REPLACE INTO evolutionary_rules (
         id, source, condition, action, parameters,
-        status, created_at, effectiveness, specificity, superseded_by
+        status, created_at, effectiveness, specificity, superseded_by, origin
       ) VALUES (
         $id, $source, $condition, $action, $parameters,
-        $status, $created_at, $effectiveness, $specificity, $superseded_by
+        $status, $created_at, $effectiveness, $specificity, $superseded_by, $origin
       )
     `);
   }
@@ -46,6 +46,7 @@ export class RuleStore {
       $effectiveness: rule.effectiveness,
       $specificity: rule.specificity,
       $superseded_by: rule.superseded_by ?? null,
+      $origin: rule.origin ?? "local",
     });
   }
 
@@ -158,5 +159,6 @@ function rowToRule(row: unknown): EvolutionaryRule {
     effectiveness: r.effectiveness,
     specificity: r.specificity,
     superseded_by: r.superseded_by ?? undefined,
+    origin: r.origin ?? "local",
   };
 }

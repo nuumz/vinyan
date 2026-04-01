@@ -230,7 +230,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const containerImage = "vinyan-sandbox:latest";
     const args = [
       "docker", "run", "--rm",
-      "--user", "1000:1000",
+      "--user", "65532:65532",
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges",
       "--network=none",

@@ -1,11 +1,14 @@
 import { watch } from "chokidar";
 import type { WorldGraph } from "./world-graph.ts";
+import type { EventBus, VinyanBusEvents } from "../core/bus.ts";
 
 export interface FileWatcherOptions {
   /** Glob patterns to ignore */
   ignored?: string[];
   /** Debounce delay in ms (default: 100) */
   debounceMs?: number;
+  /** Optional event bus for emitting file:hashChanged events. */
+  bus?: EventBus<VinyanBusEvents>;
 }
 
 export class FileWatcher {
@@ -40,6 +43,8 @@ export class FileWatcher {
           this.debounceTimers.delete(filePath);
           try {
             this.worldGraph.invalidateByFile(filePath);
+            const newHash = this.worldGraph.getFileHash(filePath) ?? "unknown";
+            this.options.bus?.emit("file:hashChanged", { filePath, newHash });
           } catch {
             // File may have been deleted between change event and hash computation
           }
@@ -53,6 +58,7 @@ export class FileWatcher {
       // On file deletion, remove its hash entry — facts with old hash remain but are stale
       try {
         this.worldGraph.updateFileHash(filePath, "DELETED");
+        this.options.bus?.emit("file:hashChanged", { filePath, newHash: "DELETED" });
       } catch {
         // DB may be closed during shutdown — ignore
       }

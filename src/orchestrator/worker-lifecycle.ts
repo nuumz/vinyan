@@ -12,6 +12,7 @@
 import type { WorkerProfile } from "./types.ts";
 import type { WorkerStore } from "../db/worker-store.ts";
 import type { VinyanBus } from "../core/bus.ts";
+import { wilsonLowerBound } from "../sleep-cycle/wilson.ts";
 
 export interface WorkerLifecycleConfig {
   workerStore: WorkerStore;
@@ -31,20 +32,6 @@ export interface DemotionResult {
   demoted: boolean;
   permanent: boolean;
   reason: string;
-}
-
-/**
- * Wilson lower bound at α=0.05 (z=1.96).
- * Returns the lower bound of the 95% confidence interval for a proportion.
- */
-function wilsonLowerBound(successes: number, total: number): number {
-  if (total === 0) return 0;
-  const z = 1.96;
-  const p = successes / total;
-  const denominator = 1 + z * z / total;
-  const centre = p + z * z / (2 * total);
-  const spread = z * Math.sqrt((p * (1 - p) + z * z / (4 * total)) / total);
-  return (centre - spread) / denominator;
 }
 
 export class WorkerLifecycle {

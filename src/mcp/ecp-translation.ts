@@ -8,15 +8,34 @@
 import type { OracleVerdict, Evidence } from "../core/types.ts";
 import { buildVerdict } from "../core/index.ts";
 import type { MCPToolResult } from "./types.ts";
+import { type PeerTrustLevel, PEER_TRUST_CAPS, clampFull } from "../oracle/tier-clamp.ts";
 
-/** Trust levels for external MCP sources — maps to confidence caps (A5). */
+/**
+ * MCP trust levels — maps to tier + transport + peer trust clamping.
+ * All MCP results use tier="probabilistic" (cap 0.7) since MCP is external (A5).
+ * "local" = stdio transport, no peer trust → cap 0.7
+ * "network" = http transport, provisional peer → cap 0.40
+ * "remote" = http transport, untrusted peer → cap 0.25
+ */
 export type TrustLevel = "local" | "network" | "remote";
 
-const TRUST_CONFIDENCE: Record<TrustLevel, number> = {
-  local: 0.7,
-  network: 0.5,
-  remote: 0.3,
+const TRUST_TO_TRANSPORT: Record<TrustLevel, string> = {
+  local: "stdio",
+  network: "http",
+  remote: "http",
 };
+
+const TRUST_TO_PEER: Record<TrustLevel, PeerTrustLevel | undefined> = {
+  local: undefined,
+  network: "provisional",
+  remote: "untrusted",
+};
+
+/** Resolve max confidence for a TrustLevel using the canonical clamping pipeline. */
+function maxConfidenceForTrust(trustLevel: TrustLevel): number {
+  // MCP sources always use "probabilistic" tier — external tools never get full confidence (A5)
+  return clampFull(1.0, "probabilistic", TRUST_TO_TRANSPORT[trustLevel], TRUST_TO_PEER[trustLevel]);
+}
 
 /**
  * Convert an OracleVerdict (ECP) to an MCP tool result.
@@ -76,7 +95,7 @@ export function mcpToEcp(
   result: MCPToolResult,
   trustLevel: TrustLevel,
 ): OracleVerdict {
-  const maxConfidence = TRUST_CONFIDENCE[trustLevel];
+  const maxConfidence = maxConfidenceForTrust(trustLevel);
 
   // Error results → verified=false
   if (result.isError) {

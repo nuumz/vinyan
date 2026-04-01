@@ -27,6 +27,7 @@ export const EvolutionaryRuleRowSchema = z.object({
   effectiveness: z.number(),
   specificity: z.number(),
   superseded_by: z.string().nullable().transform(v => v ?? undefined),
+  origin: z.enum(["local", "a2a", "mcp"]).nullable().transform(v => v ?? "local").optional(),
 });
 
 // ── WorkerProfile row schema ────────────────────────────────────────────

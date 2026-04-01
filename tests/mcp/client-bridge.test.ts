@@ -16,14 +16,14 @@ describe("trust level caps confidence correctly", () => {
     expect(verdict.type).toBe("uncertain");
   });
 
-  test("network trust → 0.5", () => {
+  test("network trust → 0.40", () => {
     const verdict = mcpToEcp(successResult, "network");
-    expect(verdict.confidence).toBe(0.5);
+    expect(verdict.confidence).toBe(0.40);
   });
 
-  test("remote trust → 0.3", () => {
+  test("remote trust → 0.25", () => {
     const verdict = mcpToEcp(successResult, "remote");
-    expect(verdict.confidence).toBe(0.3);
+    expect(verdict.confidence).toBe(0.25);
   });
 });
 

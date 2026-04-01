@@ -1,9 +1,10 @@
 /**
  * ECP Confidence Clamping — ECP spec §4.4, A5 (Tiered Trust).
  *
- * Confidence is clamped by two independent ceilings:
+ * Confidence is clamped by up to three independent ceilings:
  * 1. Trust tier (intrinsic to the engine): deterministic=1.0, heuristic=0.9, probabilistic=0.7, speculative=0.4
- * 2. Transport layer (extrinsic): stdio=1.0, websocket=0.95, http=0.7
+ * 2. Transport layer (extrinsic): stdio=1.0, websocket=0.95, http=0.7, a2a=0.7
+ * 3. Peer trust (A2A only): untrusted=0.25, provisional=0.40, established=0.50, trusted=0.60
  *
  * Applied at verdict intake — before aggregation or storage.
  *
@@ -23,7 +24,18 @@ const TRANSPORT_CAPS: Record<string, number> = {
   stdio: 1.0,
   websocket: 0.95,
   http: 0.7,
+  a2a: 0.7,
 };
+
+/** Peer trust caps — empirical (Wilson LB), NOT declared. Even trusted remote caps at 0.60. */
+export const PEER_TRUST_CAPS = {
+  untrusted: 0.25,
+  provisional: 0.40,
+  established: 0.50,
+  trusted: 0.60,
+} as const;
+
+export type PeerTrustLevel = keyof typeof PEER_TRUST_CAPS;
 
 /** Clamp confidence by tier ceiling (A5: Tiered Trust). */
 export function clampByTier(confidence: number, tier?: string): number {
@@ -39,7 +51,27 @@ export function clampByTransport(confidence: number, transport?: string): number
   return Math.min(confidence, cap);
 }
 
-/** Full ECP confidence adjustment: tier clamp + transport degradation. */
+/** Apply peer trust cap (A2A only — Wilson LB progression). */
+export function clampByPeerTrust(confidence: number, peerTrust?: PeerTrustLevel): number {
+  if (!peerTrust) return confidence;
+  const cap = PEER_TRUST_CAPS[peerTrust];
+  return Math.min(confidence, cap);
+}
+
+/**
+ * Full ECP confidence adjustment: tier × transport × peer trust.
+ * Takes the minimum across all applicable ceilings.
+ */
+export function clampFull(
+  confidence: number,
+  tier?: string,
+  transport?: string,
+  peerTrust?: PeerTrustLevel,
+): number {
+  return clampByPeerTrust(clampByTransport(clampByTier(confidence, tier), transport), peerTrust);
+}
+
+/** @deprecated Use clampFull() instead. Kept for backward compatibility. */
 export function clampConfidence(confidence: number, tier?: string, transport?: string): number {
   return clampByTransport(clampByTier(confidence, tier), transport);
 }

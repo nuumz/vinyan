@@ -19,11 +19,11 @@ export class SkillStore {
       INSERT OR REPLACE INTO cached_skills (
         task_signature, approach, success_rate, status,
         probation_remaining, usage_count, risk_at_creation,
-        dep_cone_hashes, last_verified_at, verification_profile
+        dep_cone_hashes, last_verified_at, verification_profile, origin
       ) VALUES (
         $task_signature, $approach, $success_rate, $status,
         $probation_remaining, $usage_count, $risk_at_creation,
-        $dep_cone_hashes, $last_verified_at, $verification_profile
+        $dep_cone_hashes, $last_verified_at, $verification_profile, $origin
       )
     `);
   }
@@ -40,6 +40,7 @@ export class SkillStore {
       $dep_cone_hashes: JSON.stringify(skill.depConeHashes),
       $last_verified_at: skill.lastVerifiedAt,
       $verification_profile: skill.verificationProfile,
+      $origin: skill.origin ?? "local",
     });
   }
 
@@ -133,5 +134,6 @@ function rowToSkill(row: any): CachedSkill {
     depConeHashes: JSON.parse(row.dep_cone_hashes),
     lastVerifiedAt: row.last_verified_at,
     verificationProfile: row.verification_profile,
+    origin: row.origin ?? "local",
   };
 }

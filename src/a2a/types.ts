@@ -69,6 +69,33 @@ export const A2ASkillSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+// ── Vinyan ECP Extension for Agent Card ────────────────────────────────
+
+export const VinyanOracleCapabilitySchema = z.object({
+  name: z.string(),
+  tier: z.enum(["deterministic", "heuristic", "probabilistic", "speculative"]),
+  languages: z.array(z.string()),
+  accuracy: z.number().optional(),
+  latency_ms: z.number().optional(),
+});
+
+export const VinyanECPExtensionSchema = z.object({
+  protocol: z.literal("vinyan-ecp"),
+  ecp_version: z.literal(1),
+  instance_id: z.string(),
+  public_key: z.string(),
+  capability_version: z.number(),
+  oracle_capabilities: z.array(VinyanOracleCapabilitySchema),
+  features: z.array(z.string()),
+  calibration: z.object({
+    brier_score: z.number().optional(),
+    sample_size: z.number().optional(),
+    bias_direction: z.enum(["overconfident", "underconfident", "calibrated"]).optional(),
+  }).optional(),
+});
+
+export type VinyanECPExtension = z.infer<typeof VinyanECPExtensionSchema>;
+
 export const A2AAgentCardSchema = z.object({
   name: z.string(),
   description: z.string(),
@@ -79,6 +106,7 @@ export const A2AAgentCardSchema = z.object({
     pushNotifications: z.boolean().default(false),
   }),
   skills: z.array(A2ASkillSchema),
+  "x-vinyan-ecp": VinyanECPExtensionSchema.optional(),
 });
 
 export type A2AAgentCard = z.infer<typeof A2AAgentCardSchema>;

@@ -86,6 +86,10 @@ export interface OracleVerdict {
   oracleName?: string;
   /** Time taken for oracle execution */
   duration_ms: number;
+  /** Instance provenance — where this verdict originated. Phase 5 A2A support. */
+  origin?: "local" | "a2a" | "mcp";
+  /** A2 compliance: true = oracle explicitly reported confidence; false/undefined = absent. */
+  confidence_reported?: boolean;
   /** Multi-dimensional quality signal (Phase 1 — not computed in Phase 0) */
   qualityScore?: QualityScore;
   /** Phase 1+: Engine requests more compute budget (→ concept §2.2 ECP). */

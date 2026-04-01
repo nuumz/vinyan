@@ -314,6 +314,7 @@ export interface CachedSkill {
   lastVerifiedAt: number;                // timestamp of last full re-verification
   verificationProfile: "hash-only" | "structural" | "full";
   confidence?: number;                   // PH3.4: fuzzy match confidence (omitted = exact match)
+  origin?: "local" | "a2a" | "mcp";     // PH5: instance provenance
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ export interface EvolutionaryRule {
   effectiveness: number;
   specificity: number;                   // count of non-null condition fields
   superseded_by?: string;                // rule ID that replaced this via conflict resolution
+  origin?: "local" | "a2a" | "mcp";     // PH5: instance provenance
 }
 
 // ---------------------------------------------------------------------------

@@ -97,15 +97,15 @@ describe("mcpToEcp", () => {
     expect(verdict.type).toBe("uncertain");
   });
 
-  test("network trust → confidence 0.5", () => {
+  test("network trust → confidence 0.40 (http + provisional peer)", () => {
     const verdict = mcpToEcp(successResult, "network");
-    expect(verdict.confidence).toBe(0.5);
+    expect(verdict.confidence).toBe(0.40);
     expect(verdict.type).toBe("uncertain");
   });
 
-  test("remote trust → confidence 0.3", () => {
+  test("remote trust → confidence 0.25 (http + untrusted peer)", () => {
     const verdict = mcpToEcp(successResult, "remote");
-    expect(verdict.confidence).toBe(0.3);
+    expect(verdict.confidence).toBe(0.25);
     expect(verdict.type).toBe("uncertain");
   });
 
@@ -138,7 +138,7 @@ describe("mcpToEcp", () => {
     const verdict = mcpToEcp(unstructured, "network");
     expect(verdict.verified).toBe(true);
     expect(verdict.type).toBe("uncertain");
-    expect(verdict.confidence).toBe(0.5);
+    expect(verdict.confidence).toBe(0.40);
   });
 });
 

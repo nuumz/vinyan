@@ -21,6 +21,7 @@ import type {
   ToolResult,
   WorkerProfile,
 } from "../orchestrator/types.ts";
+import type { PeerTrustLevel } from "../oracle/tier-clamp.ts";
 
 // ── Event Map ────────────────────────────────────────────────────────
 
@@ -127,6 +128,20 @@ export interface VinyanBusEvents {
   "api:response": { method: string; path: string; status: number; duration_ms: number };
   "session:created": { sessionId: string; source: string };
   "session:compacted": { sessionId: string; taskCount: number };
+
+  // Phase E: File invalidation relay
+  "file:hashChanged": { filePath: string; newHash: string; previousHash?: string };
+
+  // Phase D/E/L: Peer lifecycle
+  "peer:connected": { peerId: string; instanceId: string; url: string };
+  "peer:disconnected": { peerId: string; reason: string };
+  "peer:trustChanged": { peerId: string; from: PeerTrustLevel; to: PeerTrustLevel; trigger: string };
+
+  // Phase E: A2A knowledge events
+  "a2a:verdictReceived": { peerId: string; oracleName: string; confidence: number };
+  "a2a:knowledgeImported": { peerId: string; patternsImported: number; rulesImported: number };
+  "a2a:knowledgeOffered": { peerId: string; patternCount: number };
+  "a2a:knowledgeAccepted": { peerId: string; acceptedCount: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

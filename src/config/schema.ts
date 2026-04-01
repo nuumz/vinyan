@@ -124,7 +124,7 @@ const Phase5InstancesConfigSchema = z.object({
   heartbeat_timeout_ms: z.number().positive().default(45_000),
   peers: z.array(z.object({
     url: z.string(),
-    trust_level: z.enum(["untrusted", "semi-trusted", "trusted"]).default("untrusted"),
+    trust_level: z.enum(["untrusted", "provisional", "established", "trusted"]).default("untrusted"),
   })).default([]),
 });
 
@@ -138,7 +138,7 @@ const Phase5MCPConfigSchema = z.object({
   client_servers: z.array(z.object({
     name: z.string(),
     command: z.string(),
-    trust_level: z.enum(["untrusted", "semi-trusted", "trusted"]).default("untrusted"),
+    trust_level: z.enum(["untrusted", "provisional", "established", "trusted"]).default("untrusted"),
   })).default([]),
 });
 

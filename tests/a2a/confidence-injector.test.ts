@@ -1,12 +1,13 @@
 /**
  * A2A Confidence Injector Tests — I13 + A5 compliance.
+ * Uses canonical clampFull() pipeline: tier × transport × peer trust.
  */
 import { describe, test, expect } from "bun:test";
 import {
   injectA2AConfidence,
   createA2AVerdict,
-  A2A_CONFIDENCE_CAP,
 } from "../../src/a2a/confidence-injector.ts";
+import { PEER_TRUST_CAPS } from "../../src/oracle/tier-clamp.ts";
 import type { OracleVerdict } from "../../src/core/types.ts";
 
 function makeVerdict(overrides: Partial<OracleVerdict> = {}): OracleVerdict {
@@ -22,23 +23,35 @@ function makeVerdict(overrides: Partial<OracleVerdict> = {}): OracleVerdict {
 }
 
 describe("injectA2AConfidence", () => {
-  test("high confidence (0.9) gets capped to 0.5", () => {
+  test("untrusted peer: high confidence capped to 0.25", () => {
     const verdict = makeVerdict({ confidence: 0.9 });
     const result = injectA2AConfidence(verdict);
-    expect(result.confidence).toBe(A2A_CONFIDENCE_CAP);
-    expect(result.confidence).toBe(0.5);
+    expect(result.confidence).toBe(PEER_TRUST_CAPS.untrusted);
+    expect(result.confidence).toBe(0.25);
   });
 
-  test("low confidence (0.3) stays at 0.3", () => {
-    const verdict = makeVerdict({ confidence: 0.3 });
-    const result = injectA2AConfidence(verdict);
-    expect(result.confidence).toBe(0.3);
+  test("trusted peer: high confidence capped to 0.60", () => {
+    const verdict = makeVerdict({ confidence: 0.9 });
+    const result = injectA2AConfidence(verdict, undefined, "trusted");
+    expect(result.confidence).toBe(PEER_TRUST_CAPS.trusted);
   });
 
-  test("confidence exactly at 0.5 stays at 0.5", () => {
-    const verdict = makeVerdict({ confidence: 0.5 });
-    const result = injectA2AConfidence(verdict);
-    expect(result.confidence).toBe(0.5);
+  test("provisional peer: confidence capped to 0.40", () => {
+    const verdict = makeVerdict({ confidence: 0.8 });
+    const result = injectA2AConfidence(verdict, undefined, "provisional");
+    expect(result.confidence).toBe(PEER_TRUST_CAPS.provisional);
+  });
+
+  test("established peer: confidence capped to 0.50", () => {
+    const verdict = makeVerdict({ confidence: 0.8 });
+    const result = injectA2AConfidence(verdict, undefined, "established");
+    expect(result.confidence).toBe(PEER_TRUST_CAPS.established);
+  });
+
+  test("low confidence stays when below cap", () => {
+    const verdict = makeVerdict({ confidence: 0.1 });
+    const result = injectA2AConfidence(verdict, undefined, "trusted");
+    expect(result.confidence).toBe(0.1);
   });
 
   test("type always becomes 'uncertain' (A5 lowest trust tier)", () => {
@@ -80,14 +93,21 @@ describe("injectA2AConfidence", () => {
     const result = injectA2AConfidence(verdict);
     expect(result.reason).toBe("test failure detected");
   });
+
+  test("tier + transport + peer trust all apply (most restrictive wins)", () => {
+    const verdict = makeVerdict({ confidence: 0.9 });
+    // speculative=0.4, a2a=0.7, untrusted=0.25 → min is 0.25
+    const result = injectA2AConfidence(verdict, "speculative", "untrusted");
+    expect(result.confidence).toBe(0.25);
+  });
 });
 
 describe("createA2AVerdict", () => {
-  test("success verdict has correct structure", () => {
+  test("success verdict has correct structure (untrusted default)", () => {
     const verdict = createA2AVerdict(true, "Tests passed");
     expect(verdict.verified).toBe(true);
     expect(verdict.type).toBe("uncertain");
-    expect(verdict.confidence).toBe(A2A_CONFIDENCE_CAP);
+    expect(verdict.confidence).toBe(PEER_TRUST_CAPS.untrusted);
     expect(verdict.reason).toBe("Tests passed");
     expect(verdict.evidence).toEqual([]);
     expect(verdict.fileHashes).toEqual({});
@@ -97,12 +117,19 @@ describe("createA2AVerdict", () => {
     const verdict = createA2AVerdict(false, "Type errors found");
     expect(verdict.verified).toBe(false);
     expect(verdict.type).toBe("uncertain");
-    expect(verdict.confidence).toBe(A2A_CONFIDENCE_CAP);
+    expect(verdict.confidence).toBe(PEER_TRUST_CAPS.untrusted);
     expect(verdict.reason).toBe("Type errors found");
   });
 
-  test("confidence is always capped at 0.5", () => {
-    const verdict = createA2AVerdict(true, "ok");
-    expect(verdict.confidence).toBeLessThanOrEqual(0.5);
+  test("trusted peer gets higher cap", () => {
+    const verdict = createA2AVerdict(true, "ok", "trusted");
+    expect(verdict.confidence).toBe(PEER_TRUST_CAPS.trusted);
+  });
+
+  test("confidence never exceeds peer trust cap", () => {
+    for (const level of ["untrusted", "provisional", "established", "trusted"] as const) {
+      const verdict = createA2AVerdict(true, "ok", level);
+      expect(verdict.confidence).toBeLessThanOrEqual(PEER_TRUST_CAPS[level]);
+    }
   });
 });

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS evolutionary_rules (
   created_at      INTEGER NOT NULL,
   effectiveness   REAL NOT NULL DEFAULT 0.0,
   specificity     INTEGER NOT NULL DEFAULT 0,
-  superseded_by   TEXT
+  superseded_by   TEXT,
+  origin          TEXT CHECK(origin IN ('local', 'a2a', 'mcp')) DEFAULT 'local'
 );
 
 CREATE INDEX IF NOT EXISTS idx_rules_status ON evolutionary_rules(status);

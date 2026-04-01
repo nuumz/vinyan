@@ -400,7 +400,7 @@ All 8 items implemented with tests. See individual sections below for implementa
 - WorkerPoolManager L2 dispatch (two-layer mount):
   ```
   docker run --rm \
-    --user 1000:1000 \
+    --user 65532:65532 \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
     --network=none \
@@ -634,7 +634,7 @@ P3.0 (Audit) ──┬── P3.1 (Container Real) ── P3.2 (Shadow Real) ─
 1. Create `docker/vinyan-sandbox/Dockerfile` — Bun + tree-sitter + tsc runtime
 2. Implement `ContainerDispatcher` in `src/orchestrator/worker/container-dispatch.ts`:
    - `docker run --rm` with two-layer mount (workspace read-only + overlay writable)
-   - Security hardening: `--user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --network=none --pids-limit=256 --memory=1g`
+   - Security hardening: `--user 65532:65532 --cap-drop=ALL --security-opt=no-new-privileges --network=none --pids-limit=256 --memory=1g`
    - IPC via temp dirs: `intent.json` → container → `result.json` + `artifacts/`
    - Timeout: `docker kill` on budget exceed
 3. Implement `ArtifactCommitProtocol` in `src/orchestrator/worker/artifact-commit.ts`:

@@ -5,7 +5,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { A2ABridge } from "../../src/a2a/bridge.ts";
-import { A2A_CONFIDENCE_CAP } from "../../src/a2a/confidence-injector.ts";
+import { PEER_TRUST_CAPS } from "../../src/oracle/tier-clamp.ts";
 import type { TaskInput, TaskResult } from "../../src/orchestrator/types.ts";
 
 function makeBridge(
@@ -158,7 +158,7 @@ describe("A2ABridge", () => {
           if (part.data?.oracleVerdicts) {
             const verdicts = part.data.oracleVerdicts as Record<string, { confidence: number }>;
             for (const [, verdict] of Object.entries(verdicts)) {
-              expect(verdict.confidence).toBeLessThanOrEqual(A2A_CONFIDENCE_CAP);
+              expect(verdict.confidence).toBeLessThanOrEqual(PEER_TRUST_CAPS.untrusted);
             }
           }
         }

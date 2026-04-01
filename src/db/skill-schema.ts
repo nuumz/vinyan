@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS cached_skills (
   risk_at_creation     REAL NOT NULL,
   dep_cone_hashes      TEXT NOT NULL,
   last_verified_at     INTEGER NOT NULL,
-  verification_profile TEXT NOT NULL CHECK(verification_profile IN ('hash-only', 'structural', 'full'))
+  verification_profile TEXT NOT NULL CHECK(verification_profile IN ('hash-only', 'structural', 'full')),
+  origin               TEXT CHECK(origin IN ('local', 'a2a', 'mcp')) DEFAULT 'local'
 );
 
 CREATE INDEX IF NOT EXISTS idx_skills_status ON cached_skills(status);

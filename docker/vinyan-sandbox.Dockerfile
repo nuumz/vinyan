@@ -5,32 +5,38 @@
 #   /overlay   — writable tmpdir for mutations
 #   /ipc       — IPC channel (intent.json in, result.json + artifacts/ out)
 #
-# Security: non-root, no capabilities, no network, PID/memory limits.
+# Security: distroless (no shell, no apt), non-root, no capabilities,
+#           no network, PID/memory limits. Enforces Axiom A6 at container level.
 # Source of truth: spec/tdd.md §11, design/implementation-plan.md §2.1
 
-FROM oven/bun:1-slim
+# ── Stage 1: Install production dependencies ────────────────────────────────
+FROM oven/bun:1-slim AS builder
 
-# Install TypeScript compiler for type checking oracle + build tools for native modules
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-RUN bun add -g typescript
+WORKDIR /app
+COPY package.json bun.lockb* ./
+RUN bun install --production --frozen-lockfile
 
-# Create non-root user
-RUN groupadd -g 1000 vinyan && \
-    useradd -u 1000 -g vinyan -m vinyan
-
-# Create mount points
-RUN mkdir -p /workspace /overlay /ipc/artifacts && \
-    chown -R vinyan:vinyan /overlay /ipc
-
-# Copy worker entry point
-COPY src/orchestrator/worker/worker-entry.ts /app/worker-entry.ts
-COPY src/ /app/src/
+# ── Stage 2: Distroless runtime ─────────────────────────────────────────────
+FROM oven/bun:1-distroless
 
 WORKDIR /app
 
-USER vinyan
+# tsconfig.json needed for @vinyan/* path alias resolution at runtime
+COPY tsconfig.json ./
 
-# Worker reads intent.json from /ipc, writes result.json + artifacts to /ipc
-ENTRYPOINT ["bun", "run", "/app/worker-entry.ts"]
+# Production dependencies (zod)
+COPY --from=builder /app/node_modules ./node_modules/
+
+# Only the source directories worker-entry.ts actually imports:
+#   core/types, guardrails/*, oracle/protocol, orchestrator/llm+protocol+worker
+COPY src/core/ ./src/core/
+COPY src/guardrails/ ./src/guardrails/
+COPY src/oracle/protocol.ts ./src/oracle/protocol.ts
+COPY src/orchestrator/ ./src/orchestrator/
+
+# Run as distroless nonroot user (uid 65532)
+USER 65532
+
+# Worker reads WorkerInput from stdin, writes WorkerOutput to stdout.
+# Does NOT execute tool calls — orchestrator handles tools (A6).
+ENTRYPOINT ["bun", "run", "/app/src/orchestrator/worker/worker-entry.ts"]

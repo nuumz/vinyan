@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import type { TestGenerator, TestGenResult } from "../../../src/orchestrator/test-gen/test-generator.ts";
+import { LLMTestGeneratorImpl } from "../../../src/orchestrator/test-gen/llm-test-generator.ts";
 import type { WorkerProposal } from "../../../src/orchestrator/critic/critic-engine.ts";
-import type { PerceptualHierarchy } from "../../../src/orchestrator/types.ts";
+import type { PerceptualHierarchy, LLMProvider, LLMRequest, LLMResponse } from "../../../src/orchestrator/types.ts";
 
 /** Minimal mock implementation to verify the interface contract */
 function createMockTestGenerator(result: Partial<TestGenResult> = {}): TestGenerator {
@@ -95,5 +96,77 @@ describe("TestGenerator interface contract", () => {
     });
     const result = await gen.generateAndRun(makeProposal(), makePerception());
     expect(result.generatedTests).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LLMTestGeneratorImpl tests
+// ---------------------------------------------------------------------------
+
+function createTestProvider(responseContent: string, shouldFail = false): LLMProvider {
+  return {
+    id: "mock/test-gen",
+    tier: "balanced",
+    generate: async (_request: LLMRequest): Promise<LLMResponse> => {
+      if (shouldFail) throw new Error("provider unavailable");
+      return {
+        content: responseContent,
+        toolCalls: [],
+        tokensUsed: { input: 150, output: 200 },
+        model: "mock",
+        stopReason: "end_turn",
+      };
+    },
+  };
+}
+
+describe("LLMTestGeneratorImpl", () => {
+  test("returns empty result when LLM provider fails", async () => {
+    const gen = new LLMTestGeneratorImpl(createTestProvider("", true));
+    const result = await gen.generateAndRun(makeProposal(), makePerception());
+    expect(result.generatedTests).toHaveLength(0);
+    expect(result.failures).toHaveLength(0);
+    expect(result.tokensUsed.input).toBe(0);
+  });
+
+  test("returns empty result when LLM returns unparseable response", async () => {
+    const gen = new LLMTestGeneratorImpl(createTestProvider("not json at all"));
+    const result = await gen.generateAndRun(makeProposal(), makePerception());
+    expect(result.generatedTests).toHaveLength(0);
+    expect(result.tokensUsed.input).toBe(150);
+  });
+
+  test("parses valid test generation response", async () => {
+    const response = JSON.stringify([
+      {
+        name: "add returns sum",
+        code: "expect(1 + 2).toBe(3)",
+        targetFunction: "add",
+        category: "happy-path",
+      },
+    ]);
+    const gen = new LLMTestGeneratorImpl(createTestProvider(response));
+    const result = await gen.generateAndRun(makeProposal(), makePerception());
+    expect(result.generatedTests).toHaveLength(1);
+    expect(result.generatedTests[0]!.name).toBe("add returns sum");
+    expect(result.generatedTests[0]!.category).toBe("happy-path");
+  });
+
+  test("filters tests with invalid categories", async () => {
+    const response = JSON.stringify([
+      { name: "valid", code: "expect(true).toBe(true)", targetFunction: "fn", category: "happy-path" },
+      { name: "invalid", code: "expect(true).toBe(true)", targetFunction: "fn", category: "unknown-category" },
+    ]);
+    const gen = new LLMTestGeneratorImpl(createTestProvider(response));
+    const result = await gen.generateAndRun(makeProposal(), makePerception());
+    expect(result.generatedTests).toHaveLength(1);
+    expect(result.generatedTests[0]!.name).toBe("valid");
+  });
+
+  test("handles markdown-fenced JSON response", async () => {
+    const response = '```json\n[{"name":"test1","code":"expect(1).toBe(1)","targetFunction":"fn","category":"edge-case"}]\n```';
+    const gen = new LLMTestGeneratorImpl(createTestProvider(response));
+    const result = await gen.generateAndRun(makeProposal(), makePerception());
+    expect(result.generatedTests).toHaveLength(1);
   });
 });

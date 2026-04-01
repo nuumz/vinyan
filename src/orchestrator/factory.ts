@@ -41,6 +41,8 @@ import { WorkerSelector } from "./worker-selector.ts";
 import { WorkerLifecycle } from "./worker-lifecycle.ts";
 import { CapabilityModel } from "./capability-model.ts";
 import { LLMCriticImpl } from "./critic/llm-critic-impl.ts";
+import { LLMTestGeneratorImpl } from "./test-gen/llm-test-generator.ts";
+import { startLLMProxy } from "./llm/llm-proxy.ts";
 import { GapHDetector } from "../observability/gap-h-detector.ts";
 import { FileWatcher } from "../world-graph/file-watcher.ts";
 import type { WorkerProfile } from "./types.ts";
@@ -56,6 +58,10 @@ export interface OrchestratorConfig {
   bus?: VinyanBus;
   /** Override oracle gate (for testing escalation and fail-closed scenarios). */
   oracleGate?: import("./core-loop.ts").OracleGate;
+  /** Override critic engine (for testing fail-closed behavior). */
+  criticEngine?: import("./critic/critic-engine.ts").CriticEngine;
+  /** Enable LLM proxy for credential isolation (A6). Default: false. */
+  llmProxy?: boolean;
 }
 
 export interface Orchestrator {
@@ -186,10 +192,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         console.warn("[vinyan] No LLM providers — using single-node task decomposition");
         return new TaskDecomposerStub();
       })();
+  // A6: Start LLM proxy for credential isolation if enabled
+  let llmProxy: import("./llm/llm-proxy.ts").LLMProxyServer | undefined;
+  if (config.llmProxy && (config.useSubprocess ?? true)) {
+    llmProxy = startLLMProxy(registry);
+  }
   const workerPool = new WorkerPoolImpl({
     registry,
     workspace,
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
+    proxySocketPath: llmProxy?.socketPath,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
@@ -197,7 +209,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
   const criticProvider = registry.selectByTier("powerful") ?? registry.selectByTier("balanced");
-  const criticEngine = criticProvider ? new LLMCriticImpl(criticProvider) : undefined;
+  const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
+
+  // WP-3: TestGenerator — generative verification at L2+ (A1: separate LLM call from generator)
+  const testGenProvider = registry.selectByTier("balanced") ?? registry.selectByTier("powerful");
+  const testGenerator = testGenProvider
+    ? new LLMTestGeneratorImpl(testGenProvider, workspace)
+    : undefined;
 
   // Startup logging — confirm active components (P3.0 Gap 7)
   const components = [
@@ -267,6 +285,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerLifecycle,
     worldGraph,
     criticEngine,
+    testGenerator,
     // Disable exploration in test mode for deterministic routing (A3)
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
   };

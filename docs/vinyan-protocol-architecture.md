@@ -30,7 +30,7 @@ Vinyan's current external interfaces treat it as either a **tool** (MCP) or a **
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Principle:** All three layers use the same ECP message schema (`HypothesisTuple` → `OracleVerdict`). The difference is transport and trust level. Code that processes verdicts doesn't know or care which layer produced them — it sees the same `OracleVerdict` interface with `confidence` already adjusted for transport-level trust.
+**Principle:** All three layers use the same ECP message schema (`HypothesisTuple` → `OracleVerdict`). Transport determines two things: (1) connection lifecycle and (2) trust-level confidence adjustment (§6). Confidence is clamped at the transport boundary (`src/oracle/tier-clamp.ts`) so that downstream code sees a single `confidence` number — it doesn't need to know the transport, but the transport has already influenced the value.
 
 ### Interaction Patterns Supported
 
@@ -61,7 +61,7 @@ const proc = Bun.spawn(spawnArgs, { stdin: "pipe", stdout: "pipe", stderr: "pipe
 The runner resolves transport from the registry entry:
 
 ```typescript
-// Target: transport-agnostic
+// Target: transport-agnostic base interface
 interface ECPTransport {
   /** Send a hypothesis and receive a verdict. */
   verify(hypothesis: HypothesisTuple, timeout_ms: number): Promise<OracleVerdict>;
@@ -69,8 +69,27 @@ interface ECPTransport {
   close(): Promise<void>;
   /** Transport type for trust level determination. */
   readonly transportType: "stdio" | "websocket" | "http";
+  /** Whether the transport is currently connected and ready. */
+  readonly connected: boolean;
+}
+
+/**
+ * Extended interface for persistent transports (WebSocket).
+ * StdioTransport does NOT implement this — subprocess lifecycle is per-invocation.
+ */
+interface PersistentECPTransport extends ECPTransport {
+  /** Register engine capabilities with the orchestrator. */
+  register(capabilities: EngineCapabilities): Promise<{ engine_id: string }>;
+  /** Send/receive heartbeat. Returns false if peer is unresponsive. */
+  heartbeat(): Promise<boolean>;
+  /** Reconnect with exponential backoff after connection loss. */
+  reconnect(): Promise<void>;
+  /** Event emitter for connection lifecycle events. */
+  on(event: "disconnected" | "reconnected" | "heartbeat_timeout", handler: () => void): void;
 }
 ```
+
+> **Design note:** `StdioTransport` implements `ECPTransport` only — subprocess oracles have a spawn→verify→exit lifecycle with no persistent connection. `WebSocketTransport` implements `PersistentECPTransport` which adds registration, heartbeat, and reconnection (§3). This split avoids forcing subprocess oracles to implement no-op lifecycle methods.
 
 **Implementations:**
 
@@ -388,17 +407,17 @@ Current agent card (`src/a2a/agent-card.ts`) advertises task-level skills. Enhan
 
 The complete trust model across all protocol layers:
 
-| Source | Transport | Layer | Confidence Cap | Type Cap | Code Reference |
-|:-------|:----------|:------|---------------:|:---------|:----------|
-| Local deterministic oracle | stdio | L1 | 1.0 | `known` | `src/oracle/runner.ts` |
-| Local heuristic oracle | stdio | L1 | 0.9 (target) | `known` | Tier ceiling (ECP spec §4.4 — clamping not yet implemented) |
-| Local probabilistic oracle | stdio | L1 | 0.7 (target) | `known` | Tier ceiling (ECP spec §4.4 — clamping not yet implemented) |
-| Remote Vinyan oracle | WebSocket | L2 | 0.95 | `known` | I13 in ECP spec §5.2 (design — WebSocket not yet implemented) |
-| Remote third-party oracle | WebSocket | L2 | `conf × 0.8` | `uncertain` | Trust multiplier (design — WebSocket not yet implemented) |
-| MCP tool (`local`) | stdio | L3 | 0.7 | `uncertain` | `TRUST_CONFIDENCE.local` in `src/mcp/ecp-translation.ts` |
-| MCP tool (`network`) | stdio | L3 | 0.5 | `uncertain` | `TRUST_CONFIDENCE.network` in `src/mcp/ecp-translation.ts` |
-| MCP tool (`remote`) | stdio | L3 | 0.3 | `uncertain` | `TRUST_CONFIDENCE.remote` in `src/mcp/ecp-translation.ts` |
-| A2A agent | HTTP | L3 | 0.5 | `uncertain` | `A2A_CONFIDENCE_CAP` in `src/a2a/confidence-injector.ts` |
+| Source | Transport | Layer | Confidence Cap | Type Cap | Status | Code Reference |
+|:-------|:----------|:------|---------------:|:---------|:-------|:----------|
+| Local deterministic oracle | stdio | L1 | 1.0 | `known` | ✅ Implemented | `TIER_CAPS.deterministic` in `src/oracle/tier-clamp.ts` |
+| Local heuristic oracle | stdio | L1 | 0.9 | `known` | ✅ Implemented | `TIER_CAPS.heuristic` in `src/oracle/tier-clamp.ts` |
+| Local probabilistic oracle | stdio | L1 | 0.7 | `known` | ✅ Implemented | `TIER_CAPS.probabilistic` in `src/oracle/tier-clamp.ts` |
+| Remote Vinyan oracle | WebSocket | L2 | 0.95 | `known` | ⚠️ Cap defined, transport not implemented | `TRANSPORT_CAPS.websocket` in `src/oracle/tier-clamp.ts` |
+| Remote third-party oracle | WebSocket | L2 | `conf × 0.8` | `uncertain` | ❌ Design only | — |
+| MCP tool (`local`) | stdio | L3 | 0.7 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.local` in `src/mcp/ecp-translation.ts` |
+| MCP tool (`network`) | stdio | L3 | 0.5 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.network` in `src/mcp/ecp-translation.ts` |
+| MCP tool (`remote`) | stdio | L3 | 0.3 | `uncertain` | ✅ Implemented | `TRUST_CONFIDENCE.remote` in `src/mcp/ecp-translation.ts` |
+| A2A agent | HTTP | L3 | 0.5 | `uncertain` | ✅ Implemented | `A2A_CONFIDENCE_CAP` in `src/a2a/confidence-injector.ts` |
 
 > **Label mapping:** The MCP bridge code uses `TrustLevel = "local" | "network" | "remote"` (in `ecp-translation.ts`), while the config schema uses `"trusted" | "semi-trusted" | "untrusted"` (in `Phase5MCPConfigSchema`). The mapping is: `trusted` → `local` (0.7), `semi-trusted` → `network` (0.5), `untrusted` → `remote` (0.3). These vocabularies should be unified in a future cleanup.
 
@@ -418,7 +437,7 @@ How this architecture maps to the existing implementation plan:
 | PH5.6 A2A Bridge | §5.2 (verification-level), §5.3 (agent card) | Partial |
 | PH5.7 ECP Network Transport | §2 (transport abstraction), §3 (remote oracle pattern) | Design |
 | PH5.8 Instance Coordinator | §3 (remote engine lifecycle) | Design |
-| PH5.10 Polyglot Framework | §2 (`command` field already supports any language) | Implemented |
+| PH5.10 Polyglot Framework | §2 (`command` field already supports any language) | Partial (`runner.ts` supports `command` field; `gate.ts` calls verifiers directly) |
 | PH5.14 Security | ECP Spec §8 (instance identity, signing) | Partial |
 
 ### New Phase 5 Items (Proposed)
@@ -456,6 +475,8 @@ Tier 3 — Cross-Language (independent):
 
 **Key change from original plan:** PH5.18 (ECP Transport) is inserted as Tier 1 prerequisite. The transport abstraction is the foundation that everything else builds on — it's what makes Vinyan a platform instead of a library.
 
+> **OTel opportunity:** `src/observability/metrics.ts` exports in-memory statistics mappable to OTel semantic conventions (`gen_ai.verdict.confidence`, `gen_ai.verdict.epistemic_type`, etc.). Track as ecosystem strategy after ECP v1 stabilizes.
+
 ---
 
 ## §8 Design Decisions
@@ -471,15 +492,15 @@ Tier 3 — Cross-Language (independent):
 | D7 | A2A verification | New `/a2a/verify` endpoint | Lightweight alternative to full task submission. Same trust degradation. |
 | D8 | Batch verification | Deferred to ECP v2 | Keep v1 simple (one hypothesis per request). Batch adds complexity. |
 | D9 | Confidence model | Scalar [0,1] in v1, belief/plausibility tuple in v2 | DS theory recommends `[Bel, Pl]` intervals but scalar is simpler for initial adoption. See §9.1. |
-| D10 | Multi-oracle combination | Dempster's rule of combination | Formal mathematical framework for aggregating independent evidence sources. See §9.2. |
+| D10 | Multi-oracle combination | Priority-based heuristic (v1); DS combination as v2 research | v1: 5-step deterministic resolution in `conflict-resolver.ts`. v2: Dempster's rule under investigation — see §9.2 for caveats. |
 | D11 | LLM confidence policy | Explicit exclusion from governance | LLM self-confidence poorly calibrated (Kadavath 2022, Xiong 2024). Hard policy, not guideline. See §9.3. |
 | D12 | Evidence integrity | Merkle-chained evidence in v2 | Certificate Transparency pattern for tamper-proof evidence chains. See §9.4. |
 
 ---
 
-## §9 Research-Backed Design Refinements
+## §9 Research Directions (ECP v2)
 
-> Based on analysis of AI protocol landscape (MCP/A2A/OpenAI/AutoGen), academic epistemic research (Dempster-Shafer, calibration, Byzantine fault tolerance), and production verification patterns (Cursor/Copilot/Devin/Salesforce).
+> The following sections describe potential future enhancements. None are committed designs. Current v1 implementation is complete for local oracle coordination; these directions become relevant when ECP Network Transport (PH5.18) is implemented.
 
 ### 9.1 Confidence Model Evolution: Scalar → Belief Intervals
 
@@ -522,13 +543,13 @@ belief_interval?: {
 
 **Axiom alignment:** A2 (First-Class Uncertainty) — belief intervals make uncertainty *measurable*, not just categorical.
 
-### 9.2 Multi-Oracle Aggregation: Dempster's Rule of Combination
+### 9.2 Multi-Oracle Aggregation: Current Heuristic and Future Directions
 
-**Current:** `src/gate/conflict-resolver.ts` uses a 5-step deterministic algorithm: (1) domain separation — cross-domain conflicts are both valid, (2) tier priority — deterministic > heuristic > probabilistic (A5), (3) evidence count — more evidence items wins, (4) historical accuracy — oracle with better track record wins, (5) escalation — set `hasContradiction: true` on aggregate result, apply conservative default (failure wins). This is a priority heuristic, not a mathematically grounded combination rule.
+> **v2 Research Direction** — The current heuristic works well for Vinyan's oracle set. DS combination is one possible future improvement, not a committed design.
 
-**Problem:** When 3+ oracles with overlapping domains produce verdicts, the current heuristic doesn't have a formal way to strengthen or weaken combined confidence.
+**Current (v1, implemented):** `src/gate/conflict-resolver.ts` uses a 5-step deterministic algorithm: (1) domain separation — cross-domain conflicts are both valid, (2) tier priority — deterministic > heuristic > probabilistic (A5), (3) evidence count — more evidence items wins, (4) historical accuracy — oracle with better track record wins, (5) escalation — set `hasContradiction: true` on aggregate result, apply conservative default (failure wins). This priority heuristic is simple, auditable, and sufficient for the current oracle set (5 built-in oracles with clear tier separation).
 
-**Solution:** Dempster's rule of combination for independent evidence sources.
+**Possible v2 improvement:** When 3+ oracles with overlapping domains produce verdicts, a more formal combination rule could strengthen or weaken combined confidence. Dempster's rule of combination is one candidate, with known limitations:
 
 ```
 // Dempster's rule for two independent mass functions m1, m2:
@@ -569,6 +590,12 @@ interface DempsterCombination {
 - When an oracle returns `type: "unknown"` (excluded from combination, not treated as evidence)
 
 **Axiom alignment:** A3 (Deterministic Governance) — Dempster's rule is a deterministic mathematical function, no LLM needed. A5 (Tiered Trust) — tier ranking still applies as pre-filter.
+
+**Open questions before adopting DS combination:**
+- Does the current oracle set actually produce enough same-tier overlap to benefit from formal combination?
+- Converting scalar confidence to mass functions requires arbitrary mapping choices — is that more principled than the current heuristic?
+- The 5-step algorithm is fully auditable; DS combination produces a single number that is harder to explain.
+- DS assumes independent sources, but AST and type oracles both read the same file.
 
 ### 9.3 LLM Confidence Exclusion Policy
 
@@ -621,102 +648,14 @@ interface MerkleEvidence extends Evidence {
 ```
 
 **Use cases:**
-- Cross-instance fact sharing (§9.6): verify evidence chain integrity across network
+- Cross-instance fact sharing (future Phase 5): verify evidence chain integrity across network
 - Audit trail: prove that a fact was derived from specific evidence at a specific time
 - Tamper detection: any modification breaks the hash chain
 
 **Deferred to v2** because current local-only deployment doesn't need tamper-proofing. Becomes critical when ECP Network (PH5.18) enables cross-instance communication.
 
-### 9.5 Hypothesis Constraints (ECP v2)
+> **Threat model note:** Merkle evidence addresses integrity, not correctness. A compromised remote instance can generate valid Merkle chains of wrong evidence. A formal threat model should precede this design when ECP Network Transport is implemented.
 
-**Current:** `HypothesisTuple.context` is `Record<string, unknown>` — no schema for what constraints a hypothesis can declare.
 
-**Proposed:** Structured constraint language inspired by W3C SHACL (Shapes Constraint Language) and Guardrails AI's RAIL.
 
-```typescript
-interface HypothesisConstraints {
-  /** Required oracle patterns (all must pass) */
-  require_patterns?: string[];
-  /** Minimum combined confidence for acceptance */
-  min_confidence?: number;
-  /** Maximum allowed routing level */
-  max_routing_level?: 0 | 1 | 2 | 3;
-  /** Required evidence properties */
-  evidence_requirements?: {
-    min_count?: number;
-    require_content_hash?: boolean;
-    require_line_reference?: boolean;
-  };
-}
-```
 
-**Deferred to v2** — current hypothesis routing is sufficient for Phase 0-4. Constraints become valuable when external engines submit hypotheses with specific verification requirements.
-
-### 9.6 Fact Distribution Protocol (ECP v2 / Phase 5)
-
-**Problem:** When multiple Vinyan instances coordinate (PH5.8/PH5.9), verified facts need to propagate across the fleet with Byzantine tolerance.
-
-**Proposed:** Gossip protocol with k-confirmation.
-
-```
-1. Instance A verifies a fact (evidence chain → Merkle-chained)
-2. A gossips fact to k random peers (k=3 default)
-3. Each peer independently validates:
-   - Evidence chain integrity (Merkle hashes)
-   - Content hash matches local file (if available)
-   - Engine tier meets minimum threshold
-4. Peer accepts if local validation passes, rejects otherwise
-5. Fact is "fleet-confirmed" after k independent acceptances
-6. Confidence adjustment: fleet_confidence = local_confidence × (1 - 1/k_confirmed)
-```
-
-**Axiom alignment:** A1 (independent verification), A4 (content-addressed across fleet), A6 (each instance validates independently).
-
-**Deferred to PH5.8/PH5.9** — requires ECP Network Transport (PH5.18) as prerequisite.
-
-### 9.7 OpenTelemetry Opportunity
-
-OpenTelemetry GenAI SIG currently tracks: `gen_ai.usage.input_tokens`, `gen_ai.response.model`, etc. — no epistemic fields.
-
-**Proposed `gen_ai.verdict.*` semantic conventions:**
-
-```
-gen_ai.verdict.confidence      — float [0,1]
-gen_ai.verdict.epistemic_type  — enum {known, unknown, uncertain, contradictory}
-gen_ai.verdict.evidence_count  — int
-gen_ai.verdict.routing_level   — int [0-3]
-gen_ai.verdict.engine_tier     — enum {deterministic, heuristic, probabilistic, speculative}
-gen_ai.verdict.conflict_factor — float [0,1] (from DS combination)
-```
-
-**Action:** Contribute proposal to OTel GenAI SIG after ECP v1 stabilizes. This positions Vinyan/ECP as the reference implementation for epistemic observability.
-
-**Reference:** `src/observability/metrics.ts` exports in-memory aggregate statistics (`SystemMetrics`) and a `MetricsCollector` (event bus counter). These could be mapped to OTel semantic conventions. Prometheus-format export would need an additional adapter (e.g., via `prom-client` or OTel SDK).
-
----
-
-## §10 Competitive Protocol Positioning
-
-### No Competitor Has Epistemic Semantics
-
-| System | Verification Approach | Structured Confidence | Evidence Chains | "I Don't Know" |
-|:-------|:---------------------|:---------------------|:---------------|:---------------|
-| MCP (Anthropic/AAIF) | Tool returns opaque text | ❌ | ❌ | ❌ |
-| A2A/ACP (Google/IBM) | Task status only | ❌ | ❌ | ❌ |
-| OpenAI Agents SDK | Code interpreter + tools | ❌ | ❌ | ❌ |
-| AutoGen (Microsoft) | Multi-agent conversation | ❌ | ❌ | ❌ |
-| CrewAI | Role-based agent teams | ❌ | ❌ | ❌ |
-| LangGraph | Graph-based agent flows | ❌ | ❌ | ❌ |
-| Cursor / Copilot / Devin | Internal heuristics | ❌ | ❌ | ❌ |
-| Salesforce Einstein Trust | Trust scoring (internal) | ⚠️ Partial | ❌ | ❌ |
-| **Vinyan ECP** | **Protocol-level epistemic** | **✅ Tiered** | **✅ Content-addressed** | **✅ First-class** |
-
-**Strategic implication:** ECP occupies an *unclaimed semantic layer* above transport (JSON-RPC) and below application (agent frameworks). This is the "epistemic middleware" that every AI system will eventually need as they move from demo to production.
-
-### Bridge Strategy Validated
-
-The decision to make MCP/A2A bridge layers (not peers) is validated by their architectural limitations:
-- MCP's tool-call model cannot express uncertainty without encoding it as text (lossy)
-- A2A's task model cannot express verification without full task roundtrip (heavy)
-- Both will continue to grow in adoption — bridges give Vinyan access to their ecosystems
-- ECP-native engines get full epistemic semantics; bridge consumers get degraded but still useful access

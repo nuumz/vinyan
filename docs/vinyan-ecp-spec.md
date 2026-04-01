@@ -310,9 +310,9 @@ Trust tiers classify the reliability of evidence sources. Higher tiers are prefe
 | `probabilistic` | 0.4 | 0.7 | LLM judgment, ML classifier, external MCP tool | Medium |
 | `speculative` | 0.2 | 0.4 | Creative exploration, untested approach | Lowest |
 
-> **Implementation note:** The quality weights (1.0/0.7/0.4/0.2) are currently implemented in `src/gate/quality-score.ts` as `TIER_WEIGHTS` for weighted quality score aggregation. The confidence caps (1.0/0.9/0.7/0.4) are the target ceilings defined by this specification — confidence clamping logic should be added to the Orchestrator's verdict intake path. Currently, tier priority is enforced in `src/gate/conflict-resolver.ts` for conflict resolution but confidence clamping is not yet implemented.
+> **Implementation note:** The quality weights (1.0/0.7/0.4/0.2) are implemented in `src/gate/quality-score.ts` as `TIER_WEIGHTS` for weighted quality score aggregation. The confidence caps (1.0/0.9/0.7/0.4) are implemented in `src/oracle/tier-clamp.ts` as `TIER_CAPS`, applied at verdict intake via `clampByTier()` at two points: `src/oracle/runner.ts:112` (per-oracle run) and `src/gate/gate.ts:254` (gate pipeline). Transport-level caps (stdio=1.0, websocket=0.95, http=0.7) are also defined in `tier-clamp.ts` as `TRANSPORT_CAPS` via `clampByTransport()`. Tier priority is enforced in `src/gate/conflict-resolver.ts` for conflict resolution.
 
-**Tier is declared at engine registration** and cannot be overridden per-verdict. An engine's `confidence` value SHOULD be clamped to its tier's cap by the Orchestrator before storage (implementation pending).
+**Tier is declared at engine registration** and cannot be overridden per-verdict. An engine's `confidence` value is clamped to its tier's cap by the Orchestrator at verdict intake, before aggregation or storage. See `src/oracle/tier-clamp.ts`.
 
 ### 4.5 Falsifiability
 

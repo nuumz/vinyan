@@ -163,7 +163,7 @@ The `correlation_id` field enables distributed tracing across instances (see als
 ```typescript
 {
   hypothesis_target: string;
-  verdicts: Record<string, OracleVerdict>;  // confidence pre-capped at 0.95 per TDD §23.4 (not yet implemented — A2A bridge uses separate A2A_CONFIDENCE_CAP = 0.5)
+  verdicts: Record<string, OracleVerdict>;  // confidence pre-capped at 0.95 per TDD §23.4 (tier clamping implemented in tier-clamp.ts; A2A bridge applies separate A2A_CONFIDENCE_CAP = 0.5)
 }
 ```
 

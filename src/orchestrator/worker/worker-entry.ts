@@ -33,23 +33,33 @@ async function main() {
   const rawInput = new TextDecoder().decode(combined);
   const input = WorkerInputSchema.parse(JSON.parse(rawInput));
 
-  // Set up provider registry — same priority as factory.ts (OpenRouter first, Anthropic fallback)
+  // Set up provider registry
+  // A6: If proxy socket is available, use it instead of raw API keys
   const registry = new LLMProviderRegistry();
+  const proxySocket = process.env.VINYAN_LLM_PROXY_SOCKET;
 
-  try {
-    const { registerOpenRouterProviders } = await import("../llm/openrouter-provider.ts");
-    registerOpenRouterProviders(registry);
-  } catch {
-    // OpenRouter not available
-  }
-
-  if (registry.listProviders().length === 0) {
+  if (proxySocket) {
+    const { createProxyProvider } = await import("../llm/llm-proxy.ts");
+    registry.register(createProxyProvider(proxySocket, "fast"));
+    registry.register(createProxyProvider(proxySocket, "balanced"));
+    registry.register(createProxyProvider(proxySocket, "powerful"));
+  } else {
+    // Legacy: direct API key access (same priority as factory.ts)
     try {
-      const { createAnthropicProvider } = await import("../llm/anthropic-provider.ts");
-      const provider = createAnthropicProvider();
-      if (provider) registry.register(provider);
+      const { registerOpenRouterProviders } = await import("../llm/openrouter-provider.ts");
+      registerOpenRouterProviders(registry);
     } catch {
-      // Anthropic SDK not available
+      // OpenRouter not available
+    }
+
+    if (registry.listProviders().length === 0) {
+      try {
+        const { createAnthropicProvider } = await import("../llm/anthropic-provider.ts");
+        const provider = createAnthropicProvider();
+        if (provider) registry.register(provider);
+      } catch {
+        // Anthropic SDK not available
+      }
     }
   }
 

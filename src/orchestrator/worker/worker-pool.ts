@@ -33,6 +33,8 @@ export interface WorkerPoolConfig {
   useSubprocess?: boolean;
   /** Override worker entry script path. */
   workerEntryPath?: string;
+  /** Unix socket path for LLM proxy (A6: credential isolation). */
+  proxySocketPath?: string;
 }
 
 export class WorkerPoolImpl implements WorkerPool {
@@ -40,12 +42,14 @@ export class WorkerPoolImpl implements WorkerPool {
   private workspace: string;
   private useSubprocess: boolean;
   private workerEntryPath: string;
+  private proxySocketPath?: string;
   private dockerAvailable: boolean | null = null;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry;
     this.workspace = config.workspace;
     this.useSubprocess = config.useSubprocess ?? true;
+    this.proxySocketPath = config.proxySocketPath;
     if (!this.useSubprocess) {
       console.warn("[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.");
     }
@@ -171,7 +175,7 @@ export class WorkerPoolImpl implements WorkerPool {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: buildWorkerEnv(routing),
+      env: buildWorkerEnv(routing, this.proxySocketPath),
     });
 
     const validated = WorkerInputSchema.parse(workerInput);
@@ -335,14 +339,22 @@ const PROVIDER_ENV_KEYS = [
   "OPENROUTER_API_KEY",
 ];
 
-function buildWorkerEnv(routing: RoutingDecision): Record<string, string | undefined> {
+function buildWorkerEnv(
+  routing: RoutingDecision,
+  proxySocketPath?: string,
+): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of WORKER_ENV_KEYS) {
     if (process.env[key]) env[key] = process.env[key];
   }
-  // Forward all provider keys — the worker's provider registry decides which to use
-  for (const key of PROVIDER_ENV_KEYS) {
-    if (process.env[key]) env[key] = process.env[key];
+  if (proxySocketPath) {
+    // A6: proxy mode — worker uses socket to request LLM calls, no raw API keys
+    env.VINYAN_LLM_PROXY_SOCKET = proxySocketPath;
+  } else {
+    // Legacy mode — forward API keys directly (backward compatible)
+    for (const key of PROVIDER_ENV_KEYS) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
   }
   if (routing.workerId) {
     env.VINYAN_WORKER_ID = routing.workerId;

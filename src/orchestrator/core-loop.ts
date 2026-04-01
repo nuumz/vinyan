@@ -208,9 +208,11 @@ export async function executeTask(
   while (routing.level <= MAX_ROUTING_LEVEL) {
     // Track matched skill for feedback loop (H4) — resets on level escalation
     let matchedSkill: CachedSkill | null = null;
+    // ECP §7.3: bonus retries granted by oracle deliberation requests
+    let deliberationBonusRetries = 0;
 
     // Inner loop: retry within current routing level
-    for (let retry = 0; retry < input.budget.maxRetries; retry++) {
+    for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
       // ── Wall-clock timeout check ──────────────────────────────────
       if (Date.now() - startTime > input.budget.maxDurationMs) {
         const timeoutTrace: ExecutionTrace = {
@@ -442,6 +444,7 @@ export async function executeTask(
       }
 
       // ── ECP §7.3: Surface deliberation requests from oracles (A2) ──
+      let deliberationRequested = false;
       for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
         if (verdict.deliberation_request) {
           deps.bus?.emit("oracle:deliberation_request", {
@@ -449,6 +452,24 @@ export async function executeTask(
             oracleName,
             reason: verdict.deliberation_request.reason,
             suggestedBudget: verdict.deliberation_request.suggestedBudget,
+          });
+          deliberationRequested = true;
+        }
+      }
+
+      // ── ECP §7.3: Act on deliberation requests — grant additional compute budget ──
+      // When an oracle requests deliberation, grant +1 retry (capped at 2x original)
+      // and escalate routing level if below L2 (deliberation implies deeper analysis needed)
+      if (deliberationRequested) {
+        deliberationBonusRetries = Math.min(deliberationBonusRetries + 1, input.budget.maxRetries);
+        if (routing.level < 2) {
+          const fromLevel = routing.level;
+          routing = { ...routing, level: (routing.level + 1) as RoutingLevel };
+          deps.bus?.emit("task:escalate", {
+            taskId: input.id,
+            fromLevel,
+            toLevel: routing.level,
+            reason: "deliberation_request",
           });
         }
       }
@@ -593,8 +614,40 @@ export async function executeTask(
               );
               continue; // retry within routing level
             }
+          } catch (criticError) {
+            // A3: Critic failure → fail-closed at L2+ (governance must not silently degrade)
+            deps.bus?.emit("critic:verdict", {
+              taskId: input.id,
+              accepted: false,
+              confidence: 0,
+              reason: `Critic engine error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+            });
+            workingMemory.recordFailedApproach(
+              trace.approach,
+              `critic-error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+            );
+            continue; // retry within routing level
+          }
+        }
+
+        // ── WP-3: TestGenerator — generative verification at L2+ (§17.7) ────
+        // A1: test generation is a separate LLM call from the generator
+        if (deps.testGenerator && routing.level >= 2) {
+          try {
+            const testGenResult = await deps.testGenerator.generateAndRun(
+              { mutations: workerResult.mutations, approach: trace.approach },
+              perception,
+            );
+            if (testGenResult.failures.length > 0) {
+              const failNames = testGenResult.failures.map(f => f.name).join(", ");
+              workingMemory.recordFailedApproach(
+                trace.approach,
+                `test-gen: ${testGenResult.failures.length} generated test(s) failed: ${failNames}`,
+              );
+              continue; // retry within routing level
+            }
           } catch {
-            // Critic failure → fail-open (proceed without critic)
+            // TestGenerator failure is non-blocking — structural oracles + critic already passed
           }
         }
 

@@ -35,6 +35,7 @@ import {
   getActiveDecayFunction,
   type DecayExperimentState,
 } from "./decay-experiment.ts";
+import { clusterByApproach } from "./approach-similarity.ts";
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
   interval_sessions: 20,
@@ -478,17 +479,10 @@ export class SleepCycleRunner {
   }
 
   private groupByApproach(traces: ExecutionTrace[]): Map<string, ExecutionTrace[]> {
-    const groups = new Map<string, ExecutionTrace[]>();
-    for (const trace of traces) {
-      const approach = trace.approach || "default";
-      const group = groups.get(approach);
-      if (group) {
-        group.push(trace);
-      } else {
-        groups.set(approach, [trace]);
-      }
-    }
-    return groups;
+    return clusterByApproach(
+      traces,
+      (trace) => trace.approach || "default",
+    );
   }
 
   /**

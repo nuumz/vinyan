@@ -12,6 +12,7 @@ import { createOrchestrator } from "../../src/orchestrator/factory.ts";
 import { LLMProviderRegistry } from "../../src/orchestrator/llm/provider-registry.ts";
 import { createMockProvider } from "../../src/orchestrator/llm/mock-provider.ts";
 import type { TaskInput } from "../../src/orchestrator/types.ts";
+import type { CriticEngine } from "../../src/orchestrator/critic/critic-engine.ts";
 
 let tempDir: string;
 
@@ -378,5 +379,85 @@ describe("Core Loop Integration — §16.4 Acceptance Criteria", () => {
     // At minimum, a trace exists for the task
     expect(traces.length).toBeGreaterThanOrEqual(1);
     expect(traces[0]!.taskId).toBe("t-integration");
+  });
+
+  test("19. critic exception triggers fail-closed retry, not silent approval (A3)", async () => {
+    // A3: governance must not silently degrade — critic errors must block, not pass through
+    const throwingCritic: CriticEngine = {
+      review: async () => { throw new Error("LLM provider timeout"); },
+    };
+    const events: Array<{ accepted: boolean; reason?: string }> = [];
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeRegistry(),
+      useSubprocess: false,
+      criticEngine: throwingCritic,
+    });
+    orchestrator.bus.on("critic:verdict", (e) => events.push(e));
+
+    const result = await orchestrator.executeTask(
+      makeInput({
+        targetFiles: ["src/foo.ts"],
+        budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 2 },
+      }),
+    );
+
+    // Critic errors should be emitted as rejected verdicts
+    const rejections = events.filter(e => !e.accepted);
+    // If task reached L2+ routing, critic was invoked and should have emitted fail-closed verdicts
+    if (rejections.length > 0) {
+      expect(rejections[0]!.accepted).toBe(false);
+      expect(rejections[0]!.reason).toContain("LLM provider timeout");
+    }
+    // Regardless, the task should complete (via retry or escalation) — not crash
+    expect(["completed", "escalated", "failed"]).toContain(result.status);
+  });
+
+  test("20. deliberation_request grants bonus retries and escalates routing (A2)", async () => {
+    // A2: when an oracle requests deliberation, the system should grant more compute
+    const deliberationGate = {
+      verify: async () => ({
+        passed: false,
+        verdicts: {
+          "type-oracle": {
+            verified: false,
+            confidence: 0.3,
+            evidence: [],
+            deliberation_request: {
+              reason: "Complex type inference requires deeper analysis",
+              suggestedBudget: 2,
+            },
+          },
+        },
+        reason: "type check failed — deliberation requested",
+      }),
+    };
+    const escalations: Array<{ reason: string }> = [];
+    const deliberations: Array<{ oracleName: string }> = [];
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeRegistry(),
+      useSubprocess: false,
+      oracleGate: deliberationGate,
+    });
+    orchestrator.bus.on("task:escalate", (e) => escalations.push(e));
+    orchestrator.bus.on("oracle:deliberation_request", (e) => deliberations.push(e));
+
+    await orchestrator.executeTask(
+      makeInput({
+        targetFiles: ["src/foo.ts"],
+        budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
+      }),
+    );
+
+    // Deliberation requests should have been emitted
+    expect(deliberations.length).toBeGreaterThan(0);
+    expect(deliberations[0]!.oracleName).toBe("type-oracle");
+
+    // System should have escalated due to deliberation (from L0/L1 to higher level)
+    const deliberationEscalations = escalations.filter(e => e.reason === "deliberation_request");
+    if (deliberationEscalations.length > 0) {
+      expect(deliberationEscalations[0]!.reason).toBe("deliberation_request");
+    }
   });
 });

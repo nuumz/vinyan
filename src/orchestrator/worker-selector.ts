@@ -299,7 +299,7 @@ export class WorkerSelector {
   private tierFallback(_routingLevel: RoutingLevel): WorkerSelectionResult {
     // No specific worker — let worker pool use tier-based selection
     const activeWorkers = this.store.findActive();
-    const workerId = activeWorkers.length > 0 ? activeWorkers[0]?.id : '';
+    const workerId = activeWorkers.length > 0 ? (activeWorkers[0]?.id ?? '') : '';
 
     return {
       selectedWorkerId: workerId,

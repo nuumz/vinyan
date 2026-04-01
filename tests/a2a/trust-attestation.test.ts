@@ -15,7 +15,7 @@ function makeTrustManager(): PeerTrustManager {
   return mgr;
 }
 
-function makeManager(overrides: Partial<Parameters<typeof TrustAttestationManager>[0]> = {}) {
+function makeManager(overrides: Partial<ConstructorParameters<typeof TrustAttestationManager>[0]> = {}) {
   return new TrustAttestationManager({
     instanceId: 'inst-001',
     trustManager: makeTrustManager(),

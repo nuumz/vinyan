@@ -81,7 +81,7 @@ export function generateEvolutionReport(deps: EvolutionReportDeps): EvolutionMet
   // findRecent returns DESC — reverse to get chronological order for trend
   const chronological = [...recentTraces].reverse();
   const qualityTrend = computeQualityTrend(
-    chronological.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore?.composite),
+    chronological.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite),
   );
 
   // Routing efficiency: % resolved without escalation
@@ -259,7 +259,7 @@ function computeFleetReadiness(stats: {
 }
 
 function avgQualityOf(traces: { qualityScore?: { composite: number } }[]): number {
-  const scores = traces.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore?.composite);
+  const scores = traces.filter((t) => t.qualityScore?.composite != null).map((t) => t.qualityScore!.composite);
   return scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 }
 

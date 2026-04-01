@@ -6,7 +6,7 @@ import { type GossipEnvelope, GossipManager } from '../../src/a2a/gossip.ts';
 import { PeerTrustManager } from '../../src/a2a/peer-trust.ts';
 
 function makeManager(
-  overrides: Partial<Parameters<typeof GossipManager.prototype.originate>[0]> & Record<string, any> = {},
+  overrides: Partial<ConstructorParameters<typeof GossipManager>[0]> = {},
 ) {
   return new GossipManager({
     instanceId: 'inst-001',

@@ -53,7 +53,7 @@ export class WorkingMemory {
       // Evict lowest-confidence hypothesis
       let minIdx = 0;
       for (let i = 1; i < this.activeHypotheses.length; i++) {
-        if (this.activeHypotheses[i]?.confidence < this.activeHypotheses[minIdx]?.confidence) {
+        if (this.activeHypotheses[i]!.confidence < this.activeHypotheses[minIdx]!.confidence) {
           minIdx = i;
         }
       }

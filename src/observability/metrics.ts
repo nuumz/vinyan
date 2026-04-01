@@ -95,7 +95,7 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
 
   const qualityScores = recentTraces
     .filter((t) => t.qualityScore?.composite != null)
-    .map((t) => t.qualityScore?.composite);
+    .map((t) => t.qualityScore!.composite);
   const avgQualityComposite =
     qualityScores.length > 0 ? qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length : 0;
 

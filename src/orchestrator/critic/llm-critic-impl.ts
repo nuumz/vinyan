@@ -134,7 +134,7 @@ function parseCriticResponse(content: string): ParsedCriticResponse | null {
     let jsonStr = content.trim();
     const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) {
-      jsonStr = fenceMatch[1]?.trim();
+      jsonStr = fenceMatch[1]?.trim() ?? jsonStr;
     }
 
     const parsed = JSON.parse(jsonStr);

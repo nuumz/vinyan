@@ -12,7 +12,9 @@ function makeOracle() {
     runOracle: async (name: string, hypothesis: HypothesisTuple): Promise<OracleVerdict> => {
       calls.push({ name, hypothesis });
       return buildVerdict({
+        type: 'known',
         verified: true,
+        confidence: 1.0,
         evidence: [{ file: hypothesis.target, line: 1, snippet: `${name} ok` }],
         fileHashes: { [hypothesis.target]: 'test-hash' },
         oracleName: name,

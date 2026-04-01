@@ -36,6 +36,7 @@ describe('ecpToMcp', () => {
     const verdict: OracleVerdict = buildVerdict({
       verified: false,
       type: 'known',
+      confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: 'Symbol not found',
@@ -149,7 +150,9 @@ describe('mcpToEcp', () => {
 describe('ECP translation roundtrip', () => {
   test('ecp → mcp → ecp preserves verified state', () => {
     const original: OracleVerdict = buildVerdict({
+      type: 'known',
       verified: true,
+      confidence: 1.0,
       evidence: [{ file: 'src/x.ts', line: 1, snippet: 'ok' }],
       fileHashes: { 'src/x.ts': 'h1' },
       oracleName: 'ast',

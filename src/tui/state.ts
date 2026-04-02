@@ -33,6 +33,7 @@ export function createInitialState(workspace = '.'): TUIState {
     termHeight: process.stdout.rows || 40,
     startedAt: Date.now(),
     dirty: true,
+    stateGeneration: 0,
 
     eventLogScroll: 0,
     eventDetailScroll: 0,

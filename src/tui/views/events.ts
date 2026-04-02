@@ -14,7 +14,7 @@ export function renderEvents(state: TUIState): string {
   const rightWidth = termWidth - leftWidth - 1;
   const panelHeight = termHeight - 4; // header + spacing (1/2) + tab bar + hints
 
-  const sorted = sortEvents(state.eventLog, state.sort.events as SortConfig<EventSortField> | undefined);
+  const sorted = getCachedSortedEvents(state.eventLog, state.sort.events as SortConfig<EventSortField> | undefined);
   const listPanel = renderEventList(state, sorted, leftWidth, panelHeight, state.focusedPanel === 0);
   const detailPanel = renderEventDetail(state, rightWidth, panelHeight, state.focusedPanel === 1);
 
@@ -37,13 +37,70 @@ function sortEvents(events: EventLogEntry[], sort?: SortConfig<EventSortField>):
   });
 }
 
+// ── Memoization Cache ────────────────────────────────────────────────
+
+let _sortCache: {
+  length: number;
+  sortField: string | undefined;
+  sortDir: string | undefined;
+  result: EventLogEntry[];
+} | null = null;
+
+function getCachedSortedEvents(events: EventLogEntry[], sort?: SortConfig<EventSortField>): EventLogEntry[] {
+  const field = sort?.field;
+  const dir = sort?.direction;
+
+  if (
+    _sortCache &&
+    _sortCache.length === events.length &&
+    _sortCache.sortField === field &&
+    _sortCache.sortDir === dir
+  ) {
+    return _sortCache.result;
+  }
+
+  const result = sortEvents(events, sort);
+  _sortCache = { length: events.length, sortField: field, sortDir: dir, result };
+  return result;
+}
+
+let _filterCache: {
+  sourceLength: number;
+  sortField: string;
+  sortDir: string;
+  filterQuery: string;
+  result: EventLogEntry[];
+} | null = null;
+
+function getCachedFilteredEvents(
+  events: EventLogEntry[],
+  filterQuery: string,
+  sortField: string,
+  sortDir: string,
+): EventLogEntry[] {
+  if (
+    _filterCache &&
+    _filterCache.sourceLength === events.length &&
+    _filterCache.sortField === sortField &&
+    _filterCache.sortDir === sortDir &&
+    _filterCache.filterQuery === filterQuery
+  ) {
+    return _filterCache.result;
+  }
+
+  const result = filterQuery
+    ? events.filter((e) => e.domain.includes(filterQuery) || e.event.includes(filterQuery))
+    : events;
+  _filterCache = { sourceLength: events.length, sortField, sortDir, filterQuery, result };
+  return result;
+}
+
 // ── Event List (Left) ───────────────────────────────────────────────
 
 function renderEventList(state: TUIState, events: EventLogEntry[], width: number, height: number, focused: boolean): string {
   const visibleRows = height - 3;
-  const filtered = state.filterQuery
-    ? events.filter((e) => e.domain.includes(state.filterQuery) || e.event.includes(state.filterQuery))
-    : events;
+  const sortConfig = state.sort.events;
+  const filtered = getCachedFilteredEvents(events, state.filterQuery, sortConfig?.field ?? '', sortConfig?.direction ?? '');
 
   const startIdx = Math.max(0, filtered.length - visibleRows - state.eventLogScroll);
   const slice = filtered.slice(startIdx, startIdx + visibleRows);

@@ -73,6 +73,12 @@ export class App {
     error: typeof console.error;
   } | null = null;
 
+  // Cached Map.keys() arrays — invalidate when collection size changes
+  private _taskKeysCache: string[] = [];
+  private _taskKeysSize = 0;
+  private _peerKeysCache: string[] = [];
+  private _peerKeysSize = 0;
+
   constructor(config: AppConfig) {
     this.state = config.state;
     this.dataSource = config.dataSource ?? null;
@@ -310,47 +316,23 @@ export class App {
 
   private handleNavigation(direction: 'up' | 'down'): void {
     const delta = direction === 'down' ? 1 : -1;
+    const { activeTab, focusedPanel } = this.state;
 
-    switch (this.state.activeTab) {
-      case 'tasks':
-        if (this.state.focusedPanel === 0) {
-          // Task list — select next/prev task
-          const tasks = [...this.state.tasks.keys()];
-          const currentIdx = this.state.selectedTaskId ? tasks.indexOf(this.state.selectedTaskId) : -1;
-          const newIdx = Math.max(0, Math.min(tasks.length - 1, currentIdx + delta));
-          selectTask(this.state, tasks[newIdx] ?? null);
-          this.autoScrollTasks(newIdx);
-        }
-        break;
-
-      case 'peers':
-        if (this.state.focusedPanel === 0) {
-          const peers = [...this.state.peers.keys()];
-          const currentIdx = this.state.selectedPeerId ? peers.indexOf(this.state.selectedPeerId) : -1;
-          const newIdx = Math.max(0, Math.min(peers.length - 1, currentIdx + delta));
-          selectPeer(this.state, peers[newIdx] ?? null);
-          this.autoScrollPeers(newIdx);
-        }
-        break;
-
-      case 'events': {
-        if (this.state.focusedPanel === 1) {
-          // Detail pane scroll
-          this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
-          this.state.dirty = true;
-          break;
-        }
-        const log = this.state.eventLog;
-        if (log.length === 0) break;
-        const currentIdx = this.state.selectedEventId
-          ? log.findIndex((e) => e.id === this.state.selectedEventId)
-          : -1;
-        const newIdx = Math.max(0, Math.min(log.length - 1, currentIdx + delta));
-        selectEvent(this.state, log[newIdx]?.id ?? null);
-        this.autoScrollEvents(newIdx, log.length);
-        break;
+    if (activeTab === 'events') {
+      if (focusedPanel === 1) {
+        // Detail pane scroll
+        this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
+        this.state.dirty = true;
+        return;
       }
+      this.navigateEventList(delta, -1);
+      return;
     }
+
+    if (focusedPanel !== 0 || (activeTab !== 'tasks' && activeTab !== 'peers')) return;
+    const nav = this.getNavConfig(activeTab);
+    const currentIdx = nav.selectedId ? nav.keys.indexOf(nav.selectedId) : -1;
+    this.navigateList(nav.keys, currentIdx + delta, nav.select, nav.scrollKey, nav.maxVisible);
   }
 
   private handleSelect(): void {
@@ -382,7 +364,7 @@ export class App {
 
       case 'peers':
         if (!this.state.selectedPeerId) {
-          const firstPeer = [...this.state.peers.keys()][0];
+          const firstPeer = this.getPeerKeys()[0];
           if (firstPeer) selectPeer(this.state, firstPeer);
         }
         // Toggle to detail pane
@@ -394,102 +376,110 @@ export class App {
   private handlePageScroll(direction: 'up' | 'down'): void {
     const viewH = this.state.termHeight - 4;
     const pageDelta = Math.max(1, Math.floor(viewH / 2));
+    const delta = direction === 'down' ? pageDelta : -pageDelta;
+    const { activeTab, focusedPanel } = this.state;
 
-    switch (this.state.activeTab) {
-      case 'tasks': {
-        const tasks = [...this.state.tasks.keys()];
-        const maxVisible = Math.max(1, Math.floor((viewH - 3) / 2));
-        const currentIdx = this.state.selectedTaskId ? tasks.indexOf(this.state.selectedTaskId) : 0;
-        const newIdx = direction === 'down'
-          ? Math.min(tasks.length - 1, currentIdx + pageDelta)
-          : Math.max(0, currentIdx - pageDelta);
-        selectTask(this.state, tasks[newIdx] ?? null);
-        this.autoScrollTasks(newIdx);
-        break;
+    if (activeTab === 'events') {
+      if (focusedPanel === 1) {
+        this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
+        this.state.dirty = true;
+        return;
       }
-      case 'peers': {
-        const peers = [...this.state.peers.keys()];
-        const currentIdx = this.state.selectedPeerId ? peers.indexOf(this.state.selectedPeerId) : 0;
-        const newIdx = direction === 'down'
-          ? Math.min(peers.length - 1, currentIdx + pageDelta)
-          : Math.max(0, currentIdx - pageDelta);
-        selectPeer(this.state, peers[newIdx] ?? null);
-        this.autoScrollPeers(newIdx);
-        break;
-      }
-      case 'events': {
-        if (this.state.focusedPanel === 1) {
-          const delta = direction === 'down' ? pageDelta : -pageDelta;
-          this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
-          this.state.dirty = true;
-          break;
-        }
-        const log = this.state.eventLog;
-        const currentIdx = this.state.selectedEventId
-          ? log.findIndex((e) => e.id === this.state.selectedEventId) : 0;
-        const newIdx = direction === 'down'
-          ? Math.min(log.length - 1, currentIdx + pageDelta)
-          : Math.max(0, currentIdx - pageDelta);
-        selectEvent(this.state, log[newIdx]?.id ?? null);
-        this.autoScrollEvents(newIdx, log.length);
-        break;
-      }
+      this.navigateEventList(delta, 0);
+      return;
     }
+
+    if (activeTab !== 'tasks' && activeTab !== 'peers') return;
+    const nav = this.getNavConfig(activeTab);
+    const currentIdx = nav.selectedId ? nav.keys.indexOf(nav.selectedId) : 0;
+    this.navigateList(nav.keys, currentIdx + delta, nav.select, nav.scrollKey, nav.maxVisible);
   }
 
   private handleJump(target: 'top' | 'bottom'): void {
-    switch (this.state.activeTab) {
-      case 'events': {
-        const log = this.state.eventLog;
-        if (log.length === 0) break;
-        const idx = target === 'top' ? 0 : log.length - 1;
-        selectEvent(this.state, log[idx]!.id);
-        this.autoScrollEvents(idx, log.length);
-        break;
-      }
-      case 'tasks': {
-        const tasks = [...this.state.tasks.keys()];
-        if (tasks.length === 0) break;
-        const idx = target === 'top' ? 0 : tasks.length - 1;
-        selectTask(this.state, tasks[idx] ?? null);
-        this.autoScrollTasks(idx);
-        break;
-      }
-      case 'peers': {
-        const peers = [...this.state.peers.keys()];
-        if (peers.length === 0) break;
-        const idx = target === 'top' ? 0 : peers.length - 1;
-        selectPeer(this.state, peers[idx] ?? null);
-        this.autoScrollPeers(idx);
-        break;
-      }
+    if (this.state.activeTab === 'events') {
+      const log = this.state.eventLog;
+      if (log.length === 0) return;
+      const idx = target === 'top' ? 0 : log.length - 1;
+      selectEvent(this.state, log[idx]!.id);
+      this.autoScrollEvents(idx, log.length);
+      return;
     }
+
+    const tab = this.state.activeTab;
+    if (tab !== 'tasks' && tab !== 'peers') return;
+    const nav = this.getNavConfig(tab);
+    if (nav.keys.length === 0) return;
+    const idx = target === 'top' ? 0 : nav.keys.length - 1;
+    this.navigateList(nav.keys, idx, nav.select, nav.scrollKey, nav.maxVisible);
   }
 
-  // ── Auto-scroll helpers ─────────────────────────────────────────
+  // ── Navigation helpers ──────────────────────────────────────────
 
-  /** Keep selected task visible (each task = 2 rows). */
-  private autoScrollTasks(idx: number): void {
+  private getTaskKeys(): string[] {
+    if (this.state.tasks.size !== this._taskKeysSize) {
+      this._taskKeysCache = [...this.state.tasks.keys()];
+      this._taskKeysSize = this.state.tasks.size;
+    }
+    return this._taskKeysCache;
+  }
+
+  private getPeerKeys(): string[] {
+    if (this.state.peers.size !== this._peerKeysSize) {
+      this._peerKeysCache = [...this.state.peers.keys()];
+      this._peerKeysSize = this.state.peers.size;
+    }
+    return this._peerKeysCache;
+  }
+
+  private getNavConfig(tab: 'tasks' | 'peers') {
     const viewH = this.state.termHeight - 4;
-    const maxVisible = Math.max(1, Math.floor((viewH - 3) / 2));
-    if (idx < this.state.taskListScroll) {
-      this.state.taskListScroll = idx;
-    } else if (idx >= this.state.taskListScroll + maxVisible) {
-      this.state.taskListScroll = idx - maxVisible + 1;
+    if (tab === 'tasks') {
+      return {
+        keys: this.getTaskKeys(),
+        selectedId: this.state.selectedTaskId,
+        select: (id: string | null) => selectTask(this.state, id),
+        scrollKey: 'taskListScroll' as const,
+        maxVisible: Math.max(1, Math.floor((viewH - 3) / 2)),
+      };
+    }
+    return {
+      keys: this.getPeerKeys(),
+      selectedId: this.state.selectedPeerId,
+      select: (id: string | null) => selectPeer(this.state, id),
+      scrollKey: 'peerListScroll' as const,
+      maxVisible: Math.max(1, viewH - 4),
+    };
+  }
+
+  /** Generic list navigation: clamp target index, select item, auto-scroll. */
+  private navigateList(
+    keys: string[],
+    targetIdx: number,
+    select: (id: string | null) => void,
+    scrollKey: 'taskListScroll' | 'peerListScroll',
+    maxVisible: number,
+  ): void {
+    if (keys.length === 0) return;
+    const idx = Math.max(0, Math.min(keys.length - 1, targetIdx));
+    select(keys[idx] ?? null);
+    if (idx < this.state[scrollKey]) {
+      this.state[scrollKey] = idx;
+    } else if (idx >= this.state[scrollKey] + maxVisible) {
+      this.state[scrollKey] = idx - maxVisible + 1;
     }
     this.state.dirty = true;
   }
 
-  /** Keep selected peer visible. */
-  private autoScrollPeers(idx: number): void {
-    const viewH = this.state.termHeight - 4;
-    const maxVisible = Math.max(1, viewH - 4); // header + empty rows
-    if (idx < this.state.peerListScroll) {
-      this.state.peerListScroll = idx;
-    } else if (idx >= this.state.peerListScroll + maxVisible) {
-      this.state.peerListScroll = idx - maxVisible + 1;
-    }
-    this.state.dirty = true;
+  /** Navigate event list with reverse-scroll awareness. */
+  private navigateEventList(delta: number, noSelectionDefault: number): void {
+    const log = this.state.eventLog;
+    if (log.length === 0) return;
+    const currentIdx = this.state.selectedEventId
+      ? log.findIndex((e) => e.id === this.state.selectedEventId)
+      : noSelectionDefault;
+    const newIdx = Math.max(0, Math.min(log.length - 1, currentIdx + delta));
+    selectEvent(this.state, log[newIdx]?.id ?? null);
+    this.autoScrollEvents(newIdx, log.length);
   }
 
   /** Keep selected event visible (events show newest at bottom). */

@@ -14,6 +14,66 @@ import { pushEvent } from '../state.ts';
 import type { PeerDisplayState, TaskDisplayState, TUIState } from '../types.ts';
 import { isDefaultVisible, mapBusEvent } from './event-mapper.ts';
 
+// ── Log-Only Events (no state handler — event log + counter only) ──
+
+const LOG_ONLY_EVENTS: BusEventName[] = [
+  'task:timeout',
+  'task:explore',
+  'worker:complete',
+  'worker:error',
+  'worker:registered',
+  'worker:promoted',
+  'worker:demoted',
+  'worker:reactivated',
+  'worker:selected',
+  'worker:exploration',
+  'oracle:contradiction',
+  'oracle:deliberation_request',
+  'critic:verdict',
+  'evolution:rulesApplied',
+  'evolution:rulePromoted',
+  'evolution:ruleRetired',
+  'skill:match',
+  'skill:miss',
+  'skill:outcome',
+  'sleep:cycleComplete',
+  'shadow:enqueue',
+  'shadow:complete',
+  'shadow:failed',
+  'guardrail:injection_detected',
+  'guardrail:bypass_detected',
+  'guardrail:violation',
+  'a2a:verdictReceived',
+  'a2a:knowledgeAccepted',
+  'a2a:intentDeclared',
+  'a2a:intentConflict',
+  'a2a:proposalReceived',
+  'a2a:commitmentFailed',
+  'a2a:retractionReceived',
+  'a2a:feedbackReceived',
+  'pipeline:re-verify',
+  'pipeline:escalate',
+  'pipeline:refuse',
+  'fleet:convergence_warning',
+  'fleet:emergency_reactivation',
+  'fleet:diversity_enforced',
+  'circuit:open',
+  'circuit:close',
+  'observability:alert',
+  'memory:eviction_warning',
+  'context:verdict_omitted',
+  'selfmodel:calibration_error',
+  'selfmodel:systematic_miscalibration',
+  'commit:rejected',
+  'tools:executed',
+  'api:request',
+  'api:response',
+  'session:created',
+  'session:compacted',
+  'file:hashChanged',
+  'graph:fact',
+];
+
 // ── DataSource Interface ────────────────────────────────────────────
 
 export interface DataSource {
@@ -77,6 +137,7 @@ export class EmbeddedDataSource implements DataSource {
       task.status = 'running';
       task.pendingApproval = undefined;
       this.state.dirty = true;
+      this.state.stateGeneration++;
     }
   }
 
@@ -87,6 +148,7 @@ export class EmbeddedDataSource implements DataSource {
       task.status = 'failed';
       task.pendingApproval = undefined;
       this.state.dirty = true;
+      this.state.stateGeneration++;
     }
   }
 
@@ -96,6 +158,7 @@ export class EmbeddedDataSource implements DataSource {
       task.status = 'failed';
       task.pendingApproval = undefined;
       this.state.dirty = true;
+      this.state.stateGeneration++;
     }
     this.bus.emit('task:timeout', { taskId, elapsedMs: 0, budgetMs: 0 });
   }
@@ -119,167 +182,62 @@ export class EmbeddedDataSource implements DataSource {
   // ── Event Subscriptions ─────────────────────────────────────────
 
   private subscribeToEvents(): void {
-    // Subscribe to ALL known bus events for the event log
-    const allEvents: BusEventName[] = [
-      'task:start',
-      'task:complete',
-      'task:escalate',
-      'task:timeout',
-      'task:approval_required',
-      'task:explore',
-      'task:uncertain',
-      'worker:dispatch',
-      'worker:complete',
-      'worker:error',
-      'worker:registered',
-      'worker:promoted',
-      'worker:demoted',
-      'worker:reactivated',
-      'worker:selected',
-      'worker:exploration',
-      'oracle:verdict',
-      'oracle:contradiction',
-      'oracle:deliberation_request',
-      'critic:verdict',
-      'evolution:rulesApplied',
-      'evolution:rulePromoted',
-      'evolution:ruleRetired',
-      'skill:match',
-      'skill:miss',
-      'skill:outcome',
-      'sleep:cycleComplete',
-      'shadow:enqueue',
-      'shadow:complete',
-      'shadow:failed',
-      'guardrail:injection_detected',
-      'guardrail:bypass_detected',
-      'guardrail:violation',
-      'peer:connected',
-      'peer:disconnected',
-      'peer:trustChanged',
-      'a2a:verdictReceived',
-      'a2a:knowledgeImported',
-      'a2a:knowledgeOffered',
-      'a2a:knowledgeAccepted',
-      'a2a:capabilityUpdated',
-      'a2a:intentDeclared',
-      'a2a:intentConflict',
-      'a2a:proposalReceived',
-      'a2a:commitmentFailed',
-      'a2a:retractionReceived',
-      'a2a:feedbackReceived',
-      'pipeline:re-verify',
-      'pipeline:escalate',
-      'pipeline:refuse',
-      'fleet:convergence_warning',
-      'fleet:emergency_reactivation',
-      'fleet:diversity_enforced',
-      'circuit:open',
-      'circuit:close',
-      'observability:alert',
-      'memory:eviction_warning',
-      'context:verdict_omitted',
-      'selfmodel:predict',
-      'selfmodel:calibration_error',
-      'selfmodel:systematic_miscalibration',
-      'commit:rejected',
-      'decomposer:fallback',
-      'tools:executed',
-      'trace:record',
-      'api:request',
-      'api:response',
-      'session:created',
-      'session:compacted',
-      'file:hashChanged',
-      'graph:fact',
-      'agent:session_start',
-      'agent:session_end',
-      'agent:turn_complete',
-      'agent:tool_executed',
-    ];
+    // Handler registry: event → state mutation function
+    const handlers = new Map<BusEventName, (p: Record<string, unknown>) => void>([
+      // Task state
+      ['task:start', (p) => this.onTaskStart(p)],
+      ['task:complete', (p) => this.onTaskComplete(p)],
+      ['task:escalate', (p) => this.onTaskEscalate(p)],
+      ['task:approval_required', (p) => this.onTaskApprovalRequired(p)],
+      ['task:uncertain', (p) => this.onTaskUncertain(p)],
+      // Oracle
+      ['oracle:verdict', (p) => this.onOracleVerdict(p)],
+      // Worker
+      ['worker:dispatch', (p) => this.onWorkerDispatch(p)],
+      // Peers
+      ['peer:connected', (p) => this.onPeerConnected(p)],
+      ['peer:disconnected', (p) => this.onPeerDisconnected(p)],
+      ['peer:trustChanged', (p) => this.onPeerTrustChanged(p)],
+      // A2A
+      ['a2a:knowledgeImported', (p) => this.onKnowledgeImported(p)],
+      ['a2a:knowledgeOffered', (p) => this.onKnowledgeOffered(p)],
+      ['a2a:capabilityUpdated', (p) => this.onCapabilityUpdated(p)],
+      // Pipeline steps
+      ['selfmodel:predict', (p) => this.onSelfModelPredict(p)],
+      ['decomposer:fallback', (p) => this.onDecomposerFallback(p)],
+      ['trace:record', (p) => this.onTraceRecord(p)],
+      // Agent sessions
+      ['agent:session_start', (p) => this.onAgentSessionStart(p)],
+      ['agent:session_end', (p) => this.onAgentSessionEnd(p)],
+      ['agent:turn_complete', (p) => this.onAgentTurnComplete(p)],
+      ['agent:tool_executed', (p) => this.onAgentToolExecuted(p)],
+    ]);
 
-    for (const eventName of allEvents) {
-      const unsub = this.bus.on(eventName, (payload) => {
-        this.handleBusEvent(eventName, payload);
+    // Events with specific state handlers
+    for (const [event, handler] of handlers) {
+      const unsub = this.bus.on(event, (payload) => {
+        this.pushEventIfVisible(event, payload);
+        handler(payload as Record<string, unknown>);
+        this.incrementCounter(event);
+        this.state.stateGeneration++;
+      });
+      this.unsubscribers.push(unsub);
+    }
+
+    // Events that only go to event log (no state handler)
+    for (const event of LOG_ONLY_EVENTS) {
+      const unsub = this.bus.on(event, (payload) => {
+        this.pushEventIfVisible(event, payload);
+        this.incrementCounter(event);
       });
       this.unsubscribers.push(unsub);
     }
   }
 
-  private handleBusEvent(event: BusEventName, payload: unknown): void {
-    // Always push to event log (filtering is done at display time)
+  private pushEventIfVisible(event: BusEventName, payload: unknown): void {
     if (isDefaultVisible(event)) {
-      const entry = mapBusEvent(event, payload);
-      pushEvent(this.state, entry);
+      pushEvent(this.state, mapBusEvent(event, payload));
     }
-
-    // Update domain-specific state
-    const p = payload as Record<string, unknown>;
-    switch (event) {
-      case 'task:start':
-        this.onTaskStart(p);
-        break;
-      case 'task:complete':
-        this.onTaskComplete(p);
-        break;
-      case 'task:escalate':
-        this.onTaskEscalate(p);
-        break;
-      case 'task:approval_required':
-        this.onTaskApprovalRequired(p);
-        break;
-      case 'task:uncertain':
-        this.onTaskUncertain(p);
-        break;
-      case 'oracle:verdict':
-        this.onOracleVerdict(p);
-        break;
-      case 'worker:dispatch':
-        this.onWorkerDispatch(p);
-        break;
-      case 'peer:connected':
-        this.onPeerConnected(p);
-        break;
-      case 'peer:disconnected':
-        this.onPeerDisconnected(p);
-        break;
-      case 'peer:trustChanged':
-        this.onPeerTrustChanged(p);
-        break;
-      case 'a2a:knowledgeImported':
-        this.onKnowledgeImported(p);
-        break;
-      case 'a2a:knowledgeOffered':
-        this.onKnowledgeOffered(p);
-        break;
-      case 'a2a:capabilityUpdated':
-        this.onCapabilityUpdated(p);
-        break;
-      case 'selfmodel:predict':
-        this.onSelfModelPredict(p);
-        break;
-      case 'decomposer:fallback':
-        this.onDecomposerFallback(p);
-        break;
-      case 'trace:record':
-        this.onTraceRecord(p);
-        break;
-      case 'agent:session_start':
-        this.onAgentSessionStart(p);
-        break;
-      case 'agent:session_end':
-        this.onAgentSessionEnd(p);
-        break;
-      case 'agent:turn_complete':
-        this.onAgentTurnComplete(p);
-        break;
-      case 'agent:tool_executed':
-        this.onAgentToolExecuted(p);
-        break;
-    }
-
-    // Update real-time counters for any event
-    this.incrementCounter(event);
   }
 
   // ── Task State Updates ──────────────────────────────────────────

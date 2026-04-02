@@ -184,6 +184,7 @@ export interface TUIState {
   termHeight: number;
   startedAt: number;
   dirty: boolean;
+  stateGeneration: number;
 
   // Scroll positions
   eventLogScroll: number;

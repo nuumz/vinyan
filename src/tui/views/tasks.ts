@@ -71,15 +71,48 @@ function sortTasks(tasks: TaskDisplayState[], state: TUIState): TaskDisplayState
   });
 }
 
-// ── Task List (Left Pane) ───────────────────────────────────────────
+// ── Memoization Cache ────────────────────────────────────────────────
 
-function renderTaskList(state: TUIState, width: number, height: number, focused: boolean): string {
-  const innerW = width - 2;
+let _taskCache: {
+  size: number;
+  generation: number;
+  filterQuery: string;
+  sortField: string;
+  sortDir: string;
+  result: TaskDisplayState[];
+} | null = null;
+
+function getCachedTasks(state: TUIState): TaskDisplayState[] {
+  const sortConfig = state.sort.tasks;
+  const field = sortConfig?.field ?? 'startedAt';
+  const dir = sortConfig?.direction ?? 'desc';
+
+  if (
+    _taskCache &&
+    _taskCache.size === state.tasks.size &&
+    _taskCache.generation === state.stateGeneration &&
+    _taskCache.filterQuery === state.filterQuery &&
+    _taskCache.sortField === field &&
+    _taskCache.sortDir === dir
+  ) {
+    return _taskCache.result;
+  }
+
   const allTasks = [...state.tasks.values()];
   const filtered = state.filterQuery
     ? allTasks.filter((t) => t.id.includes(state.filterQuery) || t.goal.includes(state.filterQuery) || t.status.includes(state.filterQuery))
     : allTasks;
-  const tasks = sortTasks(filtered, state);
+  const result = sortTasks(filtered, state);
+
+  _taskCache = { size: state.tasks.size, generation: state.stateGeneration, filterQuery: state.filterQuery, sortField: field, sortDir: dir, result };
+  return result;
+}
+
+// ── Task List (Left Pane) ───────────────────────────────────────────
+
+function renderTaskList(state: TUIState, width: number, height: number, focused: boolean): string {
+  const innerW = width - 2;
+  const tasks = getCachedTasks(state);
   const visibleRows = height - 3;
 
   const lines: string[] = [];

@@ -76,7 +76,10 @@ function sortTasks(tasks: TaskDisplayState[], state: TUIState): TaskDisplayState
 function renderTaskList(state: TUIState, width: number, height: number, focused: boolean): string {
   const innerW = width - 2;
   const allTasks = [...state.tasks.values()];
-  const tasks = sortTasks(allTasks, state);
+  const filtered = state.filterQuery
+    ? allTasks.filter((t) => t.id.includes(state.filterQuery) || t.goal.includes(state.filterQuery) || t.status.includes(state.filterQuery))
+    : allTasks;
+  const tasks = sortTasks(filtered, state);
   const visibleRows = height - 3;
 
   const lines: string[] = [];

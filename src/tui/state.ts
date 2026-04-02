@@ -2,7 +2,7 @@
  * TUI State — state management and mutations for the interactive terminal UI.
  */
 
-import type { EventLogEntry, NotificationEntry, SortConfig, SortField, TUIState, ViewTab } from './types.ts';
+import type { EventLogEntry, NotificationEntry, PeerSortField, SortConfig, SortField, TUIState, ViewTab } from './types.ts';
 
 // ── Initial State ───────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ export function createInitialState(workspace = '.'): TUIState {
     dirty: true,
 
     eventLogScroll: 0,
+    eventDetailScroll: 0,
     taskListScroll: 0,
     peerListScroll: 0,
 
@@ -238,12 +239,15 @@ export function updateTabBadges(state: TUIState): void {
 
 export function selectEvent(state: TUIState, eventId: number | null): void {
   state.selectedEventId = eventId;
+  state.eventDetailScroll = 0;
   state.dirty = true;
 }
 
 // ── Sort Mutations ──────────────────────────────────────────────────
 
 const SORT_FIELDS: SortField[] = ['startedAt', 'status', 'routingLevel', 'quality'];
+const PEER_SORT_FIELDS: PeerSortField[] = ['trust', 'health', 'lastSeen'];
+const EVENT_SORT_FIELDS: string[] = ['timestamp', 'domain'];
 
 export function setSort(state: TUIState, tab: ViewTab, field: SortField): void {
   const current = state.sort[tab];
@@ -257,9 +261,10 @@ export function setSort(state: TUIState, tab: ViewTab, field: SortField): void {
 }
 
 export function cycleSortField(state: TUIState, tab: ViewTab): void {
+  const fields = tab === 'peers' ? PEER_SORT_FIELDS : tab === 'events' ? EVENT_SORT_FIELDS : SORT_FIELDS;
   const current = state.sort[tab];
-  const currentIdx = current ? SORT_FIELDS.indexOf(current.field as SortField) : -1;
-  const nextIdx = (currentIdx + 1) % SORT_FIELDS.length;
-  state.sort[tab] = { field: SORT_FIELDS[nextIdx]!, direction: 'desc' } as SortConfig;
+  const currentIdx = current ? fields.indexOf(current.field as any) : -1;
+  const nextIdx = (currentIdx + 1) % fields.length;
+  state.sort[tab] = { field: fields[nextIdx]!, direction: 'desc' } as SortConfig;
   state.dirty = true;
 }

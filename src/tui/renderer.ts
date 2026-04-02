@@ -242,7 +242,8 @@ export function panel(title: string, content: string, width: number, height: num
   const titleColor = focused ? ANSI.bold + ANSI.cyan : ANSI.bold;
 
   const innerW = width - 2;
-  const top = `${borderColor}┌─ ${titleColor}${title}${ANSI.reset}${borderColor} ${'─'.repeat(Math.max(0, innerW - title.length - 3))}┐${ANSI.reset}`;
+  const titleLen = visibleLength(title);
+  const top = `${borderColor}┌─ ${titleColor}${title}${ANSI.reset}${borderColor} ${'─'.repeat(Math.max(0, innerW - titleLen - 3))}┐${ANSI.reset}`;
   const bottom = `${borderColor}└${'─'.repeat(innerW)}┘${ANSI.reset}`;
 
   const contentLines = content.split('\n');

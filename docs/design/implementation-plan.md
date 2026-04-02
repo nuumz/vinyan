@@ -1,6 +1,6 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-04-02 (Phase 2+3 status audit — all complete) | Branch: `feature/main`
+> Generated: 2026-03-29 | Updated: 2026-04-02 (Phase 5 implementation complete — PH5.18 HttpTransport, PH5.19 ECP spec RC, PH5.8 I17 guard) | Branch: `feature/main`
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -2164,6 +2164,35 @@ Phase 5 Architecture Extension:
 | Total traces | ≥ 2000 | `TraceStore.count()` |
 | Sleep cycles completed | ≥ 30 | `PatternStore.countCycleRuns()` |
 
+#### Phase 5 Implementation Status (2026-04-02)
+
+| Phase | Component | Status | Notes |
+|:------|:----------|:------:|:------|
+| PH5.0 | Pre-Phase Cleanup | ⚠️ Partial | `fleet:convergence_warning` still unwired; `VERSION_TRANSFORMS` empty (correct for v1) |
+| PH5.1 | API Server | ✅ Done | `server.ts`, `session-manager.ts`, `session-store.ts` complete; `routes.ts` skipped (routing inline) |
+| PH5.2 | Terminal UI | ✅ Done | Full interactive TUI including `:cancel` / `:sleep` / `:export` |
+| PH5.3 | Web Dashboard | ✅ Done | Vanilla SPA with SSE, dark theme, hash router |
+| PH5.4 | VS Code Extension | ❌ Deferred | Separate esbuild/vsix toolchain — out of scope |
+| PH5.5 | MCP Bridge | ✅ Done | |
+| PH5.6 | A2A Protocol Bridge | ✅ Done | JSON-RPC + agent card + `.well-known/agent.json` |
+| PH5.7 | ECP Network Transport | ✅ Done | WebSocket + HTTP transports; `StdioTransport`, `WebSocketTransport`, `HttpTransport` |
+| PH5.8 | Instance Coordinator | ⚠️ Partial | Safety Invariant I17 guard implemented in `runner.ts`; full XL coordinator deferred |
+| PH5.9 | Cross-Instance Knowledge Sharing | ✅ Done | |
+| PH5.10 | Polyglot Oracle Framework | ✅ Done | |
+| PH5.11 | Python Oracle (Pyright) | ✅ Done | |
+| PH5.12 | Go Oracle (gopls) | ✅ Done | |
+| PH5.13 | Rust Oracle (rust-analyzer) | ✅ Done | |
+| PH5.14 | Security Model | ✅ Done | |
+| PH5.15 | Observability Extension | ✅ Done | |
+| PH5.16 | Data Migration & Compatibility | ✅ Done | |
+| PH5.17 | Oracle SDK | ✅ Done | TypeScript SDK + Python SDK (Pydantic v2) |
+| PH5.18 | ECP HTTP Transport | ✅ Done | `HttpTransport` in `src/a2a/http-transport.ts`; `POST /ecp/v1/verify` endpoint |
+| PH5.19 | ECP Spec Publication | ✅ Done | `ecp-spec.md` → Status: Release Candidate; conformance suite L0–L3 |
+
+**Test count:** 1222 (bun) + 24 (pytest) | **Type errors:** 0 | **Deferred:** PH5.4 VS Code Extension, PH5.8 full Instance Coordinator
+
+---
+
 #### Pre-Phase Cleanup (PH5.0) `[S]`
 
 Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 foundations:
@@ -2583,7 +2612,7 @@ The 7 existing immutable invariants (I1-I7) plus 4 Phase 4 fleet invariants (I8-
 | I14 | **Cross-instance knowledge enters probation.** Shared rules, patterns, and skills always start at `status: 'probation'` regardless of their status on the source instance. No shortcut to `active` via cross-instance sharing. | Knowledge import pipeline (PH5.9) |
 | I15 | **API authentication mandatory for mutations.** Read-only API endpoints (health, metrics, fact queries) may operate without authentication. Any endpoint that creates tasks, modifies configuration, or triggers actions requires authentication. | API server middleware (PH5.1, PH5.14) |
 | I16 | **Session audit preservation.** Session compaction produces supplementary summaries only. The full JSONL audit trail for every task is never deleted or overwritten by compaction. Compacted summaries reference original audit file offsets. | Session manager write path (PH5.1) |
-| I17 | **Speculative sandbox mandatory.** Speculative-tier worker outputs (`OracleConfig.tier: 'speculative'`) execute only in L2+ isolation. Full oracle verification required before any commit action. Speculative results never bypass the verification pipeline. | Creativity Protection Zone gate (PH5.8) |
+| I17 | **Speculative sandbox mandatory.** Speculative-tier worker outputs (`OracleConfig.tier: 'speculative'`) execute only in L2+ isolation. Full oracle verification required before any commit action. Speculative results never bypass the verification pipeline. | Creativity Protection Zone gate (PH5.8) — ⚠️ guard implemented in `runner.ts`; full enforcement deferred |
 
 #### Dependency Graph
 
@@ -2638,7 +2667,7 @@ Cross-Cutting:
 
 ---
 
-##### PH5.18 — ECP Network Transport `[L]` (2026-04-01 addition)
+##### PH5.18 — ECP Network Transport `[L]` (2026-04-01 addition) — ✅ Done
 
 **Purpose:** Implement the transport abstraction layer so `OracleRunner` becomes transport-agnostic. Foundation for remote oracles and cross-instance communication.
 
@@ -2660,7 +2689,7 @@ Cross-Cutting:
 
 ---
 
-##### PH5.19 — ECP Specification Publication `[S]` (2026-04-01 addition)
+##### PH5.19 — ECP Specification Publication `[S]` (2026-04-01 addition) — ✅ Done
 
 **Purpose:** Formalize ECP as a standalone, publishable protocol specification. External developers and projects can implement ECP without depending on Vinyan source code.
 

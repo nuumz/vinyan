@@ -4,7 +4,7 @@
  */
 
 import { ANSI, bold, color, dim, formatTimeShort, padEnd, panel, sideBySide, truncate } from '../renderer.ts';
-import type { TUIState } from '../types.ts';
+import type { EventLogEntry, EventSortField, SortConfig, TUIState } from '../types.ts';
 
 export const EVENTS_PANEL_COUNT = 2;
 
@@ -14,22 +14,39 @@ export function renderEvents(state: TUIState): string {
   const rightWidth = termWidth - leftWidth - 1;
   const panelHeight = termHeight - 4; // header + tab bar + notification + hints
 
-  const listPanel = renderEventList(state, leftWidth, panelHeight, state.focusedPanel === 0);
+  const sorted = sortEvents(state.eventLog, state.sort.events as SortConfig<EventSortField> | undefined);
+  const listPanel = renderEventList(state, sorted, leftWidth, panelHeight, state.focusedPanel === 0);
   const detailPanel = renderEventDetail(state, rightWidth, panelHeight, state.focusedPanel === 1);
 
   return sideBySide(listPanel, detailPanel);
 }
 
+// ── Sort ────────────────────────────────────────────────────────────
+
+function sortEvents(events: EventLogEntry[], sort?: SortConfig<EventSortField>): EventLogEntry[] {
+  if (!sort) return events;
+  const dir = sort.direction === 'asc' ? 1 : -1;
+  return [...events].sort((a, b) => {
+    switch (sort.field) {
+      case 'domain':
+        return dir * a.domain.localeCompare(b.domain);
+      case 'timestamp':
+      default:
+        return dir * (a.timestamp - b.timestamp);
+    }
+  });
+}
+
 // ── Event List (Left) ───────────────────────────────────────────────
 
-function renderEventList(state: TUIState, width: number, height: number, focused: boolean): string {
+function renderEventList(state: TUIState, events: EventLogEntry[], width: number, height: number, focused: boolean): string {
   const visibleRows = height - 3;
-  const events = state.filterQuery
-    ? state.eventLog.filter((e) => e.domain.includes(state.filterQuery) || e.event.includes(state.filterQuery))
-    : state.eventLog;
+  const filtered = state.filterQuery
+    ? events.filter((e) => e.domain.includes(state.filterQuery) || e.event.includes(state.filterQuery))
+    : events;
 
-  const startIdx = Math.max(0, events.length - visibleRows - state.eventLogScroll);
-  const slice = events.slice(startIdx, startIdx + visibleRows);
+  const startIdx = Math.max(0, filtered.length - visibleRows - state.eventLogScroll);
+  const slice = filtered.slice(startIdx, startIdx + visibleRows);
 
   const innerW = width - 2;
   const lines: string[] = [];
@@ -47,16 +64,16 @@ function renderEventList(state: TUIState, width: number, height: number, focused
 
   while (lines.length < visibleRows) lines.push('');
 
-  if (events.length > visibleRows) {
-    const remaining = events.length - startIdx - visibleRows;
+  if (filtered.length > visibleRows) {
+    const remaining = filtered.length - startIdx - visibleRows;
     if (remaining > 0) {
       lines[lines.length - 1] = dim(`  ▼ ${remaining} more events`);
     }
   }
 
   const title = state.filterQuery
-    ? `Events [/${state.filterQuery}] (${events.length})`
-    : `Events (${events.length})`;
+    ? `Events [/${state.filterQuery}] (${filtered.length})`
+    : `Events (${filtered.length})`;
 
   return panel(title, lines.join('\n'), width, height, focused);
 }
@@ -82,18 +99,22 @@ function renderEventDetail(state: TUIState, width: number, height: number, focus
   lines.push(`${bold('Domain:')} ${entry.domain}`);
   lines.push('');
 
-  // Payload
+  // Structured detail for known event types
+  const detail = formatEventDetail(entry, innerW);
+  if (detail.length > 0) {
+    for (const line of detail) {
+      lines.push(truncate(line, innerW));
+    }
+    lines.push('');
+  }
+
+  // Payload — build all lines (scrollable)
   lines.push(bold('Payload:'));
   if (entry.payload) {
     try {
       const formatted = JSON.stringify(entry.payload, null, 2);
-      const payloadLines = formatted.split('\n');
-      const maxPayloadRows = height - 10;
-      for (let i = 0; i < Math.min(payloadLines.length, maxPayloadRows); i++) {
-        lines.push(truncate(dim(payloadLines[i]!), innerW));
-      }
-      if (payloadLines.length > maxPayloadRows) {
-        lines.push(dim(`  ... ${payloadLines.length - maxPayloadRows} more lines`));
+      for (const pl of formatted.split('\n')) {
+        lines.push(truncate(dim(pl), innerW));
       }
     } catch {
       lines.push(dim('  (unable to format payload)'));
@@ -102,5 +123,100 @@ function renderEventDetail(state: TUIState, width: number, height: number, focus
     lines.push(dim('  (no payload)'));
   }
 
-  return panel(`Event #${selectedId}`, lines.join('\n'), width, height, focused);
+  // Apply scroll window
+  const visibleRows = height - 3; // panel border + title
+  const scrollOffset = Math.min(state.eventDetailScroll, Math.max(0, lines.length - visibleRows));
+  const visible = lines.slice(scrollOffset, scrollOffset + visibleRows);
+
+  // Scroll indicator
+  const hasMore = lines.length > visibleRows;
+  const scrollHint = hasMore
+    ? dim(` [${scrollOffset + 1}-${Math.min(scrollOffset + visibleRows, lines.length)}/${lines.length}]`)
+    : '';
+
+  return panel(`Event #${selectedId}${scrollHint}`, visible.join('\n'), width, height, focused);
+}
+
+// ── Structured Detail Extraction ────────────────────────────────────
+
+function formatEventDetail(entry: EventLogEntry, _maxW: number): string[] {
+  const p = entry.payload as Record<string, unknown> | undefined;
+  if (!p) return [];
+
+  const lines: string[] = [];
+  const kv = (label: string, value: unknown) => {
+    if (value == null || value === '' || value === 'none') return;
+    const s = typeof value === 'number' ? (Number.isNaN(value) ? '—' : String(value)) : String(value);
+    lines.push(`${bold(label + ':')} ${s}`);
+  };
+
+  switch (entry.event) {
+    case 'task:start': {
+      const input = p.input as Record<string, unknown> | undefined;
+      const routing = p.routing as Record<string, unknown> | undefined;
+      kv('Task', input?.id);
+      kv('Goal', input?.goal);
+      kv('Source', input?.source);
+      kv('Level', routing?.level);
+      kv('Model', routing?.model);
+      const budget = input?.budget as Record<string, unknown> | undefined;
+      if (budget) {
+        kv('Token Budget', budget.maxTokens);
+        kv('Time Budget', `${budget.maxDurationMs}ms`);
+      }
+      break;
+    }
+    case 'task:complete': {
+      const result = p.result as Record<string, unknown> | undefined;
+      const trace = result?.trace as Record<string, unknown> | undefined;
+      kv('Task', result?.id);
+      kv('Status', result?.status);
+      const qs = result?.qualityScore as Record<string, unknown> | undefined;
+      const composite = typeof qs === 'object' && qs !== null ? qs.composite : qs;
+      const qNum = typeof composite === 'number' && !Number.isNaN(composite) ? composite : null;
+      if (qNum != null) kv('Quality', qNum.toFixed(2));
+      kv('Worker', trace?.workerId);
+      kv('Model', trace?.modelUsed);
+      kv('Tokens', trace?.tokensConsumed);
+      kv('Level', trace?.routingLevel);
+      kv('Signature', trace?.taskTypeSignature);
+      break;
+    }
+    case 'task:escalate':
+      kv('From Level', p.fromLevel);
+      kv('To Level', p.toLevel);
+      kv('Reason', p.reason);
+      break;
+    case 'task:approval_required':
+      kv('Task', p.taskId);
+      kv('Risk Score', p.riskScore);
+      kv('Reason', p.reason);
+      break;
+    case 'oracle:verdict': {
+      const v = p.verdict as Record<string, unknown> | undefined;
+      kv('Oracle', p.oracleName);
+      kv('Verified', v?.verified);
+      kv('Confidence', v?.confidence);
+      if (v?.reason) kv('Reason', v.reason);
+      break;
+    }
+    case 'worker:error':
+      kv('Worker', p.workerId);
+      kv('Error', p.error);
+      break;
+    case 'peer:connected':
+      kv('Peer', p.peerId);
+      kv('URL', p.url);
+      break;
+    case 'sleep:cycleComplete':
+      kv('Patterns', p.patternsFound);
+      kv('Rules', p.rulesGenerated);
+      kv('Skills', p.skillsCreated);
+      break;
+    default:
+      // No structured extraction — raw payload shown below
+      break;
+  }
+
+  return lines;
 }

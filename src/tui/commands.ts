@@ -13,6 +13,7 @@ import { EmbeddedDataSource } from './data/source.ts';
 import { EventRenderer } from './event-renderer.ts';
 import { ANSI, bold, box, color, dim } from './renderer.ts';
 import { parseAuditLog, replayAuditLog, summarizeAuditLog } from './replay.ts';
+import { restoreSession } from './session.ts';
 import { createInitialState } from './state.ts';
 
 export interface TUIConfig {
@@ -90,7 +91,8 @@ export function showOverview(config: TUIConfig): void {
  */
 export async function startInteractive(config: TUIConfig): Promise<void> {
   const orchestrator = createOrchestrator({ workspace: config.workspace, bus: config.bus });
-  const state = createInitialState();
+  const state = createInitialState(config.workspace);
+  restoreSession(state, config.workspace);
   const dataSource = new EmbeddedDataSource(state, orchestrator);
   const app = new App({ state, dataSource });
   await app.run();

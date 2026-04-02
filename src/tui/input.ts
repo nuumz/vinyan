@@ -85,6 +85,8 @@ export function parseKeypress(buf: Buffer): KeypressInfo {
   if (seq === '\x1b[C') return { name: 'right', sequence: seq, ctrl: false, shift: false };
   if (seq === '\x1b[D') return { name: 'left', sequence: seq, ctrl: false, shift: false };
   if (seq === '\x1b[Z') return { name: 'tab', sequence: seq, ctrl: false, shift: true }; // Shift+Tab
+  if (seq === '\x1b[5~') return { name: 'pageup', sequence: seq, ctrl: false, shift: false };
+  if (seq === '\x1b[6~') return { name: 'pagedown', sequence: seq, ctrl: false, shift: false };
   if (seq === '\x1b') return { name: 'escape', sequence: seq, ctrl: false, shift: false };
   if (seq === '\r' || seq === '\n') return { name: 'return', sequence: seq, ctrl: false, shift: false };
   if (seq === '\t') return { name: 'tab', sequence: seq, ctrl: false, shift: false };
@@ -184,7 +186,9 @@ function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
   if (key.name === 'return') return { type: 'select' };
   if (key.name === 'escape') return { type: 'back' };
 
-  // Page scroll & jump (Ctrl+d, Ctrl+u, g, G)
+  // Page scroll & jump (PgUp/PgDn, Ctrl+d/u, g, G)
+  if (key.name === 'pagedown') return { type: 'page-scroll', direction: 'down' };
+  if (key.name === 'pageup') return { type: 'page-scroll', direction: 'up' };
   if (key.ctrl && key.name === 'd') return { type: 'page-scroll', direction: 'down' };
   if (key.ctrl && key.name === 'u') return { type: 'page-scroll', direction: 'up' };
   if (key.name === 'g' && !key.shift) return { type: 'jump', target: 'top' };

@@ -137,7 +137,14 @@ export function summarizeEvent(event: string, payload: unknown): string {
     }
     case 'task:complete': {
       const result = p.result as Record<string, unknown> | undefined;
-      return `${result?.status ?? '?'} q=${fmtNum((result?.qualityScore as Record<string, unknown>)?.composite)}`;
+      const qs = result?.qualityScore;
+      const composite = typeof qs === 'object' && qs !== null ? (qs as Record<string, unknown>).composite : qs;
+      const qNum = typeof composite === 'number' && !Number.isNaN(composite) ? composite : null;
+      const qStr = qNum != null ? `q=${qNum.toFixed(2)}` : '';
+      const trace = result?.trace as Record<string, unknown> | undefined;
+      const tokens = trace?.tokensConsumed;
+      const tStr = typeof tokens === 'number' && tokens > 0 ? `${tokens}tok` : '';
+      return `${result?.status ?? '?'} ${qStr} ${tStr}`.trim();
     }
     case 'task:escalate':
       return `L${p.fromLevel}→L${p.toLevel} ${truncStr(String(p.reason ?? ''), 40)}`;
@@ -214,6 +221,6 @@ function truncStr(s: string, max: number): string {
 }
 
 function fmtNum(v: unknown): string {
-  if (typeof v === 'number') return v.toFixed(2);
+  if (typeof v === 'number' && !Number.isNaN(v)) return v.toFixed(2);
   return '?';
 }

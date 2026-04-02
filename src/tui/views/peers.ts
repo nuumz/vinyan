@@ -18,7 +18,11 @@ export function renderPeers(state: TUIState): string {
   const leftW = Math.floor(termWidth * 0.5);
   const rightW = termWidth - leftW - 1; // 1 gap
 
-  const peers = sortPeers([...state.peers.values()], state.sort.peers as SortConfig<PeerSortField> | undefined);
+  const allPeers = [...state.peers.values()];
+  const filtered = state.filterQuery
+    ? allPeers.filter((p) => p.peerId.includes(state.filterQuery) || p.trustLevel.includes(state.filterQuery) || p.healthState.includes(state.filterQuery))
+    : allPeers;
+  const peers = sortPeers(filtered, state.sort.peers as SortConfig<PeerSortField> | undefined);
 
   const listPanel = renderPeerList(state, peers, leftW, viewHeight, state.focusedPanel === 0);
   const detailPanel = renderPeerDetail(state, rightW, viewHeight, state.focusedPanel === 1);

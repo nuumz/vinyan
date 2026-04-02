@@ -35,6 +35,7 @@ export interface ToastMessage {
 
 export type SortField = 'startedAt' | 'status' | 'routingLevel' | 'quality';
 export type PeerSortField = 'trust' | 'health' | 'lastSeen';
+export type EventSortField = 'timestamp' | 'domain';
 
 export interface SortConfig<F = SortField> {
   field: F;
@@ -166,6 +167,7 @@ export interface TUIState {
 
   // Scroll positions
   eventLogScroll: number;
+  eventDetailScroll: number;
   taskListScroll: number;
   peerListScroll: number;
 

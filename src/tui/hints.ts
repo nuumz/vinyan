@@ -43,19 +43,19 @@ export function getContextHints(state: TUIState): HintEntry[] {
     hints.push({ key: 'c', label: 'cancel' });
   }
 
-  hints.push({ key: 'Enter', label: state.activeTab === 'events' ? 'detail' : 'select' });
+  hints.push({ key: 'Enter', label: 'detail' });
 
   // Tab-specific hints
   if (state.activeTab === 'tasks') {
     hints.push({ key: 'n', label: 'new' });
   }
 
-  if (state.activeTab === 'events') {
-    hints.push({ key: 'g/G', label: 'top/bottom' }, { key: 'Ctrl+d/u', label: 'page' });
+  if (state.activeTab !== 'system') {
+    hints.push({ key: 'g/G', label: 'top/bottom' }, { key: 'PgDn/Up', label: 'page' });
   }
 
-  // Sorting (tasks/peers tabs)
-  if (state.activeTab === 'tasks' || state.activeTab === 'peers') {
+  // Sorting (tasks/peers/events tabs)
+  if (state.activeTab === 'tasks' || state.activeTab === 'peers' || state.activeTab === 'events') {
     hints.push({ key: 's', label: 'sort' });
   }
 

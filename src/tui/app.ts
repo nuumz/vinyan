@@ -7,6 +7,7 @@
 
 import type { DataSource } from './data/source.ts';
 import { getContextHints } from './hints.ts';
+import { saveSession } from './session.ts';
 import { parseCommand, routeKeypress, startKeyListener, type TUIAction } from './input.ts';
 import {
   contextHintsBar,
@@ -99,6 +100,7 @@ export class App {
   }
 
   private shutdown(): void {
+    saveSession(this.state, this.state.workspace);
     this.stopKeyListener?.();
     this.screen.stop();
     this.dataSource.stop();
@@ -231,6 +233,7 @@ export class App {
           const currentIdx = this.state.selectedTaskId ? tasks.indexOf(this.state.selectedTaskId) : -1;
           const newIdx = Math.max(0, Math.min(tasks.length - 1, currentIdx + delta));
           selectTask(this.state, tasks[newIdx] ?? null);
+          this.autoScrollTasks(newIdx);
         }
         break;
 
@@ -240,10 +243,17 @@ export class App {
           const currentIdx = this.state.selectedPeerId ? peers.indexOf(this.state.selectedPeerId) : -1;
           const newIdx = Math.max(0, Math.min(peers.length - 1, currentIdx + delta));
           selectPeer(this.state, peers[newIdx] ?? null);
+          this.autoScrollPeers(newIdx);
         }
         break;
 
       case 'events': {
+        if (this.state.focusedPanel === 1) {
+          // Detail pane scroll
+          this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
+          this.state.dirty = true;
+          break;
+        }
         const log = this.state.eventLog;
         if (log.length === 0) break;
         const currentIdx = this.state.selectedEventId
@@ -251,6 +261,7 @@ export class App {
           : -1;
         const newIdx = Math.max(0, Math.min(log.length - 1, currentIdx + delta));
         selectEvent(this.state, log[newIdx]?.id ?? null);
+        this.autoScrollEvents(newIdx, log.length);
         break;
       }
     }
@@ -268,66 +279,146 @@ export class App {
               riskScore: task.pendingApproval.riskScore,
               reason: task.pendingApproval.reason,
             });
+            return;
           }
         }
+        // Toggle to detail pane
+        cycleFocus(this.state, this.getMaxPanels(), 1);
         break;
 
       case 'events':
-        // Selection toggles detail pane — already handled by selectedEventId
-        // If no event selected, select first
         if (!this.state.selectedEventId && this.state.eventLog.length > 0) {
           selectEvent(this.state, this.state.eventLog[0]!.id);
         }
+        // Toggle to detail pane
+        cycleFocus(this.state, this.getMaxPanels(), 1);
         break;
 
       case 'peers':
-        // Peers detail pane already shows selected peer info
         if (!this.state.selectedPeerId) {
           const firstPeer = [...this.state.peers.keys()][0];
           if (firstPeer) selectPeer(this.state, firstPeer);
         }
+        // Toggle to detail pane
+        cycleFocus(this.state, this.getMaxPanels(), 1);
         break;
     }
   }
 
   private handlePageScroll(direction: 'up' | 'down'): void {
-    const delta = Math.floor(this.state.termHeight / 2);
-    const applyScroll = (key: 'eventLogScroll' | 'taskListScroll' | 'peerListScroll') => {
-      const current = this.state[key];
-      this.state[key] = direction === 'down' ? current + delta : Math.max(0, current - delta);
-      this.state.dirty = true;
-    };
+    const viewH = this.state.termHeight - 4;
+    const pageDelta = Math.max(1, Math.floor(viewH / 2));
 
     switch (this.state.activeTab) {
-      case 'events':
-        applyScroll('eventLogScroll');
+      case 'tasks': {
+        const tasks = [...this.state.tasks.keys()];
+        const maxVisible = Math.max(1, Math.floor((viewH - 3) / 2));
+        const currentIdx = this.state.selectedTaskId ? tasks.indexOf(this.state.selectedTaskId) : 0;
+        const newIdx = direction === 'down'
+          ? Math.min(tasks.length - 1, currentIdx + pageDelta)
+          : Math.max(0, currentIdx - pageDelta);
+        selectTask(this.state, tasks[newIdx] ?? null);
+        this.autoScrollTasks(newIdx);
         break;
-      case 'tasks':
-        applyScroll('taskListScroll');
+      }
+      case 'peers': {
+        const peers = [...this.state.peers.keys()];
+        const currentIdx = this.state.selectedPeerId ? peers.indexOf(this.state.selectedPeerId) : 0;
+        const newIdx = direction === 'down'
+          ? Math.min(peers.length - 1, currentIdx + pageDelta)
+          : Math.max(0, currentIdx - pageDelta);
+        selectPeer(this.state, peers[newIdx] ?? null);
+        this.autoScrollPeers(newIdx);
         break;
-      case 'peers':
-        applyScroll('peerListScroll');
+      }
+      case 'events': {
+        if (this.state.focusedPanel === 1) {
+          const delta = direction === 'down' ? pageDelta : -pageDelta;
+          this.state.eventDetailScroll = Math.max(0, this.state.eventDetailScroll + delta);
+          this.state.dirty = true;
+          break;
+        }
+        const log = this.state.eventLog;
+        const currentIdx = this.state.selectedEventId
+          ? log.findIndex((e) => e.id === this.state.selectedEventId) : 0;
+        const newIdx = direction === 'down'
+          ? Math.min(log.length - 1, currentIdx + pageDelta)
+          : Math.max(0, currentIdx - pageDelta);
+        selectEvent(this.state, log[newIdx]?.id ?? null);
+        this.autoScrollEvents(newIdx, log.length);
         break;
+      }
     }
   }
 
   private handleJump(target: 'top' | 'bottom'): void {
     switch (this.state.activeTab) {
-      case 'events':
-        this.state.eventLogScroll = target === 'top' ? 0 : Math.max(0, this.state.eventLog.length - 1);
-        this.state.dirty = true;
+      case 'events': {
+        const log = this.state.eventLog;
+        if (log.length === 0) break;
+        const idx = target === 'top' ? 0 : log.length - 1;
+        selectEvent(this.state, log[idx]!.id);
+        this.autoScrollEvents(idx, log.length);
         break;
+      }
       case 'tasks': {
-        this.state.taskListScroll = target === 'top' ? 0 : Math.max(0, this.state.tasks.size - 1);
-        this.state.dirty = true;
+        const tasks = [...this.state.tasks.keys()];
+        if (tasks.length === 0) break;
+        const idx = target === 'top' ? 0 : tasks.length - 1;
+        selectTask(this.state, tasks[idx] ?? null);
+        this.autoScrollTasks(idx);
         break;
       }
       case 'peers': {
-        this.state.peerListScroll = target === 'top' ? 0 : Math.max(0, this.state.peers.size - 1);
-        this.state.dirty = true;
+        const peers = [...this.state.peers.keys()];
+        if (peers.length === 0) break;
+        const idx = target === 'top' ? 0 : peers.length - 1;
+        selectPeer(this.state, peers[idx] ?? null);
+        this.autoScrollPeers(idx);
         break;
       }
     }
+  }
+
+  // ── Auto-scroll helpers ─────────────────────────────────────────
+
+  /** Keep selected task visible (each task = 2 rows). */
+  private autoScrollTasks(idx: number): void {
+    const viewH = this.state.termHeight - 4;
+    const maxVisible = Math.max(1, Math.floor((viewH - 3) / 2));
+    if (idx < this.state.taskListScroll) {
+      this.state.taskListScroll = idx;
+    } else if (idx >= this.state.taskListScroll + maxVisible) {
+      this.state.taskListScroll = idx - maxVisible + 1;
+    }
+    this.state.dirty = true;
+  }
+
+  /** Keep selected peer visible. */
+  private autoScrollPeers(idx: number): void {
+    const viewH = this.state.termHeight - 4;
+    const maxVisible = Math.max(1, viewH - 4); // header + empty rows
+    if (idx < this.state.peerListScroll) {
+      this.state.peerListScroll = idx;
+    } else if (idx >= this.state.peerListScroll + maxVisible) {
+      this.state.peerListScroll = idx - maxVisible + 1;
+    }
+    this.state.dirty = true;
+  }
+
+  /** Keep selected event visible (events show newest at bottom). */
+  private autoScrollEvents(idx: number, total: number): void {
+    const viewH = this.state.termHeight - 4;
+    const maxVisible = Math.max(1, viewH - 3);
+    // Events use reverse scroll: eventLogScroll = offset from bottom
+    const bottomIdx = total - 1;
+    const distFromBottom = bottomIdx - idx;
+    if (distFromBottom < this.state.eventLogScroll) {
+      this.state.eventLogScroll = distFromBottom;
+    } else if (distFromBottom >= this.state.eventLogScroll + maxVisible) {
+      this.state.eventLogScroll = distFromBottom - maxVisible + 1;
+    }
+    this.state.dirty = true;
   }
 
   private handleCommand(input: string): void {
@@ -392,7 +483,22 @@ export class App {
       case 'set': {
         const [key, value] = cmd.args;
         if (key && value) {
-          pushToast(this.state, `Set ${key}=${value}`, 'info');
+          switch (key) {
+            case 'eventLogMaxSize': {
+              const n = Number.parseInt(value, 10);
+              if (!Number.isNaN(n) && n > 0) {
+                this.state.eventLogMaxSize = n;
+                pushToast(this.state, `Set eventLogMaxSize=${n}`, 'info');
+              } else {
+                pushToast(this.state, `Invalid value: ${value}`, 'warning');
+              }
+              break;
+            }
+            default:
+              pushToast(this.state, `Unknown key: ${key}`, 'warning');
+          }
+        } else {
+          pushToast(this.state, 'Usage: :set <key> <value>', 'warning');
         }
         break;
       }

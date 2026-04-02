@@ -115,31 +115,37 @@ function renderMetricsPanel(state: TUIState, width: number, height: number, focu
   }
   lines.push('');
 
-  // Workers/Rules/Skills/Patterns
-  lines.push(
-    `Workers: ${color(String(m.workers.active) + 'a', ANSI.green)}` +
-      `  ${color(String(m.workers.probation) + 'p', ANSI.yellow)}` +
-      `  ${dim(String(m.workers.demoted) + 'd')}` +
-      `  ${dim(String(m.workers.retired ?? 0) + 'r')}`,
-  );
-  lines.push(
-    `Rules:  ${color(String(m.rules.active) + 'a', ANSI.green)}` +
-      `  ${color(String(m.rules.probation) + 'p', ANSI.yellow)}` +
-      `  ${dim(String(m.rules.retired) + 'r')}`,
-  );
-  lines.push(
-    `Skills:  ${color(String(m.skills.active) + 'a', ANSI.green)}` +
-      `  ${color(String(m.skills.probation) + 'p', ANSI.yellow)}` +
-      `  ${dim(String(m.skills.demoted) + 'd')}`,
-  );
-  lines.push(`Patterns: ${bold(String(m.patterns.total))}   Sleep Cycles: ${m.patterns.sleepCyclesRun}`);
+  // Workers/Rules/Skills/Patterns — table layout
+  const pad = (v: number, w = 2) => String(v).padStart(w);
+  const statRow = (label: string, cols: string[]) =>
+    `${bold(label.padEnd(10))} ${cols.join('  ')}`;
+
+  lines.push(statRow('Workers:', [
+    color(pad(m.workers.active) + 'a', ANSI.green),
+    color(pad(m.workers.probation) + 'p', ANSI.yellow),
+    dim(pad(m.workers.demoted) + 'd'),
+    dim(pad(m.workers.retired ?? 0) + 'r'),
+  ]));
+  lines.push(statRow('Rules:', [
+    color(pad(m.rules.active) + 'a', ANSI.green),
+    color(pad(m.rules.probation) + 'p', ANSI.yellow),
+    dim(pad(m.rules.retired) + 'r'),
+  ]));
+  lines.push(statRow('Skills:', [
+    color(pad(m.skills.active) + 'a', ANSI.green),
+    color(pad(m.skills.probation) + 'p', ANSI.yellow),
+    dim(pad(m.skills.demoted) + 'd'),
+  ]));
+  lines.push('');
+  lines.push(statRow('Patterns:', [bold(String(m.patterns.total))]));
+  lines.push(statRow('Sleeps:', [String(m.patterns.sleepCyclesRun)]));
   lines.push('');
 
   // Evolution metrics
   if (m.evolution) {
-    lines.push(bold('Evolution:'));
-    lines.push(` Quality Trend: ${m.evolution.overall.qualityTrend.toFixed(2)}`);
-    lines.push(` Routing Efficiency: ${m.evolution.overall.routingEfficiency.toFixed(2)}`);
+    lines.push(bold('Evolution'));
+    lines.push(statRow(' Quality:', [m.evolution.overall.qualityTrend.toFixed(2)]));
+    lines.push(statRow(' Routing:', [m.evolution.overall.routingEfficiency.toFixed(2)]));
   }
 
   return panel('Metrics & Fleet', lines.join('\n'), width, height, focused);

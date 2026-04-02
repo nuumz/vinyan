@@ -105,9 +105,9 @@ describe('getContextHints', () => {
     const hints = getContextHints(state);
     const keys = hints.map((h) => h.key);
     expect(keys).toContain('g/G');
-    expect(keys).toContain('Ctrl+d/u');
+    expect(keys).toContain('PgDn/Up');
     expect(keys).not.toContain('n'); // n is tasks-only
-    expect(keys).not.toContain('s'); // s is tasks/peers only
+    expect(keys).toContain('s'); // s is now on tasks/peers/events
   });
 
   test('peers tab shows sort hint', () => {

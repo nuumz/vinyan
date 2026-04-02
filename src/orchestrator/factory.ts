@@ -494,6 +494,379 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 /** Allowed model name prefixes — mirrors safety-invariants.ts MODEL_ALLOWLIST_PREFIXES. */
 const WORKER_MODEL_ALLOWLIST = ['claude-', 'gpt-', 'gemini-', 'mock/', 'openrouter/'];
 
+/** Yield event loop long enough for render loop (33ms interval) to paint at least 1 frame. */
+const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 50));
+
+/**
+ * Async variant of createOrchestrator — identical wiring but yields event loop
+ * between heavy phases so the TUI render loop can paint spinner frames.
+ *
+ * Use this from TUI only. CLI/tests should use the sync createOrchestrator.
+ */
+export async function createOrchestratorAsync(
+  config: OrchestratorConfig,
+  onProgress?: (message: string) => void,
+): Promise<Orchestrator> {
+  const { workspace } = config;
+  const bus = config.bus ?? createBus();
+
+  // ── Phase 1: Database + stores ──────────────────────────────────
+  onProgress?.('Cleaning up stale sessions...');
+  const staleCount = cleanupStaleOverlays(workspace);
+  if (staleCount > 0) console.warn(`[vinyan] Cleaned up ${staleCount} stale session overlays`);
+
+  const registry = config.registry ?? createDefaultRegistry();
+
+  onProgress?.('Opening database...');
+  await yieldFrame();
+
+  let db: VinyanDB | undefined;
+  let traceStore: TraceStore | undefined;
+  try {
+    db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
+    traceStore = new TraceStore(db.getDb());
+  } catch {
+    // SQLite unavailable — fall back to in-memory only
+  }
+
+  let patternStore: PatternStore | undefined;
+  let shadowStore: ShadowStore | undefined;
+  let skillStore: SkillStore | undefined;
+  let ruleStore: RuleStore | undefined;
+  let workerStore: WorkerStore | undefined;
+  if (db) {
+    patternStore = new PatternStore(db.getDb());
+    shadowStore = new ShadowStore(db.getDb());
+    skillStore = new SkillStore(db.getDb());
+    ruleStore = new RuleStore(db.getDb());
+    workerStore = new WorkerStore(db.getDb());
+  }
+
+  if (workerStore) {
+    autoRegisterWorkers(registry, workerStore, bus);
+  }
+
+  // ── Phase 2: WorldGraph + Config ────────────────────────────────
+  onProgress?.('Setting up world graph...');
+  await yieldFrame();
+
+  let worldGraph: WorldGraph | undefined;
+  let fileWatcher: FileWatcher | undefined;
+  try {
+    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
+    fileWatcher = new FileWatcher(worldGraph, workspace);
+    fileWatcher.start();
+  } catch {
+    // WorldGraph unavailable — fact invalidation disabled
+  }
+
+  let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
+  let fleetConfig:
+    | {
+        probation_min_tasks: number;
+        demotion_window_tasks: number;
+        demotion_max_reentries: number;
+        reentry_cooldown_sessions: number;
+        epsilon_worker: number;
+        diversity_cap_pct: number;
+      }
+    | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    if (vinyanConfig.orchestrator) {
+      const r = vinyanConfig.orchestrator.routing;
+      routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
+    }
+    if (vinyanConfig.fleet) {
+      fleetConfig = vinyanConfig.fleet;
+    }
+  } catch {
+    /* config loading is best-effort */
+  }
+
+  // ── Phase 3: Managers + Components ──────────────────────────────
+  onProgress?.('Creating components...');
+  await yieldFrame();
+
+  let workerLifecycle: WorkerLifecycle | undefined;
+  if (workerStore) {
+    workerLifecycle = new WorkerLifecycle({
+      workerStore,
+      bus,
+      probationMinTasks: fleetConfig?.probation_min_tasks ?? 30,
+      demotionWindowTasks: fleetConfig?.demotion_window_tasks ?? 30,
+      demotionMaxReentries: fleetConfig?.demotion_max_reentries ?? 3,
+      reentryCooldownSessions: fleetConfig?.reentry_cooldown_sessions ?? 50,
+    });
+  }
+
+  const skillManager = skillStore ? new SkillManager({ skillStore, workspace }) : undefined;
+  const shadowRunner = shadowStore ? new ShadowRunner({ shadowStore, workspace }) : undefined;
+  const sleepCycleRunner =
+    patternStore && traceStore
+      ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle })
+      : undefined;
+
+  if (shadowRunner) {
+    const recovered = shadowRunner.recover();
+    if (recovered > 0) console.warn(`[vinyan] Recovered ${recovered} stale shadow jobs`);
+  }
+
+  const perception = new PerceptionAssemblerImpl({ workspace });
+  const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
+  const selfModel = db
+    ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
+    : (() => {
+        console.warn('[vinyan] SQLite unavailable — using static self-model (no calibration)');
+        return new SelfModelStub();
+      })();
+  const decomposer =
+    registry.listProviders().length > 0
+      ? new TaskDecomposerImpl({ registry })
+      : (() => {
+          console.warn('[vinyan] No LLM providers — using single-node task decomposition');
+          return new TaskDecomposerStub();
+        })();
+
+  let llmProxy: import('./llm/llm-proxy.ts').LLMProxyServer | undefined;
+  if (config.llmProxy && (config.useSubprocess ?? true)) {
+    llmProxy = startLLMProxy(registry);
+  }
+  const workerPool = new WorkerPoolImpl({
+    registry,
+    workspace,
+    useSubprocess: config.useSubprocess ?? true,
+    proxySocketPath: llmProxy?.socketPath,
+  });
+  const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
+  const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
+  const toolExecutor = new ToolExecutor();
+
+  const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
+  const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
+  const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
+  const testGenerator = testGenProvider ? new LLMTestGeneratorImpl(testGenProvider, workspace) : undefined;
+
+  const components = [
+    `self-model: ${selfModel.constructor.name}`,
+    `decomposer: ${decomposer.constructor.name}`,
+    `skills: ${skillManager ? 'enabled' : 'disabled'}`,
+    `shadow: ${shadowRunner ? 'enabled' : 'disabled'}`,
+    `sleep-cycle: ${sleepCycleRunner ? 'enabled' : 'disabled'}`,
+    `rules: ${ruleStore ? 'enabled' : 'disabled'}`,
+  ];
+  console.log(`[vinyan] Orchestrator initialized — ${components.join(', ')}`);
+
+  // ── Phase 4: Wiring ────────────────────────────────────────────
+  onProgress?.('Wiring dependencies...');
+  await yieldFrame();
+
+  let workerSelector: WorkerSelector | undefined;
+  if (workerStore && db) {
+    const capabilityModel = new CapabilityModel({
+      db: db.getDb(),
+      minTraces: 5,
+      negativeCapabilityThreshold: 0.6,
+    });
+    const defaultGateThresholds: DataGateThresholds = {
+      sleep_cycle_min_traces: 100,
+      sleep_cycle_min_task_types: 5,
+      skill_min_patterns: 1,
+      skill_min_sleep_cycles: 1,
+      evolution_min_traces: 200,
+      evolution_min_active_skills: 1,
+      evolution_min_sleep_cycles: 3,
+      fleet_min_active_workers: 2,
+      fleet_min_worker_trace_diversity: 2,
+    };
+    workerSelector = new WorkerSelector({
+      workerStore,
+      capabilityModel,
+      bus,
+      epsilonWorker: fleetConfig?.epsilon_worker ?? 0.1,
+      diversityCapPct: fleetConfig?.diversity_cap_pct ?? 0.7,
+      gateStats: () => ({
+        traceCount: traceStore?.count() ?? 0,
+        distinctTaskTypes: traceStore?.countDistinctTaskTypes() ?? 0,
+        patternsExtracted: patternStore?.count() ?? 0,
+        activeSkills: skillStore?.countActive() ?? 0,
+        sleepCyclesRun: patternStore?.countCycleRuns() ?? 0,
+        activeWorkers: workerStore.countActive(),
+        workerTraceDiversity: workerStore.countDistinctWorkerIds(),
+      }),
+      gateThresholds: defaultGateThresholds,
+    });
+  }
+
+  let instanceCoordinator: InstanceCoordinator | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const instancesConfig = vinyanConfig.network?.instances;
+    if (instancesConfig?.enabled && instancesConfig.peers?.length) {
+      const oracleProfileStore = db ? new OracleProfileStore(db.getDb()) : undefined;
+      instanceCoordinator = new InstanceCoordinator({
+        peerUrls: instancesConfig.peers.map((p: { url: string }) => p.url),
+        instanceId: crypto.randomUUID(),
+        profileStore: oracleProfileStore,
+        bus,
+      });
+    }
+  } catch {
+    /* instance coordinator wiring is best-effort */
+  }
+
+  const approvalGate = new ApprovalGateImpl(bus);
+
+  const deps: OrchestratorDeps = {
+    perception,
+    riskRouter,
+    selfModel,
+    decomposer,
+    workerPool,
+    oracleGate,
+    traceCollector,
+    bus,
+    workspace,
+    skillManager,
+    shadowRunner,
+    ruleStore,
+    toolExecutor,
+    workerSelector,
+    workerStore,
+    workerLifecycle,
+    worldGraph,
+    criticEngine,
+    testGenerator,
+    explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
+    instanceCoordinator: instanceCoordinator,
+    approvalGate,
+  };
+
+  const delegationRouter = new DelegationRouter();
+  const executeTaskThunk = (subInput: TaskInput) => executeTask(subInput, deps);
+  const agentLoopDeps: Partial<AgentLoopDeps> = {
+    workspace,
+    contextWindow: 128_000,
+    agentWorkerEntryPath: resolve(import.meta.dir, 'worker/agent-worker-entry.ts'),
+    proxySocketPath: llmProxy?.socketPath,
+    toolExecutor: {
+      execute: async (call, context) => {
+        const results = await toolExecutor.executeProposedTools([call], context);
+        return results[0]!;
+      },
+    },
+    compressPerception,
+    bus,
+    delegationRouter,
+    executeTask: executeTaskThunk,
+  };
+  workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
+
+  const metricsCollector = new MetricsCollector();
+  const detachMetrics = metricsCollector.attach(bus);
+  const traceListenerHandle = attachTraceListener(bus);
+  const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
+
+  const gapHDetector = new GapHDetector(bus);
+  const detachGapH = gapHDetector.attach();
+
+  const predictionCache = new Map<string, import('./types.ts').SelfModelPrediction>();
+  bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
+    predictionCache.set(prediction.taskId, prediction);
+    if (predictionCache.size > 200) {
+      const oldest = predictionCache.keys().next().value;
+      if (oldest) predictionCache.delete(oldest);
+    }
+  });
+
+  if (shadowRunner && traceStore) {
+    bus.on('shadow:complete', ({ result }) => {
+      traceStore.updateShadowValidation(result.taskId, result);
+      const cached = predictionCache.get(result.taskId);
+      if (cached && 'calibrate' in selfModel) {
+        try {
+          const shadowTrace = {
+            taskId: result.taskId,
+            outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
+            durationMs: result.durationMs,
+            qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
+          } as import('./types.ts').ExecutionTrace;
+          selfModel.calibrate(cached, shadowTrace);
+        } catch {
+          /* best-effort calibration */
+        }
+      }
+      predictionCache.delete(result.taskId);
+    });
+  }
+
+  let sessionCount = 0;
+
+  let shadowInterval: ReturnType<typeof setInterval> | undefined;
+  if (shadowRunner) {
+    shadowInterval = setInterval(async () => {
+      try {
+        const result = await shadowRunner.processNext();
+        if (result) {
+          bus.emit('shadow:complete', {
+            job: {
+              id: '',
+              taskId: result.taskId,
+              status: 'done' as const,
+              enqueuedAt: 0,
+              retryCount: 0,
+              maxRetries: 1,
+            },
+            result,
+          });
+        }
+      } catch {
+        /* best-effort background processing */
+      }
+    }, 10_000);
+  }
+
+  return {
+    executeTask: async (input: TaskInput) => {
+      const result = await executeTask(input, deps);
+      sessionCount++;
+      if (sleepCycleRunner && sessionCount >= sleepCycleRunner.getInterval()) {
+        sleepCycleRunner.run().catch(() => { /* best-effort */ });
+        sessionCount = 0;
+      }
+      return result;
+    },
+    traceCollector,
+    traceListener: traceListenerHandle,
+    bus,
+    shadowRunner,
+    skillManager,
+    sleepCycleRunner,
+    workerLifecycle,
+    traceStore,
+    ruleStore,
+    skillStore,
+    patternStore,
+    shadowStore,
+    workerStore,
+    worldGraph,
+    metricsCollector,
+    approvalGate,
+    getSessionCount: () => sessionCount,
+    close: () => {
+      if (shadowInterval) clearInterval(shadowInterval);
+      fileWatcher?.stop();
+      detachGapH();
+      detachMetrics();
+      traceListenerHandle.detach();
+      detachAudit();
+      approvalGate.clear();
+      worldGraph?.close();
+      db?.close();
+    },
+  };
+}
+
 /**
  * Auto-register existing LLM providers as WorkerProfiles.
  * Grandfathered as "active" — these are proven models from Phase 3.

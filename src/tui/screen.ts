@@ -58,7 +58,9 @@ export class Screen {
   }
 
   private tick(): void {
-    if (!this.state.dirty) return;
+    // During loading, always render (drives spinner animation).
+    // Otherwise, only render when state changed (dirty flag).
+    if (!this.state.dirty && !this.state.loading) return;
 
     updateTermSize(this.state);
     const frame = this.viewRenderer(this.state);

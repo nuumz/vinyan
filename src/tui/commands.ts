@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'fs';
 import type { VinyanBus } from '../core/bus.ts';
-import { createOrchestrator } from '../orchestrator/factory.ts';
+import { createOrchestratorAsync } from '../orchestrator/factory.ts';
 import { App } from './app.ts';
 import { EmbeddedDataSource } from './data/source.ts';
 import { EventRenderer } from './event-renderer.ts';
@@ -97,22 +97,18 @@ export async function startInteractive(config: TUIConfig): Promise<void> {
   // Start TUI immediately in loading mode
   const app = new App({ state });
 
-  // Yield event loop — lets render loop paint between heavy sync steps
-  const tick = () => new Promise<void>((r) => setTimeout(r, 0));
-
-  // Initialize orchestrator in async steps, yielding between each
-  let orchestrator: ReturnType<typeof createOrchestrator> | null = null;
+  // Initialize orchestrator asynchronously — yields event loop between phases
+  // so the spinner can animate during startup
+  let orchestrator: Awaited<ReturnType<typeof createOrchestratorAsync>> | null = null;
   const initOrchestrator = async () => {
     try {
-      state.loadingMessage = 'Initializing orchestrator...';
-      state.dirty = true;
-      await tick();
-
-      orchestrator = createOrchestrator({ workspace: config.workspace, bus: config.bus });
-
-      state.loadingMessage = 'Starting data source...';
-      state.dirty = true;
-      await tick();
+      orchestrator = await createOrchestratorAsync(
+        { workspace: config.workspace, bus: config.bus },
+        (message) => {
+          state.loadingMessage = message;
+          state.dirty = true;
+        },
+      );
 
       const dataSource = new EmbeddedDataSource(state, orchestrator);
       app.wireDataSource(dataSource);

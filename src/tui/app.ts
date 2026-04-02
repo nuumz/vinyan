@@ -642,11 +642,10 @@ export class App {
   private renderLoadingScreen(state: TUIState): string {
     const { termWidth, termHeight } = state;
     const now = Date.now();
+    // Advance spinner every ~100ms — no setTimeout needed, the render loop drives this
     if (now - this.lastSpinnerMs >= 100) {
       this.spinnerTick++;
       this.lastSpinnerMs = now;
-      // Schedule next dirty for animation
-      setTimeout(() => { state.dirty = true; }, 100);
     }
     const frame = App.SPINNER[this.spinnerTick % App.SPINNER.length]!;
 

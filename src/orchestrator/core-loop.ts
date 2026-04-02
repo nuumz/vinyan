@@ -680,6 +680,16 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // Record trace once — after calibration so predictionError is persisted
+      // PH6: Compress transcript into trace for storage (Step 43)
+      if (isAgenticResult && lastAgentResult?.transcript?.length) {
+        try {
+          const transcriptJson = JSON.stringify(lastAgentResult.transcript);
+          trace.transcriptGzip = Bun.gzipSync(Buffer.from(transcriptJson));
+          trace.transcriptTurns = lastAgentResult.transcript.length;
+        } catch {
+          // Best-effort — don't fail the trace record
+        }
+      }
       await deps.traceCollector.record(trace);
       deps.bus?.emit('trace:record', { trace });
 

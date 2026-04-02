@@ -97,20 +97,33 @@ export async function startInteractive(config: TUIConfig): Promise<void> {
   // Start TUI immediately in loading mode
   const app = new App({ state });
 
-  // Schedule heavy orchestrator init for next tick — first frame renders loading screen
+  // Yield event loop — lets render loop paint between heavy sync steps
+  const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  // Initialize orchestrator in async steps, yielding between each
   let orchestrator: ReturnType<typeof createOrchestrator> | null = null;
-  setTimeout(() => {
+  const initOrchestrator = async () => {
     try {
       state.loadingMessage = 'Initializing orchestrator...';
       state.dirty = true;
+      await tick();
+
       orchestrator = createOrchestrator({ workspace: config.workspace, bus: config.bus });
+
+      state.loadingMessage = 'Starting data source...';
+      state.dirty = true;
+      await tick();
+
       const dataSource = new EmbeddedDataSource(state, orchestrator);
       app.wireDataSource(dataSource);
     } catch (err) {
       state.loadingMessage = `Init failed: ${err instanceof Error ? err.message : String(err)}`;
       state.dirty = true;
     }
-  }, 0);
+  };
+
+  // Start init after first frame renders
+  setTimeout(() => { initOrchestrator(); }, 0);
 
   app.onShutdown(() => orchestrator?.close());
   await app.run();

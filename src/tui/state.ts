@@ -56,6 +56,9 @@ export function createInitialState(workspace = '.'): TUIState {
     // New: Real-time counters
     realtimeCounters: {},
 
+    // Active agent sessions (Phase 6)
+    activeSessions: new Map(),
+
     // New: Workspace
     workspace,
 

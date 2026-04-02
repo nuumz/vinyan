@@ -192,6 +192,10 @@ export class EmbeddedDataSource implements DataSource {
       'session:compacted',
       'file:hashChanged',
       'graph:fact',
+      'agent:session_start',
+      'agent:session_end',
+      'agent:turn_complete',
+      'agent:tool_executed',
     ];
 
     for (const eventName of allEvents) {
@@ -259,6 +263,18 @@ export class EmbeddedDataSource implements DataSource {
         break;
       case 'trace:record':
         this.onTraceRecord(p);
+        break;
+      case 'agent:session_start':
+        this.onAgentSessionStart(p);
+        break;
+      case 'agent:session_end':
+        this.onAgentSessionEnd(p);
+        break;
+      case 'agent:turn_complete':
+        this.onAgentTurnComplete(p);
+        break;
+      case 'agent:tool_executed':
+        this.onAgentToolExecuted(p);
         break;
     }
 
@@ -501,6 +517,48 @@ export class EmbeddedDataSource implements DataSource {
       task.pipeline.learn = 'running';
       this.state.dirty = true;
     }
+  }
+
+  // ── Agent Session Handlers ──────────────────────────────────────
+
+  private onAgentSessionStart(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    if (!taskId) return;
+    const budget = p.budget as { maxTokens?: number; maxTurns?: number } | undefined;
+    this.state.activeSessions.set(taskId, {
+      taskId,
+      routingLevel: Number(p.routingLevel ?? 0),
+      startedAt: Date.now(),
+      turnsCompleted: 0,
+      tokensConsumed: 0,
+      turnsRemaining: budget?.maxTurns ?? 0,
+    });
+    this.state.dirty = true;
+  }
+
+  private onAgentSessionEnd(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    this.state.activeSessions.delete(taskId);
+    this.state.dirty = true;
+  }
+
+  private onAgentTurnComplete(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    const session = this.state.activeSessions.get(taskId);
+    if (!session) return;
+    session.turnsCompleted += 1;
+    session.tokensConsumed += Number(p.tokensConsumed ?? 0);
+    session.turnsRemaining = Number(p.turnsRemaining ?? session.turnsRemaining);
+    this.state.dirty = true;
+  }
+
+  private onAgentToolExecuted(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    const session = this.state.activeSessions.get(taskId);
+    if (!session) return;
+    session.currentTool = String(p.toolName ?? '');
+    session.lastToolAt = Date.now();
+    this.state.dirty = true;
   }
 
   // ── Real-time Counters ──────────────────────────────────────────

@@ -24,7 +24,8 @@ export class TraceStore {
         outcome, failure_reason, oracle_verdicts, affected_files,
         prediction_error, validation_depth, shadow_validation, exploration,
         framework_markers, worker_selection_audit,
-        pipeline_confidence_composite, confidence_decision
+        pipeline_confidence_composite, confidence_decision,
+        transcript_gzip, transcript_turns
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -34,7 +35,8 @@ export class TraceStore {
         $outcome, $failure_reason, $oracle_verdicts, $affected_files,
         $prediction_error, $validation_depth, $shadow_validation, $exploration,
         $framework_markers, $worker_selection_audit,
-        $pipeline_confidence_composite, $confidence_decision
+        $pipeline_confidence_composite, $confidence_decision,
+        $transcript_gzip, $transcript_turns
       )
     `);
   }
@@ -72,6 +74,8 @@ export class TraceStore {
       $worker_selection_audit: trace.workerSelectionAudit ? JSON.stringify(trace.workerSelectionAudit) : null,
       $pipeline_confidence_composite: trace.pipelineConfidence?.composite ?? null,
       $confidence_decision: trace.confidenceDecision ? JSON.stringify(trace.confidenceDecision) : null,
+      $transcript_gzip: trace.transcriptGzip ?? null,
+      $transcript_turns: trace.transcriptTurns ?? null,
     });
   }
 
@@ -175,5 +179,7 @@ function rowToTrace(row: any): ExecutionTrace {
       ? { composite: row.pipeline_confidence_composite, formula: '' }
       : undefined,
     confidenceDecision: row.confidence_decision ? JSON.parse(row.confidence_decision) : undefined,
+    transcriptGzip: row.transcript_gzip ?? undefined,
+    transcriptTurns: row.transcript_turns ?? undefined,
   };
 }

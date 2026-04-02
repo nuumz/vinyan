@@ -24,7 +24,7 @@ import {
   sparkline,
   truncate,
 } from '../renderer.ts';
-import type { TUIState } from '../types.ts';
+import type { ActiveSessionState, TUIState } from '../types.ts';
 
 export function renderDashboard(state: TUIState): string {
   const { termWidth } = state;
@@ -34,16 +34,21 @@ export function renderDashboard(state: TUIState): string {
 
   const healthPanel = renderHealthPanel(state, leftWidth, panelHeight, state.focusedPanel === 0);
   const metricsPanel = renderMetricsPanel(state, rightWidth, panelHeight, state.focusedPanel === 1);
-  const fleetPanel = renderFleetPanel(state, leftWidth, panelHeight, state.focusedPanel === 2);
-  const eventPanel = renderEventLogPanel(state, rightWidth, panelHeight, state.focusedPanel === 3);
+
+  // Bottom row: 3 panels (fleet, sessions, events)
+  const thirdWidth = Math.floor(termWidth / 3);
+  const lastWidth = termWidth - 2 * thirdWidth - 2;
+  const fleetPanel = renderFleetPanel(state, thirdWidth, panelHeight, state.focusedPanel === 2);
+  const sessionsPanel = renderActiveSessionsPanel(state, thirdWidth, panelHeight, state.focusedPanel === 3);
+  const eventPanel = renderEventLogPanel(state, lastWidth, panelHeight, state.focusedPanel === 4);
 
   const topRow = sideBySide(healthPanel, metricsPanel);
-  const bottomRow = sideBySide(fleetPanel, eventPanel);
+  const bottomRow = sideBySide(sideBySide(fleetPanel, sessionsPanel), eventPanel);
 
   return `${topRow}\n${bottomRow}`;
 }
 
-export const DASHBOARD_PANEL_COUNT = 4;
+export const DASHBOARD_PANEL_COUNT = 5;
 
 // ── System Health Panel ─────────────────────────────────────────────
 
@@ -167,6 +172,31 @@ function renderFleetPanel(state: TUIState, width: number, height: number, focuse
   }
 
   return panel('Fleet & Evolution', lines.join('\n'), width, height, focused);
+}
+
+// ── Active Sessions Panel ───────────────────────────────────────────
+
+function renderActiveSessionsPanel(state: TUIState, width: number, height: number, focused: boolean): string {
+  const lines: string[] = [];
+  const sessions = Array.from(state.activeSessions.values());
+
+  if (sessions.length === 0) {
+    lines.push(dim('No active agent sessions.'));
+    return panel('Active Sessions', lines.join('\n'), width, height, focused);
+  }
+
+  const innerW = width - 4;
+  for (const s of sessions) {
+    const elapsed = formatDuration(Date.now() - s.startedAt);
+    const taskLabel = truncate(s.taskId, Math.max(8, innerW - 30));
+    lines.push(`${bold(taskLabel)} ${dim(`L${s.routingLevel}`)}`);
+    lines.push(` Turns: ${s.turnsCompleted}/${s.turnsCompleted + s.turnsRemaining}  Tokens: ${s.tokensConsumed}`);
+    const toolInfo = s.currentTool ? ` Tool: ${color(truncate(s.currentTool, 15), ANSI.cyan)}` : '';
+    lines.push(` ${dim(elapsed)}${toolInfo}`);
+    lines.push('');
+  }
+
+  return panel(`Active Sessions (${sessions.length})`, lines.join('\n'), width, height, focused);
 }
 
 // ── Event Log Panel ─────────────────────────────────────────────────

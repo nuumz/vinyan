@@ -136,6 +136,20 @@ export interface ModalState {
   reason?: string;
 }
 
+// ── Active Agent Sessions (Phase 6) ─────────────────────────────────
+
+export interface ActiveSessionState {
+  taskId: string;
+  routingLevel: number;
+  startedAt: number;
+  turnsCompleted: number;
+  tokensConsumed: number;
+  turnsRemaining: number;
+  currentTool?: string;
+  lastToolAt?: number;
+  outcome?: string;
+}
+
 // ── TUI State ───────────────────────────────────────────────────────
 
 export interface TUIState {
@@ -193,6 +207,9 @@ export interface TUIState {
 
   // Real-time counters from MetricsCollector
   realtimeCounters: Record<string, number>;
+
+  // Active agent sessions (Phase 6)
+  activeSessions: Map<string, ActiveSessionState>;
 
   // Workspace path (for dbPath derivation)
   workspace: string;

@@ -393,6 +393,10 @@ export interface ExecutionTrace {
   escalationReason?: 'uncertain-verification' | 'low-pipeline-confidence';
   /** EHD Phase 3B: Pipeline-level composite confidence (geometric mean across 6 steps). */
   pipelineConfidence?: { composite: number; formula: string };
+  /** Phase 6 §43: gzip-compressed transcript from agentic session (Bun.gzip). */
+  transcriptGzip?: Uint8Array;
+  /** Phase 6 §43: number of turns in the agentic transcript (for stats without decompressing). */
+  transcriptTurns?: number;
 }
 
 // ---------------------------------------------------------------------------

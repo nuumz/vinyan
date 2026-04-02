@@ -106,4 +106,8 @@ export const ExecutionTraceRowSchema = z.object({
   exploration: z.unknown().nullable().optional(),
   framework_markers: z.string().nullable().optional(),
   worker_selection_audit: z.string().nullable().optional(),
+  pipeline_confidence_composite: z.number().nullable().optional(),
+  confidence_decision: z.string().nullable().optional(),
+  transcript_gzip: z.instanceof(Buffer).or(z.instanceof(Uint8Array)).nullable().optional(),
+  transcript_turns: z.number().nullable().optional(),
 });

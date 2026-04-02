@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   framework_markers      TEXT,
   worker_selection_audit TEXT,
   pipeline_confidence_composite REAL,
-  confidence_decision    TEXT
+  confidence_decision    TEXT,
+  transcript_gzip        BLOB,
+  transcript_turns       INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -60,6 +62,22 @@ export function migratePipelineConfidenceColumns(db: import('bun:sqlite').Databa
   }
   if (!columnNames.has('confidence_decision')) {
     db.exec('ALTER TABLE execution_traces ADD COLUMN confidence_decision TEXT');
+  }
+}
+
+/**
+ * Safe migration for transcript storage columns.
+ * Uses PRAGMA table_info to check if columns already exist before altering.
+ */
+export function migrateTranscriptColumns(db: import('bun:sqlite').Database): void {
+  const columns = db.prepare('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+  const columnNames = new Set(columns.map((c) => c.name));
+
+  if (!columnNames.has('transcript_gzip')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN transcript_gzip BLOB');
+  }
+  if (!columnNames.has('transcript_turns')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN transcript_turns INTEGER');
   }
 }
 

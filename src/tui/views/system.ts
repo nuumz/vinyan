@@ -16,7 +16,7 @@ import {
   sideBySide,
   sparkline,
 } from '../renderer.ts';
-import type { TUIState } from '../types.ts';
+import type { ActiveSessionState, TUIState } from '../types.ts';
 
 export const SYSTEM_PANEL_COUNT = 2;
 
@@ -75,6 +75,20 @@ function renderHealthPanel(state: TUIState, width: number, height: number, focus
     lines.push(bold('Real-time Counters:'));
     for (const [key, value] of Object.entries(counters)) {
       lines.push(` ${padEnd(key, 20)} ${value.toLocaleString()}`);
+    }
+  }
+
+  // Active agent sessions (Phase 6)
+  if (state.activeSessions.size > 0) {
+    lines.push('');
+    lines.push(bold(`Active Sessions (${state.activeSessions.size}):`));
+    for (const s of state.activeSessions.values()) {
+      const elapsed = formatDuration(Date.now() - s.startedAt);
+      const totalTurns = s.turnsCompleted + s.turnsRemaining;
+      const toolInfo = s.currentTool ? ` → ${color(s.currentTool, ANSI.cyan)}` : '';
+      lines.push(
+        ` L${s.routingLevel} ${dim(s.taskId.slice(0, 16))}  ${s.turnsCompleted}/${totalTurns}t  ${s.tokensConsumed}tok  ${dim(elapsed)}${toolInfo}`,
+      );
     }
   }
 

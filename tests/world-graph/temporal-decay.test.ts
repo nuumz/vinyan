@@ -78,8 +78,8 @@ describe('temporal-decay', () => {
       expect(isFullyExpired(2000, 'none', 1000)).toBe(false);
     });
 
-    test('step: past validUntil → never fully expired', () => {
-      expect(isFullyExpired(2000, 'step', 3000)).toBe(false);
+    test('step: past validUntil → expired', () => {
+      expect(isFullyExpired(2000, 'step', 3000)).toBe(true);
     });
 
     test('linear: past validUntil → expired', () => {
@@ -112,7 +112,7 @@ describe('temporal-decay', () => {
       }
     });
 
-    test("expired fact with decay_model='step' still included (drops to 50%)", () => {
+    test("expired fact with decay_model='step' excluded after validUntil", () => {
       const wg = new WorldGraph(':memory:');
       try {
         const pastTime = Date.now() - 10_000;
@@ -130,8 +130,7 @@ describe('temporal-decay', () => {
         });
 
         const facts = wg.queryFacts('src/b.ts');
-        expect(facts).toHaveLength(1);
-        expect(facts[0]!.decayModel).toBe('step');
+        expect(facts).toHaveLength(0); // step facts now properly expire
       } finally {
         wg.close();
       }

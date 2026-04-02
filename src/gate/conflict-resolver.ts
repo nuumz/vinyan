@@ -18,6 +18,7 @@ import {
   fromScalar,
   isValid,
   projectedProbability,
+  temporalDecay,
 } from '../core/subjective-opinion.ts';
 import type { SubjectiveOpinion } from '../core/subjective-opinion.ts';
 import type { OracleAbstention, OracleVerdict } from '../core/types.ts';
@@ -205,10 +206,23 @@ export function resolveConflicts(
  * If the verdict carries a native opinion, use it directly (assumed correctly oriented).
  */
 function verdictToOpinion(verdict: OracleVerdict): SubjectiveOpinion {
-  if (verdict.opinion && isValid(verdict.opinion)) return verdict.opinion;
-  return verdict.verified
-    ? fromScalar(verdict.confidence)
-    : fromScalar(1 - verdict.confidence); // invert: confidence in "wrong" → disbelief in "correct"
+  let opinion: SubjectiveOpinion;
+  if (verdict.opinion && isValid(verdict.opinion)) {
+    opinion = verdict.opinion;
+  } else {
+    opinion = verdict.verified
+      ? fromScalar(verdict.confidence)
+      : fromScalar(1 - verdict.confidence);
+  }
+
+  // Apply temporal decay if the verdict carries temporal context
+  if (verdict.temporalContext && verdict.temporalContext.decayModel !== 'none') {
+    const elapsed = Date.now() - verdict.temporalContext.validFrom;
+    const halfLife = verdict.temporalContext.halfLife ?? (verdict.temporalContext.validUntil - verdict.temporalContext.validFrom) / 2;
+    opinion = temporalDecay(opinion, elapsed, halfLife, verdict.temporalContext.decayModel);
+  }
+
+  return opinion;
 }
 
 /**
@@ -240,25 +254,46 @@ function resolveConflictPair(
 
   // Step 2: Phase 4.8 — SL-based conflict resolution using Josang conflict constant K.
   // Cross-domain pair (Step 1) already returned above, so this is always same-domain.
-  // K = b1*d2 + d1*b2. K > 0.5 → genuine contradiction → Step 5. K ≤ 0.5 → fuse → winner by P.
+  // Three zones: K > 0.7 → escalate, 0.3 ≤ K ≤ 0.7 → ambiguous (accuracy tiebreaker), K < 0.3 → fuse.
   const passOpinion = verdictToOpinion(passVerdict);
   const failOpinion = verdictToOpinion(failVerdict);
   const conflictReport = computeConflictReport(passOpinion, failOpinion);
   const K = conflictReport.K;
 
-  if (K > 0.5) {
+  if (K > 0.7) {
     // High conflict mass — oracles fundamentally disagree, escalate.
     return {
       winner: failName, // Conservative: failure wins when contradictory
       loser: passName,
       resolvedAtStep: 5,
       conflictK: K,
-      explanation: `SL contradiction: K=${K.toFixed(3)} > 0.5 — "${passName}" (passed) and "${failName}" (failed) have irreconcilable opinions`,
+      explanation: `SL contradiction: K=${K.toFixed(3)} > 0.7 — "${passName}" (passed) and "${failName}" (failed) have irreconcilable opinions`,
     };
   }
 
-  // K ≤ 0.5 — fuse via cumulative fusion (cross-domain pair already handled at Step 1;
-  // same-domain pairs are treated as independent sources for this resolution).
+  // Ambiguous zone (0.3 ≤ K ≤ 0.7) — use historical accuracy as tiebreaker if available
+  if (K >= 0.3 && K <= 0.7 && config.oracleAccuracy) {
+    const passAccuracy = config.oracleAccuracy[passName];
+    const failAccuracy = config.oracleAccuracy[failName];
+    if (passAccuracy && failAccuracy && passAccuracy.total >= 10 && failAccuracy.total >= 10) {
+      const passRate = passAccuracy.correct / passAccuracy.total;
+      const failRate = failAccuracy.correct / failAccuracy.total;
+      if (Math.abs(passRate - failRate) > 0.1) {
+        // Significant accuracy difference — trust the more accurate oracle
+        const winner = passRate > failRate ? passName : failName;
+        const loser = winner === passName ? failName : passName;
+        return {
+          winner,
+          loser,
+          resolvedAtStep: 4,
+          conflictK: K,
+          explanation: `Accuracy tiebreaker: "${winner}" (${(Math.max(passRate, failRate) * 100).toFixed(0)}%) vs "${loser}" (${(Math.min(passRate, failRate) * 100).toFixed(0)}%) in ambiguous K=${K.toFixed(3)} zone`,
+        };
+      }
+    }
+  }
+
+  // K ≤ 0.7 without accuracy tiebreaker — fuse via cumulative fusion
   const fused = cumulativeFusion(passOpinion, failOpinion);
   const fusedP = projectedProbability(fused);
   // fusedP >= 0.5 → net opinion favors correctness → pass wins; else fail wins
@@ -273,5 +308,5 @@ function resolveConflictPair(
     explanation: `SL fusion: K=${K.toFixed(3)}, P(fused)=${fusedP.toFixed(3)} — "${winner}" wins (${fusedP >= 0.5 ? 'net belief favors correctness' : 'net belief favors failure'})`,
   };
 
-  // Step 5: Escalation — reached via K > 0.5 path above (unreachable here, kept for clarity).
+  // Step 5: Escalation — reached via K > 0.7 path above (unreachable here, kept for clarity).
 }

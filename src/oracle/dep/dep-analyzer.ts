@@ -3,7 +3,11 @@ import { readdirSync, readFileSync, statSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import * as ts from 'typescript';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 900_000;
 
 /**
  * Dependency Analyzer — scans workspace TS files, builds import graph,
@@ -187,6 +191,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         reason: `Target file not found: ${target}`,
         errorCode: 'SYMBOL_NOT_FOUND',
         durationMs: performance.now() - startTime,
+        opinion: fromScalar(0, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
       });
     }
 
@@ -222,17 +228,21 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         fileHashes: { [target]: fileHash },
         reason: `Blast radius: ${blastRadius} file(s), but ${unresolved.length} import(s) unresolvable: ${unresolved.join(', ')}`,
         durationMs: performance.now() - startTime,
+        opinion: fromScalar(0.5, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
       });
     }
 
     return buildVerdict({
       verified: true,
       type: 'known',
-      confidence: 1.0,
+      confidence: 0.90,
       evidence,
       fileHashes: { [target]: fileHash },
       reason: `Blast radius: ${blastRadius} file(s) depend on ${target}`,
       durationMs: performance.now() - startTime,
+      opinion: fromScalar(0.90, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
     });
   } catch (error) {
     return buildVerdict({
@@ -244,6 +254,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       reason: `dep-oracle error: ${error instanceof Error ? error.message : String(error)}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - startTime,
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
     });
   }
 }

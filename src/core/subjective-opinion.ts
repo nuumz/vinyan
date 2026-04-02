@@ -389,19 +389,34 @@ export function clampOpinionByTier(o: SubjectiveOpinion, tier: string): Subjecti
  * @param o          - The opinion to decay
  * @param elapsedMs  - Time elapsed since evidence was gathered
  * @param halfLifeMs - Half-life for the decay model
- * @param decayModel - 'linear' | 'step' | 'none'
+ * @param decayModel - 'linear' | 'step' | 'none' | 'exponential'
  */
 export function temporalDecay(
   o: SubjectiveOpinion,
   elapsedMs: number,
   halfLifeMs: number,
-  decayModel: "linear" | "step" | "none",
+  decayModel: "linear" | "step" | "none" | "exponential",
 ): SubjectiveOpinion {
   if (decayModel === "none") return { ...o };
 
   if (decayModel === "step") {
     if (elapsedMs >= halfLifeMs) return vacuous(o.baseRate);
     return { ...o };
+  }
+
+  if (decayModel === "exponential") {
+    if (elapsedMs <= 0 || halfLifeMs <= 0) return { ...o };
+    const oldCertainty = 1 - o.uncertainty;
+    if (oldCertainty <= 0) return { ...o };
+    const decay = 2 ** (-elapsedMs / halfLifeMs);
+    const newCertainty = oldCertainty * decay;
+    const scale = newCertainty / oldCertainty;
+    return {
+      belief: o.belief * scale,
+      disbelief: o.disbelief * scale,
+      uncertainty: 1 - newCertainty,
+      baseRate: o.baseRate,
+    };
   }
 
   // Linear decay: uncertainty grows linearly toward 1.0 over 2 * halfLife
@@ -422,4 +437,74 @@ export function temporalDecay(
     uncertainty: uNew,
     baseRate: o.baseRate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 8. Exponential Decay (toward vacuous)
+// ---------------------------------------------------------------------------
+
+/**
+ * Temporal decay: opinion drifts toward vacuous over time.
+ * Uses exponential decay: uncertainty increases as evidence ages.
+ *
+ * @deprecated Use `temporalDecay(opinion, elapsedMs, halfLifeMs, 'exponential')` instead.
+ * This function is retained for backward compatibility and will be removed in a future version.
+ *
+ * @param opinion - The opinion to decay
+ * @param elapsedMs - Time elapsed since opinion was formed (ms)
+ * @param halfLifeMs - Half-life: time for uncertainty to reach midpoint (ms)
+ * @returns Decayed opinion (closer to vacuous as time passes)
+ */
+export function decayOpinion(
+  opinion: SubjectiveOpinion,
+  elapsedMs: number,
+  halfLifeMs: number,
+): SubjectiveOpinion {
+  if (elapsedMs <= 0 || halfLifeMs <= 0) return { ...opinion };
+
+  const oldCertainty = 1 - opinion.uncertainty;
+  if (oldCertainty <= 0) return { ...opinion }; // Already vacuous
+
+  const decayFactor = 2 ** (-elapsedMs / halfLifeMs);
+  const newCertainty = oldCertainty * decayFactor;
+  const newUncertainty = 1 - newCertainty;
+
+  // Proportionally rescale belief and disbelief
+  const scale = newCertainty / oldCertainty;
+  return {
+    belief: opinion.belief * scale,
+    disbelief: opinion.disbelief * scale,
+    uncertainty: newUncertainty,
+    baseRate: opinion.baseRate,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 9. EMA-based Base Rate Calibration
+// ---------------------------------------------------------------------------
+
+/**
+ * EMA-based base rate calibration from observed outcomes.
+ * Updates the base rate toward the observed success rate.
+ *
+ * Only calibrates when sufficient data exists (≥ minSamples).
+ * Uses exponential moving average for smooth adaptation.
+ *
+ * @param currentBaseRate - Current a priori base rate
+ * @param observedSuccessRate - Fraction of verdicts confirmed correct [0,1]
+ * @param totalSamples - Number of resolved verdicts
+ * @param minSamples - Minimum samples before calibration kicks in (default: 30)
+ * @param alpha - EMA smoothing factor (default: 0.1 — slow adaptation)
+ * @returns Calibrated base rate
+ */
+export function calibrateBaseRate(
+  currentBaseRate: number,
+  observedSuccessRate: number,
+  totalSamples: number,
+  minSamples = 30,
+  alpha = 0.1,
+): number {
+  if (totalSamples < minSamples) return currentBaseRate;
+  // EMA: newRate = (1 - alpha) * currentRate + alpha * observed
+  return (1 - alpha) * currentBaseRate + alpha * observedSuccessRate;
 }

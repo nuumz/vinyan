@@ -89,7 +89,8 @@ export type DeliberationRequest = z.infer<typeof DeliberationRequestSchema>;
 export const TemporalContextSchema = z.object({
   validFrom: z.number(),
   validUntil: z.number(),
-  decayModel: z.enum(['linear', 'step', 'none']),
+  decayModel: z.enum(['linear', 'step', 'none', 'exponential']),
+  halfLife: z.number().optional(),
 });
 
 export type TemporalContext = z.infer<typeof TemporalContextSchema>;

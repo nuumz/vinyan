@@ -47,7 +47,8 @@ const DeliberationRequestSchema = z.object({
 const TemporalContextSchema = z.object({
   validFrom: z.number(),
   validUntil: z.number(),
-  decayModel: z.enum(['linear', 'step', 'none']),
+  decayModel: z.enum(['linear', 'step', 'none', 'exponential']),
+  halfLife: z.number().optional(),
 });
 
 /** Zod schema for validating oracle output (OracleVerdict). */

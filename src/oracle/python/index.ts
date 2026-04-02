@@ -6,8 +6,12 @@
  */
 
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import { HypothesisTupleSchema } from '../protocol.ts';
 import { parsePyrightOutput } from './pyright-mapper.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 const PYRIGHT_TIMEOUT_MS = 60_000;
 
@@ -45,6 +49,13 @@ if (result === 'timeout') {
     verified: false,
     type: 'uncertain',
     confidence: 0.2,
+    opinion: fromScalar(0.2, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence: [],
     fileHashes: {},
     reason: `Pyright timed out after ${PYRIGHT_TIMEOUT_MS}ms`,
@@ -61,6 +72,13 @@ if (result === 'timeout') {
       verified: false,
       type: 'unknown',
       confidence: 0,
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       reason: `Pyright produced no output (exit ${result.exitCode}): ${stderr.slice(0, 500)}`,

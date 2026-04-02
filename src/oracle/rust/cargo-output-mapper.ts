@@ -10,7 +10,11 @@
 
 import { z } from 'zod/v4';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, OracleErrorCode, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 /** Cargo diagnostic span — where in source the issue occurs. */
 const CargoSpanSchema = z.object({
@@ -119,6 +123,13 @@ export function parseCargoOutput(stdout: string, exitCode: number, durationMs: n
       verified: true,
       type: 'known',
       confidence: 1.0,
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       durationMs,
@@ -140,6 +151,13 @@ export function parseCargoOutput(stdout: string, exitCode: number, durationMs: n
     verified: false,
     type: 'known',
     confidence: 1.0,
+    opinion: fromScalar(1.0, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence,
     fileHashes: {},
     reason: `${errors.length} error(s) found by cargo check`,
@@ -174,6 +192,13 @@ export function parseCargoCheckOutput(stdout: string, stderr: string, exitCode: 
       verified: false,
       type: evidence.length > 0 ? 'known' : 'uncertain',
       confidence: evidence.length > 0 ? 1.0 : 0.7,
+      opinion: fromScalar(evidence.length > 0 ? 1.0 : 0.7, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence,
       fileHashes: {},
       reason: stderr.slice(0, 500),
@@ -187,6 +212,13 @@ export function parseCargoCheckOutput(stdout: string, stderr: string, exitCode: 
     verified: exitCode === 0,
     type: exitCode === 0 ? 'known' : 'unknown',
     confidence: exitCode === 0 ? 1.0 : 0.5,
+    opinion: fromScalar(exitCode === 0 ? 1.0 : 0.5, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence: [],
     fileHashes: {},
     durationMs,

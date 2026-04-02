@@ -734,6 +734,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       if (routing.level > 0 && confidenceDecision && !shouldCommit) {
         switch (confidenceDecision) {
           case 're-verify': {
+            // DESIGN NOTE (EHD audit): Re-verify runs BEFORE the critic enrichment path (~L865).
+            // This is inherent to the architecture — re-verify escalates oracle level while critic
+            // enriches opinions post-verification. Fixing this would require critic to run inside
+            // the oracle gate, violating A1 (Epistemic Separation). Accepted as-is.
             // Escalate verification level without consuming a retry
             deps.bus?.emit('pipeline:re-verify', {
               taskId: input.id,
@@ -860,6 +864,28 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               workingMemory.recordFailedApproach(trace.approach, `critic: ${criticReason}`);
               continue; // retry within routing level
             }
+
+            // ── EHD Phase 2: Recompute pipeline confidence WITH critic dimension ──
+            if (criticResult.confidence !== undefined && routing.level > 0) {
+              pipelineConf = computePipelineConfidence({
+                prediction: predictionConfidence,
+                metaPrediction: metaPredictionConfidence,
+                verification: verificationConfidence,
+                critic: criticResult.confidence,
+              });
+              confidenceDecision = deriveConfidenceDecision(pipelineConf.composite);
+
+              // Update trace with critic-enriched pipeline confidence
+              trace.confidenceDecision = {
+                action: confidenceDecision,
+                confidence: pipelineConf.composite,
+                reason: pipelineConf.formula,
+              };
+              trace.pipelineConfidence = {
+                composite: pipelineConf.composite,
+                formula: pipelineConf.formula,
+              };
+            }
           } catch (criticError) {
             // A3: Critic failure → fail-closed at L2+ (governance must not silently degrade)
             deps.bus?.emit('critic:verdict', {
@@ -964,6 +990,19 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
         // ── A4: Commit verified oracle verdicts as World Graph facts ────
         if (deps.worldGraph && deps.workspace && commitResult && commitResult.applied.length > 0) {
+          // Compute conservative validUntil from oracle temporal contexts
+          const validUntils = Object.values(verification.verdicts)
+            .filter((v) => v.temporalContext?.validUntil)
+            .map((v) => v.temporalContext!.validUntil);
+          const factValidUntil = validUntils.length > 0 ? Math.min(...validUntils) : undefined;
+          // Derive decay model from oracle verdicts — prefer exponential if any oracle uses it
+          const decayModels = Object.values(verification.verdicts)
+            .map((v) => v.temporalContext?.decayModel)
+            .filter(Boolean) as string[];
+          const factDecayModel = decayModels.length > 0
+            ? (decayModels.includes('exponential') ? 'exponential' as const : decayModels[0] as 'linear' | 'step' | 'none' | 'exponential')
+            : undefined;
+
           try {
             for (const file of commitResult.applied) {
               const absPath = resolvePath(deps.workspace, file);
@@ -971,10 +1010,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               deps.worldGraph.storeFact({
                 target: file,
                 pattern: 'oracle-verified',
-                evidence: Object.entries(verification.verdicts).map(([oracle, passed]) => ({
+                evidence: Object.entries(verification.verdicts).map(([oracle, v]) => ({
                   file,
                   line: 0,
-                  snippet: `${oracle}: ${passed ? 'pass' : 'fail'}`,
+                  snippet: `${oracle}: ${v.verified ? 'pass' : 'fail'}`,
                 })),
                 oracleName: 'orchestrator',
                 sourceFile: file,
@@ -983,6 +1022,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 sessionId: input.id,
                 // M4 fix: use minimum oracle confidence instead of hardcoded 1.0
                 confidence: computeFactConfidence(verification.verdicts),
+                validUntil: factValidUntil,
+                decayModel: factDecayModel,
               });
             }
           } catch {

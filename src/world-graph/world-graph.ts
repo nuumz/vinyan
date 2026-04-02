@@ -93,14 +93,15 @@ export class WorldGraph {
   queryFacts(target: string): Fact[] {
     // LEFT JOIN: facts without a tracked file hash are preserved (system-provided facts).
     // Facts whose file hash mismatches current_hash are excluded (stale).
-    // ECP §3.6: Exclude fully expired facts (valid_until passed), except step-decay (never fully expires).
+    // ECP §3.6: Exclude fully expired facts (valid_until passed).
+    // Exponential-decay facts are included if within validUntil — decay applied at read time.
     const now = Date.now();
     const rows = this.db
       .query(`
       SELECT f.* FROM facts f
       LEFT JOIN file_hashes fh ON f.source_file = fh.path
       WHERE f.target = ? AND (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
-        AND (f.valid_until IS NULL OR f.valid_until > ? OR f.decay_model = 'step')
+        AND (f.valid_until IS NULL OR f.valid_until > ?)
     `)
       .all(target, now) as Array<Record<string, unknown>>;
     return rows.map((row) => ({

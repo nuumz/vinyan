@@ -1,6 +1,10 @@
 import { z } from 'zod/v4';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 /** Single Pyright diagnostic entry. */
 const PyrightDiagnosticSchema = z.object({
@@ -50,6 +54,13 @@ export function mapPyrightToVerdict(output: PyrightOutput, durationMs: number): 
     verified: errors.length === 0,
     type: 'known',
     confidence: 1.0,
+    opinion: fromScalar(1.0, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence,
     fileHashes: {},
     reason:
@@ -72,6 +83,13 @@ export function parsePyrightOutput(raw: string, durationMs: number): OracleVerdi
       verified: false,
       type: 'unknown',
       confidence: 0,
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       reason: `Failed to parse pyright output: ${parsed.error.message}`,

@@ -355,13 +355,15 @@ export class App {
         cycleFocus(this.state, this.getMaxPanels(), 1);
         break;
 
-      case 'events':
-        if (!this.state.selectedEventId && this.state.eventLog.length > 0) {
-          selectEvent(this.state, this.state.eventLog[0]!.id);
+      case 'events': {
+        const visibleLog = this.getVisibleEventLog();
+        if (!this.state.selectedEventId && visibleLog.length > 0) {
+          selectEvent(this.state, visibleLog[0]!.id);
         }
         // Toggle to detail pane
         cycleFocus(this.state, this.getMaxPanels(), 1);
         break;
+      }
 
       case 'peers':
         if (!this.state.selectedPeerId) {

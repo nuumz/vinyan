@@ -10,7 +10,11 @@
 import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.7;
+const TTL_MS = 300_000;
 
 interface LintError {
   file: string;
@@ -115,6 +119,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       fileHashes: {},
       reason: `Target file ${target} not found`,
       durationMs: performance.now() - start,
+      opinion: fromScalar(0.5, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   }
 
@@ -143,22 +149,26 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       return buildVerdict({
         verified: true,
         type: 'known',
-        confidence: 1.0,
+        confidence: 0.95,
         evidence: [],
         fileHashes: {},
         reason: `Lint clean (${lintErrors.length} warnings)`,
         durationMs,
+        opinion: fromScalar(0.95, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
       });
     }
 
     return buildVerdict({
       verified: false,
       type: 'known',
-      confidence: 1.0,
+      confidence: 0.95,
       evidence,
       fileHashes: {},
       reason: `${errors.length} lint error(s) found`,
       durationMs,
+      opinion: fromScalar(0.95, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   } catch (err) {
     return buildVerdict({
@@ -170,6 +180,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       reason: `Linter failed: ${err instanceof Error ? err.message : String(err)}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   }
 }

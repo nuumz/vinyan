@@ -137,7 +137,8 @@ export interface OracleVerdict {
   temporalContext?: {
     validFrom: number;
     validUntil: number;
-    decayModel: 'linear' | 'step' | 'none';
+    decayModel: 'linear' | 'step' | 'none' | 'exponential';
+    halfLife?: number;
   };
   /** Phase B+: Subjective Logic opinion for SL fusion (Phase 4). */
   opinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
@@ -161,5 +162,5 @@ export interface Fact {
   /** Epoch ms — fact evidence expires after this time (from oracle temporalContext). ECP spec §3.6. */
   validUntil?: number;
   /** How confidence decays over time (from oracle temporalContext). ECP spec §3.6. */
-  decayModel?: 'linear' | 'step' | 'none';
+  decayModel?: 'linear' | 'step' | 'none' | 'exponential';
 }

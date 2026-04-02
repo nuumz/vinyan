@@ -8,8 +8,12 @@
  */
 
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import { HypothesisTupleSchema } from '../protocol.ts';
 import { parseCargoCheckOutput } from './cargo-output-mapper.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 const CARGO_TIMEOUT_MS = 120_000; // Rust compilation can be slow
 
@@ -33,6 +37,13 @@ if (!SUPPORTED_PATTERNS.has(pattern)) {
     verified: false,
     type: 'unknown',
     confidence: 0,
+    opinion: fromScalar(0, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence: [],
     fileHashes: {},
     reason: `Unsupported Rust oracle pattern: ${pattern}`,
@@ -79,6 +90,13 @@ if (!SUPPORTED_PATTERNS.has(pattern)) {
       verified: false,
       type: 'uncertain',
       confidence: 0.2,
+      opinion: fromScalar(0.2, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       reason: `Cargo check timed out after ${CARGO_TIMEOUT_MS}ms`,

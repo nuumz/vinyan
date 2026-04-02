@@ -22,6 +22,7 @@ import { verify as testVerify } from '../oracle/test/test-verifier.ts';
 import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
 import type { RiskFactors } from '../orchestrator/types.ts';
+import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
 import {
   computeAggregateConfidence,
@@ -42,6 +43,14 @@ import { isMutatingTool } from './tool-classifier.ts';
 
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
+
+/** Module-level oracle accuracy store — injected by factory.ts via setOracleAccuracyStore(). */
+let oracleAccuracyStore: OracleAccuracyStore | undefined;
+
+/** Inject the OracleAccuracyStore for accuracy-based conflict resolution. */
+export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
+  oracleAccuracyStore = store;
+}
 
 /**
  * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
@@ -293,11 +302,29 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   }
 
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
+  // Build accuracy map from store for accuracy-based tiebreaking in ambiguous K zone
+  let oracleAccuracy: Record<string, { total: number; correct: number }> | undefined;
+  if (oracleAccuracyStore) {
+    const accuracyMap: Record<string, { total: number; correct: number }> = {};
+    for (const name of Object.keys(oracleResults)) {
+      const stats = oracleAccuracyStore.computeOracleAccuracy(name, 30);
+      // Use resolved count only (correct + wrong) — pending verdicts should not inflate denominator
+      const resolvedTotal = stats.correct + stats.wrong;
+      if (resolvedTotal > 0) {
+        accuracyMap[name] = { total: resolvedTotal, correct: stats.correct };
+      }
+    }
+    if (Object.keys(accuracyMap).length > 0) {
+      oracleAccuracy = accuracyMap;
+    }
+  }
+
   const resolved = resolveConflicts(oracleResults, {
     oracleTiers: Object.fromEntries(
       Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'deterministic']),
     ),
     informationalOracles: INFORMATIONAL_ORACLES,
+    oracleAccuracy,
   }, oracleAbstentions);
   reasons.push(...resolved.reasons);
 

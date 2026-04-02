@@ -188,7 +188,11 @@ export class SleepCycleRunner {
       }
     }
 
-    for (const pattern of newPatterns) {
+    // MIN_PATTERN_CONFIDENCE gate — reject patterns below threshold before promotion
+    const MIN_PATTERN_CONFIDENCE = this.config.patternMinConfidence;
+    const promotablePatterns = newPatterns.filter((p) => p.confidence >= MIN_PATTERN_CONFIDENCE);
+
+    for (const pattern of promotablePatterns) {
       this.patternStore.insert(pattern);
 
       // Phase 2.5: Create skills from success patterns

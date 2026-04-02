@@ -97,6 +97,16 @@ export const ECPDataPartSchema = z.object({
   message_type: ECPMessageTypeSchema,
   epistemic_type: EpistemicTypeSchema,
   confidence: z.number().min(0).max(1),
+  /** Optional SL opinion — must be consistent with confidence scalar */
+  opinion: z.object({
+    belief: z.number().min(0).max(1),
+    disbelief: z.number().min(0).max(1),
+    uncertainty: z.number().min(0).max(1),
+    baseRate: z.number().min(0).max(1),
+  }).refine(
+    (o) => Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001,
+    { message: 'belief + disbelief + uncertainty must sum to 1' },
+  ).optional(),
   confidence_reported: z.boolean(),
   evidence: z.array(EvidencePartSchema).optional(),
   falsifiable_by: z.string().optional(),

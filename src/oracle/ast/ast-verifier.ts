@@ -3,7 +3,11 @@ import { readFileSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import ts from 'typescript';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 300_000;
 
 /**
  * AST Verifier — uses TypeScript Compiler API for deterministic AST analysis.
@@ -173,6 +177,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
         fileHashes,
         reason: `File has ${(sf as any).parseDiagnostics.length} parse error(s) — AST analysis unreliable`,
         durationMs: Math.round(performance.now() - startTime),
+        opinion: fromScalar(0.3, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
       });
     }
 
@@ -189,6 +195,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             reason: "context.symbolName is required for pattern 'symbol-exists'",
             errorCode: 'PARSE_ERROR',
             durationMs: Math.round(performance.now() - startTime),
+            opinion: fromScalar(1.0, BASE_RATE),
+            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
           });
         }
         const result = verifySymbolExists(sf, filePath, symbolName);
@@ -201,6 +209,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.found ? undefined : `Symbol '${symbolName}' not found in ${filePath}`,
           errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
           durationMs: Math.round(performance.now() - startTime),
+          opinion: fromScalar(1.0, BASE_RATE),
+          temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
 
@@ -216,6 +226,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             reason: "context.functionName is required for pattern 'function-signature'",
             errorCode: 'PARSE_ERROR',
             durationMs: Math.round(performance.now() - startTime),
+            opinion: fromScalar(1.0, BASE_RATE),
+            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
           });
         }
         const result = verifyFunctionSignature(sf, filePath, functionName, context);
@@ -228,6 +240,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.reason,
           errorCode: !result.found ? 'SYMBOL_NOT_FOUND' : undefined,
           durationMs: Math.round(performance.now() - startTime),
+          opinion: fromScalar(1.0, BASE_RATE),
+          temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
 
@@ -243,6 +257,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
             reason: "context.moduleSpecifier is required for pattern 'import-exists'",
             errorCode: 'PARSE_ERROR',
             durationMs: Math.round(performance.now() - startTime),
+            opinion: fromScalar(1.0, BASE_RATE),
+            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
           });
         }
         const result = verifyImportExists(sf, filePath, moduleSpecifier);
@@ -255,6 +271,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.found ? undefined : `Import '${moduleSpecifier}' not found in ${filePath}`,
           errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
           durationMs: Math.round(performance.now() - startTime),
+          opinion: fromScalar(1.0, BASE_RATE),
+          temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
 
@@ -267,6 +285,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           fileHashes,
           reason: `Unknown pattern: '${hypothesis.pattern}'`,
           durationMs: Math.round(performance.now() - startTime),
+          opinion: fromScalar(1.0, BASE_RATE),
+          temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
     }
   } catch (err) {
@@ -279,6 +299,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
       reason: `AST verification failed: ${err instanceof Error ? err.message : String(err)}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: Math.round(performance.now() - startTime),
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
     });
   }
 }

@@ -18,9 +18,26 @@ export function injectA2AConfidence(
   tier?: string,
   peerTrust: PeerTrustLevel = 'untrusted',
 ): OracleVerdict {
+  const clampedConf = clampFull(verdict.confidence, tier, 'a2a', peerTrust);
+
+  // Validate opinion consistency against ORIGINAL confidence (not clamped)
+  // Clamping is a trust adjustment — opinion reflects the source's epistemic state
+  if (verdict.opinion) {
+    const projected = verdict.opinion.belief + verdict.opinion.baseRate * verdict.opinion.uncertainty;
+    if (Math.abs(projected - verdict.confidence) > 0.15) {
+      // Opinion inconsistent with source confidence — discard opinion
+      return {
+        ...verdict,
+        confidence: clampedConf,
+        type: 'uncertain',
+        opinion: undefined,
+      };
+    }
+  }
+
   return {
     ...verdict,
-    confidence: clampFull(verdict.confidence, tier, 'a2a', peerTrust),
+    confidence: clampedConf,
     type: 'uncertain',
   };
 }

@@ -24,8 +24,8 @@ const BUILTIN_ORACLES: Record<string, OracleRegistryEntry> = {
   'ast-oracle': { path: resolve(Dirname, 'ast/index.ts'), languages: ['typescript'], tier: 'deterministic' },
   'type-oracle': { path: resolve(Dirname, 'type/index.ts'), languages: ['typescript'], tier: 'deterministic' },
   'dep-oracle': { path: resolve(Dirname, 'dep/index.ts'), languages: ['typescript'], tier: 'heuristic' },
-  'test-oracle': { path: resolve(Dirname, 'test/index.ts'), languages: ['typescript'], tier: 'deterministic' },
-  'lint-oracle': { path: resolve(Dirname, 'lint/index.ts'), languages: ['typescript'], tier: 'deterministic' },
+  'test-oracle': { path: resolve(Dirname, 'test/index.ts'), languages: ['typescript'], tier: 'heuristic' },
+  'lint-oracle': { path: resolve(Dirname, 'lint/index.ts'), languages: ['typescript'], tier: 'heuristic' },
 };
 
 /** Dynamic oracle registry (Phase 5 — polyglot + plugins). */

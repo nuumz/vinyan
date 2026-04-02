@@ -1,7 +1,11 @@
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 /**
  * Type Verifier — spawns `tsc --noEmit` on the workspace and parses diagnostic output.
@@ -100,6 +104,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         reason: `Type verification timed out after ${TSC_TIMEOUT_MS}ms`,
         errorCode: 'TIMEOUT',
         durationMs: Math.round(performance.now() - startTime),
+        opinion: fromScalar(0.2, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
       });
     }
 
@@ -134,6 +140,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,
       errorCode: targetDiags.length > 0 ? 'TYPE_MISMATCH' : undefined,
       durationMs: Math.round(performance.now() - startTime),
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   } catch (err) {
     return buildVerdict({
@@ -145,6 +153,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       reason: `Type verification failed: ${err instanceof Error ? err.message : String(err)}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: Math.round(performance.now() - startTime),
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   }
 }

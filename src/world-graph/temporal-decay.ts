@@ -17,8 +17,9 @@ export function computeDecayedConfidence(
   originalConfidence: number,
   verifiedAt: number,
   validUntil: number | undefined,
-  decayModel: 'linear' | 'step' | 'none' | undefined,
+  decayModel: 'linear' | 'step' | 'none' | 'exponential' | undefined,
   now: number = Date.now(),
+  halfLifeMs?: number,
 ): number {
   if (!validUntil || !decayModel) return originalConfidence;
 
@@ -28,6 +29,15 @@ export function computeDecayedConfidence(
 
   if (decayModel === 'step') {
     return now < validUntil ? originalConfidence : originalConfidence * 0.5;
+  }
+
+  if (decayModel === 'exponential') {
+    const elapsed = now - verifiedAt;
+    if (elapsed <= 0) return originalConfidence;
+    const hl = halfLifeMs ?? (validUntil - verifiedAt) / 2;
+    if (hl <= 0) return 0;
+    const decay = 2 ** (-elapsed / hl);
+    return originalConfidence * decay;
   }
 
   // "linear": decreases linearly from verifiedAt to validUntil
@@ -46,10 +56,9 @@ export function computeDecayedConfidence(
  */
 export function isFullyExpired(
   validUntil: number | undefined,
-  decayModel: 'linear' | 'step' | 'none' | undefined,
+  decayModel: 'linear' | 'step' | 'none' | 'exponential' | undefined,
   now: number = Date.now(),
 ): boolean {
   if (!validUntil) return false;
-  if (decayModel === 'step') return false;
   return now >= validUntil;
 }

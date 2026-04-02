@@ -8,6 +8,7 @@
 import { join, resolve } from 'path';
 import { existsSync, readdirSync, statSync, rmSync } from 'fs';
 import { attachAuditListener } from '../bus/audit-listener.ts';
+import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
@@ -15,6 +16,7 @@ import { PatternStore } from '../db/pattern-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
+import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
@@ -33,6 +35,7 @@ import { createAnthropicProvider } from './llm/anthropic-provider.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
+import { setOracleAccuracyStore } from '../gate/gate.ts';
 import { OracleGateAdapter } from './oracle-gate-adapter.ts';
 import { PerceptionAssemblerImpl } from './perception.ts';
 import { RiskRouterImpl } from './risk-router-adapter.ts';
@@ -125,11 +128,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Set up persistent database
   let db: VinyanDB | undefined;
   let traceStore: TraceStore | undefined;
+  let oracleAccuracyStore: OracleAccuracyStore | undefined;
   try {
     db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
     traceStore = new TraceStore(db.getDb());
+    oracleAccuracyStore = new OracleAccuracyStore(db.getDb());
   } catch {
     // SQLite unavailable — fall back to in-memory only
+  }
+
+  // Wire accuracy store into gate module (module-level injection, like circuitBreaker)
+  if (oracleAccuracyStore) {
+    setOracleAccuracyStore(oracleAccuracyStore);
   }
 
   // Phase 2 stores — all use same db instance
@@ -377,6 +387,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
+  const detachAccuracy = oracleAccuracyStore
+    ? attachOracleAccuracyListener(bus, oracleAccuracyStore)
+    : undefined;
 
   // GAP-H failure mode detection (G5: was dead code, now live)
   const gapHDetector = new GapHDetector(bus);
@@ -484,6 +497,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachMetrics();
       traceListenerHandle.detach();
       detachAudit();
+      detachAccuracy?.();
       approvalGate.clear();
       worldGraph?.close();
       db?.close();
@@ -495,7 +509,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 const WORKER_MODEL_ALLOWLIST = ['claude-', 'gpt-', 'gemini-', 'mock/', 'openrouter/'];
 
 /** Yield event loop long enough for render loop (33ms interval) to paint at least 1 frame. */
-const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 50));
+const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 16));
 
 /**
  * Async variant of createOrchestrator — identical wiring but yields event loop
@@ -522,11 +536,17 @@ export async function createOrchestratorAsync(
 
   let db: VinyanDB | undefined;
   let traceStore: TraceStore | undefined;
+  let oracleAccuracyStore: OracleAccuracyStore | undefined;
   try {
     db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
     traceStore = new TraceStore(db.getDb());
+    oracleAccuracyStore = new OracleAccuracyStore(db.getDb());
   } catch {
     // SQLite unavailable — fall back to in-memory only
+  }
+
+  if (oracleAccuracyStore) {
+    setOracleAccuracyStore(oracleAccuracyStore);
   }
 
   let patternStore: PatternStore | undefined;
@@ -766,6 +786,9 @@ export async function createOrchestratorAsync(
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
+  const detachAccuracy = oracleAccuracyStore
+    ? attachOracleAccuracyListener(bus, oracleAccuracyStore)
+    : undefined;
 
   const gapHDetector = new GapHDetector(bus);
   const detachGapH = gapHDetector.attach();
@@ -860,6 +883,7 @@ export async function createOrchestratorAsync(
       detachMetrics();
       traceListenerHandle.detach();
       detachAudit();
+      detachAccuracy?.();
       approvalGate.clear();
       worldGraph?.close();
       db?.close();

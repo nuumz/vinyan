@@ -11,7 +11,11 @@
 
 import { z } from 'zod/v4';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 /** Go compiler error line pattern: file.go:line:col: message */
 const GO_ERROR_PATTERN = /^(.+\.go):(\d+):(\d+):\s*(.+)$/;
@@ -33,6 +37,13 @@ export function parseGoBuildOutput(stderr: string, exitCode: number, durationMs:
       verified: true,
       type: 'known',
       confidence: 1.0,
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       durationMs,
@@ -59,6 +70,13 @@ export function parseGoBuildOutput(stderr: string, exitCode: number, durationMs:
       verified: false,
       type: 'known',
       confidence: 1.0,
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence,
       fileHashes: {},
       reason: `${evidence.length} compilation error(s) found`,
@@ -72,6 +90,13 @@ export function parseGoBuildOutput(stderr: string, exitCode: number, durationMs:
     verified: false,
     type: 'known',
     confidence: 0.9,
+    opinion: fromScalar(0.9, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence: [],
     fileHashes: {},
     reason: stderr.slice(0, 500) || 'go build failed with no parseable output',
@@ -90,6 +115,13 @@ export function parseGoVetOutput(stderr: string, exitCode: number, durationMs: n
       verified: true,
       type: 'known',
       confidence: 1.0,
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       durationMs,
@@ -114,6 +146,13 @@ export function parseGoVetOutput(stderr: string, exitCode: number, durationMs: n
     verified: evidence.length === 0,
     type: 'known',
     confidence: evidence.length > 0 ? 1.0 : 0.9,
+    opinion: fromScalar(evidence.length > 0 ? 1.0 : 0.9, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence,
     fileHashes: {},
     reason: evidence.length > 0 ? `${evidence.length} vet issue(s) found` : undefined,
@@ -133,6 +172,13 @@ export function parseGoModTidyOutput(stdout: string, exitCode: number, durationM
       verified: true,
       type: 'known',
       confidence: 1.0,
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
       evidence: [],
       fileHashes: {},
       durationMs,
@@ -152,6 +198,13 @@ export function parseGoModTidyOutput(stdout: string, exitCode: number, durationM
     verified: false,
     type: 'known',
     confidence: 1.0,
+    opinion: fromScalar(1.0, BASE_RATE),
+    temporalContext: {
+      validFrom: Date.now(),
+      validUntil: Date.now() + TTL_MS,
+      decayModel: 'exponential' as const,
+      halfLife: 300_000,
+    },
     evidence,
     fileHashes: {},
     reason: 'go.mod is not tidy — run `go mod tidy`',

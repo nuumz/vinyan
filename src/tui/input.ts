@@ -159,8 +159,12 @@ function routeBufferKey(state: TUIState, key: KeypressInfo): TUIAction {
     const buffer = state.commandBuffer;
     const wasFilter = state.inputMode === 'filter';
     exitInputMode(state);
+    if (wasFilter) {
+      // Enter with empty buffer clears the active filter; with content applies it
+      return { type: 'filter', query: buffer };
+    }
     if (buffer.length > 0) {
-      return wasFilter ? { type: 'filter', query: buffer } : { type: 'command', command: buffer };
+      return { type: 'command', command: buffer };
     }
     return { type: 'noop' };
   }

@@ -10,7 +10,11 @@
 import { existsSync } from 'fs';
 import { basename, dirname, join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.6;
+const TTL_MS = 1_800_000;
 
 /** Detect test runner from workspace markers. */
 function detectTestRunner(workspace: string): { cmd: string; args: string[] } {
@@ -90,22 +94,26 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       return buildVerdict({
         verified: true,
         type: 'known',
-        confidence: 1.0,
+        confidence: 0.95,
         evidence,
         fileHashes: {},
         reason: `All tests passed (${relativeTestFiles.join(', ')})`,
         durationMs,
+        opinion: fromScalar(0.95, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
       });
     }
 
     return buildVerdict({
       verified: false,
       type: 'known',
-      confidence: 1.0,
+      confidence: 0.95,
       evidence,
       fileHashes: {},
       reason: `Tests failed (exit code ${exitCode}): ${output.slice(0, 300)}`,
       durationMs,
+      opinion: fromScalar(0.95, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
     });
   } catch (err) {
     // A2: ENOENT (runner binary not found) → uncertain, not unknown
@@ -122,6 +130,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         reason: `Test runner binary not found: ${errMsg}`,
         errorCode: 'ORACLE_CRASH',
         durationMs: performance.now() - start,
+        opinion: fromScalar(0.2, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
       });
     }
 
@@ -134,6 +144,8 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       reason: `Test runner failed: ${errMsg}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
     });
   }
 }

@@ -30,6 +30,7 @@
 - [phase6-implementation-plan.md](design/phase6-implementation-plan.md) — Phase 6: Agentic Worker Protocol implementation plan
 - [agentic-worker-protocol.md](design/agentic-worker-protocol.md) — Multi-turn tool loop, delegation, session overlay
 - [world-model.md](design/world-model.md) — Forward Predictor / World Model design (GAP-A)
+- [forward-predictor-implementation-plan.md](design/forward-predictor-implementation-plan.md) — ForwardPredictor 7-phase implementation plan (FP-A through FP-G)
 - [ehd-confidence-architecture.md](design/ehd-confidence-architecture.md) — Epistemic Humility Deficit confidence architecture
 - [tui-redesign.md](design/tui-redesign.md) — TUI redesign specification
 

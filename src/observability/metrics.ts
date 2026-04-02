@@ -82,13 +82,13 @@ const DEFAULT_GATE_THRESHOLDS: DataGateThresholds = {
   fleet_min_worker_trace_diversity: 2,
 };
 
-export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
+export function getSystemMetrics(deps: MetricsDeps, skipEvolution = false): SystemMetrics {
   const { traceStore, ruleStore, skillStore, patternStore, shadowStore, workerStore } = deps;
 
-  // Trace stats
+  // Trace stats — cap at 100 rows; larger sample doesn't meaningfully improve success rate
   const totalTraces = traceStore.count();
   const distinctTaskTypes = traceStore.countDistinctTaskTypes();
-  const recentTraces = traceStore.findRecent(1000);
+  const recentTraces = traceStore.findRecent(100);
 
   const successCount = recentTraces.filter((t) => t.outcome === 'success').length;
   const successRate = recentTraces.length > 0 ? successCount / recentTraces.length : 0;
@@ -181,7 +181,7 @@ export function getSystemMetrics(deps: MetricsDeps): SystemMetrics {
       evolutionEngine: checkDataGate('evolution_engine', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
       fleetRouting: checkDataGate('fleet_routing', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
     },
-    evolution: generateEvolutionReport({ traceStore, ruleStore, skillStore, patternStore }),
+    evolution: skipEvolution ? undefined : generateEvolutionReport({ traceStore, ruleStore, skillStore, patternStore }),
   };
 }
 

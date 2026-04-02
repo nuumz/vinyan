@@ -8,6 +8,7 @@
 import type { BusEventName, VinyanBus } from '../../core/bus.ts';
 import { getHealthCheck } from '../../observability/health.ts';
 import { getSystemMetrics, type MetricsDeps } from '../../observability/metrics.ts';
+import { generateEvolutionReport } from '../../observability/phase3-report.ts';
 import type { Orchestrator } from '../../orchestrator/factory.ts';
 import type { TaskInput, TaskResult } from '../../orchestrator/types.ts';
 import { pushEvent } from '../state.ts';
@@ -541,13 +542,18 @@ export class EmbeddedDataSource implements DataSource {
     }, 1000);
   }
 
-  /** Non-blocking metrics refresh. Yields to event loop between DB reads. */
+  /** Non-blocking metrics refresh. Yields to event loop between DB reads.
+   *
+   * Split into two deferred steps so each heavy sync SQLite batch (core metrics
+   * then evolution report) gets its own event-loop tick — keeps the TUI
+   * responsive during polling even as trace counts grow.
+   */
   private refreshMetricsAsync(): void {
     // Guard: skip if previous refresh is still running
     if (this.metricsRunning) return;
     this.metricsRunning = true;
 
-    // Use setTimeout(0) to avoid blocking the render/input event loop
+    // ── Step 1: core metrics (count + findRecent(100) + store counts) ──────
     setTimeout(() => {
       try {
         const deps: MetricsDeps = {
@@ -559,7 +565,8 @@ export class EmbeddedDataSource implements DataSource {
           workerStore: this.orchestrator.workerStore,
         };
         if (deps.traceStore) {
-          this.state.metrics = getSystemMetrics(deps);
+          // skipEvolution=true keeps this step fast; evolution runs in step 2
+          this.state.metrics = getSystemMetrics(deps, true);
         }
       } catch {
         // Best-effort
@@ -574,7 +581,23 @@ export class EmbeddedDataSource implements DataSource {
       }
 
       this.state.dirty = true;
-      this.metricsRunning = false;
+
+      // ── Step 2: evolution report (findRecent(200) + rule/skill queries) ──
+      setTimeout(() => {
+        try {
+          const { traceStore, ruleStore, skillStore, patternStore } = this.orchestrator;
+          if (traceStore && this.state.metrics) {
+            this.state.metrics = {
+              ...this.state.metrics,
+              evolution: generateEvolutionReport({ traceStore, ruleStore, skillStore, patternStore }),
+            };
+            this.state.dirty = true;
+          }
+        } catch {
+          // Best-effort
+        }
+        this.metricsRunning = false;
+      }, 0);
     }, 0);
   }
 }

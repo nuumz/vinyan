@@ -1,0 +1,19 @@
+{
+  "name": "@vinyan/oracle-sdk",
+  "version": "0.1.0",
+  "description": "SDK for building Vinyan oracles — ECP-compliant verification engines",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.25.0"
+  },
+  "peerDependencies": {
+    "bun-types": ">=1.0.0"
+  },
+  "license": "MIT",
+  "keywords": ["vinyan", "oracle", "ecp", "verification", "epistemic"]
+}

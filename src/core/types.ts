@@ -70,7 +70,20 @@ export function isAbstention(response: OracleResponse): response is OracleAbsten
 }
 
 /** Oracle verification error codes for programmatic handling. */
-export type OracleErrorCode = 'TIMEOUT' | 'PARSE_ERROR' | 'TYPE_MISMATCH' | 'SYMBOL_NOT_FOUND' | 'ORACLE_CRASH';
+export type OracleErrorCode =
+  | 'TIMEOUT'
+  | 'PARSE_ERROR'
+  | 'TYPE_MISMATCH'
+  | 'SYMBOL_NOT_FOUND'
+  | 'ORACLE_CRASH'
+  | 'BUILD_FAILED'
+  | 'VET_VIOLATION'
+  | 'MODULE_UNTIDY'
+  | 'BORROW_CHECK'
+  | 'LIFETIME_ERROR'
+  | 'TRAIT_NOT_SATISFIED'
+  | 'UNSAFE_VIOLATION'
+  | 'UNSUPPORTED_PATTERN';
 
 /**
  * Output from an oracle — the verification result with evidence chain.

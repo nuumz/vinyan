@@ -116,9 +116,27 @@ switch (command) {
     break;
   }
 
+  case 'tui': {
+    const { processTUICommand } = await import('../tui/commands.ts');
+    await processTUICommand(process.argv.slice(3), { workspace: workspacePath });
+    break;
+  }
+
+  case 'oracle': {
+    const subcommand = process.argv[3];
+    if (subcommand === 'test') {
+      const { runOracleTest } = await import('./oracle-test.ts');
+      await runOracleTest(process.argv.slice(4));
+    } else {
+      console.error('Usage: vinyan oracle test <oracle-name> [--workspace <path>] [--pattern <pattern>]');
+      process.exit(1);
+    }
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]     Initialize vinyan.json\n  gate             Run oracle gate (JSON on stdin)\n  analyze [dir]    Analyze session logs\n  run "task"       Run autonomous agent task\n  patterns         Export/import patterns for cross-project transfer\n  status           Show system status summary\n  metrics          Print full system metrics as JSON\n  rules            List evolutionary rules\n  skills           List cached skills\n  serve            Start the API server (Phase 5)\n  mcp              Start MCP server over stdio (Phase 5)`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]        Initialize vinyan.json\n  gate               Run oracle gate (JSON on stdin)\n  analyze [dir]      Analyze session logs\n  run "task"         Run autonomous agent task\n  patterns           Export/import patterns for cross-project transfer\n  status             Show system status summary\n  metrics            Print full system metrics as JSON\n  rules              List evolutionary rules\n  skills             List cached skills\n  serve              Start the API server (Phase 5)\n  mcp                Start MCP server over stdio (Phase 5)\n  oracle test <name> Test an oracle implementation\n  tui [subcommand]   Interactive Terminal UI (default: full dashboard)`,
     );
     process.exit(1);
 }

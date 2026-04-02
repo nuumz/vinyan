@@ -78,15 +78,24 @@ Every ECP design decision traces to one or more of Vinyan's 7 axioms:
 
 ### 3.1 Base Transport
 
-ECP uses JSON-RPC 2.0 as its wire format. Every ECP message is a valid JSON-RPC 2.0 message.
+ECP defines two wire formats, selected by conformance level:
 
+**Level 0 — Raw JSON over stdio:**
+```
+Request:  <HypothesisTuple JSON object>\n
+Response: <OracleVerdict JSON object>\n
+```
+
+Level 0 engines are subprocesses: they read a single `HypothesisTuple` from stdin, write a single `OracleVerdict` to stdout, and exit. No JSON-RPC framing is required. This is the simplest possible integration point.
+
+**Level 1+ — JSON-RPC 2.0:**
 ```
 Request:  { "jsonrpc": "2.0", "id": <string|number>, "method": <string>, "params": <object> }
 Response: { "jsonrpc": "2.0", "id": <string|number>, "result": <object> }
 Error:    { "jsonrpc": "2.0", "id": <string|number>, "error": { "code": <int>, "message": <string> } }
 ```
 
-Notifications (no response expected) omit the `id` field.
+Notifications (no response expected) omit the `id` field. JSON-RPC 2.0 framing is mandatory for Level 1+ engines that use network transports or persistent connections.
 
 ### 3.2 ECP Methods
 
@@ -322,7 +331,20 @@ The `falsifiable_by` field declares conditions that would invalidate a verdict. 
 - **Cascade invalidation** — A file change may invalidate multiple dependent verdicts.
 - **Prediction error computation** — Track whether falsifying conditions actually occurred (A7).
 
-Example:
+**Formal grammar** (see Appendix D.3 for resolution history):
+
+```
+condition := scope ":" target ":" event
+scope     := "file" | "dependency" | "env" | "config" | "time"
+event     := "content-change" | "version-change" | "deletion" | "expiry"
+target    := <any string, may contain colons (e.g., scoped npm packages)>
+```
+
+The target is extracted by splitting on the first colon (scope) and last colon (event); everything between is the target. This allows targets like `@scope/package` without escaping.
+
+**Reference implementation:** `src/oracle/falsifiable-parser.ts` — `parseFalsifiableCondition()` returns a structured `FalsifiabilityCondition` object.
+
+**Example:**
 ```json
 {
   "verified": true,
@@ -786,6 +808,8 @@ Engines can implement ECP incrementally. Each level adds capabilities.
 
 This is the simplest possible ECP engine — a subprocess that reads JSON and writes JSON. Any language can implement this.
 
+**Transport:** Raw JSON over stdio (one JSON object per line, `\n`-delimited). No JSON-RPC 2.0 framing, no `method` routing, no `id` field. The engine reads exactly one `HypothesisTuple` JSON object from stdin and writes exactly one `OracleVerdict` JSON object to stdout.
+
 **Required fields in verdict:** `verified`, `evidence`, `fileHashes`, `duration_ms`.
 **Optional fields:** All others default via Zod schema (`type` defaults to `"known"`, `confidence` defaults to `1.0`).
 
@@ -806,22 +830,24 @@ print(json.dumps(verdict))
 
 ### Level 1 — Standard
 
-**Adds:** Capability advertisement, health/heartbeat, epistemic type variety.
+**Adds:** Capability advertisement, health/heartbeat, epistemic type variety, JSON-RPC 2.0 framing.
 
+- **JSON-RPC 2.0 framing is mandatory** — all messages include `jsonrpc`, `method`, and `id` fields.
 - Engine sends `ecp/advertise` with patterns, languages, tier.
 - Engine responds to `ecp/heartbeat` with health status.
 - Engine uses all 4 epistemic types: `known`, `unknown`, `uncertain`, `contradictory`.
-- Engine populates `falsifiable_by` on verdicts.
+- Engine populates `falsifiable_by` on verdicts (see §4.5 for structured format).
 - Engine populates `evidence[].contentHash` (A4 compliance).
 
 ### Level 2 — Full
 
-**Adds:** Network transport, temporal context, deliberation.
+**Adds:** Network transport, temporal context, deliberation, version negotiation.
 
 - Engine connects via WebSocket or HTTP (not just stdio).
 - Engine populates `temporal_context` on verdicts.
 - Engine may send `deliberation_request` to negotiate more compute.
 - Engine supports concurrent hypotheses (multiple in-flight requests).
+- Engine performs **version negotiation** on connection (see §11.1).
 
 ### Level 3 — Platform
 
@@ -831,6 +857,48 @@ print(json.dumps(verdict))
 - Engine handles `ecp/invalidate` notifications.
 - Engine can share knowledge (rules, patterns) via ECP messages.
 - Engine supports the full network envelope (§5.2) including message signing.
+
+### §11.1 Version Negotiation (Level 2+)
+
+Network-connected engines (Level 2+) MUST perform version negotiation on connection establishment. The handshake uses the existing `ecp/register` method:
+
+**Handshake flow:**
+```
+Engine → Orchestrator:
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "ecp/register",
+  "params": {
+    "ecp_version": 1,
+    "supported_versions": [1],
+    "engine_name": "my-oracle",
+    "tier": "deterministic",
+    "patterns": ["type-check", "import-exists"],
+    "languages": ["typescript"]
+  }
+}
+
+Orchestrator → Engine:
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "negotiated_version": 1,
+    "instance_id": "<orchestrator-instance-id>",
+    "features": ["deliberation", "temporal_context"]
+  }
+}
+```
+
+**Rules:**
+1. The engine sends `ecp_version` (the preferred version) and `supported_versions` (all versions it can speak).
+2. The Orchestrator selects the highest mutually supported version and returns `negotiated_version`.
+3. If no mutually supported version exists, the Orchestrator returns a JSON-RPC error with code `-32600` (Invalid Request) and message `"no compatible ECP version"`.
+4. All subsequent messages on this connection use the negotiated version's semantics.
+5. Level 0-1 engines (stdio) do not perform version negotiation — they are implicitly ECP version 1.
+
+**Current version:** ECP 1 (the only defined version). The `ecp_version` field in `VinyanECPExtension` (`src/a2a/types.ts`) is `z.literal(1)`. When ECP 2 is defined, the schema will accept `z.union([z.literal(1), z.literal(2)])`.
 
 ---
 
@@ -968,7 +1036,7 @@ Orchestrator                              Security Scanner (remote)
 1. **(Recommended)** Amend Level 0 conformance (§11) to explicitly define raw-JSON-over-stdio as a valid Level 0 transport. JSON-RPC 2.0 framing becomes mandatory at Level 1+. This is honest and does not break backward compatibility with existing oracles.
 2. Update the oracle runner to use JSON-RPC 2.0 framing, requiring all existing oracle implementations to add envelope fields.
 
-**Status:** Open — see [TDD §15](tdd.md) for related open questions.
+**Status:** ✅ Resolved — Option 1 adopted. §3.1 now defines two wire formats (Level 0: raw JSON, Level 1+: JSON-RPC 2.0). §11 Level 0 explicitly states raw JSON transport. §11 Level 1 explicitly requires JSON-RPC 2.0 framing.
 
 ### D.2 Confidence Conflation
 
@@ -985,7 +1053,12 @@ tier_reliability: number;   // Set by Orchestrator from engine registration. Det
 engine_certainty: number;   // Reported by engine. Its own assessment of this specific verdict.
 ```
 
-**Status:** Open — breaking protocol change. Requires careful migration path. See [TDD §15 Q16](tdd.md).
+**Migration path:** This is a breaking protocol change. The recommended migration is:
+
+1. **ECP 1.x (current):** `confidence` remains the single field. The Orchestrator clamps `confidence` by tier ceiling (§4.4) as a workaround. Engines SHOULD document which dimension their confidence represents via the `evidence[].type` tier indicator.
+2. **ECP 2.0 (future):** Introduce `tier_reliability` + `engine_certainty` as separate fields. For backward compatibility, if only `confidence` is present, the Orchestrator infers: `tier_reliability` from the engine's registered tier, `engine_certainty` from the `confidence` value.
+
+**Status:** Documented with migration path. Breaking change deferred to ECP 2.0. See [TDD §15 Q16](tdd.md).
 
 ### D.3 `falsifiable_by` Lacks Formal Grammar
 
@@ -1002,7 +1075,7 @@ interface FalsifiabilityCondition {
 
 This makes `falsifiable_by` machine-parseable and enables automated re-verification triggers and cross-instance cascade invalidation.
 
-**Status:** Open — see [TDD §15 Q15](tdd.md).
+**Status:** ✅ Resolved — `FalsifiabilityCondition` interface implemented in `src/oracle/falsifiable-parser.ts` with formal grammar `scope:target:event`. Parser handles scoped npm packages (target may contain colons). Used by `src/world-graph/world-graph.ts` for cascade invalidation wiring. The `falsifiable_by` field remains `string[]` in the wire format for backward compatibility; consumers use `parseFalsifiableCondition()` to get structured access.
 
 ### D.4 Missing Deliberation Response
 

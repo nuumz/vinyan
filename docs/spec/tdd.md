@@ -3796,7 +3796,7 @@ interface ShutdownProtocol {
 1. **Stop accepting** — HTTP server stops accepting new connections, returns `503 Service Unavailable` for new requests
 2. **Drain in-flight** — Wait for all in-flight task executions to complete (up to `deadlineMs`)
 3. **Persist sessions** — Flush all active sessions to SQLite (`session_store.status = 'suspended'`)
-4. **Disconnect peers** — Send `disconnect` message to all VIIP peers (A2A protocol §3)
+4. **Disconnect peers** — Send `disconnect` message to all A2A peers (A2A protocol §3)
 5. **Close resources** — Close SQLite connections, EventBus, file watchers
 6. **Force terminate** — If deadline exceeded, cancel remaining tasks with `TaskResult.status = 'error'`, log warning
 
@@ -3939,7 +3939,7 @@ interface ExecutionTrace {
 **Propagation rules:**
 
 1. **Origin:** When Orchestrator starts a task with no existing `correlationId`, generate a new UUIDv7
-2. **Delegation:** `task_delegate` message includes `correlationId` in `VIIPEnvelope.correlation_id` (A2A protocol §2.2). The receiving instance MUST use the same `correlationId` for all traces generated from the delegated task
+2. **Delegation:** `task_delegate` message includes `correlationId` in `A2AEnvelope.correlation_id` (A2A protocol §2.2). The receiving instance MUST use the same `correlationId` for all traces generated from the delegated task
 3. **Oracle requests:** `oracle_request` message propagates `correlationId`. Response `oracle_verdict` echoes it
 4. **Knowledge sharing:** Not correlated (knowledge transfer is not task-scoped)
 5. **Trace query:** `TraceStore.queryByCorrelationId(id)` returns all local traces for a given correlation chain

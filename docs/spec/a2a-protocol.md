@@ -7,6 +7,16 @@
 >
 > **Implementation status:** Phases A-L implemented. Trust lifecycle, peer discovery, knowledge sharing (Tier 0 + Tier 2), streaming schemas, peer health monitoring, and remote bus adapter are all functional. Configuration schema covers all v1.0 features.
 
+### Document Boundary
+
+| This doc owns | Cross-ref for |
+|:-------------|:--------------|
+| A2A wire protocol (JSON-RPC envelope, ECP Data Part format) | ECP wire format & epistemic semantics → [ecp-spec.md](ecp-spec.md) |
+| 22 ECP message types (core, negotiation, knowledge, coordination, meta, streaming) | Full trust degradation matrix (all layers) → [protocol-architecture.md §6](../architecture/protocol-architecture.md) |
+| Trust lifecycle (Wilson LB progression, demotion, authorization scoping) | MCP/A2A bridge **implementation plans** → [protocol-architecture.md §4-5](../architecture/protocol-architecture.md) |
+| Knowledge sharing (Tier 0 file invalidation, Tier 2 sleep cycle batch) | ECP v2 research → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| Streaming, peer health, partition tolerance, configuration | |
+
 ---
 
 ## 1. Overview
@@ -165,6 +175,8 @@ All message types are defined in the `ECPMessageType` enum (`src/a2a/ecp-data-pa
 ---
 
 ## 4. Trust Lifecycle
+
+> **Canonical full trust matrix** (all layers, all sources, code references): [protocol-architecture.md §6](../architecture/protocol-architecture.md). This section defines only the A2A-specific trust mechanics.
 
 ### 4.1 Unified Trust Vocabulary
 

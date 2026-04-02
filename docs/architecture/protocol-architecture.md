@@ -4,6 +4,17 @@
 > **Context:** Rethink of Vinyan's external interface design. MCP/A2A become bridge layers; ECP becomes the native publishable protocol for the ENS ecosystem.
 > **References:** [ecp-spec.md](../spec/ecp-spec.md), [oracle-sdk.md](../spec/oracle-sdk.md), [concept.md](../foundation/concept.md) §2
 
+### Document Boundary
+
+| This doc owns | Cross-ref for |
+|:-------------|:--------------|
+| Three-layer protocol stack (L1/L2/L3) | ECP wire format & epistemic semantics → [ecp-spec.md](../spec/ecp-spec.md) |
+| Transport abstraction & resolution | A2A message types & trust lifecycle → [a2a-protocol.md](../spec/a2a-protocol.md) |
+| Remote oracle pattern (connection, trust degradation, circuit breaker) | Agentic worker IPC & delegation → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md) |
+| MCP/A2A bridge **implementation plans** (tool schemas, wiring, files to modify) | MCP/A2A bridge **translation semantics** → [ecp-spec.md](../spec/ecp-spec.md) §10 |
+| **§6 Trust Degradation Matrix — canonical source** for the full cross-layer trust model | ECP v2 research directions → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| Migration path & execution order | |
+
 ---
 
 ## §1 Architecture Overview
@@ -178,15 +189,7 @@ The transport type and trust level are factored into the `confidence` value **be
 
 ### Circuit Breaker for Remote Engines
 
-Same pattern as local oracles (`src/oracle/circuit-breaker.ts`), with additional network-aware triggers:
-
-| Trigger | Local (stdio) | Remote (WebSocket) |
-|:--------|:-------------|:-------------------|
-| Process exit non-zero | ✅ | N/A |
-| Timeout | ✅ | ✅ |
-| Invalid JSON output | ✅ | ✅ |
-| Connection lost | N/A | ✅ (counts as failure) |
-| No heartbeat for 90s | N/A | ✅ (counts as failure) |
+Same pattern as local oracles — see [ecp-spec.md §6.3](../spec/ecp-spec.md) for the consolidated circuit breaker spec (including network-aware triggers table merged from this section).
 
 ### Temporal Context for Network Engines
 
@@ -403,7 +406,9 @@ Current agent card (`src/a2a/agent-card.ts`) advertises task-level skills. Enhan
 
 ---
 
-## §6 Trust Degradation Matrix
+## §6 Trust Degradation Matrix (Canonical Source)
+
+> **This is the single source of truth** for the complete trust model. Other documents ([ecp-spec.md](../spec/ecp-spec.md) §4.4, [a2a-protocol.md](../spec/a2a-protocol.md) §4) define their local pieces; this table unifies everything.
 
 The complete trust model across all protocol layers:
 
@@ -495,170 +500,19 @@ Tier 3 — Cross-Language (independent):
 | D7 | A2A verification | New `/a2a/verify` endpoint | Lightweight alternative to full task submission. Same trust degradation. |
 | D8 | Batch verification | Deferred to ECP v2 | Keep v1 simple (one hypothesis per request). Batch adds complexity. |
 | D9 | Confidence model | Scalar [0,1] in v1, belief/plausibility tuple in v2 | DS theory recommends `[Bel, Pl]` intervals but scalar is simpler for initial adoption. See §9.1. |
-| D10 | Multi-oracle combination | Priority-based heuristic (v1); DS combination as v2 research | v1: 5-step deterministic resolution in `conflict-resolver.ts`. v2: Dempster's rule under investigation — see §9.2 for caveats. |
-| D11 | LLM confidence policy | Explicit exclusion from governance | LLM self-confidence poorly calibrated (Kadavath 2022, Xiong 2024). Hard policy, not guideline. See §9.3. |
-| D12 | Evidence integrity | Merkle-chained evidence in v2 | Certificate Transparency pattern for tamper-proof evidence chains. See §9.4. |
+| D10 | Multi-oracle combination | Priority-based heuristic (v1); DS combination as v2 research | v1: 5-step deterministic resolution in `conflict-resolver.ts`. v2: Dempster's rule under investigation — see [ecp-v2-research.md §2](../research/ecp-v2-research.md#2-multi-oracle-aggregation-ds-combination). |
+| D11 | LLM confidence policy | Explicit exclusion from governance | LLM self-confidence poorly calibrated (Kadavath 2022, Xiong 2024). Hard policy, not guideline. See [ecp-v2-research.md §3](../research/ecp-v2-research.md#3-llm-confidence-exclusion-policy). |
+| D12 | Evidence integrity | Merkle-chained evidence in v2 | Certificate Transparency pattern for tamper-proof evidence chains. See [ecp-v2-research.md §4](../research/ecp-v2-research.md#4-merkle-chained-evidence). |
 
 ---
 
 ## §9 Research Directions (ECP v2)
 
-> The following sections describe potential future enhancements. None are committed designs. Current v1 implementation is complete for local oracle coordination; these directions become relevant when ECP Network Transport (PH5.18) is implemented.
-
-### 9.1 Confidence Model Evolution: Scalar → Belief Intervals
-
-**Current (ECP v1):** `confidence: number` — a single scalar in [0, 1].
-
-**Problem:** Scalar confidence conflates two distinct epistemic states:
-- "50% confident" (strong evidence for both true and false)
-- "No information" (no evidence at all)
-
-Both map to `confidence: 0.5`, but they should produce different Orchestrator behavior.
-
-**Solution (ECP v2):** Dempster-Shafer belief/plausibility intervals.
-
-```typescript
-// v1: scalar (current — maintained for backward compatibility)
-confidence: 0.5
-
-// v2: belief interval (additive, optional extension)
-belief_interval?: {
-  belief: number;       // Bel(H) — minimum confidence supported by evidence
-  plausibility: number; // Pl(H) — maximum confidence if all unknowns resolve favorably
-}
-// Uncertainty gap = plausibility - belief
-// Gap = 0 → full evidence (deterministic oracle)
-// Gap = 1 → no evidence at all
-// Gap > 0 → partial evidence → trigger deliberation or escalation
-```
-
-**Migration:** `belief_interval` is optional. Engines that don't provide it: `belief = confidence, plausibility = confidence` (zero uncertainty gap — backward compatible). The scalar `confidence` field is ALWAYS present for v1 consumers.
-
-**Orchestrator behavior with belief intervals:**
-
-| Scenario | Belief | Plausibility | Gap | Action |
-|:---------|-------:|-------------:|----:|:-------|
-| Deterministic (compiler) | 1.0 | 1.0 | 0.0 | Accept immediately |
-| Strong heuristic | 0.85 | 0.90 | 0.05 | Accept with high confidence |
-| Partial evidence | 0.3 | 0.8 | 0.5 | Escalate — high uncertainty gap |
-| No information | 0.0 | 1.0 | 1.0 | Route to different engine |
-| Conflicting evidence | 0.4 | 0.6 | 0.2 | Contradiction resolution |
-
-**Axiom alignment:** A2 (First-Class Uncertainty) — belief intervals make uncertainty *measurable*, not just categorical.
-
-### 9.2 Multi-Oracle Aggregation: Current Heuristic and Future Directions
-
-> **v2 Research Direction** — The current heuristic works well for Vinyan's oracle set. DS combination is one possible future improvement, not a committed design.
-
-**Current (v1, implemented):** `src/gate/conflict-resolver.ts` uses a 5-step deterministic algorithm: (1) domain separation — cross-domain conflicts are both valid, (2) tier priority — deterministic > heuristic > probabilistic (A5), (3) evidence count — more evidence items wins, (4) historical accuracy — oracle with better track record wins, (5) escalation — set `hasContradiction: true` on aggregate result, apply conservative default (failure wins). This priority heuristic is simple, auditable, and sufficient for the current oracle set (5 built-in oracles with clear tier separation).
-
-**Possible v2 improvement:** When 3+ oracles with overlapping domains produce verdicts, a more formal combination rule could strengthen or weaken combined confidence. Dempster's rule of combination is one candidate, with known limitations:
-
-```
-// Dempster's rule for two independent mass functions m1, m2:
-// Combined mass: m12(A) = Σ{B∩C=A} m1(B)·m2(C) / (1 - K)
-// where K = Σ{B∩C=∅} m1(B)·m2(C) is the conflict factor
-//
-// For ECP: each oracle verdict maps to a mass function over
-// the frame {verified, ¬verified, Θ} where Θ = uncertainty.
-// The exact mass assignment from scalar confidence requires
-// a mapping function — see Shafer (1976) for the rigorous formulation.
-```
-
-> **Note:** The implementation should convert each oracle's `confidence` and `type` into a proper mass function before applying Dempster's rule. A naive product of scalar confidences is NOT equivalent to DS combination. This is a **target design for ECP v2** — the current `conflict-resolver.ts` uses priority-based resolution (domain → tier → evidence count → historical accuracy → escalation).
-
-**Practical implementation in Vinyan:**
-
-```typescript
-interface DempsterCombination {
-  /** Combine verdicts from independent oracles using DS rule */
-  combine(verdicts: OracleVerdict[]): {
-    combined_confidence: number;
-    conflict_factor: number;    // K — high K means oracles disagree
-    contributing_engines: string[];
-  };
-}
-
-// Integration point: src/gate/conflict-resolver.ts
-// DS combination runs AFTER tier-based filtering:
-//   1. Group verdicts by tier (deterministic > heuristic > probabilistic)
-//   2. Within each tier, apply Dempster's combination
-//   3. Higher-tier combined result overrides lower-tier
-//   4. If conflict_factor > 0.7 → flag as "contradictory"
-```
-
-**When NOT to use DS combination:**
-- When verdicts are from the same underlying data source (not independent)
-- When one oracle explicitly subsumes another (e.g., type-check includes lint-clean)
-- When an oracle returns `type: "unknown"` (excluded from combination, not treated as evidence)
-
-**Axiom alignment:** A3 (Deterministic Governance) — Dempster's rule is a deterministic mathematical function, no LLM needed. A5 (Tiered Trust) — tier ranking still applies as pre-filter.
-
-**Open questions before adopting DS combination:**
-- Does the current oracle set actually produce enough same-tier overlap to benefit from formal combination?
-- Converting scalar confidence to mass functions requires arbitrary mapping choices — is that more principled than the current heuristic?
-- The 5-step algorithm is fully auditable; DS combination produces a single number that is harder to explain.
-- DS assumes independent sources, but AST and type oracles both read the same file.
-
-### 9.3 LLM Confidence Exclusion Policy
-
-**Research finding:** LLM self-reported confidence has poor calibration. Studies on LLM calibration (e.g., Kadavath et al. 2022 "Language Models (Mostly) Know What They Know"; Xiong et al. 2024 "Can LLMs Express Their Uncertainty?") report high Expected Calibration Error (ECE), indicating that when an LLM expresses high confidence, actual accuracy can be significantly lower.
-
-**Policy (non-negotiable, A3 compliance):**
-
-```
-RULE: LLM-generated confidence values MUST NOT enter the governance path.
-
-Specifically:
-1. If an oracle wraps an LLM (e.g., LLM-as-critic in src/orchestrator/core-loop.ts):
-   - The oracle MUST set confidence based on evidence structure, NOT LLM self-report
-   - confidence = f(evidence_count, evidence_specificity, tool_confirmation)
-   - LLM's self-reported confidence may be logged for calibration research (A7) but never used for routing
-
-2. If an MCP tool returns LLM-generated text with embedded confidence claims:
-   - Ignore all embedded confidence claims
-   - Apply trust-tier confidence cap (probabilistic: 0.7, via bridge: 0.5)
-
-3. Governance decisions (routing level, verdict acceptance, fact promotion):
-   - ONLY use confidence derived from structured evidence + tier caps
-   - The SelfModel's prediction confidence (EMA-based) is valid because it's
-     calibrated against actual outcomes (A7), not LLM self-report
-```
-
-**Implementation touchpoints:**
-
-| File | Current Behavior | Required Change |
-|:-----|:----------------|:---------------|
-| `src/orchestrator/core-loop.ts` | LLM-as-critic verdict | Ensure confidence set by evidence structure, not LLM output |
-| `src/mcp/ecp-translation.ts` | Already caps at trust level | Add explicit `llm_confidence_excluded: true` annotation |
-| `src/gate/quality-score.ts` | Quality dimensions | Document that quality scores derived from evidence, not LLM claims |
-
-**Axiom alignment:** A1 (Epistemic Separation) — LLM generates, different system evaluates. A3 (Deterministic Governance) — governance confidence comes from evidence structure. A5 (Tiered Trust) — LLM is probabilistic tier, capped accordingly.
-
-### 9.4 Merkle-Chained Evidence (ECP v2)
-
-**Current:** `evidence[]` is a flat array. No way to verify that evidence hasn't been tampered with or that the chain is complete.
-
-**Proposed (v2):** Each evidence item includes a hash of the previous item, forming a Merkle chain (Certificate Transparency pattern).
-
-```typescript
-interface MerkleEvidence extends Evidence {
-  /** SHA-256 of the previous evidence item in the chain. Null for first item. */
-  prev_hash: string | null;
-  /** SHA-256 of this evidence item (file + line + snippet + contentHash + prev_hash). */
-  self_hash: string;
-}
-```
-
-**Use cases:**
-- Cross-instance fact sharing (future Phase 5): verify evidence chain integrity across network
-- Audit trail: prove that a fact was derived from specific evidence at a specific time
-- Tamper detection: any modification breaks the hash chain
-
-**Deferred to v2** because current local-only deployment doesn't need tamper-proofing. Becomes critical when ECP Network (PH5.18) enables cross-instance communication.
-
-> **Threat model note:** Merkle evidence addresses integrity, not correctness. A compromised remote instance can generate valid Merkle chains of wrong evidence. A formal threat model should precede this design when ECP Network Transport is implemented.
-
+> Full research content extracted to **[ecp-v2-research.md](../research/ecp-v2-research.md)**.
+>
+> Topics: (1) Belief intervals replacing scalar confidence, (2) Dempster-Shafer multi-oracle combination, (3) LLM confidence exclusion policy, (4) Merkle-chained evidence, (5) Confidence conflation resolution (two-field split).
+>
+> None are committed designs. v1 is complete for local oracle coordination.
 
 
 

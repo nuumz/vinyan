@@ -1,6 +1,6 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-04-02 (Phase 5 implementation complete — PH5.18 HttpTransport, PH5.19 ECP spec RC, PH5.8 I17 guard) | Branch: `feature/main`
+> Generated: 2026-03-29 | Updated: 2026-04-02 (EHD Phase 4 SL Fusion complete — K-based conflict resolution, computeSLAggregate, fusedOpinion wiring, fusedConfidence in quality-score) | Branch: `feature/main`
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -2100,6 +2100,40 @@ A systematic review of the implementation against this design document identifie
 | Added `fleet-evaluator.ts` (not in original file list) | Fleet metrics (Gini coefficient, capability coverage) needed by `phase3-report.ts` for `fleetMetrics` field |
 | `TaskResult.status` includes `"uncertain"` | Required by IG-4 (A2 abstention). Doc line 1312 specifies ECP `type: 'unknown'` response — `"uncertain"` is the TaskResult equivalent |
 | `TaskResult.notes?: string[]` field added | Carries audit notes (probation-shadow-only, uncertain) without overloading existing fields |
+
+---
+
+### EHD — Epistemic Humility Architecture ✅ Phases 0-4 Complete
+
+> **Source of truth:** `docs/research/ehd-implementation-design.md`
+> **Status:** Phases 0-4 fully wired. Phase 5 (ECP wire format) is design-only — implement when ECP v2 is prioritized.
+> **Test count:** 1228 pass, 0 fail | **Type errors:** 0
+
+EHD is a cross-cutting architectural improvement (not a standalone phase). It addresses four confidence laundering failure modes identified in the research doc: scalar confidence compounding, absence-as-certainty, circular accuracy, and compositional uncertainty collapse.
+
+#### EHD Phase Status
+
+| Phase | Scope | Key Files | Status |
+|:------|:------|:----------|:------:|
+| **0** | Type system: `SubjectiveOpinion`, `FusionInput`, `fromScalar`, `fuseAll`, `computeConflictReport`, `temporalDecay`, `clampOpinionByTier` | `src/core/subjective-opinion.ts` | ✅ Done |
+| **1** | Oracle abstention: `OracleAbstention` type, gate partitioning, `isAbstention()` | `src/core/types.ts`, `src/gate/gate.ts:277-286` | ✅ Done |
+| **2** | Pipeline confidence: `PipelineConfidence` composite wired in core-loop | `src/orchestrator/core-loop.ts` | ✅ Done |
+| **3** | Epistemic decision engine: 4-state `EpistemicGateDecision`, `OracleAccuracyStore`, tier-clamped confidence | `src/gate/epistemic-decision.ts`, `src/db/oracle-accuracy-store.ts` | ✅ Done |
+| **4.8** | K-based conflict resolution: replaced Steps 2-4 (tier/evidence/accuracy) with Josang K → fuse or escalate. Added `conflictK`, `fusedProbability` to `ConflictResolution`. `OracleAccuracyRecord` deprecated. | `src/gate/conflict-resolver.ts` | ✅ Done |
+| **4.9** | SL aggregate + gate wiring: `computeSLAggregate()` using `fuseAll()` → `projectedProbability()`. Direction-aware `FusionInput` build. `fusedOpinion?: SubjectiveOpinion` on `GateVerdict`. | `src/gate/epistemic-decision.ts`, `src/gate/gate.ts` | ✅ Done |
+| **4.10** | Quality score uses fused confidence: `fusedConfidence?: number` (7th param) overrides `architecturalCompliance` with SL projected probability. | `src/gate/quality-score.ts` | ✅ Done |
+| **5.1** | `opinion?: SubjectiveOpinion` field in `EcpDataPartSchema` | `src/a2a/ecp-data-part.ts` | ❌ Design only |
+| **5.2** | A2A ingestion drift check: `abs(confidence - projectedProbability(opinion)) < 0.05` | `src/a2a/*-transport.ts` | ❌ Design only |
+| **5.3** | Remote opinion uncertainty floor: `clampOpinionByTier` with `u ≥ 0.15` for A2A opinions | A2A transport layer | ❌ Design only |
+| **5.4** | `pipelineConfidenceComposite` in ECP message | `EcpDataPart` | ❌ Design only |
+| **5.5** | Base rate calibration: EMA over ≥30 verdicts per oracle | oracle registry / `baseRate` | ❌ Research deferred |
+
+#### Key Design Decisions (reference for Phase 5)
+
+- **`verdictToOpinion()` direction invariant:** `verified=true` → `fromScalar(confidence)` (belief); `verified=false` → `fromScalar(1 - confidence)` (disbelief). Proposition is always "code is correct."
+- **Behavioral change (Phase 4.8):** Dogmatic scalar opinions (u=0, confidence=1.0) produce K=1.0 → always Step 5 (contradictory). Resolution only succeeds at Step 2 when K ≤ 0.5, which requires native `opinion` fields with u > 0. This is more conservative and epistemically correct. Improves automatically as oracles adopt `opinion` in their verdicts.
+- **`deps` proxy:** `verdict.evidence.map(e => e.file)` used as `FusionInput.deps` (what the oracle actually examined = its source dependencies). Jaccard overlap on these drives cumulative vs. averaging fusion selection.
+- **Harmonic mean fallback:** `computeAggregateConfidence()` retained as fallback when `computeSLAggregate()` returns NaN (no oracles ran).
 
 ---
 

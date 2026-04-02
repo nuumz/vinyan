@@ -4,6 +4,17 @@
 > **Source of truth:** [concept.md](../foundation/concept.md) §2, [tdd.md](tdd.md), [a2a-protocol.md](a2a-protocol.md)
 > **Normative schemas:** `src/oracle/protocol.ts` (Zod — exports `HypothesisTupleSchema`, `EvidenceSchema`, `QualityScoreSchema`, `OracleVerdictSchema`; `DeliberationRequestSchema` and `TemporalContextSchema` are defined but not yet exported), `src/core/types.ts` (TypeScript interfaces)
 
+### Document Boundary
+
+| This doc owns | Cross-ref for |
+|:-------------|:--------------|
+| ECP wire format, message schemas, epistemic semantics | Full trust degradation matrix (all layers) → [protocol-architecture.md §6](../architecture/protocol-architecture.md) |
+| Transport bindings (stdio, WebSocket, HTTP) | MCP/A2A bridge **implementation plans** (tool schemas, wiring) → [protocol-architecture.md §4-5](../architecture/protocol-architecture.md) |
+| Reasoning Engine lifecycle, registration, circuit breaker | A2A wire protocol & message types → [a2a-protocol.md](a2a-protocol.md) |
+| Orchestrator protocol (routing, aggregation, deliberation) | AWP worker IPC & delegation → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md) |
+| Security model (identity, signing, auth, scopes) | ECP v2 research (belief intervals, DS combination, Merkle) → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| Conformance levels (L0-L3) | |
+
 ---
 
 ## §1 Abstract & Motivation
@@ -271,25 +282,11 @@ Confidence is a number in [0, 1] representing the engine's certainty in its verd
 
 **Confidence is constrained by trust tier** (§4.4). An engine declared as `tier: "heuristic"` cannot claim `confidence: 1.0`.
 
-#### Belief Intervals (ECP v2 Extension)
+#### Belief Intervals (ECP v2 Extension — Preview)
 
-Scalar confidence conflates "50% confident with strong evidence for both sides" and "no information at all" — both map to 0.5. ECP v2 introduces optional Dempster-Shafer belief/plausibility intervals:
+Scalar confidence conflates "strong evidence for both sides" and "no information" — both map to 0.5. ECP v2 will introduce optional `belief_interval: { belief, plausibility }` to distinguish these states. When absent, consumers assume `belief = confidence, plausibility = confidence` (zero uncertainty gap). The scalar `confidence` field is ALWAYS present for backward compatibility.
 
-```typescript
-// Optional extension — present when engine provides richer epistemic information
-interface BeliefInterval {
-  /** Bel(H) — minimum confidence supported by direct evidence. */
-  belief: number;
-  /** Pl(H) — maximum confidence if all unknown factors resolve favorably. */
-  plausibility: number;
-}
-// Uncertainty gap = plausibility - belief
-// Gap = 0  → deterministic (full evidence)
-// Gap = 1  → no evidence at all
-// Gap > 0  → partial evidence → Orchestrator should consider escalation
-```
-
-When `belief_interval` is absent, consumers assume `belief = confidence, plausibility = confidence` (zero uncertainty gap). The scalar `confidence` field is ALWAYS present for backward compatibility.
+> **Full design:** [ecp-v2-research.md §1](../research/ecp-v2-research.md#1-confidence-model-evolution-scalar--belief-intervals) — includes migration path, Orchestrator behavior matrix, and axiom alignment.
 
 **LLM Confidence Exclusion Policy:** LLM self-reported confidence is poorly calibrated (see Kadavath et al. 2022, Xiong et al. 2024 for ECE measurements) and MUST NOT be used for governance decisions (A3). If an oracle wraps an LLM, it MUST derive confidence from evidence structure (count, specificity, tool confirmation), NOT the LLM's self-assessed certainty. LLM self-confidence may be logged for A7 calibration research only.
 
@@ -322,6 +319,8 @@ Trust tiers classify the reliability of evidence sources. Higher tiers are prefe
 > **Implementation note:** The quality weights (1.0/0.7/0.4/0.2) are implemented in `src/gate/quality-score.ts` as `TIER_WEIGHTS` for weighted quality score aggregation. The confidence caps (1.0/0.9/0.7/0.4) are implemented in `src/oracle/tier-clamp.ts` as `TIER_CAPS`, applied at verdict intake via `clampByTier()` at two points: `src/oracle/runner.ts:112` (per-oracle run) and `src/gate/gate.ts:254` (gate pipeline). Transport-level caps (stdio=1.0, websocket=0.95, http=0.7) are also defined in `tier-clamp.ts` as `TRANSPORT_CAPS` via `clampByTransport()`. Tier priority is enforced in `src/gate/conflict-resolver.ts` for conflict resolution.
 
 **Tier is declared at engine registration** and cannot be overridden per-verdict. An engine's `confidence` value is clamped to its tier's cap by the Orchestrator at verdict intake, before aggregation or storage. See `src/oracle/tier-clamp.ts`.
+
+> **Full trust matrix:** For the complete cross-layer trust degradation table (local, remote, MCP, A2A — with code references), see [protocol-architecture.md §6](../architecture/protocol-architecture.md) — the canonical source.
 
 ### 4.5 Falsifiability
 
@@ -543,6 +542,16 @@ Configuration: `failureThreshold` (default: 3), `resetTimeout_ms` (default: 60,0
 
 Reference: `src/oracle/circuit-breaker.ts`
 
+**Network-aware triggers** (remote engines, from [protocol-architecture.md §3](../architecture/protocol-architecture.md)):
+
+| Trigger | Local (stdio) | Remote (WebSocket) |
+|:--------|:-------------|:-------------------|
+| Process exit non-zero | ✅ | N/A |
+| Timeout | ✅ | ✅ |
+| Invalid JSON output | ✅ | ✅ |
+| Connection lost | N/A | ✅ (counts as failure) |
+| No heartbeat for 90s | N/A | ✅ (counts as failure) |
+
 **Health check protocol** (network engines):
 - `ecp/heartbeat` carries: `{ status: "healthy" | "degraded" | "overloaded", queue_depth: number, error_rate: number }`
 - Orchestrator adjusts routing weight based on health. Overloaded engines receive fewer hypotheses.
@@ -607,23 +616,12 @@ Group verdicts by trust tier. The current implementation in `src/gate/conflict-r
 - **Step 4: Historical accuracy** — Oracle with better track record (correct/total ratio) wins.
 - **Step 5: Escalate** — If resolution fails, set `hasContradiction: true` on the aggregate result and apply conservative default (failure wins). The downstream gate pipeline uses this flag to produce `type: "contradictory"` on the combined verdict.
 
-**Phase 2: Dempster-Shafer Combination (within same tier)**
-
-When multiple independent oracles within the same tier produce verdicts, combine using Dempster's rule:
-
-```
-// Dempster's rule for two independent mass functions m1, m2:
-// Combined mass: m12(A) = Σ{B∩C=A} m1(B)·m2(C) / (1 - K)
-// K = conflict factor = Σ{B∩C=∅} m1(B)·m2(C)
-```
-
-> **Implementation note:** The full DS combination rule requires converting scalar confidence to a mass function over `{verified, ¬verified, Θ}` where `Θ` represents uncertainty. The exact implementation should follow standard DS theory for the ternary frame of discernment — the simplified binary product formula `(c1 × c2) / (1 - K)` is an approximation and should not be used directly. See Shafer (1976) "A Mathematical Theory of Evidence" for the rigorous formulation. DS combination is a **target design for ECP v2** — the current `conflict-resolver.ts` uses the Phase 1 priority-based resolution only.
-
-**Combination rules:**
+**Same-tier combination rules (v1):**
 - Oracles returning `type: "unknown"` are **excluded** from combination (no evidence to combine).
-- `conflict_factor > 0.7` triggers `type: "contradictory"` on the combined verdict.
-- Oracles that share the same underlying data source (e.g., two linters reading the same file) are **not independent** — only the higher-tier result is used.
-- DS combination is applied only within the same tier group; cross-tier aggregation uses Phase 1 priority rules.
+- Oracles sharing the same underlying data source (e.g., two linters reading the same file) are **not independent** — only the higher-tier result is used.
+- If resolution fails after 5 steps, `hasContradiction: true` → conservative default (failure wins).
+
+> **ECP v2 direction:** Dempster-Shafer formal combination for same-tier verdicts. See [ecp-v2-research.md §2](../research/ecp-v2-research.md#2-multi-oracle-aggregation-ds-combination) for the full design, caveats, and open questions.
 
 Reference: `src/gate/conflict-resolver.ts`
 
@@ -737,64 +735,33 @@ If no common version exists, the connection is rejected with error code `-32001`
 
 ECP is the native protocol. External protocols are bridged with trust degradation.
 
-### 10.1 MCP Bridge
+> **Implementation plans** (tool schemas, wiring, file changes): [protocol-architecture.md §4-5](../architecture/protocol-architecture.md).
+> **Full trust degradation matrix**: [protocol-architecture.md §6](../architecture/protocol-architecture.md) — canonical source for all cap values.
 
-MCP (Model Context Protocol) is used when external LLM agents consume Vinyan as a tool.
+### 10.1 MCP Bridge — Translation Semantics
 
-**Outbound (Vinyan as MCP Server):**
+MCP is used when external LLM agents consume Vinyan as a tool. Reference: `src/mcp/ecp-translation.ts` — `ecpToMcp()`, `mcpToEcp()`.
 
-| MCP Tool | ECP Operation |
-|:---------|:-------------|
-| `vinyan_ast_verify` | `ecp/verify` → ast oracle |
-| `vinyan_type_check` | `ecp/verify` → type oracle |
-| `vinyan_blast_radius` | `ecp/verify` → dep oracle |
-| `vinyan_query_facts` | World Graph fact query |
-| `vinyan_run_gate` | Full verification pipeline (risk route → multi-oracle → aggregate) |
-| `vinyan_risk_assess` | Risk score computation |
-| `vinyan_query_evidence` | Evidence chain retrieval for a fact |
-| `vinyan_list_oracles` | Discover available engines + capabilities |
+**Outbound (`ecpToMcp` — Vinyan → external agent):**
+- `type: "unknown"` → `{ verified: null, reason: "insufficient evidence" }` (preserves A2 across bridge)
+- `verified: true` → text content with full JSON payload
+- `verified: false` → text content with reason, `isError: true`
 
-**Translation rules:**
-- `OracleVerdict` → `MCPToolResult`:
-  - `type: "unknown"` → `{ verified: null, reason: "insufficient evidence" }` (preserves A2 across bridge)
-  - `verified: true` → text content with full JSON payload
-  - `verified: false` → text content with reason, `isError: true`
+**Inbound (`mcpToEcp` — external → Vinyan):**
+- `type` forced to `"uncertain"` — external sources cannot claim `"known"` (A5)
+- Confidence capped by trust level: `local`=0.7, `network`=0.5, `remote`=0.3
 
-**Inbound (Vinyan as MCP Client):**
+### 10.2 A2A Bridge — Translation Semantics
 
-All MCP tool results entering Vinyan are treated as **probabilistic-tier evidence**:
-- `type` is forced to `"uncertain"` — external sources cannot claim `"known"` (A5)
-- Confidence capped by trust level:
+A2A is used for peer agent interaction. Reference: `src/a2a/bridge.ts`, `src/a2a/confidence-injector.ts`.
 
-| Trust Level | Confidence Cap |
-|:------------|---------------:|
-| `trusted` / `local` | 0.7 |
-| `semi-trusted` / `network` | 0.5 |
-| `untrusted` / `remote` | 0.3 |
-
-Reference: `src/mcp/ecp-translation.ts` — `ecpToMcp()`, `mcpToEcp()`
-
-### 10.2 A2A Bridge
-
-A2A (Agent-to-Agent) is used when external agents interact with Vinyan as a peer.
-
-**Task-level:**
-- A2A `tasks/send` → `TaskInput` with `source: "a2a"` → Orchestrator core loop → `TaskResult` → A2A artifact
-- Confidence cap: 0.5 for all A2A-sourced results (I13)
-
-**Verification-level (proposed):**
-- A2A agents should be able to send hypotheses for verification without full task submission.
-- `POST /a2a/verify` → A2A hypothesis → ECP `ecp/verify` → verdict → A2A response
-- Same confidence cap and trust degradation as task-level.
-
-Reference: `src/a2a/bridge.ts`, `src/a2a/confidence-injector.ts`
+- Task-level: A2A `tasks/send` → `TaskInput{source:"a2a"}` → core loop → A2A artifact. Cap: 0.5 (I13).
+- Verification-level (proposed): `POST /a2a/verify` for lightweight hypothesis verification without full task.
+- Wire protocol details: [a2a-protocol.md](a2a-protocol.md).
 
 ### 10.3 LSP Bridge (Future)
 
-Language Server Protocol diagnostics can serve as evidence sources:
-- LSP diagnostics → ECP evidence (file, line, snippet from diagnostic message)
-- ECP verdicts → LSP diagnostics (push verification results to editors)
-- Trust tier: `heuristic` (LSP diagnostics are rule-based, not provably correct)
+- LSP diagnostics → ECP evidence (file, line, snippet). Trust tier: `heuristic`.
 
 ---
 

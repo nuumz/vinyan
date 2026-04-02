@@ -265,6 +265,11 @@ function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
 /**
  * Start reading raw keypresses from stdin.
  * Returns a cleanup function.
+ *
+ * ESC ambiguity: raw mode may split arrow/escape sequences across data events
+ * (e.g. \x1b arrives first, then [A). We buffer a lone \x1b for 50ms —
+ * if the next data event arrives within that window we merge and re-parse;
+ * if the timeout fires first we dispatch it as a real ESC keypress.
  */
 export function startKeyListener(onKey: (key: KeypressInfo) => void): () => void {
   if (!process.stdin.isTTY) return () => {};
@@ -272,13 +277,43 @@ export function startKeyListener(onKey: (key: KeypressInfo) => void): () => void
   process.stdin.setRawMode(true);
   process.stdin.resume();
 
-  const handler = (data: Buffer) => {
+  let escTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const dispatch = (data: Buffer) => {
     onKey(parseKeypress(data));
+  };
+
+  const handler = (data: Buffer) => {
+    // If we have a pending ESC, check if this continues the sequence
+    if (escTimer !== null) {
+      clearTimeout(escTimer);
+      escTimer = null;
+      // Merge: \x1b + new bytes = full escape sequence
+      const merged = Buffer.concat([Buffer.from('\x1b'), data]);
+      dispatch(merged);
+      return;
+    }
+
+    // Lone \x1b — hold for 50ms to detect escape sequences split across events
+    const seq = data.toString('utf-8');
+    if (seq === '\x1b') {
+      escTimer = setTimeout(() => {
+        escTimer = null;
+        dispatch(data);
+      }, 50);
+      return;
+    }
+
+    dispatch(data);
   };
 
   process.stdin.on('data', handler);
 
   return () => {
+    if (escTimer !== null) {
+      clearTimeout(escTimer);
+      escTimer = null;
+    }
     process.stdin.removeListener('data', handler);
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);

@@ -30,7 +30,7 @@ export function renderDashboard(state: TUIState): string {
   const { termWidth } = state;
   const leftWidth = Math.floor(termWidth * 0.42);
   const rightWidth = termWidth - leftWidth - 1;
-  const panelHeight = Math.floor((state.termHeight - 4) / 2); // -4 for tab bar + status bar
+  const panelHeight = Math.floor((state.termHeight - 4) / 2); // header + spacing (1/2) + tab bar + hints
 
   const healthPanel = renderHealthPanel(state, leftWidth, panelHeight, state.focusedPanel === 0);
   const metricsPanel = renderMetricsPanel(state, rightWidth, panelHeight, state.focusedPanel === 1);

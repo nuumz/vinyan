@@ -24,7 +24,7 @@ export function renderSystem(state: TUIState): string {
   const { termWidth, termHeight } = state;
   const leftWidth = Math.floor(termWidth * 0.55);
   const rightWidth = termWidth - leftWidth - 1;
-  const panelHeight = termHeight - 4; // header + tab bar + notification + hints
+  const panelHeight = termHeight - 4; // header + spacing (1/2) + tab bar + hints
 
   const healthPanel = renderHealthPanel(state, leftWidth, panelHeight, state.focusedPanel === 0);
   const metricsPanel = renderMetricsPanel(state, rightWidth, panelHeight, state.focusedPanel === 1);

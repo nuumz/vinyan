@@ -562,6 +562,7 @@ export class App {
 
     // Row 1: Header bar — health + counts + clock
     lines.push(headerBar(state, termWidth));
+    lines.push('');
 
     // Row 2: Tab bar with badges
     lines.push(tabBarWithBadges(TABS, state.activeTab, state.tabBadges, termWidth));
@@ -584,8 +585,9 @@ export class App {
     }
     lines.push(viewContent);
 
-    // Row N-1: Notification bar — pending actions / toast feedback
-    lines.push(notificationBar(state, termWidth));
+    // Row N-1: Notification bar — only rendered when there's an active toast or pending notification
+    const notif = notificationBar(state, termWidth);
+    if (notif) lines.push(notif);
 
     // Row N: Context hints — dynamic keybinding hints (+ command buffer in command/filter mode)
     const hints = getContextHints(state);

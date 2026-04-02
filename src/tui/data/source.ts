@@ -36,6 +36,7 @@ export class EmbeddedDataSource implements DataSource {
   private unsubscribers: Array<() => void> = [];
   private metricsTimer: ReturnType<typeof setInterval> | null = null;
   private clockTimer: ReturnType<typeof setInterval> | null = null;
+  private metricsRunning = false;
   constructor(state: TUIState, orchestrator: Orchestrator) {
     this.state = state;
     this.orchestrator = orchestrator;
@@ -46,7 +47,8 @@ export class EmbeddedDataSource implements DataSource {
     this.subscribeToEvents();
     this.startMetricsPolling();
     this.startClockTick();
-    this.refreshMetrics();
+    // Defer initial metrics load so screen can render first frame immediately
+    setTimeout(() => this.refreshMetricsAsync(), 50);
   }
 
   stop(): void {
@@ -512,7 +514,8 @@ export class EmbeddedDataSource implements DataSource {
   // ── Metrics Polling ─────────────────────────────────────────────
 
   private startMetricsPolling(): void {
-    this.metricsTimer = setInterval(() => this.refreshMetrics(), 5000);
+    // Poll every 10s (was 5s) — metrics are expensive (20+ DB queries)
+    this.metricsTimer = setInterval(() => this.refreshMetricsAsync(), 10_000);
   }
 
   /** Tick every 1s to keep clock and uptime fresh. */
@@ -522,31 +525,40 @@ export class EmbeddedDataSource implements DataSource {
     }, 1000);
   }
 
-  private refreshMetrics(): void {
-    try {
-      const deps: MetricsDeps = {
-        traceStore: this.orchestrator.traceStore!,
-        ruleStore: this.orchestrator.ruleStore,
-        skillStore: this.orchestrator.skillStore,
-        patternStore: this.orchestrator.patternStore,
-        shadowStore: this.orchestrator.shadowStore,
-        workerStore: this.orchestrator.workerStore,
-      };
-      if (deps.traceStore) {
-        this.state.metrics = getSystemMetrics(deps);
+  /** Non-blocking metrics refresh. Yields to event loop between DB reads. */
+  private refreshMetricsAsync(): void {
+    // Guard: skip if previous refresh is still running
+    if (this.metricsRunning) return;
+    this.metricsRunning = true;
+
+    // Use setTimeout(0) to avoid blocking the render/input event loop
+    setTimeout(() => {
+      try {
+        const deps: MetricsDeps = {
+          traceStore: this.orchestrator.traceStore!,
+          ruleStore: this.orchestrator.ruleStore,
+          skillStore: this.orchestrator.skillStore,
+          patternStore: this.orchestrator.patternStore,
+          shadowStore: this.orchestrator.shadowStore,
+          workerStore: this.orchestrator.workerStore,
+        };
+        if (deps.traceStore) {
+          this.state.metrics = getSystemMetrics(deps);
+        }
+      } catch {
+        // Best-effort
       }
-    } catch {
-      // Best-effort
-    }
 
-    try {
-      this.state.health = getHealthCheck({
-        shadowQueueDepth: this.state.metrics?.shadow.queueDepth ?? 0,
-      });
-    } catch {
-      // Best-effort
-    }
+      try {
+        this.state.health = getHealthCheck({
+          shadowQueueDepth: this.state.metrics?.shadow.queueDepth ?? 0,
+        });
+      } catch {
+        // Best-effort
+      }
 
-    this.state.dirty = true;
+      this.state.dirty = true;
+      this.metricsRunning = false;
+    }, 0);
   }
 }

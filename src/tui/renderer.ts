@@ -231,8 +231,10 @@ export function leaveAltScreen(): void {
 
 /** Write a full frame to stdout. */
 export function paintFrame(content: string): void {
-  // Clear line after each row to prevent ghost text from previous frame
-  process.stdout.write(ANSI.cursorHome + content + ANSI.clearToEnd);
+  // Insert \x1b[K (erase to end of line) after every newline so leftover
+  // characters from longer previous-frame lines are cleared.
+  const cleared = content.replace(/\n/g, '\x1b[K\n');
+  process.stdout.write(ANSI.cursorHome + cleared + ANSI.clearToEnd);
 }
 
 // ── Panel / Box with focus indicator ────────────────────────────────
@@ -393,7 +395,7 @@ export function notificationBar(state: TUIState, width: number): string {
 
   // Pending notifications
   const pending = state.notifications.filter((n) => !n.dismissed);
-  if (pending.length === 0) return ' '.repeat(width);
+  if (pending.length === 0) return '';
 
   const idx = Math.min(state.notificationIndex, pending.length - 1);
   const notif = pending[idx]!;

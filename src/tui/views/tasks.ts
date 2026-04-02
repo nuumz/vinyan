@@ -10,7 +10,7 @@ export function renderTasks(state: TUIState): string {
   const { termWidth, termHeight } = state;
   const leftWidth = Math.floor(termWidth * 0.55);
   const rightWidth = termWidth - leftWidth - 1;
-  const panelHeight = termHeight - 4; // header + tab bar + notification + hints
+  const panelHeight = termHeight - 4; // header + spacing (1/2) + tab bar + hints
 
   const listPanel = renderTaskList(state, leftWidth, panelHeight, state.focusedPanel === 0);
   const detailPanel = renderTaskDetail(state, rightWidth, panelHeight, state.focusedPanel === 1);

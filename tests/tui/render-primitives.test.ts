@@ -288,11 +288,10 @@ describe('headerBar', () => {
 });
 
 describe('notificationBar', () => {
-  test('returns blank line when no notifications or toasts', () => {
+  test('returns empty string when no notifications or toasts', () => {
     const state = createInitialState();
     const result = notificationBar(state, 80);
-    expect(result.trim()).toBe('');
-    expect(result.length).toBe(80);
+    expect(result).toBe('');
   });
 
   test('renders toast when active', () => {

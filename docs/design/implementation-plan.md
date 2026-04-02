@@ -1,6 +1,7 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-04-02 (Phase 5 Self-Hosted ENS complete — all PH5.0-PH5.19 implemented, VS Code extension, full Instance Coordinator, causal graph, hierarchical skills) | Branch: `feature/main`
+> Generated: 2026-03-29 | Updated: 2026-04-02 | Branch: `feature/main`
+> **Current state:** Phases 0-5 complete (1293 tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). Next: EHD Phase 5 (ECP v2 wire format) or new capability.
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -2107,7 +2108,7 @@ A systematic review of the implementation against this design document identifie
 
 > **Source of truth:** `docs/research/ehd-implementation-design.md`
 > **Status:** Phases 0-4 fully wired. Phase 5 (ECP wire format) is design-only — implement when ECP v2 is prioritized.
-> **Test count:** 1228 pass, 0 fail | **Type errors:** 0
+> **Test count:** 1293 pass, 0 fail | **Type errors:** 0
 
 EHD is a cross-cutting architectural improvement (not a standalone phase). It addresses four confidence laundering failure modes identified in the research doc: scalar confidence compounding, absence-as-certainty, circular accuracy, and compositional uncertainty collapse.
 
@@ -2137,9 +2138,9 @@ EHD is a cross-cutting architectural improvement (not a standalone phase). It ad
 
 ---
 
-### Phase 5 — Self-Hosted ENS
+### Phase 5 — Self-Hosted ENS ✅ Complete
 
-> **Status:** Final design. Prerequisite: Phase 4 complete + acceptance criteria met.
+> **Status:** ✅ Fully implemented. All PH5.0-PH5.19 complete. 1293 tests pass, `tsc --noEmit` clean.
 > **Type:** Mixed engineering (Pillar 1, Pillar 3), research (Pillar 2), and infrastructure (cross-cutting).
 
 #### Vision
@@ -2225,7 +2226,7 @@ Phase 5 Architecture Extension:
 | PH5.18 | ECP HTTP Transport | ✅ Done | `HttpTransport` in `src/a2a/http-transport.ts`; `POST /ecp/v1/verify` endpoint |
 | PH5.19 | ECP Spec Publication | ✅ Done | `ecp-spec.md` → Status: Release Candidate; conformance suite L0–L3 |
 
-**Test count:** ~1400 (bun) + 24 (pytest) | **Type errors:** 0 | **All Phase 5 components complete**
+**Test count:** 1293 (bun) + 24 (pytest) | **Type errors:** 0 | **All Phase 5 components complete**
 
 ---
 

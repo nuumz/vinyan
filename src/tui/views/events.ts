@@ -12,7 +12,7 @@ export function renderEvents(state: TUIState): string {
   const { termWidth, termHeight } = state;
   const leftWidth = Math.floor(termWidth * 0.55);
   const rightWidth = termWidth - leftWidth - 1;
-  const panelHeight = termHeight - 4; // header + tab bar + notification + hints
+  const panelHeight = termHeight - 4; // header + spacing (1/2) + tab bar + hints
 
   const sorted = sortEvents(state.eventLog, state.sort.events as SortConfig<EventSortField> | undefined);
   const listPanel = renderEventList(state, sorted, leftWidth, panelHeight, state.focusedPanel === 0);

@@ -14,7 +14,7 @@ import type { PeerDisplayState, PeerSortField, SortConfig, TUIState } from '../t
 
 export function renderPeers(state: TUIState): string {
   const { termWidth, termHeight } = state;
-  const viewHeight = termHeight - 4; // account for header/tab/status/hints bars
+  const viewHeight = termHeight - 4; // header + spacing (1/2) + tab bar + hints
   const leftW = Math.floor(termWidth * 0.5);
   const rightW = termWidth - leftW - 1; // 1 gap
 

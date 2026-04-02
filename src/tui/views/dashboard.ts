@@ -19,9 +19,9 @@ import {
   formatTimeShort,
   gateDot,
   gauge,
-  padEnd,
   panel,
   sideBySide,
+  sparkline,
   truncate,
 } from '../renderer.ts';
 import type { TUIState } from '../types.ts';
@@ -40,7 +40,7 @@ export function renderDashboard(state: TUIState): string {
   const topRow = sideBySide(healthPanel, metricsPanel);
   const bottomRow = sideBySide(fleetPanel, eventPanel);
 
-  return topRow + '\n' + bottomRow;
+  return `${topRow}\n${bottomRow}`;
 }
 
 export const DASHBOARD_PANEL_COUNT = 4;
@@ -101,6 +101,9 @@ function renderMetricsPanel(state: TUIState, width: number, height: number, focu
 
   lines.push(`Traces: ${bold(String(m.traces.total))}  Task Types: ${m.traces.distinctTaskTypes}`);
   lines.push(`Success: ${gauge(m.traces.successRate, barW, `${(m.traces.successRate * 100).toFixed(0)}%`)}`);
+  if (state.successHistory.length > 1) {
+    lines.push(`History: ${sparkline(state.successHistory, Math.min(barW, state.successHistory.length))}`);
+  }
   lines.push(`Quality: ${gauge(m.traces.avgQualityComposite, barW, m.traces.avgQualityComposite.toFixed(2))}`);
   lines.push('');
 
@@ -140,14 +143,14 @@ function renderFleetPanel(state: TUIState, width: number, height: number, focuse
   lines.push(
     ` ${color(String(m.rules.active), ANSI.green)} active` +
       `  ${color(String(m.rules.probation), ANSI.yellow)} probation` +
-      `  ${dim(String(m.rules.retired) + ' retired')}`,
+      `  ${dim(`${String(m.rules.retired)} retired`)}`,
   );
 
   lines.push(bold('Skills:'));
   lines.push(
     ` ${color(String(m.skills.active), ANSI.green)} active` +
       `  ${color(String(m.skills.probation), ANSI.yellow)} probation` +
-      `  ${dim(String(m.skills.demoted) + ' demoted')}`,
+      `  ${dim(`${String(m.skills.demoted)} demoted`)}`,
   );
   lines.push('');
 

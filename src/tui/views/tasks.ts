@@ -1,105 +1,129 @@
 /**
- * Tasks View — Tab 2: Task list + detail + pipeline progress.
- *
- * Layout:
- *   ┌─ Active Tasks (list) ────────────────────────────────┐
- *   │ ID        Goal              Level  Status  Quality    │
- *   └─────────────────────────────────────────────────────┘
- *   ┌─ Task Detail ───────────────────────────────────────-┐
- *   │ Pipeline: [Perceive ✓] [Predict ✓] [Plan ▸] ...     │
- *   │ Oracle Verdicts: ast PASS, type PASS, dep FAIL       │
- *   └─────────────────────────────────────────────────────-┘
+ * Tasks View — Tab 1: Task list (left) + task detail (right).
+ * Two-pane left-right layout with compact pipeline notation.
  */
 
-import {
-  ANSI,
-  bold,
-  color,
-  dim,
-  formatDuration,
-  padEnd,
-  panel,
-  sideBySide,
-  statusBadge,
-  truncate,
-} from '../renderer.ts';
-import type { PipelineStep, PipelineStepStatus, TaskDisplayState, TUIState } from '../types.ts';
+import { ANSI, bold, color, compactPipeline, confidenceGauge, dim, formatDuration, padEnd, panel, sideBySide, truncate } from '../renderer.ts';
+import type { PipelineStep, PipelineStepStatus, SortField, TaskDisplayState, TUIState } from '../types.ts';
 
 export function renderTasks(state: TUIState): string {
   const { termWidth, termHeight } = state;
-  const listHeight = Math.min(12, Math.floor(termHeight * 0.35));
-  const detailHeight = termHeight - listHeight - 4; // tab bar + status
+  const leftWidth = Math.floor(termWidth * 0.55);
+  const rightWidth = termWidth - leftWidth - 1;
+  const panelHeight = termHeight - 4; // header + tab bar + notification + hints
 
-  const listPanel = renderTaskList(state, termWidth, listHeight, state.focusedPanel === 0);
-  const detailPanel = renderTaskDetail(state, termWidth, detailHeight, state.focusedPanel === 1);
+  const listPanel = renderTaskList(state, leftWidth, panelHeight, state.focusedPanel === 0);
+  const detailPanel = renderTaskDetail(state, rightWidth, panelHeight, state.focusedPanel === 1);
 
-  return listPanel + '\n' + detailPanel;
+  return sideBySide(listPanel, detailPanel);
 }
 
 export const TASKS_PANEL_COUNT = 2;
 
-// ── Task List ───────────────────────────────────────────────────────
+// ── Status Icons ────────────────────────────────────────────────────
+
+function statusIcon(status: TaskDisplayState['status']): string {
+  switch (status) {
+    case 'running':
+      return color('●', ANSI.blue);
+    case 'completed':
+      return color('✓', ANSI.green);
+    case 'failed':
+      return color('✗', ANSI.red);
+    case 'escalated':
+      return color('↑', ANSI.magenta);
+    case 'uncertain':
+      return color('?', ANSI.yellow);
+    case 'approval_required':
+      return color('⚠', ANSI.bold, ANSI.yellow);
+  }
+}
+
+// ── Sort ────────────────────────────────────────────────────────────
+
+const STATUS_PRIORITY: Record<string, number> = {
+  approval_required: 0,
+  running: 1,
+  uncertain: 2,
+  completed: 3,
+  failed: 4,
+  escalated: 5,
+};
+
+function sortTasks(tasks: TaskDisplayState[], state: TUIState): TaskDisplayState[] {
+  const sortConfig = state.sort.tasks;
+  const field = sortConfig?.field ?? 'startedAt';
+  const dir = sortConfig?.direction ?? 'desc';
+  const mult = dir === 'desc' ? -1 : 1;
+
+  return [...tasks].sort((a, b) => {
+    switch (field) {
+      case 'status':
+        return mult * ((STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9));
+      case 'routingLevel':
+        return mult * (a.routingLevel - b.routingLevel);
+      case 'quality':
+        return mult * ((a.qualityScore ?? 0) - (b.qualityScore ?? 0));
+      case 'startedAt':
+      default:
+        return mult * (a.startedAt - b.startedAt);
+    }
+  });
+}
+
+// ── Task List (Left Pane) ───────────────────────────────────────────
 
 function renderTaskList(state: TUIState, width: number, height: number, focused: boolean): string {
   const innerW = width - 2;
-  const tasks = [...state.tasks.values()].sort((a, b) => b.startedAt - a.startedAt);
+  const allTasks = [...state.tasks.values()];
+  const tasks = sortTasks(allTasks, state);
   const visibleRows = height - 3;
 
   const lines: string[] = [];
 
-  // Header
-  const header = `${padEnd(bold('ID'), 14)}${padEnd(bold('Goal'), innerW - 50)}${padEnd(bold('Lvl'), 5)}${padEnd(bold('Status'), 14)}${padEnd(bold('Duration'), 10)}${bold('Quality')}`;
-  lines.push(truncate(header, innerW));
-
   if (tasks.length === 0) {
-    lines.push(dim('  No tasks yet. Use :run "goal" to submit a task.'));
+    lines.push(dim('  No tasks yet. Use :run "goal" to submit.'));
   } else {
     const startIdx = state.taskListScroll;
-    const slice = tasks.slice(startIdx, startIdx + visibleRows - 1);
+    // Each task takes 2 rows
+    const maxTasks = Math.floor(visibleRows / 2);
+    const slice = tasks.slice(startIdx, startIdx + maxTasks);
 
     for (const task of slice) {
       const selected = task.id === state.selectedTaskId;
-      const prefix = selected ? color('▸ ', ANSI.cyan) : '  ';
-      const id = padEnd(task.id.slice(0, 12), 12);
-      const goal = padEnd(task.goal.slice(0, innerW - 52), innerW - 52);
-      const level = padEnd(`L${task.routingLevel}`, 3);
-      const status = formatStatus(task.status);
+      const prefix = selected ? color('▸', ANSI.cyan) : ' ';
+      const id = padEnd(task.id.slice(0, 7), 8);
+      const pipeStr = compactPipeline(task.pipeline);
+      const goalWidth = Math.max(10, innerW - 20);
+      const goal = padEnd(truncate(task.goal, goalWidth), goalWidth);
+
+      // Row 1: prefix id goal [pipeline]
+      lines.push(truncate(`${prefix} ${id}${goal}${pipeStr}`, innerW));
+
+      // Row 2: status icon, level, risk/quality, duration
+      const icon = statusIcon(task.status);
+      const level = `L${task.routingLevel}`;
+      const riskOrQuality = task.pendingApproval
+        ? color(`risk:${task.pendingApproval.riskScore.toFixed(2)}`, ANSI.yellow)
+        : task.qualityScore != null
+          ? `q:${task.qualityScore.toFixed(2)}`
+          : '';
       const duration = task.durationMs
         ? formatDuration(task.durationMs)
         : task.status === 'running'
           ? formatDuration(Date.now() - task.startedAt)
-          : '-';
-      const quality = task.qualityScore != null ? task.qualityScore.toFixed(2) : '-';
-
-      const line = `${prefix}${id}  ${goal}${level}  ${padEnd(status, 12)}${padEnd(duration, 8)}  ${quality}`;
-      lines.push(truncate(line, innerW));
+          : '';
+      lines.push(truncate(`  ${icon} ${level}  ${riskOrQuality}${' '.repeat(Math.max(1, innerW - 30))}${duration}`, innerW));
     }
   }
 
-  // Pad
   while (lines.length < visibleRows) lines.push('');
 
-  return panel(`Tasks (${tasks.length})`, lines.join('\n'), width, height, focused);
+  const sortLabel = state.sort.tasks ? ` [sort:${state.sort.tasks.field}]` : '';
+  return panel(`Tasks (${tasks.length})${sortLabel}`, lines.join('\n'), width, height, focused);
 }
 
-function formatStatus(status: TaskDisplayState['status']): string {
-  switch (status) {
-    case 'running':
-      return color('running', ANSI.blue);
-    case 'completed':
-      return color('completed', ANSI.green);
-    case 'failed':
-      return color('failed', ANSI.red);
-    case 'escalated':
-      return color('escalated', ANSI.magenta);
-    case 'uncertain':
-      return color('uncertain', ANSI.yellow);
-    case 'approval_required':
-      return color('APPROVAL', ANSI.bold, ANSI.yellow);
-  }
-}
-
-// ── Task Detail ─────────────────────────────────────────────────────
+// ── Task Detail (Right Pane) ────────────────────────────────────────
 
 function renderTaskDetail(state: TUIState, width: number, height: number, focused: boolean): string {
   const task = state.selectedTaskId ? state.tasks.get(state.selectedTaskId) : undefined;
@@ -111,61 +135,68 @@ function renderTaskDetail(state: TUIState, width: number, height: number, focuse
   const lines: string[] = [];
   const innerW = width - 4;
 
-  // Goal
   lines.push(`${bold('Goal:')} ${truncate(task.goal, innerW - 6).trim()}`);
   lines.push(
-    `${bold('Source:')} ${task.source}  ${bold('Risk:')} ${task.riskScore?.toFixed(2) ?? '-'}` +
-      `  ${bold('Level:')} L${task.routingLevel}  ${bold('Worker:')} ${task.workerId ?? '-'}`,
+    `${bold('Source:')} ${task.source}  ${bold('Worker:')} ${task.workerId ?? '-'}`,
+  );
+  lines.push(
+    `${bold('Risk:')} ${task.riskScore?.toFixed(2) ?? '-'}  ${bold('Level:')} L${task.routingLevel}`,
   );
   lines.push('');
 
-  // Pipeline progress
+  // Pipeline 2×3 grid
   lines.push(bold('Pipeline:'));
-  lines.push(renderPipelineProgress(task.pipeline));
+  lines.push(renderPipelineGrid(task.pipeline));
   lines.push('');
 
-  // Oracle verdicts
-  lines.push(bold('Oracle Verdicts:'));
+  // Oracle verdicts with confidence gauges
+  lines.push(bold('Verdicts:'));
   if (task.oracleVerdicts.length === 0) {
     lines.push(dim('  No verdicts yet'));
   } else {
     for (const v of task.oracleVerdicts) {
-      const icon = v.verified ? color('PASS', ANSI.green) : color('FAIL', ANSI.red);
-      lines.push(`  ${padEnd(v.name, 10)} ${icon} (${v.confidence.toFixed(2)})`);
+      lines.push(` ${confidenceGauge(v.name, v.verified, v.confidence)}`);
     }
   }
 
-  // Approval pending
+  // Approval section
   if (task.pendingApproval) {
     lines.push('');
-    lines.push(color('  ⚠ APPROVAL REQUIRED', ANSI.bold, ANSI.yellow));
-    lines.push(`  Risk: ${task.pendingApproval.riskScore.toFixed(2)}  Reason: ${task.pendingApproval.reason}`);
-    lines.push(dim('  Press [a] to approve, [r] to reject'));
+    lines.push(color('⚠ APPROVAL REQUIRED', ANSI.bold, ANSI.yellow));
+    lines.push(`Risk: ${task.pendingApproval.riskScore.toFixed(2)}`);
+    lines.push(`Reason: ${task.pendingApproval.reason}`);
+    lines.push(dim('Press [a] approve [r] reject'));
   }
 
-  return panel(`Task: ${task.id.slice(0, 20)}`, lines.join('\n'), width, height, focused);
+  return panel(`task-${task.id.slice(0, 12)}`, lines.join('\n'), width, height, focused);
 }
 
-// ── Pipeline Progress Widget ────────────────────────────────────────
+// ── Pipeline Grid ───────────────────────────────────────────────────
 
 const PIPELINE_STEPS: PipelineStep[] = ['perceive', 'predict', 'plan', 'generate', 'verify', 'learn'];
 
-function renderPipelineProgress(pipeline: Record<PipelineStep, PipelineStepStatus>): string {
-  return PIPELINE_STEPS.map((step, i) => {
-    const status = pipeline[step];
-    const label = `[${i + 1}] ${capitalize(step)}`;
-    switch (status) {
-      case 'done':
-        return color(`${label} ✓`, ANSI.green);
-      case 'running':
-        return color(`${label} ▸`, ANSI.bold, ANSI.blue);
-      case 'skipped':
-        return dim(`${label} ○`);
-      case 'pending':
-      default:
-        return dim(`${label} ○`);
-    }
-  }).join('  ');
+function renderPipelineGrid(pipeline: Record<PipelineStep, PipelineStepStatus>): string {
+  const row1 = PIPELINE_STEPS.slice(0, 3)
+    .map((step, i) => formatPipelineStep(step, pipeline[step], i + 1))
+    .join('   ');
+  const row2 = PIPELINE_STEPS.slice(3)
+    .map((step, i) => formatPipelineStep(step, pipeline[step], i + 4))
+    .join('   ');
+  return `${row1}\n${row2}`;
+}
+
+function formatPipelineStep(step: PipelineStep, status: PipelineStepStatus, num: number): string {
+  const label = `[${num}] ${capitalize(step)}`;
+  switch (status) {
+    case 'done':
+      return color(`${label} ✓`, ANSI.green);
+    case 'running':
+      return color(`${label} ▸`, ANSI.bold, ANSI.blue);
+    case 'skipped':
+      return dim(`${label} ⊘`);
+    default:
+      return dim(`${label} ○`);
+  }
 }
 
 function capitalize(s: string): string {

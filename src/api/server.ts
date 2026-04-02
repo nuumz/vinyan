@@ -158,6 +158,11 @@ export class VinyanAPIServer {
   }
 
   private async route(method: string, path: string, req: Request): Promise<Response> {
+    // ── Dashboard static files ───────────────────────────
+    if (method === 'GET' && (path === '/dashboard' || path.startsWith('/dashboard/'))) {
+      return this.serveDashboardFile(path);
+    }
+
     // ── Health & Metrics ──────────────────────────────────
     if (method === 'GET' && path === '/api/v1/health') {
       return jsonResponse({ status: 'ok', uptime_ms: process.uptime() * 1000 });
@@ -168,7 +173,16 @@ export class VinyanAPIServer {
       return this.handleMetrics(req);
     }
 
+    // ── Global SSE (all events) ────────────────────────────
+    if (method === 'GET' && path === '/api/v1/events') {
+      return this.handleGlobalSSE();
+    }
+
     // ── Tasks ─────────────────────────────────────────────
+    if (method === 'GET' && path === '/api/v1/tasks') {
+      return this.handleListTasks();
+    }
+
     if (method === 'POST' && path === '/api/v1/tasks') {
       return this.handleSyncTask(req);
     }
@@ -193,6 +207,10 @@ export class VinyanAPIServer {
     }
 
     // ── Sessions ──────────────────────────────────────────
+    if (method === 'GET' && path === '/api/v1/sessions') {
+      return this.handleListSessions();
+    }
+
     if (method === 'POST' && path === '/api/v1/sessions') {
       return this.handleCreateSession(req);
     }
@@ -220,6 +238,11 @@ export class VinyanAPIServer {
 
     if (method === 'GET' && path === '/api/v1/facts') {
       return jsonResponse({ facts: [] }); // WorldGraph query — simplified for now
+    }
+
+    // ── ECP HTTP Verify (PH5.18) ─────────────────────────────
+    if (method === 'POST' && path === '/ecp/v1/verify') {
+      return this.handleHttpVerify(req);
     }
 
     // ── A2A Protocol (PH5.6) ────────────────────────────────
@@ -268,6 +291,25 @@ export class VinyanAPIServer {
     const body = await req.json();
     const response = await this.a2aBridge.handleRequest(body);
     return jsonResponse(response); // JSON-RPC: errors are in response body, HTTP is always 200
+  }
+
+  // ── ECP HTTP Verify Handler (PH5.18) ───────────────────
+
+  private async handleHttpVerify(req: Request): Promise<Response> {
+    if (!this.deps.runOracle) {
+      return jsonResponse({ error: 'Oracle runner not configured' }, 501);
+    }
+    try {
+      const body = await req.json() as { oracle_name?: string; hypothesis?: unknown };
+      const { oracle_name: oracleName, hypothesis } = body;
+      if (!oracleName || typeof oracleName !== 'string' || !hypothesis) {
+        return jsonResponse({ error: 'Missing oracle_name or hypothesis' }, 400);
+      }
+      const verdict = await this.deps.runOracle(oracleName, hypothesis as never);
+      return jsonResponse(verdict);
+    } catch (err) {
+      return jsonResponse({ error: err instanceof Error ? err.message : 'Oracle execution failed' }, 500);
+    }
   }
 
   // ── WebSocket ECP Handler (PH5.18) ─────────────────────
@@ -373,6 +415,68 @@ export class VinyanAPIServer {
       });
 
     return jsonResponse({ taskId: input.id, status: 'accepted' }, 202);
+  }
+
+  private handleListTasks(): Response {
+    const tasks: Array<{ taskId: string; status: string; result?: unknown }> = [];
+    for (const [id, result] of this.asyncResults) {
+      tasks.push({ taskId: id, status: 'completed', result });
+    }
+    for (const [id] of this.inFlightTasks) {
+      tasks.push({ taskId: id, status: 'running' });
+    }
+    return jsonResponse({ tasks });
+  }
+
+  private handleListSessions(): Response {
+    const sessions = this.deps.sessionManager?.listSessions() ?? [];
+    return jsonResponse({ sessions });
+  }
+
+  private handleGlobalSSE(): Response {
+    const { stream, cleanup } = createSSEStream(this.deps.bus);
+
+    // Auto-cleanup after 10 minutes
+    setTimeout(cleanup, 600_000);
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    });
+  }
+
+  private serveDashboardFile(path: string): Response {
+    // Default to index.html
+    let filePath = path === '/dashboard' || path === '/dashboard/' ? '/dashboard/index.html' : path;
+
+    // Extract relative path within dashboard
+    const relative = filePath.replace(/^\/dashboard\//, '');
+
+    // Path traversal protection
+    if (relative.includes('..') || relative.startsWith('/')) {
+      return jsonResponse({ error: 'Forbidden' }, 403);
+    }
+
+    const resolved = `${import.meta.dir}/../dashboard/${relative}`;
+    const file = Bun.file(resolved);
+
+    // Content-Type mapping
+    const ext = relative.split('.').pop() ?? '';
+    const contentTypes: Record<string, string> = {
+      html: 'text/html; charset=utf-8',
+      js: 'application/javascript; charset=utf-8',
+      css: 'text/css; charset=utf-8',
+      json: 'application/json',
+      svg: 'image/svg+xml',
+      png: 'image/png',
+    };
+
+    return new Response(file, {
+      headers: { 'Content-Type': contentTypes[ext] ?? 'application/octet-stream' },
+    });
   }
 
   private handleGetTask(taskId: string): Response {

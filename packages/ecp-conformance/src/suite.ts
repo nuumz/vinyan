@@ -5,6 +5,7 @@
 import { validateLevel0 } from './level0.ts';
 import { validateLevel1, validateJsonRpcEnvelope } from './level1.ts';
 import { validateLevel2, validateVersionHandshake, validateVersionResponse } from './level2.ts';
+import { validateLevel3 } from './level3.ts';
 
 export type ConformanceLevel = 0 | 1 | 2 | 3;
 
@@ -53,6 +54,15 @@ export function runConformanceSuite(verdictJson: string, targetLevel: Conformanc
   const l2 = validateLevel2(verdictJson);
   levels.push({ level: 2, passed: l2.passed, checks: l2.checks });
   if (l2.passed) achievedLevel = 2;
+
+  if (!l2.passed || targetLevel === 2) {
+    return { targetLevel, achievedLevel, levels };
+  }
+
+  // Level 3
+  const l3 = validateLevel3(verdictJson);
+  levels.push({ level: 3, passed: l3.passed, checks: l3.checks });
+  if (l3.passed) achievedLevel = 3;
 
   return { targetLevel, achievedLevel, levels };
 }

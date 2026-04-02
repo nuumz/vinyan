@@ -8,8 +8,45 @@ import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 
 // ── View / Navigation ───────────────────────────────────────────────
 
-export type ViewTab = 'dashboard' | 'tasks' | 'peers';
+export type ViewTab = 'tasks' | 'system' | 'peers' | 'events';
 export type InputMode = 'normal' | 'command' | 'filter';
+
+// ── Notifications & Feedback ────────────────────────────────────────
+
+export type NotificationType = 'approval' | 'guardrail' | 'circuit' | 'alert';
+
+export interface NotificationEntry {
+  id: number;
+  type: NotificationType;
+  taskId?: string;
+  message: string;
+  priority: number; // 1 = highest (approval), 4 = lowest (alert)
+  timestamp: number;
+  dismissed: boolean;
+}
+
+export interface ToastMessage {
+  message: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  expiresAt: number;
+}
+
+// ── Sort ────────────────────────────────────────────────────────────
+
+export type SortField = 'startedAt' | 'status' | 'routingLevel' | 'quality';
+export type PeerSortField = 'trust' | 'health' | 'lastSeen';
+
+export interface SortConfig<F = SortField> {
+  field: F;
+  direction: 'asc' | 'desc';
+}
+
+// ── Tab Badges ──────────────────────────────────────────────────────
+
+export interface TabBadge {
+  count: number;
+  color?: 'red' | 'yellow' | 'green';
+}
 
 // ── Event Log ───────────────────────────────────────────────────────
 
@@ -83,7 +120,7 @@ export interface PeerDisplayState {
 
 // ── Modal ───────────────────────────────────────────────────────────
 
-export type ModalType = 'approval' | 'help' | 'confirm-quit';
+export type ModalType = 'approval' | 'help' | 'confirm-quit' | 'confirm-cancel';
 
 export interface ModalState {
   type: ModalType;
@@ -118,6 +155,9 @@ export interface TUIState {
   peers: Map<string, PeerDisplayState>;
   selectedPeerId: string | null;
 
+  // History (for sparklines)
+  successHistory: number[];
+
   // Terminal
   termWidth: number;
   termHeight: number;
@@ -128,4 +168,24 @@ export interface TUIState {
   eventLogScroll: number;
   taskListScroll: number;
   peerListScroll: number;
+
+  // Notifications & Feedback
+  notifications: NotificationEntry[];
+  notificationIdCounter: number;
+  notificationIndex: number; // which notification is currently displayed
+  toasts: ToastMessage[];
+  tabBadges: Partial<Record<ViewTab, TabBadge>>;
+
+  // Events tab
+  selectedEventId: number | null;
+  lastEventTabVisit: number; // eventIdCounter at last Events tab visit
+
+  // Sorting
+  sort: Partial<Record<ViewTab, SortConfig>>;
+
+  // Real-time counters from MetricsCollector
+  realtimeCounters: Record<string, number>;
+
+  // Workspace path (for dbPath derivation)
+  workspace: string;
 }

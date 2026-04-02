@@ -39,6 +39,7 @@ export const ANSI = {
   cursorShow: '\x1b[?25h',
   saveCursor: '\x1b[s',
   restoreCursor: '\x1b[u',
+  clearToEnd: '\x1b[J', // Clear from cursor to end of screen
 };
 
 export function color(text: string, ...codes: string[]): string {
@@ -157,7 +158,7 @@ export function gauge(value: number, width = 20, label?: string): string {
   const empty = width - filled;
   const barColor = ratio >= 0.7 ? ANSI.green : ratio >= 0.4 ? ANSI.yellow : ANSI.red;
   const bar = `${barColor}${'█'.repeat(filled)}${ANSI.gray}${'░'.repeat(empty)}${ANSI.reset}`;
-  const pct = (ratio * 100).toFixed(0).padStart(3) + '%';
+  const pct = `${(ratio * 100).toFixed(0).padStart(3)}%`;
   return label ? `${bar} ${pct} ${dim(label)}` : `${bar} ${pct}`;
 }
 
@@ -220,17 +221,18 @@ export function moveTo(row: number, col: number): string {
 
 /** Enter alternate screen buffer + hide cursor. */
 export function enterAltScreen(): void {
-  process.stdout.write('\x1b[?1049h' + ANSI.cursorHide);
+  process.stdout.write(`\x1b[?1049h${ANSI.cursorHide}`);
 }
 
 /** Leave alternate screen buffer + show cursor. */
 export function leaveAltScreen(): void {
-  process.stdout.write('\x1b[?1049l' + ANSI.cursorShow);
+  process.stdout.write(`\x1b[?1049l${ANSI.cursorShow}`);
 }
 
 /** Write a full frame to stdout. */
 export function paintFrame(content: string): void {
-  process.stdout.write(ANSI.cursorHome + content);
+  // Clear line after each row to prevent ghost text from previous frame
+  process.stdout.write(ANSI.cursorHome + content + ANSI.clearToEnd);
 }
 
 // ── Panel / Box with focus indicator ────────────────────────────────
@@ -292,4 +294,194 @@ export function statusBar(left: string, right: string, width: number): string {
   const rightLen = visibleLength(right);
   const gap = Math.max(1, width - leftLen - rightLen);
   return `${ANSI.bgBlue}${ANSI.white}${left}${' '.repeat(gap)}${right}${ANSI.reset}`;
+}
+
+// ── New Renderer Primitives (Phase 2) ───────────────────────────────
+
+import type {
+  InputMode,
+  NotificationEntry,
+  PipelineStep,
+  PipelineStepStatus,
+  TabBadge,
+  TUIState,
+  ToastMessage,
+  ViewTab,
+} from './types.ts';
+
+const PIPELINE_ORDER: PipelineStep[] = ['perceive', 'predict', 'plan', 'generate', 'verify', 'learn'];
+
+/** Compact 8-char pipeline: [✓✓✓▸○○] */
+export function compactPipeline(pipeline: Record<PipelineStep, PipelineStepStatus>): string {
+  const icons = PIPELINE_ORDER.map((step) => {
+    switch (pipeline[step]) {
+      case 'done':
+        return color('✓', ANSI.green);
+      case 'running':
+        return color('▸', ANSI.blue, ANSI.bold);
+      case 'skipped':
+        return dim('⊘');
+      case 'pending':
+      default:
+        return dim('○');
+    }
+  });
+  return `[${icons.join('')}]`;
+}
+
+/** Confidence gauge: `ast PASS ████████░░ 0.95` */
+export function confidenceGauge(label: string, passed: boolean, confidence: number, width = 10): string {
+  const badge = passed ? color('PASS', ANSI.green) : color('FAIL', ANSI.red);
+  const filled = Math.round(confidence * width);
+  const empty = width - filled;
+  const barColor = passed ? ANSI.green : ANSI.red;
+  const bar = `${barColor}${'█'.repeat(filled)}${ANSI.gray}${'░'.repeat(empty)}${ANSI.reset}`;
+  return `${padEnd(label, 6)} ${badge} ${bar} ${confidence.toFixed(2)}`;
+}
+
+/** Mode indicator — spec §7.5 */
+export function modeIndicator(mode: InputMode): string {
+  switch (mode) {
+    case 'command':
+      return color(' COMMAND ', ANSI.bgBlue, ANSI.white);
+    case 'filter':
+      return color(' FILTER ', ANSI.bgGreen, ANSI.black);
+    case 'normal':
+    default:
+      return dim(' NORMAL ');
+  }
+}
+
+/** Header bar — health + counts + clock */
+export function headerBar(state: TUIState, width: number): string {
+  const healthStatus = state.health?.status ?? 'unknown';
+  const healthDot =
+    healthStatus === 'healthy'
+      ? color('●', ANSI.green)
+      : healthStatus === 'degraded'
+        ? color('●', ANSI.yellow)
+        : color('●', ANSI.red);
+
+  const runningCount = [...state.tasks.values()].filter((t) => t.status === 'running').length;
+  const totalCount = state.tasks.size;
+  const peerCount = state.peers?.size ?? 0;
+  const notifCount = state.notifications.filter((n) => !n.dismissed).length;
+
+  const logo = color('VINYAN', ANSI.bold, ANSI.cyan);
+  const health = `${healthDot} ${healthStatus}`;
+  const counts = `Tasks: ${runningCount}/${totalCount}  Peers: ${peerCount}`;
+  const alerts = notifCount > 0 ? `  ${color(`⚠${notifCount}`, ANSI.yellow)}` : '';
+  const clock = formatTimeShort(Date.now());
+
+  const left = `${logo}  ${health}  ${counts}${alerts}`;
+  const leftLen = visibleLength(left);
+  const rightLen = clock.length;
+  const gap = Math.max(1, width - leftLen - rightLen);
+
+  return `${ANSI.bgBlue}${ANSI.white}${left}${' '.repeat(gap)}${clock}${ANSI.reset}`;
+}
+
+/** Notification bar — toast or pending notification or empty (always 1 row) */
+export function notificationBar(state: TUIState, width: number): string {
+  // Toast takes priority when active
+  const now = Date.now();
+  const activeToast = state.toasts.find((t) => t.expiresAt > now);
+  if (activeToast) {
+    return renderToast(activeToast, width);
+  }
+
+  // Pending notifications
+  const pending = state.notifications.filter((n) => !n.dismissed);
+  if (pending.length === 0) return ' '.repeat(width);
+
+  const idx = Math.min(state.notificationIndex, pending.length - 1);
+  const notif = pending[idx]!;
+  return renderNotification(notif, pending.length, idx, width);
+}
+
+function renderToast(toast: ToastMessage, width: number): string {
+  const icon =
+    toast.level === 'success'
+      ? color('✓', ANSI.green)
+      : toast.level === 'error'
+        ? color('✗', ANSI.red)
+        : toast.level === 'warning'
+          ? color('⚠', ANSI.yellow)
+          : color('▶', ANSI.blue);
+  const content = `${icon} ${toast.message}`;
+  return padEnd(content, width);
+}
+
+function renderNotification(notif: NotificationEntry, total: number, index: number, width: number): string {
+  const icon = notif.type === 'approval' ? color('⚠', ANSI.yellow, ANSI.bold) : color('!', ANSI.red);
+  const taskPart = notif.taskId ? `${notif.taskId} ` : '';
+  const actions =
+    notif.type === 'approval'
+      ? `${dim('[a]')}pprove ${dim('[r]')}eject`
+      : `${dim('[Space]')}view`;
+  const counter = total > 1 ? ` (${index + 1}/${total})` : '';
+  const content = `${icon} ${taskPart}${notif.message}  ${actions}${counter}`;
+  return padEnd(content, width);
+}
+
+/** Context hints bar — mode + keybinding hints, or command buffer when in command/filter mode */
+export function contextHintsBar(
+  mode: InputMode,
+  hints: Array<{ key: string; label: string }>,
+  width: number,
+  commandBuffer?: string,
+): string {
+  const modeStr = modeIndicator(mode);
+
+  // In command/filter mode, show the buffer with cursor
+  if ((mode === 'command' || mode === 'filter') && commandBuffer != null) {
+    const prefix = mode === 'command' ? ':' : '/';
+    const bufferDisplay = `${prefix}${commandBuffer}█`;
+    const hintParts = hints.map((h) => `${color(h.key, ANSI.cyan)}:${h.label}`);
+    const content = `${modeStr}  ${bufferDisplay}  ${dim(hintParts.join('  '))}`;
+    return padEnd(content, width);
+  }
+
+  const hintParts = hints.map((h) => `${color(h.key, ANSI.cyan)}:${h.label}`);
+  const content = `${modeStr}  ${hintParts.join('  ')}`;
+  return padEnd(content, width);
+}
+
+/** Tab bar with badge support */
+export function tabBarWithBadges(
+  tabs: Array<{ key: string; label: string; tab: ViewTab }>,
+  activeTab: ViewTab,
+  badges: Partial<Record<ViewTab, TabBadge>>,
+  width: number,
+): string {
+  const parts = tabs.map((t) => {
+    const badge = badges[t.tab];
+    const badgeStr = badge && badge.count > 0 ? `(${badge.count})` : '';
+    const badgeColor = badge?.color === 'red' ? ANSI.red : '';
+    const label = `[${t.key}]${t.label}${badgeColor ? color(badgeStr, badgeColor) : dim(badgeStr)}`;
+
+    if (t.tab === activeTab) {
+      return color(` ${stripAnsi(label)} `, ANSI.bold, ANSI.cyan);
+    }
+    return dim(` ${stripAnsi(label)} `);
+  });
+  const content = parts.join(dim('│'));
+  return padEnd(content, width);
+}
+
+/** Terminal size guard — returns message if too small, null otherwise */
+export function terminalSizeGuard(width: number, height: number): string | null {
+  if (width >= 80 && height >= 24) return null;
+  const lines = [
+    '┌──────────────────────────────────┐',
+    '│  Terminal too small              │',
+    `│  Minimum: 80 x 24               │`,
+    `│  Current: ${String(width).padStart(3)} x ${String(height).padStart(2)}               │`,
+    '│  Please resize your terminal.   │',
+    '└──────────────────────────────────┘',
+  ];
+  // Center vertically and horizontally
+  const padTop = Math.max(0, Math.floor((height - lines.length) / 2));
+  const padLeft = Math.max(0, Math.floor((width - 36) / 2));
+  return '\n'.repeat(padTop) + lines.map((l) => ' '.repeat(padLeft) + l).join('\n');
 }

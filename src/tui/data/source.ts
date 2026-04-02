@@ -22,6 +22,9 @@ export interface DataSource {
   submitTask(input: TaskInput): Promise<TaskResult>;
   approveTask(taskId: string): void;
   rejectTask(taskId: string): void;
+  cancelTask(taskId: string): void;
+  triggerSleepCycle(): void;
+  exportPatterns(outputPath: string): void;
 }
 
 // ── Embedded DataSource ─────────────────────────────────────────────
@@ -32,8 +35,7 @@ export class EmbeddedDataSource implements DataSource {
   private bus: VinyanBus;
   private unsubscribers: Array<() => void> = [];
   private metricsTimer: ReturnType<typeof setInterval> | null = null;
-  private approvalResolvers = new Map<string, (decision: 'approved' | 'rejected') => void>();
-
+  private clockTimer: ReturnType<typeof setInterval> | null = null;
   constructor(state: TUIState, orchestrator: Orchestrator) {
     this.state = state;
     this.orchestrator = orchestrator;
@@ -43,6 +45,7 @@ export class EmbeddedDataSource implements DataSource {
   start(): void {
     this.subscribeToEvents();
     this.startMetricsPolling();
+    this.startClockTick();
     this.refreshMetrics();
   }
 
@@ -53,6 +56,10 @@ export class EmbeddedDataSource implements DataSource {
       clearInterval(this.metricsTimer);
       this.metricsTimer = null;
     }
+    if (this.clockTimer) {
+      clearInterval(this.clockTimer);
+      this.clockTimer = null;
+    }
   }
 
   async submitTask(input: TaskInput): Promise<TaskResult> {
@@ -60,11 +67,8 @@ export class EmbeddedDataSource implements DataSource {
   }
 
   approveTask(taskId: string): void {
-    const resolver = this.approvalResolvers.get(taskId);
-    if (resolver) {
-      resolver('approved');
-      this.approvalResolvers.delete(taskId);
-    }
+    // Delegate to the orchestrator's ApprovalGate to resolve the pending promise
+    this.orchestrator.approvalGate?.resolve(taskId, 'approved');
     // Update task display state
     const task = this.state.tasks.get(taskId);
     if (task) {
@@ -75,17 +79,39 @@ export class EmbeddedDataSource implements DataSource {
   }
 
   rejectTask(taskId: string): void {
-    const resolver = this.approvalResolvers.get(taskId);
-    if (resolver) {
-      resolver('rejected');
-      this.approvalResolvers.delete(taskId);
-    }
+    this.orchestrator.approvalGate?.resolve(taskId, 'rejected');
     const task = this.state.tasks.get(taskId);
     if (task) {
       task.status = 'failed';
       task.pendingApproval = undefined;
       this.state.dirty = true;
     }
+  }
+
+  cancelTask(taskId: string): void {
+    const task = this.state.tasks.get(taskId);
+    if (task) {
+      task.status = 'failed';
+      task.pendingApproval = undefined;
+      this.state.dirty = true;
+    }
+    this.bus.emit('task:timeout', { taskId, elapsedMs: 0, budgetMs: 0 });
+  }
+
+  triggerSleepCycle(): void {
+    if (this.orchestrator.sleepCycleRunner) {
+      this.orchestrator.sleepCycleRunner.run().catch(() => {});
+    }
+  }
+
+  exportPatterns(outputPath: string): void {
+    const store = this.orchestrator.patternStore;
+    if (!store) return;
+    import('../../evolution/pattern-abstraction.ts').then(({ exportPatterns }) => {
+      const patterns = store.findActive();
+      const exported = exportPatterns(patterns, 'vinyan');
+      Bun.write(outputPath, JSON.stringify(exported, null, 2)).catch(() => {});
+    });
   }
 
   // ── Event Subscriptions ─────────────────────────────────────────
@@ -217,7 +243,25 @@ export class EmbeddedDataSource implements DataSource {
       case 'a2a:knowledgeImported':
         this.onKnowledgeImported(p);
         break;
+      case 'a2a:knowledgeOffered':
+        this.onKnowledgeOffered(p);
+        break;
+      case 'a2a:capabilityUpdated':
+        this.onCapabilityUpdated(p);
+        break;
+      case 'selfmodel:predict':
+        this.onSelfModelPredict(p);
+        break;
+      case 'decomposer:fallback':
+        this.onDecomposerFallback(p);
+        break;
+      case 'trace:record':
+        this.onTraceRecord(p);
+        break;
     }
+
+    // Update real-time counters for any event
+    this.incrementCounter(event);
   }
 
   // ── Task State Updates ──────────────────────────────────────────
@@ -269,6 +313,14 @@ export class EmbeddedDataSource implements DataSource {
     for (const step of Object.keys(task.pipeline) as Array<keyof typeof task.pipeline>) {
       task.pipeline[step] = 'done';
     }
+
+    // Track success history for sparklines (keep last 50)
+    const isSuccess = task.status === 'completed';
+    this.state.successHistory.push(isSuccess ? 1 : 0);
+    if (this.state.successHistory.length > 50) {
+      this.state.successHistory.shift();
+    }
+
     this.state.dirty = true;
   }
 
@@ -292,7 +344,7 @@ export class EmbeddedDataSource implements DataSource {
       this.state.dirty = true;
 
       // Auto-open approval modal if we're on the tasks tab
-      if (this.state.activeTab === 'tasks' || this.state.activeTab === 'dashboard') {
+      if (this.state.activeTab === 'tasks') {
         this.state.modal = {
           type: 'approval',
           taskId: task.id,
@@ -394,10 +446,80 @@ export class EmbeddedDataSource implements DataSource {
     }
   }
 
+  private onKnowledgeOffered(p: Record<string, unknown>): void {
+    const peer = this.state.peers.get(String(p.peerId ?? ''));
+    if (peer) {
+      peer.knowledgeOffered += Number(p.patternCount ?? 0);
+      this.state.dirty = true;
+    }
+  }
+
+  private onCapabilityUpdated(p: Record<string, unknown>): void {
+    const peer = this.state.peers.get(String(p.peerId ?? ''));
+    if (peer) {
+      peer.instanceId = String(p.instanceId ?? peer.instanceId);
+      peer.lastSeen = Date.now();
+      this.state.dirty = true;
+    }
+  }
+
+  // ── Pipeline Step Updates ──────────────────────────────────────
+
+  private onSelfModelPredict(p: Record<string, unknown>): void {
+    // selfmodel:predict fires after Step 2 (PREDICT) — find the active task
+    const prediction = p.prediction as Record<string, unknown> | undefined;
+    const taskId = prediction?.taskId as string | undefined;
+    // If prediction has a taskId, use it; otherwise update the most recently started task
+    const task = taskId
+      ? this.state.tasks.get(taskId)
+      : [...this.state.tasks.values()].find((t) => t.status === 'running' && t.pipeline.predict === 'pending');
+    if (task) {
+      task.pipeline.perceive = 'done';
+      task.pipeline.predict = 'done';
+      task.pipeline.plan = 'running';
+      this.state.dirty = true;
+    }
+  }
+
+  private onDecomposerFallback(p: Record<string, unknown>): void {
+    const task = this.state.tasks.get(String(p.taskId ?? ''));
+    if (task) {
+      task.pipeline.plan = 'done';
+      this.state.dirty = true;
+    }
+  }
+
+  private onTraceRecord(p: Record<string, unknown>): void {
+    // trace:record fires during Step 6 (LEARN) — mark learn step
+    const trace = p.trace as Record<string, unknown> | undefined;
+    const taskId = String(trace?.taskId ?? '');
+    const task = this.state.tasks.get(taskId);
+    if (task && task.pipeline.learn !== 'done') {
+      task.pipeline.verify = 'done';
+      task.pipeline.learn = 'running';
+      this.state.dirty = true;
+    }
+  }
+
+  // ── Real-time Counters ──────────────────────────────────────────
+
+  private incrementCounter(event: string): void {
+    // Extract domain from event name (e.g. 'task:start' → 'task')
+    const domain = event.split(':')[0] ?? 'other';
+    this.state.realtimeCounters[domain] = (this.state.realtimeCounters[domain] ?? 0) + 1;
+  }
+
   // ── Metrics Polling ─────────────────────────────────────────────
 
   private startMetricsPolling(): void {
     this.metricsTimer = setInterval(() => this.refreshMetrics(), 5000);
+  }
+
+  /** Tick every 1s to keep clock and uptime fresh. */
+  private startClockTick(): void {
+    this.clockTimer = setInterval(() => {
+      this.state.dirty = true;
+    }, 1000);
   }
 
   private refreshMetrics(): void {

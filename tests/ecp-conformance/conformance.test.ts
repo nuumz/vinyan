@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { validateLevel0 } from '../../packages/ecp-conformance/src/level0.ts';
 import { validateLevel1, validateJsonRpcEnvelope } from '../../packages/ecp-conformance/src/level1.ts';
 import { validateLevel2, validateVersionHandshake, validateVersionResponse } from '../../packages/ecp-conformance/src/level2.ts';
+import { validateLevel3, validateKnowledgeOffer, validateKnowledgeAcceptance, validateKnowledgeTransfer } from '../../packages/ecp-conformance/src/level3.ts';
 import { runConformanceSuite } from '../../packages/ecp-conformance/src/suite.ts';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
@@ -42,6 +43,18 @@ const LEVEL_2_VERDICT = JSON.stringify({
     validUntil: 60000,
     decayModel: 'linear',
   },
+});
+
+const LEVEL_3_VERDICT = JSON.stringify({
+  verified: true,
+  type: 'known',
+  confidence: 0.9,
+  evidence: [{ file: 'src/main.ts', line: 10, snippet: 'function foo()', contentHash: 'b'.repeat(64) }],
+  falsifiableBy: ['file:src/main.ts:content-change'],
+  fileHashes: { 'src/main.ts': 'a'.repeat(64) },
+  durationMs: 80,
+  sourceInstanceId: 'inst-abc-123',
+  origin: 'a2a',
 });
 
 // ── Level 0 ──────────────────────────────────────────────────────────
@@ -308,6 +321,155 @@ describe('Level 2 Conformance', () => {
   });
 });
 
+// ── Level 3 ──────────────────────────────────────────────────────────
+
+describe('Level 3 Conformance', () => {
+  test('valid Level 3 verdict passes', () => {
+    const result = validateLevel3(LEVEL_3_VERDICT);
+    expect(result.passed).toBe(true);
+    expect(result.level).toBe(3);
+  });
+
+  test('missing sourceInstanceId fails', () => {
+    const verdict = JSON.stringify({
+      verified: true,
+      type: 'known',
+      confidence: 0.9,
+      evidence: [{ file: 'f.ts', line: 1, snippet: 'x', contentHash: 'b'.repeat(64) }],
+      fileHashes: { 'f.ts': 'a'.repeat(64) },
+      durationMs: 10,
+      // no sourceInstanceId
+    });
+    const result = validateLevel3(verdict);
+    expect(result.passed).toBe(false);
+  });
+
+  test('remote verdict above confidence ceiling fails (I13)', () => {
+    const verdict = JSON.stringify({
+      verified: true,
+      type: 'known',
+      confidence: 0.99,
+      evidence: [{ file: 'f.ts', line: 1, snippet: 'x', contentHash: 'b'.repeat(64) }],
+      fileHashes: { 'f.ts': 'a'.repeat(64) },
+      durationMs: 10,
+      sourceInstanceId: 'inst-1',
+      origin: 'a2a',
+    });
+    const result = validateLevel3(verdict);
+    expect(result.passed).toBe(false);
+    const ceilCheck = result.checks.find((c) => c.name === 'remote-confidence-ceiling');
+    expect(ceilCheck?.passed).toBe(false);
+  });
+
+  test('local origin allows high confidence', () => {
+    const verdict = JSON.stringify({
+      verified: true,
+      type: 'known',
+      confidence: 1.0,
+      evidence: [{ file: 'f.ts', line: 1, snippet: 'x', contentHash: 'b'.repeat(64) }],
+      fileHashes: { 'f.ts': 'a'.repeat(64) },
+      durationMs: 10,
+      sourceInstanceId: 'inst-1',
+      origin: 'local',
+    });
+    const result = validateLevel3(verdict);
+    expect(result.passed).toBe(true);
+  });
+
+  test('signature without signerInstanceId fails', () => {
+    const verdict = JSON.stringify({
+      verified: true,
+      type: 'known',
+      confidence: 0.9,
+      evidence: [{ file: 'f.ts', line: 1, snippet: 'x', contentHash: 'b'.repeat(64) }],
+      fileHashes: { 'f.ts': 'a'.repeat(64) },
+      durationMs: 10,
+      sourceInstanceId: 'inst-1',
+      signature: 'abcdef1234',
+      // no signerInstanceId
+    });
+    const result = validateLevel3(verdict);
+    expect(result.passed).toBe(false);
+  });
+
+  test('valid signed verdict passes', () => {
+    const verdict = JSON.stringify({
+      verified: true,
+      type: 'known',
+      confidence: 0.9,
+      evidence: [{ file: 'f.ts', line: 1, snippet: 'x', contentHash: 'b'.repeat(64) }],
+      fileHashes: { 'f.ts': 'a'.repeat(64) },
+      durationMs: 10,
+      sourceInstanceId: 'inst-1',
+      signature: 'abcdef1234567890',
+      signerInstanceId: 'inst-1',
+    });
+    const result = validateLevel3(verdict);
+    expect(result.passed).toBe(true);
+  });
+});
+
+// ── Knowledge Sharing Protocol ───────────────────────────────────────
+
+describe('Knowledge Sharing Protocol', () => {
+  test('valid knowledge offer passes', () => {
+    const offer = JSON.stringify({
+      cycleId: 'cycle-1',
+      instanceId: 'inst-1',
+      patterns: [
+        { id: 'p1', type: 'success', confidence: 0.8, portability: 'universal' },
+        { id: 'p2', type: 'failure', confidence: 0.6, portability: 'framework-specific' },
+      ],
+    });
+    const checks = validateKnowledgeOffer(offer);
+    expect(checks.every((c) => c.passed)).toBe(true);
+  });
+
+  test('offer with out-of-range confidence fails', () => {
+    const offer = JSON.stringify({
+      cycleId: 'cycle-1',
+      instanceId: 'inst-1',
+      patterns: [{ id: 'p1', type: 'success', confidence: 1.5, portability: 'universal' }],
+    });
+    const checks = validateKnowledgeOffer(offer);
+    expect(checks.some((c) => !c.passed)).toBe(true);
+  });
+
+  test('valid acceptance passes', () => {
+    const accept = JSON.stringify({
+      acceptedPatternIds: ['p1'],
+      rejectedPatternIds: ['p2'],
+    });
+    const checks = validateKnowledgeAcceptance(accept);
+    expect(checks.every((c) => c.passed)).toBe(true);
+  });
+
+  test('valid transfer passes', () => {
+    const transfer = JSON.stringify({
+      cycleId: 'cycle-1',
+      instanceId: 'inst-1',
+      patterns: [
+        { id: 'p1', type: 'success', confidence: 0.4, fingerprint: 'fp-1', portability: 'universal' },
+      ],
+    });
+    const checks = validateKnowledgeTransfer(transfer);
+    expect(checks.every((c) => c.passed)).toBe(true);
+  });
+
+  test('transfer with confidence above ceiling fails', () => {
+    const transfer = JSON.stringify({
+      cycleId: 'cycle-1',
+      instanceId: 'inst-1',
+      patterns: [
+        { id: 'p1', type: 'success', confidence: 0.98, fingerprint: 'fp-1', portability: 'universal' },
+      ],
+    });
+    const checks = validateKnowledgeTransfer(transfer);
+    const ceilCheck = checks.find((c) => c.name === 'transfer-confidence-ceiling');
+    expect(ceilCheck?.passed).toBe(false);
+  });
+});
+
 // ── Suite Runner ─────────────────────────────────────────────────────
 
 describe('Conformance Suite', () => {
@@ -329,8 +491,22 @@ describe('Conformance Suite', () => {
     expect(result.achievedLevel).toBe(2);
   });
 
+  test('Level 3 verdict achieves Level 3', () => {
+    const result = runConformanceSuite(LEVEL_3_VERDICT, 3);
+    expect(result.achievedLevel).toBe(3);
+    expect(result.levels.length).toBe(4);
+  });
+
+  test('Level 2 verdict stops at Level 2 when targeting Level 3', () => {
+    const result = runConformanceSuite(LEVEL_2_VERDICT, 3);
+    expect(result.achievedLevel).toBe(2);
+    // Level 3 attempted but fails (no sourceInstanceId)
+    expect(result.levels.length).toBe(4);
+    expect(result.levels[3]!.passed).toBe(false);
+  });
+
   test('invalid JSON achieves nothing', () => {
-    const result = runConformanceSuite('not json', 2);
+    const result = runConformanceSuite('not json', 3);
     expect(result.achievedLevel).toBe(-1);
     expect(result.levels.length).toBe(1); // Stops at Level 0
   });
@@ -342,7 +518,7 @@ describe('Conformance Suite', () => {
       fileHashes: {},
       durationMs: 10,
     });
-    const result = runConformanceSuite(badVerdict, 2);
+    const result = runConformanceSuite(badVerdict, 3);
     expect(result.achievedLevel).toBe(-1);
     expect(result.levels.length).toBe(1); // Only Level 0 attempted
   });

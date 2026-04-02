@@ -183,9 +183,12 @@ export class WorkerPoolImpl implements WorkerPool {
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
 
     const processPromise = (async () => {
-      const stdout = await new Response(proc.stdout).text();
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
       const exitCode = await proc.exited;
-      return { stdout, exitCode };
+      return { stdout, stderr, exitCode };
     })();
 
     const result = await Promise.race([processPromise, timeoutPromise]);
@@ -196,6 +199,9 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     if (result.exitCode !== 0) {
+      if (result.stderr) {
+        console.error(`[vinyan] Worker subprocess error: ${result.stderr.slice(0, 500)}`);
+      }
       return emptyOutput(workerInput.taskId);
     }
 
@@ -333,10 +339,13 @@ export class WorkerPoolImpl implements WorkerPool {
 // ── Environment ─────────────────────────────────────────────────────────
 
 /** Minimal env allowlist for worker subprocesses — prevents leaking credentials. */
-const WORKER_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'TERM', 'BUN_INSTALL'];
+const WORKER_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'TERM', 'BUN_INSTALL', 'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_EXTRA_CA_CERTS'];
 
 /** Known provider env var names — only the relevant key is forwarded. */
-const PROVIDER_ENV_KEYS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY'];
+const PROVIDER_ENV_KEYS = [
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY',
+  'OPENROUTER_FAST_MODEL', 'OPENROUTER_BALANCED_MODEL', 'OPENROUTER_POWERFUL_MODEL',
+];
 
 function buildWorkerEnv(routing: RoutingDecision, proxySocketPath?: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};

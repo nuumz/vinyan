@@ -6,24 +6,39 @@
  */
 
 import type { DataSource } from './data/source.ts';
+import { getContextHints } from './hints.ts';
 import { parseCommand, routeKeypress, startKeyListener, type TUIAction } from './input.ts';
-import { ANSI, bold, color, dim, padEnd, statusBar, tabBar } from './renderer.ts';
+import {
+  contextHintsBar,
+  headerBar,
+  notificationBar,
+  tabBarWithBadges,
+  terminalSizeGuard,
+} from './renderer.ts';
 import { Screen, type ViewRenderer } from './screen.ts';
 import {
+  cleanExpiredToasts,
   closeModal,
   cycleFocus,
+  cycleNotification,
+  cycleSortField,
+  dismissNotification,
   exitInputMode,
+  enterCommandMode,
   openModal,
-  scrollList,
+  pushToast,
+  selectEvent,
   selectPeer,
   selectTask,
   switchTab,
+  updateTabBadges,
 } from './state.ts';
 import type { TUIState, ViewTab } from './types.ts';
-import { renderApprovalModal, renderConfirmQuit } from './views/approval-modal.ts';
-import { DASHBOARD_PANEL_COUNT, renderDashboard } from './views/dashboard.ts';
+import { renderApprovalModal, renderConfirmCancel, renderConfirmQuit } from './views/approval-modal.ts';
+import { EVENTS_PANEL_COUNT, renderEvents } from './views/events.ts';
 import { renderHelpOverlay } from './views/help.ts';
 import { PEERS_PANEL_COUNT, renderPeers } from './views/peers.ts';
+import { SYSTEM_PANEL_COUNT, renderSystem } from './views/system.ts';
 import { renderTasks, TASKS_PANEL_COUNT } from './views/tasks.ts';
 
 export interface AppConfig {
@@ -32,9 +47,10 @@ export interface AppConfig {
 }
 
 const TABS: Array<{ key: string; label: string; tab: ViewTab }> = [
-  { key: '1', label: 'Dashboard', tab: 'dashboard' },
-  { key: '2', label: 'Tasks', tab: 'tasks' },
+  { key: '1', label: 'Tasks', tab: 'tasks' },
+  { key: '2', label: 'System', tab: 'system' },
   { key: '3', label: 'Peers', tab: 'peers' },
+  { key: '4', label: 'Events', tab: 'events' },
 ];
 
 export class App {
@@ -134,11 +150,18 @@ export class App {
       case 'approve':
         this.dataSource.approveTask(action.taskId);
         closeModal(this.state);
+        // Dismiss matching notification
+        const approveNotif = this.state.notifications.find((n) => n.taskId === action.taskId && !n.dismissed);
+        if (approveNotif) dismissNotification(this.state, approveNotif.id);
+        pushToast(this.state, `✓ Approved ${action.taskId}`, 'success');
         break;
 
       case 'reject':
         this.dataSource.rejectTask(action.taskId);
         closeModal(this.state);
+        const rejectNotif = this.state.notifications.find((n) => n.taskId === action.taskId && !n.dismissed);
+        if (rejectNotif) dismissNotification(this.state, rejectNotif.id);
+        pushToast(this.state, `✗ Rejected ${action.taskId}`, 'warning');
         break;
 
       case 'toggle-help':
@@ -153,6 +176,45 @@ export class App {
         this.state.dirty = true;
         break;
 
+      case 'page-scroll':
+        this.handlePageScroll(action.direction);
+        break;
+
+      case 'jump':
+        this.handleJump(action.target);
+        break;
+
+      case 'cancel-task':
+        this.dataSource.cancelTask(action.taskId);
+        closeModal(this.state);
+        pushToast(this.state, `⊘ Cancel requested: ${action.taskId}`, 'info');
+        break;
+
+      case 'focus-notification': {
+        const pending = this.state.notifications.filter((n) => !n.dismissed);
+        const idx = Math.min(this.state.notificationIndex, pending.length - 1);
+        const target = pending[idx];
+        if (target?.taskId) {
+          switchTab(this.state, 'tasks');
+          selectTask(this.state, target.taskId);
+        }
+        break;
+      }
+
+      case 'cycle-notification':
+        cycleNotification(this.state, action.direction);
+        break;
+
+      case 'new-task':
+        enterCommandMode(this.state);
+        this.state.commandBuffer = 'run ';
+        this.state.dirty = true;
+        break;
+
+      case 'sort-cycle':
+        cycleSortField(this.state, this.state.activeTab);
+        break;
+
       case 'noop':
         break;
     }
@@ -162,13 +224,6 @@ export class App {
     const delta = direction === 'down' ? 1 : -1;
 
     switch (this.state.activeTab) {
-      case 'dashboard':
-        if (this.state.focusedPanel === 3) {
-          // Event log panel — scroll
-          scrollList(this.state, 'eventLog', delta);
-        }
-        break;
-
       case 'tasks':
         if (this.state.focusedPanel === 0) {
           // Task list — select next/prev task
@@ -187,20 +242,90 @@ export class App {
           selectPeer(this.state, peers[newIdx] ?? null);
         }
         break;
+
+      case 'events': {
+        const log = this.state.eventLog;
+        if (log.length === 0) break;
+        const currentIdx = this.state.selectedEventId
+          ? log.findIndex((e) => e.id === this.state.selectedEventId)
+          : -1;
+        const newIdx = Math.max(0, Math.min(log.length - 1, currentIdx + delta));
+        selectEvent(this.state, log[newIdx]?.id ?? null);
+        break;
+      }
     }
   }
 
   private handleSelect(): void {
-    // If there's a pending approval on the selected task, open modal
-    if (this.state.activeTab === 'tasks' && this.state.selectedTaskId) {
-      const task = this.state.tasks.get(this.state.selectedTaskId);
-      if (task?.pendingApproval) {
-        openModal(this.state, {
-          type: 'approval',
-          taskId: task.id,
-          riskScore: task.pendingApproval.riskScore,
-          reason: task.pendingApproval.reason,
-        });
+    switch (this.state.activeTab) {
+      case 'tasks':
+        if (this.state.selectedTaskId) {
+          const task = this.state.tasks.get(this.state.selectedTaskId);
+          if (task?.pendingApproval) {
+            openModal(this.state, {
+              type: 'approval',
+              taskId: task.id,
+              riskScore: task.pendingApproval.riskScore,
+              reason: task.pendingApproval.reason,
+            });
+          }
+        }
+        break;
+
+      case 'events':
+        // Selection toggles detail pane — already handled by selectedEventId
+        // If no event selected, select first
+        if (!this.state.selectedEventId && this.state.eventLog.length > 0) {
+          selectEvent(this.state, this.state.eventLog[0]!.id);
+        }
+        break;
+
+      case 'peers':
+        // Peers detail pane already shows selected peer info
+        if (!this.state.selectedPeerId) {
+          const firstPeer = [...this.state.peers.keys()][0];
+          if (firstPeer) selectPeer(this.state, firstPeer);
+        }
+        break;
+    }
+  }
+
+  private handlePageScroll(direction: 'up' | 'down'): void {
+    const delta = Math.floor(this.state.termHeight / 2);
+    const applyScroll = (key: 'eventLogScroll' | 'taskListScroll' | 'peerListScroll') => {
+      const current = this.state[key];
+      this.state[key] = direction === 'down' ? current + delta : Math.max(0, current - delta);
+      this.state.dirty = true;
+    };
+
+    switch (this.state.activeTab) {
+      case 'events':
+        applyScroll('eventLogScroll');
+        break;
+      case 'tasks':
+        applyScroll('taskListScroll');
+        break;
+      case 'peers':
+        applyScroll('peerListScroll');
+        break;
+    }
+  }
+
+  private handleJump(target: 'top' | 'bottom'): void {
+    switch (this.state.activeTab) {
+      case 'events':
+        this.state.eventLogScroll = target === 'top' ? 0 : Math.max(0, this.state.eventLog.length - 1);
+        this.state.dirty = true;
+        break;
+      case 'tasks': {
+        this.state.taskListScroll = target === 'top' ? 0 : Math.max(0, this.state.tasks.size - 1);
+        this.state.dirty = true;
+        break;
+      }
+      case 'peers': {
+        this.state.peerListScroll = target === 'top' ? 0 : Math.max(0, this.state.peers.size - 1);
+        this.state.dirty = true;
+        break;
       }
     }
   }
@@ -211,32 +336,78 @@ export class App {
       case 'run': {
         const goal = cmd.args[0] ?? cmd.rawArg;
         if (goal) {
+          // Extract --level N flag
+          const levelMatch = cmd.rawArg.match(/--level\s+(\d+)/);
+          const level = levelMatch ? Number.parseInt(levelMatch[1]!, 10) : undefined;
           this.dataSource.submitTask({
             id: `task-${Date.now().toString(36)}`,
             source: 'cli',
-            goal,
+            goal: goal.replace(/--level\s+\d+/, '').trim(),
             budget: { maxTokens: 10_000, maxDurationMs: 60_000, maxRetries: 3 },
+            ...(level != null && { routingLevel: level }),
           });
           switchTab(this.state, 'tasks');
         }
         break;
       }
 
-      case 'approve':
-        if (cmd.args[0]) {
-          this.dataSource.approveTask(cmd.args[0]);
+      case 'approve': {
+        const taskId = cmd.args[0] ?? this.getNotificationTargetId();
+        if (taskId) {
+          this.dataSource.approveTask(taskId);
+          pushToast(this.state, `Approved ${taskId}`, 'success');
         }
         break;
+      }
 
-      case 'reject':
-        if (cmd.args[0]) {
-          this.dataSource.rejectTask(cmd.args[0]);
+      case 'reject': {
+        const taskId = cmd.args[0] ?? this.getNotificationTargetId();
+        if (taskId) {
+          this.dataSource.rejectTask(taskId);
+          pushToast(this.state, `Rejected ${taskId}`, 'success');
         }
         break;
+      }
+
+      case 'cancel': {
+        const taskId = cmd.args[0] ?? this.state.selectedTaskId;
+        if (taskId) {
+          this.dataSource.cancelTask(taskId);
+          pushToast(this.state, `Cancelled ${taskId}`, 'success');
+        }
+        break;
+      }
+
+      case 'sort': {
+        const field = cmd.args[0];
+        if (field) {
+          const tab = this.state.activeTab;
+          this.state.sort[tab] = { field: field as any, direction: 'desc' };
+          this.state.dirty = true;
+          pushToast(this.state, `Sort: ${field} desc`, 'info');
+        }
+        break;
+      }
+
+      case 'set': {
+        const [key, value] = cmd.args;
+        if (key && value) {
+          pushToast(this.state, `Set ${key}=${value}`, 'info');
+        }
+        break;
+      }
 
       case 'filter':
         this.state.filterQuery = cmd.rawArg;
         this.state.dirty = true;
+        break;
+
+      case 'sleep':
+        this.dataSource.triggerSleepCycle();
+        break;
+
+      case 'export':
+        this.dataSource.exportPatterns(cmd.rawArg || 'vinyan-patterns.json');
         break;
 
       case 'clear':
@@ -246,14 +417,25 @@ export class App {
     }
   }
 
+  /** Get the taskId from the current notification (for approve/reject default). */
+  private getNotificationTargetId(): string | undefined {
+    const { notifications, notificationIndex } = this.state;
+    const pending = notifications.filter((n) => !n.dismissed);
+    return pending[notificationIndex]?.taskId;
+  }
+
   private getMaxPanels(): number {
     switch (this.state.activeTab) {
-      case 'dashboard':
-        return DASHBOARD_PANEL_COUNT;
       case 'tasks':
         return TASKS_PANEL_COUNT;
+      case 'system':
+        return SYSTEM_PANEL_COUNT;
       case 'peers':
         return PEERS_PANEL_COUNT;
+      case 'events':
+        return EVENTS_PANEL_COUNT;
+      default:
+        return 1;
     }
   }
 
@@ -261,31 +443,47 @@ export class App {
 
   private renderFrame(state: TUIState): string {
     const { termWidth, termHeight } = state;
+
+    // Terminal size guard
+    const sizeGuard = terminalSizeGuard(termWidth, termHeight);
+    if (sizeGuard) return sizeGuard;
+
+    // Pre-render maintenance
+    cleanExpiredToasts(state);
+    updateTabBadges(state);
+
     const lines: string[] = [];
 
-    // Tab bar (row 1)
-    const activeTabIdx = TABS.findIndex((t) => t.tab === state.activeTab);
-    lines.push(tabBar(TABS, activeTabIdx, termWidth));
+    // Row 1: Header bar — health + counts + clock
+    lines.push(headerBar(state, termWidth));
 
-    // View content (rows 2 to termHeight-2)
+    // Row 2: Tab bar with badges
+    lines.push(tabBarWithBadges(TABS, state.activeTab, state.tabBadges, termWidth));
+
+    // Row 3+: View content (left/right split handled by each view)
     let viewContent: string;
     switch (state.activeTab) {
-      case 'dashboard':
-        viewContent = renderDashboard(state);
-        break;
       case 'tasks':
         viewContent = renderTasks(state);
+        break;
+      case 'system':
+        viewContent = renderSystem(state);
         break;
       case 'peers':
         viewContent = renderPeers(state);
         break;
+      case 'events':
+        viewContent = renderEvents(state);
+        break;
     }
     lines.push(viewContent);
 
-    // Status bar (last row)
-    const leftStatus = this.renderStatusLeft(state);
-    const rightStatus = this.renderStatusRight(state);
-    lines.push(statusBar(leftStatus, rightStatus, termWidth));
+    // Row N-1: Notification bar — pending actions / toast feedback
+    lines.push(notificationBar(state, termWidth));
+
+    // Row N: Context hints — dynamic keybinding hints (+ command buffer in command/filter mode)
+    const hints = getContextHints(state);
+    lines.push(contextHintsBar(state.inputMode, hints, termWidth, state.commandBuffer));
 
     let frame = lines.join('\n');
 
@@ -294,33 +492,12 @@ export class App {
       frame += renderApprovalModal(state);
     } else if (state.modal?.type === 'confirm-quit') {
       frame += renderConfirmQuit(state);
+    } else if (state.modal?.type === 'confirm-cancel') {
+      frame += renderConfirmCancel(state);
     } else if (state.modal?.type === 'help') {
       frame += renderHelpOverlay(state);
     }
 
     return frame;
-  }
-
-  private renderStatusLeft(state: TUIState): string {
-    if (state.inputMode === 'command') {
-      return ` :${state.commandBuffer}█`;
-    }
-    if (state.inputMode === 'filter') {
-      return ` /${state.commandBuffer}█`;
-    }
-
-    // Count pending approvals
-    const pending = [...state.tasks.values()].filter((t) => t.pendingApproval).length;
-    const pendingBadge = pending > 0 ? color(` [${pending} pending] `, ANSI.bold, ANSI.yellow) : '';
-
-    return ` Vinyan TUI${pendingBadge}`;
-  }
-
-  private renderStatusRight(state: TUIState): string {
-    const taskCount = state.tasks.size;
-    const running = [...state.tasks.values()].filter((t) => t.status === 'running').length;
-    const peerCount = state.peers.size;
-
-    return `Tasks: ${running}/${taskCount}  Peers: ${peerCount}  [?] help  [q] quit `;
   }
 }

@@ -14,4 +14,5 @@
 export { validateLevel0, type Level0Result } from './level0.ts';
 export { validateLevel1, type Level1Result } from './level1.ts';
 export { validateLevel2, type Level2Result } from './level2.ts';
+export { validateLevel3, validateKnowledgeOffer, validateKnowledgeAcceptance, validateKnowledgeTransfer, type Level3Result } from './level3.ts';
 export { runConformanceSuite, type ConformanceResult, type ConformanceLevel } from './suite.ts';

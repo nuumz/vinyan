@@ -1,30 +1,54 @@
 /**
  * Peers View — Tab 3: A2A peer network with trust and health.
  *
- * Layout:
- *   ┌─ Peer Network (list) ────────────────────────────────┐
- *   │ Peer        Trust        Health     Wilson  Latency   │
- *   └──────────────────────────────────────────────────────-┘
- *   ┌─ Peer Detail ──────────────────────────────────────--┐
- *   │ Trust history, capabilities, knowledge exchange       │
- *   └──────────────────────────────────────────────────────-┘
+ * Layout (left-right split):
+ *   ┌─ Peers (3) ─────────────────┐   ┌─ inst-02 ─────────────────────┐
+ *   │  Peer       Trust   Health   │   │ Peer: inst-02                 │
+ *   │ ▸ inst-02  trusted  ● conn  │   │ Trust: trusted  Health: conn  │
+ *   │   inst-05  prov     ● conn  │   │ Capabilities: ...             │
+ *   └─────────────────────────────-┘   └───────────────────────────────┘
  */
 
-import { ANSI, bold, color, dim, formatDuration, padEnd, panel, truncate } from '../renderer.ts';
-import type { PeerDisplayState, TUIState } from '../types.ts';
+import { ANSI, bold, color, dim, formatDuration, padEnd, panel, sideBySide, truncate } from '../renderer.ts';
+import type { PeerDisplayState, PeerSortField, SortConfig, TUIState } from '../types.ts';
 
 export function renderPeers(state: TUIState): string {
   const { termWidth, termHeight } = state;
-  const listHeight = Math.min(12, Math.floor(termHeight * 0.35));
-  const detailHeight = termHeight - listHeight - 4;
+  const viewHeight = termHeight - 4; // account for header/tab/status/hints bars
+  const leftW = Math.floor(termWidth * 0.5);
+  const rightW = termWidth - leftW - 1; // 1 gap
 
-  const listPanel = renderPeerList(state, termWidth, listHeight, state.focusedPanel === 0);
-  const detailPanel = renderPeerDetail(state, termWidth, detailHeight, state.focusedPanel === 1);
+  const peers = sortPeers([...state.peers.values()], state.sort.peers as SortConfig<PeerSortField> | undefined);
 
-  return listPanel + '\n' + detailPanel;
+  const listPanel = renderPeerList(state, peers, leftW, viewHeight, state.focusedPanel === 0);
+  const detailPanel = renderPeerDetail(state, rightW, viewHeight, state.focusedPanel === 1);
+
+  return sideBySide(listPanel, detailPanel);
 }
 
 export const PEERS_PANEL_COUNT = 2;
+
+// ── Sort ────────────────────────────────────────────────────────────
+
+const TRUST_ORDER: Record<string, number> = { trusted: 0, established: 1, provisional: 2, untrusted: 3 };
+const HEALTH_ORDER: Record<string, number> = { connected: 0, degraded: 1, partitioned: 2, unknown: 3 };
+
+function sortPeers(peers: PeerDisplayState[], sort?: SortConfig<PeerSortField>): PeerDisplayState[] {
+  if (!sort) return peers;
+  const dir = sort.direction === 'asc' ? 1 : -1;
+  return peers.sort((a, b) => {
+    switch (sort.field) {
+      case 'trust':
+        return dir * ((TRUST_ORDER[a.trustLevel] ?? 9) - (TRUST_ORDER[b.trustLevel] ?? 9));
+      case 'health':
+        return dir * ((HEALTH_ORDER[a.healthState] ?? 9) - (HEALTH_ORDER[b.healthState] ?? 9));
+      case 'lastSeen':
+        return dir * (a.lastSeen - b.lastSeen);
+      default:
+        return 0;
+    }
+  });
+}
 
 // ── Trust Badge Widget ──────────────────────────────────────────────
 
@@ -36,7 +60,6 @@ function trustBadge(level: string): string {
       return color('established', ANSI.blue);
     case 'provisional':
       return color('provisional', ANSI.yellow);
-    case 'untrusted':
     default:
       return color('untrusted', ANSI.red);
   }
@@ -55,27 +78,26 @@ function healthIcon(state: string): string {
   }
 }
 
-// ── Peer List ───────────────────────────────────────────────────────
+// ── Peer List (left pane) ───────────────────────────────────────────
 
-function renderPeerList(state: TUIState, width: number, height: number, focused: boolean): string {
+function renderPeerList(
+  state: TUIState,
+  peers: PeerDisplayState[],
+  width: number,
+  height: number,
+  focused: boolean,
+): string {
   const innerW = width - 2;
-  const peers = [...state.peers.values()];
   const visibleRows = height - 3;
 
   const lines: string[] = [];
 
   // Header
-  const header =
-    `${padEnd(bold('Peer'), 18)}` +
-    `${padEnd(bold('Instance'), 20)}` +
-    `${padEnd(bold('Trust'), 14)}` +
-    `${padEnd(bold('Health'), 10)}` +
-    `${padEnd(bold('Interactions'), 14)}` +
-    `${bold('Latency')}`;
+  const header = `${padEnd(bold('Peer'), 18)}${padEnd(bold('Trust'), 14)}${bold('Health')}`;
   lines.push(truncate(header, innerW));
 
   if (peers.length === 0) {
-    lines.push(dim('  No peers connected. Configure network.instances in vinyan.json.'));
+    lines.push(dim('  No peers connected.'));
   } else {
     const startIdx = state.peerListScroll;
     const slice = peers.slice(startIdx, startIdx + visibleRows - 1);
@@ -84,14 +106,10 @@ function renderPeerList(state: TUIState, width: number, height: number, focused:
       const selected = peer.peerId === state.selectedPeerId;
       const prefix = selected ? color('▸ ', ANSI.cyan) : '  ';
       const id = padEnd(peer.peerId.slice(0, 16), 16);
-      const inst = padEnd(peer.instanceId.slice(0, 18), 18);
       const trust = padEnd(trustBadge(peer.trustLevel), 12);
-      const health = padEnd(`${healthIcon(peer.healthState)} ${peer.healthState}`, 8);
-      const interactions = padEnd(String(peer.interactions), 12);
-      const latency = peer.latencyMs != null ? `${peer.latencyMs}ms` : '-';
+      const health = `${healthIcon(peer.healthState)} ${peer.healthState}`;
 
-      const line = `${prefix}${id}  ${inst}  ${trust}  ${health}  ${interactions}  ${latency}`;
-      lines.push(truncate(line, innerW));
+      lines.push(truncate(`${prefix}${id}${trust}  ${health}`, innerW));
     }
   }
 
@@ -100,7 +118,7 @@ function renderPeerList(state: TUIState, width: number, height: number, focused:
   return panel(`Peers (${peers.length})`, lines.join('\n'), width, height, focused);
 }
 
-// ── Peer Detail ─────────────────────────────────────────────────────
+// ── Peer Detail (right pane) ────────────────────────────────────────
 
 function renderPeerDetail(state: TUIState, width: number, height: number, focused: boolean): string {
   const peer = state.selectedPeerId ? state.peers.get(state.selectedPeerId) : undefined;
@@ -122,8 +140,9 @@ function renderPeerDetail(state: TUIState, width: number, height: number, focuse
     `${bold('Trust:')} ${trustBadge(peer.trustLevel)}  ${bold('Health:')} ${healthIcon(peer.healthState)} ${peer.healthState}`,
   );
   lines.push(
-    `${bold('Latency:')} ${peer.latencyMs != null ? `${peer.latencyMs}ms` : 'unknown'}  ${bold('Last seen:')} ${timeSince(peer.lastSeen)}`,
+    `${bold('Latency:')} ${peer.latencyMs != null ? `${peer.latencyMs}ms` : 'unknown'}  ${bold('Interactions:')} ${peer.interactions}`,
   );
+  lines.push(`${bold('Last seen:')} ${timeSince(peer.lastSeen)}`);
   lines.push('');
 
   // Capabilities
@@ -131,7 +150,9 @@ function renderPeerDetail(state: TUIState, width: number, height: number, focuse
   if (peer.capabilities.length === 0) {
     lines.push(dim('  Unknown'));
   } else {
-    lines.push(`  ${peer.capabilities.join(', ')}`);
+    for (const cap of peer.capabilities) {
+      lines.push(`  ${cap}`);
+    }
   }
   lines.push('');
 
@@ -146,5 +167,5 @@ function renderPeerDetail(state: TUIState, width: number, height: number, focuse
 function timeSince(ts: number): string {
   const delta = Date.now() - ts;
   if (delta < 1000) return 'just now';
-  return formatDuration(delta) + ' ago';
+  return `${formatDuration(delta)} ago`;
 }

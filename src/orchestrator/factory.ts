@@ -49,6 +49,7 @@ import { WorkerPoolImpl } from './worker/worker-pool.ts';
 import { WorkerLifecycle } from './worker-lifecycle.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { WorkerSelector } from './worker-selector.ts';
+import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -84,6 +85,7 @@ export interface Orchestrator {
   workerStore?: WorkerStore;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  approvalGate?: ApprovalGateImpl;
   getSessionCount(): number;
   close(): void;
 }
@@ -293,6 +295,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* instance coordinator wiring is best-effort */
   }
 
+  // Approval Gate (A6: human-in-the-loop for high-risk tasks)
+  const approvalGate = new ApprovalGateImpl(bus);
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -317,6 +322,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
     // Phase 5 — Instance Coordinator (PH5.8)
     instanceCoordinator: instanceCoordinator,
+    // Human approval gate (A6)
+    approvalGate,
   };
 
   // Wire bus listeners (read-only observers — A3 compliance)
@@ -422,6 +429,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore,
     worldGraph,
     metricsCollector,
+    approvalGate,
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);
@@ -430,6 +438,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachMetrics();
       traceListenerHandle.detach();
       detachAudit();
+      approvalGate.clear();
       worldGraph?.close();
       db?.close();
     },

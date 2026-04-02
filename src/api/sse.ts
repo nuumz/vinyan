@@ -26,7 +26,7 @@ const SSE_EVENTS: BusEventName[] = [
 /**
  * Create an SSE ReadableStream for a specific task.
  */
-export function createSSEStream(bus: VinyanBus, taskId: string): { stream: ReadableStream; cleanup: () => void } {
+export function createSSEStream(bus: VinyanBus, taskId?: string): { stream: ReadableStream; cleanup: () => void } {
   const unsubscribers: Array<() => void> = [];
   let controller: ReadableStreamDefaultController | null = null;
 

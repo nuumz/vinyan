@@ -18,11 +18,24 @@ export function renderHelpOverlay(state: TUIState): string {
     {
       title: 'Navigation',
       keys: [
-        ['1 / 2 / 3', 'Switch to Dashboard / Tasks / Peers'],
+        ['1 / 2 / 3 / 4', 'Switch to Tasks / System / Peers / Events'],
         ['Tab / Shift+Tab', 'Cycle panels forward / backward'],
         ['j / k / ↑ / ↓', 'Navigate list up / down'],
+        ['g / G', 'Jump to top / bottom'],
+        ['Ctrl+d / Ctrl+u', 'Page down / up'],
         ['Enter / Space', 'Select / expand item'],
+        ['[ / ]', 'Cycle through notifications'],
         ['Esc', 'Back / close modal'],
+      ],
+    },
+    {
+      title: 'Actions',
+      keys: [
+        ['a', 'Approve (notification target or selected task)'],
+        ['r', 'Reject (notification target) / Refresh'],
+        ['c', 'Cancel running task'],
+        ['n', 'New task (tasks tab)'],
+        ['s', 'Sort cycle (tasks / peers tab)'],
       ],
     },
     {
@@ -31,7 +44,6 @@ export function renderHelpOverlay(state: TUIState): string {
         [':', 'Command mode'],
         ['/', 'Filter mode (event log)'],
         ['?', 'Toggle this help'],
-        ['r', 'Refresh data'],
         ['q', 'Quit'],
       ],
     },
@@ -39,8 +51,12 @@ export function renderHelpOverlay(state: TUIState): string {
       title: 'Commands (: prefix)',
       keys: [
         [':run "goal"', 'Submit a new task'],
-        [':approve <id>', 'Approve pending task'],
-        [':reject <id>', 'Reject pending task'],
+        [':approve [id]', 'Approve pending task'],
+        [':reject [id]', 'Reject pending task'],
+        [':cancel [id]', 'Cancel a running task'],
+        [':sort <field>', 'Sort current tab list'],
+        [':sleep', 'Trigger sleep cycle'],
+        [':export [file]', 'Export patterns to JSON'],
         [':filter <domain>', 'Filter event log'],
       ],
     },
@@ -61,8 +77,8 @@ export function renderHelpOverlay(state: TUIState): string {
     lines.push(emptyLine(modalW, border));
     lines.push(contentLine(` ${bold(section.title)}`, modalW, border));
     for (const [key, desc] of section.keys) {
-      const keyStr = color(key!.padEnd(20), ANSI.cyan);
-      lines.push(contentLine(`  ${keyStr} ${dim(desc!)}`, modalW, border));
+      const keyStr = color((key ?? '').padEnd(20), ANSI.cyan);
+      lines.push(contentLine(`  ${keyStr} ${dim(desc ?? '')}`, modalW, border));
     }
   }
 

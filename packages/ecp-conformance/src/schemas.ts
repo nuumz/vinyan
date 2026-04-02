@@ -99,3 +99,40 @@ export const VersionResponseSchema = z.object({
   instance_id: z.string(),
   features: z.array(z.string()),
 });
+
+// ── Level 3: Cross-instance coordination ────────────────────────────
+
+export const Level3VerdictSchema = Level2VerdictSchema.extend({
+  sourceInstanceId: z.string().min(1),
+  origin: z.enum(['local', 'a2a']).optional(),
+  signature: z.string().optional(),
+  signerInstanceId: z.string().optional(),
+});
+
+export const KnowledgeOfferSchema = z.object({
+  cycleId: z.string(),
+  instanceId: z.string().min(1),
+  patterns: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    confidence: z.number().min(0).max(1),
+    portability: z.enum(['universal', 'framework-specific', 'project-specific']),
+  })),
+});
+
+export const KnowledgeAcceptanceSchema = z.object({
+  acceptedPatternIds: z.array(z.string()),
+  rejectedPatternIds: z.array(z.string()),
+});
+
+export const KnowledgeTransferSchema = z.object({
+  cycleId: z.string(),
+  instanceId: z.string().min(1),
+  patterns: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    confidence: z.number().min(0).max(1),
+    fingerprint: z.string(),
+    portability: z.enum(['universal', 'framework-specific', 'project-specific']),
+  })),
+});

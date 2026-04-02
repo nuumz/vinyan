@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import type { HypothesisTuple } from '../../src/core/types.ts';
+import { registerOracle } from '../../src/oracle/registry.ts';
 import { runOracle } from '../../src/oracle/runner.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -52,5 +53,50 @@ describe('OracleRunner', () => {
 
     expect(verdict.verified).toBe(false);
     expect(verdict.reason).toContain('Unknown oracle');
+  });
+
+  test('I17: emits guardrail:violation for speculative oracle at routing level < 2', async () => {
+    registerOracle('test-speculative', {
+      command: `bun run ${resolve(fixturesDir, 'echo-oracle.ts')}`,
+      tier: 'speculative',
+    });
+
+    const violations: unknown[] = [];
+    const mockBus = {
+      emit(event: string, payload: unknown) {
+        if (event === 'guardrail:violation') violations.push(payload);
+      },
+    };
+
+    await runOracle('test-speculative', baseHypothesis, {
+      routingLevel: 1,
+      bus: mockBus,
+    });
+
+    expect(violations).toHaveLength(1);
+    const v = violations[0] as { rule: string; severity: string };
+    expect(v.rule).toBe('I17');
+    expect(v.severity).toBe('warn');
+  });
+
+  test('I17: no violation emitted for speculative oracle at routing level >= 2', async () => {
+    registerOracle('test-speculative-l2', {
+      command: `bun run ${resolve(fixturesDir, 'echo-oracle.ts')}`,
+      tier: 'speculative',
+    });
+
+    const violations: unknown[] = [];
+    const mockBus = {
+      emit(event: string, payload: unknown) {
+        if (event === 'guardrail:violation') violations.push(payload);
+      },
+    };
+
+    await runOracle('test-speculative-l2', baseHypothesis, {
+      routingLevel: 2,
+      bus: mockBus,
+    });
+
+    expect(violations).toHaveLength(0);
   });
 });

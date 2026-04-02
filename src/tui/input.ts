@@ -8,16 +8,10 @@
 import {
   appendToBuffer,
   backspaceBuffer,
-  closeModal,
-  cycleFocus,
   enterCommandMode,
   enterFilterMode,
   exitInputMode,
   openModal,
-  scrollList,
-  selectPeer,
-  selectTask,
-  switchTab,
 } from './state.ts';
 import type { TUIState, ViewTab } from './types.ts';
 
@@ -36,6 +30,13 @@ export type TUIAction =
   | { type: 'reject'; taskId: string }
   | { type: 'toggle-help' }
   | { type: 'refresh' }
+  | { type: 'page-scroll'; direction: 'up' | 'down' }
+  | { type: 'jump'; target: 'top' | 'bottom' }
+  | { type: 'cancel-task'; taskId: string }
+  | { type: 'focus-notification' }
+  | { type: 'cycle-notification'; direction: 1 | -1 }
+  | { type: 'new-task' }
+  | { type: 'sort-cycle' }
   | { type: 'noop' };
 
 // ── Command Parser ──────────────────────────────────────────────────
@@ -134,6 +135,11 @@ function routeModalKey(state: TUIState, key: KeypressInfo): TUIAction {
     if (key.name === 'n' || key.name === 'escape') return { type: 'back' };
   }
 
+  if (state.modal?.type === 'confirm-cancel' && state.modal.taskId) {
+    if (key.name === 'y') return { type: 'cancel-task', taskId: state.modal.taskId };
+    if (key.name === 'n' || key.name === 'escape') return { type: 'back' };
+  }
+
   if (state.modal?.type === 'help') {
     if (key.name === '?' || key.name === 'escape') return { type: 'toggle-help' };
   }
@@ -149,10 +155,10 @@ function routeBufferKey(state: TUIState, key: KeypressInfo): TUIAction {
   }
   if (key.name === 'return') {
     const buffer = state.commandBuffer;
+    const wasFilter = state.inputMode === 'filter';
     exitInputMode(state);
-    if (state.inputMode === 'command' || buffer.length > 0) {
-      // Determine if this was a command or filter based on what mode we were in
-      return { type: 'command', command: buffer };
+    if (buffer.length > 0) {
+      return wasFilter ? { type: 'filter', query: buffer } : { type: 'command', command: buffer };
     }
     return { type: 'noop' };
   }
@@ -165,17 +171,64 @@ function routeBufferKey(state: TUIState, key: KeypressInfo): TUIAction {
 }
 
 function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
-  // Tab switching: 1, 2, 3
-  if (key.name === '1') return { type: 'switch-tab', tab: 'dashboard' };
-  if (key.name === '2') return { type: 'switch-tab', tab: 'tasks' };
+  // Tab switching: 1-4
+  if (key.name === '1') return { type: 'switch-tab', tab: 'tasks' };
+  if (key.name === '2') return { type: 'switch-tab', tab: 'system' };
   if (key.name === '3') return { type: 'switch-tab', tab: 'peers' };
+  if (key.name === '4') return { type: 'switch-tab', tab: 'events' };
 
   // Navigation
   if (key.name === 'tab') return { type: 'cycle-focus', direction: key.shift ? -1 : 1 };
   if (key.name === 'j' || key.name === 'down') return { type: 'navigate', direction: 'down' };
   if (key.name === 'k' || key.name === 'up') return { type: 'navigate', direction: 'up' };
-  if (key.name === 'return' || key.name === 'space') return { type: 'select' };
+  if (key.name === 'return') return { type: 'select' };
   if (key.name === 'escape') return { type: 'back' };
+
+  // Page scroll & jump (Ctrl+d, Ctrl+u, g, G)
+  if (key.ctrl && key.name === 'd') return { type: 'page-scroll', direction: 'down' };
+  if (key.ctrl && key.name === 'u') return { type: 'page-scroll', direction: 'up' };
+  if (key.name === 'g' && !key.shift) return { type: 'jump', target: 'top' };
+  if (key.name === 'G' || (key.name === 'g' && key.shift)) return { type: 'jump', target: 'bottom' };
+
+  // Notification cycling
+  if (key.name === '[') return { type: 'cycle-notification', direction: -1 };
+  if (key.name === ']') return { type: 'cycle-notification', direction: 1 };
+
+  // Space: focus notification if present, else select
+  if (key.name === 'space') {
+    const hasNotification = state.notifications.some((n) => !n.dismissed);
+    return hasNotification ? { type: 'focus-notification' } : { type: 'select' };
+  }
+
+  // Context-sensitive: a/r — approve/reject
+  // Priority: notification target > selected task
+  const pendingNotif = state.notifications.find((n) => !n.dismissed && n.type === 'approval');
+  const selectedTask = state.selectedTaskId ? state.tasks.get(state.selectedTaskId) : undefined;
+
+  if (key.name === 'a') {
+    const targetId = pendingNotif?.taskId ?? (selectedTask?.pendingApproval ? selectedTask.id : undefined);
+    if (targetId) return { type: 'approve', taskId: targetId };
+  }
+  if (key.name === 'r') {
+    const targetId = pendingNotif?.taskId ?? (selectedTask?.pendingApproval ? selectedTask.id : undefined);
+    if (targetId) return { type: 'reject', taskId: targetId };
+    // Fallback: refresh
+    return { type: 'refresh' };
+  }
+
+  // Cancel running task (with confirmation)
+  if (key.name === 'c' && selectedTask?.status === 'running') {
+    openModal(state, { type: 'confirm-cancel', taskId: selectedTask.id });
+    return { type: 'noop' };
+  }
+
+  // New task (Tasks tab only)
+  if (key.name === 'n' && state.activeTab === 'tasks') return { type: 'new-task' };
+
+  // Sort cycle (Tasks/Peers/Events tabs)
+  if (key.name === 's' && (state.activeTab === 'tasks' || state.activeTab === 'peers' || state.activeTab === 'events')) {
+    return { type: 'sort-cycle' };
+  }
 
   // Mode entry
   if (key.name === ':') {
@@ -190,12 +243,8 @@ function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
   // Help
   if (key.name === '?') return { type: 'toggle-help' };
 
-  // Refresh
-  if (key.name === 'r') return { type: 'refresh' };
-
   // Quit
   if (key.name === 'q') {
-    // If tasks are running, show confirm dialog
     const hasRunning = [...state.tasks.values()].some((t) => t.status === 'running');
     if (hasRunning) {
       openModal(state, { type: 'confirm-quit' });

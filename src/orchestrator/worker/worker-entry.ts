@@ -97,7 +97,7 @@ async function main() {
 
   let output;
   try {
-    const parsed = JSON.parse(response.content);
+    const parsed = JSON.parse(extractJSON(response.content));
     output = {
       taskId: input.taskId,
       proposedMutations: parsed.proposedMutations ?? [],
@@ -111,7 +111,7 @@ async function main() {
       taskId: input.taskId,
       proposedMutations: [],
       proposedToolCalls: [],
-      uncertainties: [],
+      uncertainties: [`Failed to parse LLM response as JSON (${response.content.length} chars)`],
       tokensConsumed: tokens,
       durationMs,
     };
@@ -123,6 +123,25 @@ async function main() {
 function writeOutput(output: unknown): void {
   const validated = WorkerOutputSchema.parse(output);
   process.stdout.write(`${JSON.stringify(validated)}\n`);
+}
+
+/** Extract JSON from LLM response that may be wrapped in markdown fences or leading text. */
+function extractJSON(content: string): string {
+  let str = content.trim();
+  // Strip markdown code fences
+  const fenceMatch = str.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    str = fenceMatch[1]?.trim() ?? str;
+  }
+  // If still not starting with {, try to find first { ... last }
+  if (!str.startsWith('{')) {
+    const firstBrace = str.indexOf('{');
+    const lastBrace = str.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      str = str.slice(firstBrace, lastBrace + 1);
+    }
+  }
+  return str;
 }
 
 main().catch((err) => {

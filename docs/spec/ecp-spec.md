@@ -1,6 +1,6 @@
 # Epistemic Communication Protocol (ECP) Specification
 
-> **Version:** 1.0-draft | **Date:** 2026-04-01 | **Status:** Draft
+> **Version:** 1.0 | **Date:** 2026-04-02 | **Status:** Release Candidate
 > **Source of truth:** [concept.md](../foundation/concept.md) §2, [tdd.md](tdd.md), [a2a-protocol.md](a2a-protocol.md)
 > **Normative schemas:** `src/oracle/protocol.ts` (Zod — exports `HypothesisTupleSchema`, `EvidenceSchema`, `QualityScoreSchema`, `OracleVerdictSchema`; `DeliberationRequestSchema` and `TemporalContextSchema` are defined but not yet exported), `src/core/types.ts` (TypeScript interfaces)
 

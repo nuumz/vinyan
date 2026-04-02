@@ -89,3 +89,29 @@ export function renderConfirmQuit(state: TUIState): string {
 
   return lines.map((line, i) => moveTo(startRow + i, startCol) + line).join('');
 }
+
+/** Render confirm-cancel dialog. */
+export function renderConfirmCancel(state: TUIState): string {
+  if (state.modal?.type !== 'confirm-cancel' || !state.modal.taskId) return '';
+
+  const { termWidth, termHeight } = state;
+  const modalW = 44;
+  const modalH = 6;
+  const startRow = Math.floor((termHeight - modalH) / 2);
+  const startCol = Math.floor((termWidth - modalW) / 2);
+
+  const border = ANSI.yellow;
+  const taskLabel = state.modal.taskId.length > 28
+    ? `${state.modal.taskId.slice(0, 25)}...`
+    : state.modal.taskId;
+  const lines = [
+    `${border}┌${'─'.repeat(modalW - 2)}┐${ANSI.reset}`,
+    padLine(bold(`Cancel task: ${taskLabel}`), modalW, border),
+    padLine('This will request cancellation.', modalW, border),
+    padLine('', modalW, border),
+    padLine(`${color('[y]es', ANSI.red)}  ${color('[n]o', ANSI.green)}`, modalW, border),
+    `${border}└${'─'.repeat(modalW - 2)}┘${ANSI.reset}`,
+  ];
+
+  return lines.map((line, i) => moveTo(startRow + i, startCol) + line).join('');
+}

@@ -5,7 +5,7 @@
  */
 
 import type { BusEventName, VinyanBus } from '../core/bus.ts';
-import { ANSI, bold, color, dim, formatTimestamp, statusBadge } from './renderer.ts';
+import { ANSI, color, dim, formatTimestamp } from './renderer.ts';
 
 export interface EventRendererConfig {
   /** Maximum number of events to keep in the rolling buffer. */

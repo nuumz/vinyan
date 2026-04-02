@@ -1,3 +1,4 @@
+import { HttpTransport } from '../a2a/http-transport.ts';
 import { StdioTransport } from '../a2a/stdio-transport.ts';
 import type { ECPTransport } from '../a2a/transport.ts';
 import { WebSocketTransport } from '../a2a/websocket-transport.ts';
@@ -16,10 +17,14 @@ export interface RunOracleOptions {
   transport?: ECPTransport;
   /** Peer trust level — only applies when transport is A2A. */
   peerTrust?: PeerTrustLevel;
-  /** WebSocket endpoint URL (for websocket transport). */
+  /** Endpoint URL (for websocket or http transport). */
   endpoint?: string;
-  /** Auth token for WebSocket transport. */
+  /** Auth token for websocket or http transport. */
   authToken?: string;
+  /** Current routing level — used for Safety Invariant I17 enforcement. */
+  routingLevel?: number;
+  /** Optional bus for emitting safety guardrail events (I17). */
+  bus?: { emit(event: string, payload: unknown): void };
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -39,7 +44,16 @@ export async function runOracle(
   const oraclePath = options.oraclePath ?? getOraclePath(oracleName);
   const timeoutMs = options.timeoutMs ?? entry?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Resolve transport: explicit > websocket (from registry) > stdio
+  // Safety Invariant I17: speculative-tier oracles require L2+ routing isolation (PH5.8).
+  if (entry?.tier === 'speculative' && (options.routingLevel ?? 0) < 2) {
+    options.bus?.emit('guardrail:violation', {
+      rule: 'I17',
+      detail: `Speculative oracle '${oracleName}' invoked at routing level ${options.routingLevel ?? 0} — requires L2+`,
+      severity: 'warn',
+    });
+  }
+
+  // Resolve transport: explicit > websocket (from registry) > http > stdio
   const transport = options.transport ?? resolveTransport(oracleName, entry, customCommand, oraclePath, options);
   if (!transport) {
     return buildVerdict({
@@ -99,6 +113,13 @@ function resolveTransport(
       wsTransportCache.set(cacheKey, ws);
     }
     return ws;
+  }
+
+  // HTTP transport — stateless POST to remote oracle endpoint (PH5.18)
+  if (transportType === 'http') {
+    const endpoint = options.endpoint ?? (entry as { endpoint?: string })?.endpoint;
+    if (!endpoint) return null;
+    return new HttpTransport({ endpoint, authToken: options.authToken });
   }
 
   // Default: stdio transport

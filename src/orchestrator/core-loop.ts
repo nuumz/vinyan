@@ -134,6 +134,8 @@ export interface OrchestratorDeps {
   // Phase 5 — optional, activated when A2A instances configured
   /** InstanceCoordinator for cross-instance task delegation and remote oracle dispatch (PH5.8). */
   instanceCoordinator?: import('./instance-coordinator.ts').InstanceCoordinator;
+  /** ApprovalGate for human-in-the-loop approval of high-risk tasks (A6). */
+  approvalGate?: import('./approval-gate.ts').ApprovalGate;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -372,6 +374,37 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot());
         if (plan.isFallback) {
           deps.bus?.emit('decomposer:fallback', { taskId: input.id });
+        }
+      }
+
+      // ── Step 3.5: APPROVAL GATE (A6 — human-in-the-loop for high-risk tasks) ──
+      if (deps.approvalGate && routing.riskScore != null && routing.riskScore >= 0.8) {
+        const decision = await deps.approvalGate.requestApproval(
+          input.id,
+          routing.riskScore,
+          `High risk (${routing.riskScore.toFixed(2)}) at L${routing.level}`,
+        );
+        if (decision === 'rejected') {
+          return {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: {
+              id: `trace-${input.id}-rejected`,
+              taskId: input.id,
+              timestamp: Date.now(),
+              routingLevel: routing.level,
+              approach: 'rejected-by-human',
+              oracleVerdicts: {},
+              modelUsed: routing.model ?? 'none',
+              tokensConsumed: 0,
+              durationMs: Date.now() - startTime,
+              outcome: 'failure',
+              failureReason: 'Rejected by human approval gate',
+              affectedFiles: input.targetFiles ?? [],
+            },
+            escalationReason: 'Rejected by human approval gate',
+          };
         }
       }
 

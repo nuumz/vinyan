@@ -210,7 +210,7 @@ export function mapBusEvent(event: string, payload: unknown): Omit<EventLogEntry
 }
 
 function truncStr(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 function fmtNum(v: unknown): string {

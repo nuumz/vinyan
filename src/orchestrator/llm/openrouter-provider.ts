@@ -30,7 +30,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
   const model = config.model ?? process.env[envModelKey] ?? DEFAULT_MODELS[config.tier];
 
   return {
-    id: `openrouter/${model}`,
+    id: `openrouter/${config.tier}/${model}`,
     tier: config.tier,
 
     async generate(request: LLMRequest): Promise<LLMResponse> {

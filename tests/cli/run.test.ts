@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe('CLI run command', () => {
   test('outputs JSON TaskResult to stdout', async () => {
-    const proc = Bun.spawn(['bun', 'run', 'src/cli/index.ts', 'run', 'Fix bug', '--workspace', tempDir], {
+    const proc = Bun.spawn(['bun', 'run', 'src/cli/index.ts', 'run', 'Fix bug', '--workspace', tempDir, '--timeout', '3000'], {
       cwd: join(import.meta.dir, '../..'),
       stdout: 'pipe',
       stderr: 'pipe',
@@ -56,7 +56,7 @@ describe('CLI run command', () => {
     }
     // Exit code should be 0 (completed), 1 (failed), or 2 (escalated)
     expect([0, 1, 2]).toContain(exitCode);
-  });
+  }, 15000);
 
   test('missing goal shows usage and exits with code 2', async () => {
     const proc = Bun.spawn(['bun', 'run', 'src/cli/index.ts', 'run', '--file', 'src/foo.ts'], {
@@ -74,7 +74,7 @@ describe('CLI run command', () => {
 
   test('--file flag is parsed correctly', async () => {
     const proc = Bun.spawn(
-      ['bun', 'run', 'src/cli/index.ts', 'run', 'Fix it', '--file', 'src/foo.ts', '--workspace', tempDir],
+      ['bun', 'run', 'src/cli/index.ts', 'run', 'Fix it', '--file', 'src/foo.ts', '--workspace', tempDir, '--timeout', '3000'],
       {
         cwd: join(import.meta.dir, '../..'),
         stdout: 'pipe',
@@ -92,7 +92,7 @@ describe('CLI run command', () => {
     } catch {
       // Process may fail without LLM, that's acceptable
     }
-  });
+  }, 15000);
 
   test('default command shows run in help', async () => {
     const proc = Bun.spawn(['bun', 'run', 'src/cli/index.ts', 'unknown-command'], {

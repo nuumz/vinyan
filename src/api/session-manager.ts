@@ -55,6 +55,18 @@ export class SessionManager {
     return { id, source, status: 'active', createdAt: now, taskCount: 0 };
   }
 
+  listSessions(): Session[] {
+    const active = this.sessionStore.listActiveSessions();
+    const suspended = this.sessionStore.listSuspendedSessions();
+    return [...active, ...suspended].map((row) => ({
+      id: row.id,
+      source: row.source,
+      status: row.status as Session['status'],
+      createdAt: row.created_at,
+      taskCount: 0,
+    }));
+  }
+
   get(sessionId: string): Session | undefined {
     const row = this.sessionStore.getSession(sessionId);
     if (!row) return undefined;

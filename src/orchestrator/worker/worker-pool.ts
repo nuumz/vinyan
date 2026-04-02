@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import type { WorkerPool } from '../core-loop.ts';
+import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
@@ -35,6 +36,36 @@ export interface WorkerPoolConfig {
   workerEntryPath?: string;
   /** Unix socket path for LLM proxy (A6: credential isolation). */
   proxySocketPath?: string;
+  /** Agent loop deps for Phase 6.3+ agentic dispatch. */
+  agentLoopDeps?: Partial<AgentLoopDeps>;
+  /** Max concurrent sessions per routing level. */
+  maxConcurrentSessions?: { l1?: number; l2?: number; l3?: number };
+}
+
+// ── Semaphore ─────────────────────────────────────────────────────────
+
+export class Semaphore {
+  private current = 0;
+  private queue: (() => void)[] = [];
+
+  constructor(private readonly max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.current < this.max) {
+      this.current++;
+      return;
+    }
+    await new Promise<void>(resolve => this.queue.push(resolve));
+    this.current++;
+  }
+
+  release(): void {
+    this.current--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+
+  get activeCount(): number { return this.current; }
 }
 
 export class WorkerPoolImpl implements WorkerPool {
@@ -44,6 +75,8 @@ export class WorkerPoolImpl implements WorkerPool {
   private workerEntryPath: string;
   private proxySocketPath?: string;
   private dockerAvailable: boolean | null = null;
+  private _agentLoopDeps: AgentLoopDeps | null = null;
+  private semaphores: Record<number, Semaphore>;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry;
@@ -54,6 +87,11 @@ export class WorkerPoolImpl implements WorkerPool {
       console.warn('[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.');
     }
     this.workerEntryPath = config.workerEntryPath ?? resolve(import.meta.dir, 'worker-entry.ts');
+    this.semaphores = {
+      1: new Semaphore(config.maxConcurrentSessions?.l1 ?? 5),
+      2: new Semaphore(config.maxConcurrentSessions?.l2 ?? 3),
+      3: new Semaphore(config.maxConcurrentSessions?.l3 ?? 1),
+    };
   }
 
   async dispatch(
@@ -100,6 +138,17 @@ export class WorkerPoolImpl implements WorkerPool {
       : await this.dispatchInProcess(workerInput, routing);
 
     return this.toWorkerResult(output, startTime);
+  }
+
+  async withSessionLimit<T>(level: number, fn: () => Promise<T>): Promise<T> {
+    const sem = this.semaphores[level];
+    if (!sem) return fn(); // L0 has no limit
+    await sem.acquire();
+    try {
+      return await fn();
+    } finally {
+      sem.release();
+    }
   }
 
   private buildWorkerInput(
@@ -333,6 +382,16 @@ export class WorkerPoolImpl implements WorkerPool {
     } catch {
       return false;
     }
+  }
+
+  /** Set agent loop deps for Phase 6.3+ agentic dispatch. */
+  setAgentLoopDeps(deps: AgentLoopDeps): void {
+    this._agentLoopDeps = deps;
+  }
+
+  /** Returns agent loop deps if configured, null otherwise. */
+  getAgentLoopDeps(): AgentLoopDeps | null {
+    return this._agentLoopDeps;
   }
 }
 

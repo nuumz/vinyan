@@ -61,6 +61,8 @@ export interface WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
   ): Promise<WorkerResult>;
+  /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
+  getAgentLoopDeps?(): import('./worker/agent-loop.ts').AgentLoopDeps | null;
 }
 
 export interface OracleGate {
@@ -139,6 +141,26 @@ export interface OrchestratorDeps {
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
+
+/** Build retry context from an agentic session result (Phase 6.3). */
+function buildAgentSessionSummary(
+  result: import('./worker/agent-loop.ts').WorkerLoopResult,
+  attempt: number,
+  outcome: 'uncertain' | 'oracle_failed',
+): import('./types.ts').AgentSessionSummary {
+  return {
+    sessionId: `session-${Date.now()}`,
+    attempt,
+    outcome,
+    filesRead: result.mutations.filter(m => m.content !== null).map(m => m.file),
+    filesWritten: result.mutations.filter(m => m.content !== null).map(m => m.file),
+    turnsCompleted: result.transcript.length,
+    tokensConsumed: result.tokensConsumed,
+    failurePoint: result.uncertainties[0] ?? 'unknown',
+    lastIntent: result.transcript[result.transcript.length - 1]?.type ?? 'unknown',
+    uncertainties: result.uncertainties,
+  };
+}
 
 /**
  * Execute a task through the full Orchestrator lifecycle.
@@ -411,9 +433,41 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ── Step 4: GENERATE (dispatch to worker) ────────────────────
       deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
       const dispatchStart = Date.now();
-      let workerResult;
+      let workerResult: WorkerResult;
+      let isAgenticResult = false;
+      let lastAgentResult: import('./worker/agent-loop.ts').WorkerLoopResult | null = null;
       try {
-        workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
+        if (routing.level === 0 || !deps.workerPool.getAgentLoopDeps?.()) {
+          // L0 or no agent deps configured: existing single-shot path
+          workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
+        } else {
+          // L1+: agentic loop
+          const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
+          const { runAgentLoop } = await import('./worker/agent-loop.ts');
+          lastAgentResult = await runAgentLoop(
+            input, perception, workingMemory.getSnapshot(), plan, routing, agentLoopDeps,
+          );
+          isAgenticResult = true;
+          // Adapt WorkerLoopResult → WorkerResult for downstream compatibility
+          workerResult = {
+            mutations: lastAgentResult.mutations.filter(m => m.content !== null).map(m => ({
+              file: m.file,
+              content: m.content ?? '',
+              diff: m.diff,
+              explanation: m.explanation,
+            })),
+            proposedToolCalls: lastAgentResult.proposedToolCalls,
+            uncertainties: lastAgentResult.uncertainties,
+            tokensConsumed: lastAgentResult.tokensConsumed,
+            durationMs: lastAgentResult.durationMs,
+          };
+
+          // Build session summary for retry context when uncertain
+          if (lastAgentResult.isUncertain) {
+            const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
+            workingMemory.addPriorAttempt(summary);
+          }
+        }
         deps.bus?.emit('worker:complete', {
           taskId: input.id,
           output: workerResult as unknown as import('./types.ts').WorkerOutput,
@@ -710,6 +764,11 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             } else {
               // Re-verify didn't help → fall through to failure
               workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+              // Preserve agentic session context for retry (transcript, tokens, failure point)
+              if (isAgenticResult && lastAgentResult) {
+                const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
+                workingMemory.addPriorAttempt(summary);
+              }
               for (const oName of failedOracles) {
                 deps.bus?.emit('context:verdict_omitted', {
                   taskId: input.id,
@@ -734,6 +793,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               fromLevel: routing.level,
             });
             workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            if (isAgenticResult && lastAgentResult) {
+              const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
+              workingMemory.addPriorAttempt(summary);
+            }
             if (matchedSkill && deps.skillManager) {
               deps.skillManager.recordOutcome(matchedSkill, false);
               deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
@@ -751,6 +814,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               reason: 'Pipeline confidence below refuse threshold',
             });
             workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            if (isAgenticResult && lastAgentResult) {
+              const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
+              workingMemory.addPriorAttempt(summary);
+            }
             if (matchedSkill && deps.skillManager) {
               deps.skillManager.recordOutcome(matchedSkill, false);
               deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });

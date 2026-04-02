@@ -5,7 +5,8 @@
  * Source of truth: spec/tdd.md §16 (Core Loop)
  */
 
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { existsSync, readdirSync, statSync, rmSync } from 'fs';
 import { attachAuditListener } from '../bus/audit-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
@@ -50,6 +51,9 @@ import { WorkerLifecycle } from './worker-lifecycle.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { WorkerSelector } from './worker-selector.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { DelegationRouter } from './delegation-router.ts';
+import { compressPerception } from './llm/perception-compressor.ts';
+import type { AgentLoopDeps } from './worker/agent-loop.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -90,9 +94,30 @@ export interface Orchestrator {
   close(): void;
 }
 
+export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200_000): number {
+  const sessionsDir = join(workspace, '.vinyan', 'sessions');
+  if (!existsSync(sessionsDir)) return 0;
+  let cleaned = 0;
+  for (const dir of readdirSync(sessionsDir)) {
+    const fullPath = join(sessionsDir, dir);
+    try {
+      const stat = statSync(fullPath);
+      if (Date.now() - stat.mtimeMs > maxAgeMs) {
+        rmSync(fullPath, { recursive: true, force: true });
+        cleaned++;
+      }
+    } catch { /* skip if inaccessible */ }
+  }
+  return cleaned;
+}
+
 export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const { workspace } = config;
   const bus = config.bus ?? createBus();
+
+  // Cleanup stale overlay directories from crashed sessions
+  const staleCount = cleanupStaleOverlays(workspace);
+  if (staleCount > 0) console.warn(`[vinyan] Cleaned up ${staleCount} stale session overlays`);
 
   // Set up LLM provider registry
   const registry = config.registry ?? createDefaultRegistry();
@@ -325,6 +350,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Human approval gate (A6)
     approvalGate,
   };
+
+  // Phase 6.4: Late-bind delegation deps to worker pool
+  const delegationRouter = new DelegationRouter();
+  const executeTaskThunk = (subInput: TaskInput) => executeTask(subInput, deps);
+  const agentLoopDeps: Partial<AgentLoopDeps> = {
+    workspace,
+    contextWindow: 128_000,
+    agentWorkerEntryPath: resolve(import.meta.dir, 'worker/agent-worker-entry.ts'),
+    proxySocketPath: llmProxy?.socketPath,
+    toolExecutor: {
+      execute: async (call, context) => {
+        const results = await toolExecutor.executeProposedTools([call], context);
+        return results[0]!;
+      },
+    },
+    compressPerception,
+    bus,
+    delegationRouter,
+    executeTask: executeTaskThunk,
+  };
+  workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 
   // Wire bus listeners (read-only observers — A3 compliance)
   const metricsCollector = new MetricsCollector();

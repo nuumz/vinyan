@@ -88,15 +88,32 @@ export function showOverview(config: TUIConfig): void {
 
 /**
  * Start the full interactive TUI with dashboard, tasks, and peers views.
+ * Screen and keyboard are responsive immediately — orchestrator initializes in background.
  */
 export async function startInteractive(config: TUIConfig): Promise<void> {
-  const orchestrator = createOrchestrator({ workspace: config.workspace, bus: config.bus });
   const state = createInitialState(config.workspace);
   restoreSession(state, config.workspace);
-  const dataSource = new EmbeddedDataSource(state, orchestrator);
-  const app = new App({ state, dataSource });
+
+  // Start TUI immediately in loading mode
+  const app = new App({ state });
+
+  // Schedule heavy orchestrator init for next tick — first frame renders loading screen
+  let orchestrator: ReturnType<typeof createOrchestrator> | null = null;
+  setTimeout(() => {
+    try {
+      state.loadingMessage = 'Initializing orchestrator...';
+      state.dirty = true;
+      orchestrator = createOrchestrator({ workspace: config.workspace, bus: config.bus });
+      const dataSource = new EmbeddedDataSource(state, orchestrator);
+      app.wireDataSource(dataSource);
+    } catch (err) {
+      state.loadingMessage = `Init failed: ${err instanceof Error ? err.message : String(err)}`;
+      state.dirty = true;
+    }
+  }, 0);
+
+  app.onShutdown(() => orchestrator?.close());
   await app.run();
-  orchestrator.close();
 }
 
 /**

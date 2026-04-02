@@ -7,7 +7,7 @@ export interface ToolDescriptor {
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, { type: string; description: string; enum?: string[] }>;
+    properties: Record<string, { type: string; description: string; enum?: string[]; items?: { type: string } }>;
     required: string[];
   };
   category: ToolCategory;

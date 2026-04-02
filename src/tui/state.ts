@@ -58,6 +58,11 @@ export function createInitialState(workspace = '.'): TUIState {
 
     // New: Workspace
     workspace,
+
+    // Loading state — TUI renders immediately, data arrives later
+    loading: true,
+    loadingMessage: 'Starting Vinyan...',
+    bootLog: [],
   };
 }
 

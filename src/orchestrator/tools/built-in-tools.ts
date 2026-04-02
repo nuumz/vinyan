@@ -4,8 +4,8 @@
  */
 
 import { createHash } from 'crypto';
-import { readdirSync, readFileSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { dirname, resolve } from 'path';
 import type { ToolResult } from '../types.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
@@ -52,15 +52,31 @@ export const fileRead: Tool = {
   },
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
+    const callId = (params.callId as string) ?? '';
+
+    // Agentic mode: CoW read (overlay-first, workspace fallback)
+    if (context.overlayDir) {
+      const overlayPath = resolve(context.overlayDir, filePath);
+      const tombstone = `${overlayPath}.__wh`;
+      if (existsSync(tombstone)) {
+        return makeResult(callId, 'file_read', { status: 'error', error: `File ${filePath} has been deleted` });
+      }
+      if (existsSync(overlayPath)) {
+        const content = readFileSync(overlayPath, 'utf-8');
+        return makeResult(callId, 'file_read', { output: content, evidence: makeEvidence(filePath, content) });
+      }
+      // Fall through to workspace read
+    }
+
     const absPath = resolve(context.workspace, filePath);
     try {
       const content = readFileSync(absPath, 'utf-8');
-      return makeResult((params.callId as string) ?? '', 'file_read', {
+      return makeResult(callId, 'file_read', {
         output: content,
         evidence: makeEvidence(filePath, content),
       });
     } catch (e) {
-      return makeResult((params.callId as string) ?? '', 'file_read', {
+      return makeResult(callId, 'file_read', {
         status: 'error',
         error: e instanceof Error ? e.message : String(e),
       });
@@ -94,15 +110,30 @@ export const fileWrite: Tool = {
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const content = params.content as string;
+    const callId = (params.callId as string) ?? '';
+
+    // Agentic mode: always write to overlay
+    if (context.overlayDir) {
+      const overlayPath = resolve(context.overlayDir, filePath);
+      const tombstone = `${overlayPath}.__wh`;
+      if (existsSync(tombstone)) rmSync(tombstone);
+      mkdirSync(dirname(overlayPath), { recursive: true });
+      writeFileSync(overlayPath, content);
+      return makeResult(callId, 'file_write', {
+        output: `Wrote ${content.length} bytes to ${filePath} (overlay)`,
+        evidence: makeEvidence(filePath, content),
+      });
+    }
+
     const absPath = resolve(context.workspace, filePath);
     try {
       writeFileSync(absPath, content);
-      return makeResult((params.callId as string) ?? '', 'file_write', {
+      return makeResult(callId, 'file_write', {
         output: `Wrote ${content.length} bytes to ${filePath}`,
         evidence: makeEvidence(filePath, content),
       });
     } catch (e) {
-      return makeResult((params.callId as string) ?? '', 'file_write', {
+      return makeResult(callId, 'file_write', {
         status: 'error',
         error: e instanceof Error ? e.message : String(e),
       });
@@ -138,23 +169,50 @@ export const fileEdit: Tool = {
     const filePath = (params.file_path ?? params.path) as string;
     const oldStr = params.old_string as string;
     const newStr = params.new_string as string;
+    const callId = (params.callId as string) ?? '';
+
+    // Agentic mode: read overlay-first, write to overlay
+    if (context.overlayDir) {
+      const overlayPath = resolve(context.overlayDir, filePath);
+      let original: string;
+      if (existsSync(overlayPath)) {
+        original = readFileSync(overlayPath, 'utf-8');
+      } else {
+        const absPath = resolve(context.workspace, filePath);
+        if (!existsSync(absPath)) {
+          return makeResult(callId, 'file_edit', { status: 'error', error: `File ${filePath} not found` });
+        }
+        original = readFileSync(absPath, 'utf-8');
+      }
+      if (!original.includes(oldStr)) {
+        return makeResult(callId, 'file_edit', { status: 'error', error: `old_string not found in ${filePath}` });
+      }
+      const updated = original.replaceAll(oldStr, newStr);
+      mkdirSync(dirname(overlayPath), { recursive: true });
+      writeFileSync(overlayPath, updated);
+      return makeResult(callId, 'file_edit', {
+        output: `Edited ${filePath} (overlay)`,
+        evidence: makeEvidence(filePath, updated),
+      });
+    }
+
     const absPath = resolve(context.workspace, filePath);
     try {
       const original = readFileSync(absPath, 'utf-8');
       if (!original.includes(oldStr)) {
-        return makeResult((params.callId as string) ?? '', 'file_edit', {
+        return makeResult(callId, 'file_edit', {
           status: 'error',
           error: `old_string not found in ${filePath}`,
         });
       }
       const updated = original.replaceAll(oldStr, newStr);
       writeFileSync(absPath, updated);
-      return makeResult((params.callId as string) ?? '', 'file_edit', {
+      return makeResult(callId, 'file_edit', {
         output: `Edited ${filePath}`,
         evidence: makeEvidence(filePath, updated),
       });
     } catch (e) {
-      return makeResult((params.callId as string) ?? '', 'file_edit', {
+      return makeResult(callId, 'file_edit', {
         status: 'error',
         error: e instanceof Error ? e.message : String(e),
       });
@@ -184,13 +242,38 @@ export const directoryList: Tool = {
   },
   async execute(params, context) {
     const dirPath = ((params.path ?? params.directory) as string) ?? '.';
+    const callId = (params.callId as string) ?? '';
+
+    // Agentic mode: merge overlay + workspace entries, hide tombstones
+    if (context.overlayDir) {
+      const entries = new Set<string>();
+      const tombstones = new Set<string>();
+
+      const overlayDirPath = resolve(context.overlayDir, dirPath);
+      if (existsSync(overlayDirPath)) {
+        for (const entry of readdirSync(overlayDirPath)) {
+          if (entry.endsWith('.__wh')) tombstones.add(entry.replace('.__wh', ''));
+          else entries.add(entry);
+        }
+      }
+
+      const workspaceDirPath = resolve(context.workspace, dirPath);
+      if (existsSync(workspaceDirPath)) {
+        for (const e of readdirSync(workspaceDirPath)) {
+          if (!tombstones.has(e)) entries.add(e);
+        }
+      }
+
+      return makeResult(callId, 'directory_list', { output: [...entries].sort().join('\n') });
+    }
+
     const absPath = resolve(context.workspace, dirPath);
     try {
       const entries = readdirSync(absPath, { withFileTypes: true });
       const output = entries.map((e) => `${e.isDirectory() ? 'd' : 'f'} ${e.name}`).join('\n');
-      return makeResult((params.callId as string) ?? '', 'directory_list', { output });
+      return makeResult(callId, 'directory_list', { output });
     } catch (e) {
-      return makeResult((params.callId as string) ?? '', 'directory_list', {
+      return makeResult(callId, 'directory_list', {
         status: 'error',
         error: e instanceof Error ? e.message : String(e),
       });
@@ -287,6 +370,25 @@ export const shellExec: Tool = {
   },
   async execute(params, context) {
     const command = params.command as string;
+
+    // Agentic mode: enforce read-only whitelist (A6 — zero-trust execution)
+    if (context.overlayDir) {
+      const SHELL_READ_ONLY_WHITELIST = [
+        'grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc',
+        'git log', 'git diff', 'git status', 'git show', 'git blame',
+      ];
+      const cmd = command.trim();
+      const allowed = SHELL_READ_ONLY_WHITELIST.some(
+        prefix => cmd === prefix || cmd.startsWith(`${prefix} `),
+      );
+      if (!allowed) {
+        return makeResult((params.callId as string) ?? '', 'shell_exec', {
+          status: 'error',
+          error: `[BLOCKED] Command not in read-only whitelist. Allowed: ${SHELL_READ_ONLY_WHITELIST.join(', ')}`,
+        });
+      }
+    }
+
     // Validate cwd if provided — must stay within workspace
     const cwd = params.cwd as string | undefined;
     const effectiveCwd = cwd ? resolve(context.workspace, cwd) : context.workspace;
@@ -573,9 +675,21 @@ export const attemptCompletion: Tool = {
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Task completion status', enum: ['done', 'uncertain'] },
-          result: { type: 'string', description: 'Summary of what was accomplished' },
-          uncertainties: { type: 'string', description: 'List of unresolved uncertainties (when status is uncertain)' },
+          status: {
+            type: 'string',
+            description: "Use 'done' when the task is complete. Use 'uncertain' when blocked.",
+            enum: ['done', 'uncertain'],
+          },
+          summary: { type: 'string', description: 'Brief summary of what was accomplished.' },
+          uncertainties: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Reasons for uncertainty (required when status=uncertain).',
+          },
+          proposedContent: {
+            type: 'string',
+            description: 'Non-file output (answer, analysis, etc.).',
+          },
         },
         required: ['status'],
       },
@@ -587,7 +701,7 @@ export const attemptCompletion: Tool = {
   async execute(params) {
     // Control tool — the agent loop intercepts this before execution
     return makeResult((params.callId as string) ?? '', 'attempt_completion', {
-      output: JSON.stringify({ status: params.status, result: params.result }),
+      output: JSON.stringify({ status: params.status, summary: params.summary, proposedContent: params.proposedContent }),
     });
   },
 };
@@ -605,10 +719,16 @@ export const requestBudgetExtension: Tool = {
       inputSchema: {
         type: 'object',
         properties: {
-          additionalTokens: { type: 'number', description: 'Number of additional tokens requested' },
-          reason: { type: 'string', description: 'Reason for the budget extension request' },
+          tokens: {
+            type: 'number',
+            description: 'Additional tokens requested (hint; actual grant may differ).',
+          },
+          reason: {
+            type: 'string',
+            description: 'Why more tokens are needed — what has been done and what remains.',
+          },
         },
-        required: ['additionalTokens', 'reason'],
+        required: ['tokens', 'reason'],
       },
       category: 'control',
       sideEffect: false,
@@ -618,7 +738,7 @@ export const requestBudgetExtension: Tool = {
   async execute(params) {
     // Control tool — handled by agent loop budget tracker
     return makeResult((params.callId as string) ?? '', 'request_budget_extension', {
-      output: JSON.stringify({ requested: params.additionalTokens, reason: params.reason }),
+      output: JSON.stringify({ requested: params.tokens, reason: params.reason }),
     });
   },
 };
@@ -661,6 +781,26 @@ export const delegateTask: Tool = {
     return context.onDelegate(params as any);
   },
 };
+
+/**
+ * Scan tool result for prompt injection / adversarial content before returning to worker.
+ * Called from agent-loop.ts after each tool execution (A6 — zero-trust execution).
+ */
+export function scanToolResult(
+  result: ToolResult,
+  guardrailsScan?: (input: string) => { blocked: boolean; reason?: string },
+): ToolResult {
+  if (!guardrailsScan || !result.output) return result;
+  const text = typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
+  const scanResult = guardrailsScan(text);
+  if (scanResult.blocked) {
+    return {
+      ...result,
+      output: `[CONTENT BLOCKED: ${scanResult.reason ?? 'potential prompt injection detected'}]`,
+    };
+  }
+  return result;
+}
 
 /** All built-in tools indexed by name. */
 export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([

@@ -21,6 +21,41 @@ export interface MockProviderOptions {
   thinking?: string;
 }
 
+export interface ScriptedMockResponse {
+  content?: string;
+  toolCalls?: ToolCall[];
+  stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
+  tokensUsed?: { input: number; output: number };
+  thinking?: string;
+}
+
+/**
+ * Create a mock provider that returns scripted responses in sequence.
+ * Pops one response per generate() call. Throws if exhausted.
+ */
+export function createScriptedMockProvider(
+  responses: ScriptedMockResponse[],
+  options?: { id?: string; tier?: LLMProvider['tier'] },
+): LLMProvider {
+  const queue = [...responses];
+  return {
+    id: options?.id ?? 'mock/scripted',
+    tier: options?.tier ?? 'fast',
+    async generate(_request: LLMRequest): Promise<LLMResponse> {
+      const next = queue.shift();
+      if (!next) throw new Error('ScriptedMockProvider: no more responses in queue');
+      return {
+        content: next.content ?? '',
+        thinking: next.thinking,
+        toolCalls: next.toolCalls ?? [],
+        tokensUsed: next.tokensUsed ?? { input: 100, output: 50 },
+        model: 'mock-scripted',
+        stopReason: next.stopReason,
+      };
+    },
+  };
+}
+
 export function createMockProvider(options: MockProviderOptions = {}): LLMProvider {
   return {
     id: options.id ?? 'mock/test',

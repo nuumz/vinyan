@@ -9,7 +9,7 @@
  */
 
 import type { VinyanBus } from '../core/bus.ts';
-import type { WorkingMemoryState } from './types.ts';
+import type { AgentSessionSummary, WorkingMemoryState } from './types.ts';
 
 export const MAX_FAILED_APPROACHES = 20;
 export const MAX_HYPOTHESES = 10;
@@ -24,6 +24,7 @@ export class WorkingMemory {
   private activeHypotheses: WorkingMemoryState['activeHypotheses'] = [];
   private unresolvedUncertainties: WorkingMemoryState['unresolvedUncertainties'] = [];
   private scopedFacts: WorkingMemoryState['scopedFacts'] = [];
+  private priorAttempts: AgentSessionSummary[] = [];
   private bus?: VinyanBus;
   private taskId?: string;
 
@@ -76,6 +77,11 @@ export class WorkingMemory {
     this.scopedFacts.push({ target, pattern, verified, hash });
   }
 
+  /** Add retry context from a prior agentic session (Phase 6.3). */
+  addPriorAttempt(summary: AgentSessionSummary): void {
+    this.priorAttempts.push(summary);
+  }
+
   /** Returns a deep copy — safe for serialization across process boundaries. */
   getSnapshot(): WorkingMemoryState {
     return JSON.parse(
@@ -84,6 +90,7 @@ export class WorkingMemory {
         activeHypotheses: this.activeHypotheses,
         unresolvedUncertainties: this.unresolvedUncertainties,
         scopedFacts: this.scopedFacts,
+        ...(this.priorAttempts.length > 0 ? { priorAttempts: this.priorAttempts } : {}),
       }),
     );
   }

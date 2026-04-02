@@ -183,8 +183,8 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 10 built-in tools', () => {
-    expect(executor.getToolNames()).toHaveLength(10);
+  test('getToolNames returns all 13 built-in tools', () => {
+    expect(executor.getToolNames()).toHaveLength(13);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');

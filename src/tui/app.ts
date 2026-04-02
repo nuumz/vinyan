@@ -10,7 +10,11 @@ import { getContextHints } from './hints.ts';
 import { saveSession } from './session.ts';
 import { parseCommand, routeKeypress, startKeyListener, type TUIAction } from './input.ts';
 import {
+  ANSI,
+  bold,
+  color,
   contextHintsBar,
+  dim,
   headerBar,
   notificationBar,
   tabBarWithBadges,
@@ -44,7 +48,7 @@ import { renderTasks, TASKS_PANEL_COUNT } from './views/tasks.ts';
 
 export interface AppConfig {
   state: TUIState;
-  dataSource: DataSource;
+  dataSource?: DataSource;
 }
 
 const TABS: Array<{ key: string; label: string; tab: ViewTab }> = [
@@ -56,30 +60,88 @@ const TABS: Array<{ key: string; label: string; tab: ViewTab }> = [
 
 export class App {
   private state: TUIState;
-  private dataSource: DataSource;
+  private dataSource: DataSource | null;
   private screen: Screen;
   private stopKeyListener: (() => void) | null = null;
   private running = false;
+  private onCleanup: (() => void) | null = null;
+
+  // Console capture — prevents raw stdout from bleeding into TUI
+  private originalConsole: {
+    log: typeof console.log;
+    warn: typeof console.warn;
+    error: typeof console.error;
+  } | null = null;
 
   constructor(config: AppConfig) {
     this.state = config.state;
-    this.dataSource = config.dataSource;
+    this.dataSource = config.dataSource ?? null;
 
     const viewRenderer: ViewRenderer = (s) => this.renderFrame(s);
     this.screen = new Screen(this.state, viewRenderer);
+  }
+
+  /** Wire the data source after construction (for deferred loading). */
+  wireDataSource(ds: DataSource): void {
+    this.dataSource = ds;
+    ds.start();
+    this.state.loading = false;
+    this.state.loadingMessage = '';
+    this.state.dirty = true;
+  }
+
+  /** Register a cleanup callback (e.g. orchestrator.close). */
+  onShutdown(fn: () => void): void {
+    this.onCleanup = fn;
+  }
+
+  /** Intercept console output — route to bootLog instead of raw stdout. */
+  private captureConsole(): void {
+    this.originalConsole = {
+      log: console.log,
+      warn: console.warn,
+      error: console.error,
+    };
+
+    const capture = (level: 'log' | 'warn' | 'error') => (...args: unknown[]) => {
+      const message = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      this.state.bootLog.push({ message, level, timestamp: Date.now() });
+      if (this.state.bootLog.length > 50) this.state.bootLog.shift();
+      this.state.dirty = true;
+    };
+
+    console.log = capture('log');
+    console.warn = capture('warn');
+    console.error = capture('error');
+  }
+
+  /** Restore original console methods. */
+  private restoreConsole(): void {
+    if (this.originalConsole) {
+      console.log = this.originalConsole.log;
+      console.warn = this.originalConsole.warn;
+      console.error = this.originalConsole.error;
+      this.originalConsole = null;
+    }
   }
 
   /** Start the interactive TUI. Returns when the user quits. */
   async run(): Promise<void> {
     this.running = true;
 
-    // Start data source
-    this.dataSource.start();
+    // Capture console before anything else — prevents log bleed on loading screen
+    this.captureConsole();
 
-    // Start rendering
+    // Start data source if already available
+    if (this.dataSource) {
+      this.dataSource.start();
+      this.state.loading = false;
+    }
+
+    // Start rendering immediately — shows loading screen or real content
     this.screen.start();
 
-    // Start keyboard input
+    // Start keyboard input — responsive even during loading
     this.stopKeyListener = startKeyListener((key) => {
       const action = routeKeypress(this.state, key);
       this.handleAction(action);
@@ -100,15 +162,39 @@ export class App {
   }
 
   private shutdown(): void {
+    this.restoreConsole();
     saveSession(this.state, this.state.workspace);
     this.stopKeyListener?.();
     this.screen.stop();
-    this.dataSource.stop();
+    this.dataSource?.stop();
+    this.onCleanup?.();
   }
 
   // ── Action Handler ──────────────────────────────────────────────
 
   private handleAction(action: TUIAction): void {
+    // During loading, only allow quit, help, and back
+    if (this.state.loading) {
+      switch (action.type) {
+        case 'quit':
+          this.running = false;
+          return;
+        case 'toggle-help':
+          if (this.state.modal?.type === 'help') {
+            closeModal(this.state);
+          } else {
+            openModal(this.state, { type: 'help' });
+          }
+          return;
+        case 'back':
+          if (this.state.modal) closeModal(this.state);
+          return;
+        default:
+          // Swallow other actions during loading — no toast spam
+          return;
+      }
+    }
+
     switch (action.type) {
       case 'quit':
         this.running = false;
@@ -150,7 +236,7 @@ export class App {
         break;
 
       case 'approve':
-        this.dataSource.approveTask(action.taskId);
+        this.dataSource?.approveTask(action.taskId);
         closeModal(this.state);
         // Dismiss matching notification
         const approveNotif = this.state.notifications.find((n) => n.taskId === action.taskId && !n.dismissed);
@@ -159,7 +245,7 @@ export class App {
         break;
 
       case 'reject':
-        this.dataSource.rejectTask(action.taskId);
+        this.dataSource?.rejectTask(action.taskId);
         closeModal(this.state);
         const rejectNotif = this.state.notifications.find((n) => n.taskId === action.taskId && !n.dismissed);
         if (rejectNotif) dismissNotification(this.state, rejectNotif.id);
@@ -187,7 +273,7 @@ export class App {
         break;
 
       case 'cancel-task':
-        this.dataSource.cancelTask(action.taskId);
+        this.dataSource?.cancelTask(action.taskId);
         closeModal(this.state);
         pushToast(this.state, `⊘ Cancel requested: ${action.taskId}`, 'info');
         break;
@@ -430,7 +516,7 @@ export class App {
           // Extract --level N flag
           const levelMatch = cmd.rawArg.match(/--level\s+(\d+)/);
           const level = levelMatch ? Number.parseInt(levelMatch[1]!, 10) : undefined;
-          this.dataSource.submitTask({
+          this.dataSource?.submitTask({
             id: `task-${Date.now().toString(36)}`,
             source: 'cli',
             goal: goal.replace(/--level\s+\d+/, '').trim(),
@@ -445,7 +531,7 @@ export class App {
       case 'approve': {
         const taskId = cmd.args[0] ?? this.getNotificationTargetId();
         if (taskId) {
-          this.dataSource.approveTask(taskId);
+          this.dataSource?.approveTask(taskId);
           pushToast(this.state, `Approved ${taskId}`, 'success');
         }
         break;
@@ -454,7 +540,7 @@ export class App {
       case 'reject': {
         const taskId = cmd.args[0] ?? this.getNotificationTargetId();
         if (taskId) {
-          this.dataSource.rejectTask(taskId);
+          this.dataSource?.rejectTask(taskId);
           pushToast(this.state, `Rejected ${taskId}`, 'success');
         }
         break;
@@ -463,7 +549,7 @@ export class App {
       case 'cancel': {
         const taskId = cmd.args[0] ?? this.state.selectedTaskId;
         if (taskId) {
-          this.dataSource.cancelTask(taskId);
+          this.dataSource?.cancelTask(taskId);
           pushToast(this.state, `Cancelled ${taskId}`, 'success');
         }
         break;
@@ -509,11 +595,11 @@ export class App {
         break;
 
       case 'sleep':
-        this.dataSource.triggerSleepCycle();
+        this.dataSource?.triggerSleepCycle();
         break;
 
       case 'export':
-        this.dataSource.exportPatterns(cmd.rawArg || 'vinyan-patterns.json');
+        this.dataSource?.exportPatterns(cmd.rawArg || 'vinyan-patterns.json');
         break;
 
       case 'clear':
@@ -547,12 +633,86 @@ export class App {
 
   // ── Frame Renderer ──────────────────────────────────────────────
 
+  // Braille spinner frames (advances every ~100ms via dirty flag)
+  private static SPINNER = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
+  private spinnerTick = 0;
+  private lastSpinnerMs = 0;
+
+  /** Render the loading splash screen — shown while orchestrator initializes. */
+  private renderLoadingScreen(state: TUIState): string {
+    const { termWidth, termHeight } = state;
+    const now = Date.now();
+    if (now - this.lastSpinnerMs >= 100) {
+      this.spinnerTick++;
+      this.lastSpinnerMs = now;
+      // Schedule next dirty for animation
+      setTimeout(() => { state.dirty = true; }, 100);
+    }
+    const frame = App.SPINNER[this.spinnerTick % App.SPINNER.length]!;
+
+    // Boot log lines (last N entries that fit)
+    const maxLogLines = Math.min(state.bootLog.length, Math.max(0, termHeight - 14));
+    const logSlice = state.bootLog.slice(-maxLogLines);
+    const logLines: string[] = [];
+    if (logSlice.length > 0) {
+      logLines.push('');
+      for (const entry of logSlice) {
+        const prefix = entry.level === 'error' ? color('✗', ANSI.red)
+          : entry.level === 'warn' ? color('!', ANSI.yellow)
+          : dim('·');
+        // Truncate to fit terminal width with padding
+        const maxMsgW = Math.max(20, termWidth - 10);
+        const msg = entry.message.length > maxMsgW
+          ? entry.message.slice(0, maxMsgW - 1) + '…'
+          : entry.message;
+        logLines.push(`  ${prefix} ${dim(msg)}`);
+      }
+    }
+
+    // Build centered content
+    const logo = [
+      '',
+      bold(color('  V I N Y A N', ANSI.cyan)),
+      dim('  Epistemic Nervous System'),
+      '',
+      `  ${color(frame, ANSI.cyan)} ${state.loadingMessage || 'Initializing...'}`,
+      ...logLines,
+      '',
+      dim('  ? Help   q Quit'),
+      '',
+    ];
+
+    // Center vertically
+    const contentH = logo.length;
+    const topPad = Math.max(0, Math.floor((termHeight - contentH) / 2));
+    const leftPad = Math.max(0, Math.floor((termWidth - 36) / 2));
+    const pad = ' '.repeat(leftPad);
+
+    const lines: string[] = [];
+    for (let i = 0; i < topPad; i++) lines.push('');
+    for (const line of logo) lines.push(pad + line);
+
+    let result = lines.join('\n');
+
+    // Help overlay still works during loading
+    if (state.modal?.type === 'help') {
+      result += renderHelpOverlay(state);
+    }
+
+    return result;
+  }
+
   private renderFrame(state: TUIState): string {
     const { termWidth, termHeight } = state;
 
     // Terminal size guard
     const sizeGuard = terminalSizeGuard(termWidth, termHeight);
     if (sizeGuard) return sizeGuard;
+
+    // Loading screen — shown while orchestrator initializes
+    if (state.loading) {
+      return this.renderLoadingScreen(state);
+    }
 
     // Pre-render maintenance
     cleanExpiredToasts(state);

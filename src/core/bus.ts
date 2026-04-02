@@ -195,6 +195,15 @@ export interface VinyanBusEvents {
   'sandbox:completed': { containerId: string; taskId: string; exitCode: number; durationMs: number };
   'sandbox:timeout': { containerId: string; taskId: string; timeoutMs: number };
   'sandbox:error': { containerId: string; taskId: string; error: string };
+
+  // Phase 6.4: Delegation events
+  'delegation:done': { parentTaskId: string; childTaskId: string; status: string; tokensUsed: number };
+
+  // Phase 6.5: Agent session observability
+  'agent:session_start': { taskId: string; routingLevel: number; budget: { maxTokens: number; maxTurns: number; contextWindow: number } };
+  'agent:session_end': { taskId: string; outcome: string; tokensConsumed: number; turnsUsed: number; durationMs: number };
+  'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
+  'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

@@ -1,0 +1,132 @@
+/**
+ * AgentBudgetTracker — Manages token budget allocation across 3 pools:
+ * base (primary work), negotiable (extensions), delegation (child agents).
+ *
+ * Tracks consumption, enforces limits, and derives child budgets for delegation.
+ * Uses performance.now() for precise duration tracking.
+ */
+import type { AgentBudget } from '../protocol.ts';
+import type { RoutingDecision } from '../types.ts';
+
+export class AgentBudgetTracker {
+  private readonly budget: AgentBudget;
+  private extensionRequestCount = 0;
+  private baseConsumed = 0;
+  private negotiableGranted = 0;
+  private delegationConsumed = 0;
+  private turnsUsed = 0;
+  private readonly startTime: number;
+
+  constructor(budget: AgentBudget) {
+    this.budget = budget;
+    this.startTime = performance.now();
+  }
+
+  /** Factory: create from routing decision with sensible defaults */
+  static fromRouting(routing: RoutingDecision, contextWindow: number): AgentBudgetTracker {
+    const budget: AgentBudget = {
+      maxTokens: routing.budgetTokens,
+      maxTurns: routing.level === 1 ? 15 : routing.level === 2 ? 30 : 50,
+      maxDurationMs: routing.latencyBudgetMs,
+      contextWindow,
+      base: Math.floor(routing.budgetTokens * 0.6),
+      negotiable: Math.floor(routing.budgetTokens * 0.25),
+      delegation: Math.floor(routing.budgetTokens * 0.15),
+      maxExtensionRequests: 3,
+      maxToolCallsPerTurn: 10,
+      delegationDepth: 0,
+      maxDelegationDepth: routing.level >= 3 ? 2 : 1,
+    };
+    return new AgentBudgetTracker(budget);
+  }
+
+  /** Can the session continue? Checks turns, tokens, and duration. */
+  canContinue(): boolean {
+    return (
+      this.turnsUsed < this.budget.maxTurns &&
+      this.baseConsumed < this.budget.base + this.negotiableGranted &&
+      performance.now() - this.startTime < this.budget.maxDurationMs
+    );
+  }
+
+  /** Can delegation be attempted? */
+  canDelegate(): boolean {
+    return this.budget.delegationDepth < this.budget.maxDelegationDepth && this.delegationRemaining > 0;
+  }
+
+  /** Record tokens consumed in a turn */
+  recordTurn(tokensConsumed: number): void {
+    this.turnsUsed++;
+    this.baseConsumed += tokensConsumed;
+  }
+
+  /** Request more tokens from negotiable pool */
+  requestExtension(tokens: number): { granted: number; remaining: number } {
+    if (this.extensionRequestCount >= this.budget.maxExtensionRequests) {
+      return { granted: 0, remaining: 0 };
+    }
+
+    const negotiableRemaining = this.budget.negotiable - this.negotiableGranted;
+    const granted = Math.min(tokens, negotiableRemaining * 0.5);
+    this.negotiableGranted += granted;
+    this.extensionRequestCount++;
+
+    return { granted, remaining: this.budget.negotiable - this.negotiableGranted };
+  }
+
+  /** Derive a child budget for delegation */
+  deriveChildBudget(requestedTokens?: number): AgentBudget {
+    const delegationRemaining = this.budget.delegation - this.delegationConsumed;
+    const cap = Math.floor(delegationRemaining * 0.5);
+    const allocated = Math.min(requestedTokens ?? Math.floor(delegationRemaining * 0.3), cap);
+
+    this.delegationConsumed += allocated;
+
+    return {
+      maxTokens: allocated,
+      maxTurns: Math.floor(this.budget.maxTurns * 0.5),
+      maxDurationMs: Math.floor(this.budget.maxDurationMs * 0.5),
+      contextWindow: this.budget.contextWindow,
+      base: Math.floor(allocated * 0.6),
+      negotiable: Math.floor(allocated * 0.3),
+      delegation: Math.floor(allocated * 0.1),
+      maxExtensionRequests: 1,
+      maxToolCallsPerTurn: this.budget.maxToolCallsPerTurn,
+      delegationDepth: this.budget.delegationDepth + 1,
+      maxDelegationDepth: this.budget.maxDelegationDepth,
+    };
+  }
+
+  /** Return unused delegation tokens after child completes */
+  returnUnusedDelegation(reserved: number, actual: number): void {
+    const refund = Math.max(0, reserved - actual);
+    this.delegationConsumed = Math.max(0, this.delegationConsumed - refund);
+  }
+
+  /** Remaining time in ms */
+  remainingMs(): number {
+    return Math.max(0, this.budget.maxDurationMs - (performance.now() - this.startTime));
+  }
+
+  /** Serializable snapshot for IPC */
+  toSnapshot(): AgentBudget {
+    return {
+      maxTokens: this.budget.maxTokens,
+      maxTurns: this.budget.maxTurns,
+      maxDurationMs: this.budget.maxDurationMs,
+      contextWindow: this.budget.contextWindow,
+      base: this.budget.base - this.baseConsumed,
+      negotiable: this.budget.negotiable - this.negotiableGranted,
+      delegation: this.budget.delegation - this.delegationConsumed,
+      maxExtensionRequests: this.budget.maxExtensionRequests - this.extensionRequestCount,
+      maxToolCallsPerTurn: this.budget.maxToolCallsPerTurn,
+      delegationDepth: this.budget.delegationDepth,
+      maxDelegationDepth: this.budget.maxDelegationDepth,
+    };
+  }
+
+  /** Get delegation-remaining tokens */
+  get delegationRemaining(): number {
+    return this.budget.delegation - this.delegationConsumed;
+  }
+}

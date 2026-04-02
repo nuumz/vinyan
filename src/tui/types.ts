@@ -31,6 +31,12 @@ export interface ToastMessage {
   expiresAt: number;
 }
 
+export interface BootLogEntry {
+  message: string;
+  level: 'log' | 'warn' | 'error';
+  timestamp: number;
+}
+
 // ── Sort ────────────────────────────────────────────────────────────
 
 export type SortField = 'startedAt' | 'status' | 'routingLevel' | 'quality';
@@ -190,4 +196,11 @@ export interface TUIState {
 
   // Workspace path (for dbPath derivation)
   workspace: string;
+
+  // Loading state — TUI renders immediately, data arrives later
+  loading: boolean;
+  loadingMessage: string;
+
+  // Boot log — captured console output during initialization
+  bootLog: BootLogEntry[];
 }

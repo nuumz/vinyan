@@ -1,8 +1,8 @@
 /**
  * TUI Session Persistence — saves/restores user preferences across TUI restarts.
  *
- * Persisted: activeTab, sort config, eventLogMaxSize.
- * NOT persisted: tasks, events, peers (live runtime state), filters (transient).
+ * Persisted: activeTab, sort config, eventLogMaxSize, filterQuery.
+ * NOT persisted: tasks, events, peers (live runtime state).
  *
  * File: <workspace>/.vinyan/tui-session.json
  */
@@ -16,6 +16,7 @@ interface TUISession {
   activeTab: ViewTab;
   sort: Partial<Record<ViewTab, SortConfig>>;
   eventLogMaxSize: number;
+  filterQuery?: string;
 }
 
 const VALID_TABS: ReadonlySet<string> = new Set(['tasks', 'system', 'peers', 'events']);
@@ -42,6 +43,9 @@ export function restoreSession(state: TUIState, workspace: string): boolean {
     if (typeof data.eventLogMaxSize === 'number' && data.eventLogMaxSize > 0) {
       state.eventLogMaxSize = data.eventLogMaxSize;
     }
+    if (typeof data.filterQuery === 'string') {
+      state.filterQuery = data.filterQuery;
+    }
     return true;
   } catch {
     // Corrupted file — ignore and start fresh
@@ -56,6 +60,7 @@ export function saveSession(state: TUIState, workspace: string): void {
     activeTab: state.activeTab,
     sort: state.sort,
     eventLogMaxSize: state.eventLogMaxSize,
+    filterQuery: state.filterQuery,
   };
 
   try {

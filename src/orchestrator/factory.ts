@@ -267,6 +267,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const components = [
     `self-model: ${selfModel.constructor.name}`,
     `decomposer: ${decomposer.constructor.name}`,
+    `critic: ${criticEngine ? 'enabled' : 'disabled'}`,
+    `test-gen: ${testGenerator ? 'enabled' : 'disabled'}`,
+    `llm-providers: ${registry.listProviders().length}`,
     `skills: ${skillManager ? 'enabled' : 'disabled'}`,
     `shadow: ${shadowRunner ? 'enabled' : 'disabled'}`,
     `sleep-cycle: ${sleepCycleRunner ? 'enabled' : 'disabled'}`,
@@ -499,6 +502,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
+      llmProxy?.close();
       worldGraph?.close();
       db?.close();
     },
@@ -670,6 +674,9 @@ export async function createOrchestratorAsync(
   const components = [
     `self-model: ${selfModel.constructor.name}`,
     `decomposer: ${decomposer.constructor.name}`,
+    `critic: ${criticEngine ? 'enabled' : 'disabled'}`,
+    `test-gen: ${testGenerator ? 'enabled' : 'disabled'}`,
+    `llm-providers: ${registry.listProviders().length}`,
     `skills: ${skillManager ? 'enabled' : 'disabled'}`,
     `shadow: ${shadowRunner ? 'enabled' : 'disabled'}`,
     `sleep-cycle: ${sleepCycleRunner ? 'enabled' : 'disabled'}`,
@@ -885,6 +892,7 @@ export async function createOrchestratorAsync(
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
+      llmProxy?.close();
       worldGraph?.close();
       db?.close();
     },

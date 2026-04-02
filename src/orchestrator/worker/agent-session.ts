@@ -13,9 +13,9 @@ import { WorkerTurnSchema } from '../protocol.ts';
 
 export type SessionState = 'INIT' | 'WAITING_FOR_WORKER' | 'WAITING_FOR_ORCHESTRATOR' | 'CLOSED';
 
-/** Duck-typed subprocess handle — avoids Bun-specific types for testability. */
+/** Duck-typed subprocess handle — matches Bun.spawn() actual output (FileSink, not WritableStream). */
 export interface SubprocessHandle {
-  stdin: WritableStream<Uint8Array>;
+  stdin: { write(data: string | Uint8Array): number; flush?(): void; end(): void };
   stdout: ReadableStream<Uint8Array>;
   pid: number;
   exited: Promise<number>;
@@ -39,13 +39,11 @@ const decoder = new TextDecoder();
 export class AgentSession implements IAgentSession {
   private state: SessionState = 'INIT';
   private reader!: ReadableStreamDefaultReader<Uint8Array>;
-  private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
   private buffer = '';
 
   constructor(private readonly proc: SubprocessHandle) {
     // biome-ignore lint: Bun's ReadableStreamDefaultReader has extra `readMany` — duck-type is sufficient
     this.reader = proc.stdout.getReader() as any;
-    this.writer = proc.stdin.getWriter();
   }
 
   get sessionState(): SessionState {
@@ -61,7 +59,7 @@ export class AgentSession implements IAgentSession {
       throw new Error(`Invalid state for send: ${this.state}`);
     }
     const line = `${JSON.stringify(turn)}\n`;
-    await this.writer.write(encoder.encode(line));
+    this.proc.stdin.write(encoder.encode(line));
     this.state = 'WAITING_FOR_WORKER';
   }
 
@@ -96,7 +94,7 @@ export class AgentSession implements IAgentSession {
 
     try {
       const terminate: OrchestratorTurn = { type: 'terminate', reason };
-      await this.writer.write(encoder.encode(`${JSON.stringify(terminate)}\n`));
+      this.proc.stdin.write(encoder.encode(`${JSON.stringify(terminate)}\n`));
     } catch {
       // stdin may already be closed — ignore
     }
@@ -132,7 +130,7 @@ export class AgentSession implements IAgentSession {
 
   private async shutdownProcess(): Promise<void> {
     try {
-      await this.writer.close();
+      this.proc.stdin.end();
     } catch {
       // already closed — ignore
     }

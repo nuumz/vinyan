@@ -30,11 +30,13 @@ function createMockProcess(workerResponses: string[] = []): MockProcess {
     },
   });
 
-  const stdin = new WritableStream<Uint8Array>({
-    write(chunk) {
-      stdinChunks.push(dec.decode(chunk));
+  const stdin = {
+    write(chunk: string | Uint8Array) {
+      stdinChunks.push(typeof chunk === 'string' ? chunk : dec.decode(chunk));
+      return typeof chunk === 'string' ? chunk.length : chunk.byteLength;
     },
-  });
+    end() {},
+  };
 
   return {
     proc: {

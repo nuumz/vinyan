@@ -79,6 +79,10 @@ export interface VinyanBusEvents {
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
+  'task:budget-exceeded': { taskId: string; totalTokensConsumed: number; globalCap: number };
+
+  // TestGenerator observability
+  'testgen:error': { taskId: string; error: string };
 
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
@@ -247,7 +251,8 @@ export class EventBus<Events extends {}> {
   emit<K extends keyof Events & string>(event: K, payload: Events[K]): void {
     const set = this.listeners.get(event);
     if (!set) return;
-    for (const handler of set) {
+    // Defensive copy — handlers may add/remove listeners during iteration
+    for (const handler of [...set]) {
       try {
         const start = performance.now();
         (handler as Handler<Events[K]>)(payload);

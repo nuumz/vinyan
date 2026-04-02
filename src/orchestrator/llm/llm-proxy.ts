@@ -10,7 +10,7 @@
  *
  * Feature-flagged: enabled via OrchestratorConfig.llmProxy = true.
  */
-import { existsSync, unlinkSync } from 'node:fs';
+import { chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LLMProvider, LLMRequest, LLMResponse } from '../types.ts';
@@ -36,16 +36,25 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
     /* ignore */
   }
 
+  // Per-connection buffer for newline-delimited JSON framing (handles TCP chunking)
+  const socketBuffers = new WeakMap<object, string>();
+
   const server = Bun.listen({
     unix: socketPath,
     socket: {
       async data(socket, rawData) {
-        try {
-          const text = typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData);
-          // Handle multiple newline-delimited messages in a single data event
-          const lines = text.split('\n').filter((l) => l.trim());
+        // Accumulate data in per-connection buffer to handle TCP chunking
+        const prev = socketBuffers.get(socket) ?? '';
+        const text = prev + (typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData));
 
-          for (const line of lines) {
+        // Split into lines; last element may be incomplete
+        const parts = text.split('\n');
+        // Keep incomplete trailing part in buffer
+        socketBuffers.set(socket, parts.pop()!);
+
+        for (const line of parts) {
+          if (!line.trim()) continue;
+          try {
             const request = JSON.parse(line) as LLMProxyRequest;
 
             // Select provider by tier (matching worker-entry.ts logic)
@@ -71,25 +80,32 @@ export function startLLMProxy(registry: LLMProviderRegistry): LLMProxyServer {
               };
               socket.write(`${JSON.stringify(errorResponse)}\n`);
             }
+          } catch (err) {
+            const errorResponse: LLMProxyResponse = {
+              error: `Proxy parse error: ${err instanceof Error ? err.message : String(err)}`,
+            };
+            socket.write(`${JSON.stringify(errorResponse)}\n`);
           }
-        } catch (err) {
-          const errorResponse: LLMProxyResponse = {
-            error: `Proxy parse error: ${err instanceof Error ? err.message : String(err)}`,
-          };
-          socket.write(`${JSON.stringify(errorResponse)}\n`);
         }
       },
       open() {
         /* connection accepted */
       },
-      close() {
-        /* connection closed */
+      close(socket) {
+        socketBuffers.delete(socket);
       },
       error(_socket, error) {
         console.error(`[vinyan] LLM proxy socket error: ${error.message}`);
       },
     },
   });
+
+  // Restrict socket permissions to owner only (A6: credential isolation)
+  try {
+    chmodSync(socketPath, 0o600);
+  } catch {
+    /* best-effort — tmpdir may not support chmod */
+  }
 
   return {
     socketPath,
@@ -113,49 +129,66 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider['tier'
     id: `proxy/${tier}`,
     tier,
     async generate(request: LLMRequest): Promise<LLMResponse> {
+      const PROXY_TIMEOUT_MS = 65_000;
       const proxyRequest: LLMProxyRequest = { tier, llmRequest: request };
 
-      return new Promise((resolve, reject) => {
-        const socket = Bun.connect({
-          unix: socketPath,
-          socket: {
-            data(socket, rawData) {
-              try {
-                const text = typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData);
-                const lines = text.split('\n').filter((l) => l.trim());
-                for (const line of lines) {
-                  const parsed = JSON.parse(line) as LLMProxyResponse;
-                  if (parsed.error) {
-                    reject(new Error(parsed.error));
-                  } else if (parsed.response) {
-                    resolve(parsed.response);
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      let resolvedSocket: { end(): void } | undefined;
+
+      try {
+        const socketPromise = new Promise<LLMResponse>((resolve, reject) => {
+          let buffer = '';
+          Bun.connect({
+            unix: socketPath,
+            socket: {
+              data(socket, rawData) {
+                try {
+                  buffer += typeof rawData === 'string' ? rawData : new TextDecoder().decode(rawData);
+                  const parts = buffer.split('\n');
+                  buffer = parts.pop()!; // keep incomplete trailing part
+                  for (const line of parts) {
+                    if (!line.trim()) continue;
+                    const parsed = JSON.parse(line) as LLMProxyResponse;
+                    if (parsed.error) {
+                      reject(new Error(parsed.error));
+                    } else if (parsed.response) {
+                      resolve(parsed.response);
+                    }
+                    socket.end();
                   }
-                  socket.end();
+                } catch (err) {
+                  reject(err);
                 }
-              } catch (err) {
-                reject(err);
-              }
+              },
+              open(socket) {
+                resolvedSocket = socket;
+                socket.write(`${JSON.stringify(proxyRequest)}\n`);
+              },
+              error(_socket, error) {
+                reject(error);
+              },
+              close() {
+                /* cleanup */
+              },
+              connectError(_socket, error) {
+                reject(error);
+              },
             },
-            open(socket) {
-              socket.write(`${JSON.stringify(proxyRequest)}\n`);
-            },
-            error(_socket, error) {
-              reject(error);
-            },
-            close() {
-              /* cleanup */
-            },
-            connectError(_socket, error) {
-              reject(error);
-            },
-          },
+          }).catch(reject);
         });
 
-        // Guard against Bun.connect returning void/undefined on connection failure
-        if (!socket) {
-          reject(new Error(`Failed to connect to LLM proxy at ${socketPath}`));
-        }
-      });
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(
+            () => reject(new Error(`LLM proxy timeout after ${PROXY_TIMEOUT_MS}ms`)),
+            PROXY_TIMEOUT_MS,
+          );
+        });
+
+        return await Promise.race([socketPromise, timeoutPromise]);
+      } finally {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        try { resolvedSocket?.end(); } catch { /* already closed */ }
+      }
     },
   };
 }

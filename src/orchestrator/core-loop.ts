@@ -224,6 +224,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   // Hoist for audit trail on timeout/escalation traces (Gap #2)
   let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
 
+  // G6: Global token budget cap — tracks worker generation tokens across routing levels × retries.
+  // Note: critic and test-gen tokens are NOT tracked here (they run post-verification and are bounded
+  // by their own maxTokens limits). This cap prevents runaway worker generation costs.
+  const BUDGET_CAP_MULTIPLIER = 6; // ~3 routing levels × 2 retries per level
+  let totalTokensConsumed = 0;
+
   while (routing.level <= MAX_ROUTING_LEVEL) {
     // Track matched skill for feedback loop (H4) — resets on level escalation
     let matchedSkill: CachedSkill | null = null;
@@ -473,6 +479,43 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           output: workerResult as unknown as import('./types.ts').WorkerOutput,
           durationMs: Date.now() - dispatchStart,
         });
+
+        // G6: Accumulate global token budget
+        totalTokensConsumed += workerResult.tokensConsumed;
+        const globalBudgetCap = input.budget.maxTokens * BUDGET_CAP_MULTIPLIER;
+        if (totalTokensConsumed > globalBudgetCap) {
+          const budgetTrace: ExecutionTrace = {
+            id: `trace-${input.id}-budget-exceeded`,
+            taskId: input.id,
+            workerId: routing.workerId ?? routing.model ?? 'unknown',
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: 'global-budget-exceeded',
+            oracleVerdicts: {},
+            modelUsed: routing.model ?? 'none',
+            tokensConsumed: totalTokensConsumed,
+            durationMs: Date.now() - startTime,
+            outcome: 'failure',
+            failureReason: `Global token budget exceeded: ${totalTokensConsumed} > ${globalBudgetCap}`,
+            affectedFiles: input.targetFiles ?? [],
+            workerSelectionAudit: workerSelection ?? lastWorkerSelection,
+          };
+          await deps.traceCollector.record(budgetTrace);
+          deps.bus?.emit('trace:record', { trace: budgetTrace });
+          deps.bus?.emit('task:budget-exceeded', {
+            taskId: input.id,
+            totalTokensConsumed,
+            globalCap: globalBudgetCap,
+          });
+          const budgetResult: TaskResult = {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: budgetTrace,
+          };
+          deps.bus?.emit('task:complete', { result: budgetResult });
+          return budgetResult;
+        }
       } catch (dispatchErr) {
         deps.bus?.emit('worker:error', {
           taskId: input.id,
@@ -918,8 +961,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               );
               continue; // retry within routing level
             }
-          } catch {
-            // TestGenerator failure is non-blocking — structural oracles + critic already passed
+          } catch (testGenError) {
+            deps.bus?.emit('testgen:error', {
+              taskId: input.id,
+              error: testGenError instanceof Error ? testGenError.message : String(testGenError),
+            });
+            // Non-blocking: structural oracles + critic already passed
           }
         }
 

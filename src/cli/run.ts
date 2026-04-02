@@ -32,9 +32,15 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   }
 
   const files = parseArrayFlag(argv, '--file');
-  const budget = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
-  const retries = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
-  const timeout = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);
+  const budgetRaw = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
+  const retriesRaw = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
+  const timeoutRaw = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);
+
+  // Validate numeric arguments
+  const budget = Number.isFinite(budgetRaw) && budgetRaw > 0 ? budgetRaw : 50_000;
+  const retries = Number.isFinite(retriesRaw) && retriesRaw > 0 ? retriesRaw : 3;
+  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 60_000;
+
   const workspace = parseSingleFlag(argv, '--workspace') ?? process.cwd();
   const quiet = argv.includes('--quiet');
   const verbose = argv.includes('--verbose');
@@ -65,6 +71,15 @@ export async function runAgentTask(argv: string[]): Promise<void> {
 
   const traceListenerHandle = attachTraceListener(bus);
   const orchestrator = createOrchestrator({ workspace, bus });
+
+  // Graceful shutdown on signals
+  const shutdown = () => {
+    detachProgress?.();
+    orchestrator.close();
+    process.exit(130);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 
   try {
     const result = await orchestrator.executeTask(input);

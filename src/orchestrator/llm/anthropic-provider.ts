@@ -7,6 +7,8 @@
  * Source of truth: spec/tdd.md §17.1
  */
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
+import { normalizeMessages } from './provider-format.ts';
+import type { AnthropicMessage } from './provider-format.ts';
 
 export interface AnthropicProviderConfig {
   id?: string;
@@ -41,18 +43,23 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
         input_schema: { type: 'object' as const, properties: t.parameters },
       }));
 
+      const messages = request.messages?.length
+        ? (normalizeMessages(request.messages, 'anthropic') as AnthropicMessage[])
+        : [{ role: 'user' as const, content: request.userPrompt }];
+
       const response = await client.messages.create({
         model,
         max_tokens: request.maxTokens,
         system: request.systemPrompt,
-        messages: [{ role: 'user', content: request.userPrompt }],
+        messages,
         ...(tools?.length ? { tools } : {}),
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
       });
 
-      // Extract tool calls from response
+      // Extract tool calls and thinking from response
       const toolCalls: ToolCall[] = [];
       let textContent = '';
+      let thinking: string | undefined;
 
       for (const block of response.content) {
         if (block.type === 'text') {
@@ -63,11 +70,14 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             tool: block.name,
             parameters: block.input as Record<string, unknown>,
           });
+        } else if ((block as any).type === 'thinking') {
+          thinking = (block as any).thinking;
         }
       }
 
       return {
         content: textContent,
+        thinking,
         toolCalls,
         tokensUsed: {
           input: response.usage.input_tokens,

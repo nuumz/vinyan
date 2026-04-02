@@ -176,4 +176,24 @@ describe('computeQualityScore', () => {
     expect(qs.simplificationGain).toBeUndefined();
     expect(qs.testPresenceHeuristic).toBeUndefined();
   });
+
+  // ── Phase 4.10: fusedConfidence override ────────────────────────
+
+  test('fusedConfidence provided → overrides architecturalCompliance', () => {
+    const results = { ast: makeVerdict(true), type: makeVerdict(false) }; // naive = 0.5
+    const qs = computeQualityScore(results, 100, 2000, undefined, undefined, undefined, 0.75);
+    expect(qs.architecturalCompliance).toBe(0.75);
+  });
+
+  test('fusedConfidence = NaN → architecturalCompliance uses oracle pass ratio', () => {
+    const results = { ast: makeVerdict(true), type: makeVerdict(false) };
+    const qs = computeQualityScore(results, 100, 2000, undefined, undefined, undefined, NaN);
+    expect(qs.architecturalCompliance).toBeCloseTo(0.5, 5);
+  });
+
+  test('fusedConfidence = undefined → backward compatible (no override)', () => {
+    const results = { ast: makeVerdict(true) };
+    const qs = computeQualityScore(results, 100, 2000);
+    expect(qs.architecturalCompliance).toBe(1.0);
+  });
 });

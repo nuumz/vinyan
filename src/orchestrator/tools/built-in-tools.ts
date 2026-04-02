@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import type { ToolResult } from '../types.ts';
-import type { Tool } from './tool-interface.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 const TOOL_TIMEOUT_MS = 30_000;
 
@@ -36,6 +36,20 @@ export const fileRead: Tool = {
   minIsolationLevel: 0,
   category: 'file_read',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'file_read',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: { file_path: { type: 'string', description: 'Path to the file to read' } },
+        required: ['file_path'],
+      },
+      category: 'file_read',
+      sideEffect: false,
+      minRoutingLevel: 0,
+    };
+  },
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const absPath = resolve(context.workspace, filePath);
@@ -60,6 +74,23 @@ export const fileWrite: Tool = {
   minIsolationLevel: 1,
   category: 'file_write',
   sideEffect: true,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'file_write',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Path to the file to write' },
+          content: { type: 'string', description: 'Content to write' },
+        },
+        required: ['file_path', 'content'],
+      },
+      category: 'file_write',
+      sideEffect: true,
+      minRoutingLevel: 2,
+    };
+  },
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const content = params.content as string;
@@ -85,6 +116,24 @@ export const fileEdit: Tool = {
   minIsolationLevel: 1,
   category: 'file_write',
   sideEffect: true,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'file_edit',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Path to the file to edit' },
+          old_string: { type: 'string', description: 'String to replace' },
+          new_string: { type: 'string', description: 'Replacement string' },
+        },
+        required: ['file_path', 'old_string', 'new_string'],
+      },
+      category: 'file_write',
+      sideEffect: true,
+      minRoutingLevel: 2,
+    };
+  },
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const oldStr = params.old_string as string;
@@ -119,6 +168,20 @@ export const directoryList: Tool = {
   minIsolationLevel: 0,
   category: 'file_read',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'directory_list',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Directory path to list' } },
+        required: [],
+      },
+      category: 'file_read',
+      sideEffect: false,
+      minRoutingLevel: 2,
+    };
+  },
   async execute(params, context) {
     const dirPath = ((params.path ?? params.directory) as string) ?? '.';
     const absPath = resolve(context.workspace, dirPath);
@@ -141,6 +204,23 @@ export const searchGrep: Tool = {
   minIsolationLevel: 0,
   category: 'search',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'search_grep',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Search pattern (regex)' },
+          path: { type: 'string', description: 'Path to search in' },
+        },
+        required: ['pattern'],
+      },
+      category: 'search',
+      sideEffect: false,
+      minRoutingLevel: 1,
+    };
+  },
   async execute(params, context) {
     const pattern = params.pattern as string;
     const path = (params.path ?? '.') as string;
@@ -188,6 +268,23 @@ export const shellExec: Tool = {
   minIsolationLevel: 1,
   category: 'shell',
   sideEffect: true,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'shell_exec',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to execute' },
+          cwd: { type: 'string', description: 'Working directory' },
+        },
+        required: ['command'],
+      },
+      category: 'shell',
+      sideEffect: true,
+      minRoutingLevel: 2,
+    };
+  },
   async execute(params, context) {
     const command = params.command as string;
     // Validate cwd if provided — must stay within workspace
@@ -240,6 +337,16 @@ export const gitStatus: Tool = {
   minIsolationLevel: 0,
   category: 'vcs',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'git_status',
+      description: this.description,
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      category: 'vcs',
+      sideEffect: false,
+      minRoutingLevel: 1,
+    };
+  },
   async execute(params, context) {
     try {
       const proc = Bun.spawn(['git', 'status', '--porcelain'], {
@@ -265,6 +372,20 @@ export const gitDiff: Tool = {
   minIsolationLevel: 0,
   category: 'vcs',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'git_diff',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: { file_path: { type: 'string', description: 'File to diff (optional)' } },
+        required: [],
+      },
+      category: 'vcs',
+      sideEffect: false,
+      minRoutingLevel: 1,
+    };
+  },
   async execute(params, context) {
     const target = params.file_path as string | undefined;
     const args = ['git', 'diff'];
@@ -293,6 +414,23 @@ export const searchSemantic: Tool = {
   minIsolationLevel: 0,
   category: 'search',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'search_semantic',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'File to search in' },
+          symbol: { type: 'string', description: 'Symbol name to search for' },
+        },
+        required: ['file_path', 'symbol'],
+      },
+      category: 'search',
+      sideEffect: false,
+      minRoutingLevel: 1,
+    };
+  },
   async execute(params, context) {
     const filePath = (params.file_path ?? params.path) as string;
     const symbolName = params.symbol as string;
@@ -366,6 +504,20 @@ export const httpGet: Tool = {
   minIsolationLevel: 1,
   category: 'shell',
   sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'http_get',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'URL to fetch' } },
+        required: ['url'],
+      },
+      category: 'shell',
+      sideEffect: false,
+      minRoutingLevel: 2,
+    };
+  },
   async execute(params, _context) {
     const url = params.url as string;
     if (!url) {
@@ -405,6 +557,111 @@ export const httpGet: Tool = {
   },
 };
 
+// ── Control tools (Phase 6) ─────────────────────────────────────────
+
+export const attemptCompletion: Tool = {
+  name: 'attempt_completion',
+  description:
+    'Signal task completion or uncertainty. Use status "done" when the task is complete, or "uncertain" when you cannot proceed.',
+  minIsolationLevel: 0,
+  category: 'control',
+  sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'attempt_completion',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', description: 'Task completion status', enum: ['done', 'uncertain'] },
+          result: { type: 'string', description: 'Summary of what was accomplished' },
+          uncertainties: { type: 'string', description: 'List of unresolved uncertainties (when status is uncertain)' },
+        },
+        required: ['status'],
+      },
+      category: 'control',
+      sideEffect: false,
+      minRoutingLevel: 0,
+    };
+  },
+  async execute(params) {
+    // Control tool — the agent loop intercepts this before execution
+    return makeResult((params.callId as string) ?? '', 'attempt_completion', {
+      output: JSON.stringify({ status: params.status, result: params.result }),
+    });
+  },
+};
+
+export const requestBudgetExtension: Tool = {
+  name: 'request_budget_extension',
+  description: 'Request additional tokens from the orchestrator when budget is running low.',
+  minIsolationLevel: 0,
+  category: 'control',
+  sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'request_budget_extension',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          additionalTokens: { type: 'number', description: 'Number of additional tokens requested' },
+          reason: { type: 'string', description: 'Reason for the budget extension request' },
+        },
+        required: ['additionalTokens', 'reason'],
+      },
+      category: 'control',
+      sideEffect: false,
+      minRoutingLevel: 1,
+    };
+  },
+  async execute(params) {
+    // Control tool — handled by agent loop budget tracker
+    return makeResult((params.callId as string) ?? '', 'request_budget_extension', {
+      output: JSON.stringify({ requested: params.additionalTokens, reason: params.reason }),
+    });
+  },
+};
+
+export const delegateTask: Tool = {
+  name: 'delegate_task',
+  description:
+    'Delegate a sub-task to a child worker. The child runs through the full pipeline with bounded scope.',
+  minIsolationLevel: 1,
+  category: 'delegation',
+  sideEffect: true,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'delegate_task',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          goal: { type: 'string', description: 'Natural language description of the sub-task' },
+          targetFiles: { type: 'array', description: 'Files the sub-task is scoped to' },
+          requiredTools: { type: 'array', description: 'Tools the sub-task needs (optional)' },
+          context: { type: 'string', description: 'Additional context for the sub-task (optional)' },
+          requestedTokens: { type: 'number', description: 'Token budget for the sub-task (optional)' },
+        },
+        required: ['goal', 'targetFiles'],
+      },
+      category: 'delegation',
+      sideEffect: true,
+      minRoutingLevel: 2,
+    };
+  },
+  async execute(params, context) {
+    // Delegation tool — handled by agent loop via context.onDelegate
+    if (!context.onDelegate) {
+      return makeResult((params.callId as string) ?? '', 'delegate_task', {
+        status: 'denied',
+        error: 'Delegation not available at this routing level',
+      });
+    }
+    return context.onDelegate(params as any);
+  },
+};
+
 /** All built-in tools indexed by name. */
 export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['file_read', fileRead],
@@ -417,4 +674,7 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['git_diff', gitDiff],
   ['search_semantic', searchSemantic],
   ['http_get', httpGet],
+  ['attempt_completion', attemptCompletion],
+  ['request_budget_extension', requestBudgetExtension],
+  ['delegate_task', delegateTask],
 ]);

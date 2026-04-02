@@ -38,6 +38,8 @@ export function computeQualityScore(
   testContext?: TestContext,
   /** Map oracle name → tier string for A5 weighted scoring. */
   oracleTiers?: Record<string, string>,
+  /** Phase 4.10: SL projected probability override for architecturalCompliance. */
+  fusedConfidence?: number,
 ): QualityScore {
   // Dimension 1: architecturalCompliance (A5 tier-weighted oracle pass ratio)
   const entries = Object.entries(oracleResults);
@@ -68,6 +70,11 @@ export function computeQualityScore(
     architecturalCompliance = totalWeight > 0 ? weightedSum / totalWeight : 1.0;
   } else {
     architecturalCompliance = entries.filter(([, v]) => v.verified).length / entries.length;
+  }
+
+  // Phase 4.10: Override architecturalCompliance with SL projected probability when available
+  if (fusedConfidence != null && !Number.isNaN(fusedConfidence)) {
+    architecturalCompliance = fusedConfidence;
   }
 
   // Dimension 3: simplificationGain (cyclomatic complexity reduction)

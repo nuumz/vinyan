@@ -142,6 +142,7 @@ export interface WorkingMemoryState {
     verified: boolean;
     hash: string;
   }>;
+  priorAttempts?: AgentSessionSummary[];
 }
 
 // ---------------------------------------------------------------------------
@@ -501,15 +502,55 @@ export interface LLMRequest {
     description: string;
     parameters: Record<string, unknown>;
   }>;
+  messages?: HistoryMessage[];
 }
 
 /** Response from an LLM provider */
 export interface LLMResponse {
   content: string;
+  thinking?: string;
   toolCalls: ToolCall[];
   tokensUsed: { input: number; output: number };
   model: string;
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
+}
+
+// ---------------------------------------------------------------------------
+// Multi-turn message history (→ Phase 6: Agentic Worker Protocol)
+// ---------------------------------------------------------------------------
+
+/** A single message in the conversation history */
+export interface Message {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  thinking?: string;
+  toolCalls?: ToolCall[];
+}
+
+/** Tool result — normalized to canonical form, provider-format.ts maps at call time */
+export interface ToolResultMessage {
+  role: 'tool_result';
+  toolCallId: string;
+  content: string;
+  isError?: boolean;
+}
+
+/** Union of all message types in conversation history */
+export type HistoryMessage = Message | ToolResultMessage;
+
+/** Retry context — built by agent-loop on uncertain/failure for next attempt */
+export interface AgentSessionSummary {
+  sessionId: string;
+  attempt: number;
+  outcome: 'uncertain' | 'max_tokens' | 'timeout' | 'oracle_failed';
+  filesRead: string[];
+  filesWritten: string[];
+  turnsCompleted: number;
+  tokensConsumed: number;
+  failurePoint: string;
+  lastIntent: string;
+  uncertainties: string[];
+  suggestedNextStep?: string;
 }
 
 // ---------------------------------------------------------------------------

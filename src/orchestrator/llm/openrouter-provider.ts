@@ -7,6 +7,8 @@
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
+import { normalizeMessages } from './provider-format.ts';
+import type { OpenAIMessage } from './provider-format.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -37,10 +39,15 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
       const body: Record<string, unknown> = {
         model,
         max_tokens: request.maxTokens,
-        messages: [
-          { role: 'system', content: request.systemPrompt },
-          { role: 'user', content: request.userPrompt },
-        ],
+        messages: request.messages?.length
+          ? [
+              { role: 'system', content: request.systemPrompt },
+              ...(normalizeMessages(request.messages, 'openai-compat') as OpenAIMessage[]),
+            ]
+          : [
+              { role: 'system', content: request.systemPrompt },
+              { role: 'user', content: request.userPrompt },
+            ],
       };
 
       if (request.temperature !== undefined) {

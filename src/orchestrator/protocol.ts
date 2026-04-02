@@ -115,6 +115,19 @@ export const WorkingMemoryStateSchema = z.object({
   activeHypotheses: z.array(ActiveHypothesisSchema),
   unresolvedUncertainties: z.array(UnresolvedUncertaintySchema),
   scopedFacts: z.array(ScopedFactSchema),
+  priorAttempts: z.array(z.object({
+    sessionId: z.string(),
+    attempt: z.number(),
+    outcome: z.enum(['uncertain', 'max_tokens', 'timeout', 'oracle_failed']),
+    filesRead: z.array(z.string()),
+    filesWritten: z.array(z.string()),
+    turnsCompleted: z.number(),
+    tokensConsumed: z.number(),
+    failurePoint: z.string(),
+    lastIntent: z.string(),
+    uncertainties: z.array(z.string()),
+    suggestedNextStep: z.string().optional(),
+  })).optional(),
 });
 
 // ── TaskDAG ──────────────────────────────────────────────────────────
@@ -185,3 +198,115 @@ export const TaskInputSchema = z.object({
   acceptanceCriteria: z.array(z.string()).optional(),
   budget: TaskBudgetSchema,
 });
+
+// ── Phase 6: Agentic Worker Protocol schemas ─────────────────────────
+
+/** Agent budget — 3-pool model (base + negotiable + delegation) */
+export const AgentBudgetSchema = z.object({
+  maxTokens: z.number().positive(),
+  maxTurns: z.number().positive(),
+  maxDurationMs: z.number().positive(),
+  contextWindow: z.number().positive(),
+  base: z.number().nonnegative(),
+  negotiable: z.number().nonnegative(),
+  delegation: z.number().nonnegative(),
+  maxExtensionRequests: z.number().nonnegative().default(3),
+  maxToolCallsPerTurn: z.number().positive().default(10),
+  delegationDepth: z.number().nonnegative().default(0),
+  maxDelegationDepth: z.number().nonnegative().default(3),
+});
+
+export type AgentBudget = z.infer<typeof AgentBudgetSchema>;
+
+/** Terminate reasons for session close */
+export const TerminateReasonSchema = z.enum([
+  'budget_exceeded',
+  'turns_exceeded',
+  'timeout',
+  'guardrail_violation',
+  'orchestrator_abort',
+]);
+export type TerminateReason = z.infer<typeof TerminateReasonSchema>;
+
+/** Agent session summary — retry context (inline schema to avoid circular imports) */
+const AgentSessionSummarySchema = z.object({
+  sessionId: z.string(),
+  attempt: z.number(),
+  outcome: z.enum(['uncertain', 'max_tokens', 'timeout', 'oracle_failed']),
+  filesRead: z.array(z.string()),
+  filesWritten: z.array(z.string()),
+  turnsCompleted: z.number(),
+  tokensConsumed: z.number(),
+  failurePoint: z.string(),
+  lastIntent: z.string(),
+  uncertainties: z.array(z.string()),
+  suggestedNextStep: z.string().optional(),
+});
+
+/** Orchestrator → Worker turns (ndjson) */
+export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('init'),
+    taskId: z.string(),
+    goal: z.string(),
+    routingLevel: RoutingLevelSchema,
+    perception: PerceptualHierarchySchema,
+    workingMemory: WorkingMemoryStateSchema,
+    plan: TaskDAGSchema.optional(),
+    budget: AgentBudgetSchema,
+    allowedPaths: z.array(z.string()),
+    toolManifest: z.array(z.object({
+      name: z.string(),
+      description: z.string(),
+      inputSchema: z.record(z.string(), z.unknown()),
+    })),
+    priorAttempts: z.array(AgentSessionSummarySchema).optional(),
+  }),
+  z.object({
+    type: z.literal('tool_results'),
+    turnId: z.string(),
+    results: z.array(ToolResultSchema),
+  }),
+  z.object({
+    type: z.literal('terminate'),
+    reason: TerminateReasonSchema,
+    message: z.string().optional(),
+  }),
+]);
+export type OrchestratorTurn = z.infer<typeof OrchestratorTurnSchema>;
+
+/** Worker → Orchestrator turns (ndjson) */
+export const WorkerTurnSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('tool_calls'),
+    turnId: z.string(),
+    calls: z.array(ToolCallSchema),
+    rationale: z.string(),
+    tokensConsumed: z.number().optional(),
+  }),
+  z.object({
+    type: z.literal('done'),
+    turnId: z.string(),
+    proposedContent: z.string().optional(),
+    tokensConsumed: z.number().optional(),
+  }),
+  z.object({
+    type: z.literal('uncertain'),
+    turnId: z.string(),
+    reason: z.string(),
+    uncertainties: z.array(z.string()),
+    suggestedNextStep: z.string().optional(),
+    tokensConsumed: z.number().optional(),
+  }),
+]);
+export type WorkerTurn = z.infer<typeof WorkerTurnSchema>;
+
+/** Delegation request from worker */
+export const DelegationRequestSchema = z.object({
+  goal: z.string(),
+  targetFiles: z.array(z.string()),
+  requiredTools: z.array(z.string()).optional(),
+  context: z.string().optional(),
+  requestedTokens: z.number().optional(),
+});
+export type DelegationRequest = z.infer<typeof DelegationRequestSchema>;

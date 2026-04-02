@@ -15,6 +15,10 @@ export interface MockProviderOptions {
   shouldFail?: boolean;
   /** Simulate latency in ms. */
   latencyMs?: number;
+  /** Override the stop reason. */
+  stopReason?: 'end_turn' | 'tool_use' | 'max_tokens';
+  /** Simulate thinking output (Anthropic extended thinking). */
+  thinking?: string;
 }
 
 export function createMockProvider(options: MockProviderOptions = {}): LLMProvider {
@@ -40,10 +44,11 @@ export function createMockProvider(options: MockProviderOptions = {}): LLMProvid
 
       return {
         content,
+        thinking: options.thinking,
         toolCalls: options.responseToolCalls ?? [],
         tokensUsed: { input: 100, output: 50 },
         model: 'mock-model',
-        stopReason: options.responseToolCalls?.length ? 'tool_use' : 'end_turn',
+        stopReason: options.stopReason ?? (options.responseToolCalls?.length ? 'tool_use' : 'end_turn'),
       };
     },
   };

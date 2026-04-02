@@ -3,6 +3,7 @@
  * A3: Deterministic Governance — all thresholds are deterministic rule-based.
  * Design: docs/research/ehd-implementation-design.md §2.4, §3.1, §3.2
  */
+import { type FusionInput, type SubjectiveOpinion, fromScalar, fuseAll, projectedProbability } from '../core/subjective-opinion.ts';
 
 export type EpistemicGateDecision =
   | 'allow' // High confidence pass (>= HIGH_CONFIDENCE)
@@ -67,6 +68,28 @@ export function computeAggregateConfidence(
   if (weightSum === 0 || reciprocalSum === 0) return NaN;
   return weightSum / reciprocalSum;
 }
+
+export interface SLAggregateResult {
+  /** projectedProbability of fused opinion, or NaN if no inputs. */
+  confidence: number;
+  /** Fused SubjectiveOpinion, or null if no inputs. */
+  fusedOpinion: SubjectiveOpinion | null;
+}
+
+/**
+ * Phase 4.9: Compute SL aggregate from N oracle fusion inputs.
+ * Uses fuseAll() (Jaccard-based operator selection) then projectedProbability().
+ * Returns NaN confidence and null fusedOpinion for empty input (caller falls back to harmonic mean).
+ */
+export function computeSLAggregate(inputs: FusionInput[]): SLAggregateResult {
+  if (inputs.length === 0) return { confidence: NaN, fusedOpinion: null };
+  const fused = fuseAll(inputs);
+  return { confidence: projectedProbability(fused), fusedOpinion: fused };
+}
+
+// Re-export for consumers that import from this module
+export type { FusionInput, SubjectiveOpinion };
+export { fromScalar, projectedProbability };
 
 export type UncertaintyResolutionHint =
   | 'add-tests' // Test oracle abstained

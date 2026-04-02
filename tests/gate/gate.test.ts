@@ -51,6 +51,9 @@ describe('Oracle Gate', () => {
     expect(verdict.durationMs).toBeGreaterThan(0);
     // At least ast and type oracles should have run
     expect(Object.keys(verdict.oracle_results).length).toBeGreaterThanOrEqual(1);
+    // Phase 4.9: fusedOpinion present when oracles ran
+    expect(verdict.fusedOpinion).toBeDefined();
+    expect(verdict.fusedOpinion!.belief + verdict.fusedOpinion!.disbelief + verdict.fusedOpinion!.uncertainty).toBeCloseTo(1.0, 5);
   });
 
   test('blocks when type oracle finds errors', async () => {

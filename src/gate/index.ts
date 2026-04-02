@@ -1,11 +1,14 @@
 export { analyzeSessionDir, analyzeSessionFile, formatMetrics, type SessionMetrics } from './analyzer.ts';
 export {
   computeAggregateConfidence,
+  computeSLAggregate,
   type ConfidenceThresholds,
   DEFAULT_THRESHOLDS,
   deriveEpistemicDecision,
   type EpistemicGateDecision,
+  type FusionInput,
   generateResolutionHints,
+  type SLAggregateResult,
   THRESHOLDS,
   TIER_WEIGHTS,
   toClassicDecision,

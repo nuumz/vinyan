@@ -12,6 +12,14 @@
  *
  * Axiom compliance: A5 (Tiered Trust), A3 (Deterministic Governance — rule-based, no LLM).
  */
+import {
+  computeConflictReport,
+  cumulativeFusion,
+  fromScalar,
+  isValid,
+  projectedProbability,
+} from '../core/subjective-opinion.ts';
+import type { SubjectiveOpinion } from '../core/subjective-opinion.ts';
 import type { OracleAbstention, OracleVerdict } from '../core/types.ts';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -25,6 +33,10 @@ export interface ConflictResolution {
   resolvedAtStep: 1 | 2 | 3 | 4 | 5;
   /** Human-readable explanation of why this oracle won. */
   explanation: string;
+  /** Phase 4.8: Josang conflict mass K [0,1]. Present when SL-based resolution was attempted. */
+  conflictK?: number;
+  /** Phase 4.8: projectedProbability of fused SL opinion. Present when K ≤ 0.5 (fused at Step 2). */
+  fusedProbability?: number;
 }
 
 export interface ResolvedGateResult {
@@ -38,6 +50,10 @@ export interface ResolvedGateResult {
   hasContradiction: boolean;
 }
 
+/**
+ * @deprecated Historical accuracy tracking replaced by SL-based conflict resolution (Phase 4.8).
+ * Kept for backward-compat; fields are no longer used in resolution logic.
+ */
 export interface OracleAccuracyRecord {
   /** Total verdicts issued by this oracle. */
   total: number;
@@ -181,6 +197,21 @@ export function resolveConflicts(
 }
 
 /**
+ * Convert an OracleVerdict to a SubjectiveOpinion oriented toward the proposition
+ * "the code/hypothesis is correct."
+ *
+ * - verified=true:  confidence → belief   (oracle says "it's correct")
+ * - verified=false: confidence → disbelief (oracle says "it's wrong")
+ * If the verdict carries a native opinion, use it directly (assumed correctly oriented).
+ */
+function verdictToOpinion(verdict: OracleVerdict): SubjectiveOpinion {
+  if (verdict.opinion && isValid(verdict.opinion)) return verdict.opinion;
+  return verdict.verified
+    ? fromScalar(verdict.confidence)
+    : fromScalar(1 - verdict.confidence); // invert: confidence in "wrong" → disbelief in "correct"
+}
+
+/**
  * Resolve a single conflict between a passing and failing oracle.
  * Returns which oracle wins and at which step.
  */
@@ -207,69 +238,40 @@ function resolveConflictPair(
     };
   }
 
-  // Step 2: Confidence comparison — higher tier wins (A5)
-  const passTier = config.oracleTiers[passName] ?? 'heuristic';
-  const failTier = config.oracleTiers[failName] ?? 'heuristic';
-  const passPriority = getTierPriority(passTier);
-  const failPriority = getTierPriority(failTier);
+  // Step 2: Phase 4.8 — SL-based conflict resolution using Josang conflict constant K.
+  // Cross-domain pair (Step 1) already returned above, so this is always same-domain.
+  // K = b1*d2 + d1*b2. K > 0.5 → genuine contradiction → Step 5. K ≤ 0.5 → fuse → winner by P.
+  const passOpinion = verdictToOpinion(passVerdict);
+  const failOpinion = verdictToOpinion(failVerdict);
+  const conflictReport = computeConflictReport(passOpinion, failOpinion);
+  const K = conflictReport.K;
 
-  if (passPriority !== failPriority) {
-    const winner = passPriority > failPriority ? passName : failName;
-    const loser = winner === passName ? failName : passName;
+  if (K > 0.5) {
+    // High conflict mass — oracles fundamentally disagree, escalate.
     return {
-      winner,
-      loser,
-      resolvedAtStep: 2,
-      explanation: `Tier comparison: "${winner}" (${winner === passName ? passTier : failTier}) outranks "${loser}" (${loser === passName ? passTier : failTier})`,
+      winner: failName, // Conservative: failure wins when contradictory
+      loser: passName,
+      resolvedAtStep: 5,
+      conflictK: K,
+      explanation: `SL contradiction: K=${K.toFixed(3)} > 0.5 — "${passName}" (passed) and "${failName}" (failed) have irreconcilable opinions`,
     };
   }
 
-  // Step 3: Evidence weight — more evidence items wins
-  const passEvidence = passVerdict.evidence.length;
-  const failEvidence = failVerdict.evidence.length;
-
-  if (passEvidence !== failEvidence) {
-    const winner = passEvidence > failEvidence ? passName : failName;
-    const loser = winner === passName ? failName : passName;
-    const winnerEvidence = winner === passName ? passEvidence : failEvidence;
-    const loserEvidence = loser === passName ? passEvidence : failEvidence;
-    return {
-      winner,
-      loser,
-      resolvedAtStep: 3,
-      explanation: `Evidence weight: "${winner}" has ${winnerEvidence} evidence items vs "${loser}" with ${loserEvidence}`,
-    };
-  }
-
-  // Step 4: Historical accuracy — better track record wins
-  if (config.oracleAccuracy) {
-    const passAcc = config.oracleAccuracy[passName];
-    const failAcc = config.oracleAccuracy[failName];
-
-    if (passAcc && failAcc && passAcc.total > 0 && failAcc.total > 0) {
-      const passRate = passAcc.correct / passAcc.total;
-      const failRate = failAcc.correct / failAcc.total;
-
-      if (Math.abs(passRate - failRate) > 0.05) {
-        const winner = passRate > failRate ? passName : failName;
-        const loser = winner === passName ? failName : passName;
-        const winnerRate = winner === passName ? passRate : failRate;
-        const loserRate = loser === passName ? passRate : failRate;
-        return {
-          winner,
-          loser,
-          resolvedAtStep: 4,
-          explanation: `Historical accuracy: "${winner}" (${(winnerRate * 100).toFixed(1)}%) vs "${loser}" (${(loserRate * 100).toFixed(1)}%)`,
-        };
-      }
-    }
-  }
-
-  // Step 5: Escalation — unresolvable, produce contradictory state
+  // K ≤ 0.5 — fuse via cumulative fusion (cross-domain pair already handled at Step 1;
+  // same-domain pairs are treated as independent sources for this resolution).
+  const fused = cumulativeFusion(passOpinion, failOpinion);
+  const fusedP = projectedProbability(fused);
+  // fusedP >= 0.5 → net opinion favors correctness → pass wins; else fail wins
+  const winner = fusedP >= 0.5 ? passName : failName;
+  const loser = winner === passName ? failName : passName;
   return {
-    winner: failName, // Conservative: failure wins when unresolvable
-    loser: passName,
-    resolvedAtStep: 5,
-    explanation: `Unresolved contradiction between "${passName}" (passed) and "${failName}" (failed) — same domain, same tier, same evidence weight, no accuracy differential`,
+    winner,
+    loser,
+    resolvedAtStep: 2,
+    conflictK: K,
+    fusedProbability: fusedP,
+    explanation: `SL fusion: K=${K.toFixed(3)}, P(fused)=${fusedP.toFixed(3)} — "${winner}" wins (${fusedP >= 0.5 ? 'net belief favors correctness' : 'net belief favors failure'})`,
   };
+
+  // Step 5: Escalation — reached via K > 0.5 path above (unreachable here, kept for clarity).
 }

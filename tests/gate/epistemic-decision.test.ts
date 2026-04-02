@@ -7,12 +7,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
   computeAggregateConfidence,
+  computeSLAggregate,
   deriveEpistemicDecision,
   generateResolutionHints,
   THRESHOLDS,
   TIER_WEIGHTS,
   type EpistemicGateDecision,
+  type FusionInput,
 } from '../../src/gate/epistemic-decision.ts';
+import { fromScalar } from '../../src/core/subjective-opinion.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -211,6 +214,71 @@ describe('generateResolutionHints', () => {
     const abstentionHints = hints.filter((h) => h.includes('abstained'));
     expect(abstentionHints).toHaveLength(1);
     expect(abstentionHints[0]).toContain('real reason');
+  });
+});
+
+// ── computeSLAggregate ─────────────────────────────────────────
+
+describe('computeSLAggregate', () => {
+  test('empty inputs → { confidence: NaN, fusedOpinion: null }', () => {
+    const result = computeSLAggregate([]);
+    expect(Number.isNaN(result.confidence)).toBe(true);
+    expect(result.fusedOpinion).toBeNull();
+  });
+
+  test('single input → passes through as projected probability', () => {
+    const input: FusionInput = {
+      opinion: fromScalar(0.9),
+      tier: 'deterministic',
+      deps: [],
+    };
+    const result = computeSLAggregate([input]);
+    // fromScalar(0.9) = {b:0.9, d:0.1, u:0} → projectedProbability = 0.9 + 0.5*0 = 0.9
+    expect(result.confidence).toBeCloseTo(0.9, 5);
+    expect(result.fusedOpinion).not.toBeNull();
+  });
+
+  test('two independent inputs (no dep overlap) → cumulative fusion reduces uncertainty', () => {
+    const a: FusionInput = {
+      opinion: { belief: 0.7, disbelief: 0.1, uncertainty: 0.2, baseRate: 0.5 },
+      tier: 'deterministic',
+      deps: ['a.ts'],
+    };
+    const b: FusionInput = {
+      opinion: { belief: 0.6, disbelief: 0.1, uncertainty: 0.3, baseRate: 0.5 },
+      tier: 'heuristic',
+      deps: ['b.ts'], // different file → Jaccard = 0
+    };
+    const result = computeSLAggregate([a, b]);
+    expect(result.confidence).toBeGreaterThan(0);
+    expect(result.confidence).toBeLessThanOrEqual(1);
+    expect(result.fusedOpinion).not.toBeNull();
+    // Fused uncertainty should be less than both inputs (cumulative reduces uncertainty)
+    expect(result.fusedOpinion!.uncertainty).toBeLessThan(Math.min(a.opinion.uncertainty, b.opinion.uncertainty));
+  });
+
+  test('two dependent inputs (full dep overlap) → averaging fusion', () => {
+    const op1 = { belief: 0.8, disbelief: 0.1, uncertainty: 0.1, baseRate: 0.5 };
+    const op2 = { belief: 0.6, disbelief: 0.2, uncertainty: 0.2, baseRate: 0.5 };
+    const inputs: FusionInput[] = [
+      { opinion: op1, tier: 'deterministic', deps: ['shared.ts'] },
+      { opinion: op2, tier: 'deterministic', deps: ['shared.ts'] }, // same dep → Jaccard = 1
+    ];
+    const result = computeSLAggregate(inputs);
+    expect(result.confidence).toBeGreaterThan(0);
+    expect(result.fusedOpinion).not.toBeNull();
+  });
+
+  test('conflicting opinions (K > 0.5) skipped → vacuous fallback → confidence ≈ 0.5', () => {
+    // Both dogmatic opposing → K=1.0 → fuseAll skips all, returns vacuous()
+    const inputs: FusionInput[] = [
+      { opinion: fromScalar(1.0), tier: 'deterministic', deps: [] },
+      { opinion: fromScalar(0.0), tier: 'deterministic', deps: [] },
+    ];
+    const result = computeSLAggregate(inputs);
+    // vacuous() → {b:0, d:0, u:1, a:0.5} → projectedProbability = 0 + 0.5*1 = 0.5
+    expect(result.confidence).toBeCloseTo(0.5, 5);
+    expect(result.fusedOpinion!.uncertainty).toBeCloseTo(1.0, 5);
   });
 });
 

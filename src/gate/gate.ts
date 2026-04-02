@@ -25,9 +25,14 @@ import type { RiskFactors } from '../orchestrator/types.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
 import {
   computeAggregateConfidence,
+  computeSLAggregate,
   deriveEpistemicDecision,
   generateResolutionHints,
   type EpistemicGateDecision,
+  type FusionInput,
+  type SLAggregateResult,
+  type SubjectiveOpinion,
+  fromScalar,
 } from './epistemic-decision.ts';
 import { logDecision, type SessionLogEntry } from './logger.ts';
 import type { ComplexityContext, TestContext } from './quality-score.ts';
@@ -86,6 +91,8 @@ export interface GateVerdict {
   qualityScore?: QualityScore;
   /** Risk score used for oracle tier selection (0.0-1.0). Present when risk-tiered mode is active. */
   riskScore?: number;
+  /** Phase 4.9: SL-fused opinion across all oracles. Present when ≥1 oracle ran. */
+  fusedOpinion?: SubjectiveOpinion;
 }
 
 // ── Oracle dispatch map ─────────────────────────────────────────
@@ -298,7 +305,21 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   const oracleTiersForConfidence: Record<string, string> = Object.fromEntries(
     Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'heuristic']),
   );
-  const aggregateConfidence = computeAggregateConfidence(oracleResults, oracleTiersForConfidence);
+
+  // Phase 4.9: Build SL fusion inputs from oracle results (direction-aware opinion, tier, evidence files as deps)
+  const fusionInputs: FusionInput[] = Object.entries(oracleResults).map(([name, verdict]) => ({
+    opinion: verdict.opinion != null
+      ? verdict.opinion
+      : (verdict.verified ? fromScalar(verdict.confidence) : fromScalar(1 - verdict.confidence)),
+    tier: oracleTiersForConfidence[name] ?? 'heuristic',
+    deps: verdict.evidence.map(e => e.file),
+  }));
+  const slResult: SLAggregateResult = computeSLAggregate(fusionInputs);
+
+  // Use SL aggregate when available; harmonic mean as NaN/empty fallback
+  const aggregateConfidence = !Number.isNaN(slResult.confidence)
+    ? slResult.confidence
+    : computeAggregateConfidence(oracleResults, oracleTiersForConfidence);
   // "All abstained" means oracles were dispatched but all returned abstentions (no verdicts).
   // Empty oracleResults + empty oracleAbstentions = no oracles ran (deliberate skip, not abstention).
   const hasAllAbstained = Object.keys(oracleResults).length === 0 && Object.keys(oracleAbstentions).length > 0;
@@ -361,8 +382,10 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
       complexityContext,
       testContext,
       oracleTiers,
+      slResult.fusedOpinion != null ? slResult.confidence : undefined,
     ),
     riskScore,
+    fusedOpinion: slResult.fusedOpinion ?? undefined,
   };
 
   await safeLog(request, verdict);

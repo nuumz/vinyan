@@ -19,11 +19,11 @@ export class SkillStore {
       INSERT OR REPLACE INTO cached_skills (
         task_signature, approach, success_rate, status,
         probation_remaining, usage_count, risk_at_creation,
-        dep_cone_hashes, last_verified_at, verification_profile, origin
+        dep_cone_hashes, last_verified_at, verification_profile, origin, composed_of
       ) VALUES (
         $task_signature, $approach, $success_rate, $status,
         $probation_remaining, $usage_count, $risk_at_creation,
-        $dep_cone_hashes, $last_verified_at, $verification_profile, $origin
+        $dep_cone_hashes, $last_verified_at, $verification_profile, $origin, $composed_of
       )
     `);
   }
@@ -41,6 +41,7 @@ export class SkillStore {
       $last_verified_at: skill.lastVerifiedAt,
       $verification_profile: skill.verificationProfile,
       $origin: skill.origin ?? 'local',
+      $composed_of: skill.composedOf ? JSON.stringify(skill.composedOf) : null,
     });
   }
 
@@ -108,6 +109,65 @@ export class SkillStore {
     const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM cached_skills`).get() as { cnt: number };
     return row.cnt;
   }
+
+  // ── Skill Composition (Phase 5 — Stream D2) ─────────────────────────
+
+  /** Find a composed skill matching a task fingerprint (exact match on task_signature). */
+  findComposedSkill(fingerprint: string): CachedSkill | null {
+    const row = this.db
+      .prepare(`SELECT * FROM cached_skills WHERE task_signature = ? AND composed_of IS NOT NULL AND status = 'active'`)
+      .get(fingerprint);
+    return row ? rowToSkill(row) : null;
+  }
+
+  /** Find all composed skills (skills that reference sub-skills). */
+  findAllComposed(): CachedSkill[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM cached_skills WHERE composed_of IS NOT NULL ORDER BY success_rate DESC`)
+      .all();
+    return rows.map(rowToSkill);
+  }
+
+  /**
+   * Detect skill compositions from co-occurrence patterns.
+   * When a set of skills is repeatedly used together for the same task signature,
+   * returns proposed compositions.
+   */
+  detectComposition(recentSkills: CachedSkill[], threshold = 3): Array<{ taskSignature: string; subSkills: string[] }> {
+    // Group skills by task signature prefix (e.g., "build-auth" from "build-auth::jwt", "build-auth::middleware")
+    const coOccurrences = new Map<string, Map<string, number>>();
+
+    for (const skill of recentSkills) {
+      const prefix = skill.taskSignature.split('::')[0] ?? skill.taskSignature;
+      if (!coOccurrences.has(prefix)) {
+        coOccurrences.set(prefix, new Map());
+      }
+      const sigMap = coOccurrences.get(prefix)!;
+      sigMap.set(skill.taskSignature, (sigMap.get(skill.taskSignature) ?? 0) + skill.usageCount);
+    }
+
+    const compositions: Array<{ taskSignature: string; subSkills: string[] }> = [];
+
+    for (const [prefix, sigMap] of coOccurrences) {
+      // Only propose composition when ≥2 sub-skills co-occur ≥threshold times
+      const qualifiedSigs = [...sigMap.entries()]
+        .filter(([, count]) => count >= threshold)
+        .map(([sig]) => sig);
+
+      if (qualifiedSigs.length >= 2) {
+        // Check this composition doesn't already exist
+        const existing = this.findComposedSkill(`composed::${prefix}`);
+        if (!existing) {
+          compositions.push({
+            taskSignature: `composed::${prefix}`,
+            subSkills: qualifiedSigs,
+          });
+        }
+      }
+    }
+
+    return compositions;
+  }
 }
 
 // ── Row deserialization ───────────────────────────────────────────────────
@@ -125,5 +185,6 @@ function rowToSkill(row: any): CachedSkill {
     lastVerifiedAt: row.last_verified_at,
     verificationProfile: row.verification_profile,
     origin: row.origin ?? 'local',
+    composedOf: row.composed_of ? JSON.parse(row.composed_of) : undefined,
   };
 }

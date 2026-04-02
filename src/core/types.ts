@@ -83,7 +83,8 @@ export type OracleErrorCode =
   | 'LIFETIME_ERROR'
   | 'TRAIT_NOT_SATISFIED'
   | 'UNSAFE_VIOLATION'
-  | 'UNSUPPORTED_PATTERN';
+  | 'UNSUPPORTED_PATTERN'
+  | 'GUARDRAIL_BLOCKED';
 
 /**
  * Output from an oracle — the verification result with evidence chain.

@@ -255,6 +255,76 @@ export class WorldGraph {
     this.db.query('DELETE FROM dependency_edges WHERE from_file = ?').run(file);
   }
 
+  // ── WP-5: Causal Edges (Phase 5 — Stream D1) ──────────────────────
+
+  /** Record a causal relationship: change to sourceFile broke targetFile (detected by oracle). */
+  recordCausalEdge(sourceFile: string, targetFile: string, oracleName: string, confidence: number): void {
+    const now = Date.now();
+    this.db
+      .query(`
+      INSERT INTO causal_edges (source_file, target_file, oracle_name, confidence, observed_at, observation_count, last_observed_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(source_file, target_file, oracle_name) DO UPDATE SET
+        confidence = ?,
+        observation_count = observation_count + 1,
+        last_observed_at = ?
+    `)
+      .run(sourceFile, targetFile, oracleName, confidence, now, now, confidence, now);
+  }
+
+  /** BFS over causal_edges to find all transitively affected files. */
+  queryCausalDependents(file: string, maxDepth = 3): string[] {
+    const visited = new Set<string>();
+    let frontier = [file];
+
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const nextFrontier: string[] = [];
+      for (const current of frontier) {
+        const rows = this.db
+          .query('SELECT target_file FROM causal_edges WHERE source_file = ?')
+          .all(current) as Array<{ target_file: string }>;
+        for (const row of rows) {
+          if (row.target_file !== file && !visited.has(row.target_file)) {
+            visited.add(row.target_file);
+            nextFrontier.push(row.target_file);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    return Array.from(visited);
+  }
+
+  /** Get direct causal edges from/to a file. */
+  getCausalEdges(file: string): Array<{
+    sourceFile: string;
+    targetFile: string;
+    oracleName: string;
+    confidence: number;
+    observationCount: number;
+    lastObservedAt: number;
+  }> {
+    const rows = this.db
+      .query('SELECT * FROM causal_edges WHERE source_file = ? OR target_file = ?')
+      .all(file, file) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      sourceFile: r.source_file as string,
+      targetFile: r.target_file as string,
+      oracleName: r.oracle_name as string,
+      confidence: r.confidence as number,
+      observationCount: r.observation_count as number,
+      lastObservedAt: r.last_observed_at as number,
+    }));
+  }
+
+  /** Remove causal edges not observed recently (default 90 days). */
+  pruneStaleCausalEdges(maxAgeDays = 90): number {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+    const result = this.db.run('DELETE FROM causal_edges WHERE last_observed_at < ?', [cutoff]);
+    return result.changes;
+  }
+
   /** Close the database connection. */
   close(): void {
     this.db.close();

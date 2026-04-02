@@ -76,7 +76,7 @@ describe('OracleRunner', () => {
     expect(violations).toHaveLength(1);
     const v = violations[0] as { rule: string; severity: string };
     expect(v.rule).toBe('I17');
-    expect(v.severity).toBe('warn');
+    expect(v.severity).toBe('error');
   });
 
   test('I17: no violation emitted for speculative oracle at routing level >= 2', async () => {

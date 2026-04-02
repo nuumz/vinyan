@@ -69,4 +69,18 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
   PRIMARY KEY (from_file, to_file, edge_type)
 );
 CREATE INDEX IF NOT EXISTS idx_dep_edges_to ON dependency_edges(to_file);
+
+CREATE TABLE IF NOT EXISTS causal_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_file TEXT NOT NULL,
+  target_file TEXT NOT NULL,
+  oracle_name TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  observed_at INTEGER NOT NULL,
+  observation_count INTEGER DEFAULT 1,
+  last_observed_at INTEGER NOT NULL,
+  UNIQUE(source_file, target_file, oracle_name)
+);
+CREATE INDEX IF NOT EXISTS idx_causal_source ON causal_edges(source_file);
+CREATE INDEX IF NOT EXISTS idx_causal_target ON causal_edges(target_file);
 `;

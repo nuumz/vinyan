@@ -67,9 +67,10 @@ export async function testOracle(command: string, fixtures: OracleTestFixture[])
       });
 
       // Write hypothesis to stdin
-      const writer = proc.stdin.getWriter();
-      await writer.write(new TextEncoder().encode(JSON.stringify(fixture.hypothesis)));
-      await writer.close();
+      const stdin = proc.stdin;
+      stdin.write(new TextEncoder().encode(JSON.stringify(fixture.hypothesis)));
+      stdin.flush();
+      stdin.end();
 
       // Race process vs timeout
       const timeoutPromise = new Promise<'timeout'>((resolve) => {

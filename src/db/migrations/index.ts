@@ -12,7 +12,9 @@ import { migration002 } from './002_add_session_tables.ts';
 import { migration003 } from './003_add_instance_registry.ts';
 import { migration004 } from './004_add_origin_provenance.ts';
 import { migration005 } from './005_add_oracle_profiles.ts';
+import { migration006 } from './006_add_causal_edges.ts';
+import { migration007 } from './007_add_skill_composition.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005];
+export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007];

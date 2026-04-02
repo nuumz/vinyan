@@ -1,8 +1,9 @@
 /**
- * Auth Middleware — bearer token validation for API endpoints.
+ * Auth Middleware — bearer token validation + role-based authorization.
  *
  * I15: API authentication mandatory for mutations.
  * Read-only endpoints may operate without auth.
+ * Multi-token support with role assignments.
  *
  * Source of truth: spec/tdd.md §22.6, safety invariant I15
  */
@@ -10,24 +11,40 @@
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
-import type { AuthContext } from './types.ts';
+import type { AuthContext, Role, TokenConfig } from './types.ts';
+import { classifyRequest, hasPermission, loadTokenFile } from './authorization.ts';
 
 /**
- * Create auth middleware that validates Bearer tokens.
+ * Create auth middleware that validates Bearer tokens and checks RBAC.
  *
  * @param tokenPath — path to the API token file (e.g., ~/.vinyan/api-token)
+ * @param tokenConfigPath — optional path to multi-token config JSON
  * @returns Function that extracts AuthContext from a Request
  */
-export function createAuthMiddleware(tokenPath: string): {
+export function createAuthMiddleware(tokenPath: string, tokenConfigPath?: string): {
   authenticate(req: Request): AuthContext;
+  authorize(ctx: AuthContext, method: string, path: string): boolean;
   getToken(): string;
 } {
-  // Auto-generate token if it doesn't exist
+  // Auto-generate default token if it doesn't exist
   ensureTokenExists(tokenPath);
-  const token = readFileSync(tokenPath, 'utf-8').trim();
+  const defaultToken = readFileSync(tokenPath, 'utf-8').trim();
+
+  // Load multi-token configuration if available
+  const tokenMap: Map<string, TokenConfig> = tokenConfigPath ? loadTokenFile(tokenConfigPath) : new Map();
 
   return {
     authenticate(req: Request): AuthContext {
+      // Check for mTLS client certificate header
+      const clientCert = req.headers.get('x-client-cert');
+      if (clientCert) {
+        return {
+          authenticated: true,
+          role: 'admin',
+          source: 'mtls',
+        };
+      }
+
       const authHeader = req.headers.get('authorization');
 
       if (!authHeader) {
@@ -40,15 +57,36 @@ export function createAuthMiddleware(tokenPath: string): {
       }
 
       const provided = match[1].trim();
-      if (safeCompare(provided, token)) {
-        return { authenticated: true, apiKey: provided, source: 'bearer' };
+
+      // Check multi-token config first
+      for (const [configToken, config] of tokenMap) {
+        if (safeCompare(provided, configToken)) {
+          return {
+            authenticated: true,
+            apiKey: provided,
+            role: config.role,
+            source: 'bearer',
+            instanceId: config.instanceId,
+          };
+        }
+      }
+
+      // Fall back to default token (admin role)
+      if (safeCompare(provided, defaultToken)) {
+        return { authenticated: true, apiKey: provided, role: 'admin', source: 'bearer' };
       }
 
       return { authenticated: false, source: 'anonymous' };
     },
 
+    authorize(ctx: AuthContext, method: string, path: string): boolean {
+      if (!ctx.authenticated || !ctx.role) return false;
+      const permission = classifyRequest(method, path);
+      return hasPermission(ctx.role, permission);
+    },
+
     getToken(): string {
-      return token;
+      return defaultToken;
     },
   };
 }

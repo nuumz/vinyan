@@ -316,6 +316,7 @@ export interface CachedSkill {
   verificationProfile: 'hash-only' | 'structural' | 'full';
   confidence?: number; // PH3.4: fuzzy match confidence (omitted = exact match)
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
+  composedOf?: string[]; // PH5 D2: sub-skill task signatures forming this composed skill
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +411,8 @@ export interface TaskDAG {
   }>;
   /** True when decomposition failed and a single-node fallback was used. */
   isFallback?: boolean;
+  /** True when DAG was generated from a composed skill (PH5 D2). */
+  isFromComposedSkill?: boolean;
 }
 
 /** 5 machine-checkable criteria for DAG validation */

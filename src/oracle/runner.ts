@@ -45,11 +45,22 @@ export async function runOracle(
   const timeoutMs = options.timeoutMs ?? entry?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // Safety Invariant I17: speculative-tier oracles require L2+ routing isolation (PH5.8).
+  // Full enforcement: REJECT (not just warn) when routing level < 2.
   if (entry?.tier === 'speculative' && (options.routingLevel ?? 0) < 2) {
     options.bus?.emit('guardrail:violation', {
       rule: 'I17',
-      detail: `Speculative oracle '${oracleName}' invoked at routing level ${options.routingLevel ?? 0} — requires L2+`,
-      severity: 'warn',
+      detail: `Speculative oracle '${oracleName}' rejected at routing level ${options.routingLevel ?? 0} — requires L2+`,
+      severity: 'error',
+    });
+    return buildVerdict({
+      verified: false,
+      type: 'unknown',
+      confidence: 0,
+      evidence: [],
+      fileHashes: {},
+      reason: `I17 violation: speculative oracle '${oracleName}' requires routing level L2+ (current: L${options.routingLevel ?? 0})`,
+      errorCode: 'GUARDRAIL_BLOCKED',
+      durationMs: 0,
     });
   }
 

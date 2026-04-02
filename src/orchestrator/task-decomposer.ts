@@ -9,6 +9,7 @@
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
+import type { SkillStore } from '../db/skill-store.ts';
 import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
 const MAX_RETRIES = 3;
@@ -16,13 +17,37 @@ const MAX_RETRIES = 3;
 export class TaskDecomposerImpl implements TaskDecomposer {
   private registry: LLMProviderRegistry;
   private maxRetries: number;
+  private skillStore?: SkillStore;
 
-  constructor(options: { registry: LLMProviderRegistry; maxRetries?: number }) {
+  constructor(options: { registry: LLMProviderRegistry; maxRetries?: number; skillStore?: SkillStore }) {
     this.registry = options.registry;
     this.maxRetries = options.maxRetries ?? MAX_RETRIES;
+    this.skillStore = options.skillStore;
   }
 
   async decompose(input: TaskInput, perception: PerceptualHierarchy, memory: WorkingMemoryState): Promise<TaskDAG> {
+    // PH5 D2: Check if a composed skill matches the task fingerprint
+    if (this.skillStore) {
+      const composed = this.skillStore.findComposedSkill(input.goal);
+      if (composed?.composedOf?.length) {
+        const subSkills = composed.composedOf
+          .map((sig) => this.skillStore!.findBySignature(sig))
+          .filter(Boolean);
+        if (subSkills.length > 0) {
+          return {
+            nodes: subSkills.map((skill, i) => ({
+              id: `s${i + 1}`,
+              description: skill!.approach,
+              targetFiles: input.targetFiles ?? [],
+              dependencies: i > 0 ? [`s${i}`] : [],
+              assignedOracles: ['type', 'dep'],
+            })),
+            isFromComposedSkill: true,
+          };
+        }
+      }
+    }
+
     const provider = this.registry.selectByTier('balanced');
     if (!provider) return this.fallbackDAG(input);
 

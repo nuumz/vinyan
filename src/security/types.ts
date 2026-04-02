@@ -5,13 +5,33 @@
  */
 import { z } from 'zod/v4';
 
+export const RoleSchema = z.enum(['readonly', 'operator', 'admin']);
+
+export type Role = z.infer<typeof RoleSchema>;
+
 export const AuthContextSchema = z.object({
   authenticated: z.boolean(),
   apiKey: z.string().optional(),
-  source: z.enum(['bearer', 'anonymous']),
+  role: RoleSchema.optional(),
+  source: z.enum(['bearer', 'mtls', 'anonymous']),
+  instanceId: z.string().optional(),
 });
 
 export type AuthContext = z.infer<typeof AuthContextSchema>;
+
+export const TokenConfigSchema = z.object({
+  token: z.string().min(1),
+  role: RoleSchema,
+  instanceId: z.string().optional(),
+});
+
+export type TokenConfig = z.infer<typeof TokenConfigSchema>;
+
+export const TokenFileSchema = z.object({
+  tokens: z.array(TokenConfigSchema),
+});
+
+export type TokenFile = z.infer<typeof TokenFileSchema>;
 
 export const InstanceIdentitySchema = z.object({
   instanceId: z.string(),

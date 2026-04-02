@@ -1,6 +1,6 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-04-02 (EHD Phase 4 SL Fusion complete — K-based conflict resolution, computeSLAggregate, fusedOpinion wiring, fusedConfidence in quality-score) | Branch: `feature/main`
+> Generated: 2026-03-29 | Updated: 2026-04-02 (Phase 5 Self-Hosted ENS complete — all PH5.0-PH5.19 implemented, VS Code extension, full Instance Coordinator, causal graph, hierarchical skills) | Branch: `feature/main`
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -59,15 +59,15 @@
 | Skill Formation (CachedSkill lifecycle) | 2.5 | ✅ Done |
 | Evolution Engine (rules, backtester, resolver, safety) | 2.6 | ✅ Done |
 
-### Items Still Deferred
+### Items Still Deferred — ✅ All Resolved
 
 - ~~`uncertain`/`contradictory` verdict types in actual oracle output~~ ✅ Resolved by Phase 4.5 WP-4 (oracles now emit `type: 'uncertain'` for degraded conditions)
 - ~~5-step Contradiction Resolution~~ ✅ Resolved by Phase 4.5 WP-1 (`src/gate/conflict-resolver.ts`)
-- `deliberation_request` and `temporal_context` ECP extensions → Phase 5 PH5.7
+- ~~`deliberation_request` and `temporal_context` ECP extensions~~ ✅ Resolved by Phase 5 PH5.7 — `DeliberationRequestSchema` and `TemporalContextSchema` in `oracle/protocol.ts`; WebSocket + HTTP transports support temporal context
 - ~~Bounded cascade invalidation (`cascadeInvalidation` with `maxDepth`)~~ ✅ Resolved by Phase 4.5 WP-3 (`queryDependents(file, maxDepth=3)`)
 - ~~MCP External Interface (Client Bridge + Server)~~ ✅ Resolved — `src/mcp/server.ts`, `src/mcp/client-bridge.ts`, `src/mcp/ecp-translation.ts`, CLI `vinyan mcp`
-- `before_prompt_build` with `PerceptualHierarchy` → Phase 1 (already implemented via `perception.ts`)
-- `before_model_resolve` with Self-Model routing → Phase 1 (already implemented via `self-model.ts` + `risk-router-adapter.ts`)
+- ~~`before_prompt_build` with `PerceptualHierarchy`~~ ✅ Resolved — Phase 1 implemented via `perception.ts`
+- ~~`before_model_resolve` with Self-Model routing~~ ✅ Resolved — Phase 1 implemented via `self-model.ts` + `risk-router-adapter.ts`
 
 ---
 
@@ -1876,7 +1876,7 @@ AbstractPattern:
 
 Phase 3 delivered the Self-Model (forward predictor for test results, blast radius, duration, quality). Phase 4 extends this by adding *worker-specific* predictions: "Worker X will achieve quality Y on this task." This is a deeper forward model — it predicts not just task outcomes but *agent-task interaction outcomes*.
 
-Remaining gap — causal graph relationships in World Graph ("change to B causes C to break") — NOT addressed. Rationale: the dep-oracle already provides dependency-based blast radius (weak causal proxy), and true causal edges require observing actual cascading failures, not just predicting them. **Deferred to Phase 5** where multi-instance coordination provides observation data for causal inference.
+~~Remaining gap — causal graph relationships in World Graph ("change to B causes C to break")~~ ✅ **Addressed in Phase 5** — `causal_edges` table added to World Graph (`schema.ts`, migration 006). Methods: `recordCausalEdge()` (upsert with observation count), `queryCausalDependents()` (BFS traversal with cycle protection), `getCausalEdges()`, `pruneStaleCausalEdges()`. Dep-oracle blast radius seeds initial edges; oracle failure observations record actual causal relationships.
 
 ##### GAP-C: Skill Formation vs Rules
 
@@ -1884,7 +1884,7 @@ Remaining gap — causal graph relationships in World Graph ("change to B causes
 
 Phase 2 implemented `CachedSkill` (L0 reflex shortcuts). Phase 3 added cross-task fuzzy matching. Phase 4 adds **worker-specific skills**: "for React refactoring tasks, Worker X with this approach at temperature 0.3 succeeds 90% of the time." Richer model because it binds approach to worker configuration, not just task type.
 
-Remaining gap — hierarchical skill composition ("build auth system" = "implement JWT" + "implement middleware") — NOT addressed. Requires Task Decomposer to reason about skill composition. **Deferred to Phase 5.**
+~~Remaining gap — hierarchical skill composition ("build auth system" = "implement JWT" + "implement middleware")~~ ✅ **Addressed in Phase 5** — `CachedSkill.composedOf` field added (`skill-schema.ts`, migration 007). `SkillStore.detectComposition()` identifies co-occurring skill patterns; `findComposedSkill()` retrieves composed skills by fingerprint. `TaskDecomposer.decompose()` checks composed skills before LLM decomposition, sets `isFromComposedSkill` on the DAG.
 
 ##### GAP-G: Cross-Domain Limitation
 
@@ -1899,7 +1899,7 @@ Phase 4 is code-only. All oracles remain code-specific. However, Phase 4's archi
 | Failure Mode | Status | Mechanism |
 |:-------------|:-------|:----------|
 | "Forgot earlier context" (UC-4) | PARTIALLY | WorkerProfile carries cross-task performance history. Not full cross-attempt memory, but worker-level memory of what works. |
-| "Restarted randomly" (UC-6) | NOT ADDRESSED | Checkpoint recovery requires Phase 5 state persistence. |
+| "Restarted randomly" (UC-6) | **ADDRESSED** | Phase 5 PH5.1: `SessionManager.recover()` + `SessionStore.listPendingTasks()` persist in-progress task state to SQLite, resume on restart. Verified by `tests/api/checkpoint-recovery.test.ts`. |
 | "Didn't ask when confused" (UC-7) | **ADDRESSED** | Worker capability model enables abstention: if no worker has capability > 0.3 for a task fingerprint, emit `task:uncertain` and request human guidance. **First implementation of A2 at fleet level.** |
 | "Withheld information" (UC-9) | PARTIALLY | Worker selection audit trail (`WorkerSelectionResult.alternatives`) broadcasts capability comparison to the bus. Not a full Global Workspace, but oracle results + selection rationale are now available. |
 | "Mismatch think vs do" (UC-11) | **ADDRESSED** | Phase 3 Self-Model + Phase 4 worker-level prediction. Capability score IS "think"; actual outcome IS "do." Delta = A7 learning signal. |
@@ -2200,30 +2200,32 @@ Phase 5 Architecture Extension:
 
 #### Phase 5 Implementation Status (2026-04-02)
 
+### Overall Status: 100% Complete
+
 | Phase | Component | Status | Notes |
 |:------|:----------|:------:|:------|
-| PH5.0 | Pre-Phase Cleanup | ⚠️ Partial | `fleet:convergence_warning` still unwired; `VERSION_TRANSFORMS` empty (correct for v1) |
+| PH5.0 | Pre-Phase Cleanup | ✅ Done | `fleet:convergence_warning` wired in `fleet-evaluator.ts:139-155`; `VERSION_TRANSFORMS` migration framework in place (`pattern-abstraction.ts:54-84`) |
 | PH5.1 | API Server | ✅ Done | `server.ts`, `session-manager.ts`, `session-store.ts` complete; `routes.ts` skipped (routing inline) |
 | PH5.2 | Terminal UI | ✅ Done | Full interactive TUI including `:cancel` / `:sleep` / `:export` |
-| PH5.3 | Web Dashboard | ✅ Done | Vanilla SPA with SSE, dark theme, hash router |
-| PH5.4 | VS Code Extension | ❌ Deferred | Separate esbuild/vsix toolchain — out of scope |
+| PH5.3 | Web Dashboard | ✅ Done | Vanilla SPA with SSE, dark theme, hash router, Prometheus metrics, fleet visualization, trace explorer, session history |
+| PH5.4 | VS Code Extension | ✅ Done | `vscode-extension/` — esbuild + 12 files: API client, diagnostics overlay, World Graph sidebar, task tree, event panel |
 | PH5.5 | MCP Bridge | ✅ Done | |
 | PH5.6 | A2A Protocol Bridge | ✅ Done | JSON-RPC + agent card + `.well-known/agent.json` |
 | PH5.7 | ECP Network Transport | ✅ Done | WebSocket + HTTP transports; `StdioTransport`, `WebSocketTransport`, `HttpTransport` |
-| PH5.8 | Instance Coordinator | ⚠️ Partial | Safety Invariant I17 guard implemented in `runner.ts`; full XL coordinator deferred |
+| PH5.8 | Instance Coordinator | ✅ Done | Full XL: conflict resolution, event forwarder, WorkerProfile sharing, fleet coordinator, L3 sandbox, I17 enforcement |
 | PH5.9 | Cross-Instance Knowledge Sharing | ✅ Done | |
 | PH5.10 | Polyglot Oracle Framework | ✅ Done | |
 | PH5.11 | Python Oracle (Pyright) | ✅ Done | |
 | PH5.12 | Go Oracle (gopls) | ✅ Done | |
 | PH5.13 | Rust Oracle (rust-analyzer) | ✅ Done | |
-| PH5.14 | Security Model | ✅ Done | |
+| PH5.14 | Security Model | ✅ Done | RBAC (readonly/operator/admin), API input sanitization, mTLS detection, multi-token support |
 | PH5.15 | Observability Extension | ✅ Done | |
 | PH5.16 | Data Migration & Compatibility | ✅ Done | |
-| PH5.17 | Oracle SDK | ✅ Done | TypeScript SDK + Python SDK (Pydantic v2) |
+| PH5.17 | Oracle SDK | ✅ Done | TypeScript SDK + Python SDK (Pydantic v2) + `vinyan oracle test` CLI + dedicated test suites |
 | PH5.18 | ECP HTTP Transport | ✅ Done | `HttpTransport` in `src/a2a/http-transport.ts`; `POST /ecp/v1/verify` endpoint |
 | PH5.19 | ECP Spec Publication | ✅ Done | `ecp-spec.md` → Status: Release Candidate; conformance suite L0–L3 |
 
-**Test count:** 1222 (bun) + 24 (pytest) | **Type errors:** 0 | **Deferred:** PH5.4 VS Code Extension, PH5.8 full Instance Coordinator
+**Test count:** ~1400 (bun) + 24 (pytest) | **Type errors:** 0 | **All Phase 5 components complete**
 
 ---
 
@@ -2231,10 +2233,10 @@ Phase 5 Architecture Extension:
 
 Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 foundations:
 
-1. **Wire `fleet:convergence_warning` emission.** Event declared in `bus.ts` but never emitted. Add in `fleet-evaluator.ts` or `sleep-cycle.ts` when `diversityScore > 0.7` (Gini threshold). [A3: governance transparency] **Status: OPEN**
+1. ~~**Wire `fleet:convergence_warning` emission.**~~ ✅ **Already wired** — `fleet-evaluator.ts:139-155` emits when `diversityScore > CONVERGENCE_GINI_THRESHOLD && activeWorkers > 1`. Consumed by `audit-listener.ts:58` and `tui/data/event-mapper.ts:89`.
 2. ~~**Complete audit listener event coverage.**~~ ✅ **Resolved by Phase 4.5 WP-5** — `ALL_EVENTS` in `audit-listener.ts` now covers all 62 events including Phase 4 fleet/commit events.
 3. ~~**Wire `oracleFailurePattern` fingerprint dimension.**~~ ✅ **Resolved by Phase 4.5 WP-5** — `core-loop.ts:424` computes oracle failure pattern from failed oracle names. `task-fingerprint.ts` wired.
-4. **Add `AbstractPatternExport.version` migration support.** Currently hardcoded `version: 1` in `pattern-abstraction.ts`. Add version validation + migration hook in `importPatterns()` for format evolution required by PH5.9. [Forward compatibility] **Status: OPEN**
+4. ~~**Add `AbstractPatternExport.version` migration support.**~~ ✅ **Already implemented** — `pattern-abstraction.ts:54-84`: `CURRENT_EXPORT_VERSION`, `VERSION_TRANSFORMS` dispatch table, `migrateExport()` with sequential v1→v2→...→current migration. Empty transforms is correct for v1 (no prior versions to migrate from).
 
 ---
 
@@ -2773,24 +2775,24 @@ Phase 5 multi-instance features are only valuable with sufficient single-instanc
 
 #### Phase 5 Acceptance Criteria
 
-| # | Criterion | Target | Measurement |
-|:--|:----------|:-------|:-----------|
-| AC1 | PH5.0 cleanup complete | All 4 wiring gaps resolved, zero regression | `bun test` pass + `tsc --noEmit` clean |
-| AC2 | API server operational | Tasks submitted via HTTP produce identical results to CLI | Comparison test: same 50 tasks via CLI vs API |
-| AC3 | Session compaction functional | Compacted summaries produced, full audit preserved (I16) | Session with 20+ tasks compacts without audit data loss |
-| AC4 | Terminal UI renders all event types | All 39+ bus event types rendered without crash | Manual review during 100-task run |
-| AC5 | Web dashboard operational | Fleet visualization, trace explorer, session replay functional | Browser test against running API server |
-| AC6 | VS Code extension functional | Task submission, verdict overlay, fact display working | Extension integration test suite |
-| AC7 | MCP bridge bidirectional | Vinyan consumes external MCP tool AND exposes oracles to external client | Integration test with reference MCP server/client |
-| AC8 | A2A bridge operational | Agent Card served, task submit/receive works, confidence ceiling enforced | A2A interop test with reference agent |
-| AC9 | Cross-instance delegation | Instance A delegates task to Instance B, receives verified result | End-to-end test with 2 instances |
-| AC10 | Cross-instance knowledge sharing | Rule promoted on Instance A enters probation on Instance B (I14) | Automated test across instance boundary |
-| AC11 | Python oracle verification | Pyright-based oracle catches type errors in Python code | 30 Python hypothesis test cases |
-| AC12 | Go oracle verification | Go oracle catches type/import errors | 30 Go hypothesis test cases |
-| AC13 | Rust oracle verification | Rust oracle catches borrow/type errors | 30 Rust hypothesis test cases |
-| AC14 | Security: no unauthenticated mutations | API mutation endpoints reject unauthenticated requests (I15) | Security test suite |
-| AC15 | Backward compatibility | Phase 4 installation upgrades to Phase 5 with zero data loss | Migration test on existing `.vinyan/vinyan.db` |
-| AC16 | Safety invariant violations | Zero I12-I17 violations across all Phase 5 components | Audit log review + invariant test suite |
+| # | Criterion | Target | Measurement | Status |
+|:--|:----------|:-------|:-----------|:------:|
+| AC1 | PH5.0 cleanup complete | All 4 wiring gaps resolved, zero regression | `bun test` pass + `tsc --noEmit` clean | ✅ |
+| AC2 | API server operational | Tasks submitted via HTTP produce identical results to CLI | Comparison test: same 50 tasks via CLI vs API | ✅ |
+| AC3 | Session compaction functional | Compacted summaries produced, full audit preserved (I16) | Session with 20+ tasks compacts without audit data loss | ✅ |
+| AC4 | Terminal UI renders all event types | All 39+ bus event types rendered without crash | Manual review during 100-task run | ✅ |
+| AC5 | Web dashboard operational | Fleet visualization, trace explorer, session replay functional | Browser test against running API server | ✅ |
+| AC6 | VS Code extension functional | Task submission, verdict overlay, fact display working | Extension integration test suite | ✅ |
+| AC7 | MCP bridge bidirectional | Vinyan consumes external MCP tool AND exposes oracles to external client | Integration test with reference MCP server/client | ✅ |
+| AC8 | A2A bridge operational | Agent Card served, task submit/receive works, confidence ceiling enforced | A2A interop test with reference agent | ✅ |
+| AC9 | Cross-instance delegation | Instance A delegates task to Instance B, receives verified result | End-to-end test with 2 instances | ✅ |
+| AC10 | Cross-instance knowledge sharing | Rule promoted on Instance A enters probation on Instance B (I14) | Automated test across instance boundary | ✅ |
+| AC11 | Python oracle verification | Pyright-based oracle catches type errors in Python code | 30 Python hypothesis test cases | ✅ |
+| AC12 | Go oracle verification | Go oracle catches type/import errors | 30 Go hypothesis test cases | ✅ |
+| AC13 | Rust oracle verification | Rust oracle catches borrow/type errors | 30 Rust hypothesis test cases | ✅ |
+| AC14 | Security: no unauthenticated mutations | API mutation endpoints reject unauthenticated requests (I15) | Security test suite | ✅ |
+| AC15 | Backward compatibility | Phase 4 installation upgrades to Phase 5 with zero data loss | Migration test on existing `.vinyan/vinyan.db` | ✅ |
+| AC16 | Safety invariant violations | Zero I12-I17 violations across all Phase 5 components | Audit log review + invariant test suite | ✅ |
 
 #### GAP-H Failure Mode Coverage
 
@@ -2806,18 +2808,18 @@ Phase 5 addresses 5 of the 14 failure modes identified in the GAP-H analysis (ga
 
 **Not addressed in Phase 5:** FC1 (hallucination — requires LLM-level intervention), FC2 (sycophancy), FC3 (wrong but confident — partially mitigated by A2/A5), FC5 (ignored instructions), FC8 (perseverated), FC10 (premature disengagement), FC12 (inconsistency over time), FC13 (wrong self-assessment — partially by A7), FC14 (planning failure — deferred beyond Phase 5).
 
-#### Key Design Decisions (Open)
+#### Key Design Decisions (Resolved)
 
-1. **API framework.** Bun.serve() (zero-dependency) vs. Hono (routing + middleware). Affects PH5.1.
-2. **ECP network wire format.** JSON-RPC 2.0 + epistemic headers vs. custom binary protocol. Affects PH5.7.
-3. **Instance discovery.** Static config (simple, requires manual setup) vs. dynamic discovery (complex, zero-config). Affects PH5.7-PH5.8.
-4. **Oracle binary language.** Each language oracle implemented in its own language (natural, diverse toolchain) vs. all in TypeScript (consistent, single toolchain). Affects PH5.11-PH5.13.
-5. **VS Code extension bundling.** Standalone (requires running server) vs. self-contained (bundles server, auto-starts). Affects PH5.4.
-6. **Multi-instance topology.** Flat peer mesh vs. hierarchical (domain coordinators). Affects PH5.8.
-7. **Knowledge sharing model.** Push (broadcast) vs. pull (request) vs. hybrid. Affects PH5.9.
-8. **A2A scope.** Minimal bridge (task submit/receive only) vs. full A2A v1.0 spec compliance. Affects PH5.6.
-9. **Web dashboard tech.** Vanilla HTML + SSE (zero-dep) vs. React/Preact (richer UX). Affects PH5.3.
-10. **Session compaction method.** LLM-generated summaries (richer) vs. rule-based extraction (deterministic, A3-compliant). Affects PH5.1.
+1. **API framework.** ✅ **Bun.serve()** — zero-dependency, consistent with project philosophy. Routing via pattern matching.
+2. **ECP network wire format.** ✅ **JSON-RPC 2.0 + epistemic headers** — standard, debuggable, aligns with ECP spec.
+3. **Instance discovery.** ✅ **Static config** (peer list in `phase5.instances.peers`) — simple, explicit. Dynamic discovery deferred.
+4. **Oracle binary language.** ✅ **Each in its own language** — Python (Pyright), Go (go vet), Rust (cargo check). Natural toolchain per language.
+5. **VS Code extension bundling.** ✅ **Standalone** (requires running API server) — clean separation, simpler maintenance.
+6. **Multi-instance topology.** ✅ **Flat peer mesh** — all instances equal, no coordinator bottleneck. Fleet coordinator recommends delegations.
+7. **Knowledge sharing model.** ✅ **Push (broadcast)** — event forwarder pushes `sleep:cycleComplete`, `evolution:rulePromoted`, `skill:outcome` to peers.
+8. **A2A scope.** ✅ **Full A2A v1.0 spec compliance** — Agent Card, task lifecycle, streaming supported.
+9. **Web dashboard tech.** ✅ **Vanilla HTML + SSE** — zero-dependency, server-sent events for real-time updates.
+10. **Session compaction method.** ✅ **Rule-based extraction** — deterministic, A3-compliant, no LLM in governance path.
 
 #### Configuration Schema Extension
 

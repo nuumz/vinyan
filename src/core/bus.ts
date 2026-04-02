@@ -173,6 +173,28 @@ export interface VinyanBusEvents {
   'a2a:intentDeclared': { peerId: string; intentId: string; targets: string[]; action: string };
   'a2a:intentConflict': { peerId: string; intentId: string; conflictingIntentId: string };
   'a2a:capabilityUpdated': { peerId: string; instanceId: string; capabilityVersion: number };
+
+  // Phase PH5.8: Instance Coordinator events
+  'instance:eventForwarded': { event: string; peerId: string; success: boolean };
+  'instance:eventReceived': { event: string; fromInstanceId: string };
+  'instance:conflictResolved': {
+    taskId: string;
+    winner: 'local' | 'remote';
+    resolvedAtStep: number;
+    explanation: string;
+  };
+  'instance:profileShared': { peerId: string; profileCount: number };
+  'instance:profileImported': { fromInstanceId: string; profileCount: number; reducedConfidence: boolean };
+
+  // Phase PH5.8: Fleet Coordinator events
+  'fleet:taskRouted': { taskId: string; targetPeerId: string; reason: string };
+  'fleet:capacityUpdate': { instanceId: string; availableSlots: number; totalSlots: number };
+
+  // Phase PH5.8: Sandbox lifecycle events
+  'sandbox:created': { containerId: string; taskId: string };
+  'sandbox:completed': { containerId: string; taskId: string; exitCode: number; durationMs: number };
+  'sandbox:timeout': { containerId: string; taskId: string; timeoutMs: number };
+  'sandbox:error': { containerId: string; taskId: string; error: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

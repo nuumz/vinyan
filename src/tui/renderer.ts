@@ -379,7 +379,9 @@ export function headerBar(state: TUIState, width: number): string {
   const left = `${logo}  ${health}  ${counts}${alerts}`;
   const leftLen = visibleLength(left);
   const rightLen = clock.length;
-  const gap = Math.max(1, width - leftLen - rightLen);
+  // Subtract 1 extra column to prevent auto-wrap when wide Unicode chars
+  // (e.g. ● rendered as 2 cols) cause off-by-one terminal overflow
+  const gap = Math.max(1, width - 1 - leftLen - rightLen);
 
   return `${ANSI.bgBlue}${ANSI.white}${left}${' '.repeat(gap)}${clock}${ANSI.reset}`;
 }

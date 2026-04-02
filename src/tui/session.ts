@@ -17,6 +17,7 @@ interface TUISession {
   sort: Partial<Record<ViewTab, SortConfig>>;
   eventLogMaxSize: number;
   filterQuery: string;
+  tabFilters: Partial<Record<ViewTab, string>>;
 }
 
 const VALID_TABS: ReadonlySet<string> = new Set(['tasks', 'system', 'peers', 'events']);
@@ -46,6 +47,11 @@ export function restoreSession(state: TUIState, workspace: string): boolean {
     if (typeof data.filterQuery === 'string') {
       state.filterQuery = data.filterQuery;
     }
+    if (data.tabFilters && typeof data.tabFilters === 'object') {
+      state.tabFilters = data.tabFilters as Partial<Record<ViewTab, string>>;
+      // Restore the active tab's filter
+      state.filterQuery = state.tabFilters[state.activeTab] ?? state.filterQuery;
+    }
     return true;
   } catch {
     // Corrupted file — ignore and start fresh
@@ -56,11 +62,14 @@ export function restoreSession(state: TUIState, workspace: string): boolean {
 /** Save current session preferences to disk. Best-effort, never throws. */
 export function saveSession(state: TUIState, workspace: string): void {
   const path = sessionPath(workspace);
+  // Sync current tab's filter before saving
+  const tabFilters = { ...state.tabFilters, [state.activeTab]: state.filterQuery };
   const data: TUISession = {
     activeTab: state.activeTab,
     sort: state.sort,
     eventLogMaxSize: state.eventLogMaxSize,
     filterQuery: state.filterQuery,
+    tabFilters,
   };
 
   try {

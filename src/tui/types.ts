@@ -159,6 +159,7 @@ export interface TUIState {
   inputMode: InputMode;
   commandBuffer: string;
   filterQuery: string;
+  tabFilters: Partial<Record<ViewTab, string>>;
   modal: ModalState | null;
 
   // Data

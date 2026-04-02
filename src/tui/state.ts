@@ -13,6 +13,7 @@ export function createInitialState(workspace = '.'): TUIState {
     inputMode: 'normal',
     commandBuffer: '',
     filterQuery: '',
+    tabFilters: {},
     modal: null,
 
     health: null,
@@ -29,7 +30,7 @@ export function createInitialState(workspace = '.'): TUIState {
 
     successHistory: [],
 
-    termWidth: process.stdout.columns || 120,
+    termWidth: Math.max(40, (process.stdout.columns || 121) - 1),
     termHeight: process.stdout.rows || 40,
     startedAt: Date.now(),
     dirty: true,
@@ -82,8 +83,12 @@ export function pushEvent(state: TUIState, entry: Omit<EventLogEntry, 'id'>): vo
 }
 
 export function switchTab(state: TUIState, tab: ViewTab): void {
+  // Save current tab's filter before switching
+  state.tabFilters[state.activeTab] = state.filterQuery;
   state.activeTab = tab;
   state.focusedPanel = 0;
+  // Restore the new tab's filter (default to empty string)
+  state.filterQuery = state.tabFilters[tab] ?? '';
   if (tab === 'events') {
     state.lastEventTabVisit = state.eventIdCounter;
   }
@@ -157,8 +162,11 @@ export function markClean(state: TUIState): void {
 export function updateTermSize(state: TUIState): void {
   const w = process.stdout.columns || 120;
   const h = process.stdout.rows || 40;
-  if (w !== state.termWidth || h !== state.termHeight) {
-    state.termWidth = w;
+  // Use columns - 1 as safe width to avoid terminal auto-wrap when
+  // writing the last character triggers line wrapping in some terminals.
+  const safeW = Math.max(40, w - 1);
+  if (safeW !== state.termWidth || h !== state.termHeight) {
+    state.termWidth = safeW;
     state.termHeight = h;
     state.dirty = true;
   }

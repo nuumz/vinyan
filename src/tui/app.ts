@@ -238,6 +238,7 @@ export class App {
 
       case 'filter':
         this.state.filterQuery = action.query;
+        this.state.tabFilters[this.state.activeTab] = action.query;
         this.state.dirty = true;
         break;
 
@@ -397,7 +398,7 @@ export class App {
 
   private handleJump(target: 'top' | 'bottom'): void {
     if (this.state.activeTab === 'events') {
-      const log = this.state.eventLog;
+      const log = this.getVisibleEventLog();
       if (log.length === 0) return;
       const idx = target === 'top' ? 0 : log.length - 1;
       selectEvent(this.state, log[idx]!.id);
@@ -470,9 +471,28 @@ export class App {
     this.state.dirty = true;
   }
 
+  /** Returns the filtered (and sorted) event list matching the current filterQuery — same order as the rendered list. */
+  private getVisibleEventLog(): import('./types.ts').EventLogEntry[] {
+    const { eventLog, filterQuery, sort } = this.state;
+    const sortConfig = sort.events as import('./types.ts').SortConfig<import('./types.ts').EventSortField> | undefined;
+    let result = eventLog;
+    // Apply same sort as renderEvents
+    if (sortConfig) {
+      const dir = sortConfig.direction === 'asc' ? 1 : -1;
+      result = [...result].sort((a, b) =>
+        sortConfig.field === 'domain' ? dir * a.domain.localeCompare(b.domain) : dir * (a.timestamp - b.timestamp),
+      );
+    }
+    // Apply filter
+    if (filterQuery) {
+      result = result.filter((e) => e.domain.includes(filterQuery) || e.event.includes(filterQuery));
+    }
+    return result;
+  }
+
   /** Navigate event list with reverse-scroll awareness. */
   private navigateEventList(delta: number, noSelectionDefault: number): void {
-    const log = this.state.eventLog;
+    const log = this.getVisibleEventLog();
     if (log.length === 0) return;
     const currentIdx = this.state.selectedEventId
       ? log.findIndex((e) => e.id === this.state.selectedEventId)
@@ -581,6 +601,7 @@ export class App {
 
       case 'filter':
         this.state.filterQuery = cmd.rawArg;
+        this.state.tabFilters[this.state.activeTab] = cmd.rawArg;
         this.state.dirty = true;
         break;
 
@@ -594,6 +615,7 @@ export class App {
 
       case 'clear':
         this.state.filterQuery = '';
+        this.state.tabFilters[this.state.activeTab] = '';
         this.state.dirty = true;
         break;
     }

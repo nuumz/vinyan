@@ -93,7 +93,9 @@ function getCachedTasks(state: TUIState): TaskDisplayState[] {
     _taskCache.generation === state.stateGeneration &&
     _taskCache.filterQuery === state.filterQuery &&
     _taskCache.sortField === field &&
-    _taskCache.sortDir === dir
+    _taskCache.sortDir === dir &&
+    // Safety: never return empty cache when tasks exist
+    (_taskCache.result.length > 0 || state.tasks.size === 0)
   ) {
     return _taskCache.result;
   }
@@ -156,7 +158,8 @@ function renderTaskList(state: TUIState, width: number, height: number, focused:
   while (lines.length < visibleRows) lines.push('');
 
   const sortLabel = state.sort.tasks ? ` [sort:${state.sort.tasks.field}]` : '';
-  return panel(`Tasks (${tasks.length})${sortLabel}`, lines.join('\n'), width, height, focused);
+  const filterLabel = state.filterQuery ? ` [/${state.filterQuery}]` : '';
+  return panel(`Tasks (${tasks.length})${filterLabel}${sortLabel}`, lines.join('\n'), width, height, focused);
 }
 
 // ── Task Detail (Right Pane) ────────────────────────────────────────

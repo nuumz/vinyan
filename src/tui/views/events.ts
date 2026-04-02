@@ -54,7 +54,9 @@ function getCachedSortedEvents(events: EventLogEntry[], sort?: SortConfig<EventS
     _sortCache &&
     _sortCache.length === events.length &&
     _sortCache.sortField === field &&
-    _sortCache.sortDir === dir
+    _sortCache.sortDir === dir &&
+    // Safety: never return empty cache when events exist
+    (_sortCache.result.length > 0 || events.length === 0)
   ) {
     return _sortCache.result;
   }
@@ -83,7 +85,9 @@ function getCachedFilteredEvents(
     _filterCache.sourceLength === events.length &&
     _filterCache.sortField === sortField &&
     _filterCache.sortDir === sortDir &&
-    _filterCache.filterQuery === filterQuery
+    _filterCache.filterQuery === filterQuery &&
+    // Safety: never return empty cache when source has events
+    (_filterCache.result.length > 0 || events.length === 0 || filterQuery !== '')
   ) {
     return _filterCache.result;
   }

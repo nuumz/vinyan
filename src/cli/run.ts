@@ -70,7 +70,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   }
 
   const traceListenerHandle = attachTraceListener(bus);
-  const orchestrator = createOrchestrator({ workspace, bus });
+  const orchestrator = createOrchestrator({ workspace, bus, llmProxy: true });
 
   // Graceful shutdown on signals
   const shutdown = () => {
@@ -138,6 +138,10 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
     : '';
 
   output.write(`\n[vinyan] ${status} | ${metrics.totalTraces} attempt(s) | ${result.trace.durationMs}ms${qs}\n`);
+
+  if (result.answer) {
+    output.write(`\n${result.answer}\n`);
+  }
 
   if (result.escalationReason) {
     output.write(`[vinyan] Escalation: ${result.escalationReason}\n`);

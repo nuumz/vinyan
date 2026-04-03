@@ -57,6 +57,9 @@ import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import type { AgentLoopDeps } from './worker/agent-loop.ts';
+import { PredictionLedger } from '../db/prediction-ledger.ts';
+import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
+import { ForwardPredictorImpl } from './forward-predictor.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -336,6 +339,25 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Approval Gate (A6: human-in-the-loop for high-risk tasks)
   const approvalGate = new ApprovalGateImpl(bus);
 
+  // Forward Predictor (A7: prediction error as learning signal)
+  let forwardPredictor: import('./forward-predictor-types.ts').ForwardPredictor | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const fpConfig = vinyanConfig.orchestrator?.forward_predictor;
+    if (fpConfig?.enabled && db) {
+      migratePredictionLedgerSchema(db.getDb());
+      const predictionLedger = new PredictionLedger(db.getDb());
+      forwardPredictor = new ForwardPredictorImpl({
+        selfModel,
+        ledger: predictionLedger,
+        worldGraph,
+        config: fpConfig,
+      });
+    }
+  } catch {
+    /* forward predictor wiring is best-effort */
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -362,6 +384,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     instanceCoordinator: instanceCoordinator,
     // Human approval gate (A6)
     approvalGate,
+    // Forward Predictor (A7: prediction error as learning signal)
+    forwardPredictor,
   };
 
   // Phase 6.4: Late-bind delegation deps to worker pool
@@ -744,6 +768,25 @@ export async function createOrchestratorAsync(
 
   const approvalGate = new ApprovalGateImpl(bus);
 
+  // Forward Predictor (A7: prediction error as learning signal)
+  let forwardPredictorAsync: import('./forward-predictor-types.ts').ForwardPredictor | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const fpConfig = vinyanConfig.orchestrator?.forward_predictor;
+    if (fpConfig?.enabled && db) {
+      migratePredictionLedgerSchema(db.getDb());
+      const predictionLedger = new PredictionLedger(db.getDb());
+      forwardPredictorAsync = new ForwardPredictorImpl({
+        selfModel,
+        ledger: predictionLedger,
+        worldGraph,
+        config: fpConfig,
+      });
+    }
+  } catch {
+    /* forward predictor wiring is best-effort */
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -767,6 +810,7 @@ export async function createOrchestratorAsync(
     explorationEpsilon: config.useSubprocess === false ? 0 : undefined,
     instanceCoordinator: instanceCoordinator,
     approvalGate,
+    forwardPredictor: forwardPredictorAsync,
   };
 
   const delegationRouter = new DelegationRouter();

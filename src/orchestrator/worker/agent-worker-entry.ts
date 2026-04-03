@@ -80,10 +80,11 @@ export async function runAgentWorkerLoop(
   const compressedPerception = compressPerception(init.perception, init.budget.contextWindow);
 
   // 3. Build initial history
+  const isNonFileTask = !init.allowedPaths?.length;
   const history: HistoryMessage[] = [
     {
       role: 'system',
-      content: buildSystemPrompt(init.routingLevel),
+      content: buildSystemPrompt(init.routingLevel, isNonFileTask),
     },
     {
       role: 'user',
@@ -287,7 +288,17 @@ function logError(msg: string): void {
   process.stderr.write(`[agent-worker] ${msg}\n`);
 }
 
-export function buildSystemPrompt(routingLevel: number): string {
+export function buildSystemPrompt(routingLevel: number, isNonFileTask = false): string {
+  if (isNonFileTask) {
+    return [
+      `You are a Vinyan reasoning agent at routing level L${routingLevel}.`,
+      'Your task is to research, reason about, or answer the given question using available tools.',
+      'You may use file_read, shell_exec, or search tools to gather information before answering.',
+      "When you are done, call attempt_completion with status 'done' and put your full answer in the proposedContent field.",
+      "If you cannot answer, call attempt_completion with status 'uncertain'.",
+      'IMPORTANT: You MUST call attempt_completion to signal task end. Do not just stop responding.',
+    ].join('\n');
+  }
   return [
     `You are a Vinyan agentic worker at routing level L${routingLevel}.`,
     'Your task is to use the available tools to accomplish the given goal.',

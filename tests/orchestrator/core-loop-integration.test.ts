@@ -20,6 +20,7 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'vinyan-integration-'));
   mkdirSync(join(tempDir, 'src'), { recursive: true });
   writeFileSync(join(tempDir, 'src', 'foo.ts'), 'export const x = 1;\n');
+  writeFileSync(join(tempDir, 'src', 'foo.test.ts'), '// test coverage marker\n');
   writeFileSync(
     join(tempDir, 'vinyan.json'),
     JSON.stringify({
@@ -77,8 +78,8 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     registry.register(spyProvider);
 
     const orchestrator = createOrchestrator({ workspace: tempDir, registry, useSubprocess: false });
-    // No targetFiles → L0 routing → no LLM needed
-    const result = await orchestrator.executeTask(makeInput());
+    // targetFiles present but low blast radius (blastRadius=0) → L0 routing → no LLM needed
+    const result = await orchestrator.executeTask(makeInput({ targetFiles: ['src/foo.ts'] }));
     expect(result.status).toBe('completed');
     expect(result.id).toBe('t-integration');
     expect(result.trace.routingLevel).toBe(0);

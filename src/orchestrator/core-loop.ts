@@ -90,6 +90,7 @@ interface WorkerResult {
   uncertainties?: string[];
   tokensConsumed: number;
   durationMs: number;
+  proposedContent?: string;
 }
 
 interface VerificationResult {
@@ -138,6 +139,8 @@ export interface OrchestratorDeps {
   instanceCoordinator?: import('./instance-coordinator.ts').InstanceCoordinator;
   /** ApprovalGate for human-in-the-loop approval of high-risk tasks (A6). */
   approvalGate?: import('./approval-gate.ts').ApprovalGate;
+  /** ForwardPredictor — World Model for probabilistic outcome prediction (A7). */
+  forwardPredictor?: import('./forward-predictor-types.ts').ForwardPredictor;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -159,6 +162,49 @@ function buildAgentSessionSummary(
     failurePoint: result.uncertainties[0] ?? 'unknown',
     lastIntent: result.transcript[result.transcript.length - 1]?.type ?? 'unknown',
     uncertainties: result.uncertainties,
+  };
+}
+
+/**
+ * Map ExecutionTrace outcome to ForwardPredictor PredictionOutcome.
+ * Only records outcomes that reflect test results; skips infrastructure failures.
+ */
+function mapTraceToFPOutcome(
+  predictionId: string,
+  trace: ExecutionTrace,
+): import('./forward-predictor-types.ts').PredictionOutcome | undefined {
+  let testResult: 'pass' | 'partial' | 'fail';
+  switch (trace.outcome) {
+    case 'success':
+      testResult = 'pass';
+      break;
+    case 'failure': {
+      const verdicts = Object.values(trace.oracleVerdicts ?? {});
+      const failCount = verdicts.filter((v) => !v).length;
+      const failRate = verdicts.length === 0 ? 1.0 : failCount / verdicts.length;
+      if (failRate >= 0.8) testResult = 'fail';
+      else if (failRate >= 0.2) testResult = 'partial';
+      else testResult = 'pass';
+      break;
+    }
+    case 'timeout':
+      return undefined; // Infrastructure issue — skip
+    case 'escalated':
+      if (trace.shadowValidation) {
+        testResult = trace.shadowValidation.testsPassed ? 'pass' : 'fail';
+      } else {
+        return undefined; // No shadow validation — skip
+      }
+      break;
+    default:
+      return undefined;
+  }
+  return {
+    predictionId,
+    actualTestResult: testResult,
+    actualBlastRadius: trace.affectedFiles?.length ?? 0,
+    actualQuality: trace.qualityScore?.composite ?? 0.5,
+    actualDuration: trace.durationMs,
   };
 }
 
@@ -299,6 +345,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       let prediction: SelfModelPrediction | undefined;
       let predictionConfidence: number | undefined;
       let metaPredictionConfidence: number | undefined;
+      let forwardPrediction: import('./forward-predictor-types.ts').OutcomePrediction | undefined;
       if (routing.level >= 2) {
         prediction = await deps.selfModel.predict(input, perception);
         deps.bus?.emit('selfmodel:predict', { prediction });
@@ -306,6 +353,19 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         // Injection A: capture prediction confidence for pipeline computation
         predictionConfidence = prediction.confidence;
         metaPredictionConfidence = prediction.metaConfidence;
+
+        // FP: Forward Predictor — probabilistic outcome prediction (A7)
+        if (deps.forwardPredictor) {
+          try {
+            forwardPrediction = await Promise.race([
+              deps.forwardPredictor.predictOutcome(input, perception),
+              new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 3000)),
+            ]);
+            if (forwardPrediction) {
+              deps.bus?.emit('prediction:generated', { prediction: forwardPrediction });
+            }
+          } catch { /* FP failure — proceed with selfModel only */ }
+        }
 
         // S1: Cold-start safeguard — enforce minimum routing level
         if (prediction.forceMinLevel != null && routing.level < prediction.forceMinLevel) {
@@ -466,6 +526,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             uncertainties: lastAgentResult.uncertainties,
             tokensConsumed: lastAgentResult.tokensConsumed,
             durationMs: lastAgentResult.durationMs,
+            proposedContent: lastAgentResult.proposedContent,
           };
 
           // Build session summary for retry context when uncertain
@@ -720,6 +781,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             error: calibErr instanceof Error ? calibErr.message : String(calibErr),
           });
         }
+      }
+
+      // FP: Record outcome for ForwardPredictor calibration (A7)
+      if (deps.forwardPredictor && forwardPrediction) {
+        try {
+          const fpOutcome = mapTraceToFPOutcome(forwardPrediction.predictionId, trace);
+          if (fpOutcome) {
+            const brierScore = await deps.forwardPredictor.recordOutcome(fpOutcome);
+            deps.bus?.emit('prediction:calibration', { taskId: input.id, brierScore });
+          }
+        } catch { /* FP calibration failure — non-critical */ }
       }
 
       // Record trace once — after calibration so predictionError is persisted
@@ -1101,6 +1173,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           })),
           trace,
           qualityScore,
+          answer: workerResult.proposedContent,
           notes: commitResult?.rejected.length
             ? [`Rejected files: ${commitResult.rejected.map((r) => `${r.path} (${r.reason})`).join(', ')}`]
             : undefined,

@@ -108,6 +108,137 @@ export interface PredictionOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// Prediction Ledger Types (DB row shapes)
+// ---------------------------------------------------------------------------
+
+/** DB row shape for a recorded prediction. */
+export interface PredictionRecord {
+  predictionId: string;
+  taskId: string;
+  taskTypeSignature: string;
+  basis: 'heuristic' | 'statistical' | 'causal';
+  testOutcome: TestOutcomeDistribution;
+  blastRadius: PredictionDistribution;
+  qualityScore: PredictionDistribution;
+  confidence: number;
+  timestamp: number;
+}
+
+/** Per-file outcome statistics from the prediction ledger. */
+export interface FileOutcomeStat {
+  filePath: string;
+  successCount: number;
+  failCount: number;
+  partialCount: number;
+  samples: number;
+  avgQuality: number;
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Statistical Enhancement
+// ---------------------------------------------------------------------------
+
+/** Result of Bayesian blend + empirical percentile computation. */
+export interface StatisticalEnhancement {
+  testOutcome: TestOutcomeDistribution;
+  blastRadius: PredictionDistribution;
+  qualityScore: PredictionDistribution;
+  confidence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3: Causal Risk Analysis
+// ---------------------------------------------------------------------------
+
+/** Result of causal BFS risk analysis. */
+export interface CausalRiskAnalysis {
+  /** P(pass) adjusted by causal risk */
+  adjustedPPass: number;
+  /** Top files at risk with causal chains */
+  riskFiles: CausalRiskEntry[];
+  /** Aggregate risk: P(≥1 break) */
+  aggregateRisk: number;
+}
+
+// ---------------------------------------------------------------------------
+// Calibration Types
+// ---------------------------------------------------------------------------
+
+/** Brier score decomposition (Murphy 1973). */
+export interface BrierDecomposition {
+  reliability: number;
+  resolution: number;
+  uncertainty: number;
+  brierScore: number;
+}
+
+/** Reliability diagram data for visualization. */
+export interface ReliabilityDiagramData {
+  bins: Array<{
+    predictedMean: number;
+    observedFrequency: number;
+    count: number;
+  }>;
+  calibrationError: number;
+  poeProbability: number;
+}
+
+/** Full calibration summary with Brier decomposition + CRPS metrics. */
+export interface CalibrationSummary {
+  brierScore: number;
+  brierReliability: number;
+  brierResolution: number;
+  brierUncertainty: number;
+  crpsBlastAvg: number;
+  crpsQualityAvg: number;
+  /** @deprecated Use crpsBlastAvg. Kept for migration compatibility. */
+  blastMAPE?: number;
+  /** @deprecated Use crpsQualityAvg. Kept for migration compatibility. */
+  qualityMAE?: number;
+  predictionCount: number;
+  basis: 'heuristic' | 'statistical' | 'causal';
+  edgeWeightsConverged: boolean;
+  calibrationBins: Array<{
+    predictedProbRange: [number, number];
+    actualFrequency: number;
+    count: number;
+  }>;
+}
+
+/** Learned edge weights after Bayesian update from traces. */
+export interface LearnedEdgeWeights {
+  weights: Record<CausalEdgeType | 'imports', number>;
+  observationCount: number;
+  converged: boolean;
+}
+
+/** Plan ranking record for counterfactual analysis. */
+export interface PlanRankingRecord {
+  taskId: string;
+  selectedPlanId: string;
+  selectedReason: 'highest_quality' | 'lowest_risk' | 'heuristic';
+  planRankings: Array<{
+    planId: string;
+    predictedOutcome: OutcomePrediction;
+    rank: number;
+    executed: boolean;
+  }>;
+  actualOutcome?: {
+    brierScore: number;
+    trace: PredictionOutcome;
+  };
+}
+
+/** Plan score for counterfactual ranking. */
+export interface PlanScore {
+  expectedQuality: number;
+  expectedDuration: number;
+  riskAdjustedQuality: number;
+  confidence: number;
+  causalRiskFiles: CausalRiskEntry[];
+}
+
+// ---------------------------------------------------------------------------
 // Edge Weights (coupling strength for causal prediction)
 // ---------------------------------------------------------------------------
 

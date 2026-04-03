@@ -78,6 +78,7 @@ export interface TaskResult {
   trace: ExecutionTrace;
   qualityScore?: QualityScore;
   escalationReason?: string; // If status === 'escalated'
+  answer?: string; // Non-mutation tasks: reasoning/Q&A response from the agent
   notes?: string[]; // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
   contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
 }
@@ -117,6 +118,7 @@ export interface PerceptualHierarchy {
     availableTools: string[];
   };
   frameworkMarkers?: string[]; // Phase 4: detected frameworks (e.g., 'react', 'express')
+  causalEdges?: import('../orchestrator/forward-predictor-types.ts').CausalEdge[]; // ForwardPredictor: Tier 3 causal edges
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */

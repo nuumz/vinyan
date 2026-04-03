@@ -31,6 +31,10 @@ const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
   'evolution:ruleRetired',
   'sleep:cycleComplete',
   'selfmodel:predict',
+  // Forward Predictor (A7)
+  'prediction:generated',
+  'prediction:calibration',
+  'prediction:outcome-skipped',
   'graph:fact',
   'circuit:open',
   'circuit:close',

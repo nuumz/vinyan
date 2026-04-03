@@ -66,6 +66,11 @@ export interface VinyanBusEvents {
   // Self-Model (Phase 1C.1)
   'selfmodel:predict': { prediction: SelfModelPrediction };
 
+  // Forward Predictor (A7: prediction error as learning signal)
+  'prediction:generated': { prediction: import('../orchestrator/forward-predictor-types.ts').OutcomePrediction };
+  'prediction:calibration': { taskId: string; brierScore: number };
+  'prediction:outcome-skipped': { predictionId: string; reason: string };
+
   // World Graph
   'graph:fact': { fact: Fact };
 

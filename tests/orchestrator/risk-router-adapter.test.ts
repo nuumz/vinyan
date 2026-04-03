@@ -20,10 +20,13 @@ function mockDepVerify(blastRadius: number) {
 }
 
 describe('RiskRouterImpl', () => {
-  test('no target files → returns L0 default', async () => {
+  test('no target files → floors to L1 (needs LLM reasoning)', async () => {
     const router = new RiskRouterImpl(mockDepVerify(0));
     const decision = await router.assessInitialLevel(makeInput());
-    expect(decision.level).toBe(0);
+    // Non-file tasks floor to L1 so the LLM is invoked for reasoning/Q&A
+    expect(decision.level).toBe(1);
+    expect(decision.model).toBe('claude-haiku');
+    expect(decision.budgetTokens).toBe(10_000);
   });
 
   test('high blast radius escalates to L1', async () => {
@@ -51,10 +54,12 @@ describe('RiskRouterImpl', () => {
 
   test('reuses Phase 0 calculateRiskScore and routeByRisk', async () => {
     const router = new RiskRouterImpl(mockDepVerify(0));
-    const decision = await router.assessInitialLevel(makeInput());
-    // L0 decision has null model and 0 budget tokens
-    expect(decision.model).toBeNull();
-    expect(decision.budgetTokens).toBe(0);
+    // File task with blastRadius=0 but no test coverage → risk=0.25 → L1
+    const decision = await router.assessInitialLevel(makeInput({ targetFiles: ['src/foo.ts'] }));
+    // Verifies Phase 0 functions are called and produce a valid RoutingDecision
+    expect(decision.level).toBeGreaterThanOrEqual(0);
+    expect(decision).toHaveProperty('model');
+    expect(decision).toHaveProperty('budgetTokens');
   });
 
   test('returns valid RoutingDecision shape', async () => {

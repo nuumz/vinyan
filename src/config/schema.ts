@@ -84,11 +84,51 @@ const EscalationConfigSchema = z.object({
   channel: z.enum(['matrix', 'slack', 'stdout']).default('stdout'),
 });
 
+// ─── ForwardPredictor schema ────────────────────────────────────────
+
+const ForwardPredictorConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  tiers: z
+    .object({
+      statistical: z.object({
+        min_traces: z.number().positive().default(100),
+      }).default(() => ({ min_traces: 100 })),
+      causal: z.object({
+        min_traces: z.number().positive().default(100),
+        min_edges: z.number().positive().default(50),
+      }).default(() => ({ min_traces: 100, min_edges: 50 })),
+    })
+    .default(() => ({
+      statistical: { min_traces: 100 },
+      causal: { min_traces: 100, min_edges: 50 },
+    })),
+  budgets: z
+    .object({
+      prediction_timeout_ms: z.number().positive().default(3000),
+      max_alternative_plans: z.number().positive().default(3),
+    })
+    .default(() => ({ prediction_timeout_ms: 3000, max_alternative_plans: 3 })),
+  calibration: z
+    .object({
+      temporal_decay_half_life_days: z.number().positive().default(30),
+      miscalibration_threshold: z.number().min(0).max(1).default(0.4),
+      miscalibration_window: z.number().positive().default(20),
+    })
+    .default(() => ({
+      temporal_decay_half_life_days: 30,
+      miscalibration_threshold: 0.4,
+      miscalibration_window: 20,
+    })),
+});
+
+export type ForwardPredictorConfig = z.infer<typeof ForwardPredictorConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
   evolution: EvolutionConfigSchema.default(() => defaults(EvolutionConfigSchema)),
   escalation: EscalationConfigSchema.default(() => defaults(EscalationConfigSchema)),
+  forward_predictor: ForwardPredictorConfigSchema.default(() => defaults(ForwardPredictorConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

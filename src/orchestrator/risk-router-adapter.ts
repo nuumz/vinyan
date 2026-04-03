@@ -93,6 +93,14 @@ export class RiskRouterImpl implements RiskRouter {
     const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType);
     decision.riskScore = score;
 
+    // Non-file tasks need LLM reasoning — L0 is reflex-only (cached patterns, no LLM)
+    if (!input.targetFiles?.length && decision.level === 0) {
+      decision.level = 1;
+      decision.model = 'claude-haiku';
+      decision.budgetTokens = 10_000;
+      decision.latencyBudgetMs = 15_000;
+    }
+
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)
     const minLevel = parseMinRoutingLevel(input.constraints);
     if (minLevel !== undefined && decision.level < minLevel) {

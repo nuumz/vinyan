@@ -256,6 +256,35 @@ export class WorldGraph {
     this.db.query('DELETE FROM dependency_edges WHERE from_file = ?').run(file);
   }
 
+  // ── FP-B: Typed Causal Edge Adapters ─────────────────────────────
+
+  /** Store a typed CausalEdge, mapping to the existing recordCausalEdge store. */
+  storeCausalEdgeTyped(edge: {
+    fromFile: string;
+    toFile: string;
+    edgeType: string;
+    confidence: number;
+  }): void {
+    this.recordCausalEdge(edge.fromFile, edge.toFile, edge.edgeType, edge.confidence);
+  }
+
+  /** Batch store typed CausalEdges. */
+  storeCausalEdgesTyped(
+    edges: Array<{ fromFile: string; toFile: string; edgeType: string; confidence: number }>,
+  ): void {
+    for (const edge of edges) {
+      this.storeCausalEdgeTyped(edge);
+    }
+  }
+
+  /** Count total causal edges in the graph. */
+  getCausalEdgeCount(): number {
+    const row = this.db.query('SELECT COUNT(*) as cnt FROM causal_edges').get() as {
+      cnt: number;
+    } | null;
+    return row?.cnt ?? 0;
+  }
+
   // ── WP-5: Causal Edges (Phase 5 — Stream D1) ──────────────────────
 
   /** Record a causal relationship: change to sourceFile broke targetFile (detected by oracle). */

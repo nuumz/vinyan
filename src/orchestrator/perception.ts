@@ -8,6 +8,7 @@
  */
 import { relative, resolve } from 'path';
 import { buildDependencyGraph, computeBlastRadius } from '../oracle/dep/dep-analyzer.ts';
+import type { CausalEdgeExtractor } from '../oracle/dep/causal-edge-extractor.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { PerceptionAssembler } from './core-loop.ts';
 import type { PerceptualHierarchy, RoutingLevel, TaskInput } from './types.ts';
@@ -16,16 +17,19 @@ export interface PerceptionAssemblerConfig {
   workspace: string;
   worldGraph?: WorldGraph;
   availableTools?: string[];
+  causalEdgeExtractor?: CausalEdgeExtractor;
 }
 
 export class PerceptionAssemblerImpl implements PerceptionAssembler {
   private workspace: string;
   private worldGraph?: WorldGraph;
   private availableTools: string[];
+  private causalEdgeExtractor?: CausalEdgeExtractor;
 
   constructor(config: PerceptionAssemblerConfig) {
     this.workspace = config.workspace;
     this.worldGraph = config.worldGraph;
+    this.causalEdgeExtractor = config.causalEdgeExtractor;
     this.availableTools = config.availableTools ?? [
       'file_read',
       'file_write',
@@ -73,6 +77,20 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     // Run diagnostics
     const diagnostics = await this.runDiagnostics();
 
+    // Extract causal edges for target files (FP-B)
+    let causalEdges: PerceptualHierarchy['causalEdges'];
+    if (this.causalEdgeExtractor && targetFiles.length > 0) {
+      try {
+        causalEdges = await this.causalEdgeExtractor.extractEdges(targetFiles, this.workspace);
+        // Store extracted edges in World Graph for future queries
+        if (this.worldGraph && causalEdges && causalEdges.length > 0) {
+          try {
+            this.worldGraph.storeCausalEdgesTyped(causalEdges);
+          } catch { /* best-effort persist */ }
+        }
+      } catch { /* causal extraction failed — proceed without */ }
+    }
+
     return {
       taskTarget: {
         file: primaryFile,
@@ -93,6 +111,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
         os: process.platform,
         availableTools: this.availableTools,
       },
+      causalEdges,
     };
   }
 

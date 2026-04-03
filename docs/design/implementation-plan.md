@@ -1,7 +1,7 @@
 # Vinyan Implementation Plan
 
-> Generated: 2026-03-29 | Updated: 2026-04-02 | Branch: `feature/main`
-> **Current state:** Phases 0-5 complete (1293 tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). Next: EHD Phase 5 (ECP v2 wire format) or new capability.
+> Generated: 2026-03-29 | Updated: 2026-04-03 | Branch: `feature/main`
+> **Current state:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next: EHD Phase 5 (ECP v2 wire format) or new capability.
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -2138,9 +2138,45 @@ EHD is a cross-cutting architectural improvement (not a standalone phase). It ad
 
 ---
 
+### EO Reconception — Epistemic Orchestration Identity Integration ✅ Complete
+
+> **Status:** ✅ All 8 concepts implemented + DAG Integration Phase complete.
+> **Date:** 2026-04-02 (concepts) → 2026-04-03 (DAG Integration)
+> **Test count:** 1298+ pass, 0 fail, 0 type errors
+
+Cross-cutting identity reframe: reconceived 8 existing components through the Epistemic Orchestration lens. Each concept maps to an EO axiom and was implemented as a behavioral change (not cosmetic rename).
+
+#### 8 EO Concepts
+
+| # | Concept | Axiom | What Changed | Key Files |
+|---|---------|-------|-------------|-----------|
+| EO #1 | Task Management → Epistemic Task Governance | A3, A6 | `TaskInput.taskType` field; `pruneForRole()` context scoping; reasoning vs code routing | `types.ts`, `prompt-assembler.ts` |
+| EO #2 | Self-Model → Epistemic Self-Model | A7 | Reasoning budget policy (`getReasoningBudgetPolicy`); per-task-type EMA with 4 cold-start safeguards | `self-model.ts` |
+| EO #3 | Verification → Verification Hints | A1, A5 | `VerificationHint` on DAG nodes; per-node oracle filtering + `skipTestWhen`; gate respects hints | `types.ts`, `gate.ts`, `core-loop.ts` |
+| EO #4 | Worker Dispatch → DAG Executor | A3, A6 | `executeDAG()` parallel/sequential dispatch; dependency-aware execution; file conflict detection | `dag-executor.ts` |
+| EO #5 | Context Window → Transcript Compaction | A2 | Evidence vs narrative turn classification; `partitionTranscript()`; LLM-assisted narrative summary; `buildCompactedTranscript()` | `transcript-compactor.ts`, `agent-loop.ts` |
+| EO #6 | Risk Routing Adaptation | A3 | `taskType === 'reasoning'` → L1 floor (was `!targetFiles`); reasoning tasks always get LLM | `risk-router-adapter.ts`, `perception.ts` |
+| EO #7 | Delegation Router | A1, A6 | Delegation complexity scoring; subtask boundary enforcement | `delegation-router.ts` |
+| EO #8 | Protocol Evolution | A2 | `WorkerOutputSchema` extended with uncertainty fields | `protocol.ts` |
+
+#### DAG Integration Phase (post-concept wiring)
+
+Wired the DAG executor into the core loop, completing the flow from task decomposition to verified parallel execution:
+
+| Component | What | Where |
+|-----------|------|-------|
+| DAG dispatch loop | Multi-node plans dispatch via `executeDAG(plan, dispatcher)` instead of single-shot | `core-loop.ts` Step 4 GENERATE |
+| Result merging | DAG results flattened to `WorkerResult`-compatible shape (mutations + defaults) | `core-loop.ts` Step 4 |
+| Per-node hint merging | Oracle union across DAG nodes; `skipTestWhen` propagated from any node | `core-loop.ts` Step 5 VERIFY |
+| LLM transcript compaction | `compactionLlm` optional dep; narrative summary when >2 turns | `agent-loop.ts` |
+| Bus event | `dag:executed` event with node count, parallel flag, file conflicts | `bus.ts` |
+| Trace recording | Calibration + record placed after confidence decision, before retry check (A7) | `core-loop.ts` Step 6 LEARN |
+
+---
+
 ### Phase 5 — Self-Hosted ENS ✅ Complete
 
-> **Status:** ✅ Fully implemented. All PH5.0-PH5.19 complete. 1293 tests pass, `tsc --noEmit` clean.
+> **Status:** ✅ Fully implemented. All PH5.0-PH5.19 complete. 1298+ tests pass, `tsc --noEmit` clean.
 > **Type:** Mixed engineering (Pillar 1, Pillar 3), research (Pillar 2), and infrastructure (cross-cutting).
 
 #### Vision

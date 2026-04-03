@@ -1004,6 +1004,45 @@ max_tokens received
 
 ---
 
+### 8.7.1 Transcript Compaction — Evidence/Narrative Classification (EO #5)
+
+> **Added:** 2026-04-03 | **Axiom:** A2 (First-Class Uncertainty) | **Status:** ✅ Implemented
+
+§8.7 handles *context window pressure* (deterministic mid-conversation compression). This section handles a complementary problem: **long-running sessions accumulate turns that have different epistemic value**. Some turns are evidence (tool results, oracle decisions, error outputs) — losing these degrades future reasoning. Others are narrative (intermediate thinking, exploration, discarded approaches) — these can be summarized without information loss.
+
+**Two-track model:**
+
+| Track | Examples | Treatment |
+|-------|----------|-----------|
+| **Evidence** (immutable) | Tool invocations, file reads, oracle verdicts, error outputs, delegation results | Never compressed; kept verbatim |
+| **Narrative** (compactable) | Reasoning turns, analysis, exploration, "let me think about..." | Summarized by LLM into ~200-token digest |
+
+**Implementation:**
+
+```
+partitionTranscript(turns: ConversationTurn[])
+  → { evidenceTurns, narrativeTurns, compactedNarrativeTurns, estimatedSavings }
+
+buildCompactedTranscript(turns, narrativeSummary)
+  → ConversationTurn[]  // evidence preserved, narrative replaced with summary
+```
+
+**Trigger in `AgentLoop`** (`agent-loop.ts`):
+- After each turn, check `partition.compactedNarrativeTurns > 2` AND `compactionLlm` available
+- If triggered: LLM summarizes narrative turns → `buildCompactedTranscript()` replaces history
+- Emits `agent:transcript_compaction` event with turn counts and token savings
+- Non-fatal: compaction failure continues with uncompacted transcript
+
+**Why separate from §8.7 compression:**
+- §8.7 is **reactive** (triggered at 75% context pressure) and **deterministic** (no LLM call)
+- §8.7.1 is **proactive** (triggered by turn accumulation) and **LLM-assisted** (narrative summary)
+- Both can apply: §8.7.1 first (reduce narrative), §8.7 later if still over context budget
+- §8.7 treats all middle turns equally; §8.7.1 distinguishes evidence from narrative
+
+**Key files:** `src/orchestrator/worker/transcript-compactor.ts`, `src/orchestrator/worker/agent-loop.ts` L264-293
+
+---
+
 ### 8.8 `AgentSessionSummary` — Retry Context Prompt Pattern (OQ-4 resolved)
 
 When a session ends as `uncertain` or when Oracle Gate fails, `AgentLoop` builds an `AgentSessionSummary` and stores it in `WorkingMemory.priorAttempts` for the next retry. The full transcript goes to `TraceCollector` → Sleep Cycle (cross-task learning).

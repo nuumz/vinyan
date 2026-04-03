@@ -187,7 +187,7 @@ ECP is designed to be a **publishable protocol specification** — not an intern
 | Level 2 (Full) | + network transport, temporal context, deliberation | Remote service |
 | Level 3 (Platform) | + cross-instance coordination, knowledge sharing | Vinyan peer instance |
 
-A Level 0 oracle can be built in 15 lines of any language. This low barrier-to-entry is intentional: the ENS grows by making it trivial for external verification systems (security scanners, compliance tools, domain experts) to join the network as ECP-native Reasoning Engines.
+A Level 0 oracle can be built in 15 lines of any language. This low barrier-to-entry is intentional: Epistemic Orchestration grows by making it trivial for external verification systems (security scanners, compliance tools, domain experts) to join the network as ECP-native Reasoning Engines.
 
 **MCP and A2A are bridge layers, not the primary interface.** External agents that speak MCP or A2A interact with Vinyan through translation bridges that enforce trust degradation (§2.3). ECP-native engines get full epistemic semantics without translation loss.
 
@@ -662,7 +662,7 @@ Vinyan is built on seven Core Axioms (§1.1) — all proven in implementation ac
 2. **First-Class Uncertainty (A2)** — encoded in the Epistemic Communication Protocol (§2). "I don't know" is a protocol state that triggers specific orchestrator behaviors, eliminating the fabrication-over-admission antipattern.
 3. **Prediction Error as Learning Signal (A7)** — the Self-Model (§9) predicts outcomes before execution; the delta drives continuous improvement through the Evolution Engine (§10), replacing crude retry loops with calibrated adaptation.
 
-Vinyan implements **Epistemic Orchestration** — a neuro-symbolic paradigm where LLM-based engines provide the neural component (pattern matching, creative generation) and deterministic engines provide the symbolic component (formal verification, causal reasoning). The ENS (Epistemic Nervous System) is the verification substrate; ECP is the signaling protocol. Models generate hypotheses. External engines verify them. Memory preserves validated state across time. Governance gates commitment before action.
+Vinyan implements **Epistemic Orchestration** — a neuro-symbolic paradigm where LLM-based engines provide the neural component (pattern matching, creative generation) and deterministic engines provide the symbolic component (formal verification, causal reasoning). The **Epistemic Nervous System (ENS)** is Vinyan's verification substrate — the connective layer between hypothesis generation and verification. **ECP** is the signaling protocol. Models generate hypotheses. External engines verify them. Memory preserves validated state across time. Governance gates commitment before action.
 
 Phase 0's foundational hypothesis (A1 + A4 reduces structural hallucination) was confirmed with 100% structural error reduction in A/B experiment. Phases 1–6 extended the system from verification library to autonomous agent with multi-instance coordination and agentic worker protocol. §12.1 preserves the Phase 0 experimental specification as historical record.
 

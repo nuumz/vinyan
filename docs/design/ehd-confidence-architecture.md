@@ -5,9 +5,11 @@
 > For research foundations, see [epistemic-humility-deficit-2025-07.md](../research/epistemic-humility-deficit-2025-07.md).
 > For 4 expert design proposals, see `design-{decision-engine,subjective-logic,pipeline-confidence,oracle-integrity}.md` in `docs/research/`.
 
-> **Status**: Architecture Design
-> **Date**: 2026-04-02
+> **Status**: Architecture Design — 75% → targeting 85% at Phase B
+> **Date**: 2026-04-03 (updated)
 > **Axioms**: A2 (First-Class Uncertainty), A3 (Deterministic Governance), A5 (Tiered Trust), A7 (Prediction Error)
+>
+> **Tracker**: Implemented & Active: C1–C4, M1, M2, M4, G11 ✅ | Phase A (wiring): G1 ✅, G2, G3 partial | Phase B (oracle layer): G4–G7 | Phase C (SL lib): G8–G10, G12
 
 ---
 
@@ -40,7 +42,7 @@ Vinyan's epistemic confidence system is **75% implemented**. The 4 critical defi
 
 | # | Gap | Where confidence leaks | Severity | Phase |
 |---|-----|------------------------|----------|-------|
-| G1 | Test oracle success → hardcoded `1.0` | Oracle layer | Low | A |
+| G1 | ~~Test oracle success → hardcoded `1.0`~~ → returns 0.95 | Oracle layer | Low | A ✅ |
 | G2 | Verification fallback `0.85`/`0.30` ignores gate aggregate | Pipeline layer | Medium | A |
 | G3 | Critic dimension always `DEFAULT_NEUTRAL` (0.7) | Pipeline layer | Medium | A |
 | G4 | Oracles emit scalar only, no SL opinions | Oracle layer | Medium | B |
@@ -271,7 +273,7 @@ Temporal decay makes the system time-aware — stale evidence weakens automatica
 
 ## 9. Open Questions
 
-1. **Critic wiring timing (G3)**: Does critic verdict arrive in the same execution context as `computePipelineConfidence()`, or asynchronously via EventBus? If async, injection timing needs restructuring.
+1. ~~**Critic wiring timing (G3)**~~ **Resolved (2026-04-03)**: Critic verdict arrives synchronously in the same execution context. `core-loop.ts` calls `criticEngine.review()` → recomputes `computePipelineConfidence()` with critic dimension inline (EHD Phase 2 block at ~L1079). No EventBus delay.
 
 2. **Oracle accuracy granularity (G6)**: Track per-oracle-name only, or per-oracle-name × task-type? More granular = better signal, but requires more data before becoming useful.
 

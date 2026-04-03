@@ -1507,7 +1507,7 @@ Complete implementation order. Each step maps to one logical unit of work.
 - [x] **36.** Write delegation Test 3 (routing level cap enforced)
 - [x] **37.** Write delegation Test 4 (R6 shell_exec blocked) + Test 5 (oracle_failed cleanup); `tests/orchestrator/delegation-router.test.ts` (11 tests)
 
-### Phase 6.5 — Hardening (steps 38–45) ⚠️ 6/8 complete
+### Phase 6.5 — Hardening (steps 38–46) ✅ Complete
 
 - [x] **38.** Add VINYAN_ORCHESTRATOR_PID watchdog to `agent-worker-entry.ts` — orphan self-termination every 10s
 - [x] **39.** Emit all 8 bus events from `agent-loop.ts` + `delegation-router.ts`
@@ -1515,8 +1515,9 @@ Complete implementation order. Each step maps to one logical unit of work.
 - [x] **41.** `cleanupStaleOverlays()` on Orchestrator startup in `factory.ts`
 - [x] **42.** Concurrent session semaphore in `worker-pool.ts` (per-level limits: L1=5, L2=3, L3=1)
 - [x] **43.** Transcript gzip storage in SQLite BLOB — `Bun.gzipSync()` in core-loop.ts, 2 new columns in trace schema
-- [x] **44.** `bun run test:all` — 1293 tests pass, 0 failures (verified 2025-04-02)
-- [ ] **45.** Manual smoke test — pending real LLM integration test
+- [x] **44.** `bun run test:all` — 1298+ tests pass, 0 failures (verified 2026-04-03)
+- [x] **45.** Transcript compaction (EO #5) — `partitionTranscript()` evidence/narrative classification + `buildCompactedTranscript()` in `transcript-compactor.ts`; wired into `agent-loop.ts` with optional `compactionLlm`
+- [ ] **46.** Manual smoke test — pending real LLM integration test
 
 ---
 

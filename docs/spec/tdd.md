@@ -1926,9 +1926,12 @@ function allCriteriaMet(v: DagValidationCriteria): boolean {
 }
 ```
 
-### 10.4 Parallel DAG Execution `[Phase 5]`
+### 10.4 Parallel DAG Execution ✅ Implemented
 
-When a validated DAG contains subtasks with no unmet dependencies, they execute in parallel via a bounded executor pool.
+When a validated DAG contains subtasks with no unmet dependencies, they execute in parallel via `executeDAG()`.
+
+> **Implementation:** `src/orchestrator/dag-executor.ts` — wired into `core-loop.ts` Step 4 (GENERATE) for multi-node plans.
+> **Verification hint merging:** `core-loop.ts` Step 5 merges `VerificationHint` from all DAG nodes (oracle union, `skipTestWhen` propagation).
 
 **Execution model:**
 

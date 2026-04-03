@@ -18,6 +18,7 @@ describe('Tool Execution Wiring (G1)', () => {
         id: 't-1',
         source: 'cli',
         goal: 'test',
+        taskType: 'code',
         budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
       },
       {

@@ -7,6 +7,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't-1',
     source: 'cli',
     goal: 'Fix bug',
+    taskType: 'code',
     budget: { maxTokens: 50_000, maxDurationMs: 60_000, maxRetries: 3 },
     ...overrides,
   };
@@ -20,10 +21,10 @@ function mockDepVerify(blastRadius: number) {
 }
 
 describe('RiskRouterImpl', () => {
-  test('no target files → floors to L1 (needs LLM reasoning)', async () => {
+  test('reasoning task → floors to L1 (needs LLM reasoning)', async () => {
     const router = new RiskRouterImpl(mockDepVerify(0));
-    const decision = await router.assessInitialLevel(makeInput());
-    // Non-file tasks floor to L1 so the LLM is invoked for reasoning/Q&A
+    const decision = await router.assessInitialLevel(makeInput({ taskType: 'reasoning' }));
+    // Reasoning tasks floor to L1 so the LLM is invoked for reasoning/Q&A
     expect(decision.level).toBe(1);
     expect(decision.model).toBe('fast');
     expect(decision.budgetTokens).toBe(10_000);

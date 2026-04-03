@@ -26,7 +26,7 @@ import type { IAgentSession } from './agent-session.ts';
 import { AgentSession, type SubprocessHandle } from './agent-session.ts';
 import { AgentBudgetTracker } from './agent-budget.ts';
 import { SessionOverlay, type ProposedMutation } from './session-overlay.ts';
-import { partitionTranscript } from './transcript-compactor.ts';
+import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
@@ -67,6 +67,10 @@ export interface AgentLoopDeps {
   delegationRouter?: DelegationRouter;
   /** Injectable session factory for testing */
   createSession?: (proc: SubprocessHandle) => IAgentSession;
+  /** EO #5: LLM for narrative summarization during transcript compaction */
+  compactionLlm?: {
+    generate(request: { messages: Array<{ role: string; content: string }>; maxTokens?: number }): Promise<{ content: string; tokensConsumed: number }>;
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -173,7 +177,7 @@ export async function runAgentLoop(
   const startTime = performance.now();
   const budget = AgentBudgetTracker.fromRouting(routing, deps.contextWindow);
   const overlay = SessionOverlay.create(deps.workspace, input.id);
-  const transcript: WorkerTurn[] = [];
+  let transcript: WorkerTurn[] = [];
   let tokensConsumed = 0;
   let session: IAgentSession | null = null;
 
@@ -213,6 +217,7 @@ export async function runAgentLoop(
       type: 'init',
       taskId: input.id,
       goal: input.goal,
+      taskType: input.taskType ?? 'code',
       routingLevel: routing.level as Exclude<typeof routing.level, 0>,
       perception: compressedPerception,
       workingMemory: memory,
@@ -267,7 +272,27 @@ export async function runAgentLoop(
             narrativeTurns: partition.compactedNarrativeTurns,
             tokensSaved: partition.tokensSaved,
           });
-          // NOTE: actual narrative summarization requires LLM call — deferred to future enhancement.
+
+          // EO #5: LLM-based narrative summarization when available
+          if (deps.compactionLlm && partition.compactedNarrativeTurns > 2) {
+            try {
+              const narrativeText = transcript
+                .filter((_, i) => !partition.evidenceTurns[i]?.isEvidence)
+                .map((t) => ('content' in t ? String(t.content) : JSON.stringify(t)).slice(0, 500))
+                .join('\n---\n');
+              const summaryResponse = await deps.compactionLlm.generate({
+                messages: [
+                  { role: 'system', content: 'Summarize the following agent reasoning turns into a concise paragraph. Preserve key decisions, hypotheses, and rationale. Omit filler.' },
+                  { role: 'user', content: narrativeText },
+                ],
+                maxTokens: 300,
+              });
+              transcript = buildCompactedTranscript(transcript, summaryResponse.content) as typeof transcript;
+              tokensConsumed += summaryResponse.tokensConsumed;
+            } catch {
+              // Compaction failure is non-fatal — continue with uncompacted transcript
+            }
+          }
         }
 
         // Cap tool calls per turn

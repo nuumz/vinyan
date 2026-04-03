@@ -103,8 +103,8 @@ export class RiskRouterImpl implements RiskRouter {
     const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType, epistemicAdj);
     decision.riskScore = score;
 
-    // Non-file tasks need LLM reasoning — L0 is reflex-only (cached patterns, no LLM)
-    if (!input.targetFiles?.length && decision.level === 0) {
+    // Reasoning tasks need LLM — L0 is reflex-only (cached patterns, no LLM)
+    if (input.taskType === 'reasoning' && decision.level === 0) {
       decision.level = 1;
       decision.model = 'fast'; // maps correctly to fast tier in agent-worker-entry.ts
       decision.budgetTokens = 10_000;
@@ -114,7 +114,16 @@ export class RiskRouterImpl implements RiskRouter {
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)
     const minLevel = parseMinRoutingLevel(input.constraints);
     if (minLevel !== undefined && decision.level < minLevel) {
-      decision.level = minLevel;
+      // Re-route through routeByRisk to get correct model/budget/thinkingConfig for the new level
+      const escalated = routeByRisk(
+        Math.max(score, minLevel === 3 ? 0.71 : minLevel === 2 ? 0.41 : 0.21),
+        blastRadius, this.thresholds, factors.environmentType, epistemicAdj,
+      );
+      decision.level = escalated.level;
+      decision.model = escalated.model;
+      decision.budgetTokens = escalated.budgetTokens;
+      decision.latencyBudgetMs = escalated.latencyBudgetMs;
+      decision.thinkingConfig = escalated.thinkingConfig;
     }
 
     return decision;

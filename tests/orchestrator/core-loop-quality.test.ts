@@ -42,6 +42,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't-qs',
     source: 'cli',
     goal: 'Fix the export',
+    taskType: 'code',
     budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
     ...overrides,
   };

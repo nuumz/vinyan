@@ -9,6 +9,7 @@ function makeInput(): TaskInput {
     id: 'task-fallback',
     source: 'cli',
     goal: 'fix the bug',
+    taskType: 'code',
     targetFiles: ['src/foo.ts'],
     budget: { maxTokens: 10000, maxRetries: 3, maxDurationMs: 60000 },
   };

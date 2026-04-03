@@ -45,6 +45,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 'phase0-compat',
     source: 'cli',
     goal: 'Fix export',
+    taskType: 'code',
     budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
     ...overrides,
   };

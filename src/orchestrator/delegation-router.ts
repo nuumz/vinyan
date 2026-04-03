@@ -84,6 +84,7 @@ export function buildSubTaskInput(
     id: `${parent.id}-child-${Date.now()}`,
     source: parent.source,
     goal: request.goal,
+    taskType: request.targetFiles?.length ? 'code' : 'reasoning',
     targetFiles: request.targetFiles,
     budget: {
       maxTokens: childBudget.maxTokens,

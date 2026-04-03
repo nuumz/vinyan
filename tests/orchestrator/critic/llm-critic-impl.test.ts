@@ -34,6 +34,7 @@ const minimalTask: TaskInput = {
   id: 'test-task-1',
   source: 'cli',
   goal: 'Add a greeting function',
+  taskType: 'code',
   targetFiles: ['src/hello.ts'],
   budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
 };

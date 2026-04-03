@@ -111,6 +111,7 @@ export class A2ABridge {
       id: taskId,
       source: 'a2a',
       goal,
+      taskType: 'reasoning', // A2A tasks are cross-agent reasoning by default
       budget: {
         maxTokens: 50_000,
         maxDurationMs: 60_000,

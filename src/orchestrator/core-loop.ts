@@ -27,11 +27,13 @@ import type {
   TaskInput,
   TaskResult,
   ToolCall,
+  VerificationHint,
   WorkingMemoryState,
 } from './types.ts';
 import { computePipelineConfidence, deriveConfidenceDecision, type ConfidenceDecision } from './pipeline-confidence.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
 import { WorkingMemory } from './working-memory.ts';
+import { executeDAG, type DAGExecutionResult, type NodeDispatcher } from './dag-executor.ts';
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -514,13 +516,52 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       let workerResult: WorkerResult;
       let isAgenticResult = false;
       let lastAgentResult: import('./worker/agent-loop.ts').WorkerLoopResult | null = null;
-      const isNonFileTask = !input.targetFiles?.length;
+      let dagResult: DAGExecutionResult | null = null;
       try {
-        if (routing.level === 0 || !deps.workerPool.getAgentLoopDeps?.() || (isNonFileTask && routing.level <= 1)) {
-          // L0, no agent deps, or non-file L1 tasks: single-shot path (skip subprocess overhead)
-          workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
+        if (routing.level <= 1 || !deps.workerPool.getAgentLoopDeps?.()) {
+          // L0-L1 or no agent deps: single-shot or DAG dispatch
+          if (plan && !plan.isFallback && plan.nodes.length > 1) {
+            // EO #1+#4: Multi-node plan → DAG executor with parallel dispatch
+            const memSnapshot = workingMemory.getSnapshot();
+            const dispatcher: NodeDispatcher = async (nodeId, node) => {
+              const nodeInput: TaskInput = {
+                ...input,
+                id: `${input.id}-${nodeId}`,
+                targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
+                goal: node.description || input.goal,
+              };
+              const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing);
+              return {
+                nodeId,
+                mutations: result.mutations,
+                tokensConsumed: result.tokensConsumed,
+                durationMs: result.durationMs,
+              };
+            };
+            dagResult = await executeDAG(plan, dispatcher);
+            deps.bus?.emit('dag:executed', {
+              taskId: input.id,
+              nodes: dagResult.results.length,
+              parallel: dagResult.usedParallelExecution,
+              fileConflicts: dagResult.fileConflicts.length,
+            });
+            workerResult = {
+              mutations: dagResult.results.flatMap((r) => r.mutations.map((m) => ({
+                file: m.file,
+                content: m.content,
+                diff: m.diff ?? '',
+                explanation: m.explanation ?? '',
+              }))),
+              proposedToolCalls: [],
+              tokensConsumed: dagResult.totalTokens,
+              durationMs: dagResult.totalDurationMs,
+            };
+          } else {
+            // Single-node or fallback: direct dispatch (TDD: L0 < 100ms, L1 < 2s)
+            workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
+          }
         } else {
-          // L1+ with target files or L2+: agentic loop
+          // L2+: agentic loop (multi-turn with tools)
           const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
           const { runAgentLoop } = await import('./worker/agent-loop.ts');
           lastAgentResult = await runAgentLoop(
@@ -555,6 +596,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           output: workerResult as unknown as import('./types.ts').WorkerOutput,
           durationMs: Date.now() - dispatchStart,
         });
+
+        // Answer quality gate: reasoning tasks must produce non-empty answer
+        if (input.taskType === 'reasoning' && !workerResult.proposedContent?.trim()) {
+          workingMemory.recordFailedApproach(
+            `Empty answer at L${routing.level}`,
+            'answer-quality-gate',
+          );
+          continue; // retry with next escalation level
+        }
 
         // G6: Accumulate global token budget
         totalTokensConsumed += workerResult.tokensConsumed;
@@ -641,8 +691,24 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── Step 5: VERIFY (oracle gate) ─────────────────────────────
-      // EO #3: Extract verificationHint from plan's first node (if available)
-      const activeHint = plan?.nodes?.[0]?.verificationHint;
+      // EO #3: Extract verificationHint — per-node merge for DAG, single-node for direct
+      let activeHint: VerificationHint | undefined;
+      if (dagResult && plan && plan.nodes.length > 1) {
+        // Multi-node DAG: merge hints — use oracle intersection if all nodes agree,
+        // otherwise run all oracles (safest). skipTestWhen applies if ANY node sets it.
+        const nodeHints = plan.nodes.map((n) => n.verificationHint).filter(Boolean) as VerificationHint[];
+        if (nodeHints.length > 0) {
+          const allOracleSets = nodeHints.filter((h) => h.oracles).map((h) => h.oracles!);
+          // Union all oracle sets — DAG touches multiple nodes, need all relevant oracles
+          const mergedOracles = allOracleSets.length > 0
+            ? [...new Set(allOracleSets.flat())] as VerificationHint['oracles']
+            : undefined;
+          const mergedSkip = nodeHints.find((h) => h.skipTestWhen)?.skipTestWhen;
+          activeHint = { oracles: mergedOracles, skipTestWhen: mergedSkip };
+        }
+      } else {
+        activeHint = plan?.nodes?.[0]?.verificationHint;
+      }
       const verification = await deps.oracleGate.verify(
         workerResult.mutations.map((m) => ({
           file: m.file,
@@ -788,45 +854,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         } : undefined,
       };
 
-      // Calibrate self-model BEFORE recording — so predictionError is included in single insert
-      if (prediction && deps.selfModel.calibrate) {
-        try {
-          const predictionError = deps.selfModel.calibrate(prediction, trace);
-          if (predictionError) {
-            trace.predictionError = predictionError;
-          }
-        } catch (calibErr) {
-          deps.bus?.emit('selfmodel:calibration_error', {
-            taskId: input.id,
-            error: calibErr instanceof Error ? calibErr.message : String(calibErr),
-          });
-        }
-      }
-
-      // FP: Record outcome for ForwardPredictor calibration (A7)
-      if (deps.forwardPredictor && forwardPrediction) {
-        try {
-          const fpOutcome = mapTraceToFPOutcome(forwardPrediction.predictionId, trace);
-          if (fpOutcome) {
-            const brierScore = await deps.forwardPredictor.recordOutcome(fpOutcome);
-            deps.bus?.emit('prediction:calibration', { taskId: input.id, brierScore });
-          }
-        } catch { /* FP calibration failure — non-critical */ }
-      }
-
-      // Record trace once — after calibration so predictionError is persisted
-      // PH6: Compress transcript into trace for storage (Step 43)
-      if (isAgenticResult && lastAgentResult?.transcript?.length) {
-        try {
-          const transcriptJson = JSON.stringify(lastAgentResult.transcript);
-          trace.transcriptGzip = Bun.gzipSync(Buffer.from(transcriptJson));
-          trace.transcriptTurns = lastAgentResult.transcript.length;
-        } catch {
-          // Best-effort — don't fail the trace record
-        }
-      }
-      await deps.traceCollector.record(trace);
-      deps.bus?.emit('trace:record', { trace });
+      // ── Step 6: LEARN — see calibrate + record block after confidence decision switch ──
 
       // ── Step 5½: EXECUTE mutating tools ONLY after verification ──
       if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
@@ -866,6 +894,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         : confidenceDecision === 'allow';
 
       // Handle re-verify, escalate, refuse for L1+ before the main success/failure branch
+      let shouldContinue = false;
       if (routing.level > 0 && confidenceDecision && !shouldCommit) {
         switch (confidenceDecision) {
           case 're-verify': {
@@ -931,7 +960,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
                 matchedSkill = null;
               }
-              continue;
+              shouldContinue = true;
             }
             break;
           }
@@ -954,7 +983,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             }
             // Exhaust retries to trigger routing level escalation
             retry = input.budget.maxRetries + deliberationBonusRetries;
-            continue;
+            shouldContinue = true;
+            break;
           }
           case 'refuse': {
             // Block — record failed approach, do not retry
@@ -973,10 +1003,55 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
               matchedSkill = null;
             }
-            continue;
+            shouldContinue = true;
+            break;
           }
         }
       }
+
+      // ── Step 6: LEARN — calibrate + record trace ──────────────────
+      // Placed AFTER confidence decision so trace.outcome reflects final resolved outcome (A7)
+      // but BEFORE shouldContinue check so ALL paths (refuse/escalate/success) record traces
+      if (prediction && deps.selfModel.calibrate) {
+        try {
+          const predictionError = deps.selfModel.calibrate(prediction, trace);
+          if (predictionError) {
+            trace.predictionError = predictionError;
+          }
+        } catch (calibErr) {
+          deps.bus?.emit('selfmodel:calibration_error', {
+            taskId: input.id,
+            error: calibErr instanceof Error ? calibErr.message : String(calibErr),
+          });
+        }
+      }
+
+      // FP: Record outcome for ForwardPredictor calibration (A7)
+      if (deps.forwardPredictor && forwardPrediction) {
+        try {
+          const fpOutcome = mapTraceToFPOutcome(forwardPrediction.predictionId, trace);
+          if (fpOutcome) {
+            const brierScore = await deps.forwardPredictor.recordOutcome(fpOutcome);
+            deps.bus?.emit('prediction:calibration', { taskId: input.id, brierScore });
+          }
+        } catch { /* FP calibration failure — non-critical */ }
+      }
+
+      // PH6: Compress transcript into trace for storage (Step 43)
+      if (isAgenticResult && lastAgentResult?.transcript?.length) {
+        try {
+          const transcriptJson = JSON.stringify(lastAgentResult.transcript);
+          trace.transcriptGzip = Bun.gzipSync(Buffer.from(transcriptJson));
+          trace.transcriptTurns = lastAgentResult.transcript.length;
+        } catch {
+          // Best-effort — don't fail the trace record
+        }
+      }
+      await deps.traceCollector.record(trace);
+      deps.bus?.emit('trace:record', { trace });
+
+      // shouldContinue: confidence decision requires retry (escalate / re-verify failure / refuse)
+      if (shouldContinue) continue;
 
       // ── SUCCESS → return result ──────────────────────────────────
       if (shouldCommit || trace.outcome === 'success') {

@@ -11,6 +11,7 @@ const defaultInput: TaskInput = {
   id: 'task-fleet-1',
   source: 'cli',
   goal: 'refactor utility function',
+  taskType: 'code',
   targetFiles: ['src/foo.ts'],
   budget: { maxTokens: 5000, maxDurationMs: 30000, maxRetries: 1 },
 };

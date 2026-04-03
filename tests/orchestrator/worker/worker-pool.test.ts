@@ -30,6 +30,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't-1',
     source: 'cli',
     goal: 'Fix bug',
+    taskType: 'code',
     targetFiles: ['src/foo.ts'],
     budget: { maxTokens: 50_000, maxDurationMs: 60_000, maxRetries: 3 },
     ...overrides,

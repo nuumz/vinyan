@@ -24,6 +24,7 @@ const defaultInput: TaskInput = {
   id: 'task-1',
   source: 'cli',
   goal: 'refactor authentication logic',
+  taskType: 'code',
   targetFiles: ['src/auth.ts'],
   budget: { maxTokens: 5000, maxDurationMs: 10000, maxRetries: 1 },
 };

@@ -44,6 +44,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't-integration',
     source: 'cli',
     goal: 'Fix the export value',
+    taskType: 'code',
     budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
     ...overrides,
   };

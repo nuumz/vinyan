@@ -62,6 +62,7 @@ function makeInitTurn(): OrchestratorTurn {
     type: 'init',
     taskId: 'task-1',
     goal: 'test goal',
+    taskType: 'code',
     routingLevel: 1,
     perception: {
       taskTarget: { file: 'test.ts', description: 'test' },

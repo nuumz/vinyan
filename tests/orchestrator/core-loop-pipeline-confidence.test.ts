@@ -19,6 +19,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't-pc',
     source: 'cli',
     goal: 'Test pipeline confidence wiring',
+    taskType: 'code',
     budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
     targetFiles: ['src/foo.ts'],
     ...overrides,

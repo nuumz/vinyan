@@ -140,12 +140,11 @@ export class WorkerPoolImpl implements WorkerPool {
       }
     }
 
-    // Non-file tasks (e.g. "hi", questions) use in-process dispatch:
-    // no mutations → no isolation concern, avoids subprocess overhead + JSON format loss
-    const isNonFileTask = !input.targetFiles?.length;
-    const output = (this.useSubprocess && !isNonFileTask)
+    // L1 single-shot: in-process always (subprocess overhead > 500ms defeats < 2s budget)
+    // L2+ subprocess: isolation for file-mutating tasks
+    const output = (this.useSubprocess && routing.level >= 2)
       ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing, isNonFileTask);
+      : await this.dispatchInProcess(workerInput, routing);
 
     return this.toWorkerResult(output, startTime);
   }
@@ -175,6 +174,7 @@ export class WorkerPoolImpl implements WorkerPool {
     return {
       taskId: input.id,
       goal: input.goal,
+      taskType: input.taskType,
       routingLevel: routing.level as Exclude<typeof routing.level, 0>,
       perception: prunedPerception,
       workingMemory: prunedMemory,
@@ -190,7 +190,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
   // ── In-process dispatch (default) ───────────────────────────────────
 
-  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision, isNonFileTask = false): Promise<WorkerOutput> {
+  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select provider if available, fallback to tier-based
     const provider = routing.workerId
       ? (this.registry.selectById(routing.workerId) ?? this.registry.selectForRoutingLevel(routing.level))
@@ -199,18 +199,13 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    // Non-file tasks: conversational prompt → plain-text LLM response → captured as proposedContent
-    const { systemPrompt, userPrompt } = isNonFileTask
-      ? {
-          systemPrompt: 'You are a helpful assistant. Answer the user\'s question directly and concisely. Do NOT wrap your response in JSON or code blocks.',
-          userPrompt: workerInput.goal,
-        }
-      : assemblePrompt(
-          workerInput.goal,
-          workerInput.perception,
-          workerInput.workingMemory,
-          workerInput.plan,
-        );
+    const { systemPrompt, userPrompt } = assemblePrompt(
+      workerInput.goal,
+      workerInput.perception,
+      workerInput.workingMemory,
+      workerInput.plan,
+      workerInput.taskType,
+    );
 
     const startTime = performance.now();
 

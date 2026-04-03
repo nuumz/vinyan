@@ -64,11 +64,15 @@ export interface RiskFactors {
 // Task lifecycle (→ TDD §16)
 // ---------------------------------------------------------------------------
 
+/** Task type: code tasks mutate files, reasoning tasks produce answers */
+export type TaskType = 'code' | 'reasoning';
+
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
   id: string;
   source: 'cli' | 'api' | 'mcp' | 'a2a';
   goal: string; // Natural language task description
+  taskType: TaskType; // Explicit classification — drives prompt, perception, and verification
   targetFiles?: string[]; // Optional explicit scope
   constraints?: string[]; // User-specified constraints
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
@@ -517,6 +521,7 @@ export interface DagValidationCriteria {
 export interface WorkerInput {
   taskId: string;
   goal: string;
+  taskType: TaskType;
   routingLevel: RoutingLevel;
   perception: PerceptualHierarchy;
   workingMemory: WorkingMemoryState;

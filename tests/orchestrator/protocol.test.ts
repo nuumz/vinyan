@@ -62,14 +62,15 @@ function makeWorkerInput(overrides?: Partial<WorkerInput>): WorkerInput {
   return {
     taskId: 'task-001',
     goal: 'Fix the type error in foo.ts',
-    routingLevel: 1,
+    taskType: 'code' as const,
+    routingLevel: 1 as const,
     perception: makePerception(),
     workingMemory: makeWorkingMemory(),
     budget: { maxTokens: 10_000, timeoutMs: 5_000 },
     allowedPaths: ['src/'],
-    isolationLevel: 0,
+    isolationLevel: 0 as const,
     ...overrides,
-  };
+  } as WorkerInput;
 }
 
 function makeWorkerOutput(overrides?: Partial<WorkerOutput>): WorkerOutput {
@@ -179,6 +180,7 @@ describe('TaskInputSchema', () => {
       id: 't-1',
       source: 'cli',
       goal: 'Fix bug',
+      taskType: 'code',
       budget: { maxTokens: 50_000, maxDurationMs: 60_000, maxRetries: 3 },
     };
     expect(TaskInputSchema.parse(input)).toEqual(input);
@@ -189,6 +191,7 @@ describe('TaskInputSchema', () => {
       id: 't-2',
       source: 'api',
       goal: 'Refactor module',
+      taskType: 'code',
       targetFiles: ['src/foo.ts'],
       constraints: ['Do not change public API'],
       budget: { maxTokens: 100_000, maxDurationMs: 120_000, maxRetries: 5 },
@@ -201,6 +204,7 @@ describe('TaskInputSchema', () => {
       id: 't-3',
       source: 'mcp',
       goal: 'Verify types',
+      taskType: 'code',
       budget: { maxTokens: 10_000, maxDurationMs: 5_000, maxRetries: 1 },
     };
     expect(TaskInputSchema.parse(input)).toEqual(input);

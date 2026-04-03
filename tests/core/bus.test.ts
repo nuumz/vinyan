@@ -176,6 +176,7 @@ function makeInput() {
     id: 'test-1',
     source: 'cli' as const,
     goal: 'test task',
+    taskType: 'code' as const,
     budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 3 },
   };
 }

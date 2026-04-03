@@ -155,6 +155,7 @@ const WorkerBudgetSchema = z.object({
 export const WorkerInputSchema = z.object({
   taskId: z.string(),
   goal: z.string(),
+  taskType: z.enum(['code', 'reasoning']).default('code'),
   routingLevel: RoutingLevelSchema,
   perception: PerceptualHierarchySchema,
   workingMemory: WorkingMemoryStateSchema,
@@ -179,6 +180,7 @@ export const WorkerOutputSchema = z.object({
   uncertainties: z.array(z.string()),
   tokensConsumed: z.number(),
   durationMs: z.number(),
+  proposedContent: z.string().optional(),
 });
 
 // ── TaskInput (CLI/API entry point) ──────────────────────────────────
@@ -193,6 +195,7 @@ export const TaskInputSchema = z.object({
   id: z.string(),
   source: z.enum(['cli', 'api', 'mcp', 'a2a']),
   goal: z.string(),
+  taskType: z.enum(['code', 'reasoning']).default('code'),
   targetFiles: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),
   acceptanceCriteria: z.array(z.string()).optional(),
@@ -249,6 +252,7 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     type: z.literal('init'),
     taskId: z.string(),
     goal: z.string(),
+    taskType: z.enum(['code', 'reasoning']).default('code'),
     routingLevel: RoutingLevelSchema,
     perception: PerceptualHierarchySchema,
     workingMemory: WorkingMemoryStateSchema,

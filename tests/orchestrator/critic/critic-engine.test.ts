@@ -29,6 +29,7 @@ function makeTask(): TaskInput {
     id: 't-1',
     source: 'cli',
     goal: 'Fix bug',
+    taskType: 'code',
     budget: { maxTokens: 50_000, maxDurationMs: 60_000, maxRetries: 3 },
   };
 }

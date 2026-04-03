@@ -11,7 +11,7 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
-import type { PerceptualHierarchy, TaskDAG, WorkingMemoryState } from '../types.ts';
+import type { PerceptualHierarchy, TaskDAG, TaskType, WorkingMemoryState } from '../types.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
@@ -28,9 +28,16 @@ export function assemblePrompt(
   perception: PerceptualHierarchy,
   memory: WorkingMemoryState,
   plan?: TaskDAG,
+  taskType: TaskType = 'code',
 ): AssembledPrompt {
-  const systemPrompt = buildSystemPrompt(perception);
-  const userPrompt = buildUserPrompt(goal, perception, memory, plan);
+  if (taskType === 'reasoning') {
+    return {
+      systemPrompt: buildReasoningSystemPrompt(),
+      userPrompt: buildReasoningUserPrompt(goal, memory),
+    };
+  }
+  const systemPrompt = buildCodeSystemPrompt(perception);
+  const userPrompt = buildCodeUserPrompt(goal, perception, memory, plan);
   return { systemPrompt, userPrompt };
 }
 
@@ -56,7 +63,7 @@ function buildOracleManifest(): string {
   ].join('\n');
 }
 
-function buildSystemPrompt(perception: PerceptualHierarchy): string {
+function buildCodeSystemPrompt(perception: PerceptualHierarchy): string {
   const tools = [...perception.runtime.availableTools].sort().join(', ');
   return `[ROLE]
 You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
@@ -79,7 +86,7 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
 ${buildOracleManifest()}`;
 }
 
-function buildUserPrompt(
+function buildCodeUserPrompt(
   goal: string,
   perception: PerceptualHierarchy,
   memory: WorkingMemoryState,
@@ -143,6 +150,28 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
       .map((n, i) => `  ${i + 1}. ${clean(n.description)} → ${n.targetFiles.join(', ')}`)
       .join('\n');
     sections.push(`[PLAN]\n${steps}`);
+  }
+
+  return sections.join('\n\n');
+}
+
+// ── Reasoning task prompts ───────────────────────────────────────────
+
+function buildReasoningSystemPrompt(): string {
+  return `You are a Vinyan reasoning assistant.
+Answer the user's question directly and concisely.
+Do NOT wrap your response in JSON or code blocks.
+If you are uncertain, state what you don't know.`;
+}
+
+function buildReasoningUserPrompt(goal: string, memory: WorkingMemoryState): string {
+  const sections: string[] = [clean(goal)];
+
+  if (memory.failedApproaches.length > 0) {
+    const constraints = memory.failedApproaches
+      .map((f) => `  - Avoid: ${clean(f.approach)} (reason: ${clean(f.oracleVerdict)})`)
+      .join('\n');
+    sections.push(`[CONTEXT]\n${constraints}`);
   }
 
   return sections.join('\n\n');

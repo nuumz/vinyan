@@ -136,8 +136,10 @@ export class CalibratedSelfModel implements SelfModel {
     // Confidence & meta-confidence
     const confidence = params.predictionAccuracy;
 
-    // S2: Meta-uncertainty — forced < 0.3 when < 10 observations for this task type
-    let metaConfidence = Math.min(confidence, obs / 20);
+    // S2: Meta-uncertainty — forced < 0.3 when < 10 observations for this task type.
+    // Floor at 0.1: prevents metaConfidence=0 for new task types which collapses pipeline
+    // composite to 0 (geometric mean) and causes infinite refuse loops across all routing levels.
+    let metaConfidence = Math.max(0.1, Math.min(confidence, obs / 20));
     if (obs < 10) {
       metaConfidence = Math.min(metaConfidence, 0.29);
     }
@@ -206,6 +208,7 @@ export class CalibratedSelfModel implements SelfModel {
         id: trace.taskId,
         source: 'cli',
         goal: '',
+        taskType: trace.affectedFiles?.length ? 'code' : 'reasoning',
         targetFiles: trace.affectedFiles,
         budget: { maxTokens: 0, maxDurationMs: 0, maxRetries: 0 },
       });

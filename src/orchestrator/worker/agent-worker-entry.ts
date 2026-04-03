@@ -80,11 +80,11 @@ export async function runAgentWorkerLoop(
   const compressedPerception = compressPerception(init.perception, init.budget.contextWindow);
 
   // 3. Build initial history
-  const isNonFileTask = !init.allowedPaths?.length;
+  const taskType = init.taskType ?? (!init.allowedPaths?.length ? 'reasoning' : 'code');
   const history: HistoryMessage[] = [
     {
       role: 'system',
-      content: buildSystemPrompt(init.routingLevel, isNonFileTask),
+      content: buildSystemPrompt(init.routingLevel, taskType),
     },
     {
       role: 'user',
@@ -288,8 +288,8 @@ function logError(msg: string): void {
   process.stderr.write(`[agent-worker] ${msg}\n`);
 }
 
-export function buildSystemPrompt(routingLevel: number, isNonFileTask = false): string {
-  if (isNonFileTask) {
+export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reasoning' = 'code'): string {
+  if (taskType === 'reasoning') {
     return [
       `You are a Vinyan reasoning agent at routing level L${routingLevel}.`,
       'Your task is to research, reason about, or answer the given question using available tools.',

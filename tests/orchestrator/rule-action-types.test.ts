@@ -19,6 +19,7 @@ const defaultInput: TaskInput = {
   id: 'task-1',
   source: 'cli',
   goal: 'test rule action types',
+  taskType: 'code',
   targetFiles: ['src/foo.ts'],
   budget: { maxTokens: 5000, maxDurationMs: 10000, maxRetries: 1 },
 };

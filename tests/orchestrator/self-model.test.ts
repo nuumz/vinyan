@@ -9,6 +9,7 @@ function makeInput(overrides: Partial<TaskInput> = {}): TaskInput {
     id: 'task-001',
     source: 'cli',
     goal: 'add JSDoc to function',
+    taskType: 'code',
     targetFiles: ['src/foo.ts'],
     budget: { maxTokens: 10000, maxRetries: 3, maxDurationMs: 60000 },
     ...overrides,

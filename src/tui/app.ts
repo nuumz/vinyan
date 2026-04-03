@@ -532,6 +532,7 @@ export class App {
             id: `task-${Date.now().toString(36)}`,
             source: 'cli',
             goal: goal.replace(/--level\s+\d+/, '').trim(),
+            taskType: 'reasoning', // TUI input is conversational by default
             budget: { maxTokens: 10_000, maxDurationMs: 60_000, maxRetries: 3 },
             ...(level != null && { routingLevel: level }),
           });

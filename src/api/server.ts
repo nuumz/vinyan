@@ -612,6 +612,7 @@ function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
     id: partial.id ?? crypto.randomUUID(),
     source: 'api',
     goal: partial.goal ?? '',
+    taskType: partial.taskType ?? (partial.targetFiles?.length ? 'code' : 'reasoning'),
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
     budget: partial.budget ?? {

@@ -27,6 +27,7 @@ describe('InstanceCoordinator', () => {
       id: 'task-1',
       source: 'cli',
       goal: 'test',
+      taskType: 'code',
       budget: { maxTokens: 1000, maxDurationMs: 60000, maxRetries: 3 },
     });
 
@@ -43,6 +44,7 @@ describe('InstanceCoordinator', () => {
       id: 'task-1',
       source: 'cli',
       goal: 'test',
+      taskType: 'code',
       budget: { maxTokens: 1000, maxDurationMs: 60000, maxRetries: 3 },
     });
 

@@ -26,6 +26,7 @@ function makeParent(overrides: Partial<TaskInput> = {}): TaskInput {
     id: 'task-parent-1',
     source: 'cli',
     goal: 'Fix the bug',
+    taskType: 'code',
     targetFiles: ['src/foo.ts', 'src/bar.ts'],
     budget: { maxTokens: 10000, maxDurationMs: 60_000, maxRetries: 3 },
     ...overrides,

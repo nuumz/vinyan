@@ -50,6 +50,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     id: `task-${Date.now().toString(36)}`,
     source: 'cli',
     goal,
+    taskType: files.length > 0 ? 'code' : 'reasoning',
     targetFiles: files.length > 0 ? files : undefined,
     budget: {
       maxTokens: budget,

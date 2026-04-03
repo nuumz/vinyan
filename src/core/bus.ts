@@ -215,6 +215,8 @@ export interface VinyanBusEvents {
   'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
+  // EO #1+#4: DAG execution observability
+  'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

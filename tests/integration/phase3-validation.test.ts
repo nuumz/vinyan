@@ -196,6 +196,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
             id: `t-${i}`,
             source: 'cli',
             goal: 'refactor auth',
+            taskType: 'code',
             budget: { maxTokens: 1000, maxDurationMs: 30000, maxRetries: 3 },
           },
           perception,
@@ -368,7 +369,7 @@ describe('PH3.8: Phase 3 Integration Validation', () => {
       const model = new CalibratedSelfModel({});
 
       const pred = await model.predict(
-        { id: 't-1', source: 'cli', goal: 'test', budget: { maxTokens: 1000, maxDurationMs: 30000, maxRetries: 3 } },
+        { id: 't-1', source: 'cli', goal: 'test', taskType: 'code', budget: { maxTokens: 1000, maxDurationMs: 30000, maxRetries: 3 } },
         {
           taskTarget: { file: 'a.ts', description: 'test' },
           dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 1 },

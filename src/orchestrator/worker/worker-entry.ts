@@ -82,7 +82,7 @@ async function main() {
     return;
   }
 
-  const { systemPrompt, userPrompt } = assemblePrompt(input.goal, input.perception, input.workingMemory, input.plan);
+  const { systemPrompt, userPrompt } = assemblePrompt(input.goal, input.perception, input.workingMemory, input.plan, input.taskType ?? 'code');
 
   const startTime = performance.now();
 
@@ -107,13 +107,15 @@ async function main() {
       durationMs,
     };
   } catch {
+    // Non-JSON response (reasoning task): capture as proposedContent
     output = {
       taskId: input.taskId,
       proposedMutations: [],
       proposedToolCalls: [],
-      uncertainties: [`Failed to parse LLM response as JSON (${response.content.length} chars)`],
+      uncertainties: [],
       tokensConsumed: tokens,
       durationMs,
+      ...(response.content?.trim() ? { proposedContent: response.content } : {}),
     };
   }
 

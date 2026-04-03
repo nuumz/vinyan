@@ -31,6 +31,7 @@ function makeTaskInput(id: string): TaskInput {
     id,
     source: 'api',
     goal: `Test task ${id}`,
+    taskType: 'code',
     budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
   };
 }

@@ -43,6 +43,25 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
   }
 
   async assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy> {
+    // Reasoning tasks: lightweight perception — skip file-centric operations
+    if (input.taskType === 'reasoning') {
+      return {
+        taskTarget: { file: '', symbol: undefined, description: input.goal },
+        dependencyCone: {
+          directImporters: [],
+          directImportees: [],
+          transitiveBlastRadius: 0,
+        },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: {
+          nodeVersion: process.version,
+          os: process.platform,
+          availableTools: this.availableTools,
+        },
+      };
+    }
+
     const targetFiles = input.targetFiles ?? [];
     const primaryFile = targetFiles[0] ?? '';
 

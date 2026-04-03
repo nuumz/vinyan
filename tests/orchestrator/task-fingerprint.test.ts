@@ -7,6 +7,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
     id: 't1',
     source: 'cli',
     goal: 'refactor the authentication module',
+    taskType: 'code',
     targetFiles: ['src/auth/login.ts', 'src/auth/session.ts'],
     budget: { maxTokens: 10000, maxDurationMs: 60000, maxRetries: 3 },
     ...overrides,

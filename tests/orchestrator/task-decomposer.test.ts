@@ -9,6 +9,7 @@ function makeInput(): TaskInput {
     id: 'task-001',
     source: 'cli',
     goal: 'refactor auth module',
+    taskType: 'code',
     targetFiles: ['src/auth.ts'],
     budget: { maxTokens: 10000, maxRetries: 3, maxDurationMs: 60000 },
   };

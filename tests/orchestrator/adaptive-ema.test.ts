@@ -21,6 +21,7 @@ function makeInput(goal = 'refactor auth logic', files = ['src/auth.ts']): TaskI
     id: `task-${Math.random().toString(36).slice(2)}`,
     source: 'cli',
     goal,
+    taskType: 'code',
     targetFiles: files,
     budget: { maxTokens: 5000, maxDurationMs: 10000, maxRetries: 1 },
   };

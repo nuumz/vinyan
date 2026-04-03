@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
-import { verify } from '../../../src/oracle/type/type-verifier.ts';
+import { clearTscCache, verify } from '../../../src/oracle/type/type-verifier.ts';
 
 describe('type-oracle', () => {
   let tempDir: string;
@@ -78,5 +78,35 @@ describe('type-oracle', () => {
     const verdict = await verify(hypothesis);
     // b.ts itself has no errors
     expect(verdict.verified).toBe(true);
+  });
+
+  test('incremental mode creates .vinyan/tsbuildinfo', async () => {
+    writeFileSync(join(tempDir, 'valid.ts'), `export const x = 1;\n`);
+    clearTscCache();
+
+    const hypothesis: HypothesisTuple = {
+      target: 'valid.ts',
+      pattern: 'type-check',
+      workspace: tempDir,
+    };
+
+    await verify(hypothesis);
+    expect(existsSync(join(tempDir, '.vinyan', 'tsbuildinfo'))).toBe(true);
+  });
+
+  test('dedup: concurrent verify calls for same workspace share one tsc invocation', async () => {
+    writeFileSync(join(tempDir, 'a.ts'), `export const a: number = 1;\n`);
+    writeFileSync(join(tempDir, 'b.ts'), `export const b: number = 2;\n`);
+    clearTscCache();
+
+    const hypA: HypothesisTuple = { target: 'a.ts', pattern: 'type-check', workspace: tempDir };
+    const hypB: HypothesisTuple = { target: 'b.ts', pattern: 'type-check', workspace: tempDir };
+
+    // Fire both concurrently — should share single tsc invocation
+    const [verdictA, verdictB] = await Promise.all([verify(hypA), verify(hypB)]);
+    expect(verdictA.verified).toBe(true);
+    expect(verdictB.verified).toBe(true);
+    // Both should complete roughly at the same time (shared tsc)
+    expect(Math.abs(verdictA.durationMs - verdictB.durationMs)).toBeLessThan(500);
   });
 });

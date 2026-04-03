@@ -13,6 +13,7 @@ import { join, resolve } from 'path';
 import type { WorkerPool } from '../core-loop.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
+import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 import type {
@@ -20,6 +21,7 @@ import type {
   LLMResponse,
   PerceptualHierarchy,
   PerceptionRole,
+  REResponse,
   RoutingDecision,
   TaskDAG,
   TaskInput,
@@ -47,6 +49,12 @@ export interface WorkerPoolConfig {
   agentLoopDeps?: Partial<AgentLoopDeps>;
   /** Max concurrent sessions per routing level. */
   maxConcurrentSessions?: { l1?: number; l2?: number; l3?: number };
+  /**
+   * RE-agnostic engine registry. If provided, in-process dispatch uses this
+   * instead of wrapping `registry`. Enables non-LLM Reasoning Engines (AGI, symbolic, etc.)
+   * to be registered and dispatched without changing the core loop.
+   */
+  engineRegistry?: ReasoningEngineRegistry;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -77,6 +85,7 @@ export class Semaphore {
 
 export class WorkerPoolImpl implements WorkerPool {
   private registry: LLMProviderRegistry;
+  private engineRegistry: ReasoningEngineRegistry;
   private workspace: string;
   private useSubprocess: boolean;
   private workerEntryPath: string;
@@ -87,6 +96,8 @@ export class WorkerPoolImpl implements WorkerPool {
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry;
+    // Build RE registry: use provided one or wrap legacy LLM registry for backward compat
+    this.engineRegistry = config.engineRegistry ?? ReasoningEngineRegistry.fromLLMRegistry(config.registry);
     this.workspace = config.workspace;
     this.useSubprocess = config.useSubprocess ?? true;
     this.proxySocketPath = config.proxySocketPath;
@@ -191,11 +202,11 @@ export class WorkerPoolImpl implements WorkerPool {
   // ── In-process dispatch (default) ───────────────────────────────────
 
   private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
-    // PH4.4: Use workerId to select provider if available, fallback to tier-based
-    const provider = routing.workerId
-      ? (this.registry.selectById(routing.workerId) ?? this.registry.selectForRoutingLevel(routing.level))
-      : this.registry.selectForRoutingLevel(routing.level);
-    if (!provider) {
+    // PH4.4: Use workerId to select engine if available, fallback to tier-based
+    const engine = routing.workerId
+      ? (this.engineRegistry.selectById(routing.workerId) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+      : this.engineRegistry.selectForRoutingLevel(routing.level);
+    if (!engine) {
       return emptyOutput(workerInput.taskId);
     }
 
@@ -209,26 +220,28 @@ export class WorkerPoolImpl implements WorkerPool {
 
     const startTime = performance.now();
 
-    // Race: LLM call vs timeout
+    // Race: RE execute vs timeout
     const timeoutMs = workerInput.budget.timeoutMs;
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
-    const llmPromise = provider
-      .generate({
+    const rePromise = engine
+      .execute({
         systemPrompt,
         userPrompt,
         maxTokens: workerInput.budget.maxTokens,
-        ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
-        cacheControl: { type: 'ephemeral' as const },
+        providerOptions: {
+          ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
+          cacheControl: { type: 'ephemeral' as const },
+        },
       })
       .catch((): 'error' => 'error');
 
-    const result = await Promise.race([llmPromise, timeoutPromise]);
+    const result = await Promise.race([rePromise, timeoutPromise]);
     if (result === 'timeout' || result === 'error') {
       return emptyOutput(workerInput.taskId);
     }
 
     const durationMs = Math.round(performance.now() - startTime);
-    return parseWorkerOutput(workerInput.taskId, result as LLMResponse, durationMs);
+    return parseWorkerOutputFromRE(workerInput.taskId, result as REResponse, durationMs);
   }
 
   // ── Subprocess dispatch (production path) ───────────────────────────
@@ -531,6 +544,33 @@ function stripCodeBlock(text: string): string {
   const trimmed = text.trim();
   const match = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
   return match ? match[1]! : trimmed;
+}
+
+/** Parse WorkerOutput from a RE-agnostic REResponse (primary dispatch path). */
+function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationMs: number): WorkerOutputWithCache {
+  const tokens = response.tokensUsed.input + response.tokensUsed.output;
+  const cacheReadTokens = response.tokensUsed.cacheRead;
+  const cacheCreationTokens = response.tokensUsed.cacheCreation;
+  try {
+    const cleaned = stripCodeBlock(response.content);
+    const parsed = JSON.parse(cleaned);
+    const candidate = {
+      taskId,
+      proposedMutations: parsed.proposedMutations ?? [],
+      proposedToolCalls: parsed.proposedToolCalls ?? response.toolCalls ?? [],
+      uncertainties: parsed.uncertainties ?? [],
+      tokensConsumed: tokens,
+      durationMs,
+    };
+    const validated = WorkerOutputSchema.safeParse(candidate);
+    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens };
+    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
+  } catch {
+    if (response.content?.trim()) {
+      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
+    }
+    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens };
+  }
 }
 
 function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: number): WorkerOutputWithCache {

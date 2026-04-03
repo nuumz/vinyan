@@ -447,7 +447,9 @@ export interface ExecutionTrace {
   prediction?: SelfModelPrediction;
   predictionError?: PredictionError; // Full prediction error, not just a number
   successPatternTag?: string; // Tag for Evolution Engine pattern extraction
-  modelUsed: string;
+  /** RE-agnostic engine identifier — replaces model-specific naming. Alias: modelUsed (backward compat). */
+  engineId?: string;
+  modelUsed: string; // kept for backward compat; new code should prefer engineId
   tokensConsumed: number;
   durationMs: number;
   outcome: 'success' | 'failure' | 'timeout' | 'escalated';
@@ -617,6 +619,64 @@ export interface LLMResponse {
   };
   model: string;
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning Engine — RE-agnostic abstraction over any generator (LLM, symbolic, AGI)
+// ---------------------------------------------------------------------------
+// Design intent: any future Reasoning Engine (current LLM, symbolic solver, AGI system)
+// plugs into Vinyan by implementing this interface. LLMProvider becomes one concrete RE type.
+// Axiom A3: Orchestrator routing remains deterministic regardless of which RE executes.
+
+export type REEngineType = 'llm' | 'symbolic' | 'oracle' | 'hybrid' | 'external';
+
+/** RE-agnostic request — LLM-specific params (thinking, cacheControl) go in providerOptions. */
+export interface RERequest {
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens: number;
+  temperature?: number;
+  tools?: Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  }>;
+  messages?: HistoryMessage[];
+  /** Capability hints for engine selection (informational — selection done before execute()). */
+  requiredCapabilities?: string[];
+  /** RE-specific options (e.g. { thinking: ThinkingConfig, cacheControl: CacheControl } for LLMs). */
+  providerOptions?: Record<string, unknown>;
+}
+
+/** RE-agnostic response — maps from provider-specific response at the adapter layer. */
+export interface REResponse {
+  content: string;
+  toolCalls: ToolCall[];
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheCreation?: number;
+  };
+  engineId: string;
+  /** Generic termination reason — more stable than provider-specific stop reasons. */
+  terminationReason: 'completed' | 'tool_use' | 'limit_reached';
+  /** Thinking trace — only populated by REs that support extended reasoning. */
+  thinking?: string;
+  /** RE-specific response metadata (e.g. { model: 'claude-opus-4-6' } for LLMs). */
+  providerMeta?: Record<string, unknown>;
+}
+
+/** Primary interface for all Reasoning Engines — LLMs, symbolic solvers, future AGI. */
+export interface ReasoningEngine {
+  id: string;
+  engineType: REEngineType;
+  /** Formal capability declaration — PRIMARY selector for routing (replaces tier-only selection). */
+  capabilities: string[];
+  /** Advisory tier — backward compat with tier-based routing. Optional for non-LLM REs. */
+  tier?: 'fast' | 'balanced' | 'powerful';
+  maxContextTokens?: number;
+  execute(request: RERequest): Promise<REResponse>;
 }
 
 // ---------------------------------------------------------------------------

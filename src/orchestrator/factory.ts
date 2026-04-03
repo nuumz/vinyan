@@ -65,6 +65,12 @@ export interface OrchestratorConfig {
   workspace: string;
   /** Override the LLM provider registry (useful for testing with mock providers). */
   registry?: LLMProviderRegistry;
+  /**
+   * Override with a RE-agnostic engine registry — preferred over `registry` when provided.
+   * Any ReasoningEngine (LLM, symbolic, AGI) can be registered here.
+   * If omitted, the LLM registry is wrapped via ReasoningEngineRegistry.fromLLMRegistry().
+   */
+  engineRegistry?: import('./llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
   /** Use subprocess for worker dispatch (default: true for A1/A6 isolation). */
   useSubprocess?: boolean;
   /** Provide an existing bus instance (one is created if omitted). */
@@ -75,6 +81,12 @@ export interface OrchestratorConfig {
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
+  /**
+   * Allowlist of engine ID prefixes for auto-registration into worker_profiles.
+   * Defaults to the legacy LLM vendor list. Pass [] to disable allowlist filtering
+   * (useful when using a custom engineRegistry with non-LLM REs).
+   */
+  workerModelAllowlist?: string[];
 }
 
 export interface Orchestrator {
@@ -161,7 +173,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
   if (workerStore) {
-    autoRegisterWorkers(registry, workerStore, bus);
+    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist);
   }
 
   // Set up WorldGraph for fact invalidation (A4: content-addressed truth)
@@ -253,6 +265,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   const workerPool = new WorkerPoolImpl({
     registry,
+    engineRegistry: config.engineRegistry,
     workspace,
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
     proxySocketPath: llmProxy?.socketPath,
@@ -536,8 +549,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   };
 }
 
-/** Allowed model name prefixes — mirrors safety-invariants.ts MODEL_ALLOWLIST_PREFIXES. */
-const WORKER_MODEL_ALLOWLIST = ['claude-', 'gpt-', 'gemini-', 'mock/', 'openrouter/'];
+/** Default allowed engine ID prefixes — configurable via OrchestratorConfig.workerModelAllowlist. */
+const DEFAULT_WORKER_MODEL_ALLOWLIST = ['claude-', 'gpt-', 'gemini-', 'mock/', 'openrouter/', 'anthropic/'];
 
 /** Yield event loop long enough for render loop (33ms interval) to paint at least 1 frame. */
 const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 16));
@@ -594,7 +607,7 @@ export async function createOrchestratorAsync(
   }
 
   if (workerStore) {
-    autoRegisterWorkers(registry, workerStore, bus);
+    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist);
   }
 
   // ── Phase 2: WorldGraph + Config ────────────────────────────────
@@ -950,14 +963,19 @@ export async function createOrchestratorAsync(
 }
 
 /**
- * Auto-register existing LLM providers as WorkerProfiles.
+ * Auto-register existing providers as WorkerProfiles.
  * Grandfathered as "active" — these are proven models from Phase 3.
+ * Allowlist is configurable; pass [] to skip filtering (for custom RE types).
  */
-function autoRegisterWorkers(registry: LLMProviderRegistry, workerStore: WorkerStore, bus: VinyanBus): void {
+function autoRegisterWorkers(
+  registry: LLMProviderRegistry,
+  workerStore: WorkerStore,
+  bus: VinyanBus,
+  allowlist: string[] = DEFAULT_WORKER_MODEL_ALLOWLIST,
+): void {
   for (const provider of registry.listProviders()) {
-    // M12: Validate model against allowlist before registration
-    const allowlisted = WORKER_MODEL_ALLOWLIST.some((p) => provider.id.startsWith(p));
-    if (!allowlisted) {
+    // M12: Validate engine against allowlist before registration. Empty allowlist = no filter.
+    if (allowlist.length > 0 && !allowlist.some((p) => provider.id.startsWith(p))) {
       console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);
       continue;
     }

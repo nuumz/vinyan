@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import { readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
 import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
@@ -51,13 +52,29 @@ function resolveTscPath(): string {
 }
 
 const TSC_TIMEOUT_MS = 30_000;
+const DEDUP_WINDOW_MS = 2_000;
 
-/** Run tsc --noEmit and return diagnostics. Kills process after 30s timeout. */
-async function runTsc(
-  workspace: string,
-  target?: string,
-): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean }> {
-  const args = ['--noEmit', '--pretty', 'false', '--project', workspace];
+type TscResult = { diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean };
+
+/** Dedup cache: concurrent tsc runs for the same workspace share one invocation. */
+const pendingTsc = new Map<string, Promise<TscResult>>();
+
+/** Ensure .vinyan cache directory exists and return tsBuildInfoFile path. */
+function tsBuildInfoPath(workspace: string): string {
+  const cacheDir = join(workspace, '.vinyan');
+  if (!existsSync(cacheDir)) {
+    mkdirSync(cacheDir, { recursive: true });
+  }
+  return join(cacheDir, 'tsbuildinfo');
+}
+
+/** Core tsc invocation with incremental mode. */
+async function runTscCore(workspace: string): Promise<TscResult> {
+  const buildInfoFile = tsBuildInfoPath(workspace);
+  const args = [
+    '--noEmit', '--pretty', 'false', '--project', workspace,
+    '--incremental', '--tsBuildInfoFile', buildInfoFile,
+  ];
 
   const proc = Bun.spawn([resolveTscPath(), ...args], {
     cwd: workspace,
@@ -83,6 +100,26 @@ async function runTsc(
   }
 
   return { diagnostics: parseTscOutput(result.stdout), exitCode: result.exitCode };
+}
+
+/** Run tsc --noEmit with dedup: concurrent calls for the same workspace share one invocation. */
+async function runTsc(workspace: string): Promise<TscResult> {
+  const cached = pendingTsc.get(workspace);
+  if (cached) return cached;
+
+  const promise = runTscCore(workspace);
+  pendingTsc.set(workspace, promise);
+  promise.then(
+    () => setTimeout(() => pendingTsc.delete(workspace), DEDUP_WINDOW_MS),
+    () => pendingTsc.delete(workspace),
+  );
+
+  return promise;
+}
+
+/** Clear the tsc dedup cache — exposed for testing. */
+export function clearTscCache(): void {
+  pendingTsc.clear();
 }
 
 export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {

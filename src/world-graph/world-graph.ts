@@ -21,6 +21,9 @@ export class WorldGraph {
     this.db = new Database(dbPath);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA foreign_keys = ON');
+    // Limit WAL to 200 pages (~800KB) — prevents multi-MB WAL accumulation that
+    // causes synchronous recovery on next open and blocks the event loop
+    this.db.exec('PRAGMA wal_autocheckpoint = 200');
     this.db.exec(SCHEMA_SQL);
 
     // Safe additive migration for ECP temporal context columns (Gap 3)
@@ -355,8 +358,14 @@ export class WorldGraph {
     return result.changes;
   }
 
-  /** Close the database connection. */
+  /** Close the database connection, checkpointing the WAL first to keep it small. */
   close(): void {
+    try {
+      // Truncate WAL before close — prevents bloat that blocks event loop on next open
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      // Best-effort — don't prevent close
+    }
     this.db.close();
   }
 }

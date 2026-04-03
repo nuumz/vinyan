@@ -14,7 +14,8 @@ import { migration004 } from './004_add_origin_provenance.ts';
 import { migration005 } from './005_add_oracle_profiles.ts';
 import { migration006 } from './006_add_causal_edges.ts';
 import { migration007 } from './007_add_skill_composition.ts';
+import { migration008 } from './008_re_agnostic_worker_profiles.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007];
+export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008];

@@ -32,3 +32,19 @@ CREATE INDEX IF NOT EXISTS idx_wp_identity
 CREATE INDEX IF NOT EXISTS idx_wp_status ON worker_profiles(status);
 CREATE INDEX IF NOT EXISTS idx_wp_model ON worker_profiles(model_id);
 `;
+
+/**
+ * Additive migration: RE-agnostic columns for worker_profiles.
+ *
+ * engine_type:           'llm' | 'symbolic' | 'oracle' | 'hybrid' | 'external'
+ * capabilities_declared: JSON array of capability strings (e.g. ["code-generation", "reasoning"])
+ * engine_config:         JSON object — RE-specific config (replaces scattered LLM-specific columns)
+ *
+ * Legacy columns (model_id, temperature, system_prompt_tpl, max_context_tokens) are kept for
+ * backward compatibility. New code should use engine_config for RE-specific parameters.
+ */
+export const WORKER_SCHEMA_MIGRATION_RE_AGNOSTIC = `
+ALTER TABLE worker_profiles ADD COLUMN engine_type TEXT DEFAULT 'llm';
+ALTER TABLE worker_profiles ADD COLUMN capabilities_declared TEXT;
+ALTER TABLE worker_profiles ADD COLUMN engine_config TEXT;
+`;

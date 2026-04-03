@@ -14,7 +14,7 @@ afterEach(() => {
 describe('generateAgentCard', () => {
   test('agent card has correct name and version', () => {
     const card = generateAgentCard('http://localhost:3000');
-    expect(card.name).toBe('Vinyan ENS');
+    expect(card.name).toBe('Vinyan');
     expect(card.version).toBe('5.0.0');
   });
 

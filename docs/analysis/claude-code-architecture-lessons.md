@@ -2,7 +2,7 @@
 
 **Status:** External architecture analysis  
 **Date:** 2026-04-03  
-**Scope:** Prompt harness, memory runtime, and extensible thinking patterns relevant to Vinyan ENS
+**Scope:** Prompt harness, memory runtime, and extensible thinking patterns relevant to Vinyan
 
 > **Document boundary**: This document owns the architectural lessons Vinyan can reuse from the publicly mirrored `khumbal/claude-code` repository and related analysis articles.  
 > It does **not** attempt to document Claude Code comprehensively, restate leaked source, or define Vinyan implementation contracts.  
@@ -106,7 +106,7 @@ The source distinguishes at least four memory roles:
 
 This is the single most important memory lesson for Vinyan: **do not force instruction memory, factual memory, and working memory into the same substrate**.
 
-### 3.3 Why this matters for Vinyan ENS
+### 3.3 Why this matters for Vinyan
 
 Vinyan currently already has distinct concepts that should stay separate:
 

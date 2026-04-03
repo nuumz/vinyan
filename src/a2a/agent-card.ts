@@ -42,8 +42,8 @@ export function generateAgentCard(
   });
 
   const card: A2AAgentCard = {
-    name: 'Vinyan ENS',
-    description: 'Epistemic Nervous System — verification oracles for code analysis',
+    name: 'Vinyan',
+    description: 'Autonomous task orchestrator built on the Epistemic Orchestration paradigm',
     url: baseUrl,
     version: '5.0.0',
     capabilities: {

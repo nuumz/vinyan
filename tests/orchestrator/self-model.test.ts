@@ -254,4 +254,115 @@ describe('CalibratedSelfModel', () => {
       expect(model2.getParams().avgQualityScore).toBeGreaterThan(0.5);
     });
   });
+
+  describe('getEpistemicSignal', () => {
+    test('returns insufficient for fresh task type', () => {
+      const model = new CalibratedSelfModel();
+      const signal = model.getEpistemicSignal('unknown-task-type');
+      expect(signal.avgOracleConfidence).toBe(0.5);
+      expect(signal.observationCount).toBe(0);
+      expect(signal.basis).toBe('insufficient');
+    });
+
+    test('calibrate updates avgOracleConfidence via EMA', () => {
+      const model = new CalibratedSelfModel();
+      const pred = {
+        taskId: 'task-epi-1',
+        timestamp: Date.now(),
+        expectedTestResults: 'pass' as const,
+        expectedBlastRadius: 2,
+        expectedDuration: 4000,
+        expectedQualityScore: 0.5,
+        uncertainAreas: [],
+        confidence: 0.5,
+        metaConfidence: 0.1,
+        basis: 'static-heuristic' as const,
+        calibrationDataPoints: 0,
+      };
+
+      model.calibrate(
+        pred,
+        makeTrace({
+          id: 'trace-epi-1',
+          taskTypeSignature: 'fix::ts::single',
+          qualityScore: {
+            architecturalCompliance: 0.9,
+            efficiency: 0.9,
+            composite: 0.9,
+            dimensionsAvailable: 2,
+            phase: 'phase0',
+          },
+        }),
+      );
+
+      const signal = model.getEpistemicSignal('fix::ts::single');
+      expect(signal.avgOracleConfidence).toBeGreaterThan(0.5);
+      expect(signal.observationCount).toBe(1);
+      expect(signal.basis).toBe('insufficient');
+    });
+
+    test('basis transitions: insufficient → emerging → calibrated', () => {
+      const model = new CalibratedSelfModel();
+      const taskSig = 'refactor::ts::single';
+
+      const makePred = (i: number) => ({
+        taskId: `task-basis-${i}`,
+        timestamp: Date.now(),
+        expectedTestResults: 'pass' as const,
+        expectedBlastRadius: 2,
+        expectedDuration: 4000,
+        expectedQualityScore: 0.5,
+        uncertainAreas: [],
+        confidence: 0.5,
+        metaConfidence: 0.1,
+        basis: 'static-heuristic' as const,
+        calibrationDataPoints: i,
+      });
+
+      // 10 calibrations → emerging
+      for (let i = 0; i < 10; i++) {
+        model.calibrate(
+          makePred(i),
+          makeTrace({
+            id: `trace-basis-${i}`,
+            taskTypeSignature: taskSig,
+            qualityScore: {
+              architecturalCompliance: 0.9,
+              efficiency: 0.9,
+              composite: 0.9,
+              dimensionsAvailable: 2,
+              phase: 'phase0',
+            },
+          }),
+        );
+      }
+
+      const signal10 = model.getEpistemicSignal(taskSig);
+      expect(signal10.observationCount).toBe(10);
+      expect(signal10.basis).toBe('emerging');
+
+      // 20 more calibrations (total 30) → calibrated
+      for (let i = 10; i < 30; i++) {
+        model.calibrate(
+          makePred(i),
+          makeTrace({
+            id: `trace-basis-${i}`,
+            taskTypeSignature: taskSig,
+            qualityScore: {
+              architecturalCompliance: 0.9,
+              efficiency: 0.9,
+              composite: 0.9,
+              dimensionsAvailable: 2,
+              phase: 'phase0',
+            },
+          }),
+        );
+      }
+
+      const signal30 = model.getEpistemicSignal(taskSig);
+      expect(signal30.observationCount).toBe(30);
+      expect(signal30.basis).toBe('calibrated');
+      expect(signal30.avgOracleConfidence).toBeGreaterThan(0.8);
+    });
+  });
 });

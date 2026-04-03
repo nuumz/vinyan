@@ -10,7 +10,14 @@ import type { Database } from 'bun:sqlite';
 import type { VinyanBus } from '../core/bus.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { SelfModel } from './core-loop.ts';
-import type { ExecutionTrace, PerceptualHierarchy, PredictionError, SelfModelPrediction, TaskInput } from './types.ts';
+import type {
+  EpistemicAdjustment,
+  ExecutionTrace,
+  PerceptualHierarchy,
+  PredictionError,
+  SelfModelPrediction,
+  TaskInput,
+} from './types.ts';
 
 const BASE_MS_PER_FILE = 2000;
 
@@ -28,6 +35,7 @@ interface TaskTypeParams {
   predictionAccuracy: number;
   failRate: number;
   partialRate: number;
+  avgOracleConfidence: number;
   lastUpdated: number;
   basis: 'static-heuristic' | 'hybrid' | 'trace-calibrated';
 }
@@ -39,6 +47,7 @@ const DEFAULT_TASK_TYPE_PARAMS: Omit<TaskTypeParams, 'taskTypeSignature' | 'last
   predictionAccuracy: 0.5,
   failRate: 0.0,
   partialRate: 0.1,
+  avgOracleConfidence: 0.5,
   basis: 'static-heuristic',
 };
 
@@ -53,6 +62,40 @@ function adaptiveAlpha(observationCount: number): number {
 
 function ema(current: number, observed: number, alpha: number): number {
   return alpha * observed + (1 - alpha) * current;
+}
+
+/** Compute task type signature — shared between SelfModel and RiskRouterAdapter. */
+export function computeTaskSignature(input: TaskInput): string {
+  const actionVerb = extractActionVerb(input.goal);
+  const exts = extractFileExtensions(input.targetFiles ?? []);
+  const blastBucket = blastRadiusBucket(input.targetFiles?.length ?? 1);
+  return `${actionVerb}::${exts}::${blastBucket}`;
+}
+
+function extractActionVerb(goal: string): string {
+  const lower = goal.toLowerCase().trim();
+  const verbs = ['refactor', 'fix', 'add', 'remove', 'update', 'test', 'rename', 'move', 'extract', 'inline'];
+  for (const v of verbs) {
+    if (lower.startsWith(v)) return v;
+  }
+  return lower.split(/\s+/)[0]?.slice(0, 20) ?? 'unknown';
+}
+
+function extractFileExtensions(files: string[]): string {
+  const exts = new Set(
+    files.map((f) => {
+      const dot = f.lastIndexOf('.');
+      return dot >= 0 ? f.slice(dot + 1) : 'none';
+    }),
+  );
+  return [...exts].sort().join(',') || 'none';
+}
+
+function blastRadiusBucket(fileCount: number): string {
+  if (fileCount <= 1) return 'single';
+  if (fileCount <= 3) return 'small';
+  if (fileCount <= 10) return 'medium';
+  return 'large';
 }
 
 export class CalibratedSelfModel implements SelfModel {
@@ -139,9 +182,7 @@ export class CalibratedSelfModel implements SelfModel {
       blastRadius: trace.affectedFiles.length,
       duration: trace.durationMs,
       qualityScore:
-        trace.qualityScore != null && !isNaN(trace.qualityScore.composite)
-          ? trace.qualityScore.composite
-          : 0.5, // Guard against NaN composite from unverified gate results (C3 EHD fix)
+        trace.qualityScore != null && !isNaN(trace.qualityScore.composite) ? trace.qualityScore.composite : 0.5, // Guard against NaN composite from unverified gate results (C3 EHD fix)
     };
 
     const error: PredictionError = {
@@ -186,6 +227,13 @@ export class CalibratedSelfModel implements SelfModel {
     const isPartial = actual.testResults === 'partial' ? 1 : 0;
     params.failRate = ema(params.failRate, isFail, alpha);
     params.partialRate = ema(params.partialRate, isPartial, alpha);
+
+    // Track gate-level composite quality for epistemic routing feedback.
+    // Uses qualityScore.composite (the aggregate gate verdict) as a proxy for oracle confidence.
+    // When ECP v2 provides per-oracle belief intervals, this can switch to direct oracle signals.
+    const oracleConfidence =
+      trace.qualityScore != null && !isNaN(trace.qualityScore.composite) ? trace.qualityScore.composite : 0.5;
+    params.avgOracleConfidence = ema(params.avgOracleConfidence, oracleConfidence, alpha);
 
     params.observationCount++;
     params.lastUpdated = Date.now();
@@ -270,6 +318,16 @@ export class CalibratedSelfModel implements SelfModel {
     return this.resolveTaskTypeParams(taskSig);
   }
 
+  /** Epistemic signal for risk-router de-escalation feedback. */
+  getEpistemicSignal(taskSig: string): EpistemicAdjustment {
+    const params = this.resolveTaskTypeParams(taskSig);
+    return {
+      avgOracleConfidence: params.avgOracleConfidence,
+      observationCount: params.observationCount,
+      basis: params.observationCount < 10 ? 'insufficient' : params.observationCount < 30 ? 'emerging' : 'calibrated',
+    };
+  }
+
   /** PH3.6: Get all per-task-type params for counterfactual analysis. */
   getTaskTypeParamsMap(): Map<string, TaskTypeParams> {
     const all = this.getAllTaskTypeParams();
@@ -285,10 +343,7 @@ export class CalibratedSelfModel implements SelfModel {
    * Peer data is treated as having 1/4 the observation count of local data,
    * and only used for task types we haven't seen locally yet.
    */
-  warmStartFromPeer(
-    peerCalibration: import('../a2a/calibration.ts').CalibrationReport,
-    peerWeight = 0.25,
-  ): number {
+  warmStartFromPeer(peerCalibration: import('../a2a/calibration.ts').CalibrationReport, peerWeight = 0.25): number {
     let applied = 0;
 
     for (const [taskType, cal] of Object.entries(peerCalibration.per_task_type)) {
@@ -307,6 +362,7 @@ export class CalibratedSelfModel implements SelfModel {
         predictionAccuracy: cal.wilson_lb * peerWeight, // Discounted accuracy
         failRate: cal.bias_direction === 'overconfident' ? 0.3 : 0.1,
         partialRate: 0.1,
+        avgOracleConfidence: 0.5,
         lastUpdated: Date.now(),
         basis: 'static-heuristic', // Peer data never counts as trace-calibrated
       };
@@ -336,36 +392,7 @@ export class CalibratedSelfModel implements SelfModel {
   }
 
   private computeTaskSignature(input: TaskInput): string {
-    const actionVerb = this.extractActionVerb(input.goal);
-    const exts = this.extractFileExtensions(input.targetFiles ?? []);
-    const blastBucket = this.blastRadiusBucket(input.targetFiles?.length ?? 1);
-    return `${actionVerb}::${exts}::${blastBucket}`;
-  }
-
-  private extractActionVerb(goal: string): string {
-    const lower = goal.toLowerCase().trim();
-    const verbs = ['refactor', 'fix', 'add', 'remove', 'update', 'test', 'rename', 'move', 'extract', 'inline'];
-    for (const v of verbs) {
-      if (lower.startsWith(v)) return v;
-    }
-    return lower.split(/\s+/)[0]?.slice(0, 20) ?? 'unknown';
-  }
-
-  private extractFileExtensions(files: string[]): string {
-    const exts = new Set(
-      files.map((f) => {
-        const dot = f.lastIndexOf('.');
-        return dot >= 0 ? f.slice(dot + 1) : 'none';
-      }),
-    );
-    return [...exts].sort().join(',') || 'none';
-  }
-
-  private blastRadiusBucket(fileCount: number): string {
-    if (fileCount <= 1) return 'single';
-    if (fileCount <= 3) return 'small';
-    if (fileCount <= 10) return 'medium';
-    return 'large';
+    return computeTaskSignature(input);
   }
 
   private computeBasis(obs: number, accuracy: number): 'static-heuristic' | 'hybrid' | 'trace-calibrated' {
@@ -403,9 +430,21 @@ export class CalibratedSelfModel implements SelfModel {
         prediction_accuracy   REAL NOT NULL DEFAULT 0.5,
         fail_rate             REAL NOT NULL DEFAULT 0.0,
         partial_rate          REAL NOT NULL DEFAULT 0.1,
+        avg_oracle_confidence REAL NOT NULL DEFAULT 0.5,
         last_updated          INTEGER NOT NULL,
         basis                 TEXT NOT NULL DEFAULT 'static-heuristic'
       )`);
+
+      // Migration: add avg_oracle_confidence to existing tables
+      try {
+        this.db.exec(`ALTER TABLE self_model_params ADD COLUMN avg_oracle_confidence REAL NOT NULL DEFAULT 0.5`);
+      } catch (e: unknown) {
+        // Expected when column already exists; warn on unexpected errors
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes('duplicate column')) {
+          console.warn(`[vinyan] self-model migration warning: ${msg}`);
+        }
+      }
     } catch {
       /* table may already exist */
     }
@@ -415,7 +454,9 @@ export class CalibratedSelfModel implements SelfModel {
     // Check DB first
     if (this.db) {
       try {
-        const row = this.db.prepare(`SELECT * FROM self_model_params WHERE task_type_signature = ?`).get(taskSig) as any;
+        const row = this.db
+          .prepare(`SELECT * FROM self_model_params WHERE task_type_signature = ?`)
+          .get(taskSig) as any;
         if (row) return this.rowToParams(row);
       } catch {
         /* fallback */
@@ -449,7 +490,8 @@ export class CalibratedSelfModel implements SelfModel {
       wDuration = 0,
       wAccuracy = 0,
       wFail = 0,
-      wPartial = 0;
+      wPartial = 0,
+      wOracleConf = 0;
     for (const p of allParams) {
       const w = p.observationCount;
       totalObs += w;
@@ -458,6 +500,7 @@ export class CalibratedSelfModel implements SelfModel {
       wAccuracy += p.predictionAccuracy * w;
       wFail += p.failRate * w;
       wPartial += p.partialRate * w;
+      wOracleConf += p.avgOracleConfidence * w;
     }
 
     this.globalAvgCache = {
@@ -468,6 +511,7 @@ export class CalibratedSelfModel implements SelfModel {
       predictionAccuracy: totalObs > 0 ? wAccuracy / totalObs : 0.5,
       failRate: totalObs > 0 ? wFail / totalObs : 0.0,
       partialRate: totalObs > 0 ? wPartial / totalObs : 0.1,
+      avgOracleConfidence: totalObs > 0 ? wOracleConf / totalObs : 0.5,
       lastUpdated: Date.now(),
       basis: 'static-heuristic',
     };
@@ -495,6 +539,7 @@ export class CalibratedSelfModel implements SelfModel {
       predictionAccuracy: row.prediction_accuracy,
       failRate: row.fail_rate,
       partialRate: row.partial_rate,
+      avgOracleConfidence: row.avg_oracle_confidence ?? 0.5,
       lastUpdated: row.last_updated,
       basis: row.basis,
     };
@@ -510,8 +555,8 @@ export class CalibratedSelfModel implements SelfModel {
         .prepare(`
         INSERT OR REPLACE INTO self_model_params
           (task_type_signature, observation_count, avg_quality_score, avg_duration_per_file,
-           prediction_accuracy, fail_rate, partial_rate, last_updated, basis)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           prediction_accuracy, fail_rate, partial_rate, avg_oracle_confidence, last_updated, basis)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
         .run(
           params.taskTypeSignature,
@@ -521,6 +566,7 @@ export class CalibratedSelfModel implements SelfModel {
           params.predictionAccuracy,
           params.failRate,
           params.partialRate,
+          params.avgOracleConfidence,
           params.lastUpdated,
           params.basis,
         );
@@ -574,6 +620,7 @@ export class CalibratedSelfModel implements SelfModel {
           predictionAccuracy: old.predictionAccuracy ?? 0.5,
           failRate: total > 0 ? o.fail / total : 0,
           partialRate: total > 0 ? o.partial / total : 0.1,
+          avgOracleConfidence: 0.5,
           lastUpdated: Date.now(),
           basis: this.computeBasis(count, old.predictionAccuracy ?? 0.5),
         });

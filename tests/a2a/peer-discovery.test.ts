@@ -24,7 +24,7 @@ function makeAgentCard(overrides: Partial<A2AAgentCard> = {}): A2AAgentCard {
 /** Build a Vinyan Agent Card with x-vinyan-ecp extension. */
 function makeVinyanCard(overrides: Partial<A2AAgentCard> = {}): A2AAgentCard {
   return makeAgentCard({
-    name: 'Vinyan ENS',
+    name: 'Vinyan',
     'x-vinyan-ecp': {
       protocol: 'vinyan-ecp',
       ecp_version: 1,
@@ -189,7 +189,7 @@ describe('discoverPeers', () => {
       const peers = await discoverPeers([url]);
       expect(peers).toHaveLength(1);
       expect(peers[0]!.url).toBe(url);
-      expect(peers[0]!.card.name).toBe('Vinyan ENS');
+      expect(peers[0]!.card.name).toBe('Vinyan');
       expect(peers[0]!.isVinyanPeer).toBe(true);
       expect(peers[0]!.ecpExtension).not.toBeNull();
       expect(peers[0]!.discoveredAt).toBeGreaterThan(0);

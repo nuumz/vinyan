@@ -37,7 +37,7 @@ export function assemblePrompt(
 function buildSystemPrompt(perception: PerceptualHierarchy): string {
   const tools = perception.runtime.availableTools.join(', ');
   return `[ROLE]
-You are a coding worker in the Vinyan Epistemic Nervous System.
+You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You generate code proposals that will be verified by external oracles.
 Do NOT self-evaluate your output — external verification determines correctness.
 

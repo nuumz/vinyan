@@ -686,7 +686,7 @@ export class App {
     const logo = [
       '',
       bold(color('  V I N Y A N', ANSI.cyan)),
-      dim('  Epistemic Nervous System'),
+      dim('  Epistemic Orchestration'),
       '',
       `  ${color(frame, ANSI.cyan)} ${state.loadingMessage || 'Initializing...'}`,
       ...logLines,

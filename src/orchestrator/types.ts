@@ -34,6 +34,15 @@ export interface RoutingDecision {
   riskThresholdOverride?: number; // Phase 2.6: adjust-threshold rules set this
   workerId?: string; // Phase 4.4: selected worker profile ID
   riskScore?: number; // WP-4: computed risk score (0.0-1.0)
+  epistemicDeescalated?: boolean; // true if risk level was de-escalated by SelfModel epistemic signal
+}
+
+/** Epistemic signal from SelfModel — historical oracle confidence for task type.
+ *  Used by RiskRouter to enable de-escalation when evidence consistently supports lower routing. */
+export interface EpistemicAdjustment {
+  avgOracleConfidence: number; // [0,1] — EMA of oracle aggregate confidence for this task type
+  observationCount: number; // how many times this task type has been verified
+  basis: 'insufficient' | 'emerging' | 'calibrated'; // <10 = insufficient, 10-30 = emerging, >30 = calibrated
 }
 
 /** Input factors for risk scoring (→ TDD §6) */

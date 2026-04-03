@@ -376,8 +376,9 @@ if (import.meta.main) {
   }
   // Dynamic import to avoid bundling proxy code into test builds
   const { createProxyProvider } = await import('../llm/llm-proxy.ts');
-  const tier = (process.env.VINYAN_MODEL?.includes('powerful') ? 'powerful'
-    : process.env.VINYAN_MODEL?.includes('fast') ? 'fast' : 'balanced') as 'fast' | 'balanced' | 'powerful';
+  const routingLevel = parseInt(process.env.VINYAN_ROUTING_LEVEL ?? '1', 10);
+  const tier: 'fast' | 'balanced' | 'powerful' =
+    routingLevel >= 3 ? 'powerful' : routingLevel >= 2 ? 'balanced' : 'fast';
   const provider = createProxyProvider(socketPath, tier);
   await agentWorkerMain(provider);
 }

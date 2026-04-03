@@ -4,7 +4,7 @@
  * TDD §6: weighted sum with normalization + A6 guardrails.
  * Phase 0 computes and logs; Phase 1 Orchestrator uses for actual routing.
  */
-import type { RiskFactors, RoutingDecision, RoutingLevel } from '../orchestrator/types.ts';
+import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel } from '../orchestrator/types.ts';
 
 // ── Weights per TDD §6 ──────────────────────────────────────────
 
@@ -111,6 +111,7 @@ export function routeByRisk(
   blastRadius: number,
   thresholds: RoutingThresholds = DEFAULT_THRESHOLDS,
   environmentType?: string,
+  epistemicAdjustment?: EpistemicAdjustment,
 ): RoutingDecision {
   let level: RoutingLevel;
 
@@ -119,14 +120,28 @@ export function routeByRisk(
   else if (riskScore <= thresholds.l2_max_risk) level = 2;
   else level = 3;
 
+  // Epistemic de-escalation: if oracle confidence is calibrated and high, allow -1 level
+  let epistemicDeescalated = false;
+  if (
+    epistemicAdjustment &&
+    epistemicAdjustment.basis === 'calibrated' &&
+    epistemicAdjustment.avgOracleConfidence >= 0.85 &&
+    level > 0
+  ) {
+    level = (level - 1) as RoutingLevel;
+    epistemicDeescalated = true;
+  }
+
   // Hard floor: blast radius > 1 file → minimum L1
   if (blastRadius > 1 && level < 1) {
     level = 1;
+    if (epistemicDeescalated) epistemicDeescalated = false; // floor overrode de-escalation
   }
 
   // Production boundary: minimum L2 (TDD §7)
   if (environmentType === 'production' && level < 2) {
     level = 2;
+    if (epistemicDeescalated) epistemicDeescalated = false; // floor overrode de-escalation
   }
 
   // Map level to model + budget (latency budgets sized for remote LLM APIs)
@@ -140,5 +155,6 @@ export function routeByRisk(
   return {
     level,
     ...LEVEL_CONFIG[level],
+    ...(epistemicDeescalated ? { epistemicDeescalated } : {}),
   };
 }

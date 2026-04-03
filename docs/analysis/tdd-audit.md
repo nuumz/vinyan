@@ -1,4 +1,4 @@
-# Vinyan TDD Audit — ENS Design Review
+# Vinyan TDD Audit — Technical Design Review
 
 > **Document boundary**: เอกสารนี้เป็นเจ้าของ audit findings + action items สำหรับ TDD
 > สำหรับ TDD spec → [tdd.md](../spec/tdd.md), concept → [concept.md](../foundation/concept.md), gap analysis → [gap-analysis.md](gap-analysis.md)
@@ -439,9 +439,9 @@ Items เหล่านี้ต้องการ Orchestrator หรือ de
 
 ---
 
-## 16. ENS Competitive Readiness — HiClaw Benchmark
+## 16. Competitive Readiness — HiClaw Benchmark
 
-> **Context:** Vinyan's vision is to be a full Epistemic Nervous System that surpasses HiClaw/OpenClaw — not a plugin. Phase 0 proved epistemic verification works (253 tests, A1/A3/A4/A5/A6 validated). The question: **what TDD specs are missing to claim Vinyan is architecturally superior as a complete system?**
+> **Context:** Vinyan's vision is to be a full autonomous task orchestrator (with ENS verification substrate) that surpasses HiClaw/OpenClaw — not a plugin. Phase 0 proved epistemic verification works (253 tests, A1/A3/A4/A5/A6 validated). The question: **what TDD specs are missing to claim Vinyan is architecturally superior as a complete system?**
 
 ### 16.1 Assessment: Phase 0 TDD vs HiClaw
 

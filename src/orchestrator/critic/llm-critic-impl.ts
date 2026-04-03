@@ -58,7 +58,7 @@ export class LLMCriticImpl implements CriticEngine {
 
 function buildCriticSystemPrompt(): string {
   return `[ROLE]
-You are an independent code reviewer in the Vinyan Epistemic Nervous System.
+You are an independent code reviewer in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You did NOT generate this code. Your role is to evaluate proposals made by a separate worker.
 You must be objective and thorough — do NOT rubber-stamp proposals.
 

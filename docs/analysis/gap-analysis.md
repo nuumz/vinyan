@@ -6,7 +6,7 @@
 
 **ผลลัพธ์หลัก:**
 - Vinyan Concept มี vision ที่ก้าวหน้ากว่า frameworks ปัจจุบันใน 4 จุด แต่ยังขาด implementation path ใน 7 จุดที่ frameworks อื่นพิสูจน์แล้วว่าจำเป็น
-- **สถาปัตยกรรมใหม่:** Vinyan เป็น Epistemic Nervous System ไม่ใช่ governance plugin — สื่อสารผ่าน Epistemic Communication Protocol (ECP), LLM เป็น Reasoning Engine หนึ่งในหลายประเภท (ดู [concept.md](../foundation/concept.md) §1-3), พร้อม 7 Core Axioms (A1–A7) ที่เป็น DNA ของระบบ ([concept.md §1.1](../foundation/concept.md))
+- **สถาปัตยกรรมใหม่:** Vinyan ใช้ **Epistemic Orchestration** paradigm — สื่อสารผ่าน Epistemic Communication Protocol (ECP), LLM เป็น Reasoning Engine หนึ่งในหลายประเภท (ดู [concept.md](../foundation/concept.md) §1-3), พร้อม 7 Core Axioms (A1–A7) ที่เป็น DNA ของระบบ ([concept.md §1.1](../foundation/concept.md))
 - **Landscape Update (2026):** เพิ่ม Google A2A Protocol (v1.0.0, 22.8k stars, Linux Foundation), OpenHands v1.5.0 (69.9k stars), Exocortex pattern, MCP ecosystem (500+ community servers)
 - **AGI Readiness Assessment (Section 10)**: เทียบกับ 15 ข้อตกลงร่วมของ AGI architecture (Bareš, 2025) พบว่า Vinyan ตอบโจทย์ได้ 8/15 ข้อ มี partial coverage 4 ข้อ และ **ขาดหายไป 3 ข้อที่ critical** — โดยเฉพาะ World Model, Value Function, และ Compression/Skill Formation
 

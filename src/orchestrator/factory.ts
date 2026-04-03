@@ -229,13 +229,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
 
   const perception = new PerceptionAssemblerImpl({ workspace });
-  const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {
         console.warn('[vinyan] SQLite unavailable — using static self-model (no calibration)');
         return new SelfModelStub();
       })();
+  const riskRouter = new RiskRouterImpl(
+    depVerify, workspace, routingThresholds,
+    'getEpistemicSignal' in selfModel ? selfModel as CalibratedSelfModel : undefined,
+  );
   const decomposer =
     registry.listProviders().length > 0
       ? new TaskDecomposerImpl({ registry })
@@ -661,13 +664,16 @@ export async function createOrchestratorAsync(
   }
 
   const perception = new PerceptionAssemblerImpl({ workspace });
-  const riskRouter = new RiskRouterImpl(depVerify, workspace, routingThresholds);
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {
         console.warn('[vinyan] SQLite unavailable — using static self-model (no calibration)');
         return new SelfModelStub();
       })();
+  const riskRouter = new RiskRouterImpl(
+    depVerify, workspace, routingThresholds,
+    'getEpistemicSignal' in selfModel ? selfModel as CalibratedSelfModel : undefined,
+  );
   const decomposer =
     registry.listProviders().length > 0
       ? new TaskDecomposerImpl({ registry })

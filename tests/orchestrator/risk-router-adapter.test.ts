@@ -25,7 +25,7 @@ describe('RiskRouterImpl', () => {
     const decision = await router.assessInitialLevel(makeInput());
     // Non-file tasks floor to L1 so the LLM is invoked for reasoning/Q&A
     expect(decision.level).toBe(1);
-    expect(decision.model).toBe('claude-haiku');
+    expect(decision.model).toBe('fast');
     expect(decision.budgetTokens).toBe(10_000);
   });
 
@@ -69,5 +69,24 @@ describe('RiskRouterImpl', () => {
     expect(decision).toHaveProperty('model');
     expect(decision).toHaveProperty('budgetTokens');
     expect(decision).toHaveProperty('latencyBudgetMs');
+  });
+
+  test('selfModel epistemic signal is passed to routeByRisk', async () => {
+    const mockSelfModel = {
+      getEpistemicSignal: (_taskSig: string) => ({
+        avgOracleConfidence: 0.95,
+        observationCount: 50,
+        basis: 'calibrated' as const,
+      }),
+    };
+    const router = new RiskRouterImpl(mockDepVerify(0), process.cwd(), undefined, mockSelfModel);
+    const decision = await router.assessInitialLevel(makeInput({ targetFiles: ['src/foo.ts'] }));
+    // With calibrated high-confidence signal, de-escalation should apply if risk > L0
+    expect(decision).toHaveProperty('level');
+    // The epistemic signal should flow through — if original level > 0 and gets de-escalated,
+    // the flag should be set. If original level was already 0, no de-escalation possible.
+    // With blastRadius=0, testCoverage≈0, fileVolatility≈0 → risk low but non-zero → L1 baseline → de-escalated to L0
+    expect(decision.level).toBe(0);
+    expect(decision.epistemicDeescalated).toBe(true);
   });
 });

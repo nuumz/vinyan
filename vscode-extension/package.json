@@ -1,12 +1,11 @@
 {
   "name": "vinyan",
-  "displayName": "Vinyan — Epistemic Nervous System",
+  "displayName": "Vinyan — Epistemic Orchestration",
   "description": "AI agent verification, oracle verdicts, and world graph integration",
   "version": "0.1.0",
   "publisher": "vinyan",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages", "Linters", "Other"],
-  "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -46,8 +45,6 @@
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch"
   },
   "devDependencies": {
-    "@types/jest": "^29.0.0",
-    "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.20.0",

@@ -1,20 +1,22 @@
 ---
 type: concept
 audience: all
-single-source-of-truth-for: Vinyan vision, epistemic nervous system architecture, protocol design
+single-source-of-truth-for: Vinyan vision, Epistemic Orchestration paradigm, ENS protocol design
 related:
   - theory.md (theoretical foundations, academic citations)
   - ../architecture/decisions.md (concrete implementation decisions)
   - ../analysis/gap-analysis.md (competitive landscape, gap tracking)
 ---
 
-# Vinyan — Epistemic Nervous System for AI Systems
+# Vinyan — Epistemic Orchestration
 
 ## Abstract
 
 Current agent frameworks — OpenHands, SWE-agent, Claude Code, Devin — share a common architecture: the LLM *is* the brain. It decomposes tasks, coordinates workers, evaluates success, and arbitrates conflicts. Every cognitive function runs through a single probabilistic substrate. Every function therefore inherits every LLM failure mode: hallucination, epistemic arrogance, non-reproducible reasoning, and the inability to distinguish “I verified this” from “I believe this.”
 
-Vinyan is an **Epistemic Nervous System (ENS)** — the connective substrate between hypothesis generation and hypothesis verification in AI systems. Phase 0 delivers the **verification foundation** (Oracle Gate); Phase 1 delivers the **complete agent**; the full ENS emerges across Phases 2–5 as self-improvement and fleet governance activate. Like a biological nervous system connecting specialized organs, Vinyan connects heterogeneous **Reasoning Engines** (deterministic verifiers, heuristic analyzers, symbolic solvers, LLMs, statistical models) through a shared epistemic protocol. No single engine is "the brain." The Orchestrator is rule-based and non-LLM-driven — its routing, verification, and commit decisions are reproducible given the same state. Communication flows through the **Epistemic Communication Protocol (ECP)** — an internal protocol encoding confidence, evidence chains, falsifiability, and first-class uncertainty. ECP establishes an epistemic boundary between components that formulate hypotheses and components that validate them, within a framework of *Mostly-Deterministic Orchestration with Principled Stochasticity*, bounded by immutable safety invariants that only human governance can modify.
+Vinyan is an **autonomous task orchestrator** built on the **Epistemic Orchestration** paradigm — the architectural thesis that AGI-grade reliability emerges from correct epistemic architecture, not from larger LLMs. It receives tasks, plans execution, dispatches workers, verifies results, and learns from outcomes without human intervention. Its verification layer is an **Epistemic Nervous System (ENS)**: the connective substrate between hypothesis generation and hypothesis verification. Phase 0 delivers the **verification foundation** (Oracle Gate); Phase 1 delivers the **complete agent**; the full ENS emerges across Phases 2–5 as self-improvement and fleet governance activate. Like a biological nervous system connecting specialized organs, Vinyan connects heterogeneous **Reasoning Engines** (deterministic verifiers, heuristic analyzers, symbolic solvers, LLMs, statistical models) through a shared epistemic protocol. No single engine is "the brain." The Orchestrator is rule-based and non-LLM-driven — its routing, verification, and commit decisions are reproducible given the same state. Communication flows through the **Epistemic Communication Protocol (ECP)** — an internal protocol encoding confidence, evidence chains, falsifiability, and first-class uncertainty. ECP establishes an epistemic boundary between components that formulate hypotheses and components that validate them, within a framework of *Mostly-Deterministic Orchestration with Principled Stochasticity*, bounded by immutable safety invariants that only human governance can modify.
+
+> **Epistemic Orchestration** = uncertainty-aware, verification-first, self-calibrating orchestration. Vinyan is the first implementation of this paradigm. ENS is its verification substrate. ECP is its wire protocol.
 ---
 
 ## 1. Vision — Why Vinyan Exists
@@ -26,7 +28,7 @@ Vinyan inverts this:
 | Dimension | Current Paradigm | Vinyan Paradigm |
 | :--- | :--- | :--- |
 | Role of LLM | LLM is the primary decision-maker (with optional deterministic add-ons) | LLM is ONE reasoning engine among many |
-| System architecture | Agent framework orchestrates LLMs | Epistemic Nervous System connects Reasoning Engines |
+| System architecture | Agent framework orchestrates LLMs | Epistemic Orchestration — autonomous orchestrator with ENS verification substrate |
 | Integration protocol | MCP/tools extend the LLM | ECP connects heterogeneous reasoning systems |
 | Verification | Self-evaluation by LLM | External verification by deterministic engines |
 | Governance | Governance via add-on hooks/plugins | Governance is the architectural foundation |
@@ -34,6 +36,8 @@ Vinyan inverts this:
 | Agent completeness | LLM *is* the entire agent | Complete system: rule-based Orchestrator + LLM Generators + Tool Execution + external Verification |
 
 > **Timeline honesty:** This table compares Vinyan's *architectural design* against competitors' *general approach*. As of Phase 6 completion, Vinyan is a standalone autonomous agent with multi-instance coordination — all seven axioms are proven in implementation. Competitors are also evolving — pre-commit verification, structured verification hooks, and risk-based routing are incrementally adoptable patterns. Vinyan's durable advantage is the *architectural commitment* to A1 + A4 from the foundation, not individual features.
+
+**Why code is capability #1:** Vinyan's first and most developed domain is software engineering — not because Vinyan is a code tool, but because code is the **meta-capability that enables unbounded self-evolution**. A system that can competently modify its own source code can: add new verification engines for any domain, fix its own defects without downtime, create tools it doesn't yet possess, and optimize its own execution pipeline. Code is the bootstrap — the capability that unlocks all other capabilities. The Oracle framework (§3, §6) is domain-agnostic by design; current implementations are code-specific because that's where self-evolution starts.
 
 **Phase 1 Vinyan's concrete advantages over "Claude Code + linters":**
 1. **A1 — Structural separation guarantee:** The Generator (LLM) never evaluates its own output. This is an *architectural invariant*, not a hook or opt-in rule — the Orchestrator enforces it.
@@ -46,10 +50,10 @@ Vinyan inverts this:
 
 **The protocol analogy:** TCP/IP didn’t try to be a better telegraph. HTTP didn’t try to be a better FTP. ECP establishes a fundamentally new communication paradigm for reasoning systems — one where epistemic state (confidence, evidence, uncertainty) is a first-class citizen of the protocol, not metadata bolted onto tool calls.
 
-**Domain scope:** Vinyan’s deterministic verification is maximally effective in software engineering, where formal verification tools exist (AST parsers, type checkers, test runners). The Oracle framework is domain-agnostic; current implementations are code-specific. Cross-domain expansion (legal, financial, scientific) is a Phase 3+ research agenda contingent on domain-specific Reasoning Engine development.
-### 1.1 Core Axioms — The DNA of ENS
+**Domain scope:** Vinyan is a general-purpose task orchestrator. Its verification engines are currently most developed for software engineering, where formal verification tools exist (AST parsers, type checkers, test runners). The Oracle framework is domain-agnostic; current built-in implementations are code-specific as the bootstrap domain. Cross-domain expansion (document analysis, workflow automation, data pipelines) follows naturally as new Reasoning Engines are added — either by users via the Oracle SDK, or by Vinyan itself through its code self-evolution capability.
+### 1.1 Core Axioms — The DNA of Epistemic Orchestration
 
-Seven non-negotiable principles define the Epistemic Nervous System. Every section (§2–§14) is an implementation or extension of these axioms. If a proposed feature cannot justify itself through at least one axiom, it does not belong in Vinyan.
+Seven non-negotiable principles define the Epistemic Orchestration paradigm. Every section (§2–§14) is an implementation or extension of these axioms. If a proposed feature cannot justify itself through at least one axiom, it does not belong in Vinyan.
 
 | # | Axiom | Principle | Implemented In |
 | :--- | :--- | :--- | :--- |
@@ -164,7 +168,7 @@ This ensures A5 (Tiered Trust) holds across network boundaries — local evidenc
 
 ### 2.5 ECP as Publishable Standard
 
-ECP is designed to be a **publishable protocol specification** — not an internal Vinyan detail but a standard that external systems can implement to participate in the Epistemic Nervous System.
+ECP is designed to be a **publishable protocol specification** — not an internal Vinyan detail but a standard that external systems can implement to participate in Epistemic Orchestration.
 
 **Three-layer protocol stack:**
 
@@ -604,7 +608,7 @@ This is a pre-registered experimental design. Adjusting success criteria after o
 
 **Scope constraints:** Single-file TypeScript mutations. Multi-file blast radius analysis, cross-language support, and heuristic oracles deferred to Phase 1. No Self-Model, no Evolution Engine, no Fleet Governance — those require runtime data that Phase 0 collects.
 
-**What Phase 0 is NOT:** It is not a framework, not an SDK, not a product, and not an AI agent. It is a **verification library** inside a host agent — a scientific experiment with a measurable outcome. The "Epistemic Nervous System" label applies to the architectural vision, not to Phase 0's deliverable. Phase 0 proves the verification thesis (A1 + A4); Phase 1 proves the agent thesis (A3 + A6); the ENS emerges across Phases 2–5. If the oracle gate does not reduce hallucination meaningfully, the architectural thesis is wrong and Vinyan pivots or stops.
+**What Phase 0 is NOT:** It is not a framework, not an SDK, not a product, and not an AI agent. It is a **verification library** inside a host agent — a scientific experiment with a measurable outcome. The "Epistemic Orchestration" paradigm names the architectural vision; "ENS" names the verification substrate. Phase 0 proves the verification thesis (A1 + A4); Phase 1 proves the agent thesis (A3 + A6); the full paradigm emerges across Phases 2–5. If the oracle gate does not reduce hallucination meaningfully, the architectural thesis is wrong and Vinyan pivots or stops.
 
 ---
 
@@ -658,7 +662,7 @@ Vinyan is built on seven Core Axioms (§1.1) — all proven in implementation ac
 2. **First-Class Uncertainty (A2)** — encoded in the Epistemic Communication Protocol (§2). "I don't know" is a protocol state that triggers specific orchestrator behaviors, eliminating the fabrication-over-admission antipattern.
 3. **Prediction Error as Learning Signal (A7)** — the Self-Model (§9) predicts outcomes before execution; the delta drives continuous improvement through the Evolution Engine (§10), replacing crude retry loops with calibrated adaptation.
 
-Vinyan is an **Epistemic Nervous System** — a neuro-symbolic substrate where LLM-based engines provide the neural component (pattern matching, creative generation) and deterministic engines provide the symbolic component (formal verification, causal reasoning). ECP is the signaling protocol. Models generate hypotheses. External engines verify them. Memory preserves validated state across time. Governance gates commitment before action.
+Vinyan implements **Epistemic Orchestration** — a neuro-symbolic paradigm where LLM-based engines provide the neural component (pattern matching, creative generation) and deterministic engines provide the symbolic component (formal verification, causal reasoning). The ENS (Epistemic Nervous System) is the verification substrate; ECP is the signaling protocol. Models generate hypotheses. External engines verify them. Memory preserves validated state across time. Governance gates commitment before action.
 
 Phase 0's foundational hypothesis (A1 + A4 reduces structural hallucination) was confirmed with 100% structural error reduction in A/B experiment. Phases 1–6 extended the system from verification library to autonomous agent with multi-instance coordination and agentic worker protocol. §12.1 preserves the Phase 0 experimental specification as historical record.
 

@@ -76,7 +76,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           function: {
             name: t.name,
             description: t.description,
-            parameters: { type: 'object', properties: t.parameters },
+            parameters: t.parameters,
           },
         }));
       }

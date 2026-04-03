@@ -296,7 +296,7 @@ describe('A2ABridge', () => {
     test('returns agent card object', () => {
       const bridge = makeBridge();
       const card = bridge.getAgentCard() as { name: string; url: string };
-      expect(card.name).toBe('Vinyan ENS');
+      expect(card.name).toBe('Vinyan');
       expect(card.url).toBe('http://localhost:3000');
     });
   });

@@ -11,7 +11,8 @@ import { basename, dirname, join } from 'path';
 import type { HypothesisTuple } from '../core/types.ts';
 import { calculateRiskScore, detectEnvironment, type RoutingThresholds, routeByRisk } from '../gate/risk-router.ts';
 import type { RiskRouter } from './core-loop.ts';
-import type { RiskFactors, RoutingDecision, RoutingLevel, TaskInput } from './types.ts';
+import { computeTaskSignature } from './self-model.ts';
+import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, TaskInput } from './types.ts';
 
 type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: string }[] }>;
 
@@ -53,6 +54,7 @@ export class RiskRouterImpl implements RiskRouter {
     private workspace: string = process.cwd(),
     /** Pass config-sourced thresholds to unify with gate's routing (Gap #14). */
     thresholds?: RoutingThresholds,
+    private selfModel?: { getEpistemicSignal(taskSig: string): EpistemicAdjustment },
   ) {
     this.thresholds = thresholds;
   }
@@ -90,15 +92,23 @@ export class RiskRouterImpl implements RiskRouter {
     };
 
     const score = calculateRiskScore(factors);
-    const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType);
+
+    // Query epistemic signal for this task type
+    let epistemicAdj: EpistemicAdjustment | undefined;
+    if (this.selfModel) {
+      const taskSig = computeTaskSignature(input);
+      epistemicAdj = this.selfModel.getEpistemicSignal(taskSig);
+    }
+
+    const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType, epistemicAdj);
     decision.riskScore = score;
 
     // Non-file tasks need LLM reasoning — L0 is reflex-only (cached patterns, no LLM)
     if (!input.targetFiles?.length && decision.level === 0) {
       decision.level = 1;
-      decision.model = 'claude-haiku';
+      decision.model = 'fast'; // maps correctly to fast tier in agent-worker-entry.ts
       decision.budgetTokens = 10_000;
-      decision.latencyBudgetMs = 15_000;
+      decision.latencyBudgetMs = 60_000; // non-file tasks need subprocess + LLM + proxy overhead
     }
 
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)

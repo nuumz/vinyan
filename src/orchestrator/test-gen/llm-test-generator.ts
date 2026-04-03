@@ -93,7 +93,7 @@ export class LLMTestGeneratorImpl implements TestGenerator {
 
 function buildTestGenSystemPrompt(): string {
   return `[ROLE]
-You are a test generation engine in the Vinyan Epistemic Nervous System.
+You are a test generation engine in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You generate targeted test cases for code mutations proposed by a worker.
 You did NOT write the code — your tests VERIFY the worker's proposal.
 

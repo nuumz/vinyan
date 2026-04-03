@@ -263,3 +263,70 @@ describe('routeByRisk — production boundary', () => {
     expect(decision.level).toBe(0);
   });
 });
+
+describe('epistemic de-escalation', () => {
+  test('calibrated high confidence → de-escalate by 1 level', () => {
+    const decision = routeByRisk(0.5, 1, undefined, 'development', {
+      avgOracleConfidence: 0.9,
+      observationCount: 50,
+      basis: 'calibrated',
+    });
+    // 0.5 → L2 normally, de-escalated to L1
+    expect(decision.level).toBe(1);
+  });
+
+  test('insufficient basis → no de-escalation', () => {
+    const decision = routeByRisk(0.5, 1, undefined, 'development', {
+      avgOracleConfidence: 0.9,
+      observationCount: 5,
+      basis: 'insufficient',
+    });
+    expect(decision.level).toBe(2);
+  });
+
+  test('calibrated but low confidence → no de-escalation', () => {
+    const decision = routeByRisk(0.5, 1, undefined, 'development', {
+      avgOracleConfidence: 0.6,
+      observationCount: 50,
+      basis: 'calibrated',
+    });
+    expect(decision.level).toBe(2);
+  });
+
+  test('de-escalation respects blast radius floor', () => {
+    const decision = routeByRisk(0.3, 5, undefined, 'development', {
+      avgOracleConfidence: 0.95,
+      observationCount: 50,
+      basis: 'calibrated',
+    });
+    // 0.3 → L1, would de-escalate to L0 but blastRadius > 1 → stays L1
+    expect(decision.level).toBe(1);
+    expect(decision.epistemicDeescalated).toBeUndefined();
+  });
+
+  test('de-escalation respects production floor', () => {
+    const decision = routeByRisk(0.5, 1, undefined, 'production', {
+      avgOracleConfidence: 0.95,
+      observationCount: 50,
+      basis: 'calibrated',
+    });
+    // 0.5 → L2, would de-escalate to L1 but production → stays L2
+    expect(decision.level).toBe(2);
+    expect(decision.epistemicDeescalated).toBeUndefined();
+  });
+
+  test('no epistemic adjustment → unchanged behavior (backward compat)', () => {
+    const decision = routeByRisk(0.5, 1);
+    expect(decision.level).toBe(2);
+    expect(decision.epistemicDeescalated).toBeUndefined();
+  });
+
+  test('epistemicDeescalated flag set when de-escalation occurs', () => {
+    const decision = routeByRisk(0.5, 1, undefined, 'development', {
+      avgOracleConfidence: 0.9,
+      observationCount: 50,
+      basis: 'calibrated',
+    });
+    expect(decision.epistemicDeescalated).toBe(true);
+  });
+});

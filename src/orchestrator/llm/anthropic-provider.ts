@@ -59,7 +59,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
       const tools = request.tools?.map((t) => ({
         name: t.name,
         description: t.description,
-        input_schema: { type: 'object' as const, properties: t.parameters },
+        input_schema: t.parameters as { type: 'object'; properties: Record<string, unknown> },
       }));
 
       const messages = request.messages?.length

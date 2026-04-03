@@ -1,4 +1,4 @@
-# Vinyan ENS — Technical Design Document
+# Vinyan — Technical Design Document
 
 > **Version**: 3.0 | **Phase**: 0–5 | **Audience**: AI Agent (Copilot/Claude)
 >
@@ -24,7 +24,7 @@
 
 ## §1. System Overview
 
-> **Architectural thesis**: Vinyan is a **standalone Epistemic Nervous System (ENS)** engine — not a plugin or extension of any host agent. §4–§7 define host-independent core capabilities (reasoning engines, world graph, risk router, guardrails). §8 defines a thin, replaceable **host integration adapter** that connects the engine to a specific host (Claude Code or compatible host in Phase 0). In Phase 1, the Orchestrator (§16) replaces the adapter as the primary entry point, making Vinyan a fully autonomous agent.
+> **Architectural thesis**: Vinyan is a **standalone autonomous task orchestrator** built on the **Epistemic Orchestration** paradigm, with an **Epistemic Nervous System (ENS)** verification layer — not a plugin or extension of any host agent. §4–§7 define host-independent core capabilities (reasoning engines, world graph, risk router, guardrails). §8 defines a thin, replaceable **host integration adapter** that connects the engine to a specific host (Claude Code or compatible host in Phase 0). In Phase 1, the Orchestrator (§16) replaces the adapter as the primary entry point, making Vinyan a fully autonomous agent.
 
 ### Architecture Diagram
 

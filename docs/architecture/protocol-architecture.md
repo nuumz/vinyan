@@ -21,7 +21,7 @@
 
 ### The Problem
 
-Vinyan's current external interfaces treat it as either a **tool** (MCP) or a **peer agent** (A2A). Neither captures its true role: an **Epistemic Nervous System** that connects heterogeneous Reasoning Engines. The protocol architecture must reflect this.
+Vinyan's current external interfaces treat it as either a **tool** (MCP) or a **peer agent** (A2A). Neither captures its true role: an **autonomous task orchestrator** built on the **Epistemic Orchestration** paradigm, with an **ENS verification layer** that connects heterogeneous Reasoning Engines. The protocol architecture must reflect this.
 
 ### Three-Layer Protocol Stack
 
@@ -385,7 +385,7 @@ Current agent card (`src/a2a/agent-card.ts`) advertises task-level skills. Enhan
 ```json
 {
   "name": "vinyan",
-  "description": "Epistemic Nervous System for AI Systems",
+  "description": "Autonomous task orchestrator with ENS verification substrate",
   "url": "http://localhost:3927",
   "skills": [
     { "id": "verify-typescript", "name": "TypeScript Verification", "description": "Type check, AST, lint, test" },

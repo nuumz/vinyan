@@ -44,6 +44,11 @@ export type {
   PredictionError,
   RiskFactors,
   RoutingDecision,
+  // Reasoning Engine abstraction
+  REEngineType,
+  RERequest,
+  REResponse,
+  ReasoningEngine,
   // Routing
   RoutingLevel,
   // Self-Model
@@ -62,3 +67,4 @@ export type {
   WorkingMemoryState,
 } from './types.ts';
 export { ECP_PROTOCOL_VERSION } from './types.ts';
+export { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';

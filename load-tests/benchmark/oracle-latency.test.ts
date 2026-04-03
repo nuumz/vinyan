@@ -15,6 +15,7 @@ import { join } from 'path';
 import type { HypothesisTuple } from '../../src/core/types.ts';
 import { verify as astVerify } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as depVerify } from '../../src/oracle/dep/dep-analyzer.ts';
+import { verify as typeVerify, clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 
 let workspace: string;
 
@@ -113,6 +114,51 @@ describe('Oracle Latency Smoke Tests', () => {
 
   test('Dep oracle returns valid verdict structure', async () => {
     const verdict = await depVerify(makeHypothesis('src/helper.ts', 'blast-radius'));
+    expect(verdict).toHaveProperty('verified');
+    expect(typeof verdict.verified).toBe('boolean');
+    expect(verdict).toHaveProperty('evidence');
+    expect(typeof verdict.durationMs).toBe('number');
+  });
+
+  const TypeRuns = 10;
+
+  test(`Type oracle p99 ≤ 1500ms (cold + incremental, ${TypeRuns} runs)`, async () => {
+    clearTscCache();
+    const stats = await benchmarkOracle(typeVerify, makeHypothesis('src/index.ts', 'type-check'), TypeRuns);
+    console.log(
+      `  Type: p99=${stats.p99.toFixed(1)}ms, median=${stats.median.toFixed(1)}ms, mean=${stats.mean.toFixed(1)}ms`,
+    );
+    expect(stats.p99).toBeLessThan(1500);
+  });
+
+  test('Type oracle incremental runs are faster than cold', async () => {
+    // Warm up to populate tsc cache
+    await typeVerify(makeHypothesis('src/index.ts', 'type-check'));
+
+    // Cold run
+    clearTscCache();
+    const coldStart = performance.now();
+    await typeVerify(makeHypothesis('src/index.ts', 'type-check'));
+    const coldDuration = performance.now() - coldStart;
+
+    // Incremental runs (cache is warm from the cold run above)
+    const incrementalLatencies: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const start = performance.now();
+      await typeVerify(makeHypothesis('src/index.ts', 'type-check'));
+      incrementalLatencies.push(performance.now() - start);
+    }
+    incrementalLatencies.sort((a, b) => a - b);
+    const incrementalMedian = incrementalLatencies[Math.floor(incrementalLatencies.length / 2)]!;
+
+    console.log(
+      `  Type cold=${coldDuration.toFixed(1)}ms, incremental median=${incrementalMedian.toFixed(1)}ms`,
+    );
+    expect(incrementalMedian).toBeLessThan(coldDuration);
+  });
+
+  test('Type oracle returns valid verdict structure', async () => {
+    const verdict = await typeVerify(makeHypothesis('src/index.ts', 'type-check'));
     expect(verdict).toHaveProperty('verified');
     expect(typeof verdict.verified).toBe('boolean');
     expect(verdict).toHaveProperty('evidence');

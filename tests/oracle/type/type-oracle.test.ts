@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
@@ -108,5 +108,47 @@ describe('type-oracle', () => {
     expect(verdictB.verified).toBe(true);
     // Both should complete roughly at the same time (shared tsc)
     expect(Math.abs(verdictA.durationMs - verdictB.durationMs)).toBeLessThan(500);
+  });
+
+  test('tsbuildinfo updates when source file changes', async () => {
+    writeFileSync(join(tempDir, 'src.ts'), `export const x = 1;\n`);
+    clearTscCache();
+
+    const hypothesis: HypothesisTuple = { target: 'src.ts', pattern: 'type-check', workspace: tempDir };
+
+    // First run — creates tsbuildinfo
+    await verify(hypothesis);
+    const buildInfoPath = join(tempDir, '.vinyan', 'tsbuildinfo');
+    expect(existsSync(buildInfoPath)).toBe(true);
+    const info1 = readFileSync(buildInfoPath, 'utf-8');
+
+    // Modify the source file
+    writeFileSync(join(tempDir, 'src.ts'), `export const x = 2;\nexport const y = 3;\n`);
+    clearTscCache();
+
+    // Second run — tsbuildinfo should be updated
+    await verify(hypothesis);
+    const info2 = readFileSync(buildInfoPath, 'utf-8');
+    expect(info2).not.toBe(info1);
+  });
+
+  test('detects new type error after source change', async () => {
+    writeFileSync(join(tempDir, 'evolving.ts'), `export const x: number = 1;\n`);
+    clearTscCache();
+
+    const hypothesis: HypothesisTuple = { target: 'evolving.ts', pattern: 'type-check', workspace: tempDir };
+
+    // First run — clean
+    const v1 = await verify(hypothesis);
+    expect(v1.verified).toBe(true);
+
+    // Introduce type error
+    writeFileSync(join(tempDir, 'evolving.ts'), `export const x: number = "oops";\n`);
+    clearTscCache();
+
+    // Second run — should detect
+    const v2 = await verify(hypothesis);
+    expect(v2.verified).toBe(false);
+    expect(v2.evidence.length).toBeGreaterThan(0);
   });
 });

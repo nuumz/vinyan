@@ -52,7 +52,7 @@ function resolveTscPath(): string {
 }
 
 const TSC_TIMEOUT_MS = 30_000;
-const DEDUP_WINDOW_MS = 2_000;
+const DEDUP_WINDOW_MS = 5_000;
 
 type TscResult = { diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean };
 

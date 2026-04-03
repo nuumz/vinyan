@@ -163,6 +163,7 @@ export const WorkerInputSchema = z.object({
   budget: WorkerBudgetSchema,
   allowedPaths: z.array(z.string()),
   isolationLevel: IsolationLevelSchema,
+  workerId: z.string().optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────

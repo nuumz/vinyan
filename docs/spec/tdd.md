@@ -3069,6 +3069,72 @@ interface TestGenResult {
 - The proposal re-enters the lifecycle at PLAN step with test failure context
 - The Generator receives "test X failed with error Y — fix the implementation or explain why the test expectation is wrong"
 
+### 17.8 ReasoningEngine Abstraction `[Phase 6+]`
+
+> → arch D19 | Axiom: A3 (governance independent of RE type), A6 (zero-trust regardless of RE)
+
+LLMs are one class of Reasoning Engine. The `ReasoningEngine` interface decouples `WorkerPool` dispatch from LLM-specific vocabulary, enabling any future RE (symbolic solver, AGI API, local model, oracle process) to plug in by implementing one interface — with zero changes to the core loop, risk router, or oracle gate.
+
+```typescript
+export type REEngineType = 'llm' | 'symbolic' | 'oracle' | 'hybrid' | 'external';
+
+/** RE-agnostic dispatch request — replaces LLMRequest at the WorkerPool boundary. */
+export interface RERequest {
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens: number;
+  temperature?: number;
+  tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+  messages?: HistoryMessage[];
+  requiredCapabilities?: string[];
+  /** RE-specific options (e.g. thinking config for Anthropic, temperature for OpenRouter). */
+  providerOptions?: Record<string, unknown>;
+}
+
+/** RE-agnostic response — replaces LLMResponse at the WorkerPool boundary. */
+export interface REResponse {
+  content: string;
+  toolCalls: ToolCall[];
+  tokensUsed: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
+  engineId: string;                // replaces model_used in traces
+  terminationReason: 'completed' | 'tool_use' | 'limit_reached';
+  thinking?: string;
+  providerMeta?: Record<string, unknown>;
+}
+
+/** Primary abstraction for any Reasoning Engine. */
+export interface ReasoningEngine {
+  id: string;
+  engineType: REEngineType;
+  capabilities: string[];          // formal declaration — PRIMARY selection criterion
+  tier?: 'fast' | 'balanced' | 'powerful'; // advisory, backward-compat
+  maxContextTokens?: number;
+  execute(request: RERequest): Promise<REResponse>;
+}
+```
+
+**`LLMReasoningEngine` adapter:** `LLMProvider` (legacy interface) is unchanged. `LLMReasoningEngine` wraps any `LLMProvider` as a `ReasoningEngine`. The adapter maps `stopReason` (Anthropic vocabulary) to `terminationReason` (RE-agnostic vocabulary) and passes `providerOptions` through to `ThinkingConfig` / `cacheControl`.
+
+**`ReasoningEngineRegistry`:** Replaces tier-only selection with capability-first selection + tier fallback. Selection order:
+1. `selectByCapability(required[], preferredTier?)` — filter by declared capabilities, then prefer tier
+2. `selectForRoutingLevel(level)` — tier-based fallback (backward compat for LLM-only registries)
+3. `selectById(id)` — exact → strip `worker-` prefix → prefix match
+
+**WorkerConfig RE fields:** `engineType?: REEngineType` and `capabilitiesDeclared?: string[]` are persisted in `worker_profiles` (migration 008 columns `engine_type`, `capabilities_declared`) so fleet governance (WorkerLifecycle, WorkerSelector, CapabilityModel) can track non-LLM engines alongside LLM workers.
+
+**Dispatch constraint:** Non-LLM REs dispatched at L2/L3 receive an isolation-degraded warning and fall back to in-process execution. Subprocess reconstruction requires serialization of the RE config — a protocol defined when the first non-LLM RE is production-deployed.
+
+**Acceptance criteria:**
+
+| # | Criterion | Test |
+|---|-----------|------|
+| 1 | Any `ReasoningEngine` implementor registers and dispatches without modifying core loop | Mock symbolic RE round-trip |
+| 2 | `ReasoningEngineRegistry.fromLLMRegistry()` wraps all existing providers | Existing LLM tests unchanged |
+| 3 | Capability-first selection returns non-LLM RE over LLM when it uniquely has required capability | Registry unit test |
+| 4 | `LLMReasoningEngine.execute()` maps all three `stopReason` values to correct `terminationReason` | Unit test |
+| 5 | Non-LLM engines persisted in `worker_profiles` with correct `engine_type` | WorkerStore integration |
+| 6 | `OrchestratorConfig.engineRegistry` accepts any `ReasoningEngineRegistry` instance | Type check + factory test |
+
 ---
 
 ## §18. Tool Execution Layer `[Phase 1]`

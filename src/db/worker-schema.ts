@@ -10,21 +10,25 @@
 
 export const WORKER_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS worker_profiles (
-  id                 TEXT PRIMARY KEY,
-  model_id           TEXT NOT NULL,
-  model_version      TEXT,
-  temperature        REAL NOT NULL DEFAULT 0.7,
-  tool_allowlist     TEXT,
-  system_prompt_tpl  TEXT DEFAULT 'default',
-  max_context_tokens INTEGER,
-  project_id         TEXT,
-  status             TEXT NOT NULL DEFAULT 'probation'
-                     CHECK(status IN ('probation','active','demoted','retired')),
-  created_at         INTEGER NOT NULL,
-  promoted_at        INTEGER,
-  demoted_at         INTEGER,
-  demotion_reason    TEXT,
-  demotion_count     INTEGER NOT NULL DEFAULT 0
+  id                   TEXT PRIMARY KEY,
+  model_id             TEXT NOT NULL,
+  model_version        TEXT,
+  temperature          REAL NOT NULL DEFAULT 0.7,
+  tool_allowlist       TEXT,
+  system_prompt_tpl    TEXT DEFAULT 'default',
+  max_context_tokens   INTEGER,
+  project_id           TEXT,
+  status               TEXT NOT NULL DEFAULT 'probation'
+                       CHECK(status IN ('probation','active','demoted','retired')),
+  created_at           INTEGER NOT NULL,
+  promoted_at          INTEGER,
+  demoted_at           INTEGER,
+  demotion_reason      TEXT,
+  demotion_count       INTEGER NOT NULL DEFAULT 0,
+  -- RE-agnostic columns (migration 008)
+  engine_type          TEXT DEFAULT 'llm',
+  capabilities_declared TEXT,
+  engine_config        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_wp_identity

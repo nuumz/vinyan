@@ -29,12 +29,18 @@ export class LLMReasoningEngine implements ReasoningEngine {
   readonly tier: 'fast' | 'balanced' | 'powerful';
   readonly maxContextTokens?: number;
 
-  constructor(private readonly provider: LLMProvider) {
+  /**
+   * @param provider - The underlying LLMProvider to wrap.
+   * @param capabilitiesOverride - Explicit capability list. Overrides provider.capabilities
+   *   and the default list. Pass when the provider's declared capabilities don't match
+   *   what the RE should advertise (e.g. mock engines in tests).
+   */
+  constructor(private readonly provider: LLMProvider, capabilitiesOverride?: string[]) {
     this.id = provider.id;
     this.tier = provider.tier;
-    this.capabilities = provider.capabilities?.length
-      ? provider.capabilities
-      : DEFAULT_LLM_CAPABILITIES;
+    this.capabilities = capabilitiesOverride?.length
+      ? capabilitiesOverride
+      : (provider.capabilities?.length ? provider.capabilities : DEFAULT_LLM_CAPABILITIES);
     this.maxContextTokens = provider.maxContextTokens;
   }
 

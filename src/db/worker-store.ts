@@ -22,11 +22,13 @@ export class WorkerStore {
       INSERT OR IGNORE INTO worker_profiles (
         id, model_id, model_version, temperature, tool_allowlist,
         system_prompt_tpl, max_context_tokens, status,
-        created_at, promoted_at, demoted_at, demotion_reason, demotion_count
+        created_at, promoted_at, demoted_at, demotion_reason, demotion_count,
+        engine_type, capabilities_declared
       ) VALUES (
         $id, $model_id, $model_version, $temperature, $tool_allowlist,
         $system_prompt_tpl, $max_context_tokens, $status,
-        $created_at, $promoted_at, $demoted_at, $demotion_reason, $demotion_count
+        $created_at, $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
+        $engine_type, $capabilities_declared
       )
     `);
   }
@@ -46,6 +48,10 @@ export class WorkerStore {
       $demoted_at: profile.demotedAt ?? null,
       $demotion_reason: profile.demotionReason ?? null,
       $demotion_count: profile.demotionCount,
+      $engine_type: profile.config.engineType ?? null,
+      $capabilities_declared: profile.config.capabilitiesDeclared
+        ? JSON.stringify(profile.config.capabilitiesDeclared)
+        : null,
     });
   }
 
@@ -329,6 +335,12 @@ function rowToProfile(row: unknown): WorkerProfile {
     toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
     systemPromptTemplate: r.system_prompt_tpl ?? undefined,
     maxContextTokens: r.max_context_tokens ?? undefined,
+    engineType: (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
+    capabilitiesDeclared: parsed.success
+      ? r.capabilities_declared
+      : r.capabilities_declared
+        ? JSON.parse(r.capabilities_declared)
+        : undefined,
   };
 
   return {

@@ -14,11 +14,10 @@ import type { WorkerPool } from '../core-loop.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
-import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 import type {
   IsolationLevel,
-  LLMResponse,
   PerceptualHierarchy,
   PerceptionRole,
   REResponse,
@@ -37,7 +36,12 @@ type WorkerOutputWithCache = WorkerOutput & {
 };
 
 export interface WorkerPoolConfig {
-  registry: LLMProviderRegistry;
+  /**
+   * Legacy LLM provider registry. Optional when `engineRegistry` is provided.
+   * Used by the subprocess dispatch path (L2/L3), which is LLM-only by design.
+   * In-process dispatch prefers `engineRegistry` when both are present.
+   */
+  registry?: LLMProviderRegistry;
   workspace: string;
   /** Use subprocess for L1+ dispatch (default: false — in-process). */
   useSubprocess?: boolean;
@@ -55,6 +59,10 @@ export interface WorkerPoolConfig {
    * to be registered and dispatched without changing the core loop.
    */
   engineRegistry?: ReasoningEngineRegistry;
+  /** Enable warm worker pool for subprocess dispatch (default: true when useSubprocess=true). */
+  useWarmPool?: boolean;
+  /** Number of warm workers to maintain (default: 2). */
+  warmPoolSize?: number;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -83,6 +91,184 @@ export class Semaphore {
   get activeCount(): number { return this.current; }
 }
 
+// ── Line Reader (for warm worker stdout) ──────────────────────────────
+
+/**
+ * Async line reader that consumes a ReadableStream and yields lines on demand.
+ * Runs an internal pump loop; callers await `readLine()` which resolves when
+ * a complete '\n'-terminated line is available.
+ */
+export class LineReader {
+  private lines: string[] = [];
+  private waiting: ((line: string | null) => void) | null = null;
+  private done = false;
+
+  constructor(stream: ReadableStream<Uint8Array>) {
+    this.pump(stream);
+  }
+
+  private async pump(stream: ReadableStream<Uint8Array>) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n');
+        buffer = parts.pop()!;
+        for (const part of parts) {
+          if (part.trim()) this.emit(part.trim());
+        }
+      }
+      if (buffer.trim()) this.emit(buffer.trim());
+    } finally {
+      this.done = true;
+      if (this.waiting) {
+        this.waiting(null);
+        this.waiting = null;
+      }
+    }
+  }
+
+  private emit(line: string) {
+    if (this.waiting) {
+      const r = this.waiting;
+      this.waiting = null;
+      r(line);
+    } else {
+      this.lines.push(line);
+    }
+  }
+
+  readLine(): Promise<string | null> {
+    if (this.lines.length > 0) return Promise.resolve(this.lines.shift()!);
+    if (this.done) return Promise.resolve(null);
+    return new Promise((r) => { this.waiting = r; });
+  }
+}
+
+// ── Warm Worker Pool ──────────────────────────────────────────────────
+
+interface WarmWorker {
+  proc: ReturnType<typeof Bun.spawn>;
+  stdin: { write(data: string): number; end(): void; flush(): void };
+  reader: LineReader;
+  busy: boolean;
+  taskCount: number;
+}
+
+export class WarmWorkerPool {
+  private workers: WarmWorker[] = [];
+  private initialized = false;
+
+  constructor(
+    private workerEntryPath: string,
+    private env: Record<string, string | undefined>,
+    private poolSize: number,
+  ) {}
+
+  /** Lazily spawn warm workers on first acquire. */
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+    const spawns = Array.from({ length: this.poolSize }, () => this.spawnWorker());
+    await Promise.all(spawns);
+  }
+
+  private async spawnWorker(): Promise<WarmWorker | null> {
+    try {
+      const proc = Bun.spawn(['bun', 'run', this.workerEntryPath, '--warm'], {
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: this.env,
+      });
+
+      const reader = new LineReader(proc.stdout as ReadableStream<Uint8Array>);
+
+      // Wait for ready signal (first line)
+      const readyLine = await Promise.race([
+        reader.readLine(),
+        new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
+      ]);
+
+      if (!readyLine) {
+        proc.kill();
+        return null;
+      }
+
+      try {
+        const ready = JSON.parse(readyLine);
+        if (!ready?.ready) {
+          proc.kill();
+          return null;
+        }
+      } catch {
+        proc.kill();
+        return null;
+      }
+
+      const stdin = proc.stdin as unknown as WarmWorker['stdin'];
+      const worker: WarmWorker = { proc, stdin, reader, busy: false, taskCount: 0 };
+      this.workers.push(worker);
+
+      // Monitor process exit → remove from pool
+      proc.exited.then(() => {
+        const idx = this.workers.indexOf(worker);
+        if (idx !== -1) this.workers.splice(idx, 1);
+      });
+
+      return worker;
+    } catch {
+      return null;
+    }
+  }
+
+  async acquire(): Promise<WarmWorker | null> {
+    await this.ensureInitialized();
+    const idle = this.workers.find((w) => !w.busy);
+    if (idle) {
+      idle.busy = true;
+      return idle;
+    }
+    return null;
+  }
+
+  release(worker: WarmWorker): void {
+    worker.busy = false;
+    worker.taskCount++;
+  }
+
+  /** Kill a worker and remove it from the pool. Replacement spawns lazily on next acquire. */
+  kill(worker: WarmWorker): void {
+    worker.busy = true; // prevent reuse
+    const idx = this.workers.indexOf(worker);
+    if (idx !== -1) this.workers.splice(idx, 1);
+    try { worker.proc.kill(); } catch { /* already dead */ }
+    // Spawn replacement in background
+    this.spawnWorker();
+  }
+
+  shutdown(): void {
+    for (const w of this.workers) {
+      try { w.stdin.end(); } catch { /* ignore */ }
+      try { w.proc.kill(); } catch { /* ignore */ }
+    }
+    this.workers = [];
+    this.initialized = false;
+  }
+
+  get idleCount(): number {
+    return this.workers.filter((w) => !w.busy).length;
+  }
+
+  get size(): number {
+    return this.workers.length;
+  }
+}
+
 export class WorkerPoolImpl implements WorkerPool {
   private registry: LLMProviderRegistry;
   private engineRegistry: ReasoningEngineRegistry;
@@ -93,11 +279,12 @@ export class WorkerPoolImpl implements WorkerPool {
   private dockerAvailable: boolean | null = null;
   private _agentLoopDeps: AgentLoopDeps | null = null;
   private semaphores: Record<number, Semaphore>;
+  private warmPool: WarmWorkerPool | null = null;
 
   constructor(config: WorkerPoolConfig) {
-    this.registry = config.registry;
+    this.registry = config.registry ?? new LLMProviderRegistry();
     // Build RE registry: use provided one or wrap legacy LLM registry for backward compat
-    this.engineRegistry = config.engineRegistry ?? ReasoningEngineRegistry.fromLLMRegistry(config.registry);
+    this.engineRegistry = config.engineRegistry ?? ReasoningEngineRegistry.fromLLMRegistry(this.registry);
     this.workspace = config.workspace;
     this.useSubprocess = config.useSubprocess ?? true;
     this.proxySocketPath = config.proxySocketPath;
@@ -110,6 +297,20 @@ export class WorkerPoolImpl implements WorkerPool {
       2: new Semaphore(config.maxConcurrentSessions?.l2 ?? 3),
       3: new Semaphore(config.maxConcurrentSessions?.l3 ?? 1),
     };
+
+    // Initialize warm pool when subprocess mode is enabled (lazy spawn on first use)
+    const useWarm = config.useWarmPool ?? this.useSubprocess;
+    if (useWarm) {
+      const warmEnv = buildWorkerEnv(
+        { level: 2, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
+        this.proxySocketPath,
+      );
+      this.warmPool = new WarmWorkerPool(
+        this.workerEntryPath,
+        warmEnv,
+        config.warmPoolSize ?? 2,
+      );
+    }
   }
 
   async dispatch(
@@ -152,8 +353,21 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     // L1 single-shot: in-process always (subprocess overhead > 500ms defeats < 2s budget)
-    // L2+ subprocess: isolation for file-mutating tasks
-    const output = (this.useSubprocess && routing.level >= 2)
+    // L2+ subprocess: isolation for file-mutating tasks.
+    // DESIGN CONSTRAINT: subprocess path is LLM-only — worker-entry.ts reconstructs an
+    // LLMProviderRegistry from env vars and cannot serialize/deserialize custom RE types.
+    // If the selected engine is non-LLM, fall back to in-process dispatch with a warning.
+    const selectedEngine = routing.workerId
+      ? this.engineRegistry.selectById(routing.workerId)
+      : this.engineRegistry.selectForRoutingLevel(routing.level);
+    const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
+    const useSubprocessForTask = this.useSubprocess && routing.level >= 2 && isLLMEngine;
+    if (!isLLMEngine && routing.level >= 2) {
+      console.warn(
+        `[vinyan] RE dispatch: engine '${selectedEngine?.id}' (type: ${selectedEngine?.engineType}) is non-LLM — subprocess isolation unavailable. Dispatching in-process (isolation degraded).`,
+      );
+    }
+    const output = useSubprocessForTask
       ? await this.dispatchSubprocess(workerInput, routing)
       : await this.dispatchInProcess(workerInput, routing);
 
@@ -196,6 +410,7 @@ export class WorkerPoolImpl implements WorkerPool {
       },
       allowedPaths: input.targetFiles?.map((f) => f.replace(/\/[^/]+$/, '/')) ?? ['src/'],
       isolationLevel: routingToIsolation(routing.level),
+      ...(routing.workerId ? { workerId: routing.workerId } : {}),
     };
   }
 
@@ -247,6 +462,53 @@ export class WorkerPoolImpl implements WorkerPool {
   // ── Subprocess dispatch (production path) ───────────────────────────
 
   private async dispatchSubprocess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+    // Try warm pool first — avoids ~50ms spawn + module load overhead
+    if (this.warmPool) {
+      const warm = await this.warmPool.acquire();
+      if (warm) {
+        return this.dispatchWarm(warm, workerInput, routing);
+      }
+    }
+
+    // Cold spawn fallback
+    return this.dispatchColdSubprocess(workerInput, routing);
+  }
+
+  private async dispatchWarm(worker: WarmWorker, workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+    const validated = WorkerInputSchema.parse(workerInput);
+
+    try {
+      worker.stdin.write(`${JSON.stringify(validated)}\n`);
+    } catch {
+      // stdin broken — worker died. Kill and fall back to cold spawn.
+      this.warmPool!.kill(worker);
+      return this.dispatchColdSubprocess(workerInput, routing);
+    }
+
+    const timeoutMs = routing.latencyBudgetMs;
+    const linePromise = worker.reader.readLine();
+    const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), timeoutMs));
+
+    const line = await Promise.race([linePromise, timeoutPromise]);
+
+    if (line === null) {
+      // Timeout or worker died — kill and replace
+      this.warmPool!.kill(worker);
+      return emptyOutput(workerInput.taskId);
+    }
+
+    // Release worker back to pool for reuse
+    this.warmPool!.release(worker);
+
+    try {
+      const raw = JSON.parse(line);
+      return WorkerOutputSchema.parse(raw);
+    } catch {
+      return emptyOutput(workerInput.taskId);
+    }
+  }
+
+  private async dispatchColdSubprocess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
     const proc = Bun.spawn(['bun', 'run', this.workerEntryPath], {
       stdin: 'pipe',
       stdout: 'pipe',
@@ -426,6 +688,11 @@ export class WorkerPoolImpl implements WorkerPool {
   getAgentLoopDeps(): AgentLoopDeps | null {
     return this._agentLoopDeps;
   }
+
+  /** Shutdown warm pool — kill all warm workers. Call before discarding the pool. */
+  shutdown(): void {
+    this.warmPool?.shutdown();
+  }
 }
 
 // ── Environment ─────────────────────────────────────────────────────────
@@ -566,35 +833,6 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
     if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens };
     return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
   } catch {
-    if (response.content?.trim()) {
-      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
-    }
-    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens };
-  }
-}
-
-function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: number): WorkerOutputWithCache {
-  const tokens = response.tokensUsed.input + response.tokensUsed.output;
-  const cacheReadTokens = response.tokensUsed.cacheRead;
-  const cacheCreationTokens = response.tokensUsed.cacheCreation;
-  try {
-    const cleaned = stripCodeBlock(response.content);
-    const parsed = JSON.parse(cleaned);
-    // Validate through Zod schema (prevents malformed field types from reaching pipeline)
-    const candidate = {
-      taskId,
-      proposedMutations: parsed.proposedMutations ?? [],
-      proposedToolCalls: parsed.proposedToolCalls ?? response.toolCalls ?? [],
-      uncertainties: parsed.uncertainties ?? [],
-      tokensConsumed: tokens,
-      durationMs,
-    };
-    const validated = WorkerOutputSchema.safeParse(candidate);
-    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens };
-    // Non-JSON response (e.g. conversational answer) — return as proposedContent
-    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
-  } catch {
-    // Non-JSON response (e.g. conversational answer) — return as proposedContent
     if (response.content?.trim()) {
       return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
     }

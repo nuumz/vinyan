@@ -71,6 +71,14 @@ export const WorkerProfileRowSchema = z.object({
   demoted_at: z.number().nullable().optional(),
   demotion_reason: z.string().nullable().optional(),
   demotion_count: z.number(),
+  // RE-agnostic columns (migration 008)
+  engine_type: z.string().nullable().optional(),
+  capabilities_declared: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
+  engine_config: z.string().nullable().optional(),
 });
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────

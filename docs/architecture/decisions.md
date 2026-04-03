@@ -819,6 +819,64 @@ const ecpResponse: ECPResponse = {
 
 ---
 
+### Decision 19: ReasoningEngine — RE-Agnostic Generator Abstraction
+
+> **Axioms: A1, A3, A6** — Epistemic Separation (any RE generates, Orchestrator governs) + Deterministic Governance (routing never depends on RE type) + Zero-Trust Execution (RE proposes; Orchestrator disposes)
+
+**Problem:** Decision 12 defines `LLMProvider` as the dispatch boundary, coupling `WorkerPool` to LLM-flavored vocabulary (`generate()`, `stopReason: 'end_turn'`, `ThinkingConfig`, `cacheControl`). Any future Reasoning Engine — symbolic solver, local code model, AGI system — must conform to LLM-shaped APIs or require core loop changes.
+
+**Choice:** Introduce `ReasoningEngine` as the primary generator abstraction above `LLMProvider`. `LLMProvider` is not removed; `LLMReasoningEngine` wraps it as a backward-compatible adapter.
+
+**Interface:**
+
+```typescript
+interface ReasoningEngine {
+  id: string;
+  engineType: 'llm' | 'symbolic' | 'oracle' | 'hybrid' | 'external';
+  capabilities: string[];    // PRIMARY routing selector — replaces tier-only selection
+  tier?: 'fast' | 'balanced' | 'powerful';  // advisory, backward compat
+  execute(request: RERequest): Promise<REResponse>;
+}
+
+// RERequest: prompt fields + providerOptions bag (LLM-specific: ThinkingConfig, cacheControl)
+// REResponse: content + toolCalls + tokensUsed + engineId + terminationReason (generic naming)
+```
+
+**ReasoningEngineRegistry:**
+- `selectByCapability(required: string[])` — capability-first, preferred for new REs
+- `selectForRoutingLevel(level)` — tier-based fallback for backward compat
+- `selectById(id)` — prefix-match resolution (same as LLMProviderRegistry)
+- `fromLLMRegistry(llmReg)` — wraps existing registry; zero migration cost
+
+**Dispatch path:**
+
+| Path | RE Type | Isolation |
+|------|---------|-----------|
+| L1 in-process | Any `ReasoningEngine` | None (A6 warning in non-test mode) |
+| L2/L3 in-process (no Docker) | Any `ReasoningEngine` | None |
+| L2/L3 subprocess | **LLM-only** — `worker-entry.ts` reconstructs `LLMProviderRegistry` from env vars | Subprocess |
+| L2/L3 container | **LLM-only** — same constraint | Docker |
+
+**Design constraint:** Non-LLM REs dispatched at L2/L3 receive an isolation-degraded warning and fall back to in-process execution. This is intentional — serializing a non-LLM RE for subprocess reconstruction requires a protocol not yet defined.
+
+**Plugging in a future AGI:**
+```typescript
+const agiFuture: ReasoningEngine = {
+  id: 'agi-v1',
+  engineType: 'external',
+  capabilities: ['code-generation', 'reasoning', 'formal-proof'],
+  execute: async (req) => { ... }
+};
+const engineRegistry = new ReasoningEngineRegistry();
+engineRegistry.register(agiFuture);
+createOrchestrator({ workspace, engineRegistry });
+```
+Core loop, risk router, oracle gate, and world graph require **zero changes**.
+
+**What this achieves:** `WorkerPool` dispatch is decoupled from LLM vocabulary. Future REs register capabilities declaratively. The 7 axioms — especially A1, A3, A6 — remain invariant regardless of which RE executes.
+
+---
+
 ### Decision 13: Tool Execution Model — Orchestrator-Mediated Environment Interaction
 
 > **Axiom: A6** — Zero-Trust Execution (workers propose tool calls, Orchestrator validates and executes. Workers NEVER interact with the environment directly.)

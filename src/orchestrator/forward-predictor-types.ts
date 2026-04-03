@@ -13,8 +13,9 @@ import type { PerceptualHierarchy, TaskInput } from './types.ts';
 // Causal Edge Types
 // ---------------------------------------------------------------------------
 
-/** Semantic causal edge types beyond 'imports'. */
+/** Causal edge types — 'imports' is the structural baseline; others are semantic. */
 export type CausalEdgeType =
+  | 'imports'
   | 'calls-method'
   | 'extends-class'
   | 'implements-interface'

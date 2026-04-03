@@ -32,6 +32,7 @@ import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
@@ -70,7 +71,7 @@ export interface OrchestratorConfig {
    * Any ReasoningEngine (LLM, symbolic, AGI) can be registered here.
    * If omitted, the LLM registry is wrapped via ReasoningEngineRegistry.fromLLMRegistry().
    */
-  engineRegistry?: import('./llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
+  engineRegistry?: ReasoningEngineRegistry;
   /** Use subprocess for worker dispatch (default: true for A1/A6 isolation). */
   useSubprocess?: boolean;
   /** Provide an existing bus instance (one is created if omitted). */
@@ -173,7 +174,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
   if (workerStore) {
-    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist);
+    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist, config.engineRegistry);
   }
 
   // Set up WorldGraph for fact invalidation (A4: content-addressed truth)
@@ -607,7 +608,7 @@ export async function createOrchestratorAsync(
   }
 
   if (workerStore) {
-    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist);
+    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist, config.engineRegistry);
   }
 
   // ── Phase 2: WorldGraph + Config ────────────────────────────────
@@ -966,13 +967,18 @@ export async function createOrchestratorAsync(
  * Auto-register existing providers as WorkerProfiles.
  * Grandfathered as "active" — these are proven models from Phase 3.
  * Allowlist is configurable; pass [] to skip filtering (for custom RE types).
+ *
+ * Also registers non-LLM engines from engineRegistry so fleet governance
+ * (WorkerLifecycle, WorkerSelector, CapabilityModel) can track them.
  */
 function autoRegisterWorkers(
   registry: LLMProviderRegistry,
   workerStore: WorkerStore,
   bus: VinyanBus,
   allowlist: string[] = DEFAULT_WORKER_MODEL_ALLOWLIST,
+  engineRegistry?: ReasoningEngineRegistry,
 ): void {
+  // Register LLM providers from the legacy registry
   for (const provider of registry.listProviders()) {
     // M12: Validate engine against allowlist before registration. Empty allowlist = no filter.
     if (allowlist.length > 0 && !allowlist.some((p) => provider.id.startsWith(p))) {
@@ -981,8 +987,7 @@ function autoRegisterWorkers(
     }
 
     const workerId = `worker-${provider.id}`;
-    const existing = workerStore.findById(workerId);
-    if (existing) continue;
+    if (workerStore.findById(workerId)) continue;
 
     const profile: WorkerProfile = {
       id: workerId,
@@ -998,6 +1003,32 @@ function autoRegisterWorkers(
     };
     workerStore.insert(profile);
     bus.emit('worker:registered', { profile });
+  }
+
+  // Register non-LLM engines from engineRegistry (fleet governance visibility)
+  if (engineRegistry) {
+    for (const engine of engineRegistry.listEngines()) {
+      if (engine.engineType === 'llm') continue; // already registered via LLMProviderRegistry above
+      const workerId = `worker-${engine.id}`;
+      if (workerStore.findById(workerId)) continue;
+
+      const profile: WorkerProfile = {
+        id: workerId,
+        config: {
+          modelId: engine.id, // engine.id as model identifier for non-LLM REs
+          temperature: 0, // not applicable for non-LLM
+          systemPromptTemplate: 'none',
+          maxContextTokens: engine.maxContextTokens,
+          engineType: engine.engineType,
+          capabilitiesDeclared: engine.capabilities,
+        },
+        status: 'active',
+        createdAt: Date.now(),
+        demotionCount: 0,
+      };
+      workerStore.insert(profile);
+      bus.emit('worker:registered', { profile });
+    }
   }
 }
 

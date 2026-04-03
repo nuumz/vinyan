@@ -3,7 +3,7 @@
  * Implements the LLMProvider interface without calling any external API.
  * Also provides createMockReasoningEngine for RE-agnostic testing.
  */
-import type { LLMProvider, LLMRequest, LLMResponse, RERequest, REResponse, ReasoningEngine, ToolCall } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, ReasoningEngine, ToolCall } from '../types.ts';
 import { LLMReasoningEngine } from './llm-reasoning-engine.ts';
 
 export interface MockProviderOptions {
@@ -98,12 +98,7 @@ export function createMockProvider(options: MockProviderOptions = {}): LLMProvid
  */
 export function createMockReasoningEngine(options: MockProviderOptions & { capabilities?: string[] } = {}): ReasoningEngine {
   const provider = createMockProvider(options);
-  const engine = new LLMReasoningEngine(provider);
-  // Override capabilities if specified (for testing capability-based routing)
-  if (options.capabilities?.length) {
-    Object.assign(engine, { capabilities: options.capabilities });
-  }
-  return engine;
+  return new LLMReasoningEngine(provider, options.capabilities);
 }
 
 /**
@@ -115,9 +110,5 @@ export function createScriptedMockReasoningEngine(
   options?: { id?: string; tier?: LLMProvider['tier']; capabilities?: string[] },
 ): ReasoningEngine {
   const provider = createScriptedMockProvider(responses, options);
-  const engine = new LLMReasoningEngine(provider);
-  if (options?.capabilities?.length) {
-    Object.assign(engine, { capabilities: options.capabilities });
-  }
-  return engine;
+  return new LLMReasoningEngine(provider, options?.capabilities);
 }

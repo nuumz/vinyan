@@ -399,6 +399,7 @@ export interface CachedSkill {
   verificationProfile: 'hash-only' | 'structural' | 'full';
   confidence?: number; // PH3.4: fuzzy match confidence (omitted = exact match)
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
+  composedOf?: string[]; // PH5 D2: ordered list of sub-skill task signatures
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +505,8 @@ export interface TaskDAG {
   }>;
   /** True when decomposition failed and a single-node fallback was used. */
   isFallback?: boolean;
+  /** True when the DAG was produced by expanding a composed skill (PH5 D2). */
+  isFromComposedSkill?: boolean;
 }
 
 /** 5 machine-checkable criteria for DAG validation */
@@ -534,6 +537,8 @@ export interface WorkerInput {
   };
   allowedPaths: string[];
   isolationLevel: IsolationLevel;
+  /** Optional worker/engine ID for provider selection (warm pool mode). */
+  workerId?: string;
 }
 
 /** Output from a worker process */
@@ -744,6 +749,10 @@ export interface WorkerConfig {
   toolAllowlist?: string[]; // if empty/undefined, all tools allowed
   systemPromptTemplate?: string; // template ID or "default"
   maxContextTokens?: number;
+  /** RE-agnostic type — 'llm' for all LLM-backed workers, other values for future RE types. */
+  engineType?: REEngineType;
+  /** Capabilities this engine declares (for capability-first routing). */
+  capabilitiesDeclared?: string[];
 }
 
 /** Worker stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */

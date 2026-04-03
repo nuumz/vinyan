@@ -1,6 +1,13 @@
 export { type AnthropicProviderConfig, createAnthropicProvider } from './anthropic-provider.ts';
 export { LLMReasoningEngine, ReasoningEngineRegistry } from './llm-reasoning-engine.ts';
-export { createMockProvider, type MockProviderOptions } from './mock-provider.ts';
+export {
+  createMockProvider,
+  createMockReasoningEngine,
+  createScriptedMockProvider,
+  createScriptedMockReasoningEngine,
+  type MockProviderOptions,
+  type ScriptedMockResponse,
+} from './mock-provider.ts';
 export {
   createOpenRouterProvider,
   type OpenRouterProviderConfig,

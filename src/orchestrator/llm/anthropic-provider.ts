@@ -6,7 +6,7 @@
  * Guarded by ANTHROPIC_API_KEY environment variable.
  * Source of truth: spec/tdd.md §17.1
  */
-import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, ThinkingConfig, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 
@@ -71,13 +71,17 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
+          const thinkingEnabled = isThinkingEnabled(request.thinking);
           const response = await client.messages.create({
             model,
             max_tokens: request.maxTokens,
-            system: request.systemPrompt,
+            system: request.cacheControl
+              ? [{ type: 'text' as const, text: request.systemPrompt, cache_control: request.cacheControl }]
+              : request.systemPrompt,
             messages,
             ...(tools?.length ? { tools } : {}),
-            ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+            ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+            ...buildThinkingParams(request.thinking),
             signal: controller.signal as any,
           });
           clearTimeout(timer);
@@ -97,7 +101,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
                 parameters: block.input as Record<string, unknown>,
               });
             } else if ((block as any).type === 'thinking') {
-              thinking = (block as any).thinking;
+              thinking = thinking ? `${thinking}\n---\n${(block as any).thinking}` : (block as any).thinking;
             }
           }
 
@@ -108,6 +112,8 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             tokensUsed: {
               input: response.usage.input_tokens,
               output: response.usage.output_tokens,
+              cacheRead: (response.usage as any).cache_read_input_tokens,
+              cacheCreation: (response.usage as any).cache_creation_input_tokens,
             },
             model: response.model,
             stopReason:
@@ -136,5 +142,25 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
       }
       throw lastError!;
     },
+  };
+}
+
+/** Check if thinking is active (adaptive or enabled). */
+function isThinkingEnabled(thinking?: ThinkingConfig): boolean {
+  return thinking?.type === 'adaptive' || thinking?.type === 'enabled';
+}
+
+/** Build thinking-related API params from ThinkingConfig. */
+function buildThinkingParams(thinking?: ThinkingConfig): Record<string, unknown> {
+  if (!thinking || thinking.type === 'disabled') return {};
+  if (thinking.type === 'adaptive') {
+    return {
+      thinking: { type: 'adaptive', ...(thinking.display ? { display: thinking.display } : {}) },
+      output_config: { effort: thinking.effort },
+    };
+  }
+  // type === 'enabled'
+  return {
+    thinking: { type: 'enabled', budget_tokens: thinking.budgetTokens, ...(thinking.display ? { display: thinking.display } : {}) },
   };
 }

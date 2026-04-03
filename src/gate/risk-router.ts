@@ -4,7 +4,7 @@
  * TDD §6: weighted sum with normalization + A6 guardrails.
  * Phase 0 computes and logs; Phase 1 Orchestrator uses for actual routing.
  */
-import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel } from '../orchestrator/types.ts';
+import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, ThinkingConfig } from '../orchestrator/types.ts';
 
 // ── Weights per TDD §6 ──────────────────────────────────────────
 
@@ -145,11 +145,11 @@ export function routeByRisk(
   }
 
   // Map level to model + budget (latency budgets sized for remote LLM APIs)
-  const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number }> = {
-    0: { model: null, budgetTokens: 0, latencyBudgetMs: 100 },
-    1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000 },
-    2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000 },
-    3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000 },
+  const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
+    0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
+    1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },
+    2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
+    3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
   };
 
   return {

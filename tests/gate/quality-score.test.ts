@@ -44,12 +44,13 @@ describe('computeQualityScore', () => {
     expect(qs.architecturalCompliance).toBe(0);
   });
 
-  test('no oracles → C3 fix: INDETERMINATE (NaN + unverified)', () => {
+  test('no oracles → neutral score with unverified flag (no NaN propagation)', () => {
     const qs = computeQualityScore({}, 100);
-    expect(Number.isNaN(qs.architecturalCompliance)).toBe(true);
-    expect(Number.isNaN(qs.composite)).toBe(true);
+    expect(Number.isFinite(qs.architecturalCompliance)).toBe(true);
+    expect(qs.architecturalCompliance).toBe(1.0);
+    expect(Number.isFinite(qs.composite)).toBe(true);
     expect(qs.unverified).toBe(true);
-    expect(qs.dimensionsAvailable).toBe(0);
+    expect(qs.dimensionsAvailable).toBe(1);
     expect(qs.phase).toBe('phase0');
   });
 

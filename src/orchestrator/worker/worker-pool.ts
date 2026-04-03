@@ -19,6 +19,7 @@ import type {
   IsolationLevel,
   LLMResponse,
   PerceptualHierarchy,
+  PerceptionRole,
   RoutingDecision,
   TaskDAG,
   TaskInput,
@@ -26,6 +27,12 @@ import type {
   WorkerOutput,
   WorkingMemoryState,
 } from '../types.ts';
+
+/** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
+type WorkerOutputWithCache = WorkerOutput & {
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+};
 
 export interface WorkerPoolConfig {
   registry: LLMProviderRegistry;
@@ -133,9 +140,12 @@ export class WorkerPoolImpl implements WorkerPool {
       }
     }
 
-    const output = this.useSubprocess
+    // Non-file tasks (e.g. "hi", questions) use in-process dispatch:
+    // no mutations → no isolation concern, avoids subprocess overhead + JSON format loss
+    const isNonFileTask = !input.targetFiles?.length;
+    const output = (this.useSubprocess && !isNonFileTask)
       ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing);
+      : await this.dispatchInProcess(workerInput, routing, isNonFileTask);
 
     return this.toWorkerResult(output, startTime);
   }
@@ -158,12 +168,16 @@ export class WorkerPoolImpl implements WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
   ): WorkerInput {
+    // EO #2: Prune context by role before building input
+    const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
+      perception, memory, 'generator', routing.level,
+    );
     return {
       taskId: input.id,
       goal: input.goal,
       routingLevel: routing.level as Exclude<typeof routing.level, 0>,
-      perception,
-      workingMemory: memory,
+      perception: prunedPerception,
+      workingMemory: prunedMemory,
       ...(plan ? { plan } : {}),
       budget: {
         maxTokens: routing.budgetTokens,
@@ -176,7 +190,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
   // ── In-process dispatch (default) ───────────────────────────────────
 
-  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision, isNonFileTask = false): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select provider if available, fallback to tier-based
     const provider = routing.workerId
       ? (this.registry.selectById(routing.workerId) ?? this.registry.selectForRoutingLevel(routing.level))
@@ -185,12 +199,18 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    const { systemPrompt, userPrompt } = assemblePrompt(
-      workerInput.goal,
-      workerInput.perception,
-      workerInput.workingMemory,
-      workerInput.plan,
-    );
+    // Non-file tasks: conversational prompt → plain-text LLM response → captured as proposedContent
+    const { systemPrompt, userPrompt } = isNonFileTask
+      ? {
+          systemPrompt: 'You are a helpful assistant. Answer the user\'s question directly and concisely. Do NOT wrap your response in JSON or code blocks.',
+          userPrompt: workerInput.goal,
+        }
+      : assemblePrompt(
+          workerInput.goal,
+          workerInput.perception,
+          workerInput.workingMemory,
+          workerInput.plan,
+        );
 
     const startTime = performance.now();
 
@@ -202,6 +222,8 @@ export class WorkerPoolImpl implements WorkerPool {
         systemPrompt,
         userPrompt,
         maxTokens: workerInput.budget.maxTokens,
+        ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
+        cacheControl: { type: 'ephemeral' as const },
       })
       .catch((): 'error' => 'error');
 
@@ -348,7 +370,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
   // ── Result conversion ───────────────────────────────────────────────
 
-  private toWorkerResult(output: WorkerOutput, startTime: number) {
+  private toWorkerResult(output: WorkerOutputWithCache, startTime: number) {
     const mutations = output.proposedMutations.map((m) => ({
       file: m.file,
       content: m.content,
@@ -360,7 +382,10 @@ export class WorkerPoolImpl implements WorkerPool {
       mutations,
       proposedToolCalls: output.proposedToolCalls,
       tokensConsumed: output.tokensConsumed,
+      cacheReadTokens: output.cacheReadTokens,
+      cacheCreationTokens: output.cacheCreationTokens,
       durationMs: Math.round(performance.now() - startTime),
+      proposedContent: output.proposedContent,
     };
   }
 
@@ -428,6 +453,67 @@ function buildWorkerEnv(routing: RoutingDecision, proxySocketPath?: string): Rec
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
+// ── EO #2: Epistemic Information Barriers ─────────────────────────────
+
+/**
+ * EO #2: Epistemic Information Barriers — prune context by role.
+ * A1: Generator must not see detailed oracle verdict text (prevents self-evaluation loop).
+ * Critic sees full perception but not prior attempts (avoids bias).
+ */
+export function pruneForRole(
+  perception: PerceptualHierarchy,
+  memory: WorkingMemoryState,
+  role: PerceptionRole,
+  routingLevel: number,
+): { perception: PerceptualHierarchy; memory: WorkingMemoryState } {
+  if (role === 'generator') {
+    // Strip detailed oracleVerdict text — keep directional signals only
+    const prunedMemory: WorkingMemoryState = {
+      ...memory,
+      failedApproaches: memory.failedApproaches.map(fa => ({
+        ...fa,
+        oracleVerdict: fa.failureOracle
+          ? `Failed: ${fa.failureOracle} oracle`
+          : 'Failed: verification',
+      })),
+    };
+
+    // L0/L1: only direct dependencies (skip transitive, causal edges)
+    if (routingLevel <= 1) {
+      const prunedPerception: PerceptualHierarchy = {
+        ...perception,
+        dependencyCone: {
+          ...perception.dependencyCone,
+          transitiveImporters: undefined,
+          affectedTestFiles: undefined,
+        },
+        diagnostics: {
+          lintWarnings: [],
+          typeErrors: perception.diagnostics.typeErrors,
+          failingTests: [],
+        },
+        causalEdges: undefined,
+      };
+      return { perception: prunedPerception, memory: prunedMemory };
+    }
+    return { perception, memory: prunedMemory };
+  }
+
+  if (role === 'critic') {
+    // Critic gets full perception but NO prior attempts (avoid bias from past failures)
+    return {
+      perception,
+      memory: {
+        ...memory,
+        priorAttempts: undefined,
+      },
+    };
+  }
+
+  // 'testgen' — full access (needs to understand what to test)
+  return { perception, memory };
+}
+
 function routingToIsolation(level: RoutingDecision['level']): IsolationLevel {
   if (level === 0) return 0;
   if (level === 1) return 1;
@@ -452,8 +538,10 @@ function stripCodeBlock(text: string): string {
   return match ? match[1]! : trimmed;
 }
 
-function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: number): WorkerOutput {
+function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: number): WorkerOutputWithCache {
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
+  const cacheReadTokens = response.tokensUsed.cacheRead;
+  const cacheCreationTokens = response.tokensUsed.cacheCreation;
   try {
     const cleaned = stripCodeBlock(response.content);
     const parsed = JSON.parse(cleaned);
@@ -467,10 +555,15 @@ function parseWorkerOutput(taskId: string, response: LLMResponse, durationMs: nu
       durationMs,
     };
     const validated = WorkerOutputSchema.safeParse(candidate);
-    if (validated.success) return validated.data;
-    return emptyOutput(taskId, tokens);
+    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens };
+    // Non-JSON response (e.g. conversational answer) — return as proposedContent
+    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
   } catch {
-    return emptyOutput(taskId, tokens);
+    // Non-JSON response (e.g. conversational answer) — return as proposedContent
+    if (response.content?.trim()) {
+      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
+    }
+    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens };
   }
 }
 

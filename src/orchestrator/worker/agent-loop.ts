@@ -26,6 +26,7 @@ import type { IAgentSession } from './agent-session.ts';
 import { AgentSession, type SubprocessHandle } from './agent-session.ts';
 import { AgentBudgetTracker } from './agent-budget.ts';
 import { SessionOverlay, type ProposedMutation } from './session-overlay.ts';
+import { partitionTranscript } from './transcript-compactor.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
@@ -254,6 +255,20 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+
+        // EO #5: Check if transcript compaction is warranted
+        const snap = budget.toSnapshot();
+        const pressureRatio = tokensConsumed / snap.maxTokens;
+        if (pressureRatio > 0.7 && transcript.length > 5) {
+          const partition = partitionTranscript(transcript);
+          deps.bus?.emit('agent:transcript_compaction', {
+            taskId: input.id,
+            evidenceTurns: partition.evidenceTurns.filter((t) => t.isEvidence).length,
+            narrativeTurns: partition.compactedNarrativeTurns,
+            tokensSaved: partition.tokensSaved,
+          });
+          // NOTE: actual narrative summarization requires LLM call — deferred to future enhancement.
+        }
 
         // Cap tool calls per turn
         const calls = turn.calls.slice(0, maxToolCallsPerTurn);

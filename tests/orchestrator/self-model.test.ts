@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { MODEL_PARAMS_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
-import type { ExecutionTrace, PerceptualHierarchy, TaskInput } from '../../src/orchestrator/types.ts';
+import type { ExecutionTrace, PerceptualHierarchy, ReasoningPolicy, TaskInput } from '../../src/orchestrator/types.ts';
 
 function makeInput(overrides: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -363,6 +363,181 @@ describe('CalibratedSelfModel', () => {
       expect(signal30.observationCount).toBe(30);
       expect(signal30.basis).toBe('calibrated');
       expect(signal30.avgOracleConfidence).toBeGreaterThan(0.8);
+    });
+  });
+
+  describe('getReasoningPolicy (EO #6)', () => {
+    test('returns default policy when no traces exist', () => {
+      const model = new CalibratedSelfModel();
+      const policy = model.getReasoningPolicy('unknown::none::single');
+
+      expect(policy.basis).toBe('default');
+      expect(policy.generationBudget).toBe(0.65);
+      expect(policy.verificationBudget).toBe(0.20);
+      expect(policy.contingencyReserve).toBe(0.15);
+    });
+
+    test('returns default policy when <10 observations', () => {
+      const model = new CalibratedSelfModel();
+      const taskSig = 'add::ts::single';
+
+      // Calibrate 5 times (< 10 threshold)
+      for (let i = 0; i < 5; i++) {
+        const pred = {
+          taskId: `task-rp-${i}`,
+          timestamp: Date.now(),
+          expectedTestResults: 'pass' as const,
+          expectedBlastRadius: 1,
+          expectedDuration: 2000,
+          expectedQualityScore: 0.5,
+          uncertainAreas: [],
+          confidence: 0.5,
+          metaConfidence: 0.1,
+          basis: 'static-heuristic' as const,
+          calibrationDataPoints: i,
+        };
+        model.calibrate(pred, makeTrace({
+          id: `trace-rp-${i}`,
+          taskTypeSignature: taskSig,
+          qualityScore: { architecturalCompliance: 0.7, efficiency: 0.7, composite: 0.7, dimensionsAvailable: 2, phase: 'phase0' },
+        }));
+      }
+
+      const policy = model.getReasoningPolicy(taskSig);
+      expect(policy.basis).toBe('default');
+      expect(policy.generationBudget).toBe(0.65);
+    });
+
+    test('returns calibrated policy when ≥10 observations', () => {
+      const model = new CalibratedSelfModel();
+      const taskSig = 'fix::ts::small';
+
+      for (let i = 0; i < 15; i++) {
+        const pred = {
+          taskId: `task-rp-${i}`,
+          timestamp: Date.now(),
+          expectedTestResults: 'pass' as const,
+          expectedBlastRadius: 2,
+          expectedDuration: 3000,
+          expectedQualityScore: 0.5,
+          uncertainAreas: [],
+          confidence: 0.5,
+          metaConfidence: 0.1,
+          basis: 'static-heuristic' as const,
+          calibrationDataPoints: i,
+        };
+        model.calibrate(pred, makeTrace({
+          id: `trace-rp-${i}`,
+          taskTypeSignature: taskSig,
+          qualityScore: { architecturalCompliance: 0.8, efficiency: 0.8, composite: 0.8, dimensionsAvailable: 2, phase: 'phase0' },
+        }));
+      }
+
+      const policy = model.getReasoningPolicy(taskSig);
+      expect(policy.basis).toBe('calibrated');
+      expect(policy.generationBudget).toBeGreaterThanOrEqual(0.4);
+      expect(policy.generationBudget).toBeLessThanOrEqual(0.85);
+    });
+
+    test('calibrated policy clamps generationBudget to [0.4, 0.85]', () => {
+      const model = new CalibratedSelfModel();
+      const taskSigLow = 'fix::ts::low';
+      const taskSigHigh = 'fix::ts::high';
+
+      // Simulate low quality (quality → 0) → genBudget should clamp to 0.4
+      for (let i = 0; i < 12; i++) {
+        const pred = {
+          taskId: `task-lo-${i}`,
+          timestamp: Date.now(),
+          expectedTestResults: 'pass' as const,
+          expectedBlastRadius: 1,
+          expectedDuration: 2000,
+          expectedQualityScore: 0.5,
+          uncertainAreas: [],
+          confidence: 0.5,
+          metaConfidence: 0.1,
+          basis: 'static-heuristic' as const,
+          calibrationDataPoints: i,
+        };
+        model.calibrate(pred, makeTrace({
+          id: `trace-lo-${i}`,
+          taskTypeSignature: taskSigLow,
+          qualityScore: { architecturalCompliance: 0.0, efficiency: 0.0, composite: 0.0, dimensionsAvailable: 2, phase: 'phase0' },
+        }));
+      }
+
+      // Simulate high quality (quality → 1) → genBudget should clamp to 0.8
+      for (let i = 0; i < 12; i++) {
+        const pred = {
+          taskId: `task-hi-${i}`,
+          timestamp: Date.now(),
+          expectedTestResults: 'pass' as const,
+          expectedBlastRadius: 1,
+          expectedDuration: 2000,
+          expectedQualityScore: 0.5,
+          uncertainAreas: [],
+          confidence: 0.5,
+          metaConfidence: 0.1,
+          basis: 'static-heuristic' as const,
+          calibrationDataPoints: i,
+        };
+        model.calibrate(pred, makeTrace({
+          id: `trace-hi-${i}`,
+          taskTypeSignature: taskSigHigh,
+          qualityScore: { architecturalCompliance: 1.0, efficiency: 1.0, composite: 1.0, dimensionsAvailable: 2, phase: 'phase0' },
+        }));
+      }
+
+      const policyLow = model.getReasoningPolicy(taskSigLow);
+      const policyHigh = model.getReasoningPolicy(taskSigHigh);
+
+      expect(policyLow.generationBudget).toBeGreaterThanOrEqual(0.4);
+      expect(policyHigh.generationBudget).toBeLessThanOrEqual(0.85);
+      expect(policyHigh.generationBudget).toBeGreaterThan(policyLow.generationBudget);
+    });
+
+    test('budget fractions sum to 1.0', () => {
+      const model = new CalibratedSelfModel();
+      const taskSig = 'refactor::ts::medium';
+
+      // Default policy
+      const defaultPolicy = model.getReasoningPolicy(taskSig);
+      const defaultSum = defaultPolicy.generationBudget + defaultPolicy.verificationBudget + defaultPolicy.contingencyReserve;
+      expect(Math.abs(defaultSum - 1.0)).toBeLessThan(0.001);
+
+      // Calibrated policy
+      for (let i = 0; i < 12; i++) {
+        const pred = {
+          taskId: `task-sum-${i}`,
+          timestamp: Date.now(),
+          expectedTestResults: 'pass' as const,
+          expectedBlastRadius: 3,
+          expectedDuration: 5000,
+          expectedQualityScore: 0.5,
+          uncertainAreas: [],
+          confidence: 0.5,
+          metaConfidence: 0.1,
+          basis: 'static-heuristic' as const,
+          calibrationDataPoints: i,
+        };
+        model.calibrate(pred, makeTrace({
+          id: `trace-sum-${i}`,
+          taskTypeSignature: taskSig,
+          qualityScore: { architecturalCompliance: 0.6, efficiency: 0.6, composite: 0.6, dimensionsAvailable: 2, phase: 'phase0' },
+        }));
+      }
+
+      const calibrated = model.getReasoningPolicy(taskSig);
+      const calibratedSum = calibrated.generationBudget + calibrated.verificationBudget + calibrated.contingencyReserve;
+      expect(Math.abs(calibratedSum - 1.0)).toBeLessThan(0.001);
+    });
+
+    test('oraclePriority follows A5 tiered trust order', () => {
+      const model = new CalibratedSelfModel();
+      const policy = model.getReasoningPolicy('any::sig::single');
+
+      // A5: deterministic first → ast, type, dep, lint (deterministic), then test (heuristic)
+      expect(policy.oraclePriority).toEqual(['ast', 'type', 'dep', 'lint', 'test']);
     });
   });
 });

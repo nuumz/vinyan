@@ -15,7 +15,7 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1_000;
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
-  fast: 30_000,
+  fast: 15_000,
   balanced: 60_000,
   powerful: 60_000,
 };

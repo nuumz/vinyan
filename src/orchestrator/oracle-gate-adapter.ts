@@ -8,6 +8,7 @@ import type { OracleVerdict } from '../core/types.ts';
 import type { EpistemicGateDecision } from '../gate/epistemic-decision.ts';
 import { runGate } from '../gate/gate.ts';
 import type { OracleGate } from './core-loop.ts';
+import type { VerificationHint } from './types.ts';
 
 export class OracleGateAdapter implements OracleGate {
   private workspace: string;
@@ -16,7 +17,7 @@ export class OracleGateAdapter implements OracleGate {
     this.workspace = workspace;
   }
 
-  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string) {
+  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string, verificationHint?: VerificationHint) {
     // Empty mutations (L0) → trivially pass
     if (mutations.length === 0) {
       return { passed: true as const, verdicts: {} as Record<string, OracleVerdict> };
@@ -49,6 +50,7 @@ export class OracleGateAdapter implements OracleGate {
             content: mutation.content,
             workspace: this.workspace,
           },
+          verificationHint,
         }).then((gateResult) => ({ mutation, gateResult })),
       ),
     );

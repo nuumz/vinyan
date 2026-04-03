@@ -86,4 +86,25 @@ describe('PromptAssembler', () => {
     expect(userPrompt).toContain('[DIAGNOSTICS]');
     expect(userPrompt).toContain('not assignable');
   });
+
+  test('system prompt includes oracle verification capabilities section', () => {
+    const { systemPrompt } = assemblePrompt('Fix bug', makePerception(), makeMemory());
+    expect(systemPrompt).toContain('[ORACLE VERIFICATION CAPABILITIES]');
+    expect(systemPrompt).toContain('Each subtask you propose should be verifiable');
+  });
+
+  test('oracle manifest lists all 5 oracle types', () => {
+    const { systemPrompt } = assemblePrompt('Fix bug', makePerception(), makeMemory());
+    expect(systemPrompt).toContain('ast: Validates symbol existence');
+    expect(systemPrompt).toContain('type: Checks TypeScript type correctness');
+    expect(systemPrompt).toContain('dep: Analyzes import graph');
+    expect(systemPrompt).toContain('lint: Checks code style');
+    expect(systemPrompt).toContain('test: Runs test suite');
+  });
+
+  test('oracle manifest mentions verificationHint', () => {
+    const { systemPrompt } = assemblePrompt('Fix bug', makePerception(), makeMemory());
+    expect(systemPrompt).toContain('verificationHint');
+    expect(systemPrompt).toContain('skipTestWhen');
+  });
 });

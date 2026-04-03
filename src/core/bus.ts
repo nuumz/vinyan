@@ -213,6 +213,8 @@ export interface VinyanBusEvents {
   'agent:session_end': { taskId: string; outcome: string; tokensConsumed: number; turnsUsed: number; durationMs: number };
   'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
   'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
+  // EO #5: Dual-track transcript compaction
+  'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

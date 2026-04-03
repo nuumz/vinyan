@@ -34,8 +34,30 @@ export function assemblePrompt(
   return { systemPrompt, userPrompt };
 }
 
+/** Concise descriptions of what each oracle can verify. */
+const ORACLE_MANIFEST = [
+  'ast: Validates symbol existence, function signatures, import statements',
+  'type: Checks TypeScript type correctness (tsc --noEmit)',
+  'dep: Analyzes import graph, blast radius, dependency safety',
+  'lint: Checks code style and quality rules (ESLint/Biome)',
+  'test: Runs test suite, verifies all tests pass',
+];
+
+function buildOracleManifest(): string {
+  return [
+    '[ORACLE VERIFICATION CAPABILITIES]',
+    'Each subtask you propose should be verifiable by at least one oracle:',
+    ...ORACLE_MANIFEST.map((line) => `  - ${line}`),
+    '',
+    'When decomposing tasks, assign appropriate oracles to each node.',
+    'For each node, you may specify a verificationHint with:',
+    '  - oracles: which oracles to run (subset of above)',
+    '  - skipTestWhen: "import-only" | "type-change-only" | "config-change"',
+  ].join('\n');
+}
+
 function buildSystemPrompt(perception: PerceptualHierarchy): string {
-  const tools = perception.runtime.availableTools.join(', ');
+  const tools = [...perception.runtime.availableTools].sort().join(', ');
   return `[ROLE]
 You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You generate code proposals that will be verified by external oracles.
@@ -52,7 +74,9 @@ Respond with a JSON object matching this structure:
 [AVAILABLE TOOLS]
 ${tools}
 
-Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.`;
+Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.
+
+${buildOracleManifest()}`;
 }
 
 function buildUserPrompt(

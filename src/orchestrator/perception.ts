@@ -74,8 +74,8 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     const factTargets = [...new Set([...targetFiles, ...directImporters, ...directImportees])];
     const verifiedFacts = this.queryVerifiedFacts(factTargets);
 
-    // Run diagnostics
-    const diagnostics = await this.runDiagnostics();
+    // Run diagnostics — only at L2+ (analytical); L0/L1 don't have budget to act on type errors
+    const diagnostics = level >= 2 ? await this.runDiagnostics() : { lintWarnings: [], typeErrors: [], failingTests: [] };
 
     // Extract causal edges for target files (FP-B)
     let causalEdges: PerceptualHierarchy['causalEdges'];

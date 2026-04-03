@@ -35,6 +35,10 @@ export interface RoutingDecision {
   workerId?: string; // Phase 4.4: selected worker profile ID
   riskScore?: number; // WP-4: computed risk score (0.0-1.0)
   epistemicDeescalated?: boolean; // true if risk level was de-escalated by SelfModel epistemic signal
+  /** EO #6: Self-Model calibrated reasoning budget policy. */
+  reasoningPolicy?: ReasoningPolicy;
+  /** Thinking configuration for this routing level. */
+  thinkingConfig?: ThinkingConfig;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -136,6 +140,10 @@ export interface WorkingMemoryState {
     approach: string;
     oracleVerdict: string; // which oracle rejected + evidence
     timestamp: number;
+    /** EO #8: Oracle gate confidence when this approach was rejected (0.0-1.0). */
+    verdictConfidence?: number;
+    /** EO #8: Which oracle was the primary rejector (e.g. 'test', 'type', 'ast'). */
+    failureOracle?: string;
   }>;
   activeHypotheses: Array<{
     hypothesis: string;
@@ -154,6 +162,66 @@ export interface WorkingMemoryState {
     hash: string;
   }>;
   priorAttempts?: AgentSessionSummary[];
+}
+
+// ---------------------------------------------------------------------------
+// EO Concepts — Epistemic Orchestration enhancements
+// ---------------------------------------------------------------------------
+
+/** EO #2: Role-based context pruning — A1 enforced information barriers */
+export type PerceptionRole = 'generator' | 'critic' | 'testgen';
+
+/** EO #3: Per-node verification contract — tells the gate which oracles matter */
+export interface VerificationHint {
+  /** Which oracles are relevant for this mutation type */
+  oracles?: Array<'ast' | 'type' | 'dep' | 'lint' | 'test'>;
+  /** Skip test oracle for trivial mutations */
+  skipTestWhen?: 'import-only' | 'type-change-only' | 'config-change';
+}
+
+// ---------------------------------------------------------------------------
+// Thinking & Cache Configuration (→ Anthropic API integration)
+// ---------------------------------------------------------------------------
+
+/** Thinking configuration for Anthropic models.
+ *  - adaptive: Opus 4.6/Sonnet 4.6 — auto-determines thinking depth via effort level
+ *  - enabled: older models — explicit budget_tokens control
+ *  - disabled: no thinking (L0/L1 fast path)
+ */
+export type ThinkingConfig =
+  | { type: 'adaptive'; effort: 'low' | 'medium' | 'high' | 'max'; display?: 'omitted' | 'summarized' }
+  | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
+  | { type: 'disabled' };
+
+/** Cache control marker for prompt caching (Anthropic ephemeral cache). */
+export interface CacheControl {
+  type: 'ephemeral';
+}
+
+/** EO #6: Epistemic reasoning budget policy — Self-Model calibrated */
+export interface ReasoningPolicy {
+  /** Fraction of total budget allocated to generation (0.4-0.85) */
+  generationBudget: number;
+  /** Fraction allocated to verification (1.0 - generationBudget - contingencyReserve) */
+  verificationBudget: number;
+  /** Reserved for escalation retries (default: 0.15) */
+  contingencyReserve: number;
+  /** Which oracles to run first if verification budget is tight (A5: deterministic first) */
+  oraclePriority: string[];
+  /** Source: 'default' for <10 traces, 'calibrated' for ≥10 traces */
+  basis: 'default' | 'calibrated';
+}
+
+/** EO #5: Transcript partition for dual-track compaction */
+export interface TranscriptPartition {
+  /** Recent turns (uncompressed, for LLM context window) */
+  evidenceTurns: Array<{ turnId: string; type: string; isEvidence: boolean }>;
+  /** Number of narrative turns that were compacted */
+  compactedNarrativeTurns: number;
+  /** Summary of compacted narrative (if compaction occurred) */
+  compactedSummary?: string;
+  /** Token savings from compaction */
+  tokensSaved: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +458,9 @@ export interface ExecutionTrace {
   workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
+  /** Prompt cache metrics for cost analysis. */
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   /** EHD Phase 3: Aggregate verification confidence from the gate verdict. */
   verificationConfidence?: number;
   /** EHD Phase 3: 4-state epistemic decision from the gate. */
@@ -422,6 +493,8 @@ export interface TaskDAG {
     targetFiles: string[];
     dependencies: string[]; // IDs of nodes this depends on
     assignedOracles: string[];
+    /** EO #3: Per-node verification hint — tells gate which oracles matter for this node */
+    verificationHint?: VerificationHint;
   }>;
   /** True when decomposition failed and a single-node fallback was used. */
   isFallback?: boolean;
@@ -468,6 +541,8 @@ export interface WorkerOutput {
   uncertainties: string[];
   tokensConsumed: number;
   durationMs: number;
+  /** Conversational answer for non-file tasks (e.g. "hi"). */
+  proposedContent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +593,10 @@ export interface LLMRequest {
     parameters: Record<string, unknown>;
   }>;
   messages?: HistoryMessage[];
+  /** Thinking configuration — controls extended thinking behavior per routing level. */
+  thinking?: ThinkingConfig;
+  /** Cache control — enables prompt caching on system/tool blocks. */
+  cacheControl?: CacheControl;
 }
 
 /** Response from an LLM provider */
@@ -525,7 +604,12 @@ export interface LLMResponse {
   content: string;
   thinking?: string;
   toolCalls: ToolCall[];
-  tokensUsed: { input: number; output: number };
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheCreation?: number;
+  };
   model: string;
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
 }

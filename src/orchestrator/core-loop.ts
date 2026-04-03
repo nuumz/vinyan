@@ -19,6 +19,7 @@ import type {
   ExecutionTrace,
   PerceptualHierarchy,
   PredictionError,
+  ReasoningPolicy,
   RoutingDecision,
   RoutingLevel,
   SelfModelPrediction,
@@ -47,6 +48,8 @@ export interface RiskRouter {
 export interface SelfModel {
   predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction>;
   calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError | undefined;
+  /** EO #6: Get Self-Model calibrated reasoning budget policy for a task type. */
+  getReasoningPolicy?(taskTypeSignature: string): ReasoningPolicy;
 }
 
 export interface TaskDecomposer {
@@ -66,7 +69,7 @@ export interface WorkerPool {
 }
 
 export interface OracleGate {
-  verify(mutations: Array<{ file: string; content: string }>, workspace: string): Promise<VerificationResult>;
+  verify(mutations: Array<{ file: string; content: string }>, workspace: string, verificationHint?: import('./types.ts').VerificationHint): Promise<VerificationResult>;
 }
 
 export interface TraceCollector {
@@ -89,6 +92,8 @@ interface WorkerResult {
   proposedToolCalls: ToolCall[];
   uncertainties?: string[];
   tokensConsumed: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   durationMs: number;
   proposedContent?: string;
 }
@@ -373,6 +378,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         }
       }
 
+      // ── EO #6: Attach reasoning policy (Self-Model calibrated budget split) ──
+      if (deps.selfModel.getReasoningPolicy) {
+        const { computeTaskSignature } = await import('./self-model.ts');
+        const taskSig = computeTaskSignature(input);
+        routing = { ...routing, reasoningPolicy: deps.selfModel.getReasoningPolicy(taskSig) };
+      }
+
       // ── Step 2½: SELECT WORKER (Phase 4) ──────────────────────────
       let workerSelection: import('./types.ts').WorkerSelectionResult | undefined;
       if (deps.workerSelector && !routing.workerId) {
@@ -502,12 +514,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       let workerResult: WorkerResult;
       let isAgenticResult = false;
       let lastAgentResult: import('./worker/agent-loop.ts').WorkerLoopResult | null = null;
+      const isNonFileTask = !input.targetFiles?.length;
       try {
-        if (routing.level === 0 || !deps.workerPool.getAgentLoopDeps?.()) {
-          // L0 or no agent deps configured: existing single-shot path
+        if (routing.level === 0 || !deps.workerPool.getAgentLoopDeps?.() || (isNonFileTask && routing.level <= 1)) {
+          // L0, no agent deps, or non-file L1 tasks: single-shot path (skip subprocess overhead)
           workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
         } else {
-          // L1+: agentic loop
+          // L1+ with target files or L2+: agentic loop
           const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
           const { runAgentLoop } = await import('./worker/agent-loop.ts');
           lastAgentResult = await runAgentLoop(
@@ -525,6 +538,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             proposedToolCalls: lastAgentResult.proposedToolCalls,
             uncertainties: lastAgentResult.uncertainties,
             tokensConsumed: lastAgentResult.tokensConsumed,
+            cacheReadTokens: (lastAgentResult as any).cacheReadTokens,
+            cacheCreationTokens: (lastAgentResult as any).cacheCreationTokens,
             durationMs: lastAgentResult.durationMs,
             proposedContent: lastAgentResult.proposedContent,
           };
@@ -626,12 +641,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── Step 5: VERIFY (oracle gate) ─────────────────────────────
+      // EO #3: Extract verificationHint from plan's first node (if available)
+      const activeHint = plan?.nodes?.[0]?.verificationHint;
       const verification = await deps.oracleGate.verify(
         workerResult.mutations.map((m) => ({
           file: m.file,
           content: m.content,
         })),
         input.targetFiles?.[0] ?? '.',
+        activeHint,
       );
 
       // ── Emit per-oracle verdicts ──────────────────────────────────
@@ -744,6 +762,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         oracleVerdicts: Object.fromEntries(Object.entries(verification.verdicts).map(([k, v]) => [k, v.verified])),
         modelUsed: routing.model ?? 'none',
         tokensConsumed: workerResult.tokensConsumed,
+        cacheReadTokens: workerResult.cacheReadTokens,
+        cacheCreationTokens: workerResult.cacheCreationTokens,
         durationMs: workerResult.durationMs,
         outcome: effectiveOutcome,
         failureReason: effectiveOutcome === 'success' ? undefined : verification.reason,
@@ -863,6 +883,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             const reVerification = await deps.oracleGate.verify(
               workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
               input.targetFiles?.[0] ?? '.',
+              activeHint,
             );
             const reVerConfidence = reVerification.aggregateConfidence
               ?? (reVerification.passed ? 0.85 : 0.30);
@@ -892,7 +913,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               // Commit success directly here
             } else {
               // Re-verify didn't help → fall through to failure
-              workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+              workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
               // Preserve agentic session context for retry (transcript, tokens, failure point)
               if (isAgenticResult && lastAgentResult) {
                 const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
@@ -921,7 +942,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               composite: pipelineConf?.composite,
               fromLevel: routing.level,
             });
-            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
               workingMemory.addPriorAttempt(summary);
@@ -942,7 +963,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               composite: pipelineConf?.composite,
               reason: 'Pipeline confidence below refuse threshold',
             });
-            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
               workingMemory.addPriorAttempt(summary);
@@ -976,7 +997,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             });
             if (!criticResult.approved) {
               const criticReason = criticResult.reason ?? 'Critic rejected proposal';
-              workingMemory.recordFailedApproach(trace.approach, `critic: ${criticReason}`);
+              workingMemory.recordFailedApproach(trace.approach, `critic: ${criticReason}`, criticResult.confidence, 'critic');
               continue; // retry within routing level
             }
 
@@ -1012,6 +1033,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             workingMemory.recordFailedApproach(
               trace.approach,
               `critic-error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+              0,
+              'critic',
             );
             continue; // retry within routing level
           }
@@ -1030,6 +1053,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               workingMemory.recordFailedApproach(
                 trace.approach,
                 `test-gen: ${testGenResult.failures.length} generated test(s) failed: ${failNames}`,
+                undefined,
+                'test-gen',
               );
               continue; // retry within routing level
             }
@@ -1211,7 +1236,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── FAILURE → record in working memory, retry ────────────────
-      workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown');
+      workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
 
       // G3: Emit context:verdict_omitted for failed oracle verdicts
       // These verdicts won't be in the worker's next context unless explicitly propagated

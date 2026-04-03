@@ -65,19 +65,20 @@ describe('WorkingMemory', () => {
 
   // ── Bounded eviction tests ─────────────────────────────────────────────────
 
-  test(`failedApproaches: FIFO eviction at cap (MAX=${MAX_FAILED_APPROACHES})`, () => {
+  test(`failedApproaches: evicts lowest confidence at cap (MAX=${MAX_FAILED_APPROACHES})`, () => {
     const wm = new WorkingMemory();
     for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
-      wm.recordFailedApproach(`approach-${i}`, `verdict-${i}`);
+      wm.recordFailedApproach(`approach-${i}`, `verdict-${i}`, (i + 1) * 0.05);
     }
     expect(wm.getSnapshot().failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
 
-    // Adding the 21st entry evicts approach-0 (oldest)
-    wm.recordFailedApproach('approach-new', 'verdict-new');
+    // Adding the 21st entry evicts approach-0 (lowest confidence = 0.05)
+    wm.recordFailedApproach('approach-new', 'verdict-new', 0.9);
     const snap = wm.getSnapshot();
     expect(snap.failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
-    expect(snap.failedApproaches[0]!.approach).toBe('approach-1');
-    expect(snap.failedApproaches[MAX_FAILED_APPROACHES - 1]!.approach).toBe('approach-new');
+    const names = snap.failedApproaches.map((f) => f.approach);
+    expect(names).not.toContain('approach-0');
+    expect(names).toContain('approach-new');
   });
 
   test(`activeHypotheses: evicts lowest confidence at cap (MAX=${MAX_HYPOTHESES})`, () => {
@@ -156,5 +157,79 @@ describe('WorkingMemory', () => {
     const snap2 = wm.getSnapshot();
     expect(snap2.failedApproaches).toHaveLength(1);
     expect(snap2.failedApproaches[0]!.approach).toBe('original');
+  });
+
+  // ── EO #8: Confidence-Aware Retry ──────────────────────────────────────────
+
+  test('recordFailedApproach stores verdictConfidence and failureOracle', () => {
+    const wm = new WorkingMemory();
+    wm.recordFailedApproach('bad approach', 'type error', 0.85, 'type');
+    const snap = wm.getSnapshot();
+    expect(snap.failedApproaches[0]!.verdictConfidence).toBe(0.85);
+    expect(snap.failedApproaches[0]!.failureOracle).toBe('type');
+  });
+
+  test('eviction removes lowest confidence approach instead of oldest', () => {
+    const wm = new WorkingMemory();
+    // Fill to capacity: first entry has low confidence, rest have high
+    wm.recordFailedApproach('low-conf', 'verdict-low', 0.1, 'ast');
+    for (let i = 1; i < MAX_FAILED_APPROACHES; i++) {
+      wm.recordFailedApproach(`high-conf-${i}`, `verdict-${i}`, 0.9, 'test');
+    }
+    expect(wm.getSnapshot().failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
+
+    // Trigger eviction — low-conf (0.1) should be evicted, not the oldest high-conf
+    wm.recordFailedApproach('new-entry', 'verdict-new', 0.8, 'lint');
+    const snap = wm.getSnapshot();
+    const names = snap.failedApproaches.map((f) => f.approach);
+    expect(names).not.toContain('low-conf');
+    expect(names).toContain('new-entry');
+  });
+
+  test('undefined confidence treated as 0.5 (neutral) for eviction priority', () => {
+    const wm = new WorkingMemory();
+    // Entry without confidence (undefined → 0.5 neutral for eviction)
+    wm.recordFailedApproach('no-conf', 'verdict-none');
+    // Entry with low explicit confidence — should be evicted before no-conf
+    wm.recordFailedApproach('low-conf', 'verdict-low', 0.1);
+    for (let i = 2; i < MAX_FAILED_APPROACHES; i++) {
+      wm.recordFailedApproach(`with-conf-${i}`, `verdict-${i}`, 0.7);
+    }
+    expect(wm.getSnapshot().failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
+
+    // Trigger eviction — low-conf (0.1) should be evicted before no-conf (0.5)
+    wm.recordFailedApproach('trigger', 'verdict-trigger', 0.6);
+    const snap = wm.getSnapshot();
+    const names = snap.failedApproaches.map((f) => f.approach);
+    expect(names).not.toContain('low-conf');
+    expect(names).toContain('no-conf'); // undefined treated as 0.5, kept over 0.1
+    expect(names).toContain('trigger');
+  });
+
+  test('backwards compatible: old 2-arg calls still work', () => {
+    const wm = new WorkingMemory();
+    wm.recordFailedApproach('legacy-call', 'some verdict');
+    const snap = wm.getSnapshot();
+    expect(snap.failedApproaches).toHaveLength(1);
+    expect(snap.failedApproaches[0]!.approach).toBe('legacy-call');
+    expect(snap.failedApproaches[0]!.verdictConfidence).toBeUndefined();
+    expect(snap.failedApproaches[0]!.failureOracle).toBeUndefined();
+  });
+
+  test('eviction picks correct minimum when confidences are mixed', () => {
+    const wm = new WorkingMemory();
+    const confidences = [0.5, 0.3, 0.8, 0.1, 0.6, 0.9, 0.4, 0.7, 0.2, 0.95,
+      0.55, 0.35, 0.85, 0.15, 0.65, 0.88, 0.45, 0.75, 0.25, 0.92];
+    for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
+      wm.recordFailedApproach(`approach-${i}`, `verdict-${i}`, confidences[i]);
+    }
+
+    // approach-3 has confidence 0.1 (lowest) — should be evicted
+    wm.recordFailedApproach('newcomer', 'verdict-new', 0.5);
+    const snap = wm.getSnapshot();
+    const names = snap.failedApproaches.map((f) => f.approach);
+    expect(names).not.toContain('approach-3');
+    expect(names).toContain('newcomer');
+    expect(snap.failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
   });
 });

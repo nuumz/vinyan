@@ -133,7 +133,7 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
           ? 'UNCERTAIN'
           : 'FAILED';
 
-  const qs = result.qualityScore
+  const qs = result.qualityScore && !Number.isNaN(result.qualityScore.composite)
     ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
     : '';
 

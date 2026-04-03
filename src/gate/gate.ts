@@ -21,7 +21,7 @@ import { verify as lintVerify } from '../oracle/lint/lint-verifier.ts';
 import { verify as testVerify } from '../oracle/test/test-verifier.ts';
 import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
-import type { RiskFactors } from '../orchestrator/types.ts';
+import type { RiskFactors, VerificationHint } from '../orchestrator/types.ts';
 import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
 import {
@@ -80,6 +80,8 @@ export interface GateRequest {
   session_id?: string;
   /** Optional — when provided, enables risk-tiered oracle selection (TDD §8). */
   riskScore?: number;
+  /** EO #3: Per-node verification hint — selectively run oracles based on mutation type. */
+  verificationHint?: VerificationHint;
 }
 
 export type GateDecision = 'allow' | 'block';
@@ -218,6 +220,14 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           const tier = ORACLE_TIERS[name] ?? 'structural';
           if (riskScore < 0.2) return false; // hash-only → skip all oracles
           if (riskScore < 0.4 && tier === 'full') return false; // structural → skip test oracle
+        }
+        // EO #3: Verification hint — skip oracles not in the hint's oracle list
+        if (request.verificationHint?.oracles && !(request.verificationHint.oracles as string[]).includes(name)) {
+          return false;
+        }
+        // EO #3: Skip test oracle for trivial mutations
+        if (request.verificationHint?.skipTestWhen && name === 'test') {
+          return false;
         }
         return true;
       })

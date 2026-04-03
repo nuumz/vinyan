@@ -6,11 +6,12 @@ import { createMockProvider } from '../../../src/orchestrator/llm/mock-provider.
 import { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
 import type {
   PerceptualHierarchy,
+  PerceptionRole,
   RoutingDecision,
   TaskInput,
   WorkingMemoryState,
 } from '../../../src/orchestrator/types.ts';
-import { createUnifiedDiff, WorkerPoolImpl } from '../../../src/orchestrator/worker/worker-pool.ts';
+import { createUnifiedDiff, pruneForRole, WorkerPoolImpl } from '../../../src/orchestrator/worker/worker-pool.ts';
 
 let tempDir: string;
 
@@ -204,5 +205,116 @@ describe('createUnifiedDiff', () => {
     const diff = createUnifiedDiff('f.ts', 'line1\n', '');
     expect(diff).toContain('@@ -1,');
     expect(diff).toContain('-line1');
+  });
+});
+
+// ── EO #2: Epistemic Information Barriers ─────────────────────────────
+
+describe('pruneForRole — EO #2 Information Barriers', () => {
+  function fullPerception(): PerceptualHierarchy {
+    return {
+      taskTarget: { file: 'src/foo.ts', description: 'Fix bug' },
+      dependencyCone: {
+        directImporters: ['src/bar.ts'],
+        directImportees: ['src/baz.ts'],
+        transitiveBlastRadius: 5,
+        transitiveImporters: ['src/deep.ts'],
+        affectedTestFiles: ['tests/foo.test.ts'],
+      },
+      diagnostics: {
+        lintWarnings: [{ file: 'src/foo.ts', line: 1, message: 'no-unused-vars' }],
+        typeErrors: [{ file: 'src/foo.ts', line: 2, message: 'Type error' }],
+        failingTests: ['tests/foo.test.ts'],
+      },
+      verifiedFacts: [],
+      runtime: { nodeVersion: 'v18', os: 'darwin', availableTools: ['file_read'] },
+      causalEdges: [{ source: 'src/a.ts', target: 'src/b.ts', type: 'import', weight: 1.0 }] as any,
+    };
+  }
+
+  function fullMemory(): WorkingMemoryState {
+    return {
+      failedApproaches: [
+        {
+          approach: 'add null check',
+          oracleVerdict: 'test oracle: 3 tests failed — TypeError at line 42, expected string got undefined',
+          timestamp: Date.now(),
+          verdictConfidence: 0.92,
+          failureOracle: 'test',
+        },
+        {
+          approach: 'wrap in try-catch',
+          oracleVerdict: 'type oracle: TS2345 — Argument of type number is not assignable to string',
+          timestamp: Date.now(),
+        },
+      ],
+      activeHypotheses: [{ hypothesis: 'missing null check', confidence: 0.8, source: 'generator' }],
+      unresolvedUncertainties: [],
+      scopedFacts: [],
+      priorAttempts: [{ taskId: 't-0', outcome: 'failed', summary: 'first attempt' }] as any,
+    };
+  }
+
+  test('generator role strips detailed oracle verdict text', () => {
+    const { memory } = pruneForRole(fullPerception(), fullMemory(), 'generator', 2);
+    expect(memory.failedApproaches[0]!.oracleVerdict).toBe('Failed: test oracle');
+    expect(memory.failedApproaches[1]!.oracleVerdict).toBe('Failed: verification');
+  });
+
+  test('generator role preserves verdictConfidence and failureOracle', () => {
+    const { memory } = pruneForRole(fullPerception(), fullMemory(), 'generator', 2);
+    expect(memory.failedApproaches[0]!.verdictConfidence).toBe(0.92);
+    expect(memory.failedApproaches[0]!.failureOracle).toBe('test');
+  });
+
+  test('generator L0/L1 strips transitive deps, causal edges, lint warnings', () => {
+    const { perception } = pruneForRole(fullPerception(), fullMemory(), 'generator', 1);
+    expect(perception.dependencyCone.transitiveImporters).toBeUndefined();
+    expect(perception.dependencyCone.affectedTestFiles).toBeUndefined();
+    expect(perception.diagnostics.lintWarnings).toHaveLength(0);
+    expect(perception.diagnostics.failingTests).toHaveLength(0);
+    expect(perception.causalEdges).toBeUndefined();
+    // Direct deps preserved
+    expect(perception.dependencyCone.directImporters).toEqual(['src/bar.ts']);
+    // Type errors preserved
+    expect(perception.diagnostics.typeErrors).toHaveLength(1);
+  });
+
+  test('generator L2+ preserves full perception', () => {
+    const original = fullPerception();
+    const { perception } = pruneForRole(original, fullMemory(), 'generator', 2);
+    expect(perception.dependencyCone.transitiveImporters).toEqual(['src/deep.ts']);
+    expect(perception.dependencyCone.affectedTestFiles).toEqual(['tests/foo.test.ts']);
+    expect(perception.diagnostics.lintWarnings).toHaveLength(1);
+    expect(perception.causalEdges).toBeDefined();
+  });
+
+  test('critic role strips priorAttempts', () => {
+    const { memory, perception } = pruneForRole(fullPerception(), fullMemory(), 'critic', 2);
+    expect(memory.priorAttempts).toBeUndefined();
+    // Critic keeps full perception
+    expect(perception.diagnostics.lintWarnings).toHaveLength(1);
+    // Critic keeps full failedApproaches (unmodified verdict text)
+    expect(memory.failedApproaches[0]!.oracleVerdict).toContain('test oracle: 3 tests failed');
+  });
+
+  test('testgen role returns full context unchanged', () => {
+    const p = fullPerception();
+    const m = fullMemory();
+    const { perception, memory } = pruneForRole(p, m, 'testgen', 2);
+    expect(perception).toBe(p); // same reference — no copy
+    expect(memory).toBe(m);
+  });
+
+  test('backwards compatible: works with old failedApproaches without verdictConfidence', () => {
+    const mem = fullMemory();
+    // Simulate old format — no verdictConfidence or failureOracle
+    mem.failedApproaches = [
+      { approach: 'old approach', oracleVerdict: 'some old verdict', timestamp: Date.now() },
+    ];
+    const { memory } = pruneForRole(fullPerception(), mem, 'generator', 2);
+    expect(memory.failedApproaches[0]!.oracleVerdict).toBe('Failed: verification');
+    expect(memory.failedApproaches[0]!.verdictConfidence).toBeUndefined();
+    expect(memory.failedApproaches[0]!.failureOracle).toBeUndefined();
   });
 });

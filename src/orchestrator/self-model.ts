@@ -15,6 +15,7 @@ import type {
   ExecutionTrace,
   PerceptualHierarchy,
   PredictionError,
+  ReasoningPolicy,
   SelfModelPrediction,
   TaskInput,
 } from './types.ts';
@@ -325,6 +326,43 @@ export class CalibratedSelfModel implements SelfModel {
       avgOracleConfidence: params.avgOracleConfidence,
       observationCount: params.observationCount,
       basis: params.observationCount < 10 ? 'insufficient' : params.observationCount < 30 ? 'emerging' : 'calibrated',
+    };
+  }
+
+  /**
+   * EO #6: Get Self-Model calibrated reasoning budget policy.
+   * Cold start (<10 observations): conservative default split.
+   * Calibrated (≥10): derive generation budget from historical quality score.
+   * Higher quality → less verification needed → more generation budget.
+   * Oracle priority follows A5 Tiered Trust: deterministic first.
+   */
+  getReasoningPolicy(taskTypeSignature: string): ReasoningPolicy {
+    const params = this.resolveTaskTypeParams(taskTypeSignature);
+
+    // Default policy (cold start: <10 observations)
+    if (params.observationCount < 10) {
+      return {
+        generationBudget: 0.65,
+        verificationBudget: 0.20,
+        contingencyReserve: 0.15,
+        oraclePriority: ['ast', 'type', 'dep', 'lint', 'test'],
+        basis: 'default',
+      };
+    }
+
+    // Calibrated: use avgQualityScore as signal for budget allocation.
+    // Higher quality → model generates well → allocate more to generation.
+    const qualitySignal = Math.min(1, Math.max(0, params.avgQualityScore));
+    const genBudget = Math.min(0.85, Math.max(0.4, 0.5 + qualitySignal * 0.3));
+    const contingency = 0.15;
+    const verifyBudget = 1.0 - genBudget - contingency;
+
+    return {
+      generationBudget: Math.round(genBudget * 100) / 100,
+      verificationBudget: Math.round(verifyBudget * 100) / 100,
+      contingencyReserve: contingency,
+      oraclePriority: ['ast', 'type', 'dep', 'lint', 'test'],
+      basis: 'calibrated',
     };
   }
 

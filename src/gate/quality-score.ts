@@ -49,12 +49,14 @@ export function computeQualityScore(
 
   let architecturalCompliance: number;
   if (entries.length === 0) {
-    // C3 fix: zero oracles is INDETERMINATE, not "perfect". Use NaN + unverified flag.
+    // Zero oracle verdicts — either no mutations (trivially safe) or all oracles abstained.
+    // Return efficiency-only score rather than NaN which breaks trace storage and aggregations.
+    // unverified: true preserves the signal that no structural oracle ran.
     return {
-      architecturalCompliance: NaN,
+      architecturalCompliance: 1.0,
       efficiency,
-      composite: NaN,
-      dimensionsAvailable: 0,
+      composite: efficiency * 0.4 + 1.0 * 0.6,
+      dimensionsAvailable: 1,
       phase: 'phase0',
       unverified: true,
     };

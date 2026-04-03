@@ -33,11 +33,20 @@ export class WorkingMemory {
     this.taskId = options?.taskId;
   }
 
-  recordFailedApproach(approach: string, oracleVerdict: string): void {
+  recordFailedApproach(approach: string, oracleVerdict: string, verdictConfidence?: number, failureOracle?: string): void {
     if (this.failedApproaches.length >= MAX_FAILED_APPROACHES) {
-      this.failedApproaches.shift(); // evict oldest
+      // EO #8: Evict lowest-confidence approach (least informative) instead of FIFO
+      // NOTE: undefined confidence → 0.5 (unknown ≠ low; treat as neutral)
+      let minIdx = 0;
+      for (let i = 1; i < this.failedApproaches.length; i++) {
+        const conf = this.failedApproaches[i]!.verdictConfidence ?? 0.5;
+        if (conf < (this.failedApproaches[minIdx]!.verdictConfidence ?? 0.5)) {
+          minIdx = i;
+        }
+      }
+      this.failedApproaches.splice(minIdx, 1);
     }
-    this.failedApproaches.push({ approach, oracleVerdict, timestamp: Date.now() });
+    this.failedApproaches.push({ approach, oracleVerdict, timestamp: Date.now(), verdictConfidence, failureOracle });
 
     // G3: Emit memory pressure warning for GAP-H FC4 detection
     if (this.bus && this.taskId && this.failedApproaches.length >= EVICTION_WARNING_THRESHOLD) {

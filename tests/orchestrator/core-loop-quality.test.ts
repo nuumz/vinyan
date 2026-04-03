@@ -118,10 +118,10 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
 
     const trace = orchestrator.traceCollector.getTraces()[0]!;
     if (trace.qualityScore) {
-      // C3 fix: zero-oracle case now returns NaN + unverified:true, NOT 1.0
-      // This is the correct epistemic behavior: absence of evidence ≠ perfect compliance
+      // Zero-oracle case returns unverified:true with neutral score (no NaN propagation)
       if (trace.qualityScore.unverified) {
-        expect(isNaN(trace.qualityScore.architecturalCompliance)).toBe(true);
+        expect(trace.qualityScore.architecturalCompliance).toBe(1.0);
+        expect(Number.isFinite(trace.qualityScore.composite)).toBe(true);
       } else {
         expect(trace.qualityScore.architecturalCompliance).toBeGreaterThanOrEqual(0);
       }

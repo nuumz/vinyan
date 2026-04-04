@@ -36,6 +36,7 @@ function insertTrace(
     taskTypeSig?: string;
     tokensConsumed?: number;
     durationMs?: number;
+    timestamp?: number;
   },
 ) {
   const id = `trace-${Math.random().toString(36).slice(2, 8)}`;
@@ -48,7 +49,7 @@ function insertTrace(
     [
       id,
       `task-${id}`,
-      Date.now(),
+      opts?.timestamp ?? Date.now(),
       1,
       'test approach',
       'claude-sonnet',
@@ -315,6 +316,57 @@ describe('WorkerStore', () => {
       const stats = store.getStatsSince('w1', futureTimestamp);
       expect(stats.totalTasks).toBe(0);
       expect(stats.successRate).toBe(0);
+    });
+  });
+
+  describe('getRecentStats (rolling window)', () => {
+    test('returns only the N most recent traces, excluding older ones', () => {
+      store.insert(makeProfile({ id: 'w1' }));
+      const now = Date.now();
+      // 2 older failure traces — inserted first (lower timestamp)
+      insertTrace(db, 'w1', { outcome: 'failure', qualityComposite: 0.1, timestamp: now - 5000 });
+      insertTrace(db, 'w1', { outcome: 'failure', qualityComposite: 0.2, timestamp: now - 4000 });
+      // 3 recent success traces — inserted after (higher timestamp)
+      insertTrace(db, 'w1', { outcome: 'success', qualityComposite: 0.9, timestamp: now - 1000 });
+      insertTrace(db, 'w1', { outcome: 'success', qualityComposite: 0.8, timestamp: now - 500 });
+      insertTrace(db, 'w1', { outcome: 'success', qualityComposite: 0.7, timestamp: now });
+
+      // Rolling window of 3 most recent: all 3 successes, failures excluded
+      const stats = store.getRecentStats('w1', 3);
+      expect(stats.totalTasks).toBe(3);
+      expect(stats.successRate).toBe(1.0); // only the 3 recent success traces
+      expect(stats.avgQualityScore).toBeCloseTo((0.9 + 0.8 + 0.7) / 3, 2);
+    });
+
+    test('taskTypeBreakdown is always empty (rolling window does not compute breakdown)', () => {
+      // getRecentStats uses a flat aggregation subquery — breakdown intentionally omitted (source line 190)
+      store.insert(makeProfile({ id: 'w1' }));
+      insertTrace(db, 'w1', { taskTypeSig: 'refactor::.ts' });
+      insertTrace(db, 'w1', { taskTypeSig: 'fix::.ts' });
+      const stats = store.getRecentStats('w1', 10);
+      expect(stats.taskTypeBreakdown).toEqual({}); // flat aggregation — breakdown not populated
+    });
+  });
+
+  describe('countTracesSince', () => {
+    test('counts only traces at or after the cutoff timestamp', () => {
+      store.insert(makeProfile({ id: 'w1' }));
+      const cutoff = Date.now();
+      insertTrace(db, 'w1', { timestamp: cutoff - 5000 }); // before cutoff — excluded
+      insertTrace(db, 'w1', { timestamp: cutoff + 1000 }); // after cutoff — included
+      insertTrace(db, 'w1', { timestamp: cutoff + 2000 }); // after cutoff — included
+      expect(store.countTracesSince('w1', cutoff)).toBe(2);
+    });
+
+    test('is isolated per worker — does not count other workers traces', () => {
+      store.insert(makeProfile({ id: 'w1' }));
+      store.insert(makeProfile({ id: 'w2' }));
+      const cutoff = Date.now();
+      insertTrace(db, 'w1', { timestamp: cutoff + 100 });
+      insertTrace(db, 'w2', { timestamp: cutoff + 100 });
+      insertTrace(db, 'w2', { timestamp: cutoff + 200 });
+      expect(store.countTracesSince('w1', cutoff)).toBe(1); // only w1's trace
+      expect(store.countTracesSince('w2', cutoff)).toBe(2); // only w2's traces
     });
   });
 

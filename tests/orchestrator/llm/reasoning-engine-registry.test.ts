@@ -258,19 +258,30 @@ describe('LLMReasoningEngine adapter', () => {
 // ── Non-LLM RE dispatch (RE-agnostic path) ────────────────────────────────────
 
 describe('Non-LLM RE dispatch through ReasoningEngineRegistry', () => {
-  test('symbolic RE returns content without calling LLM API', async () => {
+  test('execute() is called with the unmodified request — registry does not intercept payload', async () => {
+    // Verifies the dispatch path: registry.selectByCapability → engine.execute(request)
+    // The request must reach the engine intact (not mutated by the registry or adapter layer).
     const reg = new ReasoningEngineRegistry();
-    const sym = makeSymbolicRE('sym/verifier', ['symbolic-reasoning', 'verification']);
-    reg.register(sym);
+    let capturedReq: RERequest | undefined;
+    const spy: ReasoningEngine = {
+      id: 'sym/spy',
+      engineType: 'symbolic',
+      capabilities: ['verification'],
+      tier: 'fast',
+      async execute(req) {
+        capturedReq = req; // capture what the registry actually passed through
+        return { content: 'ok', toolCalls: [], tokensUsed: { input: 0, output: 0 }, engineId: 'sym/spy', terminationReason: 'completed' };
+      },
+    };
+    reg.register(spy);
 
-    const engine = reg.selectByCapability(['verification']);
-    expect(engine).toBeDefined();
-    expect(engine!.engineType).toBe('symbolic');
+    const engine = reg.selectByCapability(['verification'])!;
+    expect(engine.engineType).toBe('symbolic'); // registry picked the right engine
+    await engine.execute(makeRERequest({ userPrompt: 'verify this specifically' }));
 
-    const result = await engine!.execute(makeRERequest());
-    expect(result.content).toBe('symbolic:sym/verifier');
-    expect(result.engineId).toBe('sym/verifier');
-    expect(result.terminationReason).toBe('completed');
+    expect(capturedReq).toBeDefined(); // execute() was actually called
+    expect(capturedReq!.userPrompt).toBe('verify this specifically'); // request passed through intact
+    expect(capturedReq!.systemPrompt).toBe('You are a test assistant.'); // full request, not a partial
   });
 
   test('registry selects non-LLM RE over LLM when it uniquely has required capability', async () => {

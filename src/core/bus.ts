@@ -70,6 +70,8 @@ export interface VinyanBusEvents {
   'prediction:generated': { prediction: import('../orchestrator/forward-predictor-types.ts').OutcomePrediction };
   'prediction:calibration': { taskId: string; brierScore: number };
   'prediction:outcome-skipped': { predictionId: string; reason: string };
+  'prediction:miscalibrated': { taskId: string; brierScore: number; threshold: number };
+  'prediction:tier_upgraded': { taskId: string; fromBasis: string; toBasis: string };
 
   // World Graph
   'graph:fact': { fact: Fact };
@@ -126,6 +128,12 @@ export interface VinyanBusEvents {
   // Worker selection (Phase 4.4)
   'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
   'worker:exploration': { taskId: string; selectedWorkerId: string; defaultWorkerId: string };
+
+  // Warm pool observability (perf tuning)
+  'warmpool:hit': { taskId: string };
+  'warmpool:miss': { taskId: string; reason: 'all_busy' | 'not_initialized' };
+  'warmpool:timeout': { taskId: string; workerTaskCount: number; timeoutMs: number };
+  'warmpool:worker_replaced': { reason: 'timeout' | 'stdin_error' | 'parse_error'; taskCount: number };
 
   // Fleet governance (Phase 4.5)
   'fleet:convergence_warning': { giniScore: number; dominantWorkerId: string; allocation: number };

@@ -83,6 +83,9 @@ export interface OutcomePrediction {
 
   /** Overall confidence in this prediction (0.0-1.0). */
   confidence: number;
+
+  /** Set when tier was upgraded from a previous level (e.g. heuristic → statistical). */
+  upgradedFrom?: 'heuristic' | 'statistical';
 }
 
 /** A file at risk due to causal dependency on the task's target files. */
@@ -106,6 +109,8 @@ export interface PredictionOutcome {
   actualBlastRadius: number;
   actualQuality: number;
   actualDuration: number;
+  /** Files affected by the task — used for cache updates. */
+  affectedFiles?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +209,10 @@ export interface CalibrationSummary {
     actualFrequency: number;
     count: number;
   }>;
+  intervalScoreBlast?: number;
+  intervalScoreQuality?: number;
+  coverageBlast?: number;
+  coverageQuality?: number;
 }
 
 /** Learned edge weights after Bayesian update from traces. */
@@ -272,6 +281,9 @@ export interface ForwardPredictor {
 
   /** Record actual outcome and compute prediction error. Returns Brier score. */
   recordOutcome(outcome: PredictionOutcome): Promise<number>;
+
+  /** Update causal edge weights from observed outcomes. Closes the A7 calibration loop for Tier 3. */
+  updateEdgeWeights(observations: Array<{ edgeType: CausalEdgeType | 'imports'; brokeTarget: boolean }>): void;
 
   /** Get calibration summary: how accurate is the predictor? */
   getCalibrationSummary(): {

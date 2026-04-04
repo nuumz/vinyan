@@ -10,7 +10,15 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+
+/** Prefer pre-bundled JS worker if available (eliminates ~3.7s TS compilation per spawn). */
+function resolveWorkerEntryPath(): string {
+  const bundled = resolve(import.meta.dir, '../../../dist/worker-entry.js');
+  if (existsSync(bundled)) return bundled;
+  return resolve(import.meta.dir, 'worker-entry.ts');
+}
 import type { WorkerPool } from '../core-loop.ts';
+import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
@@ -63,6 +71,8 @@ export interface WorkerPoolConfig {
   useWarmPool?: boolean;
   /** Number of warm workers to maintain (default: 2). */
   warmPoolSize?: number;
+  /** Event bus for warm pool observability metrics. */
+  bus?: VinyanBus;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -157,24 +167,31 @@ interface WarmWorker {
   reader: LineReader;
   busy: boolean;
   taskCount: number;
+  consecutiveErrors: number;
 }
+
+/** Max consecutive errors before a warm worker is killed and replaced. */
+const WARM_WORKER_ERROR_THRESHOLD = 3;
 
 export class WarmWorkerPool {
   private workers: WarmWorker[] = [];
-  private initialized = false;
+  private _readyPromise: Promise<void>;
 
   constructor(
     private workerEntryPath: string,
     private env: Record<string, string | undefined>,
     private poolSize: number,
-  ) {}
+    private bus?: VinyanBus,
+  ) {
+    // Eager background init — start spawning immediately, don't block first acquire
+    this._readyPromise = Promise.all(
+      Array.from({ length: this.poolSize }, () => this.spawnWorker()),
+    ).then(() => {});
+  }
 
-  /** Lazily spawn warm workers on first acquire. */
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    this.initialized = true;
-    const spawns = Array.from({ length: this.poolSize }, () => this.spawnWorker());
-    await Promise.all(spawns);
+  /** Wait until all initial workers are ready. Used by tests only — production code never awaits this. */
+  waitForReady(): Promise<void> {
+    return this._readyPromise;
   }
 
   private async spawnWorker(): Promise<WarmWorker | null> {
@@ -211,7 +228,7 @@ export class WarmWorkerPool {
       }
 
       const stdin = proc.stdin as unknown as WarmWorker['stdin'];
-      const worker: WarmWorker = { proc, stdin, reader, busy: false, taskCount: 0 };
+      const worker: WarmWorker = { proc, stdin, reader, busy: false, taskCount: 0, consecutiveErrors: 0 };
       this.workers.push(worker);
 
       // Monitor process exit → remove from pool
@@ -227,7 +244,7 @@ export class WarmWorkerPool {
   }
 
   async acquire(): Promise<WarmWorker | null> {
-    await this.ensureInitialized();
+    // Non-blocking: return idle worker if any are ready, null → cold fallback
     const idle = this.workers.find((w) => !w.busy);
     if (idle) {
       idle.busy = true;
@@ -239,10 +256,14 @@ export class WarmWorkerPool {
   release(worker: WarmWorker): void {
     worker.busy = false;
     worker.taskCount++;
+    worker.consecutiveErrors = 0;
   }
 
   /** Kill a worker and remove it from the pool. Replacement spawns lazily on next acquire. */
-  kill(worker: WarmWorker): void {
+  kill(worker: WarmWorker, reason?: 'timeout' | 'stdin_error' | 'parse_error'): void {
+    if (reason) {
+      this.bus?.emit('warmpool:worker_replaced', { reason, taskCount: worker.taskCount });
+    }
     worker.busy = true; // prevent reuse
     const idx = this.workers.indexOf(worker);
     if (idx !== -1) this.workers.splice(idx, 1);
@@ -257,7 +278,6 @@ export class WarmWorkerPool {
       try { w.proc.kill(); } catch { /* ignore */ }
     }
     this.workers = [];
-    this.initialized = false;
   }
 
   get idleCount(): number {
@@ -280,6 +300,8 @@ export class WorkerPoolImpl implements WorkerPool {
   private _agentLoopDeps: AgentLoopDeps | null = null;
   private semaphores: Record<number, Semaphore>;
   private warmPool: WarmWorkerPool | null = null;
+  private warmPoolConfig: { enabled: boolean; poolSize: number } = { enabled: false, poolSize: 2 };
+  private bus?: VinyanBus;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -291,26 +313,37 @@ export class WorkerPoolImpl implements WorkerPool {
     if (!this.useSubprocess) {
       console.warn('[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.');
     }
-    this.workerEntryPath = config.workerEntryPath ?? resolve(import.meta.dir, 'worker-entry.ts');
+    this.workerEntryPath = config.workerEntryPath ?? resolveWorkerEntryPath();
+    this.bus = config.bus;
     this.semaphores = {
       1: new Semaphore(config.maxConcurrentSessions?.l1 ?? 5),
       2: new Semaphore(config.maxConcurrentSessions?.l2 ?? 3),
       3: new Semaphore(config.maxConcurrentSessions?.l3 ?? 1),
     };
 
-    // Initialize warm pool when subprocess mode is enabled (lazy spawn on first use)
-    const useWarm = config.useWarmPool ?? this.useSubprocess;
-    if (useWarm) {
-      const warmEnv = buildWorkerEnv(
-        { level: 2, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
-        this.proxySocketPath,
-      );
-      this.warmPool = new WarmWorkerPool(
-        this.workerEntryPath,
-        warmEnv,
-        config.warmPoolSize ?? 2,
-      );
-    }
+    // Defer warm pool creation — only spawn workers when first L2+ dispatch needs it.
+    // L1 tasks always use in-process dispatch, so warm pool startup would waste CPU.
+    this.warmPoolConfig = {
+      enabled: config.useWarmPool ?? this.useSubprocess,
+      poolSize: config.warmPoolSize ?? 2,
+    };
+  }
+
+  /** Lazily create warm pool on first subprocess dispatch (L2+). */
+  private ensureWarmPool(): WarmWorkerPool | null {
+    if (this.warmPool) return this.warmPool;
+    if (!this.warmPoolConfig.enabled) return null;
+    const warmEnv = buildWorkerEnv(
+      { level: 2, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
+      this.proxySocketPath,
+    );
+    this.warmPool = new WarmWorkerPool(
+      this.workerEntryPath,
+      warmEnv,
+      this.warmPoolConfig.poolSize,
+      this.bus,
+    );
+    return this.warmPool;
   }
 
   async dispatch(
@@ -462,12 +495,15 @@ export class WorkerPoolImpl implements WorkerPool {
   // ── Subprocess dispatch (production path) ───────────────────────────
 
   private async dispatchSubprocess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
-    // Try warm pool first — avoids ~50ms spawn + module load overhead
-    if (this.warmPool) {
-      const warm = await this.warmPool.acquire();
+    // Lazily init warm pool on first L2+ dispatch
+    const pool = this.ensureWarmPool();
+    if (pool) {
+      const warm = await pool.acquire();
       if (warm) {
+        this.bus?.emit('warmpool:hit', { taskId: workerInput.taskId });
         return this.dispatchWarm(warm, workerInput, routing);
       }
+      this.bus?.emit('warmpool:miss', { taskId: workerInput.taskId, reason: 'all_busy' });
     }
 
     // Cold spawn fallback
@@ -481,7 +517,7 @@ export class WorkerPoolImpl implements WorkerPool {
       worker.stdin.write(`${JSON.stringify(validated)}\n`);
     } catch {
       // stdin broken — worker died. Kill and fall back to cold spawn.
-      this.warmPool!.kill(worker);
+      this.warmPool!.kill(worker, 'stdin_error');
       return this.dispatchColdSubprocess(workerInput, routing);
     }
 
@@ -493,17 +529,29 @@ export class WorkerPoolImpl implements WorkerPool {
 
     if (line === null) {
       // Timeout or worker died — kill and replace
-      this.warmPool!.kill(worker);
+      this.bus?.emit('warmpool:timeout', {
+        taskId: workerInput.taskId,
+        workerTaskCount: worker.taskCount,
+        timeoutMs,
+      });
+      this.warmPool!.kill(worker, 'timeout');
       return emptyOutput(workerInput.taskId);
     }
 
-    // Release worker back to pool for reuse
-    this.warmPool!.release(worker);
-
     try {
       const raw = JSON.parse(line);
-      return WorkerOutputSchema.parse(raw);
+      const output = WorkerOutputSchema.parse(raw);
+      // Success — release worker back to pool for reuse
+      this.warmPool!.release(worker);
+      return output;
     } catch {
+      // Parse failure — track consecutive errors, kill after threshold
+      worker.consecutiveErrors++;
+      if (worker.consecutiveErrors >= WARM_WORKER_ERROR_THRESHOLD) {
+        this.warmPool!.kill(worker, 'parse_error');
+      } else {
+        this.warmPool!.release(worker);
+      }
       return emptyOutput(workerInput.taskId);
     }
   }

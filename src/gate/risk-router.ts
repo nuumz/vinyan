@@ -5,6 +5,7 @@
  * Phase 0 computes and logs; Phase 1 Orchestrator uses for actual routing.
  */
 import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, ThinkingConfig } from '../orchestrator/types.ts';
+import type { OutcomePrediction } from '../orchestrator/forward-predictor-types.ts';
 
 // ── Weights per TDD §6 ──────────────────────────────────────────
 
@@ -157,4 +158,37 @@ export function routeByRisk(
     ...LEVEL_CONFIG[level],
     ...(epistemicDeescalated ? { epistemicDeescalated } : {}),
   };
+}
+
+// ── Prediction-based escalation ──────────────────────────────────
+
+/**
+ * Apply ForwardPredictor causal risk to escalate routing level.
+ * Pure function — does not modify the original routing decision.
+ * Returns a new RoutingDecision with potentially escalated level.
+ */
+export function applyPredictionEscalation(
+  routing: RoutingDecision,
+  forwardPrediction: OutcomePrediction,
+): RoutingDecision {
+  let level = routing.level;
+
+  // If top causal risk file has >50% break probability → minimum L2
+  const topRisk = forwardPrediction.causalRiskFiles[0];
+  if (topRisk && topRisk.breakProbability > 0.5 && level < 2) {
+    level = 2 as RoutingLevel;
+  }
+
+  // If aggregate risk across all causal files > 0.7 → escalate to L3
+  if (forwardPrediction.causalRiskFiles.length > 0) {
+    const aggregateRisk = 1 - forwardPrediction.causalRiskFiles.reduce(
+      (product, r) => product * (1 - r.breakProbability), 1,
+    );
+    if (aggregateRisk > 0.7 && level < 3) {
+      level = 3 as RoutingLevel;
+    }
+  }
+
+  if (level === routing.level) return routing;
+  return { ...routing, level };
 }

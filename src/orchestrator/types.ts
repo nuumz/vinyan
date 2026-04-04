@@ -243,6 +243,8 @@ export interface SelfModelPrediction {
   uncertainAreas: string[];
   confidence: number; // 0.0–1.0
   metaConfidence: number; // forced < 0.3 when < 10 observations
+  /** Probability of passing — used by ForwardPredictor merge (C3). */
+  pPass?: number;
   basis: 'static-heuristic' | 'trace-calibrated' | 'hybrid';
   calibrationDataPoints: number;
   /** S1: Cold-start safeguard — force minimum routing level for first N tasks */
@@ -468,6 +470,10 @@ export interface ExecutionTrace {
   /** Prompt cache metrics for cost analysis. */
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** Forward Predictor prediction stored for calibration comparison (C3). */
+  forwardPrediction?: import('../orchestrator/forward-predictor-types.ts').OutcomePrediction;
+  /** Confidence-weighted merge of SelfModel + ForwardPredictor pPass (C3). */
+  mergedPPass?: number;
   /** EHD Phase 3: Aggregate verification confidence from the gate verdict. */
   verificationConfidence?: number;
   /** EHD Phase 3: 4-state epistemic decision from the gate. */
@@ -502,6 +508,8 @@ export interface TaskDAG {
     assignedOracles: string[];
     /** EO #3: Per-node verification hint — tells gate which oracles matter for this node */
     verificationHint?: VerificationHint;
+    /** Prediction-based risk score for fail-fast ordering (C2). */
+    riskScore?: number;
   }>;
   /** True when decomposition failed and a single-node fallback was used. */
   isFallback?: boolean;

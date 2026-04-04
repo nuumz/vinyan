@@ -61,6 +61,8 @@ import type { AgentLoopDeps } from './worker/agent-loop.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
 import { ForwardPredictorImpl } from './forward-predictor.ts';
+import { FileStatsCache } from './file-stats-cache.ts';
+import { PercentileCache } from './percentile-cache.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -270,6 +272,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workspace,
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
     proxySocketPath: llmProxy?.socketPath,
+    bus,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
@@ -369,6 +372,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         ledger: predictionLedger,
         worldGraph,
         config: fpConfig,
+        fileStatsCache: new FileStatsCache(),
+        percentileCache: new PercentileCache(),
       });
     }
   } catch {
@@ -705,6 +710,7 @@ export async function createOrchestratorAsync(
     workspace,
     useSubprocess: config.useSubprocess ?? true,
     proxySocketPath: llmProxy?.socketPath,
+    bus,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
@@ -801,6 +807,8 @@ export async function createOrchestratorAsync(
         ledger: predictionLedger,
         worldGraph,
         config: fpConfig,
+        fileStatsCache: new FileStatsCache(),
+        percentileCache: new PercentileCache(),
       });
     }
   } catch {

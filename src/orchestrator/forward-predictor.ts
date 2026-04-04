@@ -8,11 +8,12 @@
  * Axiom: A3 (deterministic governance — tier selection is rule-based)
  */
 import type { ForwardPredictorConfig } from '../config/schema.ts';
-import { PredictionLedger } from '../db/prediction-ledger.ts';
+import type { PredictionLedger } from '../db/prediction-ledger.ts';
 import { PredictionTierSelectorImpl } from '../gate/prediction-tier-selector.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { CalibrationEngineImpl } from './calibration-engine.ts';
 import { CausalPredictorImpl } from './causal-predictor.ts';
+import type { FileStatsCache } from './file-stats-cache.ts';
 import type {
   CausalRiskAnalysis,
   ForwardPredictor,
@@ -21,6 +22,7 @@ import type {
   StatisticalEnhancement,
 } from './forward-predictor-types.ts';
 import { OutcomePredictorImpl } from './outcome-predictor.ts';
+import type { PercentileCache } from './percentile-cache.ts';
 import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from './types.ts';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +36,10 @@ export interface ForwardPredictorDeps {
   ledger: PredictionLedger;
   worldGraph?: WorldGraph;
   config: ForwardPredictorConfig;
+  /** Optional in-memory cache for per-file outcome stats (µs reads). Falls back to ledger if absent. */
+  fileStatsCache?: FileStatsCache;
+  /** Optional in-memory cache for percentile distributions (µs reads). Falls back to ledger if absent. */
+  percentileCache?: PercentileCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,14 +63,22 @@ export class ForwardPredictorImpl implements ForwardPredictor {
   private readonly causalPredictor: CausalPredictorImpl;
   private readonly calibrationEngine: CalibrationEngineImpl;
 
+  private readonly fileStatsCache: FileStatsCache | undefined;
+  private readonly percentileCache: PercentileCache | undefined;
+
   /** Cached predictions for recordOutcome lookups. Oldest-first insertion order. */
   private readonly predictionCache = new Map<string, OutcomePrediction>();
+
+  /** Track last selected tier to detect upgrades. */
+  private lastBasis: 'heuristic' | 'statistical' | 'causal' = 'heuristic';
 
   constructor(deps: ForwardPredictorDeps) {
     this.selfModel = deps.selfModel;
     this.ledger = deps.ledger;
     this.worldGraph = deps.worldGraph;
     this.config = deps.config;
+    this.fileStatsCache = deps.fileStatsCache;
+    this.percentileCache = deps.percentileCache;
 
     this.tierSelector = new PredictionTierSelectorImpl({
       minTracesStatistical: deps.config.tiers.statistical.min_traces,
@@ -88,12 +102,8 @@ export class ForwardPredictorImpl implements ForwardPredictor {
     // ① SELECT TIER
     const traceCount = this.ledger.getTraceCount();
     const edgeCount = this.worldGraph?.getCausalEdgeCount() ?? 0;
-    const recentBrier = this.ledger.getRecentBrierScores(
-      this.config.calibration.miscalibration_window,
-    );
-    const avgBrier = recentBrier.length > 0
-      ? recentBrier.reduce((a, b) => a + b, 0) / recentBrier.length
-      : 0;
+    const recentBrier = this.ledger.getRecentBrierScores(this.config.calibration.miscalibration_window);
+    const avgBrier = recentBrier.length > 0 ? recentBrier.reduce((a, b) => a + b, 0) / recentBrier.length : 0;
     const miscalibrated = avgBrier > this.config.calibration.miscalibration_threshold;
     const tier = this.tierSelector.select(traceCount, edgeCount, miscalibrated);
 
@@ -105,10 +115,16 @@ export class ForwardPredictorImpl implements ForwardPredictor {
     if (tier === 'statistical' || tier === 'causal') {
       try {
         const targetFiles = input.targetFiles ?? [];
-        const fileStats = this.ledger.getFileOutcomeStats(targetFiles);
+        const fileStats = this.fileStatsCache
+          ? this.fileStatsCache.getFileOutcomeStats(targetFiles)
+          : this.ledger.getFileOutcomeStats(targetFiles);
         const taskType = input.goal.split(' ')[0] ?? 'unknown';
-        const blastPctiles = this.ledger.getPercentiles(taskType, [10, 50, 90]);
-        const qualityPctiles = this.ledger.getPercentiles(taskType, [10, 50, 90]);
+        const blastPctiles = this.percentileCache
+          ? this.percentileCache.getPercentiles(taskType)
+          : this.ledger.getPercentiles(taskType, [10, 50, 90]);
+        const qualityPctiles = this.percentileCache
+          ? this.percentileCache.getPercentiles(taskType)
+          : this.ledger.getPercentiles(taskType, [10, 50, 90]);
         const stats = this.outcomePredictor.enhance(heuristic, fileStats, blastPctiles, qualityPctiles);
         prediction = this.blendTier2(prediction, stats);
       } catch {
@@ -121,7 +137,9 @@ export class ForwardPredictorImpl implements ForwardPredictor {
       try {
         const edges = perception.causalEdges ?? [];
         const targetFiles = input.targetFiles ?? [];
-        const fileStats = this.ledger.getFileOutcomeStats(targetFiles);
+        const fileStats = this.fileStatsCache
+          ? this.fileStatsCache.getFileOutcomeStats(targetFiles)
+          : this.ledger.getFileOutcomeStats(targetFiles);
         const causal = this.causalPredictor.computeRisks(
           targetFiles,
           edges,
@@ -139,6 +157,13 @@ export class ForwardPredictorImpl implements ForwardPredictor {
     this.ledger.recordPrediction(prediction);
     this.cachePrediction(prediction);
 
+    // ⑥ DETECT TIER UPGRADE
+    const basisRank = { heuristic: 0, statistical: 1, causal: 2 } as const;
+    if (basisRank[prediction.basis] > basisRank[this.lastBasis] && this.lastBasis !== 'causal') {
+      prediction = { ...prediction, upgradedFrom: this.lastBasis };
+    }
+    this.lastBasis = prediction.basis;
+
     return prediction;
   }
 
@@ -154,21 +179,21 @@ export class ForwardPredictorImpl implements ForwardPredictor {
       return 0;
     }
 
-    const brierScore = this.calibrationEngine.scoreTestOutcome(
-      pred.testOutcome,
-      outcome.actualTestResult,
-    );
-    const crpsBlast = this.calibrationEngine.scoreContinuous(
-      pred.blastRadius,
-      outcome.actualBlastRadius,
-    );
-    const crpsQuality = this.calibrationEngine.scoreContinuous(
-      pred.qualityScore,
-      outcome.actualQuality,
-    );
+    const brierScore = this.calibrationEngine.scoreTestOutcome(pred.testOutcome, outcome.actualTestResult);
+    const crpsBlast = this.calibrationEngine.scoreContinuous(pred.blastRadius, outcome.actualBlastRadius);
+    const crpsQuality = this.calibrationEngine.scoreContinuous(pred.qualityScore, outcome.actualQuality);
 
     this.ledger.recordOutcome(outcome, brierScore, crpsBlast, crpsQuality);
     this.predictionCache.delete(outcome.predictionId);
+
+    // Update µs caches so future reads are served from memory
+    if (this.fileStatsCache && outcome.affectedFiles?.length) {
+      this.fileStatsCache.recordOutcome(outcome.affectedFiles, outcome.actualTestResult, outcome.actualQuality);
+    }
+    if (this.percentileCache) {
+      const taskType = pred.taskId.split(' ')[0] ?? 'unknown';
+      this.percentileCache.recordValue(taskType, outcome.actualBlastRadius);
+    }
 
     return brierScore;
   }
@@ -195,6 +220,19 @@ export class ForwardPredictorImpl implements ForwardPredictor {
   }
 
   // -----------------------------------------------------------------------
+  // updateEdgeWeights — Tier 3 calibration feedback (A7)
+  // -----------------------------------------------------------------------
+
+  updateEdgeWeights(
+    observations: Array<{
+      edgeType: import('./forward-predictor-types.ts').CausalEdgeType | 'imports';
+      brokeTarget: boolean;
+    }>,
+  ): void {
+    this.calibrationEngine.updateEdgeWeights(observations);
+  }
+
+  // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
 
@@ -203,7 +241,8 @@ export class ForwardPredictorImpl implements ForwardPredictor {
     taskId: string,
     confidence: number,
   ): OutcomePrediction {
-    const pPass = heuristic.expectedTestResults === 'pass' ? 0.7 : heuristic.expectedTestResults === 'partial' ? 0.3 : 0.1;
+    const pPass =
+      heuristic.expectedTestResults === 'pass' ? 0.7 : heuristic.expectedTestResults === 'partial' ? 0.3 : 0.1;
     const pFail = heuristic.expectedTestResults === 'fail' ? 0.7 : 0.1;
     const pPartial = 1.0 - pPass - pFail;
 

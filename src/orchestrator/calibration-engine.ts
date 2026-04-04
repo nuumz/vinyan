@@ -22,6 +22,7 @@ import { CAUSAL_EDGE_WEIGHTS } from './forward-predictor-types.ts';
 export interface CalibrationEngine {
   scoreTestOutcome(predicted: TestOutcomeDistribution, actual: 'pass' | 'partial' | 'fail'): number;
   scoreContinuous(predicted: PredictionDistribution, actual: number): number;
+  scoreInterval(predicted: PredictionDistribution, actual: number, kind?: 'blast' | 'quality'): number;
   getBrierDecomposition(): BrierDecomposition;
   getReliabilityDiagram(): ReliabilityDiagramData;
   getCalibrationSummary(): CalibrationSummary;
@@ -44,6 +45,13 @@ interface ScoredPrediction {
 interface ContinuousScore {
   kind: 'blast' | 'quality';
   crps: number;
+  timestamp: number;
+}
+
+interface IntervalScore {
+  kind: 'blast' | 'quality';
+  score: number;
+  insideInterval: boolean;
   timestamp: number;
 }
 
@@ -112,6 +120,7 @@ export class CalibrationEngineImpl implements CalibrationEngine {
 
   private scoredPredictions: ScoredPrediction[] = [];
   private continuousScores: ContinuousScore[] = [];
+  private intervalScores: IntervalScore[] = [];
   private edgeObservations: EdgeObservation[] = [];
   private currentWeights: Record<CausalEdgeType | 'imports', number>;
 
@@ -143,6 +152,29 @@ export class CalibrationEngineImpl implements CalibrationEngine {
     });
 
     return bs;
+  }
+
+  // -----------------------------------------------------------------------
+  // scoreInterval — Interval Score (Gneiting & Raftery 2007)
+  // IS = (hi - lo) + (2/α)(lo - x)·𝟙(x < lo) + (2/α)(x - hi)·𝟙(x > hi)
+  // α = 0.2 for 80% nominal coverage
+  // -----------------------------------------------------------------------
+
+  scoreInterval(predicted: PredictionDistribution, actual: number, kind: 'blast' | 'quality' = 'blast'): number {
+    const alpha = 0.2;
+    const spread = predicted.hi - predicted.lo;
+    const undershoot = actual < predicted.lo ? (2 / alpha) * (predicted.lo - actual) : 0;
+    const overshoot = actual > predicted.hi ? (2 / alpha) * (actual - predicted.hi) : 0;
+    const is = spread + undershoot + overshoot;
+
+    this.intervalScores.push({
+      kind,
+      score: is,
+      insideInterval: actual >= predicted.lo && actual <= predicted.hi,
+      timestamp: Date.now(),
+    });
+
+    return is;
   }
 
   // -----------------------------------------------------------------------
@@ -337,6 +369,23 @@ export class CalibrationEngineImpl implements CalibrationEngine {
       count: b.count,
     }));
 
+    // Interval scores by kind
+    const blastIntervals = this.intervalScores.filter((s) => s.kind === 'blast');
+    const qualityIntervals = this.intervalScores.filter((s) => s.kind === 'quality');
+
+    const intervalScoreBlast = blastIntervals.length > 0
+      ? blastIntervals.reduce((s, c) => s + c.score, 0) / blastIntervals.length
+      : undefined;
+    const intervalScoreQuality = qualityIntervals.length > 0
+      ? qualityIntervals.reduce((s, c) => s + c.score, 0) / qualityIntervals.length
+      : undefined;
+    const coverageBlast = blastIntervals.length > 0
+      ? blastIntervals.filter((s) => s.insideInterval).length / blastIntervals.length
+      : undefined;
+    const coverageQuality = qualityIntervals.length > 0
+      ? qualityIntervals.filter((s) => s.insideInterval).length / qualityIntervals.length
+      : undefined;
+
     return {
       brierScore: decomp.brierScore,
       brierReliability: decomp.reliability,
@@ -348,6 +397,10 @@ export class CalibrationEngineImpl implements CalibrationEngine {
       basis,
       edgeWeightsConverged: edgeWeights.converged,
       calibrationBins,
+      ...(intervalScoreBlast !== undefined && { intervalScoreBlast }),
+      ...(intervalScoreQuality !== undefined && { intervalScoreQuality }),
+      ...(coverageBlast !== undefined && { coverageBlast }),
+      ...(coverageQuality !== undefined && { coverageQuality }),
     };
   }
 

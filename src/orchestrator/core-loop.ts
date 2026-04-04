@@ -14,6 +14,9 @@
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
 import { buildComplexityContext, computeQualityScore } from '../gate/quality-score.ts';
+import { applyPredictionEscalation } from '../gate/risk-router.ts';
+import { type DAGExecutionResult, executeDAG, type NodeDispatcher } from './dag-executor.ts';
+import { type ConfidenceDecision, computePipelineConfidence, deriveConfidenceDecision } from './pipeline-confidence.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
@@ -30,10 +33,8 @@ import type {
   VerificationHint,
   WorkingMemoryState,
 } from './types.ts';
-import { computePipelineConfidence, deriveConfidenceDecision, type ConfidenceDecision } from './pipeline-confidence.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
 import { WorkingMemory } from './working-memory.ts';
-import { executeDAG, type DAGExecutionResult, type NodeDispatcher } from './dag-executor.ts';
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -71,7 +72,11 @@ export interface WorkerPool {
 }
 
 export interface OracleGate {
-  verify(mutations: Array<{ file: string; content: string }>, workspace: string, verificationHint?: import('./types.ts').VerificationHint): Promise<VerificationResult>;
+  verify(
+    mutations: Array<{ file: string; content: string }>,
+    workspace: string,
+    verificationHint?: import('./types.ts').VerificationHint,
+  ): Promise<VerificationResult>;
 }
 
 export interface TraceCollector {
@@ -162,8 +167,8 @@ function buildAgentSessionSummary(
     sessionId: `session-${Date.now()}`,
     attempt,
     outcome,
-    filesRead: result.mutations.filter(m => m.content !== null).map(m => m.file),
-    filesWritten: result.mutations.filter(m => m.content !== null).map(m => m.file),
+    filesRead: result.mutations.filter((m) => m.content !== null).map((m) => m.file),
+    filesWritten: result.mutations.filter((m) => m.content !== null).map((m) => m.file),
     turnsCompleted: result.transcript.length,
     tokensConsumed: result.tokensConsumed,
     failurePoint: result.uncertainties[0] ?? 'unknown',
@@ -212,7 +217,41 @@ function mapTraceToFPOutcome(
     actualBlastRadius: trace.affectedFiles?.length ?? 0,
     actualQuality: trace.qualityScore?.composite ?? 0.5,
     actualDuration: trace.durationMs,
+    affectedFiles: trace.affectedFiles,
   };
+}
+
+/**
+ * Confidence-weighted merge of SelfModel and ForwardPredictor predictions.
+ * w_fp = forwardPrediction.confidence, w_sm = 1 - fp.confidence.
+ * Pure function — returns merged pPass.
+ */
+export function mergeForwardAndSelfModel(
+  selfModelPrediction: SelfModelPrediction,
+  forwardPrediction: import('./forward-predictor-types.ts').OutcomePrediction,
+): number {
+  const wFp = forwardPrediction.confidence;
+  const wSm = 1 - wFp;
+  const smPPass = selfModelPrediction.pPass ?? 0.5;
+  const fpPPass = forwardPrediction.testOutcome.pPass;
+  return wFp * fpPPass + wSm * smPPass;
+}
+
+/**
+ * Score plan nodes by causal risk and reorder for fail-fast execution.
+ * Mutates plan.nodes order. Nodes with highest risk execute first.
+ */
+export function scorePlanByPrediction(
+  plan: TaskDAG,
+  forwardPrediction: import('./forward-predictor-types.ts').OutcomePrediction,
+): void {
+  if (!forwardPrediction.causalRiskFiles.length) return;
+  for (const node of plan.nodes) {
+    const matchingRisks = forwardPrediction.causalRiskFiles.filter((r) => node.targetFiles.includes(r.filePath));
+    node.riskScore = matchingRisks.reduce((sum, r) => sum + r.breakProbability, 0);
+  }
+  // Sort: highest risk first → fail fast
+  plan.nodes.sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0));
 }
 
 /**
@@ -370,8 +409,22 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             ]);
             if (forwardPrediction) {
               deps.bus?.emit('prediction:generated', { prediction: forwardPrediction });
+              if (forwardPrediction.upgradedFrom) {
+                deps.bus?.emit('prediction:tier_upgraded', {
+                  taskId: input.id,
+                  fromBasis: forwardPrediction.upgradedFrom,
+                  toBasis: forwardPrediction.basis,
+                });
+              }
             }
-          } catch { /* FP failure — proceed with selfModel only */ }
+          } catch {
+            /* FP failure — proceed with selfModel only */
+          }
+        }
+
+        // C1: Apply prediction-based routing escalation
+        if (forwardPrediction) {
+          routing = applyPredictionEscalation(routing, forwardPrediction);
         }
 
         // S1: Cold-start safeguard — enforce minimum routing level
@@ -479,6 +532,11 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         }
       }
 
+      // C2: Score plan nodes by causal risk → reorder for fail-fast
+      if (plan && forwardPrediction) {
+        scorePlanByPrediction(plan, forwardPrediction);
+      }
+
       // ── Step 3.5: APPROVAL GATE (A6 — human-in-the-loop for high-risk tasks) ──
       if (deps.approvalGate && routing.riskScore != null && routing.riskScore >= 0.8) {
         const decision = await deps.approvalGate.requestApproval(
@@ -546,36 +604,51 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               fileConflicts: dagResult.fileConflicts.length,
             });
             workerResult = {
-              mutations: dagResult.results.flatMap((r) => r.mutations.map((m) => ({
-                file: m.file,
-                content: m.content,
-                diff: m.diff ?? '',
-                explanation: m.explanation ?? '',
-              }))),
+              mutations: dagResult.results.flatMap((r) =>
+                r.mutations.map((m) => ({
+                  file: m.file,
+                  content: m.content,
+                  diff: m.diff ?? '',
+                  explanation: m.explanation ?? '',
+                })),
+              ),
               proposedToolCalls: [],
               tokensConsumed: dagResult.totalTokens,
               durationMs: dagResult.totalDurationMs,
             };
           } else {
             // Single-node or fallback: direct dispatch (TDD: L0 < 100ms, L1 < 2s)
-            workerResult = await deps.workerPool.dispatch(input, perception, workingMemory.getSnapshot(), plan, routing);
+            workerResult = await deps.workerPool.dispatch(
+              input,
+              perception,
+              workingMemory.getSnapshot(),
+              plan,
+              routing,
+            );
           }
         } else {
           // L2+: agentic loop (multi-turn with tools)
           const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
           const { runAgentLoop } = await import('./worker/agent-loop.ts');
           lastAgentResult = await runAgentLoop(
-            input, perception, workingMemory.getSnapshot(), plan, routing, agentLoopDeps,
+            input,
+            perception,
+            workingMemory.getSnapshot(),
+            plan,
+            routing,
+            agentLoopDeps,
           );
           isAgenticResult = true;
           // Adapt WorkerLoopResult → WorkerResult for downstream compatibility
           workerResult = {
-            mutations: lastAgentResult.mutations.filter(m => m.content !== null).map(m => ({
-              file: m.file,
-              content: m.content ?? '',
-              diff: m.diff,
-              explanation: m.explanation,
-            })),
+            mutations: lastAgentResult.mutations
+              .filter((m) => m.content !== null)
+              .map((m) => ({
+                file: m.file,
+                content: m.content ?? '',
+                diff: m.diff,
+                explanation: m.explanation,
+              })),
             proposedToolCalls: lastAgentResult.proposedToolCalls,
             uncertainties: lastAgentResult.uncertainties,
             tokensConsumed: lastAgentResult.tokensConsumed,
@@ -599,10 +672,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
         // Answer quality gate: reasoning tasks must produce non-empty answer
         if (input.taskType === 'reasoning' && !workerResult.proposedContent?.trim()) {
-          workingMemory.recordFailedApproach(
-            `Empty answer at L${routing.level}`,
-            'answer-quality-gate',
-          );
+          workingMemory.recordFailedApproach(`Empty answer at L${routing.level}`, 'answer-quality-gate');
           continue; // retry with next escalation level
         }
 
@@ -700,9 +770,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         if (nodeHints.length > 0) {
           const allOracleSets = nodeHints.filter((h) => h.oracles).map((h) => h.oracles!);
           // Union all oracle sets — DAG touches multiple nodes, need all relevant oracles
-          const mergedOracles = allOracleSets.length > 0
-            ? [...new Set(allOracleSets.flat())] as VerificationHint['oracles']
-            : undefined;
+          const mergedOracles =
+            allOracleSets.length > 0 ? ([...new Set(allOracleSets.flat())] as VerificationHint['oracles']) : undefined;
           const mergedSkip = nodeHints.find((h) => h.skipTestWhen)?.skipTestWhen;
           activeHint = { oracles: mergedOracles, skipTestWhen: mergedSkip };
         }
@@ -787,8 +856,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       );
 
       // ── Injection B: Compute pipeline confidence (L1+ only) ──────
-      const verificationConfidence = verification.aggregateConfidence
-        ?? (verification.passed ? 0.85 : 0.30);
+      const verificationConfidence = verification.aggregateConfidence ?? (verification.passed ? 0.85 : 0.3);
 
       let pipelineConf: ReturnType<typeof computePipelineConfidence> | undefined;
       let confidenceDecision: ConfidenceDecision | undefined;
@@ -813,9 +881,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
       // Injection D: determine outcome using confidence decision when available
       const effectiveOutcome: ExecutionTrace['outcome'] =
-        (routing.level === 0 || !confidenceDecision)
-          ? (verification.passed ? 'success' : 'failure')
-          : (confidenceDecision === 'allow' ? 'success' : 'failure');
+        routing.level === 0 || !confidenceDecision
+          ? verification.passed
+            ? 'success'
+            : 'failure'
+          : confidenceDecision === 'allow'
+            ? 'success'
+            : 'failure';
 
       const trace: ExecutionTrace = {
         id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
@@ -836,6 +908,9 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         affectedFiles: workerResult.mutations.map((m) => m.file),
         qualityScore,
         prediction,
+        forwardPrediction,
+        mergedPPass:
+          prediction && forwardPrediction ? mergeForwardAndSelfModel(prediction, forwardPrediction) : undefined,
         oracleFailurePattern,
         exploration: explorationFlag || undefined,
         workerSelectionAudit: workerSelection,
@@ -843,15 +918,19 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         // Injection D: populate pipeline confidence fields
         verificationConfidence: routing.level > 0 ? verificationConfidence : undefined,
         epistemicDecision: verification.epistemicDecision,
-        confidenceDecision: confidenceDecision ? {
-          action: confidenceDecision,
-          confidence: pipelineConf?.composite ?? 0,
-          reason: pipelineConf?.formula,
-        } : undefined,
-        pipelineConfidence: pipelineConf ? {
-          composite: pipelineConf.composite,
-          formula: pipelineConf.formula,
-        } : undefined,
+        confidenceDecision: confidenceDecision
+          ? {
+              action: confidenceDecision,
+              confidence: pipelineConf?.composite ?? 0,
+              reason: pipelineConf?.formula,
+            }
+          : undefined,
+        pipelineConfidence: pipelineConf
+          ? {
+              composite: pipelineConf.composite,
+              formula: pipelineConf.formula,
+            }
+          : undefined,
       };
 
       // ── Step 6: LEARN — see calibrate + record block after confidence decision switch ──
@@ -889,9 +968,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ── Injection C: Confidence-driven decision routing ──────────
       // Determine whether to take the success path based on confidence decision (L1+)
       // or binary verification result (L0).
-      const shouldCommit = routing.level === 0 || !confidenceDecision
-        ? verification.passed
-        : confidenceDecision === 'allow';
+      const shouldCommit =
+        routing.level === 0 || !confidenceDecision ? verification.passed : confidenceDecision === 'allow';
 
       // Handle re-verify, escalate, refuse for L1+ before the main success/failure branch
       let shouldContinue = false;
@@ -914,8 +992,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               input.targetFiles?.[0] ?? '.',
               activeHint,
             );
-            const reVerConfidence = reVerification.aggregateConfidence
-              ?? (reVerification.passed ? 0.85 : 0.30);
+            const reVerConfidence = reVerification.aggregateConfidence ?? (reVerification.passed ? 0.85 : 0.3);
             const reVerPipeline = computePipelineConfidence({
               prediction: predictionConfidence,
               metaPrediction: metaPredictionConfidence,
@@ -942,7 +1019,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               // Commit success directly here
             } else {
               // Re-verify didn't help → fall through to failure
-              workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
+              workingMemory.recordFailedApproach(
+                trace.approach,
+                verification.reason ?? 'unknown',
+                verificationConfidence,
+                failedOracles[0],
+              );
               // Preserve agentic session context for retry (transcript, tokens, failure point)
               if (isAgenticResult && lastAgentResult) {
                 const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
@@ -971,7 +1053,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               composite: pipelineConf?.composite,
               fromLevel: routing.level,
             });
-            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
+            workingMemory.recordFailedApproach(
+              trace.approach,
+              verification.reason ?? 'unknown',
+              verificationConfidence,
+              failedOracles[0],
+            );
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
               workingMemory.addPriorAttempt(summary);
@@ -993,7 +1080,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               composite: pipelineConf?.composite,
               reason: 'Pipeline confidence below refuse threshold',
             });
-            workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
+            workingMemory.recordFailedApproach(
+              trace.approach,
+              verification.reason ?? 'unknown',
+              verificationConfidence,
+              failedOracles[0],
+            );
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
               workingMemory.addPriorAttempt(summary);
@@ -1033,8 +1125,28 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           if (fpOutcome) {
             const brierScore = await deps.forwardPredictor.recordOutcome(fpOutcome);
             deps.bus?.emit('prediction:calibration', { taskId: input.id, brierScore });
+            // C4: Miscalibration alert when Brier exceeds threshold
+            if (brierScore > 1.0) {
+              deps.bus?.emit('prediction:miscalibrated', { taskId: input.id, brierScore, threshold: 1.0 });
+            }
+
+            // Tier 3 edge weight feedback: extract edge observations from causal chain
+            if (forwardPrediction.causalRiskFiles.length > 0) {
+              const brokeTarget = fpOutcome.actualTestResult !== 'pass';
+              const edgeObs = forwardPrediction.causalRiskFiles.flatMap((risk) =>
+                risk.causalChain.map((link) => ({
+                  edgeType: link.edgeType,
+                  brokeTarget,
+                })),
+              );
+              if (edgeObs.length > 0) {
+                deps.forwardPredictor.updateEdgeWeights(edgeObs);
+              }
+            }
           }
-        } catch { /* FP calibration failure — non-critical */ }
+        } catch {
+          /* FP calibration failure — non-critical */
+        }
       }
 
       // PH6: Compress transcript into trace for storage (Step 43)
@@ -1072,7 +1184,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             });
             if (!criticResult.approved) {
               const criticReason = criticResult.reason ?? 'Critic rejected proposal';
-              workingMemory.recordFailedApproach(trace.approach, `critic: ${criticReason}`, criticResult.confidence, 'critic');
+              workingMemory.recordFailedApproach(
+                trace.approach,
+                `critic: ${criticReason}`,
+                criticResult.confidence,
+                'critic',
+              );
               continue; // retry within routing level
             }
 
@@ -1218,9 +1335,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           const decayModels = Object.values(verification.verdicts)
             .map((v) => v.temporalContext?.decayModel)
             .filter(Boolean) as string[];
-          const factDecayModel = decayModels.length > 0
-            ? (decayModels.includes('exponential') ? 'exponential' as const : decayModels[0] as 'linear' | 'step' | 'none' | 'exponential')
-            : undefined;
+          const factDecayModel =
+            decayModels.length > 0
+              ? decayModels.includes('exponential')
+                ? ('exponential' as const)
+                : (decayModels[0] as 'linear' | 'step' | 'none' | 'exponential')
+              : undefined;
 
           try {
             for (const file of commitResult.applied) {
@@ -1311,7 +1431,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── FAILURE → record in working memory, retry ────────────────
-      workingMemory.recordFailedApproach(trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0]);
+      workingMemory.recordFailedApproach(
+        trace.approach,
+        verification.reason ?? 'unknown',
+        verificationConfidence,
+        failedOracles[0],
+      );
 
       // G3: Emit context:verdict_omitted for failed oracle verdicts
       // These verdicts won't be in the worker's next context unless explicitly propagated

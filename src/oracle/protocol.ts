@@ -1,4 +1,8 @@
 import { z } from 'zod/v4';
+import { SubjectiveOpinionSchema as _SOS } from '../core/subjective-opinion.ts';
+
+// Re-export SubjectiveOpinionSchema for protocol consumers
+export { SubjectiveOpinionSchema } from '../core/subjective-opinion.ts';
 
 /** Zod schema for validating oracle input (HypothesisTuple). */
 export const HypothesisTupleSchema = z.object({
@@ -34,6 +38,7 @@ export const OracleErrorCodeSchema = z.enum([
   'TYPE_MISMATCH',
   'SYMBOL_NOT_FOUND',
   'ORACLE_CRASH',
+  'GUARDRAIL_BLOCKED',
 ]);
 
 /** Zod schema for validating oracle output (OracleVerdict). */
@@ -55,7 +60,7 @@ const TemporalContextSchema = z.object({
 export const OracleVerdictSchema = z.object({
   verified: z.boolean(),
   type: z.enum(['known', 'unknown', 'uncertain', 'contradictory']).default('known'),
-  confidence: z.number().min(0).max(1).default(1.0),
+  confidence: z.number().min(0).max(1).default(0.5),
   evidence: z.array(EvidenceSchema),
   falsifiableBy: z.array(z.string()).optional(),
   fileHashes: z.record(z.string(), z.string()),
@@ -66,4 +71,11 @@ export const OracleVerdictSchema = z.object({
   qualityScore: QualityScoreSchema.optional(),
   deliberationRequest: DeliberationRequestSchema.optional(),
   temporalContext: TemporalContextSchema.optional(),
+
+  // ── ECP v2 additions (all optional for backward compat) ──
+  opinion: _SOS.optional(),
+  tierReliability: z.number().min(0).max(1).optional(),
+  engineCertainty: z.number().min(0).max(1).optional(),
+  confidenceSource: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),
+  confidenceReported: z.boolean().optional(),
 });

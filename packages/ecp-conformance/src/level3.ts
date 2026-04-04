@@ -96,6 +96,43 @@ export function validateLevel3Verdict(verdictJson: string): Level3Check[] {
     });
   }
 
+  // C6 (ECP v2): If tierReliability present, must be in [0, 1]
+  const tierReliability = verdict.tierReliability as number | undefined;
+  if (tierReliability != null) {
+    checks.push({
+      name: 'tier-reliability-range',
+      passed: tierReliability >= 0 && tierReliability <= 1,
+      error: tierReliability < 0 || tierReliability > 1
+        ? `tierReliability ${tierReliability} out of [0, 1] range`
+        : undefined,
+    });
+  }
+
+  // C7 (ECP v2): If engineCertainty present, must be in [0, 1]
+  const engineCertainty = verdict.engineCertainty as number | undefined;
+  if (engineCertainty != null) {
+    checks.push({
+      name: 'engine-certainty-range',
+      passed: engineCertainty >= 0 && engineCertainty <= 1,
+      error: engineCertainty < 0 || engineCertainty > 1
+        ? `engineCertainty ${engineCertainty} out of [0, 1] range`
+        : undefined,
+    });
+  }
+
+  // C8 (ECP v2): confidenceSource must be a valid enum if present
+  const confidenceSource = verdict.confidenceSource as string | undefined;
+  if (confidenceSource != null) {
+    const validSources = ['evidence-derived', 'self-model-calibrated', 'llm-self-report'];
+    checks.push({
+      name: 'confidence-source-valid',
+      passed: validSources.includes(confidenceSource),
+      error: !validSources.includes(confidenceSource)
+        ? `Unknown confidenceSource: ${confidenceSource}`
+        : undefined,
+    });
+  }
+
   return checks;
 }
 

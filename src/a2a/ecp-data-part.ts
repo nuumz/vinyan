@@ -93,7 +93,7 @@ export type EpistemicType = z.infer<typeof EpistemicTypeSchema>;
 // ── ECP Data Part (main schema) ────────────────────────────────────────
 
 export const ECPDataPartSchema = z.object({
-  ecp_version: z.literal(1),
+  ecp_version: z.literal(1).default(1),
   message_type: ECPMessageTypeSchema,
   epistemic_type: EpistemicTypeSchema,
   confidence: z.number().min(0).max(1),
@@ -117,6 +117,11 @@ export const ECPDataPartSchema = z.object({
   payload: z.unknown(),
   signer: SignerSchema.optional(),
   signature: z.string().optional(),
+
+  // ── ECP v2 wire-format additions (all optional for backward compat) ──
+  tier_reliability: z.number().min(0).max(1).optional(),
+  engine_certainty: z.number().min(0).max(1).optional(),
+  confidence_source: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),
 });
 
 export type ECPDataPart = z.infer<typeof ECPDataPartSchema>;

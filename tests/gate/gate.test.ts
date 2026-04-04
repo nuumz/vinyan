@@ -9,6 +9,7 @@ import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
+import { clearConfigCache } from '../../src/config/loader.ts';
 
 // ── Workspace setup ─────────────────────────────────────────────
 
@@ -112,6 +113,8 @@ describe('Oracle Gate', () => {
   });
 
   test('respects oracle enabled=false config', async () => {
+    // Clear config cache so the new vinyan.json is picked up
+    clearConfigCache();
     // Create a vinyan.json that disables the type oracle
     const configPath = join(workspace, 'vinyan.json');
     const hadConfig = existsSync(configPath);
@@ -149,6 +152,7 @@ describe('Oracle Gate', () => {
       } else {
         rmSync(configPath, { force: true });
       }
+      clearConfigCache();
     }
   });
 

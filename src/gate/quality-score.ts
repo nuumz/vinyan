@@ -52,10 +52,11 @@ export function computeQualityScore(
     // Zero oracle verdicts — either no mutations (trivially safe) or all oracles abstained.
     // Return efficiency-only score rather than NaN which breaks trace storage and aggregations.
     // unverified: true preserves the signal that no structural oracle ran.
+    // ECP v2: Changed from 1.0 to 0.5 — unknown state = maximum uncertainty, not assumed perfect.
     return {
-      architecturalCompliance: 1.0,
+      architecturalCompliance: 0.5,
       efficiency,
-      composite: efficiency * 0.4 + 1.0 * 0.6,
+      composite: efficiency * 0.4 + 0.5 * 0.6,
       dimensionsAvailable: 1,
       phase: 'phase0',
       unverified: true,
@@ -159,5 +160,67 @@ export function buildComplexityContext(
   return {
     originalSource: originals.join('\n'),
     mutatedSource: mutated.join('\n'),
+  };
+}
+
+// ── ECP v2: Pipeline-split helpers (DE4) ────────────────────────────
+
+/**
+ * Compute architecturalCompliance directly from oracle verdicts.
+ * Extracted from computeQualityScore Dimension 1 for reuse in post-fusion recalibration.
+ */
+export function computeFromVerdicts(
+  oracleResults: Record<string, OracleVerdict>,
+  oracleTiers?: Record<string, string>,
+): number {
+  const entries = Object.entries(oracleResults);
+  if (entries.length === 0) return 0.5; // ECP v2: unknown = maximum uncertainty
+
+  if (oracleTiers) {
+    let weightedSum = 0;
+    let totalWeight = 0;
+    for (const [name, verdict] of entries) {
+      const tier = oracleTiers[name] ?? 'deterministic';
+      const weight = TIER_WEIGHTS[tier] ?? 1.0;
+      weightedSum += (verdict.verified ? 1 : 0) * weight;
+      totalWeight += weight;
+    }
+    return totalWeight > 0 ? weightedSum / totalWeight : 0.5;
+  }
+
+  return entries.filter(([, v]) => v.verified).length / entries.length;
+}
+
+/**
+ * Recalibrate a QualityScore with SL fused probability (post-conflict-resolution).
+ * Replaces architecturalCompliance with fusedConfidence and recomputes composite.
+ * DE4: Quality score reflects epistemic state after fusion, not just raw pass/fail ratios.
+ */
+export function recalibrateWithFusion(
+  score: QualityScore,
+  fusedConfidence: number,
+): QualityScore {
+  const architecturalCompliance = fusedConfidence;
+  const dims = score.dimensionsAvailable;
+
+  let composite: number;
+  if (dims === 4) {
+    composite =
+      architecturalCompliance * 0.3 +
+      score.efficiency * 0.2 +
+      (score.simplificationGain ?? 0) * 0.25 +
+      (score.testPresenceHeuristic ?? 0) * 0.25;
+  } else if (dims === 3 && score.simplificationGain != null) {
+    composite = architecturalCompliance * 0.35 + score.efficiency * 0.25 + score.simplificationGain * 0.4;
+  } else if (dims === 3 && score.testPresenceHeuristic != null) {
+    composite = architecturalCompliance * 0.35 + score.efficiency * 0.25 + score.testPresenceHeuristic * 0.4;
+  } else {
+    composite = architecturalCompliance * 0.6 + score.efficiency * 0.4;
+  }
+
+  return {
+    ...score,
+    architecturalCompliance,
+    composite,
   };
 }

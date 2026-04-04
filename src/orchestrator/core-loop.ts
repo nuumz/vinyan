@@ -50,7 +50,7 @@ export interface RiskRouter {
 
 export interface SelfModel {
   predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction>;
-  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace): PredictionError | undefined;
+  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace, engineCertaintyMap?: Record<string, number>): PredictionError | undefined;
   /** EO #6: Get Self-Model calibrated reasoning budget policy for a task type. */
   getReasoningPolicy?(taskTypeSignature: string): ReasoningPolicy;
 }
@@ -1106,7 +1106,18 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // but BEFORE shouldContinue check so ALL paths (refuse/escalate/success) record traces
       if (prediction && deps.selfModel.calibrate) {
         try {
-          const predictionError = deps.selfModel.calibrate(prediction, trace);
+          // ECP v2 (DE2): Extract engineCertainty map from oracle verdicts for calibration
+          const engineCertaintyMap: Record<string, number> = {};
+          for (const [name, v] of Object.entries(verification.verdicts)) {
+            if (v.engineCertainty != null) {
+              engineCertaintyMap[name] = v.engineCertainty;
+            }
+          }
+          const predictionError = deps.selfModel.calibrate(
+            prediction,
+            trace,
+            Object.keys(engineCertaintyMap).length > 0 ? engineCertaintyMap : undefined,
+          );
           if (predictionError) {
             trace.predictionError = predictionError;
           }

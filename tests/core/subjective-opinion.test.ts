@@ -165,13 +165,14 @@ describe('resolveOpinion', () => {
 
   test('falls back to fromScalar when no opinion provided', () => {
     const result = resolveOpinion({ confidence: 0.75 });
-    expect(result).toEqual(fromScalar(0.75));
+    // resolveOpinion defaults to defaultUncertainty=0.3
+    expect(result).toEqual(fromScalar(0.75, 0.5, 0.3));
   });
 
   test('falls back to fromScalar when opinion is invalid', () => {
     const invalidOpinion = { belief: 0.5, disbelief: 0.5, uncertainty: 0.5, baseRate: 0.5 };
     const result = resolveOpinion({ confidence: 0.8, opinion: invalidOpinion });
-    expect(result).toEqual(fromScalar(0.8));
+    expect(result).toEqual(fromScalar(0.8, 0.5, 0.3));
   });
 
   test('respects custom baseRate for fallback', () => {

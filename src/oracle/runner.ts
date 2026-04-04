@@ -4,7 +4,7 @@ import type { ECPTransport } from '../a2a/transport.ts';
 import { WebSocketTransport } from '../a2a/websocket-transport.ts';
 import { buildVerdict } from '../core/index.ts';
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
-import { getOracleEntry, getOraclePath } from './registry.ts';
+import { getOracleEntry, getOraclePath, type OracleRegistryEntry } from './registry.ts';
 import { clampFull, type PeerTrustLevel } from './tier-clamp.ts';
 
 export interface RunOracleOptions {
@@ -87,16 +87,54 @@ export async function runOracle(
 
   // A2: Distinguish genuine epistemic uncertainty from errors.
   if (!verdict.verified && clampedConfidence > 0 && clampedConfidence < 0.5 && verdict.type === 'unknown') {
-    return {
-      ...verdict,
-      type: 'uncertain' as const,
-      confidence: clampedConfidence,
-      oracleName,
-      durationMs: verdict.durationMs,
-    };
+    return enrichVerdictWithRegistryData(
+      {
+        ...verdict,
+        type: 'uncertain' as const,
+        confidence: clampedConfidence,
+        oracleName,
+        durationMs: verdict.durationMs,
+      },
+      entry,
+    );
   }
 
-  return { ...verdict, confidence: clampedConfidence, oracleName, durationMs: verdict.durationMs };
+  return enrichVerdictWithRegistryData(
+    { ...verdict, confidence: clampedConfidence, oracleName, durationMs: verdict.durationMs },
+    entry,
+  );
+}
+
+// ── ECP v2: Enrich verdict with registry metadata ──────────────────
+
+/** Tier → reliability mapping. Deterministic oracles are most reliable. */
+const TIER_RELIABILITY: Record<string, number> = {
+  deterministic: 0.95,
+  heuristic: 0.70,
+  probabilistic: 0.50,
+  speculative: 0.30,
+};
+
+/**
+ * ECP v2: Enrich an OracleVerdict with metadata from the oracle registry entry.
+ * Sets tierReliability, confidenceSource, confidenceReported.
+ */
+export function enrichVerdictWithRegistryData(
+  verdict: OracleVerdict,
+  registryEntry?: OracleRegistryEntry,
+): OracleVerdict {
+  if (!registryEntry) return verdict;
+
+  const tierReliability = TIER_RELIABILITY[registryEntry.tier ?? 'deterministic'] ?? 0.95;
+  const confidenceSource: OracleVerdict['confidenceSource'] =
+    registryEntry.tier === 'deterministic' ? 'evidence-derived' : 'evidence-derived';
+
+  return {
+    ...verdict,
+    tierReliability: verdict.tierReliability ?? tierReliability,
+    confidenceSource: verdict.confidenceSource ?? confidenceSource,
+    confidenceReported: verdict.confidenceReported ?? true,
+  };
 }
 
 /** Persistent WebSocket transport cache — reuse connections across invocations. */

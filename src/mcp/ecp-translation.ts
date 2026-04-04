@@ -144,5 +144,8 @@ export function mcpToEcp(result: MCPToolResult, trustLevel: McpSourceZone): Orac
     fileHashes,
     reason,
     durationMs: 0,
+    // ECP v2: MCP tools produce evidence-derived confidence (not self-reported)
+    confidenceSource: 'evidence-derived',
+    confidenceReported: true,
   });
 }

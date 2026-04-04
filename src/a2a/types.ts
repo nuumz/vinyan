@@ -75,6 +75,7 @@ export const VinyanOracleCapabilitySchema = z.object({
 export const VinyanECPExtensionSchema = z.object({
   protocol: z.literal('vinyan-ecp'),
   ecp_version: z.literal(1),
+  supported_versions: z.array(z.number()).optional(),
   instance_id: z.string(),
   public_key: z.string(),
   capability_version: z.number(),

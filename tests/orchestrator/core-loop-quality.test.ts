@@ -121,7 +121,7 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     if (trace.qualityScore) {
       // Zero-oracle case returns unverified:true with neutral score (no NaN propagation)
       if (trace.qualityScore.unverified) {
-        expect(trace.qualityScore.architecturalCompliance).toBe(1.0);
+        expect(trace.qualityScore.architecturalCompliance).toBe(0.5);
         expect(Number.isFinite(trace.qualityScore.composite)).toBe(true);
       } else {
         expect(trace.qualityScore.architecturalCompliance).toBeGreaterThanOrEqual(0);

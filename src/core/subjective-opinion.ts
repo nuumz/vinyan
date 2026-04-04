@@ -13,6 +13,10 @@
  */
 import { z } from 'zod';
 
+/** Floating-point tolerance for SL invariant checks (internal computation).
+ *  Wire-boundary tolerance is wider (0.001) — see SubjectiveOpinionSchema.refine(). */
+export const SL_EPSILON = 1e-6;
+
 export interface SubjectiveOpinion {
   /** Belief mass: evidence FOR the proposition */
   belief: number;
@@ -33,19 +37,26 @@ export const SubjectiveOpinionSchema: z.ZodType<SubjectiveOpinion> = z
     baseRate: z.number().min(0).max(1),
   })
   .refine((o: { belief: number; disbelief: number; uncertainty: number; baseRate: number }) =>
-    Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 1e-9, {
-    message: 'belief + disbelief + uncertainty must equal 1.0 (±1e-9)',
+    Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001, {
+    message: 'belief + disbelief + uncertainty must equal 1.0 (±0.001 wire tolerance)',
   });
 
 /**
- * Maps a scalar confidence [0,1] to a dogmatic opinion (u=0, d=1-b, b=confidence).
- * baseRate defaults to 0.5.
+ * Maps a scalar confidence [0,1] to an SL opinion.
+ *
+ * When defaultUncertainty > 0, produces a non-dogmatic opinion that honestly
+ * represents the epistemic gap from scalar→opinion conversion (A2).
+ * When defaultUncertainty = 0 (default), produces a dogmatic opinion (u=0) for
+ * backward compatibility. Use the ECP_V2_ENRICHMENT flag to enable non-dogmatic
+ * conversion at the call site.
  */
-export function fromScalar(confidence: number, baseRate = 0.5): SubjectiveOpinion {
+export function fromScalar(confidence: number, baseRate = 0.5, defaultUncertainty = 0): SubjectiveOpinion {
+  const u = Math.max(0, Math.min(1, defaultUncertainty));
+  const remaining = 1 - u;
   return {
-    belief: confidence,
-    disbelief: 1 - confidence,
-    uncertainty: 0,
+    belief: confidence * remaining,
+    disbelief: (1 - confidence) * remaining,
+    uncertainty: u,
     baseRate,
   };
 }
@@ -82,11 +93,11 @@ export function isVacuous(o: SubjectiveOpinion, threshold = 0.95): boolean {
 }
 
 /**
- * Returns true if |b + d + u - 1| < 1e-9 and all components in [0,1].
+ * Returns true if |b + d + u - 1| < SL_EPSILON and all components in [0,1].
  */
 export function isValid(o: SubjectiveOpinion): boolean {
   return (
-    Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 1e-9 &&
+    Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < SL_EPSILON &&
     o.belief >= 0 &&
     o.belief <= 1 &&
     o.disbelief >= 0 &&
@@ -98,16 +109,17 @@ export function isValid(o: SubjectiveOpinion): boolean {
 
 /**
  * If verdict.opinion is present AND isValid(opinion), return it.
- * Otherwise, return fromScalar(verdict.confidence, baseRate).
+ * Otherwise, return fromScalar(verdict.confidence, baseRate, defaultUncertainty).
  */
 export function resolveOpinion(
   verdict: { confidence: number; opinion?: SubjectiveOpinion },
   baseRate = 0.5,
+  defaultUncertainty = 0.3,
 ): SubjectiveOpinion {
   if (verdict.opinion !== undefined && isValid(verdict.opinion)) {
     return verdict.opinion;
   }
-  return fromScalar(verdict.confidence, baseRate);
+  return fromScalar(verdict.confidence, baseRate, defaultUncertainty);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +127,7 @@ export function resolveOpinion(
 // ---------------------------------------------------------------------------
 
 /** Floating-point tolerance for b+d+u=1 check. */
-const EPSILON = 1e-9;
+const EPSILON = SL_EPSILON;
 
 function normalize(o: SubjectiveOpinion): SubjectiveOpinion {
   const sum = o.belief + o.disbelief + o.uncertainty;

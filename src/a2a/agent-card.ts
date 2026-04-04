@@ -67,6 +67,7 @@ export function generateAgentCard(
     card['x-vinyan-ecp'] = {
       protocol: 'vinyan-ecp',
       ecp_version: 1,
+      supported_versions: [1],
       instance_id: identity.instanceId,
       public_key: identity.publicKey,
       capability_version: capabilityVersion,

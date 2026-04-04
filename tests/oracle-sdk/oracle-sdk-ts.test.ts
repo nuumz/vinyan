@@ -126,7 +126,7 @@ describe('OracleVerdictSchema', () => {
     expect(result.success).toBe(true);
     // Check defaults
     expect(result.data!.type).toBe('known');
-    expect(result.data!.confidence).toBe(1.0);
+    expect(result.data!.confidence).toBe(0.5);
   });
 
   it('validates all epistemic types', () => {

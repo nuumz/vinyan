@@ -103,8 +103,8 @@ export const OracleVerdictSchema = z.object({
   verified: z.boolean(),
   /** Epistemic state: known (deterministic), unknown, uncertain, contradictory. */
   type: z.enum(['known', 'unknown', 'uncertain', 'contradictory']).default('known'),
-  /** Confidence level [0, 1]. 1.0 for deterministic oracles. */
-  confidence: z.number().min(0).max(1).default(1.0),
+  /** Confidence level [0, 1]. ECP v2 default: 0.5 (maximum uncertainty). */
+  confidence: z.number().min(0).max(1).default(0.5),
   /** Evidence chain — source locations supporting the verdict. */
   evidence: z.array(EvidenceSchema),
   /** Conditions that would falsify this verdict (ECP falsifiability). */
@@ -125,6 +125,23 @@ export const OracleVerdictSchema = z.object({
   deliberationRequest: DeliberationRequestSchema.optional(),
   /** Temporal validity context. */
   temporalContext: TemporalContextSchema.optional(),
+
+  // ── ECP v2 additions (all optional for backward compat) ──
+  /** SL opinion tuple. */
+  opinion: z.object({
+    belief: z.number().min(0).max(1),
+    disbelief: z.number().min(0).max(1),
+    uncertainty: z.number().min(0).max(1),
+    baseRate: z.number().min(0).max(1),
+  }).optional(),
+  /** Tier methodology reliability — set by Orchestrator. */
+  tierReliability: z.number().min(0).max(1).optional(),
+  /** Engine's per-verdict certainty. */
+  engineCertainty: z.number().min(0).max(1).optional(),
+  /** Source of confidence derivation. */
+  confidenceSource: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),
+  /** Whether confidence was explicitly reported by the oracle. */
+  confidenceReported: z.boolean().optional(),
 });
 
 export type OracleVerdict = z.infer<typeof OracleVerdictSchema>;

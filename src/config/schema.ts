@@ -274,6 +274,17 @@ function defaults<T extends z.ZodType>(schema: T): z.output<T> {
   return schema.parse({});
 }
 
+// ─── ECP v2 Feature Flags ────────────────────────────────────────────
+
+export const ECPv2FlagsSchema = z.object({
+  /** Gates B1 (Zod confidence default 0.5) + B2 (zero-oracle quality 0.5). HIGH risk. */
+  ECP_V2_SCHEMA_DEFAULTS: z.boolean().default(false),
+  /** Gates B5-B10 (enrichment, wiring, pipeline split, calibration). MEDIUM risk. */
+  ECP_V2_ENRICHMENT: z.boolean().default(false),
+});
+
+export type ECPv2Flags = z.infer<typeof ECPv2FlagsSchema>;
+
 // ─── Root schema ─────────────────────────────────────────────────────
 
 export const VinyanConfigSchema = z.object({
@@ -291,6 +302,8 @@ export const VinyanConfigSchema = z.object({
   fleet: FleetConfigSchema.optional(),
   /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
   network: NetworkConfigSchema.optional(),
+  /** ECP v2 feature flags — progressive rollout of epistemic improvements. */
+  ecpV2: ECPv2FlagsSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

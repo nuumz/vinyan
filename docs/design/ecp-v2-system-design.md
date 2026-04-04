@@ -20,6 +20,12 @@ Transform ECP v1 into v2 by resolving 4 verified deficits (D1, D3, D4, D5) in th
 - No wire format breaking changes (all additions are optional fields; assumes consumers use Zod `.passthrough()` or `JSON.parse()` without strict field validation)
 - No Merkle evidence (deferred to PH5.18 network phase)
 
+**Epistemic boundaries not addressed by v2:**
+- Conditional opinions (uncertainty contingent on runtime environment)
+- Temporal confidence decay (confidence staleness over time)
+- Multi-modal evidence weighting (test vs static analysis weighted differently per context)
+- Higher-order opinions (uncertainty about one's own uncertainty)
+
 ### 1.3 Success Criteria
 
 | Criterion | Measurement |
@@ -198,6 +204,8 @@ export const SubjectiveOpinionSchema = z.object({
   (o) => Math.abs(o.belief + o.disbelief + o.uncertainty - 1.0) < 0.001,
   { message: 'SL invariant: belief + disbelief + uncertainty must equal 1.0 (±0.001)' },
 );
+// NOTE: Wire tolerance (0.001) is intentionally wider than internal SL_EPSILON (1e-6)
+// to accommodate JSON serialization rounding from external oracles. See §3.3.10.
 ```
 
 ### 3.3 Behavioral Changes Design
@@ -324,13 +332,16 @@ function scaleBeliefByCeiling(
   const projected = projectedProbability(opinion);
   if (projected <= ceiling) return opinion;
 
-  // How much belief to remove: reduce belief proportionally
-  const excess = projected - ceiling;
-  const newBelief = Math.max(0, opinion.belief - excess);
+  // Correct delta accounts for baseRate feedback: moving mass to uncertainty
+  // feeds back through P = b + u×a, so raw `excess` under-corrects.
+  // delta = excess / (1 - baseRate) compensates for the baseRate×Δu term.
+  const divisor = 1 - opinion.baseRate;
+  const delta = divisor > SL_EPSILON ? excess / divisor : excess;  // guard: baseRate ≈ 1.0
+  const newBelief = Math.max(0, opinion.belief - delta);
   return {
     belief: newBelief,
     disbelief: opinion.disbelief,
-    uncertainty: 1 - newBelief - opinion.disbelief,  // absorbs the excess
+    uncertainty: 1 - newBelief - opinion.disbelief,  // absorbs the delta
     baseRate: opinion.baseRate,
   };
 }
@@ -482,6 +493,8 @@ export function fromScalar(
 
 **Backward compatibility:** Default parameter means existing callers `fromScalar(x)` silently gain the fix. Callers that explicitly need dogmatic opinions can pass `fromScalar(x, 0)`.
 
+> **Conservative heuristic note:** `defaultUncertainty = 0.3` is a conservative heuristic — it treats all scalar-converted opinions equally regardless of evidence volume. Phase 7 replaces this with evidence-count-derived uncertainty computed from oracle execution metadata (sample size, test count, assertion density). The 0.3 constant provides an honest baseline until per-oracle calibration data is available.
+
 #### 3.3.9 Quality-Score / Fusion Pipeline Split
 
 **Problem (identified by Architecture Purist):** The execution order between `computeQualityScore()` and fusion is ambiguous. If quality-score runs before fusion, it can't benefit from `fusedOpinion`. If after, the fusion step doesn't have quality context. This creates a circular dependency.
@@ -530,12 +543,11 @@ Verdicts → computeFromVerdicts() → baseQuality
 export const SL_EPSILON = 1e-6;  // 6 decimal places — sufficient for IEEE 754 double
 ```
 
-**Usage:** All SL-related comparisons use `SL_EPSILON`:
-- `SubjectiveOpinionSchema.refine()` → `Math.abs(b+d+u - 1.0) < SL_EPSILON`
-- `isValid()` / `isVacuous()` / `isDogmatic()` → `SL_EPSILON`
-- `clampOpinionFull()` normalization guard → `SL_EPSILON` (already uses it in §3.3.3)
+**Two-tier tolerance decision:**
+- **Wire boundary (Zod parse):** `0.001` — accommodates JSON serialization rounding from external oracles. Applied in `SubjectiveOpinionSchema.refine()` (§3.2.4).
+- **Internal computation:** `SL_EPSILON = 1e-6` — applied in `isValid()`, `isVacuous()`, `clampOpinionFull()` normalization guard, and all runtime SL comparisons.
 
-> **Wire-format note:** The Zod schema tolerance can remain slightly wider (`0.001`) at the parse boundary to accommodate rounding in external oracle JSON serialization. The tighter `SL_EPSILON` applies to internal computation after parsing.
+This is intentional, not contradictory: external data may arrive slightly imprecise (wire), but once parsed, all internal operations use the tighter tolerance.
 
 ### 3.4 Integration Design
 
@@ -583,6 +595,8 @@ if (peerTrust !== 'trusted' && verdict.confidenceSource === 'evidence-derived') 
   verdict.confidenceSource = 'llm-self-report';  // A6: zero-trust, downgrade claim
 }
 ```
+
+> **Threat model assumption:** This protects against honest misconfiguration and basic confidence injection, NOT adversarial compromise of initially-trusted peers (which requires cryptographic attestation, deferred to PH5.18).
 
 #### 3.4.3 MCP Bridge Additions
 
@@ -742,6 +756,16 @@ SelfModel.calibrate()
 
 **Implementation point:** `src/orchestrator/core-loop.ts` Step 6 (Learn). After `TraceCollector.collect()`, pass `engineCertainty` from each verdict into `SelfModel.calibrate()` as the ground-truth signal. This enables the prediction error mechanism (A7).
 
+**Signature extension:** v2 extends the `SelfModel` interface to accept optional engine certainty data:
+```typescript
+calibrate?(
+  prediction: SelfModelPrediction,
+  trace: ExecutionTrace,
+  engineCertaintyMap?: Record<string, number>,  // ← v2: oracle_name → engineCertainty
+): PredictionError | undefined;
+```
+Phase 7 implements the EMA calibration algorithm that consumes `engineCertaintyMap`. v2 provides the data and the ready signature.
+
 **v2 scope:** Populate the field and persist to trace. Phase 7 implements the actual EMA calibration algorithm that reads it.
 
 ### 4.4 Feedback Loop: `fusedOpinion` → Quality Recalibration (DE4 Wire)
@@ -825,7 +849,7 @@ Verdicts ───► computeFromVerdicts() ──► baseQuality
 | C2 | `packages/ecp-conformance/src/level3.ts` | Add `tierReliability`/`engineCertainty` validation + `beliefInterval` bounds (on `ResolvedGateResult` only) | A1 |
 | C3 | `src/a2a/agent-card.ts` | Change `ecp_version: 1` → `ecp_version: 2`, add `supported_versions: [1, 2]` | None |
 | C4 | `packages/ecp-conformance/src/schemas.ts` | Add `SubjectiveOpinionSchema` and `BeliefIntervalSchema` to conformance schemas | A3 |
-| C5 | `src/config/vinyan-config.ts` | Add `ENABLE_ECP_V2_BEHAVIORS` feature flag (default `false`); gate B1-B10 behind flag for canary rollout | None |
+| C5 | `src/config/schema.ts` | Add `ECP_V2_SCHEMA_DEFAULTS` + `ECP_V2_ENRICHMENT` feature flags (both default `false`); gate B1-B2 and B5-B10 respectively | None |
 
 **Test strategy:**
 - C1-C2: `tests/ecp-conformance/` — add test cases for v2 validation rules
@@ -891,12 +915,16 @@ B2 (quality-score) ────────────────────�
 | `A2A roundtrip preserves v2 fields` | `tests/a2a/ecp-a2a-translation.test.ts` | verdict → dataPart → verdict, all v2 fields survive |
 | `conformance L1 rejects invalid SL opinion` | `tests/ecp-conformance/level1.test.ts` | b+d+u ≠ 1 → L1 check fails |
 | `conformance L3 validates tier/engine split` | `tests/ecp-conformance/level3.test.ts` | confidence > tierReliability → L3 check fails |
+| `governance filter rejects llm-self-report` | `tests/gate/governance-filter.test.ts` | `isGovernanceEligible('llm-self-report') === false` |
+| `governance filter rejects undefined source` | same | `isGovernanceEligible(undefined) === false` |
+| `all-llm-self-report verdicts trigger vacuous block` | `tests/gate/conflict-resolver.test.ts` | gate returns `{ decision: 'block', unverified: true }` + emits `governance:vacuous-evidence` |
 | `fromScalar produces non-dogmatic opinion` | `tests/core/subjective-opinion.test.ts` | `fromScalar(0.95).uncertainty === 0.3` (not 0) |
 | `fromScalar(x, 0) remains dogmatic` | same | `fromScalar(0.95, 0).uncertainty === 0` (explicit override) |
 | `recalibrateWithFusion overrides compliance` | `tests/gate/quality-score.test.ts` | `recalibrateWithFusion(base, fused).architecturalCompliance === projectedProbability(fused)` |
 | `recalibrateWithFusion no-op without opinion` | same | `recalibrateWithFusion(base, undefined)` returns base unchanged |
 | `SL_EPSILON consistent across codebase` | `tests/core/subjective-opinion.test.ts` | Opinion with b+d+u off by 1e-7 passes `isValid()` |
-| `feature flag gates behavioral changes` | `tests/config/vinyan-config.test.ts` | When `ENABLE_ECP_V2_BEHAVIORS=false`, Zod default remains 1.0 and quality returns 1.0 |
+| `ECP_V2_SCHEMA_DEFAULTS flag gates defaults` | `tests/config/vinyan-config.test.ts` | When `ECP_V2_SCHEMA_DEFAULTS=false`, Zod default remains 1.0 and quality returns 1.0 |
+| `ECP_V2_ENRICHMENT flag gates enrichment` | same | When `ECP_V2_ENRICHMENT=false`, verdict enrichment + fromScalar fix disabled |
 
 ### 6.3 Regression Risk Matrix
 
@@ -943,28 +971,37 @@ These are **not v2 blockers** but should be tracked:
 
 | Phase | Scope | Duration | Risk | Rollback |
 |-------|-------|----------|------|----------|
-| **1. Schema Migration** | Phase A: types + Zod + SDK types. `ENABLE_ECP_V2_BEHAVIORS=false`. | Day 1 | Zero — additive optional fields only | Remove fields (backward compatible) |
-| **2. Behavioral Canary** | Phase B+C: flag ON for 10% of tasks via config. Monitor error rate, confidence distributions, test oracle compatibility. | Days 2-5 | Low — flag = instant rollback | Set `ENABLE_ECP_V2_BEHAVIORS=false` |
+| **1. Schema Migration** | Phase A: types + Zod + SDK types. Both flags `false`. | Day 1 | Zero — additive optional fields only | Remove fields (backward compatible) |
+| **2. Behavioral Canary** | Phase B+C: enable `ECP_V2_ENRICHMENT` for 10% of tasks; `ECP_V2_SCHEMA_DEFAULTS` still false. Monitor enrichment field population. | Days 2-3 | Low — flag = instant rollback | Set `ECP_V2_ENRICHMENT=false` |
+| **2b. Defaults Canary** | Enable `ECP_V2_SCHEMA_DEFAULTS` for 10% of tasks. Monitor confidence distributions and zero-oracle paths. | Days 4-5 | Medium — changes defaults | Set `ECP_V2_SCHEMA_DEFAULTS=false` |
 | **3. Full Rollout** | 100% after 5-day stability window. Remove flag guards (flag becomes dead code). | Day 7+ | Mitigated by canary data | Revert to canary (10%) and investigate |
 
 **Feature flag mechanics:**
 ```typescript
-// In src/config/vinyan-config.ts:
-export const ENABLE_ECP_V2_BEHAVIORS = config.ecp?.v2Behaviors ?? false;
+// In src/config/schema.ts:
+export const ECP_V2_SCHEMA_DEFAULTS = config.ecp?.v2SchemaDefaults ?? false;  // HIGH risk
+export const ECP_V2_ENRICHMENT = config.ecp?.v2Enrichment ?? false;            // MEDIUM risk
 
-// Gated behaviors (when flag is false, v1 behavior preserved):
-// - B1: Zod confidence default remains 1.0
-// - B2: Zero-oracle quality returns 1.0
-// - B8: fromScalar() uses u=0 (dogmatic)
-// - B9: No quality recalibration with fusedOpinion
-// - B5: No verdict enrichment (tierReliability/engineCertainty)
-// All other Phase A/C changes (schema additions) are unconditional.
+// ECP_V2_SCHEMA_DEFAULTS gates (HIGH risk — changes default behavior):
+// - B1: Zod confidence default remains 1.0 when false
+// - B2: Zero-oracle quality returns 1.0 when false
+
+// ECP_V2_ENRICHMENT gates (MEDIUM risk — adds new computation):
+// - B5: No verdict enrichment (tierReliability/engineCertainty) when false
+// - B8: fromScalar() uses u=0 (dogmatic) when false
+// - B9: No quality recalibration with fusedOpinion when false
+// - B10: No engineCertainty→SelfModel wire when false
+
+// All Phase A/C changes (schema additions, conformance) are unconditional.
 ```
 
+**Canary trace field:** Each task trace persists `ecpBehaviorVersion: 1 | 2` reflecting which flag state was active. This enables forensic analysis during canary — without it, debugging confidence-related issues requires guessing which behavior path a specific task used.
+
 **Monitoring during canary:**
-- Confidence distribution shift (expect lower mean when flag ON)
+- Confidence distribution shift (expect lower mean when `ECP_V2_SCHEMA_DEFAULTS` ON)
 - Oracle verdict parse failures (expect 0 — Zod still accepts v1 shape)
-- Quality score distribution (expect lower composite for zero-oracle tasks)
+- Quality score distribution (expect lower composite for zero-oracle tasks when `ECP_V2_SCHEMA_DEFAULTS` ON)
+- Enrichment field population rate (expect >0 when `ECP_V2_ENRICHMENT` ON)
 - Test oracle compatibility (run conformance suite against canary)
 
 ---
@@ -975,7 +1012,7 @@ export const ENABLE_ECP_V2_BEHAVIORS = config.ecp?.v2Behaviors ?? false;
 |-------|-------------------|---------------|-------------------|
 | A | `src/core/types.ts`, `src/oracle/protocol.ts`, `src/a2a/ecp-data-part.ts`, `packages/oracle-sdk-ts/src/index.ts`, `src/core/subjective-opinion.ts` | `SubjectiveOpinionSchema`, `SL_EPSILON` | None (additive only) |
 | B | `src/oracle/protocol.ts`, `packages/oracle-sdk-ts/src/schemas.ts`, `src/gate/quality-score.ts`, `src/oracle/tier-clamp.ts`, `src/gate/conflict-resolver.ts`, `src/oracle/runner.ts`, `src/mcp/ecp-translation.ts`, `src/a2a/ecp-a2a-translation.ts`, `src/core/subjective-opinion.ts`, `src/orchestrator/core-loop.ts` | `clampOpinionFull()`, `enrichVerdictWithRegistryData()`, `isGovernanceEligible()`, `computeFromVerdicts()`, `recalibrateWithFusion()` | `fromScalar()`, `computeQualityScore()`, `resolveConflicts()`, `mcpToEcp()`, `verdictToECPDataPart()`, `ecpDataPartToVerdict()` |
-| C | `packages/ecp-conformance/src/level1.ts`, `packages/ecp-conformance/src/level3.ts`, `packages/ecp-conformance/src/schemas.ts`, `src/a2a/agent-card.ts`, `src/config/vinyan-config.ts` | L1/L3 validation checks, `ENABLE_ECP_V2_BEHAVIORS` | `generateAgentCard()` |
+| C | `packages/ecp-conformance/src/level1.ts`, `packages/ecp-conformance/src/level3.ts`, `packages/ecp-conformance/src/schemas.ts`, `src/a2a/agent-card.ts`, `src/config/schema.ts` | L1/L3 validation checks, `ECP_V2_SCHEMA_DEFAULTS`, `ECP_V2_ENRICHMENT` | `generateAgentCard()` |
 
 **Total: 19 files changed, 6 new functions/constants, ~11 modified functions.**
 
@@ -995,26 +1032,26 @@ export const ENABLE_ECP_V2_BEHAVIORS = config.ecp?.v2Behaviors ?? false;
 
 Every v2 change traces to a Vinyan axiom:
 
-| Change | Primary Axiom | Justification |
-|--------|--------------|---------------|
-| Vacuous default (D3) | A2 — First-Class Uncertainty | "I don't know" is a valid state, not masked as 1.0 |
-| SL opinion promotion | A2 — First-Class Uncertainty | Rich uncertainty representation, not just scalar |
-| Confidence source enum | A3 — Deterministic Governance | Machine-enforceable LLM exclusion from governance |
-| Tier/engine split | A5 — Tiered Trust | Separates methodology reliability from per-verdict certainty |
-| Tier reliability from registry | A6 — Zero-Trust Execution | Orchestrator assigns trust, not the engine itself |
-| Belief interval (on ResolvedGateResult only) | A2 — First-Class Uncertainty | Makes "gap between what we know and don't" explicit, post-fusion only (pre-verdict belief derivable from opinion) |
-| clampOpinionFull | A5 — Tiered Trust | SL-native tier enforcement (uncertainty floors) |
-| Conformance v2 checks | A3 — Deterministic Governance | Rule-based validation, no LLM in compliance path |
-| Level-differentiated fusion (§3.3.7) | A5 — Tiered Trust | L0-L1 use scalar averaging; L2-L3 use full SL fusion — match verification depth to risk |
-| Governance empty-set fallback (§3.3.5) | A2 + A3 — Uncertainty + Governance | Honest block when no verifiable evidence exists, logged for A7 calibration |
-| A2A trust override (§3.4.2) | A6 — Zero-Trust Execution | Untrusted peers cannot claim evidence-derived confidence |
-| SL invariant guard (§3.3.3) | A2 — First-Class Uncertainty | Normalize malformed opinions from external sources before clamping |
-| `fromScalar()` fix (§3.3.8) | A2 — First-Class Uncertainty | Eliminate dogmatic u=0 fabrication; honest uncertainty from scalar conversion |
-| Quality-score pipeline split (§3.3.9) | A3 — Deterministic Governance | Unambiguous execution order; fusion feeds quality deterministically |
-| FP tolerance standardization (§3.3.10) | A2 — First-Class Uncertainty | Consistent SL invariant checking prevents silent validation failures |
-| `engineCertainty` → SelfModel wire (§4.3) | A7 — Prediction Error as Learning | Closes calibration feedback loop; enables predicted vs actual comparison |
-| `fusedOpinion` → quality recalibration (§4.4) | A5 + A7 — Tiered Trust + Learning | SL-grade fusion replaces scalar averaging in quality assessment |
-| Feature flag (§7.2) | A3 — Deterministic Governance | Rule-based deployment control; instant rollback without code change |
+| Change | Primary Axiom | Motivation | Justification |
+|--------|--------------|------------|---------------|
+| Vacuous default (D3) | A2 — First-Class Uncertainty | axiom-driven | "I don't know" is a valid state, not masked as 1.0 |
+| SL opinion promotion | A2 — First-Class Uncertainty | axiom-driven | Rich uncertainty representation, not just scalar |
+| Confidence source enum | A3 — Deterministic Governance | axiom-driven | Machine-enforceable LLM exclusion from governance |
+| Tier/engine split | A5 — Tiered Trust | axiom-driven | Separates methodology reliability from per-verdict certainty |
+| Tier reliability from registry | A6 — Zero-Trust Execution | axiom-driven | Orchestrator assigns trust, not the engine itself |
+| Belief interval (on ResolvedGateResult only) | A2 — First-Class Uncertainty | axiom-driven | Makes "gap between what we know and don't" explicit, post-fusion only |
+| clampOpinionFull | A5 — Tiered Trust | axiom-driven | SL-native tier enforcement (uncertainty floors) |
+| Conformance v2 checks | A3 — Deterministic Governance | axiom-driven | Rule-based validation, no LLM in compliance path |
+| Level-differentiated fusion (§3.3.7) | A5 — Tiered Trust | axiom-driven | L0-L1 use scalar averaging; L2-L3 use full SL fusion — match verification depth to risk |
+| Governance empty-set fallback (§3.3.5) | A2 + A3 — Uncertainty + Governance | axiom-driven | Honest block when no verifiable evidence exists, logged for A7 calibration |
+| A2A trust override (§3.4.2) | A6 — Zero-Trust Execution | axiom-driven | Untrusted peers cannot claim evidence-derived confidence |
+| SL invariant guard (§3.3.3) | A2 — First-Class Uncertainty | axiom-driven | Normalize malformed opinions from external sources before clamping |
+| `fromScalar()` fix (§3.3.8) | A2 — First-Class Uncertainty | axiom-driven | Eliminate dogmatic u=0 fabrication; honest uncertainty from scalar conversion |
+| Quality-score pipeline split (§3.3.9) | A3 — Deterministic Governance | engineering | Unambiguous execution order; fusion feeds quality deterministically |
+| FP tolerance standardization (§3.3.10) | A2 — First-Class Uncertainty | engineering | Consistent SL invariant checking prevents silent validation failures |
+| `engineCertainty` → SelfModel wire (§4.3) | A7 — Prediction Error as Learning | axiom-driven | Closes calibration feedback loop; enables predicted vs actual comparison |
+| `fusedOpinion` → quality recalibration (§4.4) | A5 + A7 — Tiered Trust + Learning | axiom-driven | SL-grade fusion replaces scalar averaging in quality assessment |
+| Feature flag (§7.2) | — | engineering | Deployment best practice; instant rollback without code change |
 
 ---
 
@@ -1033,13 +1070,15 @@ The following items were identified during the [ECP v2 debate synthesis](../rese
 | Threshold governance (A3 compliance) | Debate §3.7 | Runtime governance — depends on v2 `confidenceSource` field existing first |
 | Evidence confidence enum | Debate §3.8 | **Partially covered** by `confidenceSource` field on OracleVerdict |
 
+| Governance filter calibration | Design review | Whether `isGovernanceEligible()` rules should themselves produce traces and be subject to A7 learning. Depends on v2 `confidenceSource` infrastructure. |
+
 > **Dependency note:** Threshold governance (item 7) depends on v2's `confidenceSource` field existing. Once v2 is deployed, this becomes implementable without further schema changes.
 
 ---
 
 ## 12. Autonomy Readiness Assessment (Phase 7 Foundation)
 
-v2 provides ~60% of Phase 7's structural foundation. The remaining 40% is algorithmic (learning/calibration) and operational (monitoring/alerting).
+v2 provides ~60% of Phase 7's **data-structure foundation** (schemas, wire format, persistence). The remaining 40% — algorithms (EMA learning, drift detection) and operational infrastructure (monitoring, alerting) — represents the majority of Phase 7's implementation effort.
 
 ### What v2 Enables for Phase 7
 

@@ -144,6 +144,24 @@ export interface OracleVerdict {
   opinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
   /** Phase B+: Unclamped opinion before tier adjustment (for audit). */
   rawOpinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
+
+  // ── ECP v2 additions (all optional for backward compat) ──
+
+  /** Tier methodology reliability — set by Orchestrator from oracle registry, NOT by engine.
+   *  Deterministic oracles get 1.0; heuristic 0.7-0.9; probabilistic 0.3-0.7.
+   *  Axiom A5: tier determines the ceiling. */
+  tierReliability?: number;
+
+  /** Engine's per-verdict certainty — reported by the oracle engine itself.
+   *  Separates "how reliable is this oracle type" from "how certain is this specific result."
+   *  Axiom A7: enables calibration of engine accuracy over time. */
+  engineCertainty?: number;
+
+  /** How confidence was derived — governs governance eligibility.
+   *  Only 'evidence-derived' and 'self-model-calibrated' enter routing/gating.
+   *  'llm-self-report' is logged for A7 analysis only, excluded from governance.
+   *  Axiom A3: machine-enforceable, not policy-dependent. */
+  confidenceSource?: 'evidence-derived' | 'self-model-calibrated' | 'llm-self-report';
 }
 
 /** A verified fact stored in the World Graph. */
@@ -163,4 +181,12 @@ export interface Fact {
   validUntil?: number;
   /** How confidence decays over time (from oracle temporalContext). ECP spec §3.6. */
   decayModel?: 'linear' | 'step' | 'none' | 'exponential';
+
+  // ── ECP v2 additions ──
+
+  /** SL opinion tuple — propagated from verdict at fact creation time. */
+  opinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
+
+  /** Tier reliability — copied from verdict for fact-level trust assessment. */
+  tierReliability?: number;
 }

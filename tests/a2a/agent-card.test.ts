@@ -86,6 +86,7 @@ describe('generateAgentCard', () => {
     expect(ext).toBeDefined();
     expect(ext!.protocol).toBe('vinyan-ecp');
     expect(ext!.ecp_version).toBe(1);
+    expect(ext!.supported_versions).toEqual([1]);
     expect(ext!.instance_id).toBe('inst-001');
     expect(ext!.public_key).toBe('pk-001');
   });

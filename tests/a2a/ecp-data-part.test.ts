@@ -42,17 +42,18 @@ describe('ECPDataPartSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  test('rejects ecp_version != 1', () => {
-    const part = {
-      ecp_version: 2,
+  test('accepts ecp_version 1 only, rejects other values', () => {
+    const base = {
       message_type: 'respond',
       epistemic_type: 'known',
       confidence: 0.5,
       confidence_reported: true,
       payload: {},
     };
-    const result = ECPDataPartSchema.safeParse(part);
-    expect(result.success).toBe(false);
+    expect(ECPDataPartSchema.safeParse({ ...base, ecp_version: 1 }).success).toBe(true);
+    // v2+ not valid until production release
+    expect(ECPDataPartSchema.safeParse({ ...base, ecp_version: 2 }).success).toBe(false);
+    expect(ECPDataPartSchema.safeParse({ ...base, ecp_version: 3 }).success).toBe(false);
   });
 
   test('validates all 22 message types', () => {

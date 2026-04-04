@@ -110,6 +110,26 @@ export const Level3VerdictSchema = Level2VerdictSchema.extend({
   signerInstanceId: z.string().optional(),
 });
 
+// ── ECP v2: Subjective Logic opinion + belief interval ──────────────
+
+export const SubjectiveOpinionSchema = z.object({
+  belief: z.number().min(0).max(1),
+  disbelief: z.number().min(0).max(1),
+  uncertainty: z.number().min(0).max(1),
+  baseRate: z.number().min(0).max(1),
+}).refine(
+  (o) => Math.abs(o.belief + o.disbelief + o.uncertainty - 1.0) < 0.001,
+  { message: 'SL opinion: belief + disbelief + uncertainty must equal 1.0 (±0.001)' },
+);
+
+export const BeliefIntervalSchema = z.object({
+  belief: z.number().min(0).max(1),
+  plausibility: z.number().min(0).max(1),
+}).refine(
+  (bi) => bi.plausibility >= bi.belief,
+  { message: 'Belief interval: plausibility must be >= belief' },
+);
+
 export const KnowledgeOfferSchema = z.object({
   cycleId: z.string(),
   instanceId: z.string().min(1),

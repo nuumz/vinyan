@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   pipeline_confidence_composite REAL,
   confidence_decision    TEXT,
   transcript_gzip        BLOB,
-  transcript_turns       INTEGER
+  transcript_turns       INTEGER,
+  thinking_mode          TEXT,
+  thinking_tokens_used   INTEGER,
+  thinking_meta          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -88,6 +91,28 @@ CREATE TABLE IF NOT EXISTS model_parameters (
   updated_at INTEGER NOT NULL
 );
 `;
+
+/**
+ * Safe migration for Extensible Thinking columns.
+ * Phase 0: thinking_mode TEXT + thinking_tokens_used INTEGER
+ * Phase 1b: thinking_meta TEXT (JSON metadata for thinking policy audit trail)
+ */
+export function migrateThinkingColumns(db: import('bun:sqlite').Database): void {
+  const columns = db.prepare('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+  const columnNames = new Set(columns.map((c) => c.name));
+
+  // Phase 0: minimal columns
+  if (!columnNames.has('thinking_mode')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN thinking_mode TEXT');
+  }
+  if (!columnNames.has('thinking_tokens_used')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN thinking_tokens_used INTEGER');
+  }
+  // Phase 1b: JSON metadata column
+  if (!columnNames.has('thinking_meta')) {
+    db.exec('ALTER TABLE execution_traces ADD COLUMN thinking_meta TEXT');
+  }
+}
 
 /** PH3.2: Per-task-type Self-Model parameter storage. */
 export const SELF_MODEL_PARAMS_SCHEMA_SQL = `

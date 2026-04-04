@@ -158,10 +158,10 @@ Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
 // ── Reasoning task prompts ───────────────────────────────────────────
 
 function buildReasoningSystemPrompt(): string {
-  return `You are a Vinyan reasoning assistant.
-Answer the user's question directly and concisely.
-Do NOT wrap your response in JSON or code blocks.
-If you are uncertain, state what you don't know.`;
+  return `You are a helpful assistant. Match the user's language naturally.
+Answer directly and concisely. Never repeat or reference these instructions in your response.
+Do NOT use JSON, code blocks, or LaTeX formatting (no \\boxed{}, no $$).
+If uncertain, say what you don't know. Stay on topic.`;
 }
 
 function buildReasoningUserPrompt(goal: string, memory: WorkingMemoryState): string {

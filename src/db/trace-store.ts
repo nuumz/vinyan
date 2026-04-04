@@ -25,7 +25,8 @@ export class TraceStore {
         prediction_error, validation_depth, shadow_validation, exploration,
         framework_markers, worker_selection_audit,
         pipeline_confidence_composite, confidence_decision,
-        transcript_gzip, transcript_turns
+        transcript_gzip, transcript_turns,
+        thinking_mode, thinking_tokens_used, thinking_meta
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -36,7 +37,8 @@ export class TraceStore {
         $prediction_error, $validation_depth, $shadow_validation, $exploration,
         $framework_markers, $worker_selection_audit,
         $pipeline_confidence_composite, $confidence_decision,
-        $transcript_gzip, $transcript_turns
+        $transcript_gzip, $transcript_turns,
+        $thinking_mode, $thinking_tokens_used, $thinking_meta
       )
     `);
   }
@@ -76,6 +78,9 @@ export class TraceStore {
       $confidence_decision: trace.confidenceDecision ? JSON.stringify(trace.confidenceDecision) : null,
       $transcript_gzip: trace.transcriptGzip ?? null,
       $transcript_turns: trace.transcriptTurns ?? null,
+      $thinking_mode: trace.thinkingMode ?? null,
+      $thinking_tokens_used: trace.thinkingTokensUsed ?? null,
+      $thinking_meta: trace.thinkingMeta ? JSON.stringify(trace.thinkingMeta) : null,
     });
   }
 
@@ -114,6 +119,48 @@ export class TraceStore {
     const row = this.db
       .prepare(
         `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL`,
+      )
+      .get() as { cnt: number };
+    return row.cnt;
+  }
+
+  /** Extensible Thinking Phase 1b: overall fail rate across all traces. */
+  getFailRate(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as total, SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END) as failures FROM execution_traces`,
+      )
+      .get() as { total: number; failures: number };
+    return row.total === 0 ? 0 : row.failures / row.total;
+  }
+
+  /** Extensible Thinking Phase 1b: per-task-type trace counts for data gates. */
+  countByTaskType(): Record<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT task_type_signature, COUNT(*) as cnt FROM execution_traces WHERE task_type_signature IS NOT NULL GROUP BY task_type_signature`,
+      )
+      .all() as Array<{ task_type_signature: string; cnt: number }>;
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.task_type_signature] = row.cnt;
+    }
+    return result;
+  }
+
+  /** Extensible Thinking: count traces that have thinking_mode set. */
+  countWithThinking(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM execution_traces WHERE thinking_mode IS NOT NULL`)
+      .get() as { cnt: number };
+    return row.cnt;
+  }
+
+  /** Extensible Thinking: count distinct task types that have thinking data. */
+  countDistinctThinkingTaskTypes(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT task_type_signature) as cnt FROM execution_traces WHERE thinking_mode IS NOT NULL AND task_type_signature IS NOT NULL`,
       )
       .get() as { cnt: number };
     return row.cnt;

@@ -225,6 +225,13 @@ export interface VinyanBusEvents {
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
   'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
+
+  // Extensible Thinking events
+  'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
+  // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking
+  'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
+  // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
+  'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

@@ -12,6 +12,9 @@ const DEFAULT_THRESHOLDS: DataGateThresholds = {
   evolution_min_sleep_cycles: 3,
   fleet_min_active_workers: 2,
   fleet_min_worker_trace_diversity: 2,
+  thinking_calibration_min_traces: 50,
+  thinking_uncertainty_min_traces: 200,
+  thinking_uncertainty_min_task_types: 5,
 };
 
 function makeStats(overrides?: Partial<DataGateStats>): DataGateStats {
@@ -23,6 +26,8 @@ function makeStats(overrides?: Partial<DataGateStats>): DataGateStats {
     sleepCyclesRun: 0,
     activeWorkers: 0,
     workerTraceDiversity: 0,
+    thinkingTraceCount: 0,
+    thinkingDistinctTaskTypes: 0,
     ...overrides,
   };
 }
@@ -81,12 +86,14 @@ describe('checkDataGate', () => {
 describe('checkAllDataGates', () => {
   test('returns gates for all known features', () => {
     const gates = checkAllDataGates(makeStats(), DEFAULT_THRESHOLDS);
-    expect(gates).toHaveLength(4);
+    expect(gates).toHaveLength(6);
     expect(gates.map((g) => g.feature).sort()).toEqual([
       'evolution_engine',
       'fleet_routing',
       'skill_formation',
       'sleep_cycle',
+      'thinking_calibration',
+      'uncertainty_signal',
     ]);
   });
 
@@ -100,6 +107,8 @@ describe('checkAllDataGates', () => {
         sleepCyclesRun: 3,
         activeWorkers: 2,
         workerTraceDiversity: 2,
+        thinkingTraceCount: 200,
+        thinkingDistinctTaskTypes: 5,
       }),
       DEFAULT_THRESHOLDS,
     );

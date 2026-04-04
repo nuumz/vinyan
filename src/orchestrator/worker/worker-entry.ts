@@ -78,10 +78,13 @@ async function processTask(
   );
 
   const startTime = performance.now();
+  // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision
+  const temperature = (input.taskType ?? 'code') === 'reasoning' ? 0.3 : 0.2;
   const response = await provider.generate({
     systemPrompt,
     userPrompt,
     maxTokens: input.budget.maxTokens,
+    temperature,
   });
   const durationMs = Math.round(performance.now() - startTime);
   const tokens = response.tokensUsed.input + response.tokensUsed.output;

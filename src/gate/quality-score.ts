@@ -52,11 +52,12 @@ export function computeQualityScore(
     // Zero oracle verdicts — either no mutations (trivially safe) or all oracles abstained.
     // Return efficiency-only score rather than NaN which breaks trace storage and aggregations.
     // unverified: true preserves the signal that no structural oracle ran.
-    // ECP v2: Changed from 1.0 to 0.5 — unknown state = maximum uncertainty, not assumed perfect.
+    // For zero-oracle tasks (e.g. reasoning), weight efficiency higher since it's the only real signal.
+    // architecturalCompliance stays at 0.5 (unknown), but composite leans on efficiency (0.7 weight).
     return {
       architecturalCompliance: 0.5,
       efficiency,
-      composite: efficiency * 0.4 + 0.5 * 0.6,
+      composite: efficiency * 0.7 + 0.5 * 0.3,
       dimensionsAvailable: 1,
       phase: 'phase0',
       unverified: true,

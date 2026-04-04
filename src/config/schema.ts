@@ -123,12 +123,37 @@ const ForwardPredictorConfigSchema = z.object({
 
 export type ForwardPredictorConfig = z.infer<typeof ForwardPredictorConfigSchema>;
 
+// ─── Extensible Thinking schema ─────────────────────────────────────
+
+const ExtensibleThinkingConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  modes: z.array(
+    z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']),
+  ).default(['adaptive']),
+  /** Configurable 2D grid boundaries (no hardcoded magic numbers). */
+  thresholds: z.object({
+    riskBoundary: z.number().min(0).max(1).default(0.35),
+    uncertaintyBoundary: z.number().min(0).max(1).default(0.50),
+  }).default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.50 })),
+  /** Data gate overrides for thinking feature activation. */
+  data_gate_overrides: z.object({
+    uncertainty_min_traces: z.number().positive().default(200),
+    calibration_min_traces: z.number().positive().default(50),
+  }).optional(),
+  /** Audit sample rate for high-confidence tasks (default: 5%). */
+  audit_sample_rate: z.number().min(0).max(1).default(0.05),
+});
+
+export type ExtensibleThinkingConfig = z.infer<typeof ExtensibleThinkingConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
   evolution: EvolutionConfigSchema.default(() => defaults(EvolutionConfigSchema)),
   escalation: EscalationConfigSchema.default(() => defaults(EscalationConfigSchema)),
   forward_predictor: ForwardPredictorConfigSchema.default(() => defaults(ForwardPredictorConfigSchema)),
+  /** Extensible Thinking — 2D routing grid (risk × uncertainty). */
+  extensible_thinking: ExtensibleThinkingConfigSchema.default(() => defaults(ExtensibleThinkingConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

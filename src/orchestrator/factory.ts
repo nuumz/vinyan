@@ -26,6 +26,7 @@ import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
 import { FileWatcher } from '../world-graph/file-watcher.ts';
+import { DefaultThinkingPolicyCompiler } from './thinking-compiler.ts';
 import { WorldGraph } from '../world-graph/world-graph.ts';
 import { CapabilityModel } from './capability-model.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
@@ -193,6 +194,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Load config to unify routing thresholds and Phase 4 governance parameters
   let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
+  let extensibleThinkingEnabled = true; // default: enabled
+  let extensibleThinkingConfig: { thresholds?: { riskBoundary: number; uncertaintyBoundary: number }; auditSampleRate?: number } | undefined;
   let fleetConfig:
     | {
         probation_min_tasks: number;
@@ -208,6 +211,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     if (vinyanConfig.orchestrator) {
       const r = vinyanConfig.orchestrator.routing;
       routingThresholds = { l0_max_risk: r.l0_max_risk, l1_max_risk: r.l1_max_risk, l2_max_risk: r.l2_max_risk };
+      extensibleThinkingEnabled = vinyanConfig.orchestrator.extensible_thinking?.enabled !== false;
+      const et = vinyanConfig.orchestrator.extensible_thinking;
+      if (et) {
+        extensibleThinkingConfig = {
+          thresholds: et.thresholds,
+          auditSampleRate: et.audit_sample_rate,
+        };
+      }
     }
     if (vinyanConfig.fleet) {
       fleetConfig = vinyanConfig.fleet;
@@ -318,6 +329,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       evolution_min_sleep_cycles: 3,
       fleet_min_active_workers: 2,
       fleet_min_worker_trace_diversity: 2,
+      thinking_calibration_min_traces: 50,
+      thinking_uncertainty_min_traces: 200,
+      thinking_uncertainty_min_task_types: 5,
     };
     workerSelector = new WorkerSelector({
       workerStore,
@@ -333,6 +347,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         sleepCyclesRun: patternStore?.countCycleRuns() ?? 0,
         activeWorkers: workerStore.countActive(),
         workerTraceDiversity: workerStore.countDistinctWorkerIds(),
+        thinkingTraceCount: traceStore?.countWithThinking?.() ?? 0,
+        thinkingDistinctTaskTypes: traceStore?.countDistinctThinkingTaskTypes?.() ?? 0,
       }),
       gateThresholds: defaultGateThresholds,
     });
@@ -408,6 +424,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalGate,
     // Forward Predictor (A7: prediction error as learning signal)
     forwardPredictor,
+    // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
+    thinkingPolicyCompiler: extensibleThinkingEnabled
+      ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
+      : undefined,
   };
 
   // Phase 6.4: Late-bind delegation deps to worker pool
@@ -755,6 +775,9 @@ export async function createOrchestratorAsync(
       evolution_min_sleep_cycles: 3,
       fleet_min_active_workers: 2,
       fleet_min_worker_trace_diversity: 2,
+      thinking_calibration_min_traces: 50,
+      thinking_uncertainty_min_traces: 200,
+      thinking_uncertainty_min_task_types: 5,
     };
     workerSelector = new WorkerSelector({
       workerStore,
@@ -770,6 +793,8 @@ export async function createOrchestratorAsync(
         sleepCyclesRun: patternStore?.countCycleRuns() ?? 0,
         activeWorkers: workerStore.countActive(),
         workerTraceDiversity: workerStore.countDistinctWorkerIds(),
+        thinkingTraceCount: traceStore?.countWithThinking?.() ?? 0,
+        thinkingDistinctTaskTypes: traceStore?.countDistinctThinkingTaskTypes?.() ?? 0,
       }),
       gateThresholds: defaultGateThresholds,
     });

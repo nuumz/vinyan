@@ -39,6 +39,8 @@ export interface RoutingDecision {
   reasoningPolicy?: ReasoningPolicy;
   /** Thinking configuration for this routing level. */
   thinkingConfig?: ThinkingConfig;
+  /** Extensible Thinking: compiled policy from 2D routing grid (risk × uncertainty). */
+  thinkingPolicy?: import('./thinking-policy.ts').ThinkingPolicy;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -195,7 +197,18 @@ export interface VerificationHint {
 export type ThinkingConfig =
   | { type: 'adaptive'; effort: 'low' | 'medium' | 'high' | 'max'; display?: 'omitted' | 'summarized' }
   | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
-  | { type: 'disabled' };
+  | { type: 'disabled' }
+  // Phase 3+ type stubs (design §4.1 "Design it now" — type-only, no implementation)
+  | { type: 'multi-hypothesis'; branches: 2 | 3 | 4;
+      diversityConstraint: 'different-patterns' | 'different-resources';
+      selectionRule: 'highest-oracle-confidence' | 'first-to-pass' | 'voting-consensus';
+      allFailBehavior: 'escalate-level' | 'return-best-effort' | 'refuse';
+      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random'; }
+  | { type: 'counterfactual'; trigger: 'verification_failure';
+      maxRetries: number; constraintSource: 'working-memory'; }
+  | { type: 'deliberative'; checkpoints: number; depthLimit: number; }
+  | { type: 'debate'; participants: string[]; debateTurns: number;
+      arbitrationRule: 'oracle-score' | 'evidence-weight'; };
 
 /** Cache control marker for prompt caching (Anthropic ephemeral cache). */
 export interface CacheControl {
@@ -333,7 +346,9 @@ export type DataGateMetric =
   | 'active_skills'
   | 'sleep_cycles_run'
   | 'active_workers' // Phase 4: registered active worker profiles
-  | 'worker_trace_diversity'; // Phase 4: traces with >1 distinct model_used
+  | 'worker_trace_diversity' // Phase 4: traces with >1 distinct model_used
+  | 'thinking_trace_count' // Extensible Thinking: traces with thinking data
+  | 'thinking_distinct_task_types'; // Extensible Thinking: task types with thinking data
 
 /** Data sufficiency gate — checked before Phase 2 sub-feature activation */
 export interface DataGate {
@@ -488,6 +503,12 @@ export interface ExecutionTrace {
   escalationReason?: 'uncertain-verification' | 'low-pipeline-confidence';
   /** EHD Phase 3B: Pipeline-level composite confidence (geometric mean across 6 steps). */
   pipelineConfidence?: { composite: number; formula: string };
+  /** Extensible Thinking Phase 0: thinking mode used for this trace (e.g., 'adaptive:medium', 'disabled'). */
+  thinkingMode?: string;
+  /** Extensible Thinking Phase 0: thinking tokens consumed (proxy: thinking content char length). */
+  thinkingTokensUsed?: number;
+  /** Extensible Thinking Phase 1b: JSON metadata for thinking policy audit trail. */
+  thinkingMeta?: Record<string, unknown>;
   /** Phase 6 §43: gzip-compressed transcript from agentic session (Bun.gzip). */
   transcriptGzip?: Uint8Array;
   /** Phase 6 §43: number of turns in the agentic transcript (for stats without decompressing). */
@@ -670,6 +691,8 @@ export interface REResponse {
     output: number;
     cacheRead?: number;
     cacheCreation?: number;
+    /** Extensible Thinking: thinking tokens used (separate from output tokens when available). */
+    thinkingTokens?: number;
   };
   engineId: string;
   /** Generic termination reason — more stable than provider-specific stop reasons. */

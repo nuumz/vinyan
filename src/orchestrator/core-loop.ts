@@ -101,6 +101,8 @@ interface WorkerResult {
   tokensConsumed: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** Extensible Thinking: thinking tokens used (from LLM response). */
+  thinkingTokensUsed?: number;
   durationMs: number;
   proposedContent?: string;
 }
@@ -153,6 +155,8 @@ export interface OrchestratorDeps {
   approvalGate?: import('./approval-gate.ts').ApprovalGate;
   /** ForwardPredictor — World Model for probabilistic outcome prediction (A7). */
   forwardPredictor?: import('./forward-predictor-types.ts').ForwardPredictor;
+  /** ThinkingPolicyCompiler — 2D routing grid (Extensible Thinking Phase 2.1). */
+  thinkingPolicyCompiler?: import('./thinking-policy.ts').ThinkingPolicyCompiler;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -438,6 +442,39 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         const { computeTaskSignature } = await import('./self-model.ts');
         const taskSig = computeTaskSignature(input);
         routing = { ...routing, reasoningPolicy: deps.selfModel.getReasoningPolicy(taskSig) };
+      }
+
+      // ── Step 2½a: COMPILE THINKING POLICY (Extensible Thinking Phase 2.1) ──
+      if (deps.thinkingPolicyCompiler) {
+        const { computeTaskUncertainty } = await import('./uncertainty-computer.ts');
+        const { computeTaskSignature } = await import('./self-model.ts');
+        const taskSig = computeTaskSignature(input);
+
+        const uncertainty = computeTaskUncertainty({
+          taskInput: input,
+          priorTraceCount: prediction?.calibrationDataPoints ?? 0,
+        });
+
+        const compiledPolicy = await deps.thinkingPolicyCompiler.compile({
+          taskInput: input,
+          riskScore: routing.riskScore ?? 0,
+          uncertaintySignal: uncertainty,
+          routingLevel: routing.level as 0 | 1 | 2 | 3,
+          taskTypeSignature: taskSig,
+          selfModelConfidence: prediction?.confidence,
+        });
+
+        routing = {
+          ...routing,
+          thinkingPolicy: compiledPolicy,
+          thinkingConfig: compiledPolicy.thinking, // backward compat
+        };
+
+        deps.bus?.emit('thinking:policy-compiled', {
+          taskId: input.id,
+          policy: compiledPolicy,
+          routingLevel: routing.level,
+        });
       }
 
       // ── Step 2½: SELECT WORKER (Phase 4) ──────────────────────────
@@ -929,6 +966,27 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           ? {
               composite: pipelineConf.composite,
               formula: pipelineConf.formula,
+            }
+          : undefined,
+        // Extensible Thinking Phase 0: capture thinking mode and token usage
+        thinkingMode: routing.thinkingConfig
+          ? routing.thinkingConfig.type === 'adaptive'
+            ? `adaptive:${routing.thinkingConfig.effort}`
+            : routing.thinkingConfig.type === 'enabled'
+              ? `enabled:${routing.thinkingConfig.budgetTokens}`
+              : 'disabled'
+          : undefined,
+        thinkingTokensUsed: workerResult.thinkingTokensUsed,
+        // Extensible Thinking Phase 1b: thinking policy metadata
+        thinkingMeta: routing.thinkingPolicy
+          ? {
+              profile_id: routing.thinkingPolicy.profileId,
+              uncertainty_score: routing.thinkingPolicy.uncertaintyScore,
+              risk_score: routing.thinkingPolicy.riskScore,
+              self_model_confidence: routing.thinkingPolicy.selfModelConfidence,
+              thinking_ceiling: routing.thinkingPolicy.thinkingCeiling,
+              observation_key: routing.thinkingPolicy.observationKey,
+              policy_basis: routing.thinkingPolicy.policyBasis,
             }
           : undefined,
       };

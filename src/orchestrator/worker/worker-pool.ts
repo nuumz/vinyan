@@ -41,6 +41,8 @@ import type {
 type WorkerOutputWithCache = WorkerOutput & {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** Extensible Thinking: thinking tokens used (from REResponse.tokensUsed.thinkingTokens or char-length proxy). */
+  thinkingTokensUsed?: number;
 };
 
 export interface WorkerPoolConfig {
@@ -471,11 +473,14 @@ export class WorkerPoolImpl implements WorkerPool {
     // Race: RE execute vs timeout
     const timeoutMs = workerInput.budget.timeoutMs;
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
+    // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision
+    const temperature = workerInput.taskType === 'reasoning' ? 0.3 : 0.2;
     const rePromise = engine
       .execute({
         systemPrompt,
         userPrompt,
         maxTokens: workerInput.budget.maxTokens,
+        temperature,
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
           cacheControl: { type: 'ephemeral' as const },
@@ -702,6 +707,7 @@ export class WorkerPoolImpl implements WorkerPool {
       tokensConsumed: output.tokensConsumed,
       cacheReadTokens: output.cacheReadTokens,
       cacheCreationTokens: output.cacheCreationTokens,
+      thinkingTokensUsed: output.thinkingTokensUsed,
       durationMs: Math.round(performance.now() - startTime),
       proposedContent: output.proposedContent,
     };
@@ -866,6 +872,9 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
   const cacheReadTokens = response.tokensUsed.cacheRead;
   const cacheCreationTokens = response.tokensUsed.cacheCreation;
+  // Extensible Thinking: capture thinking token usage (explicit field or char-length proxy)
+  const thinkingTokensUsed = response.tokensUsed.thinkingTokens
+    ?? (response.thinking ? Math.ceil(response.thinking.length / 4) : undefined);
   try {
     const cleaned = stripCodeBlock(response.content);
     const parsed = JSON.parse(cleaned);
@@ -878,13 +887,13 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
       durationMs,
     };
     const validated = WorkerOutputSchema.safeParse(candidate);
-    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens };
-    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
+    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
+    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
   } catch {
     if (response.content?.trim()) {
-      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens };
+      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
     }
-    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens };
+    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
   }
 }
 

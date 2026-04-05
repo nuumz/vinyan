@@ -44,6 +44,8 @@ export interface WorkerLoopResult {
   isUncertain: boolean;
   /** Backward compat: core-loop.ts treats WorkerLoopResult like WorkerResult */
   proposedToolCalls: ToolCall[];
+  /** When set, indicates a permanent error that should not be retried or escalated. */
+  nonRetryableError?: string;
 }
 
 export interface AgentLoopDeps {
@@ -67,7 +69,7 @@ export interface AgentLoopDeps {
   delegationRouter?: DelegationRouter;
   /** Injectable session factory for testing */
   createSession?: (proc: SubprocessHandle) => IAgentSession;
-  /** EO #5: LLM for narrative summarization during transcript compaction */
+  /** @deprecated P1-6: Replaced by deterministic structure-preserve compaction. Kept for backwards compat. */
   compactionLlm?: {
     generate(request: { messages: Array<{ role: string; content: string }>; maxTokens?: number }): Promise<{ content: string; tokensConsumed: number }>;
   };
@@ -87,6 +89,7 @@ function buildUncertainResult(
   durationMs: number,
   transcript: WorkerTurn[],
   proposedContent?: string,
+  nonRetryableError?: string,
 ): WorkerLoopResult {
   return {
     mutations,
@@ -97,7 +100,22 @@ function buildUncertainResult(
     transcript,
     isUncertain: true,
     proposedToolCalls: [],
+    nonRetryableError,
   };
+}
+
+/** Detect permanent errors (auth, config) from uncertainty messages. */
+const NON_RETRYABLE_PATTERNS = [
+  /\b40[13]\b/,          // 401 Unauthorized, 403 Forbidden
+  /invalid.api.key/i,
+  /user not found/i,
+  /authentication/i,
+  /permission denied/i,
+];
+
+function detectNonRetryableError(uncertainties: string[]): string | undefined {
+  const joined = uncertainties.join(' ');
+  return NON_RETRYABLE_PATTERNS.some(p => p.test(joined)) ? joined : undefined;
 }
 
 // ── Delegation handler (Phase 6.4) ───────────────────────────────────
@@ -210,6 +228,25 @@ export async function runAgentLoop(
       },
     }) as unknown as SubprocessHandle;
 
+    // Drain stderr in background for diagnostics — surface worker errors to orchestrator
+    const stderrChunks: string[] = [];
+    const stderrDecoder = new TextDecoder();
+    const stderrReader = (proc as any).stderr?.getReader?.();
+    if (stderrReader) {
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await stderrReader.read();
+            if (done) break;
+            const text = stderrDecoder.decode(value, { stream: true });
+            stderrChunks.push(text);
+            // Forward worker stderr to orchestrator stderr for visibility
+            process.stderr.write(`[worker:${input.id}] ${text}`);
+          }
+        } catch { /* reader closed */ }
+      })();
+    }
+
     session = deps.createSession?.(proc) ?? new AgentSession(proc);
 
     // Build and send init turn
@@ -245,12 +282,18 @@ export async function runAgentLoop(
       // Subprocess crash or timeout — treat as uncertain
       if (turn === null) {
         const mutations = overlay.computeDiff();
+        const stderrOutput = stderrChunks.join('').trim();
+        const reason = stderrOutput
+          ? `Subprocess error — ${stderrOutput.slice(0, 500)}`
+          : 'Subprocess timeout or crash — no response received';
         return buildUncertainResult(
           mutations,
-          ['Subprocess timeout or crash — no response received'],
+          [reason],
           tokensConsumed,
           performance.now() - startTime,
           transcript,
+          undefined,
+          detectNonRetryableError([reason]),
         );
       }
 
@@ -273,25 +316,10 @@ export async function runAgentLoop(
             tokensSaved: partition.tokensSaved,
           });
 
-          // EO #5: LLM-based narrative summarization when available
-          if (deps.compactionLlm && partition.compactedNarrativeTurns > 2) {
-            try {
-              const narrativeText = transcript
-                .filter((_, i) => !partition.evidenceTurns[i]?.isEvidence)
-                .map((t) => ('content' in t ? String(t.content) : JSON.stringify(t)).slice(0, 500))
-                .join('\n---\n');
-              const summaryResponse = await deps.compactionLlm.generate({
-                messages: [
-                  { role: 'system', content: 'Summarize the following agent reasoning turns into a concise paragraph. Preserve key decisions, hypotheses, and rationale. Omit filler.' },
-                  { role: 'user', content: narrativeText },
-                ],
-                maxTokens: 300,
-              });
-              transcript = buildCompactedTranscript(transcript, summaryResponse.content) as typeof transcript;
-              tokensConsumed += summaryResponse.tokensConsumed;
-            } catch {
-              // Compaction failure is non-fatal — continue with uncompacted transcript
-            }
+          // Structure-preserve compaction: keep evidence, replace narrative with metadata
+          if (partition.compactedNarrativeTurns > 2) {
+            const summary = `[Compacted: ${partition.compactedNarrativeTurns} narrative turns removed, ~${partition.tokensSaved} tokens saved. Evidence turns preserved.]`;
+            transcript = buildCompactedTranscript(transcript, summary) as typeof transcript;
           }
         }
 
@@ -388,6 +416,8 @@ export async function runAgentLoop(
           tokensConsumed,
           performance.now() - startTime,
           transcript,
+          undefined,
+          detectNonRetryableError(turn.uncertainties),
         );
       }
     }

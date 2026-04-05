@@ -12,6 +12,7 @@
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
 import type { PerceptualHierarchy, TaskDAG, TaskType, WorkingMemoryState } from '../types.ts';
+import type { InstructionMemory } from './instruction-loader.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
@@ -21,6 +22,8 @@ function clean(s: string): string {
 export interface AssembledPrompt {
   systemPrompt: string;
   userPrompt: string;
+  /** Cache control hint — system prompt is typically cacheable across tasks */
+  cacheControl?: { type: 'ephemeral' };
 }
 
 export function assemblePrompt(
@@ -29,16 +32,18 @@ export function assemblePrompt(
   memory: WorkingMemoryState,
   plan?: TaskDAG,
   taskType: TaskType = 'code',
+  instructions?: InstructionMemory | null,
 ): AssembledPrompt {
   if (taskType === 'reasoning') {
     return {
       systemPrompt: buildReasoningSystemPrompt(),
       userPrompt: buildReasoningUserPrompt(goal, memory),
+      cacheControl: { type: 'ephemeral' },
     };
   }
-  const systemPrompt = buildCodeSystemPrompt(perception);
+  const systemPrompt = buildCodeSystemPrompt(perception, instructions);
   const userPrompt = buildCodeUserPrompt(goal, perception, memory, plan);
-  return { systemPrompt, userPrompt };
+  return { systemPrompt, userPrompt, cacheControl: { type: 'ephemeral' } };
 }
 
 /** Concise descriptions of what each oracle can verify. */
@@ -63,7 +68,7 @@ function buildOracleManifest(): string {
   ].join('\n');
 }
 
-function buildCodeSystemPrompt(perception: PerceptualHierarchy): string {
+function buildCodeSystemPrompt(perception: PerceptualHierarchy, instructions?: InstructionMemory | null): string {
   const tools = [...perception.runtime.availableTools].sort().join(', ');
   return `[ROLE]
 You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
@@ -83,7 +88,7 @@ ${tools}
 
 Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.
 
-${buildOracleManifest()}`;
+${buildOracleManifest()}${instructions ? `\n\n[PROJECT INSTRUCTIONS]\n${clean(instructions.content)}` : ''}`;
 }
 
 function buildCodeUserPrompt(

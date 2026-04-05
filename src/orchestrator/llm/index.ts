@@ -14,4 +14,9 @@ export {
   registerOpenRouterProviders,
 } from './openrouter-provider.ts';
 export { type AssembledPrompt, assemblePrompt } from './prompt-assembler.ts';
+export {
+  clearInstructionCache,
+  type InstructionMemory,
+  loadInstructionMemory,
+} from './instruction-loader.ts';
 export { LLMProviderRegistry } from './provider-registry.ts';

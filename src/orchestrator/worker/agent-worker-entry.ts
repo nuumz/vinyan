@@ -107,13 +107,27 @@ export async function runAgentWorkerLoop(
     }
 
     // 4b. LLM generate
-    const response = await provider.generate({
-      systemPrompt: '',  // already in history[0]
-      userPrompt: '',    // already in history
-      maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
-      messages: history,
-      tools: init.toolManifest.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema })),
-    });
+    let response: Awaited<ReturnType<typeof provider.generate>>;
+    try {
+      response = await provider.generate({
+        systemPrompt: '',  // already in history[0]
+        userPrompt: '',    // already in history
+        maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
+        messages: history,
+        tools: init.toolManifest.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema })),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`LLM generate failed: ${msg}`);
+      writeTurn(io, {
+        type: 'uncertain',
+        turnId: `t${turnCount}`,
+        reason: `LLM generation error: ${msg}`,
+        uncertainties: [`LLM call failed: ${msg}`],
+        tokensConsumed: totalTokensConsumed,
+      });
+      return;
+    }
 
     totalTokensConsumed += response.tokensUsed.input + response.tokensUsed.output;
     turnCount++;

@@ -513,6 +513,15 @@ export interface ExecutionTrace {
   transcriptGzip?: Uint8Array;
   /** Phase 6 §43: number of turns in the agentic transcript (for stats without decompressing). */
   transcriptTurns?: number;
+  /** P1: Working memory failed approaches serialized at task end for cross-task learning. */
+  failedApproaches?: Array<{
+    approach: string;
+    oracleVerdict: string;
+    verdictConfidence?: number;
+    failureOracle?: string;
+  }>;
+  /** P1: Transcript partition captured at task end — evidence vs narrative classification. */
+  transcriptPartition?: TranscriptPartition;
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +593,8 @@ export interface WorkerOutput {
   durationMs: number;
   /** Conversational answer for non-file tasks (e.g. "hi"). */
   proposedContent?: string;
+  /** When set, indicates a permanent error that should not be retried or escalated. */
+  nonRetryableError?: string;
 }
 
 // ---------------------------------------------------------------------------

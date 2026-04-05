@@ -46,6 +46,7 @@ export async function afterToolCall(
       verifiedAt: Date.now(),
       sessionId: sessionId,
       confidence: verdict.confidence,
+      tierReliability: verdict.confidence >= 0.95 ? 1.0 : verdict.confidence >= 0.7 ? 0.8 : 0.5,
     });
   }
 

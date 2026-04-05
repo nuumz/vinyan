@@ -5,6 +5,7 @@ import type { Evidence, Fact } from '../core/types.ts';
 import { parseFalsifiableConditions } from '../oracle/falsifiable-parser.ts';
 import { DEFAULT_RETENTION, type RetentionConfig, runRetention } from './retention.ts';
 import { SCHEMA_SQL } from './schema.ts';
+import { computeDecayedConfidence } from './temporal-decay.ts';
 
 export class WorldGraph {
   private db: Database;
@@ -37,6 +38,11 @@ export class WorldGraph {
     } catch {
       /* column exists */
     }
+    try {
+      this.db.exec('ALTER TABLE facts ADD COLUMN tier_reliability REAL');
+    } catch {
+      /* column exists */
+    }
   }
 
   /** Compute content-hash ID for a fact (deterministic deduplication). */
@@ -56,8 +62,8 @@ export class WorldGraph {
     const id = this.computeFactId(fact.target, fact.pattern, fact.evidence);
     this.db
       .query(`
-      INSERT OR REPLACE INTO facts (id, target, pattern, evidence, oracle_name, file_hash, source_file, verified_at, session_id, confidence, valid_until, decay_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO facts (id, target, pattern, evidence, oracle_name, file_hash, source_file, verified_at, session_id, confidence, valid_until, decay_model, tier_reliability)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
       .run(
         id,
@@ -72,6 +78,7 @@ export class WorldGraph {
         fact.confidence,
         fact.validUntil ?? null,
         fact.decayModel ?? 'none',
+        fact.tierReliability ?? null,
       );
 
     // Populate evidence-file junction table for cross-file cascade invalidation
@@ -104,7 +111,7 @@ export class WorldGraph {
       SELECT f.* FROM facts f
       LEFT JOIN file_hashes fh ON f.source_file = fh.path
       WHERE f.target = ? AND (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
-        AND (f.valid_until IS NULL OR f.valid_until > ?)
+        AND (f.valid_until IS NULL OR f.valid_until > ? OR f.decay_model = 'step')
     `)
       .all(target, now) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
@@ -117,9 +124,16 @@ export class WorldGraph {
       sourceFile: row.source_file as string,
       verifiedAt: row.verified_at as number,
       sessionId: row.session_id as string | undefined,
-      confidence: row.confidence as number,
+      confidence: computeDecayedConfidence(
+        row.confidence as number,
+        row.verified_at as number,
+        (row.valid_until as number) || undefined,
+        (row.decay_model as string as Fact['decayModel']) || undefined,
+        now,
+      ),
       validUntil: (row.valid_until as number) || undefined,
       decayModel: (row.decay_model as string as Fact['decayModel']) || undefined,
+      tierReliability: (row.tier_reliability as number) ?? undefined,
     }));
   }
 

@@ -21,6 +21,7 @@ import type { WorkerPool } from '../core-loop.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
+import { loadInstructionMemory } from '../llm/instruction-loader.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
@@ -460,12 +461,14 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    const { systemPrompt, userPrompt } = assemblePrompt(
+    const instructions = loadInstructionMemory(this.workspace);
+    const { systemPrompt, userPrompt, cacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
       workerInput.plan,
       workerInput.taskType,
+      instructions,
     );
 
     const startTime = performance.now();
@@ -475,6 +478,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
     // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision
     const temperature = workerInput.taskType === 'reasoning' ? 0.3 : 0.2;
+    let lastErrorMsg = '';
     const rePromise = engine
       .execute({
         systemPrompt,
@@ -486,11 +490,24 @@ export class WorkerPoolImpl implements WorkerPool {
           cacheControl: { type: 'ephemeral' as const },
         },
       })
-      .catch((): 'error' => 'error');
+      .catch((err): 'error' => {
+        const msg = err instanceof Error ? err.message : String(err);
+        lastErrorMsg = msg;
+        console.error(`[vinyan] In-process LLM call failed (${engine.id}): ${msg}`);
+        return 'error';
+      });
 
     const result = await Promise.race([rePromise, timeoutPromise]);
-    if (result === 'timeout' || result === 'error') {
+    if (result === 'timeout') {
+      console.error(`[vinyan] In-process LLM call timed out (${engine.id}, ${timeoutMs}ms)`);
       return emptyOutput(workerInput.taskId);
+    }
+    if (result === 'error') {
+      const output = emptyOutput(workerInput.taskId);
+      if (isNonRetryableError(lastErrorMsg)) {
+        output.nonRetryableError = lastErrorMsg;
+      }
+      return output;
     }
 
     const durationMs = Math.round(performance.now() - startTime);
@@ -710,6 +727,7 @@ export class WorkerPoolImpl implements WorkerPool {
       thinkingTokensUsed: output.thinkingTokensUsed,
       durationMs: Math.round(performance.now() - startTime),
       proposedContent: output.proposedContent,
+      nonRetryableError: output.nonRetryableError,
     };
   }
 
@@ -847,6 +865,19 @@ function routingToIsolation(level: RoutingDecision['level']): IsolationLevel {
   if (level === 0) return 0;
   if (level === 1) return 1;
   return 2;
+}
+
+/** HTTP status codes that indicate permanent auth/config failures — retrying won't help. */
+const NON_RETRYABLE_PATTERNS = [
+  /\b40[13]\b/,          // 401 Unauthorized, 403 Forbidden
+  /invalid.api.key/i,
+  /user not found/i,
+  /authentication/i,
+  /permission denied/i,
+];
+
+function isNonRetryableError(msg: string): boolean {
+  return NON_RETRYABLE_PATTERNS.some(p => p.test(msg));
 }
 
 function emptyOutput(taskId: string, tokens = 0): WorkerOutput {

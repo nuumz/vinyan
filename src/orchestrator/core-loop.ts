@@ -105,6 +105,8 @@ interface WorkerResult {
   thinkingTokensUsed?: number;
   durationMs: number;
   proposedContent?: string;
+  /** When set, indicates a permanent error — skip retries and escalation. */
+  nonRetryableError?: string;
 }
 
 interface VerificationResult {
@@ -693,6 +695,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             cacheCreationTokens: (lastAgentResult as any).cacheCreationTokens,
             durationMs: lastAgentResult.durationMs,
             proposedContent: lastAgentResult.proposedContent,
+            nonRetryableError: lastAgentResult.nonRetryableError,
           };
 
           // Build session summary for retry context when uncertain
@@ -706,6 +709,36 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           output: workerResult as unknown as import('./types.ts').WorkerOutput,
           durationMs: Date.now() - dispatchStart,
         });
+
+        // ── Non-retryable error fast-exit (auth, config) ────────────
+        if (workerResult.nonRetryableError) {
+          console.error(`[vinyan] Non-retryable error — aborting: ${workerResult.nonRetryableError}`);
+          const failTrace: ExecutionTrace = {
+            id: `trace-${input.id}-non-retryable`,
+            taskId: input.id,
+            workerId: routing.workerId ?? routing.model ?? 'unknown',
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: 'non-retryable-error',
+            oracleVerdicts: {},
+            modelUsed: routing.model ?? 'none',
+            tokensConsumed: workerResult.tokensConsumed,
+            durationMs: Date.now() - startTime,
+            outcome: 'failure',
+            failureReason: workerResult.nonRetryableError,
+            affectedFiles: input.targetFiles ?? [],
+          };
+          await deps.traceCollector.record(failTrace);
+          deps.bus?.emit('trace:record', { trace: failTrace });
+          const failResult: TaskResult = {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: failTrace,
+          };
+          deps.bus?.emit('task:complete', { result: failResult });
+          return failResult;
+        }
 
         // Answer quality gate: reasoning tasks must produce non-empty answer
         if (input.taskType === 'reasoning' && !workerResult.proposedContent?.trim()) {
@@ -917,12 +950,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       const frameworkMarkers = detectFrameworkMarkers(perception);
 
       // Injection D: determine outcome using confidence decision when available
+      // Zero-mutation tasks (reasoning/conversation): pipeline confidence protects against bad code
+      // changes — when there are no changes, confidence gatekeeping is unnecessary.
+      const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
       const effectiveOutcome: ExecutionTrace['outcome'] =
         routing.level === 0 || !confidenceDecision
           ? verification.passed
             ? 'success'
             : 'failure'
-          : confidenceDecision === 'allow'
+          : zeroMutationPass || confidenceDecision === 'allow'
             ? 'success'
             : 'failure';
 
@@ -989,6 +1025,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               policy_basis: routing.thinkingPolicy.policyBasis,
             }
           : undefined,
+        // P1: Serialize working memory failed approaches for cross-task learning
+        failedApproaches: workingMemory.getSnapshot().failedApproaches.map(fa => ({
+          approach: fa.approach,
+          oracleVerdict: fa.oracleVerdict,
+          verdictConfidence: fa.verdictConfidence,
+          failureOracle: fa.failureOracle,
+        })),
       };
 
       // ── Step 6: LEARN — see calibrate + record block after confidence decision switch ──
@@ -1026,8 +1069,11 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ── Injection C: Confidence-driven decision routing ──────────
       // Determine whether to take the success path based on confidence decision (L1+)
       // or binary verification result (L0).
+      // Zero-mutation shortcut: nothing to protect → trust binary verification (prevents retry storm)
       const shouldCommit =
-        routing.level === 0 || !confidenceDecision ? verification.passed : confidenceDecision === 'allow';
+        routing.level === 0 || !confidenceDecision
+          ? verification.passed
+          : zeroMutationPass || confidenceDecision === 'allow';
 
       // Handle re-verify, escalate, refuse for L1+ before the main success/failure branch
       let shouldContinue = false;
@@ -1238,7 +1284,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       if (shouldCommit || trace.outcome === 'success') {
         // ── WP-2: LLM-as-Critic (semantic verification at L2+) ──────
         // A1: critic is a separate LLM call from the generator
-        if (deps.criticEngine && routing.level >= 2) {
+        // Skip critic for zero-mutation tasks — nothing to review
+        if (deps.criticEngine && routing.level >= 2 && workerResult.mutations.length > 0) {
           try {
             const proposal = {
               mutations: workerResult.mutations,
@@ -1303,7 +1350,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
         // ── WP-3: TestGenerator — generative verification at L2+ (§17.7) ────
         // A1: test generation is a separate LLM call from the generator
-        if (deps.testGenerator && routing.level >= 2) {
+        // Skip test generation for zero-mutation tasks — nothing to test
+        if (deps.testGenerator && routing.level >= 2 && workerResult.mutations.length > 0) {
           try {
             const testGenResult = await deps.testGenerator.generateAndRun(
               { mutations: workerResult.mutations, approach: trace.approach },
@@ -1432,6 +1480,11 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 confidence: computeFactConfidence(verification.verdicts),
                 validUntil: factValidUntil,
                 decayModel: factDecayModel,
+                // P0: Propagate tier reliability from oracle confidence
+                tierReliability: (() => {
+                  const conf = computeFactConfidence(verification.verdicts);
+                  return conf >= 0.95 ? 1.0 : conf >= 0.7 ? 0.8 : 0.5;
+                })(),
               });
             }
           } catch {
@@ -1559,6 +1612,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
     affectedFiles: input.targetFiles ?? [],
     workerSelectionAudit: lastWorkerSelection,
+    // P1: Serialize working memory failed approaches for cross-task learning
+    failedApproaches: workingMemory.getSnapshot().failedApproaches.map(fa => ({
+      approach: fa.approach,
+      oracleVerdict: fa.oracleVerdict,
+      verdictConfidence: fa.verdictConfidence,
+      failureOracle: fa.failureOracle,
+    })),
   };
 
   await deps.traceCollector.record(escalationTrace);

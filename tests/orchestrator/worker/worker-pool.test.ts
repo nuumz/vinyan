@@ -171,6 +171,22 @@ describe('WorkerPoolImpl', () => {
     expect(result.tokensConsumed).toBe(0);
   });
 
+  test('auth error (401) tags result as nonRetryableError', async () => {
+    const registry = new LLMProviderRegistry();
+    const authFailProvider: import('../../../src/orchestrator/types.ts').LLMProvider = {
+      id: 'mock/auth-fail',
+      tier: 'fast',
+      async generate() {
+        throw new Error('OpenRouter API error 401: {"error":{"message":"User not found.","code":401}}');
+      },
+    };
+    registry.register(authFailProvider);
+    const pool = new WorkerPoolImpl({ registry, workspace: tempDir, useSubprocess: false });
+    const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
+    expect(result.mutations).toHaveLength(0);
+    expect((result as any).nonRetryableError).toContain('401');
+  });
+
   test('non-JSON LLM response returns empty mutations', async () => {
     const pool = new WorkerPoolImpl({
       registry: makeRegistry({ responseContent: 'I cannot help with that.' }),

@@ -9,6 +9,7 @@
  */
 import { OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
 import type { HistoryMessage, LLMProvider, Message, ToolResultMessage } from '../types.ts';
+import { PromptTooLargeError } from '../types.ts';
 import { compressPerception } from '../llm/perception-compressor.ts';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -117,6 +118,13 @@ export async function runAgentWorkerLoop(
         tools: init.toolManifest.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema })),
       });
     } catch (err) {
+      // PromptTooLargeError → compress history and retry once
+      if (err instanceof PromptTooLargeError && compressionAttempts < MAX_COMPRESSION_ATTEMPTS) {
+        logError(`Prompt too large (~${err.estimatedTokens} tokens), compressing and retrying`);
+        history.splice(0, history.length, ...compressHistory(history));
+        compressionAttempts++;
+        continue; // retry this turn with compressed history
+      }
       const msg = err instanceof Error ? err.message : String(err);
       logError(`LLM generate failed: ${msg}`);
       writeTurn(io, {

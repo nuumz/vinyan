@@ -17,6 +17,7 @@ import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
+import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
@@ -167,12 +168,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let skillStore: SkillStore | undefined;
   let ruleStore: RuleStore | undefined;
   let workerStore: WorkerStore | undefined;
+  let rejectedApproachStore: RejectedApproachStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
     skillStore = new SkillStore(db.getDb());
     ruleStore = new RuleStore(db.getDb());
     workerStore = new WorkerStore(db.getDb());
+    rejectedApproachStore = new RejectedApproachStore(db.getDb());
   }
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
@@ -424,6 +427,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalGate,
     // Forward Predictor (A7: prediction error as learning signal)
     forwardPredictor,
+    // Cross-task learning: eviction archiving + prior-approach loading
+    rejectedApproachStore,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
@@ -624,12 +629,14 @@ export async function createOrchestratorAsync(
   let skillStore: SkillStore | undefined;
   let ruleStore: RuleStore | undefined;
   let workerStore: WorkerStore | undefined;
+  let rejectedApproachStore: RejectedApproachStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
     skillStore = new SkillStore(db.getDb());
     ruleStore = new RuleStore(db.getDb());
     workerStore = new WorkerStore(db.getDb());
+    rejectedApproachStore = new RejectedApproachStore(db.getDb());
   }
 
   if (workerStore) {
@@ -864,6 +871,7 @@ export async function createOrchestratorAsync(
     instanceCoordinator: instanceCoordinator,
     approvalGate,
     forwardPredictor: forwardPredictorAsync,
+    rejectedApproachStore,
   };
 
   const delegationRouter = new DelegationRouter();

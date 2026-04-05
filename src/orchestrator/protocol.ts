@@ -66,12 +66,21 @@ const VerifiedFactRefSchema = z.object({
   pattern: z.string(),
   verified_at: z.number(),
   hash: z.string(),
+  confidence: z.number().default(1.0),
+  oracleName: z.string().default('unknown'),
+  tierReliability: z.number().optional(),
 });
 
 const RuntimeInfoSchema = z.object({
   nodeVersion: z.string(),
   os: z.string(),
   availableTools: z.array(z.string()),
+});
+
+const FileContentSchema = z.object({
+  file: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
 });
 
 export const PerceptualHierarchySchema = z.object({
@@ -81,6 +90,7 @@ export const PerceptualHierarchySchema = z.object({
   verifiedFacts: z.array(VerifiedFactRefSchema),
   runtime: RuntimeInfoSchema,
   frameworkMarkers: z.array(z.string()).optional(),
+  fileContents: z.array(FileContentSchema).optional(),
 });
 
 // ── WorkingMemoryState ───────────────────────────────────────────────
@@ -145,6 +155,28 @@ export const TaskDAGSchema = z.object({
   isFallback: z.boolean().optional(),
 });
 
+// ── TaskUnderstanding (Gap 9A: unified intermediate representation) ───
+
+const TaskFingerprintSchema = z.object({
+  actionVerb: z.string(),
+  fileExtensions: z.array(z.string()),
+  blastRadiusBucket: z.enum(['single', 'small', 'medium', 'large']),
+  frameworkMarkers: z.array(z.string()).optional(),
+  oracleFailurePattern: z.string().optional(),
+});
+
+const TaskUnderstandingSchema = z.object({
+  rawGoal: z.string(),
+  actionVerb: z.string(),
+  actionCategory: z.enum(['mutation', 'analysis', 'investigation', 'design', 'qa']),
+  targetSymbol: z.string().optional(),
+  frameworkContext: z.array(z.string()),
+  constraints: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+  expectsMutation: z.boolean(),
+  fingerprint: TaskFingerprintSchema.optional(),
+});
+
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────
 
 const WorkerBudgetSchema = z.object({
@@ -164,6 +196,7 @@ export const WorkerInputSchema = z.object({
   allowedPaths: z.array(z.string()),
   isolationLevel: IsolationLevelSchema,
   workerId: z.string().optional(),
+  understanding: TaskUnderstandingSchema.optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────

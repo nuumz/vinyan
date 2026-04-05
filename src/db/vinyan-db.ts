@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ALL_MIGRATIONS, MigrationRunner } from './migrations/index.ts';
-import { migratePipelineConfidenceColumns, migrateTranscriptColumns } from './trace-schema.ts';
+import { migratePipelineConfidenceColumns, migrateThinkingColumns, migrateTranscriptColumns } from './trace-schema.ts';
 
 export class VinyanDB {
   private db: Database;
@@ -29,6 +29,8 @@ export class VinyanDB {
     migratePipelineConfidenceColumns(this.db);
     // Safe column additions for Phase 6 transcript storage (idempotent)
     migrateTranscriptColumns(this.db);
+    // Safe column additions for Extensible Thinking (idempotent)
+    migrateThinkingColumns(this.db);
   }
 
   getDb(): Database {

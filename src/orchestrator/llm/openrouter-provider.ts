@@ -6,6 +6,7 @@
  *
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
+import { PromptTooLargeError } from '../types.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { OpenAIMessage } from './provider-format.ts';
@@ -110,6 +111,11 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               continue;
             }
             const errorText = await response.text();
+            // 413 or context_length_exceeded → throw typed error for worker-level recovery
+            if (response.status === 413 || errorText.includes('context_length_exceeded') || errorText.includes('too large')) {
+              const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+              throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
+            }
             throw new Error(`OpenRouter API error ${response.status}: ${errorText}`);
           }
 

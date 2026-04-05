@@ -49,6 +49,7 @@ export interface QualityScore {
 export type AbstentionReason =
   | 'no_test_files'
   | 'no_linter_configured'
+  | 'no_understanding'
   | 'out_of_domain'
   | 'insufficient_data'
   | 'timeout'

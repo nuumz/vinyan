@@ -17,6 +17,10 @@ export interface AttributeCombo {
   routingLevel?: number;
   blastRadiusBucket?: string;
   oracleVerdictPattern?: string;
+  /** Gap 8B: Action verb from task goal for goal-aware pattern mining. */
+  actionVerb?: string;
+  /** Gap 8B: Framework markers for framework-correlated patterns. */
+  frameworkMarker?: string;
 }
 
 export interface CorrelationResult {
@@ -46,10 +50,13 @@ export function findFailureCorrelations(
     routingLevel: t.routingLevel,
     blastRadiusBucket: blastBucket(t.affectedFiles.length),
     oracleVerdictPattern: dominantFailedOracle(t.oracleVerdicts),
+    // Gap 8B: Goal-derived attributes for semantic pattern mining
+    actionVerb: extractActionVerbFromSignature(t.taskTypeSignature),
+    frameworkMarker: t.frameworkMarkers?.[0], // Primary framework only
   }));
 
-  // Generate all 2-attribute combination groups
-  const attrKeys = ['model', 'routingLevel', 'blastRadiusBucket', 'oracleVerdictPattern'] as const;
+  // Generate all 2-attribute combination groups (Gap 8B: expanded with actionVerb + frameworkMarker)
+  const attrKeys = ['model', 'routingLevel', 'blastRadiusBucket', 'oracleVerdictPattern', 'actionVerb', 'frameworkMarker'] as const;
   const results: CorrelationResult[] = [];
 
   for (let i = 0; i < attrKeys.length; i++) {
@@ -140,4 +147,11 @@ function dominantFailedOracle(verdicts: Record<string, boolean>): string | undef
     if (!passed) return name;
   }
   return undefined;
+}
+
+/** Gap 8B: Extract action verb from task type signature (e.g. "fix::ts::single" → "fix"). */
+function extractActionVerbFromSignature(sig?: string): string | undefined {
+  if (!sig) return undefined;
+  const verb = sig.split('::')[0];
+  return verb && verb !== 'unknown' ? verb : undefined;
 }

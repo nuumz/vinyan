@@ -9,6 +9,7 @@
  */
 
 import type { VinyanBus } from '../core/bus.ts';
+import { sanitizeForPrompt } from '../guardrails/index.ts';
 import type { AgentSessionSummary, WorkingMemoryState } from './types.ts';
 
 export const MAX_FAILED_APPROACHES = 20;
@@ -19,6 +20,9 @@ export const MAX_SCOPED_FACTS = 50;
 /** Threshold at which memory pressure is considered high enough to warn. */
 const EVICTION_WARNING_THRESHOLD = 10;
 
+/** Callback to archive evicted/completed failed approaches to persistent storage. */
+export type FailedApproachArchiver = (entry: WorkingMemoryState['failedApproaches'][number]) => void;
+
 export class WorkingMemory {
   private failedApproaches: WorkingMemoryState['failedApproaches'] = [];
   private activeHypotheses: WorkingMemoryState['activeHypotheses'] = [];
@@ -27,13 +31,15 @@ export class WorkingMemory {
   private priorAttempts: AgentSessionSummary[] = [];
   private bus?: VinyanBus;
   private taskId?: string;
+  private archiver?: FailedApproachArchiver;
 
-  constructor(options?: { bus?: VinyanBus; taskId?: string }) {
+  constructor(options?: { bus?: VinyanBus; taskId?: string; archiver?: FailedApproachArchiver }) {
     this.bus = options?.bus;
     this.taskId = options?.taskId;
+    this.archiver = options?.archiver;
   }
 
-  recordFailedApproach(approach: string, oracleVerdict: string, verdictConfidence?: number, failureOracle?: string): void {
+  recordFailedApproach(approach: string, oracleVerdict: string, verdictConfidence?: number, failureOracle?: string, classifiedFailures?: Array<{ category: string; file?: string; line?: number; message: string; severity: 'error' | 'warning'; suggestedFix?: string }>): void {
     if (this.failedApproaches.length >= MAX_FAILED_APPROACHES) {
       // EO #8: Evict lowest-confidence approach (least informative) instead of FIFO
       // NOTE: undefined confidence → 0.5 (unknown ≠ low; treat as neutral)
@@ -44,9 +50,24 @@ export class WorkingMemory {
           minIdx = i;
         }
       }
+      // G2: Archive evicted entry before removal — preserves forensic trail
+      const evicted = this.failedApproaches[minIdx]!;
+      try {
+        this.archiver?.(evicted);
+      } catch {
+        // Archival is best-effort — eviction proceeds regardless
+      }
       this.failedApproaches.splice(minIdx, 1);
     }
-    this.failedApproaches.push({ approach, oracleVerdict, timestamp: Date.now(), verdictConfidence, failureOracle });
+    // Storage-layer sanitization: sanitize LLM-generated text at write time (not just at prompt assembly)
+    this.failedApproaches.push({
+      approach: sanitizeForPrompt(approach).cleaned,
+      oracleVerdict: sanitizeForPrompt(oracleVerdict).cleaned,
+      timestamp: Date.now(),
+      verdictConfidence,
+      failureOracle,
+      classifiedFailures,
+    });
 
     // G3: Emit memory pressure warning for GAP-H FC4 detection
     if (this.bus && this.taskId && this.failedApproaches.length >= EVICTION_WARNING_THRESHOLD) {
@@ -89,6 +110,19 @@ export class WorkingMemory {
   /** Add retry context from a prior agentic session (Phase 6.3). */
   addPriorAttempt(summary: AgentSessionSummary): void {
     this.priorAttempts.push(summary);
+  }
+
+  /** G2: Archive all remaining failed approaches to persistent storage at task end.
+   *  Called before WorkingMemory instance is discarded. */
+  archiveRemainingApproaches(): void {
+    if (!this.archiver) return;
+    for (const entry of this.failedApproaches) {
+      try {
+        this.archiver(entry);
+      } catch {
+        // Best-effort — continue archiving remaining entries
+      }
+    }
   }
 
   /** Returns a deep copy — safe for serialization across process boundaries. */

@@ -22,20 +22,22 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { loadInstructionMemory } from '../llm/instruction-loader.ts';
+import { buildTaskUnderstanding } from '../task-understanding.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
-import type {
-  IsolationLevel,
-  PerceptualHierarchy,
-  PerceptionRole,
-  REResponse,
-  RoutingDecision,
-  TaskDAG,
-  TaskInput,
-  WorkerInput,
-  WorkerOutput,
-  WorkingMemoryState,
+import {
+  type IsolationLevel,
+  type PerceptualHierarchy,
+  type PerceptionRole,
+  PromptTooLargeError,
+  type REResponse,
+  type RoutingDecision,
+  type TaskDAG,
+  type TaskInput,
+  type WorkerInput,
+  type WorkerOutput,
+  type WorkingMemoryState,
 } from '../types.ts';
 
 /** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
@@ -447,6 +449,7 @@ export class WorkerPoolImpl implements WorkerPool {
       allowedPaths: input.targetFiles?.map((f) => f.replace(/\/[^/]+$/, '/')) ?? ['src/'],
       isolationLevel: routingToIsolation(routing.level),
       ...(routing.workerId ? { workerId: routing.workerId } : {}),
+      understanding: buildTaskUnderstanding(input), // Gap 9A: carry understanding to prompt assembly
     };
   }
 
@@ -462,13 +465,14 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     const instructions = loadInstructionMemory(this.workspace);
-    const { systemPrompt, userPrompt, cacheControl } = assemblePrompt(
+    const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
       workerInput.plan,
       workerInput.taskType,
       instructions,
+      workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
     );
 
     const startTime = performance.now();
@@ -487,10 +491,13 @@ export class WorkerPoolImpl implements WorkerPool {
         temperature,
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
-          cacheControl: { type: 'ephemeral' as const },
+          cacheControl: systemCacheControl ?? { type: 'ephemeral' as const },
+          ...(instructionCacheControl ? { instructionCacheControl } : {}),
         },
       })
       .catch((err): 'error' => {
+        // Rethrow PromptTooLargeError for caller-level recovery
+        if (err instanceof PromptTooLargeError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         lastErrorMsg = msg;
         console.error(`[vinyan] In-process LLM call failed (${engine.id}): ${msg}`);

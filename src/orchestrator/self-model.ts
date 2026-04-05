@@ -10,6 +10,7 @@ import type { Database } from 'bun:sqlite';
 import type { VinyanBus } from '../core/bus.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { SelfModel } from './core-loop.ts';
+import { extractActionVerb as sharedExtractActionVerb } from './task-fingerprint.ts';
 import type {
   EpistemicAdjustment,
   ExecutionTrace,
@@ -73,13 +74,9 @@ export function computeTaskSignature(input: TaskInput): string {
   return `${actionVerb}::${exts}::${blastBucket}`;
 }
 
+/** Gap 5B: Use shared extractActionVerb from task-fingerprint.ts (16 verbs, includes()-based). */
 function extractActionVerb(goal: string): string {
-  const lower = goal.toLowerCase().trim();
-  const verbs = ['refactor', 'fix', 'add', 'remove', 'update', 'test', 'rename', 'move', 'extract', 'inline'];
-  for (const v of verbs) {
-    if (lower.startsWith(v)) return v;
-  }
-  return lower.split(/\s+/)[0]?.slice(0, 20) ?? 'unknown';
+  return sharedExtractActionVerb(goal);
 }
 
 function extractFileExtensions(files: string[]): string {

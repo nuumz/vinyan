@@ -1,8 +1,8 @@
 /**
  * Prompt Assembler — builds system and user prompts for LLM workers.
  *
- * System: ROLE + OUTPUT FORMAT
- * User: PERCEPTION + CONSTRAINTS + GOAL + PLAN
+ * Code tasks use PromptSectionRegistry for composable prompt assembly.
+ * Reasoning tasks use dedicated builder functions.
  *
  * All untrusted text (goal, diagnostics, working memory, facts)
  * is sanitized through guardrail scanners before interpolation.
@@ -11,8 +11,10 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
-import type { PerceptualHierarchy, TaskDAG, TaskType, WorkingMemoryState } from '../types.ts';
+import type { CacheControl, PerceptualHierarchy, TaskDAG, TaskType, TaskUnderstanding, WorkingMemoryState } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
+import type { SectionContext } from './prompt-section-registry.ts';
+import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
@@ -22,9 +24,32 @@ function clean(s: string): string {
 export interface AssembledPrompt {
   systemPrompt: string;
   userPrompt: string;
-  /** Cache control hint — system prompt is typically cacheable across tasks */
-  cacheControl?: { type: 'ephemeral' };
+  /** Cache control for system prompt — static content gets long-lived cache */
+  systemCacheControl?: CacheControl;
+  /** Cache control for user-message instruction block (VINYAN.md) — session-stable */
+  instructionCacheControl?: CacheControl;
+  /** Estimated token counts for cost instrumentation */
+  estimatedTokens?: { system: number; user: number; total: number };
+  /** @deprecated Use systemCacheControl instead */
+  cacheControl?: CacheControl;
 }
+
+/** G1: Map tier_reliability score to human-readable label for prompt rendering. */
+export function tierLabel(tierReliability?: number): string {
+  if (tierReliability == null) return 'unknown-tier';
+  if (tierReliability >= 0.95) return 'deterministic';
+  if (tierReliability >= 0.7) return 'heuristic';
+  return 'probabilistic';
+}
+
+/** Rough token estimate: ~1.3 tokens per word (English code-mixed text). */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.split(/\s+/).length * 1.3);
+}
+
+/** Singleton registries — created once, reused across calls. */
+const defaultRegistry = createDefaultRegistry();
+const reasoningRegistry = createReasoningRegistry();
 
 export function assemblePrompt(
   goal: string,
@@ -33,132 +58,42 @@ export function assemblePrompt(
   plan?: TaskDAG,
   taskType: TaskType = 'code',
   instructions?: InstructionMemory | null,
+  understanding?: TaskUnderstanding,
 ): AssembledPrompt {
+  // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
+    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding };
+    const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
+    const userPrompt = reasoningRegistry.renderTarget('user', ctx);
+    const sysTokens = estimateTokens(systemPrompt);
+    const usrTokens = estimateTokens(userPrompt);
     return {
-      systemPrompt: buildReasoningSystemPrompt(),
-      userPrompt: buildReasoningUserPrompt(goal, memory),
+      systemPrompt,
+      userPrompt,
+      systemCacheControl: { type: 'static' },
+      instructionCacheControl: instructions ? { type: 'session' } : undefined,
       cacheControl: { type: 'ephemeral' },
+      estimatedTokens: { system: sysTokens, user: usrTokens, total: sysTokens + usrTokens },
     };
   }
-  const systemPrompt = buildCodeSystemPrompt(perception, instructions);
-  const userPrompt = buildCodeUserPrompt(goal, perception, memory, plan);
-  return { systemPrompt, userPrompt, cacheControl: { type: 'ephemeral' } };
+
+  // Code tasks: use section registry for composable assembly
+  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding };
+  const systemPrompt = defaultRegistry.renderTarget('system', ctx);
+  const userPrompt = defaultRegistry.renderTarget('user', ctx);
+  const sysTokens = estimateTokens(systemPrompt);
+  const usrTokens = estimateTokens(userPrompt);
+  return {
+    systemPrompt,
+    userPrompt,
+    systemCacheControl: { type: 'static' },
+    instructionCacheControl: instructions ? { type: 'session' } : undefined,
+    cacheControl: { type: 'ephemeral' },
+    estimatedTokens: { system: sysTokens, user: usrTokens, total: sysTokens + usrTokens },
+  };
 }
 
-/** Concise descriptions of what each oracle can verify. */
-const ORACLE_MANIFEST = [
-  'ast: Validates symbol existence, function signatures, import statements',
-  'type: Checks TypeScript type correctness (tsc --noEmit)',
-  'dep: Analyzes import graph, blast radius, dependency safety',
-  'lint: Checks code style and quality rules (ESLint/Biome)',
-  'test: Runs test suite, verifies all tests pass',
-];
-
-function buildOracleManifest(): string {
-  return [
-    '[ORACLE VERIFICATION CAPABILITIES]',
-    'Each subtask you propose should be verifiable by at least one oracle:',
-    ...ORACLE_MANIFEST.map((line) => `  - ${line}`),
-    '',
-    'When decomposing tasks, assign appropriate oracles to each node.',
-    'For each node, you may specify a verificationHint with:',
-    '  - oracles: which oracles to run (subset of above)',
-    '  - skipTestWhen: "import-only" | "type-change-only" | "config-change"',
-  ].join('\n');
-}
-
-function buildCodeSystemPrompt(perception: PerceptualHierarchy, instructions?: InstructionMemory | null): string {
-  const tools = [...perception.runtime.availableTools].sort().join(', ');
-  return `[ROLE]
-You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
-You generate code proposals that will be verified by external oracles.
-Do NOT self-evaluate your output — external verification determines correctness.
-
-[OUTPUT FORMAT]
-Respond with a JSON object matching this structure:
-{
-  "proposedMutations": [{ "file": "path", "content": "full file content", "explanation": "why" }],
-  "proposedToolCalls": [{ "id": "tc-1", "tool": "tool_name", "parameters": {} }],
-  "uncertainties": ["areas of uncertainty"]
-}
-
-[AVAILABLE TOOLS]
-${tools}
-
-Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.
-
-${buildOracleManifest()}${instructions ? `\n\n[PROJECT INSTRUCTIONS]\n${clean(instructions.content)}` : ''}`;
-}
-
-function buildCodeUserPrompt(
-  goal: string,
-  perception: PerceptualHierarchy,
-  memory: WorkingMemoryState,
-  plan?: TaskDAG,
-): string {
-  const sections: string[] = [];
-
-  // GOAL — sanitized (user/API input)
-  sections.push(`[TASK]\n${clean(goal)}`);
-
-  // PERCEPTION
-  sections.push(`[PERCEPTION]
-Target: ${perception.taskTarget.file} — ${clean(perception.taskTarget.description)}
-Direct importers: ${perception.dependencyCone.directImporters.join(', ') || 'none'}
-Direct importees: ${perception.dependencyCone.directImportees.join(', ') || 'none'}
-Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
-
-  if (perception.diagnostics.typeErrors.length > 0) {
-    const errors = perception.diagnostics.typeErrors
-      .slice(0, 10)
-      .map((e) => `  ${e.file}:${e.line}: ${clean(e.message)}`)
-      .join('\n');
-    sections.push(`[DIAGNOSTICS]\n${errors}`);
-  }
-
-  if (perception.verifiedFacts.length > 0) {
-    const facts = perception.verifiedFacts
-      .slice(0, 10)
-      .map((f) => `  ${f.target}: ${clean(f.pattern)} (verified)`)
-      .join('\n');
-    sections.push(`[VERIFIED FACTS]\n${facts}`);
-  }
-
-  // CONSTRAINTS (failed approaches) — sanitized (LLM-generated text re-entering prompt)
-  if (memory.failedApproaches.length > 0) {
-    const constraints = memory.failedApproaches
-      .map((f) => `  - Do NOT try: ${clean(f.approach)} (rejected: ${clean(f.oracleVerdict)})`)
-      .join('\n');
-    sections.push(`[CONSTRAINTS]\n${constraints}`);
-  }
-
-  // HYPOTHESES — sanitized (may contain cached skill approaches)
-  if (memory.activeHypotheses.length > 0) {
-    const hypotheses = memory.activeHypotheses
-      .map((h) => `  - ${clean(h.hypothesis)} (confidence: ${h.confidence}, source: ${h.source})`)
-      .join('\n');
-    sections.push(`[HYPOTHESES]\n${hypotheses}`);
-  }
-
-  // UNCERTAINTIES
-  if (memory.unresolvedUncertainties.length > 0) {
-    const uncertainties = memory.unresolvedUncertainties
-      .map((u) => `  - ${clean(u.area)}: ${clean(u.suggestedAction)}`)
-      .join('\n');
-    sections.push(`[UNCERTAINTIES]\n${uncertainties}`);
-  }
-
-  // PLAN (L2+ only) — sanitized (LLM-generated DAG descriptions)
-  if (plan && plan.nodes.length > 0) {
-    const steps = plan.nodes
-      .map((n, i) => `  ${i + 1}. ${clean(n.description)} → ${n.targetFiles.join(', ')}`)
-      .join('\n');
-    sections.push(`[PLAN]\n${steps}`);
-  }
-
-  return sections.join('\n\n');
-}
+// ── Legacy reasoning prompts (kept for backward compat, no longer primary path) ──
 
 // ── Reasoning task prompts ───────────────────────────────────────────
 

@@ -76,7 +76,7 @@ export function calculateRiskScore(factors: RiskFactors): number {
   const normDepth = Math.min(1.0, factors.dependencyDepth / NORM.dependencyDepth);
   const normVolatility = Math.min(1.0, factors.fileVolatility / NORM.fileVolatility);
 
-  const base =
+  let base =
     normBlast * WEIGHTS.blastRadius +
     normDepth * WEIGHTS.dependencyDepth +
     (1 - factors.testCoverage) * WEIGHTS.testCoverage +
@@ -84,6 +84,14 @@ export function calculateRiskScore(factors: RiskFactors): number {
     factors.irreversibility * WEIGHTS.irreversibility +
     (factors.hasSecurityImplication ? WEIGHTS.security : 0) +
     (factors.environmentType === 'production' ? WEIGHTS.production : 0);
+
+  // Tier reliability adjustment: high reliability reduces risk, low increases it
+  // Neutral point at 0.7 (heuristic tier boundary)
+  // Range: -0.045 (deterministic, 1.0) to +0.06 (low probabilistic, 0.3)
+  if (factors.avgTierReliability != null) {
+    const adjustment = (0.7 - factors.avgTierReliability) * 0.15;
+    base = Math.max(0, base + adjustment);
+  }
 
   // A6 Guardrail: production + high irreversibility → floor at 0.9
   if (factors.environmentType === 'production' && factors.irreversibility > 0.5) {
@@ -122,11 +130,13 @@ export function routeByRisk(
   else level = 3;
 
   // Epistemic de-escalation: if oracle confidence is calibrated and high, allow -1 level
+  // G4: tier_reliability guard — low reliability (<0.5) prevents de-escalation
   let epistemicDeescalated = false;
   if (
     epistemicAdjustment &&
     epistemicAdjustment.basis === 'calibrated' &&
     epistemicAdjustment.avgOracleConfidence >= 0.85 &&
+    (epistemicAdjustment.avgTierReliability === undefined || epistemicAdjustment.avgTierReliability >= 0.5) &&
     level > 0
   ) {
     level = (level - 1) as RoutingLevel;

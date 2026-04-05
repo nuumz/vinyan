@@ -75,6 +75,8 @@ async function processTask(
 
   const { systemPrompt, userPrompt } = assemblePrompt(
     input.goal, input.perception, input.workingMemory, input.plan, input.taskType ?? 'code',
+    undefined, // instructions (loaded by in-process path; subprocess doesn't have workspace access)
+    input.understanding, // Gap 9A: TaskUnderstanding for enriched prompt
   );
 
   const startTime = performance.now();

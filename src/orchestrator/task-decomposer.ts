@@ -121,6 +121,16 @@ Target files: ${(input.targetFiles ?? []).join(', ') || 'not specified'}
 Direct importees: ${perception.dependencyCone.directImportees.join(', ') || 'none'}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
 
+    // Gap 1A: Surface user constraints in decomposition (not just generation)
+    if (input.constraints?.length) {
+      userPrompt += `\n\nConstraints:\n${input.constraints.map((c) => `- ${c}`).join('\n')}`;
+    }
+
+    // Gap 1B: Surface acceptance criteria in decomposition
+    if (input.acceptanceCriteria?.length) {
+      userPrompt += `\n\nAcceptance criteria:\n${input.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}`;
+    }
+
     if (memory.failedApproaches.length > 0) {
       userPrompt += `\n\nPreviously failed approaches (avoid these):\n${memory.failedApproaches.map((a) => `- ${a.approach}: ${a.oracleVerdict}`).join('\n')}`;
     }

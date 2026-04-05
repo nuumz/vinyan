@@ -34,6 +34,7 @@ import type {
   WorkingMemoryState,
 } from './types.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
+import { classifyAllFailures } from './failure-classifier.ts';
 import { WorkingMemory } from './working-memory.ts';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ import { WorkingMemory } from './working-memory.ts';
 // ---------------------------------------------------------------------------
 
 export interface PerceptionAssembler {
-  assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy>;
+  assemble(input: TaskInput, level: RoutingLevel, understanding?: import('./types.ts').TaskUnderstanding): Promise<PerceptualHierarchy>;
 }
 
 export interface RiskRouter {
@@ -159,6 +160,8 @@ export interface OrchestratorDeps {
   forwardPredictor?: import('./forward-predictor-types.ts').ForwardPredictor;
   /** ThinkingPolicyCompiler — 2D routing grid (Extensible Thinking Phase 2.1). */
   thinkingPolicyCompiler?: import('./thinking-policy.ts').ThinkingPolicyCompiler;
+  /** G2+G5: RejectedApproachStore — persists failed approaches for cross-task learning. */
+  rejectedApproachStore?: import('../db/rejected-approach-store.ts').RejectedApproachStore;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -270,8 +273,52 @@ export function scorePlanByPrediction(
  * into an autonomous agent. Everything flows through here.
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
-  const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id });
+  // Gap 9A: Build TaskUnderstanding once at ingestion — single source of truth
+  const { buildTaskUnderstanding, enrichWithPerception } = await import('./task-understanding.ts');
+  let understanding = buildTaskUnderstanding(input);
+
+  // G2: Wire archiver to persist evicted approaches to rejected_approaches table
+  const archiver = deps.rejectedApproachStore
+    ? (entry: WorkingMemoryState['failedApproaches'][number]) => {
+        deps.rejectedApproachStore!.store({
+          taskId: input.id,
+          taskType: input.taskType,
+          fileTarget: input.targetFiles?.[0],
+          approach: entry.approach,
+          oracleVerdict: entry.oracleVerdict,
+          verdictConfidence: entry.verdictConfidence,
+          failureOracle: entry.failureOracle,
+          source: 'eviction',
+          actionVerb: understanding.actionVerb, // Gap 6B: persist verb for cross-task learning
+        });
+      }
+    : undefined;
+  const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id, archiver });
   const startTime = Date.now();
+
+  // Cross-task learning: load prior failed approaches from rejected_approaches table
+  if (deps.rejectedApproachStore && input.targetFiles?.length) {
+    try {
+      const { loadPriorFailedApproaches } = await import('./cross-task-loader.ts');
+      const priorApproaches = loadPriorFailedApproaches(
+        deps.rejectedApproachStore,
+        input.targetFiles[0]!,
+        input.taskType,
+        undefined,
+        understanding.actionVerb, // Gap 8A: verb-aware cross-task loading
+      );
+      for (const approach of priorApproaches) {
+        workingMemory.recordFailedApproach(
+          approach.approach,
+          approach.oracleVerdict,
+          approach.verdictConfidence,
+          approach.failureOracle,
+        );
+      }
+    } catch {
+      // Cross-task loading is best-effort — proceed without prior context
+    }
+  }
 
   // Outer loop: routing level escalation
   let routing = await deps.riskRouter.assessInitialLevel(input);
@@ -391,7 +438,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── Step 1: PERCEIVE ──────────────────────────────────────────
-      const perception = await deps.perception.assemble(input, routing.level);
+      const perception = await deps.perception.assemble(input, routing.level, understanding);
+
+      // Gap 9A: Enrich understanding with perception-derived framework context
+      if (perception.frameworkMarkers?.length) {
+        understanding = enrichWithPerception(understanding, perception.frameworkMarkers);
+      }
 
       // ── Step 2: PREDICT (L2+ only) ───────────────────────────────
       let prediction: SelfModelPrediction | undefined;
@@ -848,6 +900,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       } else {
         activeHint = plan?.nodes?.[0]?.verificationHint;
       }
+      // A1 Understanding layer: attach TaskUnderstanding for goal-alignment oracle
+      if (activeHint) {
+        activeHint.understanding = understanding;
+        activeHint.targetFiles = input.targetFiles;
+      } else {
+        activeHint = { understanding, targetFiles: input.targetFiles };
+      }
       const verification = await deps.oracleGate.verify(
         workerResult.mutations.map((m) => ({
           file: m.file,
@@ -941,9 +1000,11 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── Step 6: LEARN ────────────────────────────────────────────
-      // Compute task type signature for Sleep Cycle grouping
-      const filePattern = (input.targetFiles ?? []).sort().join(',') || '*';
-      const taskTypeSignature = `${input.goal.slice(0, 50)}::${filePattern}`;
+      // Gap 6A: Use unified computeTaskSignature instead of raw goal prefix.
+      // This ensures traces cluster by verb+extensions+blastBucket (not freeform goal text)
+      // so Sleep Cycle pattern extraction and Self-Model calibration operate on consistent keys.
+      const { computeTaskSignature: computeSig } = await import('./self-model.ts');
+      const taskTypeSignature = computeSig(input);
 
       // PH4: Detect framework markers for capability routing (always compute, data-gate only in fingerprint)
       const { detectFrameworkMarkers } = await import('./task-fingerprint.ts');
@@ -1123,11 +1184,13 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               // Commit success directly here
             } else {
               // Re-verify didn't help → fall through to failure
+              const classified = classifyAllFailures(verification.verdicts);
               workingMemory.recordFailedApproach(
                 trace.approach,
                 verification.reason ?? 'unknown',
                 verificationConfidence,
                 failedOracles[0],
+                classified.length > 0 ? classified : undefined,
               );
               // Preserve agentic session context for retry (transcript, tokens, failure point)
               if (isAgenticResult && lastAgentResult) {
@@ -1162,6 +1225,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               verification.reason ?? 'unknown',
               verificationConfidence,
               failedOracles[0],
+              classifyAllFailures(verification.verdicts),
             );
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
@@ -1189,6 +1253,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               verification.reason ?? 'unknown',
               verificationConfidence,
               failedOracles[0],
+              classifyAllFailures(verification.verdicts),
             );
             if (isAgenticResult && lastAgentResult) {
               const summary = buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed');
@@ -1548,6 +1613,9 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: true });
         }
 
+        // G2: Serialize remaining failed approaches to rejected_approaches table (source='task-end')
+        serializeApproachesToStore(workingMemory, input, deps);
+
         deps.bus?.emit('task:complete', { result: successResult });
         return successResult;
       }
@@ -1559,6 +1627,25 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         verificationConfidence,
         failedOracles[0],
       );
+
+      // G5: Archive failed verdicts to World Graph for cross-task visibility
+      if (deps.worldGraph && failedOracles.length > 0) {
+        try {
+          for (const oracleName of failedOracles) {
+            deps.worldGraph.storeFailedVerdict({
+              target: input.targetFiles?.[0] ?? input.id,
+              pattern: trace.approach,
+              oracleName,
+              verdict: verification.reason ?? 'unknown',
+              confidence: verificationConfidence,
+              fileHash: undefined, // file not yet committed on failure path
+              sessionId: undefined,
+            });
+          }
+        } catch {
+          // Failed verdict archival is best-effort — does not block retry
+        }
+      }
 
       // G3: Emit context:verdict_omitted for failed oracle verdicts
       // These verdicts won't be in the worker's next context unless explicitly propagated
@@ -1621,6 +1708,9 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     })),
   };
 
+  // G2: Serialize remaining failed approaches to rejected_approaches table (source='task-end')
+  serializeApproachesToStore(workingMemory, input, deps);
+
   await deps.traceCollector.record(escalationTrace);
   deps.bus?.emit('trace:record', { trace: escalationTrace });
 
@@ -1633,6 +1723,29 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   };
   deps.bus?.emit('task:complete', { result: escalationResult });
   return escalationResult;
+}
+
+/** G2: Serialize all remaining failed approaches from working memory to the rejected_approaches store.
+ *  Called at task completion (both success and escalation). Best-effort — does not block. */
+function serializeApproachesToStore(workingMemory: WorkingMemory, input: TaskInput, deps: OrchestratorDeps): void {
+  if (!deps.rejectedApproachStore) return;
+  const snapshot = workingMemory.getSnapshot();
+  for (const entry of snapshot.failedApproaches) {
+    try {
+      deps.rejectedApproachStore.store({
+        taskId: input.id,
+        taskType: input.taskType,
+        fileTarget: input.targetFiles?.[0],
+        approach: entry.approach,
+        oracleVerdict: entry.oracleVerdict,
+        verdictConfidence: entry.verdictConfidence,
+        failureOracle: entry.failureOracle,
+        source: 'task-end',
+      });
+    } catch {
+      // Best-effort — continue with remaining entries
+    }
+  }
 }
 
 /**

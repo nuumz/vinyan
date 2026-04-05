@@ -82,6 +82,8 @@ const GATE_MET: DataGateStats = {
   sleepCyclesRun: 5,
   activeWorkers: 3,
   workerTraceDiversity: 3,
+  thinkingTraceCount: 50,
+  thinkingDistinctTaskTypes: 3,
 };
 
 const GATE_NOT_MET: DataGateStats = {
@@ -92,6 +94,8 @@ const GATE_NOT_MET: DataGateStats = {
   sleepCyclesRun: 0,
   activeWorkers: 1,
   workerTraceDiversity: 1,
+  thinkingTraceCount: 0,
+  thinkingDistinctTaskTypes: 0,
 };
 
 const THRESHOLDS: DataGateThresholds = {
@@ -104,6 +108,9 @@ const THRESHOLDS: DataGateThresholds = {
   evolution_min_sleep_cycles: 3,
   fleet_min_active_workers: 2,
   fleet_min_worker_trace_diversity: 2,
+  thinking_calibration_min_traces: 50,
+  thinking_uncertainty_min_traces: 30,
+  thinking_uncertainty_min_task_types: 3,
 };
 
 describe('WorkerSelector', () => {

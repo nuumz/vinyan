@@ -36,6 +36,8 @@ describe('compressPerception', () => {
         pattern: 'export function ' + 'x'.repeat(50),
         verified_at: i,
         hash: 'abc' + i,
+        confidence: 0.9,
+        oracleName: 'orchestrator',
       })),
       dependencyCone: {
         directImporters: Array.from({ length: 30 }, (_, i) => `src/imp-${i}.ts`),
@@ -70,12 +72,16 @@ describe('compressPerception', () => {
       pattern: `target-fact-${i}`,
       verified_at: i,
       hash: `th${i}`,
+      confidence: 0.9,
+      oracleName: 'orchestrator',
     }));
     const otherFacts = Array.from({ length: 30 }, (_, i) => ({
       target: `src/other-${i}.ts`,
       pattern: `other-fact-${i}` + 'x'.repeat(100),
       verified_at: i,
       hash: `oh${i}`,
+      confidence: 0.9,
+      oracleName: 'orchestrator',
     }));
 
     const p = makePerception({ verifiedFacts: [...targetFacts, ...otherFacts] });
@@ -102,6 +108,8 @@ describe('compressPerception', () => {
         pattern: 'export function ' + 'x'.repeat(80),
         verified_at: i,
         hash: `h${i}`,
+        confidence: 0.9,
+        oracleName: 'orchestrator',
       })),
       diagnostics: {
         lintWarnings: [],
@@ -160,6 +168,8 @@ describe('compressPerception', () => {
         pattern: `fact-${i}`,
         verified_at: i,
         hash: `h${i}`,
+        confidence: 0.9,
+        oracleName: 'orchestrator',
       })),
     });
 

@@ -55,6 +55,8 @@ export class RiskRouterImpl implements RiskRouter {
     /** Pass config-sourced thresholds to unify with gate's routing (Gap #14). */
     thresholds?: RoutingThresholds,
     private selfModel?: { getEpistemicSignal(taskSig: string): EpistemicAdjustment },
+    /** G4: WorldGraph for tier_reliability lookup — optional, activates A5 tier trust in routing. */
+    private worldGraph?: { queryFacts(target: string): Array<{ tierReliability?: number }> },
   ) {
     this.thresholds = thresholds;
   }
@@ -81,6 +83,25 @@ export class RiskRouterImpl implements RiskRouter {
     const testCoverage = targetFile ? computeTestCoverage(targetFile, this.workspace) : 0.5;
     const fileVolatility = targetFile ? computeFileVolatility(targetFile, this.workspace) : 0;
 
+    // Compute average tier_reliability from World Graph facts (used in both RiskFactors and EpistemicAdjustment)
+    let avgTierReliability: number | undefined;
+    if (this.worldGraph && input.targetFiles?.length) {
+      try {
+        const reliabilities: number[] = [];
+        for (const file of input.targetFiles) {
+          const facts = this.worldGraph.queryFacts(file);
+          for (const f of facts) {
+            if (f.tierReliability != null) reliabilities.push(f.tierReliability);
+          }
+        }
+        if (reliabilities.length > 0) {
+          avgTierReliability = reliabilities.reduce((a, b) => a + b, 0) / reliabilities.length;
+        }
+      } catch {
+        // World Graph query failure — proceed without tier_reliability
+      }
+    }
+
     const factors: RiskFactors = {
       blastRadius,
       dependencyDepth: 0,
@@ -89,6 +110,7 @@ export class RiskRouterImpl implements RiskRouter {
       irreversibility: 0.5,
       hasSecurityImplication: false,
       environmentType: detectEnvironment(),
+      avgTierReliability,
     };
 
     const score = calculateRiskScore(factors);
@@ -98,6 +120,11 @@ export class RiskRouterImpl implements RiskRouter {
     if (this.selfModel) {
       const taskSig = computeTaskSignature(input);
       epistemicAdj = this.selfModel.getEpistemicSignal(taskSig);
+    }
+
+    // G4: Enrich epistemic signal with tier_reliability for de-escalation guard
+    if (epistemicAdj && avgTierReliability != null) {
+      epistemicAdj.avgTierReliability = avgTierReliability;
     }
 
     const decision = routeByRisk(score, blastRadius, this.thresholds, factors.environmentType, epistemicAdj);

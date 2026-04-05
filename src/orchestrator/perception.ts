@@ -6,18 +6,26 @@
  *
  * Source of truth: spec/tdd.md §16.2 (Perceive step), arch D8
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve } from 'path';
 import { buildDependencyGraph, computeBlastRadius } from '../oracle/dep/dep-analyzer.ts';
 import type { CausalEdgeExtractor } from '../oracle/dep/causal-edge-extractor.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { PerceptionAssembler } from './core-loop.ts';
-import type { PerceptualHierarchy, RoutingLevel, TaskInput } from './types.ts';
+import { detectFrameworkMarkers } from './task-fingerprint.ts';
+import type { PerceptualHierarchy, RoutingLevel, TaskInput, TaskUnderstanding } from './types.ts';
 
 export interface PerceptionAssemblerConfig {
   workspace: string;
   worldGraph?: WorldGraph;
   availableTools?: string[];
   causalEdgeExtractor?: CausalEdgeExtractor;
+  /** Gap 3A: Optional pre-computed task understanding for symbol population. */
+  taskUnderstanding?: TaskUnderstanding;
+  /** Token budget for reading file contents (~3 chars per token). */
+  maxTotalChars?: number;
+  /** Max chars per individual file. */
+  maxPerFileChars?: number;
 }
 
 export class PerceptionAssemblerImpl implements PerceptionAssembler {
@@ -25,11 +33,15 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
   private worldGraph?: WorldGraph;
   private availableTools: string[];
   private causalEdgeExtractor?: CausalEdgeExtractor;
+  private maxTotalChars: number;
+  private maxPerFileChars: number;
 
   constructor(config: PerceptionAssemblerConfig) {
     this.workspace = config.workspace;
     this.worldGraph = config.worldGraph;
     this.causalEdgeExtractor = config.causalEdgeExtractor;
+    this.maxTotalChars = config.maxTotalChars ?? 6000; // ~2000 tokens at 3 chars/token
+    this.maxPerFileChars = config.maxPerFileChars ?? 4000;
     this.availableTools = config.availableTools ?? [
       'file_read',
       'file_write',
@@ -42,9 +54,10 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     ];
   }
 
-  async assemble(input: TaskInput, level: RoutingLevel): Promise<PerceptualHierarchy> {
-    // Reasoning tasks: lightweight perception — skip file-centric operations
-    if (input.taskType === 'reasoning') {
+  async assemble(input: TaskInput, level: RoutingLevel, understanding?: TaskUnderstanding): Promise<PerceptualHierarchy> {
+    // Gap 7A+2A: Only skip perception for reasoning tasks WITHOUT target files.
+    // Reasoning tasks with targetFiles (analysis, investigation) get full structural perception.
+    if (input.taskType === 'reasoning' && !(input.targetFiles?.length)) {
       return {
         taskTarget: { file: '', symbol: undefined, description: input.goal },
         dependencyCone: {
@@ -91,7 +104,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
 
     // Query World Graph for verified facts from all files in merged cone
     const factTargets = [...new Set([...targetFiles, ...directImporters, ...directImportees])];
-    const verifiedFacts = this.queryVerifiedFacts(factTargets);
+    const verifiedFacts = this.queryVerifiedFacts(factTargets, level);
 
     // Run diagnostics — only at L2+ (analytical); L0/L1 don't have budget to act on type errors
     const diagnostics = level >= 2 ? await this.runDiagnostics() : { lintWarnings: [], typeErrors: [], failingTests: [] };
@@ -110,10 +123,12 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
       } catch { /* causal extraction failed — proceed without */ }
     }
 
-    return {
+    // Gap 3A: Populate symbol from TaskUnderstanding (extracted from goal text)
+    // Gap 3B: Detect framework markers from dependency cone
+    const perception: PerceptualHierarchy = {
       taskTarget: {
         file: primaryFile,
-        symbol: undefined,
+        symbol: understanding?.targetSymbol,
         description: input.goal,
       },
       dependencyCone: {
@@ -132,6 +147,20 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
       },
       causalEdges,
     };
+
+    // Gap 3B: Populate framework markers from import paths
+    const frameworks = detectFrameworkMarkers(perception);
+    if (frameworks.length > 0) {
+      perception.frameworkMarkers = frameworks;
+    }
+
+    // Gap 3C: Read target file contents for L1+ (token-budgeted, priority-tiered preview)
+    if (level >= 1 && targetFiles.length > 0) {
+      const fileContents = this.readFileContents(targetFiles, directImporters, affectedTestFiles);
+      if (fileContents) perception.fileContents = fileContents;
+    }
+
+    return perception;
   }
 
   private buildDependencyCone(targetAbsolute: string, _level: RoutingLevel) {
@@ -201,8 +230,77 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     }
   }
 
-  private queryVerifiedFacts(files: string[]): PerceptualHierarchy['verifiedFacts'] {
+  /**
+   * Gap 3C: Read file contents with a configurable token budget and priority tiers.
+   * Priority: P0 target files (60%) → P1 direct importers (25%) → P2 test files (15%).
+   * Unused budget flows down: if P0 doesn't exhaust its allocation, P1 gets more.
+   */
+  private readFileContents(
+    targetFiles: string[],
+    importerFiles: string[] = [],
+    testFiles: string[] = [],
+  ): PerceptualHierarchy['fileContents'] | undefined {
+    const totalBudget = this.maxTotalChars;
+    const maxPerFile = this.maxPerFileChars;
+
+    // Priority-tiered allocation (unused budget flows to next tier)
+    const P0_RATIO = 0.6;
+    const P1_RATIO = 0.25;
+    // P2 gets remainder (0.15 base + any unused from P0/P1)
+
+    let totalChars = 0;
+    const contents: Array<{ file: string; content: string; truncated: boolean }> = [];
+    const seen = new Set<string>();
+
+    const readTier = (files: string[], tierBudget: number) => {
+      let tierChars = 0;
+      for (const relPath of files) {
+        if (seen.has(relPath)) continue; // Deduplicate across tiers
+        if (totalChars >= totalBudget) break;
+        if (tierChars >= tierBudget) break;
+
+        seen.add(relPath);
+        const absPath = resolve(this.workspace, relPath);
+        try {
+          if (!existsSync(absPath)) continue;
+          const raw = readFileSync(absPath, 'utf-8');
+          if (!raw) continue;
+          const budget = Math.min(maxPerFile, tierBudget - tierChars, totalBudget - totalChars);
+          if (budget <= 0) break;
+          const truncated = raw.length > budget;
+          const content = truncated ? raw.slice(0, budget) : raw;
+          contents.push({ file: relPath, content, truncated });
+          tierChars += content.length;
+          totalChars += content.length;
+        } catch {
+          // File read failed — skip
+        }
+      }
+      return tierChars;
+    };
+
+    // P0: Target files — most important, get 60% of budget
+    const p0Budget = Math.floor(totalBudget * P0_RATIO);
+    const p0Used = readTier(targetFiles, p0Budget);
+    const p0Remaining = p0Budget - p0Used;
+
+    // P1: Direct importers — 25% base + unused from P0
+    const p1Budget = Math.floor(totalBudget * P1_RATIO) + p0Remaining;
+    const p1Used = readTier(importerFiles, p1Budget);
+    const p1Remaining = p1Budget - p1Used;
+
+    // P2: Test files — remainder (15% base + any unused from P0/P1)
+    const p2Budget = (totalBudget - totalChars); // All remaining budget
+    readTier(testFiles, p2Budget);
+
+    return contents.length > 0 ? contents : undefined;
+  }
+
+  private queryVerifiedFacts(files: string[], routingLevel?: number): PerceptualHierarchy['verifiedFacts'] {
     if (!this.worldGraph) return [];
+
+    // G3: Level-dependent confidence floor — exclude decayed/irrelevant facts
+    const confidenceFloor = (routingLevel ?? 1) === 0 ? 0.9 : 0.6;
 
     const facts: PerceptualHierarchy['verifiedFacts'] = [];
     for (const file of files) {
@@ -210,11 +308,17 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
       try {
         const fileFacts = this.worldGraph.queryFacts(file);
         for (const f of fileFacts) {
+          // G3: Skip facts below confidence floor
+          if (f.confidence < confidenceFloor) continue;
+          // G1: Pass through full oracle metadata (confidence, oracleName, tierReliability)
           facts.push({
             target: f.target,
             pattern: f.pattern,
             verified_at: f.verifiedAt,
             hash: f.fileHash,
+            confidence: f.confidence,
+            oracleName: f.oracleName,
+            tierReliability: f.tierReliability,
           });
         }
       } catch {

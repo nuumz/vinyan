@@ -17,6 +17,7 @@ import { containsBypassAttempt, detectPromptInjection } from '../guardrails/inde
 import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
 import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
+import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { verify as lintVerify } from '../oracle/lint/lint-verifier.ts';
 import { verify as testVerify } from '../oracle/test/test-verifier.ts';
 import { clampByTier } from '../oracle/tier-clamp.ts';
@@ -124,10 +125,15 @@ const ORACLE_ENTRIES: Record<string, OracleEntry> = {
   dep: { verify: depVerify, defaultPattern: 'dependency-check', requiresContext: false },
   test: { verify: testVerify, defaultPattern: 'test-pass', requiresContext: false },
   lint: { verify: lintVerify, defaultPattern: 'lint-clean', requiresContext: false },
+  'goal-alignment': {
+    verify: (h) => goalAlignmentVerify(h, h.context?.understanding as import('../orchestrator/types.ts').TaskUnderstanding | undefined, h.context?.targetFiles as string[] | undefined),
+    defaultPattern: 'goal-alignment',
+    requiresContext: false, // Runs whenever understanding is available (abstains if missing)
+  },
 };
 
 /** Oracles that are informational-only — never block the gate. */
-const INFORMATIONAL_ORACLES = new Set(['dep']);
+const INFORMATIONAL_ORACLES = new Set(['dep', 'goal-alignment']);
 
 /** Oracle tier classification for risk-tiered verification (TDD §8). */
 const ORACLE_TIERS: Record<string, 'structural' | 'full'> = {
@@ -136,6 +142,7 @@ const ORACLE_TIERS: Record<string, 'structural' | 'full'> = {
   dep: 'structural',
   lint: 'structural',
   test: 'full',
+  'goal-alignment': 'structural',
 };
 
 // ── Gate logic ──────────────────────────────────────────────────
@@ -240,7 +247,12 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
         const hypothesis: HypothesisTuple = {
           target: request.params.file_path,
           pattern: entry.defaultPattern,
-          context: request.params.content ? { content: request.params.content } : undefined,
+          context: {
+            ...(request.params.content ? { content: request.params.content } : {}),
+            // A1 Understanding layer: inject TaskUnderstanding for goal-alignment oracle
+            ...(request.verificationHint?.understanding ? { understanding: request.verificationHint.understanding } : {}),
+            ...(request.verificationHint?.targetFiles ? { targetFiles: request.verificationHint.targetFiles } : {}),
+          },
           workspace: request.params.workspace,
         };
         try {

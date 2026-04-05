@@ -55,6 +55,7 @@ export class LLMReasoningEngine implements ReasoningEngine {
       messages: req.messages,
       thinking: opts.thinking as ThinkingConfig | undefined,
       cacheControl: opts.cacheControl as CacheControl | undefined,
+      instructionCacheControl: opts.instructionCacheControl as CacheControl | undefined,
     };
 
     const res = await this.provider.generate(llmReq);

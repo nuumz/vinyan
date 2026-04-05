@@ -706,6 +706,8 @@ export class SleepCycleRunner {
       sleepCyclesRun: this.patternStore.countCycleRuns(),
       activeWorkers: this.workerStore?.countActive() ?? 0,
       workerTraceDiversity: this.workerStore?.countDistinctWorkerIds() ?? 0,
+      thinkingTraceCount: this.traceStore.countWithThinking(),
+      thinkingDistinctTaskTypes: this.traceStore.countDistinctThinkingTaskTypes(),
     };
   }
 
@@ -720,6 +722,9 @@ export class SleepCycleRunner {
       evolution_min_sleep_cycles: 3,
       fleet_min_active_workers: 2,
       fleet_min_worker_trace_diversity: 2,
+      thinking_calibration_min_traces: 50,
+      thinking_uncertainty_min_traces: 30,
+      thinking_uncertainty_min_task_types: 3,
     };
   }
 

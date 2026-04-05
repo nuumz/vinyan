@@ -43,6 +43,23 @@ export class WorldGraph {
     } catch {
       /* column exists */
     }
+
+    // G5: Failed verdict archive — preserves negative verification results (§4.1, §8.2)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS failed_verdicts (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        pattern TEXT,
+        oracle_name TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        confidence REAL,
+        tier_reliability REAL,
+        file_hash TEXT,
+        session_id TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_failed_verdicts_target ON failed_verdicts(target)');
   }
 
   /** Compute content-hash ID for a fact (deterministic deduplication). */
@@ -94,6 +111,40 @@ export class WorldGraph {
     }
 
     return { ...fact, id };
+  }
+
+  /** G5: Store a failed oracle verdict for cross-task pattern visibility.
+   *  Failed patterns are preserved so future tasks can see "previously rejected" approaches. */
+  storeFailedVerdict(verdict: {
+    target: string;
+    pattern?: string;
+    oracleName: string;
+    verdict: string;
+    confidence?: number;
+    tierReliability?: number;
+    fileHash?: string;
+    sessionId?: string;
+  }): void {
+    const id = createHash('sha256')
+      .update(JSON.stringify({ target: verdict.target, oracle: verdict.oracleName, verdict: verdict.verdict }))
+      .digest('hex');
+    this.db
+      .query(`
+      INSERT OR REPLACE INTO failed_verdicts (id, target, pattern, oracle_name, verdict, confidence, tier_reliability, file_hash, session_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .run(
+        id,
+        verdict.target,
+        verdict.pattern ?? null,
+        verdict.oracleName,
+        verdict.verdict,
+        verdict.confidence ?? null,
+        verdict.tierReliability ?? null,
+        verdict.fileHash ?? null,
+        verdict.sessionId ?? null,
+        Date.now(),
+      );
   }
 
   /**

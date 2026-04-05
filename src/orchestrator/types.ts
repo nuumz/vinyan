@@ -49,6 +49,9 @@ export interface EpistemicAdjustment {
   avgOracleConfidence: number; // [0,1] — EMA of oracle aggregate confidence for this task type
   observationCount: number; // how many times this task type has been verified
   basis: 'insufficient' | 'emerging' | 'calibrated'; // <10 = insufficient, 10-30 = emerging, >30 = calibrated
+  /** G4: Average tier_reliability of World Graph facts for target files.
+   *  Low reliability (<0.5) prevents de-escalation even when avgOracleConfidence is high. */
+  avgTierReliability?: number;
 }
 
 /** Input factors for risk scoring (→ TDD §6) */
@@ -60,6 +63,8 @@ export interface RiskFactors {
   irreversibility: number; // 0.0–1.0 (see §6 Irreversibility Scoring)
   hasSecurityImplication: boolean;
   environmentType: 'development' | 'staging' | 'production';
+  /** Average tier reliability of verified facts for target files (0-1). undefined = no facts. */
+  avgTierReliability?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +73,28 @@ export interface RiskFactors {
 
 /** Task type: code tasks mutate files, reasoning tasks produce answers */
 export type TaskType = 'code' | 'reasoning';
+
+/** Action category inferred from goal verb — drives perception depth and prompt shape. */
+export type ActionCategory = 'mutation' | 'analysis' | 'investigation' | 'design' | 'qa';
+
+/**
+ * TaskUnderstanding — unified intermediate representation of what a task means.
+ *
+ * Computed once at ingestion (rule-based, A3-safe), enriched by perception,
+ * consumed by prompt assembly, prediction, cross-task learning, and trace recording.
+ * Eliminates dual-fingerprint inconsistency and ensures constraints/criteria reach downstream.
+ */
+export interface TaskUnderstanding {
+  rawGoal: string;
+  actionVerb: string;
+  actionCategory: ActionCategory;
+  targetSymbol?: string;
+  frameworkContext: string[];
+  constraints: string[];
+  acceptanceCriteria: string[];
+  expectsMutation: boolean;
+  fingerprint?: TaskFingerprint;
+}
 
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
@@ -130,6 +157,12 @@ export interface PerceptualHierarchy {
     pattern: string;
     verified_at: number;
     hash: string;
+    /** G1: Decayed confidence from World Graph queryFacts() — enables trust-weighted prompting. */
+    confidence: number;
+    /** G1: Which oracle verified this fact (e.g. 'ast', 'type', 'orchestrator'). */
+    oracleName: string;
+    /** G1: Tier reliability — deterministic (1.0) > heuristic (0.8) > probabilistic (0.5). */
+    tierReliability?: number;
   }>;
   runtime: {
     nodeVersion: string;
@@ -138,6 +171,12 @@ export interface PerceptualHierarchy {
   };
   frameworkMarkers?: string[]; // Phase 4: detected frameworks (e.g., 'react', 'express')
   causalEdges?: import('../orchestrator/forward-predictor-types.ts').CausalEdge[]; // ForwardPredictor: Tier 3 causal edges
+  /** Gap 3C: Token-budgeted file content previews for L1+ single-shot workers. */
+  fileContents?: Array<{
+    file: string;
+    content: string;
+    truncated: boolean;
+  }>;
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */
@@ -150,6 +189,17 @@ export interface WorkingMemoryState {
     verdictConfidence?: number;
     /** EO #8: Which oracle was the primary rejector (e.g. 'test', 'type', 'ast'). */
     failureOracle?: string;
+    /** Source of this approach: 'task' (current), 'cross-task' (loaded from prior task), 'eviction' (re-loaded). */
+    source?: string;
+    /** Structured failure details parsed from oracle verdicts (A1 Understanding layer). */
+    classifiedFailures?: Array<{
+      category: string;
+      file?: string;
+      line?: number;
+      message: string;
+      severity: 'error' | 'warning';
+      suggestedFix?: string;
+    }>;
   }>;
   activeHypotheses: Array<{
     hypothesis: string;
@@ -180,9 +230,13 @@ export type PerceptionRole = 'generator' | 'critic' | 'testgen';
 /** EO #3: Per-node verification contract — tells the gate which oracles matter */
 export interface VerificationHint {
   /** Which oracles are relevant for this mutation type */
-  oracles?: Array<'ast' | 'type' | 'dep' | 'lint' | 'test'>;
+  oracles?: Array<'ast' | 'type' | 'dep' | 'lint' | 'test' | 'goal-alignment'>;
   /** Skip test oracle for trivial mutations */
   skipTestWhen?: 'import-only' | 'type-change-only' | 'config-change';
+  /** A1 Understanding layer: task semantics for goal alignment verification */
+  understanding?: TaskUnderstanding;
+  /** Target files from TaskInput — used by goal alignment for file scope check */
+  targetFiles?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +264,26 @@ export type ThinkingConfig =
   | { type: 'debate'; participants: string[]; debateTurns: number;
       arbitrationRule: 'oracle-score' | 'evidence-weight'; };
 
-/** Cache control marker for prompt caching (Anthropic ephemeral cache). */
+/** Cache control marker for prompt caching — 3-tier strategy.
+ *  - static: system prompt (role, oracle manifest, format) — stable across sessions (~1hr effective TTL)
+ *  - session: project instructions (VINYAN.md) — stable within session (~5min effective TTL)
+ *  - ephemeral: per-task content (goal, perception, memory) — Anthropic default ephemeral cache */
 export interface CacheControl {
-  type: 'ephemeral';
+  type: 'ephemeral' | 'static' | 'session';
+}
+
+/** Provider-agnostic error: prompt payload exceeds API size limit (HTTP 413 or context_length_exceeded).
+ *  Thrown by providers, caught by worker layer for compress-and-retry. */
+export class PromptTooLargeError extends Error {
+  override readonly name = 'PromptTooLargeError';
+  constructor(
+    public readonly estimatedTokens: number,
+    public readonly provider: string,
+    cause?: unknown,
+  ) {
+    super(`Prompt too large (~${estimatedTokens} tokens) for ${provider}`);
+    if (cause) this.cause = cause;
+  }
 }
 
 /** EO #6: Epistemic reasoning budget policy — Self-Model calibrated */
@@ -577,6 +648,8 @@ export interface WorkerInput {
   isolationLevel: IsolationLevel;
   /** Optional worker/engine ID for provider selection (warm pool mode). */
   workerId?: string;
+  /** Gap 9A: Unified task understanding — carries constraints, criteria, action category to prompt assembly. */
+  understanding?: TaskUnderstanding;
 }
 
 /** Output from a worker process */
@@ -649,6 +722,8 @@ export interface LLMRequest {
   thinking?: ThinkingConfig;
   /** Cache control — enables prompt caching on system/tool blocks. */
   cacheControl?: CacheControl;
+  /** Cache control for instruction block (VINYAN.md) — session-stable content. */
+  instructionCacheControl?: CacheControl;
 }
 
 /** Response from an LLM provider */

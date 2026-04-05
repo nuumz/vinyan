@@ -31,7 +31,7 @@ const FRAMEWORK_PATTERNS: Array<{ pattern: RegExp; marker: string }> = [
 ];
 
 /** Common action verbs extracted from task goal text. */
-const ACTION_VERBS = [
+export const ACTION_VERBS = [
   'refactor',
   'fix',
   'add',
@@ -131,8 +131,9 @@ export function detectFrameworkMarkers(perception: PerceptualHierarchy): string[
 
 /**
  * Extract the primary action verb from a task goal string.
+ * Shared across self-model, task-fingerprint, and task-understanding (Gap 5B unification).
  */
-function extractActionVerb(goal: string): string {
+export function extractActionVerb(goal: string): string {
   const lower = goal.toLowerCase();
   for (const verb of ACTION_VERBS) {
     if (lower.includes(verb)) return verb;

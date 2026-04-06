@@ -50,14 +50,14 @@ export function computeQualityScore(
   let architecturalCompliance: number;
   if (entries.length === 0) {
     // Zero oracle verdicts — either no mutations (trivially safe) or all oracles abstained.
-    // Return efficiency-only score rather than NaN which breaks trace storage and aggregations.
     // unverified: true preserves the signal that no structural oracle ran.
-    // For zero-oracle tasks (e.g. reasoning), weight efficiency higher since it's the only real signal.
-    // architecturalCompliance stays at 0.5 (unknown), but composite leans on efficiency (0.7 weight).
+    // Composite capped at 0.5 to prevent inflated quality for unverified tasks.
+    // Without oracle evidence, quality is epistemically unknown — we report the latency signal
+    // but cap composite so it doesn't feed misleading A7 calibration signals.
     return {
       architecturalCompliance: 0.5,
       efficiency,
-      composite: efficiency * 0.7 + 0.5 * 0.3,
+      composite: Math.min(0.5, efficiency * 0.4 + 0.5 * 0.1),
       dimensionsAvailable: 1,
       phase: 'phase0',
       unverified: true,

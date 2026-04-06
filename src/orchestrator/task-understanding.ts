@@ -68,6 +68,11 @@ function classifyActionCategory(verb: string, goal: string): ActionCategory {
   if (/\b(change|modify|edit|rewrite|replace|patch)\b/.test(lower)) return 'mutation';
   if (/\b(what|how|why|explain|describe|show)\b/.test(lower)) return 'analysis';
 
+  // Short goals without code-related keywords are likely conversational/analysis
+  if (lower.length < 30 && !/\b(file|code|src|function|class|module|import|test)\b/i.test(lower)) {
+    return 'analysis';
+  }
+
   return 'mutation'; // Default: assume mutation (safer — triggers full verification)
 }
 
@@ -94,7 +99,14 @@ function extractTargetSymbol(goal: string): string | undefined {
  */
 export function buildTaskUnderstanding(input: TaskInput): TaskUnderstanding {
   const actionVerb = extractActionVerb(input.goal);
-  const actionCategory = classifyActionCategory(actionVerb, input.goal);
+  let actionCategory = classifyActionCategory(actionVerb, input.goal);
+
+  // Reasoning tasks with no target files override mutation default → analysis
+  // Prevents non-English greetings/questions from being classified as code mutations
+  if (actionCategory === 'mutation' && input.taskType === 'reasoning' && !input.targetFiles?.length) {
+    actionCategory = 'analysis';
+  }
+
   const targetSymbol = extractTargetSymbol(input.goal);
   const expectsMutation = actionCategory === 'mutation' || actionCategory === 'qa';
 

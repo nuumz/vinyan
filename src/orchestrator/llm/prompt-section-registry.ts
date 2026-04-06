@@ -161,6 +161,7 @@ Respond with a JSON object matching this structure:
       return `[AVAILABLE TOOLS]
 ${tools}
 
+Runtime: ${process.platform} (${process.arch})
 Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.`;
     },
   });
@@ -470,7 +471,10 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
     render: (ctx) => {
       const tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
-      return `[AVAILABLE TOOLS]\n${[...tools].sort().join(', ')}\n\nYou may propose tool calls for information gathering.`;
+      const lines = [`[AVAILABLE TOOLS]`, [...tools].sort().join(', ')];
+      lines.push(`\nRuntime: ${process.platform} (${process.arch})`);
+      lines.push('You may propose tool calls for information gathering.');
+      return lines.join('\n');
     },
   });
 

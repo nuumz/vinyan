@@ -10,14 +10,33 @@
  * Gap 3A: symbol extraction from goal.
  * Gap 2B: goal-based action category (mutation vs analysis vs investigation).
  */
+import { createHash } from 'node:crypto';
+import type { TraceStore } from '../db/trace-store.ts';
+import type { WorldGraph } from '../world-graph/world-graph.ts';
+import { EntityResolver } from './entity-resolver.ts';
+import { profileHistory } from './historical-profiler.ts';
+import { computeTaskSignature } from './self-model.ts';
 import { extractActionVerb } from './task-fingerprint.ts';
-import type { ActionCategory, TaskInput, TaskUnderstanding } from './types.ts';
+import type { ActionCategory, SemanticTaskUnderstanding, TaskInput, TaskUnderstanding } from './types.ts';
+import type { UnderstandingEngine } from './understanding-engine.ts';
 
 /** Verbs that indicate file mutations (code generation). */
 const MUTATION_VERBS = new Set([
-  'fix', 'add', 'remove', 'update', 'refactor', 'rename', 'move',
-  'extract', 'inline', 'optimize', 'migrate', 'convert', 'implement',
-  'delete', 'create',
+  'fix',
+  'add',
+  'remove',
+  'update',
+  'refactor',
+  'rename',
+  'move',
+  'extract',
+  'inline',
+  'optimize',
+  'migrate',
+  'convert',
+  'implement',
+  'delete',
+  'create',
 ]);
 
 /** Verbs that indicate read-only analysis. */
@@ -95,12 +114,125 @@ export function buildTaskUnderstanding(input: TaskInput): TaskUnderstanding {
  * Enrich TaskUnderstanding with perception-derived data.
  * Called after perception assembly to add framework markers and fingerprint.
  */
-export function enrichWithPerception(
-  understanding: TaskUnderstanding,
-  frameworkMarkers: string[],
-): TaskUnderstanding {
+export function enrichWithPerception(understanding: TaskUnderstanding, frameworkMarkers: string[]): TaskUnderstanding {
   return {
     ...understanding,
     frameworkContext: frameworkMarkers,
   };
+}
+
+/** Dependencies for Layer 0+1 understanding enrichment. */
+export interface EnrichUnderstandingDeps {
+  workspace: string;
+  worldGraph?: WorldGraph;
+  traceStore?: TraceStore;
+}
+
+/**
+ * Layer 0+1: deterministic, pre-routing. Always runs. Cost: 0 tokens.
+ *
+ * Composes Layer 0 (rule-based extraction) + Layer 1 (entity resolution + historical profiling)
+ * into a SemanticTaskUnderstanding. This is the single entry point for the core loop.
+ */
+export function enrichUnderstanding(
+  input: TaskInput,
+  deps: EnrichUnderstandingDeps,
+  opts?: { forceRefresh?: boolean },
+): SemanticTaskUnderstanding {
+  // Layer 0: existing rule-based extraction
+  const base = buildTaskUnderstanding(input);
+
+  // Layer 1: entity resolution (NL → code paths)
+  const resolver = new EntityResolver(deps.workspace, deps.worldGraph);
+  const resolvedEntities = resolver.resolve(input, base, opts);
+
+  // Layer 1: historical profiling (recurring detection, failure oracles)
+  const historicalProfile = deps.traceStore ? profileHistory(input, deps.traceStore) : undefined;
+
+  // P8: content-addressed fingerprint for Layer 0+1
+  const resolvedPaths = resolvedEntities.flatMap((e) => e.resolvedPaths).sort();
+  const signature = computeTaskSignature(input);
+  const understandingFingerprint = createHash('sha256')
+    .update(input.goal + JSON.stringify(resolvedPaths) + signature)
+    .digest('hex');
+
+  return {
+    ...base,
+    resolvedEntities,
+    historicalProfile,
+    understandingDepth: 1,
+    verifiedClaims: [],
+    understandingFingerprint,
+  };
+}
+
+// ── Layer 2: Semantic Understanding (LLM, budget-gated) ─────────────────
+
+/** Dependencies for Layer 2 understanding enrichment. */
+export interface EnrichUnderstandingL2Deps {
+  understandingEngine: UnderstandingEngine;
+  workspace: string;
+}
+
+/**
+ * Layer 2: LLM-based semantic intent extraction. Post-routing, budget-gated.
+ * Gracefully degrades to Layer 0+1 on any failure (parse, timeout, circuit open).
+ */
+export async function enrichUnderstandingL2(
+  understanding: SemanticTaskUnderstanding,
+  deps: EnrichUnderstandingL2Deps,
+  budget: { remainingTokens: number; timeoutMs?: number },
+): Promise<SemanticTaskUnderstanding> {
+  const {
+    LAYER2_MIN_BUDGET_TOKENS,
+    LAYER2_TIMEOUT_MS,
+    buildUnderstandingPrompt,
+    parseSemanticIntent,
+    verifyImplicitConstraints,
+  } = await import('./understanding-engine.ts');
+
+  // Budget gate
+  if (budget.remainingTokens < LAYER2_MIN_BUDGET_TOKENS) return understanding;
+  if (understanding.understandingDepth >= 2) return understanding;
+
+  // Circuit breaker check
+  if (deps.understandingEngine.shouldSkip()) return understanding;
+
+  // Cache check
+  const cached = deps.understandingEngine.getCached(understanding.understandingFingerprint);
+  if (cached) return { ...understanding, semanticIntent: cached, understandingDepth: 2 };
+
+  // Execute L2 with timeout
+  const { systemPrompt, userPrompt } = buildUnderstandingPrompt(understanding);
+  try {
+    const response = await Promise.race([
+      deps.understandingEngine.execute({ systemPrompt, userPrompt, maxTokens: 500 }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('L2 timeout')), budget.timeoutMs ?? LAYER2_TIMEOUT_MS),
+      ),
+    ]);
+
+    const parsed = parseSemanticIntent(response.content);
+    if (!parsed) {
+      deps.understandingEngine.recordResult(false);
+      return understanding;
+    }
+
+    // Verify implicit constraints against codebase evidence
+    const { verified, claims } = verifyImplicitConstraints(parsed.implicitConstraints, deps.workspace);
+    parsed.implicitConstraints = verified;
+
+    deps.understandingEngine.recordResult(true);
+    deps.understandingEngine.setCached(understanding.understandingFingerprint, parsed);
+
+    return {
+      ...understanding,
+      semanticIntent: parsed,
+      understandingDepth: 2,
+      verifiedClaims: [...understanding.verifiedClaims, ...claims],
+    };
+  } catch {
+    deps.understandingEngine.recordResult(false);
+    return understanding; // Graceful degradation
+  }
 }

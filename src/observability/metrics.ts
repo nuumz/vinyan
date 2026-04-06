@@ -216,6 +216,12 @@ export class MetricsCollector {
       bus.on('api:request', () => this.inc('api.request')),
       bus.on('session:created', () => this.inc('session.created')),
       bus.on('oracle:verdict', () => this.inc('oracle.verdict')),
+      // STU: Semantic Task Understanding
+      bus.on('understanding:layer0_complete', () => this.inc('understanding.layer0')),
+      bus.on('understanding:layer1_complete', () => this.inc('understanding.layer1')),
+      bus.on('understanding:layer2_complete', () => this.inc('understanding.layer2')),
+      bus.on('understanding:claims_verified', () => this.inc('understanding.verified')),
+      bus.on('understanding:calibration', () => this.inc('understanding.calibration')),
     ];
     return () => unsubs.forEach((fn) => fn());
   }

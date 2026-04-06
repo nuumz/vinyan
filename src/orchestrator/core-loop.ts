@@ -54,6 +54,8 @@ export interface SelfModel {
   calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace, engineCertaintyMap?: Record<string, number>): PredictionError | undefined;
   /** EO #6: Get Self-Model calibrated reasoning budget policy for a task type. */
   getReasoningPolicy?(taskTypeSignature: string): ReasoningPolicy;
+  /** STU Phase D: Access per-task-type params for enriched signature computation. */
+  getTaskTypeParams?(sig: string): { observationCount: number } | undefined;
 }
 
 export interface TaskDecomposer {
@@ -162,6 +164,10 @@ export interface OrchestratorDeps {
   thinkingPolicyCompiler?: import('./thinking-policy.ts').ThinkingPolicyCompiler;
   /** G2+G5: RejectedApproachStore — persists failed approaches for cross-task learning. */
   rejectedApproachStore?: import('../db/rejected-approach-store.ts').RejectedApproachStore;
+  /** STU: TraceStore for historical profiler in enrichUnderstanding(). */
+  traceStore?: import('../db/trace-store.ts').TraceStore;
+  /** STU Layer 2: Understanding engine for semantic intent extraction. */
+  understandingEngine?: import('./understanding-engine.ts').UnderstandingEngine;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -273,9 +279,27 @@ export function scorePlanByPrediction(
  * into an autonomous agent. Everything flows through here.
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
-  // Gap 9A: Build TaskUnderstanding once at ingestion — single source of truth
-  const { buildTaskUnderstanding, enrichWithPerception } = await import('./task-understanding.ts');
-  let understanding = buildTaskUnderstanding(input);
+  // STU: Build SemanticTaskUnderstanding (Layer 0+1) once at ingestion — single source of truth
+  const { enrichUnderstanding, enrichWithPerception } = await import('./task-understanding.ts');
+  const understandingStart = Date.now();
+  let understanding = enrichUnderstanding(input, {
+    workspace: deps.workspace ?? '.',
+    worldGraph: deps.worldGraph,
+    traceStore: deps.traceStore,
+  });
+  const understandingDurationMs = Date.now() - understandingStart;
+  deps.bus?.emit('understanding:layer0_complete', {
+    taskId: input.id,
+    durationMs: understandingDurationMs,
+    verb: understanding.actionVerb,
+    category: understanding.actionCategory,
+  });
+  deps.bus?.emit('understanding:layer1_complete', {
+    taskId: input.id,
+    durationMs: understandingDurationMs,
+    entitiesResolved: understanding.resolvedEntities.length,
+    isRecurring: understanding.historicalProfile?.isRecurring ?? false,
+  });
 
   // G2: Wire archiver to persist evicted approaches to rejected_approaches table
   const archiver = deps.rejectedApproachStore
@@ -441,8 +465,74 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       const perception = await deps.perception.assemble(input, routing.level, understanding);
 
       // Gap 9A: Enrich understanding with perception-derived framework context
+      // enrichWithPerception uses spread — preserves SemanticTaskUnderstanding fields
       if (perception.frameworkMarkers?.length) {
-        understanding = enrichWithPerception(understanding, perception.frameworkMarkers);
+        understanding = enrichWithPerception(understanding, perception.frameworkMarkers) as typeof understanding;
+      }
+
+      // ── STU Layer 2: Semantic Understanding (post-routing, budget-gated, L2+ only) ──
+      if (deps.understandingEngine && routing.level >= 2) {
+        const { enrichUnderstandingL2 } = await import('./task-understanding.ts');
+        const l2Start = Date.now();
+        understanding = await enrichUnderstandingL2(understanding, {
+          understandingEngine: deps.understandingEngine,
+          workspace: deps.workspace ?? '.',
+        }, { remainingTokens: input.budget.maxTokens - totalTokensConsumed });
+        deps.bus?.emit('understanding:layer2_complete', {
+          taskId: input.id,
+          durationMs: Date.now() - l2Start,
+          hasIntent: understanding.semanticIntent != null,
+          depth: understanding.understandingDepth,
+        });
+      }
+
+      // ── STU Phase C: Understanding Verification (A1: separate from generation) ──
+      if (deps.worldGraph && understanding.understandingDepth >= 1) {
+        const { verifyUnderstandingClaims } = await import('./understanding-verifier.ts');
+        const verifyStart = Date.now();
+        const verifiedClaims = verifyUnderstandingClaims(understanding, deps.worldGraph, deps.workspace ?? '.');
+        understanding = { ...understanding, verifiedClaims: [...understanding.verifiedClaims, ...verifiedClaims] };
+        deps.bus?.emit('understanding:claims_verified', {
+          taskId: input.id,
+          durationMs: Date.now() - verifyStart,
+          totalClaims: verifiedClaims.length,
+          knownClaims: verifiedClaims.filter((c) => c.type === 'known').length,
+          contradictoryClaims: verifiedClaims.filter((c) => c.type === 'contradictory').length,
+        });
+      }
+
+      // ── STU Phase E: Persist verified understanding claims as WorldGraph facts (A4) ──
+      if (deps.worldGraph && understanding.verifiedClaims.length > 0) {
+        try {
+          const workspace = deps.workspace ?? '.';
+          const knownClaims = understanding.verifiedClaims.filter((c) => c.type === 'known' && c.evidence.length > 0);
+          for (const claim of knownClaims) {
+            const sourceFile = claim.evidence[0]!.file;
+            if (sourceFile === 'goal') continue; // Skip non-file evidence
+            const absPath = resolvePath(workspace, sourceFile);
+            let fileHash: string;
+            try {
+              fileHash = deps.worldGraph.computeFileHash(absPath);
+            } catch {
+              continue; // File not accessible — skip
+            }
+            deps.worldGraph.storeFact({
+              target: sourceFile,
+              pattern: 'understanding-verified',
+              evidence: claim.evidence.map((e) => ({ file: e.file, line: e.line ?? 0, snippet: e.snippet ?? '' })),
+              oracleName: claim.verifiedBy ?? 'understanding-verifier',
+              sourceFile,
+              fileHash,
+              verifiedAt: Date.now(),
+              sessionId: input.id,
+              confidence: claim.confidence,
+              decayModel: 'linear',
+              tierReliability: claim.tierReliability,
+            });
+          }
+        } catch {
+          // WorldGraph fact storage is best-effort
+        }
       }
 
       // ── Step 2: PREDICT (L2+ only) ───────────────────────────────
@@ -1298,6 +1388,32 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         }
       }
 
+      // ── STU Phase D: Understanding calibration (A7) ──
+      if (understanding.understandingDepth >= 1) {
+        try {
+          const { calibrateUnderstanding, computeEnrichedSignature } = await import('./understanding-calibrator.ts');
+          const calibration = calibrateUnderstanding(understanding, trace);
+          deps.bus?.emit('understanding:calibration', {
+            taskId: input.id,
+            entityAccuracy: calibration.entityAccuracy,
+            categoryMatch: calibration.categoryMatch,
+          });
+          // Enriched signature: create per-intent learning bucket when ≥10 observations
+          if (deps.selfModel?.getTaskTypeParams && taskTypeSignature) {
+            const enrichedSig = computeEnrichedSignature(
+              taskTypeSignature,
+              understanding,
+              (sig) => deps.selfModel.getTaskTypeParams?.(sig)?.observationCount ?? 0,
+            );
+            if (enrichedSig !== taskTypeSignature) {
+              trace.taskTypeSignature = enrichedSig;
+            }
+          }
+        } catch {
+          // Understanding calibration failure — non-critical
+        }
+      }
+
       // FP: Record outcome for ForwardPredictor calibration (A7)
       if (deps.forwardPredictor && forwardPrediction) {
         try {
@@ -1339,6 +1455,21 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           // Best-effort — don't fail the trace record
         }
       }
+      // ── STU Phase D: Record understanding snapshot for A7 calibration ──
+      trace.understandingDepth = understanding.understandingDepth;
+      trace.understandingIntent = understanding.semanticIntent
+        ? JSON.stringify(understanding.semanticIntent)
+        : undefined;
+      trace.resolvedEntities =
+        understanding.resolvedEntities.length > 0 ? JSON.stringify(understanding.resolvedEntities) : undefined;
+      trace.understandingVerified =
+        understanding.verifiedClaims.length > 0
+          ? understanding.verifiedClaims.every((c) => c.type === 'known')
+            ? 1
+            : 0
+          : undefined;
+      trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
+
       await deps.traceCollector.record(trace);
       deps.bus?.emit('trace:record', { trace });
 

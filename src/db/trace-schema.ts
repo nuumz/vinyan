@@ -41,7 +41,12 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   transcript_turns       INTEGER,
   thinking_mode          TEXT,
   thinking_tokens_used   INTEGER,
-  thinking_meta          TEXT
+  thinking_meta          TEXT,
+  understanding_depth    INTEGER,
+  understanding_intent   TEXT,
+  resolved_entities      TEXT,
+  understanding_verified INTEGER DEFAULT 0,
+  understanding_primary_action TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -50,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_et_timestamp ON execution_traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite);
 CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
 CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
+CREATE INDEX IF NOT EXISTS idx_primary_action ON execution_traces(understanding_primary_action);
 `;
 
 /**

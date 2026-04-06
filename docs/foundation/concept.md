@@ -67,6 +67,16 @@ Seven non-negotiable principles define the Epistemic Orchestration paradigm. Eve
 
 These axioms are **self-reinforcing**: A1 requires A5 (separated verification needs a trust hierarchy), A5 requires A4 (trust hierarchy needs evidence provenance), A3 requires A6 (deterministic governance needs controlled execution), and A7 closes the loop (prediction error feeds back into all other axioms).
 
+**Epistemic Grounding (A4 corollary):** Every reasoning chain must terminate at a verifiable artifact — not at an LLM's interpretation. A4 establishes this for code (content hash); Epistemic Grounding extends the principle to all three A1 layers:
+
+| A1 Layer | Grounding Artifact | Verification Mechanism |
+|:---------|:-------------------|:-----------------------|
+| Understanding | User-confirmed intent or explicit task specification | Goal Alignment Oracle (§6) — when comprehension confidence is low, the Orchestrator requests clarification rather than proceeding on uncertain interpretation |
+| Planning | DAG structural criteria (5 machine-checkable rules) | TaskDecomposer validation (§8) |
+| Execution | Source file content hash (SHA-256) | Oracle Gate — AST, type, dep, lint, test oracles (§6) |
+
+This formalizes a key constraint: LLM interpretation alone is **never sufficient grounding** for governance decisions. The Orchestrator may use LLM output as input, but must verify it against a concrete artifact before acting. "I understood the task" is not evidence — a structured `TaskUnderstanding` verified against the original input is.
+
 **Validation status (updated Phase 6+)**: All seven axioms are **proven in implementation**. A1 Execution and Planning layers were proven in Phase 0 (100% structural error reduction in A/B experiment); A1 Understanding layer is newly implemented via the Goal Alignment Oracle (heuristic tier, informational-only). A2 is **fully active** — `OracleVerdict` carries continuous confidence, `type: 'uncertain'|'contradictory'` states, evidence chains with temporal context, and Subjective Logic opinions. A3 is **fully proven** — `risk-router.ts` calculates risk scores and `calculateRoutingLevel()` deterministically routes L0–L3; no LLM in governance path. A5 is **fully proven** — `tier-clamp.ts` enforces three-tier confidence capping (engine tier, transport tier, peer trust) with `clampFull()` composing all three. A7 is **fully proven** — `self-model.ts` computes per-task-type EMA prediction error with adaptive learning rate, sliding window miscalibration detection, and feeds back into routing calibration. Test suite: 400+ tests across all modules.
 ---
 
@@ -269,12 +279,13 @@ Tool results are wrapped as ECP evidence with provenance (file path, timestamp, 
 
 ## 4. Layer 0: The Cognitive & Perception Baseline
 
-To operate autonomously at or above human capacity, an agent must possess contextual awareness and the ability to push back against flawed directives. Vinyan closes the cognitive gap between human developers and AI through four deterministic constraints at Layer 0.
+To operate autonomously at or above human capacity, an agent must possess contextual awareness and the ability to push back against flawed directives. Vinyan closes the cognitive gap between human developers and AI through five deterministic constraints at Layer 0.
 
 * **PerceptualHierarchy Injection (Perception):** Agents are never deployed "blind." Before execution, the Orchestrator assembles a deterministic `PerceptualHierarchy`—comprising dependency cone (filtered by routing level), linter warnings, type errors, verified facts from World Graph, and runtime context—into the agent's context. Salience is deterministic: dep-oracle traverses the dependency cone from the task target, with depth controlled by routing level (L0-1 shallow, L2-3 deep). The Orchestrator also injects `WorkingMemory` containing failed approaches, active hypotheses, and unresolved uncertainties. See [architecture.md Decision 8](../architecture/decisions.md) for concrete interfaces.
 * **Architectural Invariants & Epistemic Pushback (Alignment):** Vinyan rejects the LLM “helpfulness bias.” The system is governed by hardcoded architectural rules. If a human prompt or a worker’s sub-task violates these invariants (e.g., bypassing authentication), the Orchestrator outright rejects the intent, forcing a systemic pushback rather than attempting a catastrophic execution.
 * **The Ephemeral Mutation Sandbox (Exploration):** Autonomy requires experimentation. Workers operate in file-based mutation sandboxes (`shadow-runner.ts`) — isolated temporary directories where proposed changes are applied and verified (compilation, type-checking, tests) before being committed to the canonical workspace. The Orchestrator creates, executes, and tears down sandboxes; workers have no direct filesystem access.
 * **Multi-Modal Deterministic QA (Evaluation):** Agents are forbidden from evaluating their own success. Quality Gates are enforced exclusively by the Orchestrator via deterministic engineering tools (unit tests, AST validation) and visual regression models for UI changes.
+* **Intent Verification (Comprehension):** Before planning, the Orchestrator verifies that the system's interpretation of user intent (`TaskUnderstanding`) aligns with the actual input. This is distinct from Alignment (which gates *safety* — "should I do this?") — Intent Verification gates *comprehension* ("is THIS what the user wants?"). The mechanism: (1) the LLM generates a structured `TaskUnderstanding` (action verb, target symbol, mutation expectation, action category), (2) the Goal Alignment Oracle runs deterministic checks against the original task input and perceived context, (3) if comprehension confidence is below threshold, the Orchestrator requests user clarification before entering the Plan step — preventing wasted computation on misunderstood tasks. This operationalizes the Epistemic Grounding principle (§1.1) for the Understanding layer of A1.
 
 ---
 
@@ -349,8 +360,10 @@ Rather than a binary System 1/System 2 switch, routing operates as a **four-leve
 | :--- | :--- | :--- | :--- |
 | **Level 0 (Reflex)** | Known pattern with cached solution | Near-instant retrieval, zero LLM cost. | Perceive → Retrieve → Verify (hash) → Commit |
 | **Level 1 (Heuristic)** | Low Risk Score, Standard Budget | Single model, single pass, light verification. Default for routine tasks. | Perceive → Generate → Verify → Commit |
-| **Level 2 (Analytical)** | Moderate Risk, Novel Dependencies | Single model, multi-pass with full Oracle verification. | Perceive → Predict → Plan → Validate Plan → Generate → Verify + QualityScore → Learn |
-| **Level 3 (Deliberative)** | High Blast Radius, High Uncertainty | Parallel hypothesis exploration within isolated shadow environments. Selects optimal mutation based on programmatic QA pass rates, not LLM confidence. | Perceive → Predict → Plan (iterative + Critic) → Validate Plan → Generate (PHE) → Verify + QualityScore + Shadow → Learn |
+| **Level 2 (Analytical)** | Moderate Risk, Novel Dependencies | Single model, multi-pass with full Oracle verification. | Perceive → **Comprehend** → Predict → Plan → Validate Plan → Generate → Verify + QualityScore → Learn |
+| **Level 3 (Deliberative)** | High Blast Radius, High Uncertainty | Parallel hypothesis exploration within isolated shadow environments. Selects optimal mutation based on programmatic QA pass rates, not LLM confidence. | Perceive → **Comprehend** → Predict → Plan (iterative + Critic) → Validate Plan → Generate (PHE) → Verify + QualityScore + Shadow → Learn |
+
+> **Comprehend step:** Before prediction and planning, the Orchestrator generates a structured `TaskUnderstanding` and verifies it via the Goal Alignment Oracle (§4, Intent Verification). L0–L1 skip this step — L0 uses cached solutions (understanding is implicit in the pattern match), L1 tasks are low-risk where misunderstanding cost is bounded. L2–L3 tasks carry enough risk that wasted computation from misunderstood intent justifies the verification overhead.
 
 > **Design note:** The previous “MCTS” framing has been revised. Software engineering search spaces are combinatorially explosive without clean reward signals (unlike game playing). **Parallel hypothesis generation with structured selection** (closer to beam search) better describes the actual mechanism.
 

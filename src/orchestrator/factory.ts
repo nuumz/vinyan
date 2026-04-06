@@ -65,6 +65,7 @@ import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts
 import { ForwardPredictorImpl } from './forward-predictor.ts';
 import { FileStatsCache } from './file-stats-cache.ts';
 import { PercentileCache } from './percentile-cache.ts';
+import { UnderstandingEngine } from './understanding-engine.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -300,6 +301,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
   const testGenerator = testGenProvider ? new LLMTestGeneratorImpl(testGenProvider, workspace) : undefined;
 
+  // STU Layer 2: Understanding engine — fast tier, budget-gated semantic intent extraction
+  const understandingProvider = registry.selectByTier('fast') ?? registry.selectByTier('balanced');
+  const understandingEngine = understandingProvider ? new UnderstandingEngine(understandingProvider) : undefined;
+
   // Startup logging — confirm active components (P3.0 Gap 7)
   const components = [
     `self-model: ${selfModel.constructor.name}`,
@@ -429,6 +434,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     forwardPredictor,
     // Cross-task learning: eviction archiving + prior-approach loading
     rejectedApproachStore,
+    // STU: historical profiler for enrichUnderstanding()
+    traceStore,
+    // STU Layer 2: semantic intent extraction
+    understandingEngine,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
@@ -747,6 +756,8 @@ export async function createOrchestratorAsync(
   const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
   const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
   const testGenerator = testGenProvider ? new LLMTestGeneratorImpl(testGenProvider, workspace) : undefined;
+  const understandingProvider = registry.selectByTier('fast') ?? registry.selectByTier('balanced');
+  const understandingEngine = understandingProvider ? new UnderstandingEngine(understandingProvider) : undefined;
 
   const components = [
     `self-model: ${selfModel.constructor.name}`,
@@ -872,6 +883,8 @@ export async function createOrchestratorAsync(
     approvalGate,
     forwardPredictor: forwardPredictorAsync,
     rejectedApproachStore,
+    traceStore,
+    understandingEngine,
   };
 
   const delegationRouter = new DelegationRouter();

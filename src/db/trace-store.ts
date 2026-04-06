@@ -26,7 +26,9 @@ export class TraceStore {
         framework_markers, worker_selection_audit,
         pipeline_confidence_composite, confidence_decision,
         transcript_gzip, transcript_turns,
-        thinking_mode, thinking_tokens_used, thinking_meta
+        thinking_mode, thinking_tokens_used, thinking_meta,
+        understanding_depth, understanding_intent, resolved_entities,
+        understanding_verified, understanding_primary_action
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -38,7 +40,9 @@ export class TraceStore {
         $framework_markers, $worker_selection_audit,
         $pipeline_confidence_composite, $confidence_decision,
         $transcript_gzip, $transcript_turns,
-        $thinking_mode, $thinking_tokens_used, $thinking_meta
+        $thinking_mode, $thinking_tokens_used, $thinking_meta,
+        $understanding_depth, $understanding_intent, $resolved_entities,
+        $understanding_verified, $understanding_primary_action
       )
     `);
   }
@@ -81,6 +85,11 @@ export class TraceStore {
       $thinking_mode: trace.thinkingMode ?? null,
       $thinking_tokens_used: trace.thinkingTokensUsed ?? null,
       $thinking_meta: trace.thinkingMeta ? JSON.stringify(trace.thinkingMeta) : null,
+      $understanding_depth: trace.understandingDepth ?? null,
+      $understanding_intent: trace.understandingIntent ?? null,
+      $resolved_entities: trace.resolvedEntities ?? null,
+      $understanding_verified: trace.understandingVerified ?? null,
+      $understanding_primary_action: trace.understandingPrimaryAction ?? null,
     });
   }
 
@@ -228,5 +237,10 @@ function rowToTrace(row: any): ExecutionTrace {
     confidenceDecision: row.confidence_decision ? JSON.parse(row.confidence_decision) : undefined,
     transcriptGzip: row.transcript_gzip ?? undefined,
     transcriptTurns: row.transcript_turns ?? undefined,
+    understandingDepth: row.understanding_depth ?? undefined,
+    understandingIntent: row.understanding_intent ?? undefined,
+    resolvedEntities: row.resolved_entities ?? undefined,
+    understandingVerified: row.understanding_verified ?? undefined,
+    understandingPrimaryAction: row.understanding_primary_action ?? undefined,
   };
 }

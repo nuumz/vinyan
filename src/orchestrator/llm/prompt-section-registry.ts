@@ -9,7 +9,14 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
-import type { CacheControl, PerceptualHierarchy, TaskDAG, TaskUnderstanding, WorkingMemoryState } from '../types.ts';
+import type {
+  CacheControl,
+  PerceptualHierarchy,
+  SemanticTaskUnderstanding,
+  TaskDAG,
+  TaskUnderstanding,
+  WorkingMemoryState,
+} from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
@@ -31,8 +38,9 @@ export interface SectionContext {
   memory: WorkingMemoryState;
   plan?: TaskDAG;
   instructions?: InstructionMemory | null;
-  /** Gap 9A: Unified task understanding — carries constraints, criteria, action category. */
-  understanding?: TaskUnderstanding;
+  /** Gap 9A: Unified task understanding — carries constraints, criteria, action category.
+   *  STU Phase B: widened to SemanticTaskUnderstanding for Layer 1+2 fields. */
+  understanding?: SemanticTaskUnderstanding | TaskUnderstanding;
 }
 
 export interface PromptSection {
@@ -191,6 +199,76 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
         lines.push(meta.join(' | '));
       }
       lines.push(clean(ctx.goal));
+      return lines.join('\n');
+    },
+  });
+
+  // STU Phase B: Semantic context from Layer 1 (entities, history) + Layer 2 (intent, constraints)
+  registry.register({
+    id: 'semantic-context',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 22,
+    render: (ctx) => {
+      const u = ctx.understanding;
+      // Only render if we have Layer 1+ data (resolvedEntities or semanticIntent)
+      const hasEntities = u && 'resolvedEntities' in u && (u as SemanticTaskUnderstanding).resolvedEntities?.length;
+      const hasIntent = u && 'semanticIntent' in u && (u as SemanticTaskUnderstanding).semanticIntent;
+      if (!hasEntities && !hasIntent) return null;
+
+      const stu = u as SemanticTaskUnderstanding;
+      const lines = ['[SEMANTIC CONTEXT]'];
+
+      // Resolved entities (Layer 1)
+      for (const entity of stu.resolvedEntities ?? []) {
+        lines.push(`  "${entity.reference}" → ${entity.resolvedPaths.join(', ')} (${entity.resolution})`);
+      }
+
+      // Historical profile
+      if (stu.historicalProfile?.isRecurring) {
+        lines.push(`  ⚠ Recurring issue — ${stu.historicalProfile.priorAttemptCount} prior attempts`);
+        lines.push(`  Common failure oracles: ${stu.historicalProfile.commonFailureOracles.join(', ')}`);
+      }
+
+      // Semantic intent (Layer 2)
+      const intent = stu.semanticIntent;
+      if (intent) {
+        lines.push(`  Intent: ${intent.primaryAction} — ${intent.scope}`);
+
+        // Constraints with polarity
+        for (const c of intent.implicitConstraints) {
+          const prefix = c.polarity === 'must-not' ? 'MUST NOT:' : 'MUST:';
+          lines.push(`  ${prefix} ${c.text}`);
+        }
+
+        // Ambiguities
+        for (const a of intent.ambiguities) {
+          lines.push(`  ⚠ Ambiguity: ${a.aspect} — ${a.interpretations.join(' / ')}`);
+        }
+      }
+
+      // L0 vs L2 caveat (AI-1 gap fix)
+      if (intent && stu.actionCategory) {
+        const CATEGORY_ACTION_MAP: Record<string, string[]> = {
+          mutation: ['add-feature', 'bug-fix', 'security-fix', 'refactor', 'api-migration',
+            'dependency-update', 'configuration', 'performance-optimization', 'accessibility'],
+          analysis: ['documentation'],
+          investigation: ['investigation', 'flaky-test-diagnosis'],
+          qa: ['test-improvement'],
+        };
+        const expected = CATEGORY_ACTION_MAP[stu.actionCategory] ?? [];
+        if (!expected.includes(intent.primaryAction) && intent.primaryAction !== 'other') {
+          lines.push(`  [CAVEAT] Rule-based classification (${stu.actionCategory}) differs from semantic analysis (${intent.primaryAction}). Prefer the structural classification for safety.`);
+        }
+      }
+
+      // Behavioral instruction for ambiguities
+      if (intent?.ambiguities?.length) {
+        lines.push('');
+        lines.push('  INSTRUCTION: Where ambiguities exist, choose the SAFEST interpretation');
+        lines.push('  (smallest scope, fewest side effects).');
+      }
+
       return lines.join('\n');
     },
   });

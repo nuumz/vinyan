@@ -226,6 +226,13 @@ export interface VinyanBusEvents {
   // EO #1+#4: DAG execution observability
   'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
 
+  // STU: Semantic Task Understanding events
+  'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };
+  'understanding:layer1_complete': { taskId: string; durationMs: number; entitiesResolved: number; isRecurring: boolean };
+  'understanding:layer2_complete': { taskId: string; durationMs: number; hasIntent: boolean; depth: number };
+  'understanding:claims_verified': { taskId: string; durationMs: number; totalClaims: number; knownClaims: number; contradictoryClaims: number };
+  'understanding:calibration': { taskId: string; entityAccuracy: number; categoryMatch: boolean };
+
   // Extensible Thinking events
   'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
   // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking

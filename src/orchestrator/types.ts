@@ -78,6 +78,45 @@ export type TaskType = 'code' | 'reasoning';
 export type ActionCategory = 'mutation' | 'analysis' | 'investigation' | 'design' | 'qa';
 
 /**
+ * Task domain — determines capability scope and tool access.
+ * Classified by rule-based heuristics at Layer 0 (A3-safe, deterministic).
+ *
+ * Vinyan is a general-purpose task orchestrator (concept §1). Code is capability #1
+ * as the bootstrap domain, but ALL tasks proceed through the pipeline.
+ *
+ * - code-mutation: goal involves modifying code files → full tool access
+ * - code-reasoning: goal involves analyzing code without mutation → read-only tools
+ * - general-reasoning: non-code questions, explanations, or tasks → no tools (LLM knowledge)
+ * - conversational: greetings, casual interaction → no tools, lightweight response
+ */
+export type TaskDomain = 'code-mutation' | 'code-reasoning' | 'general-reasoning' | 'conversational';
+
+/**
+ * Task intent — captures WHAT the user wants the orchestrator to do.
+ * Orthogonal to TaskDomain (which determines tool access/capability scope).
+ *
+ * - execute:  User wants Vinyan to DO something ("ช่วย capture window screen", "send email")
+ * - inquire:  User wants information/explanation ("อธิบาย X", "how does Y work")
+ * - converse: Social interaction, greeting, meta-questions ("สวัสดี", "คุณคือใคร")
+ *
+ * Concept §1: Vinyan is a task orchestrator, not a Q&A chatbot.
+ * When intent=execute, the response should frame as capability assessment, not tutorial.
+ */
+export type TaskIntent = 'execute' | 'inquire' | 'converse';
+
+/**
+ * Whether the task requires tool execution to fulfil the user's goal.
+ * Used as a capability floor: tool-needed tasks get minimum L2 (agentic with tools).
+ * Orthogonal to risk score — a zero-risk task can still need tools.
+ */
+export type ToolRequirement = 'none' | 'tool-needed';
+
+/** Read-only tools available for non-mutating reasoning tasks. */
+export const READONLY_TOOLS = new Set([
+  'file_read', 'search_grep', 'directory_list', 'git_status', 'git_diff', 'web_search',
+]);
+
+/**
  * TaskUnderstanding — unified intermediate representation of what a task means.
  *
  * Computed once at ingestion (rule-based, A3-safe), enriched by perception,
@@ -198,6 +237,14 @@ export interface VerifiedClaim {
 
 /** Extended understanding IR — Layer 0 + Layer 1 + optional Layer 2/3. */
 export interface SemanticTaskUnderstanding extends TaskUnderstanding {
+  // ── Layer 0: Domain Classification ─────────────────────
+  /** Task domain — drives tool access scope and A2 capability boundary. */
+  taskDomain: TaskDomain;
+  /** Task intent — drives response framing (execute vs inquire vs converse). */
+  taskIntent: TaskIntent;
+  /** Whether this task requires tool execution (capability routing floor). */
+  toolRequirement: ToolRequirement;
+
   // ── Layer 1: Structural ────────────────────────────────
   /** NL references resolved to code entities. */
   resolvedEntities: ResolvedEntity[];

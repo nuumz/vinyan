@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { PromptSectionRegistry, createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import { PromptSectionRegistry, createDefaultRegistry, createReasoningRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import type { SemanticTaskUnderstanding, TaskDomain, TaskIntent } from '../../../src/orchestrator/types.ts';
 
 function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
   return {
@@ -164,5 +165,280 @@ describe('createDefaultRegistry', () => {
     expect(user).not.toContain('[USER CONSTRAINTS]');
     expect(user).not.toContain('[HYPOTHESES]');
     expect(user).not.toContain('[PLAN]');
+  });
+});
+
+// ── Reasoning Registry (domain-aware prompts) ──────────────────────
+
+function makeReasoningContext(
+  domain: TaskDomain,
+  overrides: Partial<SectionContext> = {},
+  intent?: TaskIntent,
+): SectionContext {
+  const resolvedIntent = intent ?? (domain === 'conversational' ? 'converse' : 'inquire');
+  return {
+    goal: 'สวัสดี',
+    perception: {
+      taskTarget: { file: '', description: '' },
+      dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+      diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+      verifiedFacts: [],
+      runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: ['file_read', 'shell_exec'] },
+    },
+    memory: {
+      failedApproaches: [],
+      activeHypotheses: [],
+      unresolvedUncertainties: [],
+      scopedFacts: [],
+    },
+    understanding: {
+      rawGoal: 'สวัสดี',
+      actionVerb: 'unknown',
+      actionCategory: 'mutation',
+      targetSymbol: undefined,
+      frameworkContext: [],
+      constraints: [],
+      acceptanceCriteria: [],
+      expectsMutation: false,
+      taskDomain: domain,
+      taskIntent: resolvedIntent,
+      toolRequirement: 'none',
+      resolvedEntities: [],
+      understandingDepth: 0,
+      verifiedClaims: [],
+      understandingFingerprint: 'test-fp',
+    } satisfies SemanticTaskUnderstanding,
+    ...overrides,
+  };
+}
+
+describe('createReasoningRegistry — domain-aware prompts', () => {
+  it('general-reasoning: role has no orchestrator mention, has anti-hallucination', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning'));
+
+    expect(system).toContain('helpful assistant');
+    expect(system).not.toContain('orchestrator');
+    expect(system).toContain('Do NOT claim to have tools');
+  });
+
+  it('conversational: friendly assistant role, no orchestrator mention', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('conversational'));
+
+    expect(system).toContain('friendly assistant');
+    expect(system).not.toContain('orchestrator');
+  });
+
+  it('code-reasoning: role mentions Vinyan orchestrator', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('code-reasoning'));
+
+    expect(system).toContain('Vinyan');
+    expect(system).toContain('orchestrator');
+    expect(system).not.toContain('Do NOT claim to have tools');
+  });
+
+  it('general-reasoning: task section has intent hint, no code metadata', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('general-reasoning');
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[TASK]');
+    expect(user).toContain('Intent: unknown');
+    expect(user).not.toContain('Action:');
+    expect(user).not.toContain('Symbol:');
+  });
+
+  it('code-reasoning: task section includes code metadata', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('code-reasoning');
+    (ctx.understanding as SemanticTaskUnderstanding).actionVerb = 'explain';
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('Action: explain');
+  });
+
+  it('general-reasoning: no tools shown', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning'));
+
+    expect(system).not.toContain('[AVAILABLE TOOLS]');
+    expect(system).not.toContain('shell_exec');
+  });
+
+  it('conversational: no tools shown', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('conversational'));
+
+    expect(system).not.toContain('[AVAILABLE TOOLS]');
+  });
+
+  it('general-reasoning: no codebase perception', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('general-reasoning', {
+      perception: {
+        taskTarget: { file: 'src/auth.ts', description: 'target file' },
+        dependencyCone: { directImporters: ['src/api.ts'], directImportees: [], transitiveBlastRadius: 3 },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: ['file_read'] },
+        fileContents: [{ file: 'src/auth.ts', content: 'export function login() {}', truncated: false }],
+      },
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).not.toContain('[CODEBASE CONTEXT]');
+    expect(user).not.toContain('[FILE CONTENTS]');
+  });
+
+  it('code-reasoning: includes codebase perception when available', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('code-reasoning', {
+      perception: {
+        taskTarget: { file: 'src/auth.ts', description: 'target file' },
+        dependencyCone: { directImporters: ['src/api.ts'], directImportees: [], transitiveBlastRadius: 3 },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: ['file_read'] },
+        fileContents: [{ file: 'src/auth.ts', content: 'export function login() {}', truncated: false }],
+      },
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[CODEBASE CONTEXT]');
+    expect(user).toContain('[FILE CONTENTS]');
+  });
+
+  it('code-mutation: tools shown when available', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('code-mutation'));
+
+    expect(system).toContain('[AVAILABLE TOOLS]');
+    expect(system).toContain('shell_exec');
+  });
+
+  it('general-reasoning: environment section renders OS', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('general-reasoning', {
+      perception: {
+        taskTarget: { file: '', description: '' },
+        dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: { nodeVersion: '20.0.0', os: 'darwin', availableTools: [] },
+      },
+    });
+    const system = registry.renderTarget('system', ctx);
+
+    expect(system).toContain('[ENVIRONMENT]');
+    expect(system).toContain('Platform: macOS');
+  });
+
+  it('conversational: environment section renders OS', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('conversational', {
+      perception: {
+        taskTarget: { file: '', description: '' },
+        dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: [] },
+      },
+    });
+    const system = registry.renderTarget('system', ctx);
+
+    expect(system).toContain('[ENVIRONMENT]');
+    expect(system).toContain('Platform: Linux');
+  });
+
+  it('code-reasoning: environment section renders OS', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('code-reasoning', {
+      perception: {
+        taskTarget: { file: '', description: '' },
+        dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+        diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+        verifiedFacts: [],
+        runtime: { nodeVersion: '20.0.0', os: 'win32', availableTools: [] },
+      },
+    });
+    const system = registry.renderTarget('system', ctx);
+
+    expect(system).toContain('[ENVIRONMENT]');
+    expect(system).toContain('Platform: Windows');
+  });
+
+  it('non-code role mentions environment awareness', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning'));
+
+    expect(system).toContain('operating environment');
+    expect(system).toContain('specific to their platform');
+  });
+
+  it('code-reasoning role does not mention platform awareness', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('code-reasoning'));
+
+    expect(system).not.toContain('operating environment');
+  });
+
+  it('conversational: task section has intent hint', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('conversational');
+    (ctx.understanding as SemanticTaskUnderstanding).actionVerb = 'greet';
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('Intent: greet');
+    expect(user).not.toContain('Action:');
+  });
+
+  // ── Intent-aware prompt framing ────────────────────────────────────
+
+  it('execute intent: role is task orchestrator with goal framing', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning', {}, 'execute'));
+
+    expect(system).toContain('task orchestrator');
+    expect(system).toContain('goal');
+    expect(system).not.toContain('helpful assistant');
+    expect(system).not.toContain('Do NOT claim to have tools');
+  });
+
+  it('execute intent: task section has Goal line', () => {
+    const registry = createReasoningRegistry();
+    const ctx = makeReasoningContext('general-reasoning', { goal: 'ช่วย capture window screen' }, 'execute');
+    (ctx.understanding as SemanticTaskUnderstanding).actionVerb = 'capture';
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('Goal: capture');
+    expect(user).not.toContain('Intent:');
+    expect(user).not.toContain('Action:');
+  });
+
+  it('inquire intent: role is helpful assistant', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning', {}, 'inquire'));
+
+    expect(system).toContain('helpful assistant');
+    expect(system).not.toContain('task orchestrator');
+  });
+
+  it('converse intent: role is friendly assistant', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('conversational', {}, 'converse'));
+
+    expect(system).toContain('friendly assistant');
+    expect(system).not.toContain('task orchestrator');
+    expect(system).not.toContain('helpful assistant');
+  });
+
+  it('execute intent on code domain: still uses Vinyan orchestrator role', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('code-mutation', {}, 'execute'));
+
+    expect(system).toContain('Vinyan');
+    expect(system).toContain('orchestrator');
   });
 });

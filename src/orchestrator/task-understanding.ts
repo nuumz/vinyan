@@ -17,8 +17,171 @@ import { EntityResolver } from './entity-resolver.ts';
 import { profileHistory } from './historical-profiler.ts';
 import { computeTaskSignature } from './self-model.ts';
 import { extractActionVerb } from './task-fingerprint.ts';
-import type { ActionCategory, SemanticTaskUnderstanding, TaskInput, TaskUnderstanding } from './types.ts';
+import type { ActionCategory, SemanticTaskUnderstanding, TaskDomain, TaskInput, TaskIntent, TaskType, TaskUnderstanding, ToolRequirement } from './types.ts';
 import type { UnderstandingEngine } from './understanding-engine.ts';
+
+/** Keywords that indicate software engineering context. */
+const CODE_KEYWORDS = /\b(file|code|src|function|class|module|import|export|test|api|endpoint|bug|error|refactor|deploy|build|compile|lint|type|interface|schema|database|query|migration|docker|ci|cd|pipeline|git|branch|merge|commit|config|env|package|dependency|library|framework|server|client|route|middleware|controller|service|model|component|hook|state|prop|render|template|style|css|html|jsx|tsx|vue|svelte|astro|sql|orm|redis|kafka|queue|socket|auth|token|jwt|oauth|session|cookie|cors|ssl|tls|cert|log|metric|trace|debug|monitor|alert|cron|schedule|script|cli|command|tool|plugin|extension|sdk|worker|thread|process|cache|index|regex|parse|serialize|encode|decode|hash|encrypt|algorithm|data.?structure|linked.?list|tree|graph|stack|heap|sort|search|complexity|runtime|memory|cpu|performance|optimize|benchmark|profil|latency|throughput)\b/i;
+
+/** Keywords that strongly indicate non-software-engineering context. */
+const NON_CODE_KEYWORDS = /\b(screenshot|photo|picture|camera|weather|recipe|cook|translate|song|music|play|movie|game|joke|poem|story|draw|paint|calendar|appointment|reminder|email|message|chat|call|phone|drive|map|direction|flight|hotel|book|shop|buy|order|deliver|price|stock|crypto|bitcoin|exercise|workout|diet|nutrition|health|doctor|medicine|symptom)\b/i;
+
+/** Greeting patterns across common languages. */
+const GREETING_PATTERN = /^\s*(สวัสดี|หวัดดี|hello|hi|hey|good\s+(morning|afternoon|evening)|howdy|こんにちは|你好|bonjour|hola|\u0421\u0430\u043b\u0430\u043c|\u0645\u0631\u062d\u0628\u0627)\s*[!?.,\u0e46]*\s*$/i;
+
+/**
+ * Classify task domain — determines capability scope and tool access.
+ * Rule-based (A3-safe): same input always produces same domain classification.
+ *
+ * Classification priority:
+ * 1. Greetings → conversational (lightweight LLM response, no tools)
+ * 2. Non-code keywords without code context → general-reasoning (no tools)
+ * 3. Has target files → code-mutation or code-reasoning
+ * 4. Goal contains code keywords → code-reasoning or code-mutation
+ * 5. Short goal without code context → general-reasoning
+ * 6. Default → general-reasoning
+ */
+export function classifyTaskDomain(
+  understanding: TaskUnderstanding,
+  taskType: TaskType,
+  targetFiles?: string[],
+): TaskDomain {
+  const goal = understanding.rawGoal;
+  const hasTargetFiles = (targetFiles?.length ?? 0) > 0;
+
+  // 1. Greetings → conversational (lightweight natural response, no tools)
+  if (GREETING_PATTERN.test(goal)) {
+    return 'conversational';
+  }
+
+  // 2. Non-code keywords without any code keywords → general-reasoning
+  // Vinyan is a general-purpose orchestrator — LLM responds from knowledge or explains limitations naturally.
+  if (NON_CODE_KEYWORDS.test(goal) && !CODE_KEYWORDS.test(goal)) {
+    return 'general-reasoning';
+  }
+
+  // 3. Has explicit target files → code task (mutation or reasoning based on category)
+  if (hasTargetFiles) {
+    return understanding.expectsMutation ? 'code-mutation' : 'code-reasoning';
+  }
+
+  // 4. Goal references code concepts
+  if (CODE_KEYWORDS.test(goal)) {
+    // Code task with mutation verbs → code-mutation
+    if (understanding.expectsMutation && taskType === 'code') {
+      return 'code-mutation';
+    }
+    // Code-related analysis or reasoning task → code-reasoning
+    return 'code-reasoning';
+  }
+
+  // 5. Short generic goal without any code signals → general-reasoning
+  // Let the LLM handle ambiguous requests naturally.
+  if (goal.length < 40 && !understanding.targetSymbol) {
+    return 'general-reasoning';
+  }
+
+  // 6. Default: general reasoning (might be about code concepts without keywords)
+  return 'general-reasoning';
+}
+
+// ── Intent Classification ─────────────────────────────────────────────────
+
+/** Imperative/help verbs in Thai and English that signal "do this for me". */
+const EXECUTE_PATTERN = /(?:ช่วย|ทำ(?!ไม|อะไร|ยังไง)|สร้าง|ลบ|แก้|ส่ง|ย้าย|เปิด|ปิด|รัน|ติดตั้ง)|\b(capture|send|create|delete|remove|move|open|close|run|execute|install|deploy|convert|transform|generate|build|start|stop|restart|download|upload|setup|configure|launch|clear|reset|copy|paste|rename|merge|split|compress|extract|backup|restore|schedule|trigger|publish|release|fetch|pull|push|sync|migrate|export|import|format|scan|clean|update|fix|patch|write|make|connect|disconnect)\b/i;
+
+/** Question patterns that signal "tell me about". */
+const INQUIRE_PATTERN = /(?:อะไร|ทำไม|อย่างไร|เท่าไหร่|กี่|ยังไง|หมายความว่า|คืออะไร)|(what|why|how|explain|describe|tell|show|list|compare|difference|define|meaning|which|where|when|who|can you tell|do you know|is it|are there|does it|should|would|could you explain)/i;
+
+/** Meta-questions about the system itself. */
+const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
+
+/**
+ * Classify task intent — what does the user want the orchestrator to DO?
+ * Rule-based (A3-safe): same input always produces same intent.
+ *
+ * Concept §1: Vinyan is a task orchestrator, not a Q&A chatbot.
+ * When intent=execute, response should be goal-oriented (assess, act, or explain limitation).
+ * When intent=inquire, response provides information.
+ *
+ * Priority:
+ * 1. Greetings/conversational domain → converse
+ * 2. Meta questions about system → inquire
+ * 3. Execute patterns (help verbs + action nouns) → execute
+ * 4. Question patterns → inquire
+ * 5. Code mutation tasks → execute
+ * 6. Default → inquire (safer — doesn't promise action)
+ */
+export function classifyTaskIntent(
+  understanding: TaskUnderstanding,
+  taskDomain: TaskDomain,
+): TaskIntent {
+  const goal = understanding.rawGoal;
+
+  // 1. Conversational domain → converse
+  if (taskDomain === 'conversational') return 'converse';
+
+  // 2. Meta questions about system capabilities
+  if (META_PATTERN.test(goal)) return 'inquire';
+
+  // 3. Execute patterns — imperative/help verbs
+  if (EXECUTE_PATTERN.test(goal)) return 'execute';
+
+  // 4. Question patterns
+  if (INQUIRE_PATTERN.test(goal)) return 'inquire';
+
+  // 5. Code mutation tasks are always execute intent
+  if (taskDomain === 'code-mutation') return 'execute';
+
+  // 6. Default: inquire (don't promise action without evidence)
+  return 'inquire';
+}
+
+// ── Tool requirement patterns ──────────────────────────────────────
+
+/** CLI tools / system commands that require shell_exec or similar tool to execute. */
+const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip|apt|make|cargo|go|python|node|ssh|scp|rsync|kubectl|terraform|aws|gcloud|az|mv|cp|rm|mkdir|chmod|chown|tar|zip|unzip|cat|ls|find|grep|sed|awk|heroku|vercel|netlify|ffmpeg|imagemagick|convert|pandoc)\b/i;
+
+/** Thai action verbs implying system-level execution (not just information). */
+const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
+
+/**
+ * Assess whether a task requires tool execution to achieve its goal.
+ * Rule-based (A3-safe): same input always produces same result.
+ *
+ * Priority order:
+ * 1. Conversational → none (greetings don't need tools)
+ * 2. CLI command mention → tool-needed REGARDLESS of intent/domain
+ *    "git commit ว่าอะไร" needs `git log` even though it's phrased as a question.
+ *    False positive (L2 for "git คืออะไร?") is cheap — model answers from knowledge.
+ *    False negative (hallucinate tool calls at L1) is expensive and wrong.
+ *    Design principle: Capability > token cost.
+ * 3. Execute intent + Thai action verbs → tool-needed
+ * 4. Otherwise → none
+ */
+export function assessToolRequirement(
+  understanding: TaskUnderstanding,
+  taskDomain: TaskDomain,
+  taskIntent: TaskIntent,
+): ToolRequirement {
+  // Conversational tasks never need tools
+  if (taskDomain === 'conversational') return 'none';
+
+  const goal = understanding.rawGoal;
+
+  // CLI command/tool mention → always needs tool access.
+  // This must come BEFORE intent/domain gates because questions about runtime
+  // state ("git last commit ว่าอะไร") need tool execution to answer.
+  if (TOOL_COMMAND_PATTERN.test(goal)) return 'tool-needed';
+
+  // Non-execute intents without CLI commands don't need tools
+  if (taskIntent !== 'execute') return 'none';
+
+  // Thai action verbs implying system-level execution
+  if (THAI_TOOL_ACTION_PATTERN.test(goal)) return 'tool-needed';
+
+  return 'none';
+}
 
 /** Verbs that indicate file mutations (code generation). */
 const MUTATION_VERBS = new Set([
@@ -154,6 +317,15 @@ export function enrichUnderstanding(
   // Layer 0: existing rule-based extraction
   const base = buildTaskUnderstanding(input);
 
+  // Layer 0: domain classification (A2 boundary, tool scoping)
+  const taskDomain = classifyTaskDomain(base, input.taskType, input.targetFiles);
+
+  // Layer 0: intent classification (response framing — concept §1: orchestrator, not Q&A)
+  const taskIntent = classifyTaskIntent(base, taskDomain);
+
+  // Layer 0: tool requirement (capability routing floor)
+  const toolRequirement = assessToolRequirement(base, taskDomain, taskIntent);
+
   // Layer 1: entity resolution (NL → code paths)
   const resolver = new EntityResolver(deps.workspace, deps.worldGraph);
   const resolvedEntities = resolver.resolve(input, base, opts);
@@ -170,6 +342,9 @@ export function enrichUnderstanding(
 
   return {
     ...base,
+    taskDomain,
+    taskIntent,
+    toolRequirement,
     resolvedEntities,
     historicalProfile,
     understandingDepth: 1,

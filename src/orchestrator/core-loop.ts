@@ -388,6 +388,20 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     deps.bus?.emit('task:explore', { taskId: input.id, fromLevel, toLevel: routing.level });
   }
 
+  // Domain-aware routing cap: conversational tasks are trivial — L1 is sufficient.
+  // Prevents wasting tokens on L2+ escalation for greetings and simple questions.
+  const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
+  if (understanding.taskDomain === 'conversational' && routing.level > MAX_CONVERSATIONAL_LEVEL) {
+    routing = { ...routing, level: MAX_CONVERSATIONAL_LEVEL };
+  }
+
+  // Capability floor: tasks that need tool execution require minimum L2 (agentic mode).
+  // L0-L1 are single-shot text-only — no tool access. Without this floor, the LLM
+  // hallucinates tool calls in its text response instead of actually executing them.
+  if (understanding.toolRequirement === 'tool-needed' && routing.level < (2 as RoutingLevel)) {
+    routing = { ...routing, level: 2 as RoutingLevel };
+  }
+
   deps.bus?.emit('task:start', { input, routing });
 
   // Hoist for audit trail on timeout/escalation traces (Gap #2)
@@ -886,6 +900,57 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         if (input.taskType === 'reasoning' && !workerResult.proposedContent?.trim()) {
           workingMemory.recordFailedApproach(`Empty answer at L${routing.level}`, 'answer-quality-gate');
           continue; // retry with next escalation level
+        }
+
+        // A1 Reasoning quality gate: deterministic post-generation checks.
+        // Different component (orchestrator) verifies generator (LLM) output.
+        if (input.taskType === 'reasoning' && workerResult.proposedContent) {
+          // Check 1: Instruction echo detection — LLM parrots system prompt instead of answering.
+          // Uses word overlap ratio between output prefix and known system prompt fragments.
+          const echoFragments = [
+            'do not use json',
+            'match the user\'s language',
+            'never fabricate facts',
+            'answer directly and concisely',
+            'code blocks for your answer',
+            'produce a concise',
+          ];
+          const outputPrefix = workerResult.proposedContent.slice(0, 200).toLowerCase();
+          const echoCount = echoFragments.filter((f) => outputPrefix.includes(f)).length;
+          if (echoCount >= 2) {
+            workingMemory.recordFailedApproach(`Instruction echo detected (${echoCount} fragments)`, 'answer-quality-gate');
+            continue; // retry — LLM echoed instructions instead of answering
+          }
+
+          // Check 1b: Hallucinated tool calls — L0-L1 has no tools, but LLM may generate
+          // fake tool-call XML patterns in its text response. Detect and escalate to L2+.
+          if (routing.level <= 1) {
+            const hallucinationPatterns = [
+              '<function_calls>',
+              '<invoke name=',
+              '<tool_use>',
+              '<tool_call>',
+              '```tool_code',
+            ];
+            const contentLower = workerResult.proposedContent.toLowerCase();
+            const hasHallucination = hallucinationPatterns.some((p) => contentLower.includes(p));
+            if (hasHallucination) {
+              workingMemory.recordFailedApproach(
+                `Hallucinated tool calls at L${routing.level} (text-only mode has no tools)`,
+                'answer-quality-gate',
+              );
+              continue; // escalate to L2+ where real tools are available
+            }
+          }
+
+          // Check 2: A6 defense-in-depth — strip mutating tool calls from non-mutation domains.
+          // Even if prompt filtering fails, orchestrator blocks execution.
+          if (understanding.taskDomain !== 'code-mutation' && workerResult.proposedToolCalls.length > 0) {
+            const { READONLY_TOOLS } = await import('./types.ts');
+            workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter(
+              (tc) => READONLY_TOOLS.has(tc.tool),
+            );
+          }
         }
 
         // G6: Accumulate global token budget
@@ -1798,7 +1863,9 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
     // ── RETRY EXHAUSTED → escalate routing level ─────────────────
     const nextLevel = (routing.level + 1) as RoutingLevel;
-    if (nextLevel > MAX_ROUTING_LEVEL) break;
+    // Domain-aware cap: conversational tasks stop at L1 (no L2+ escalation)
+    const effectiveMaxLevel = understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+    if (nextLevel > effectiveMaxLevel) break;
 
     deps.bus?.emit('task:escalate', {
       taskId: input.id,

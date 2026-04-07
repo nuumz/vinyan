@@ -14,14 +14,21 @@ import type {
   PerceptualHierarchy,
   SemanticTaskUnderstanding,
   TaskDAG,
+  TaskDomain,
   TaskUnderstanding,
   WorkingMemoryState,
 } from '../types.ts';
+import { READONLY_TOOLS } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
   return sanitizeForPrompt(s).cleaned;
+}
+
+/** Check if the task domain requires code-centric prompt context. */
+function isCodeDomain(domain?: TaskDomain): boolean {
+  return domain === 'code-mutation' || domain === 'code-reasoning';
 }
 
 /** G1: Map tier_reliability score to human-readable label for prompt rendering. */
@@ -455,12 +462,47 @@ export function createReasoningRegistry(): PromptSectionRegistry {
     target: 'system',
     cache: 'static',
     priority: 10,
-    render: () =>
-      `[ROLE]
+    render: (ctx) => {
+      const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
+      const domain = stu?.taskDomain;
+      const intent = stu?.taskIntent;
+
+      // Code domains: Vinyan orchestrator framing
+      if (isCodeDomain(domain)) {
+        return `[ROLE]
 You are a reasoning assistant in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 Answer directly and concisely. Match the user's language naturally.
 If uncertain, say what you don't know — never fabricate facts about the codebase.
-Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
+Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
+      }
+
+      // Execute intent: orchestrator framing — assess capability, act or explain limitation
+      if (intent === 'execute') {
+        return `[ROLE]
+You are a task orchestrator. When the user asks you to do something:
+1. State the goal clearly (one sentence).
+2. If you have tools for this task — propose the action.
+3. If you do NOT have tools — state that, then suggest the single most direct way the user can do it themselves.
+Be concise. One recommended approach — not a tutorial of all options.
+Match the user's language naturally. Be specific to their platform.
+Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
+      }
+
+      // Converse intent: lightweight friendly assistant
+      if (intent === 'converse') {
+        return `[ROLE]
+You are a friendly assistant. Respond naturally and briefly. Match the user's language.
+Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
+      }
+
+      // Inquire intent (default): knowledge assistant
+      return `[ROLE]
+You are a helpful assistant. Answer directly and concisely. Match the user's language naturally.
+Consider the user's operating environment when answering. Be specific to their platform rather than listing all platforms.
+If uncertain, say what you don't know.
+Do NOT claim to have tools, file access, or capabilities that are not explicitly listed in this prompt.
+Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
+    },
   });
 
   registry.register({
@@ -469,12 +511,41 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
     cache: 'static',
     priority: 20,
     render: (ctx) => {
-      const tools = ctx.perception.runtime.availableTools;
+      let tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
+
+      // A6 defense-in-depth: filter tools by task domain.
+      // code-reasoning gets read-only tools only; general-reasoning gets none.
+      const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
+      if (domain === 'general-reasoning' || domain === 'conversational') {
+        // General reasoning & conversational: no tools (answer from knowledge)
+        return null;
+      }
+      if (domain === 'code-reasoning') {
+        // Code reasoning: read-only tools only
+        tools = tools.filter((t) => READONLY_TOOLS.has(t));
+        if (!tools.length) return null;
+      }
+      // code-mutation: all tools (default)
+
       const lines = [`[AVAILABLE TOOLS]`, [...tools].sort().join(', ')];
       lines.push(`\nRuntime: ${process.platform} (${process.arch})`);
       lines.push('You may propose tool calls for information gathering.');
       return lines.join('\n');
+    },
+  });
+
+  // Environment context — available for ALL domains (OS info is always relevant)
+  registry.register({
+    id: 'reasoning-environment',
+    target: 'system',
+    cache: 'static',
+    priority: 25,
+    render: (ctx) => {
+      const os = ctx.perception.runtime.os;
+      if (!os) return null;
+      const osName = os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os === 'linux' ? 'Linux' : os;
+      return `[ENVIRONMENT]\nPlatform: ${osName} (${process.arch})`;
     },
   });
 
@@ -494,12 +565,23 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
     priority: 20,
     render: (ctx) => {
       const lines = ['[TASK]'];
-      if (ctx.understanding) {
+      const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
+      const domain = stu?.taskDomain;
+      const intent = stu?.taskIntent;
+
+      if (ctx.understanding && isCodeDomain(domain)) {
+        // Code domains: full metadata (action verb, symbol, frameworks)
         const u = ctx.understanding;
         const meta: string[] = [`Action: ${u.actionVerb}`];
         if (u.targetSymbol) meta.push(`Symbol: ${u.targetSymbol}`);
         if (u.frameworkContext.length > 0) meta.push(`Frameworks: ${u.frameworkContext.join(', ')}`);
         lines.push(meta.join(' | '));
+      } else if (intent === 'execute' && ctx.understanding) {
+        // Execute intent: explicit goal framing for the orchestrator
+        lines.push(`Goal: ${ctx.understanding.actionVerb} — ${clean(ctx.goal)}`);
+      } else if (ctx.understanding) {
+        // Inquire/converse: lightweight intent hint
+        lines.push(`Intent: ${ctx.understanding.actionVerb}`);
       }
       lines.push(clean(ctx.goal));
       return lines.join('\n');
@@ -513,6 +595,9 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
     cache: 'ephemeral',
     priority: 30,
     render: (ctx) => {
+      // Non-code domains don't need codebase context
+      const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
+      if (!isCodeDomain(domain)) return null;
       const target = ctx.perception.taskTarget;
       const cone = ctx.perception.dependencyCone;
       // Skip if no meaningful perception
@@ -543,6 +628,9 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`,
     cache: 'ephemeral',
     priority: 35,
     render: (ctx) => {
+      // Non-code domains don't need file contents
+      const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
+      if (!isCodeDomain(domain)) return null;
       if (!ctx.perception.fileContents?.length) return null;
       const sections = ctx.perception.fileContents.map((fc) => {
         const header = fc.truncated ? `${fc.file} (truncated)` : fc.file;

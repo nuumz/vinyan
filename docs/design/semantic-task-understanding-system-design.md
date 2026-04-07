@@ -36,6 +36,8 @@ Vinyan's `TaskUnderstanding` (`src/orchestrator/task-understanding.ts`) is purel
 | "why is the test flaky" | verb=`unknown`, category=`analysis` (fallback) | verb=`investigate`, intent=`flaky-test-diagnosis`, recurring=`true` (3 prior attempts) |
 | "refactor auth like we did for payments" | verb=`refactor`, no historical context | verb=`refactor`, priorPattern=`payments refactor trace #247`, implicit=`follow same approach` |
 | "add rate limiting" | verb=`add`, no implicit constraints | verb=`add`, implicit=`[don't break existing API, add config for limits]` |
+| "สวัสดี" (greeting) | verb=`unknown`, category=`analysis` → LLM dispatch → output echoes system prompt instructions | domain=`conversational` → no tool access, LLM responds naturally (echo detection rejects parroted output) |
+| "ช่วยถ่ายรูป screenshot" (non-code request) | verb=`unknown`, category=`analysis` → LLM proposes `shell_exec which gnome-screenshot` → **executed via step 5½** (A6 violation) | domain=`general-reasoning` → no tool access, LLM explains limitation naturally (A6 tool stripping as defense-in-depth) |
 
 ### 1.3 What "Understanding" Means for an Epistemic Orchestrator
 
@@ -126,6 +128,10 @@ TaskInput.goal
   ├──[Layer 0]──→ buildTaskUnderstanding()           cost: 0     latency: <1ms
   │                verb, category, symbol, constraints
   │                ↓
+  ├──[Domain]───→ classifyTaskDomain()               cost: 0     latency: <0.1ms
+  │                conversational | general-reasoning → no tool access
+  │                code-mutation | code-reasoning
+  │                ↓
   ├──[Layer 1]──→ resolveEntities() + profileHistory() cost: 0   latency: <50ms
   │                NL→paths, recurring detection, prior failures
   │                ↓
@@ -138,10 +144,11 @@ TaskInput.goal
   │            └──→ upgrade/downgrade confidence
   │
   ▼
-  SemanticTaskUnderstanding
+  SemanticTaskUnderstanding (with taskDomain)
   │
+  ├──→ Tool Scoping (domain → filter availableTools in prompt; conversational/general = none)
   ├──→ RiskRouter (Layer 0-1 claims only, governance-eligible)
-  ├──→ PromptSectionRegistry (all layers, enrichment)
+  ├──→ PromptSectionRegistry (domain-filtered tools, all layers)
   ├──→ SelfModel.predict() (enriched signature → per-intent learning)
   ├──→ CrossTaskLoader (intent-aware approach matching)
   └──→ TraceCollector (understanding snapshot for calibration)
@@ -152,6 +159,7 @@ TaskInput.goal
 | Component | File | Layer | New/Existing |
 |-----------|------|-------|-------------|
 | `buildTaskUnderstanding()` | `src/orchestrator/task-understanding.ts` | 0 | `[IMPLEMENTED]` |
+| `classifyTaskDomain()` | `src/orchestrator/task-understanding.ts` | 0 | `[IMPLEMENTED]` — rule-based domain classifier |
 | `enrichWithPerception()` | `src/orchestrator/task-understanding.ts` | 0 | `[IMPLEMENTED]` |
 | `EntityResolver` | `src/orchestrator/entity-resolver.ts` | 1 | `[DESIGNED]` — new file |
 | `HistoricalProfiler` | `src/orchestrator/historical-profiler.ts` | 1 | `[DESIGNED]` — new file |
@@ -170,6 +178,10 @@ TaskInput.goal
 
 ```typescript
 interface SemanticTaskUnderstanding extends TaskUnderstanding {
+  // ── Layer 0: Domain Classification ─────────────────────
+  /** Task domain — drives tool access scope and A2 capability boundary. */
+  taskDomain: TaskDomain; // 'code-mutation' | 'code-reasoning' | 'general-reasoning' | 'conversational'
+
   // ── Layer 1: Structural ────────────────────────────────
   /** NL references resolved to code entities. */
   resolvedEntities: ResolvedEntity[];
@@ -790,23 +802,29 @@ Pipeline position in `executeTask()`:
 ```
 executeTask(input, deps)
   │
-  ├── 1. enrichUnderstanding(input, deps)        ← SINGLE ENTRY POINT (new)
+  ├── 1. enrichUnderstanding(input, deps)        ← SINGLE ENTRY POINT
   │      └─ Layer 0: buildTaskUnderstanding(input)    ← existing
-  │      └─ Layer 1: resolveEntities() + profileHistory()  ← new
-  │      └─ (Layer 2 deferred to post-routing)        ← budget-dependent
+  │      └─ Domain: classifyTaskDomain()              ← NEW (rule-based, A3-safe)
+  │      └─ Layer 1: resolveEntities() + profileHistory()
+  │      └─ (Layer 2 deferred to post-routing)
   │
   ├── 2. Risk routing                              ← EXISTING (uses Layer 0-1 claims)
   │      riskRouter.route(input, perception)
   │
-  ├── 3. enrichUnderstandingL2(understanding, budget) ← SINGLE ENTRY POINT (new)
+  ├── 3. enrichUnderstandingL2(understanding, budget)
   │      └─ Layer 2 semantic (if budget >= LAYER2_MIN)
   │      └─ Verify understanding claims
   │      └─ Verify implicit constraints against codebase
   │
   ├── 4. Perceive / Plan / Generate / Verify       ← EXISTING
   │      (understanding flows through all steps)
+  │      Prompt assembly: tools filtered by taskDomain
   │
-  └── 5. calibrateUnderstanding (via EventBus)      ← LISTENER (not inline)
+  ├── 4½. Reasoning Quality Gate                    ← NEW
+  │      - Instruction echo detection (≥2 prompt fragments → reject)
+  │      - A6 tool stripping (non-mutation domains → filter mutating tools)
+  │
+  └── 5. calibrateUnderstanding (via EventBus)
          bus.emit('task:complete', {understanding, trace})
 ```
 
@@ -900,6 +918,19 @@ registry.register({
 
 **Why behavioral rules matter:** Without them, the generator sees `"⚠ Ambiguity: OAuth2 provider — Auth0 / custom"` but has no guidance on what to do. It may pick the more complex interpretation or ignore the ambiguity entirely. The behavioral rule ensures the generator defaults to the safest option, which the Oracle Gate can then verify — consistent with A6 (zero-trust: propose the conservative option, let governance decide if it's sufficient).
 
+#### Tool Scoping by Domain `[IMPLEMENTED]`
+
+The `reasoning-tools` section in `PromptSectionRegistry` filters available tools based on `taskDomain`:
+
+| Domain | Tools in Prompt | Rationale |
+|--------|----------------|-----------|
+| `code-mutation` | All tools | Full capability needed for code changes |
+| `code-reasoning` | `READONLY_TOOLS` only (`file_read`, `search_grep`, `directory_list`, `git_status`, `git_diff`, `web_search`) | Analysis doesn't need mutation tools — A6 defense-in-depth |
+| `general-reasoning` | No tools | Pure reasoning — tools would be noise/risk |
+| `conversational` | No tools | Greetings/casual interaction — LLM responds naturally |
+
+This is the **first layer** of tool defense. The core-loop reasoning quality gate provides a **second layer** — stripping any mutating tool calls from non-mutation domains post-generation (defense-in-depth per A6).
+
 ### 6.3 SelfModel — Enriched Signatures
 
 `computeTaskSignature` (`src/orchestrator/self-model.ts` line 70) gains an optional enrichment:
@@ -967,12 +998,12 @@ bus.on('understanding:recomprehend',    () => this.inc('understanding.recomprehe
 
 | Axiom | Principle | How This Design Satisfies It | Enforcement Mechanism |
 |-------|-----------|------------------------------|----------------------|
-| **A1** Epistemic Separation | Generation ≠ verification | Understanding Engine (Layer 2) generates claims; Understanding Verifier checks them via oracles | Separate components, separate files |
-| **A2** First-Class Uncertainty | "I don't know" is valid | `type: 'unknown'` on unresolvable entities; ambiguities surfaced, not hidden | `VerifiedClaim.type` field |
-| **A3** Deterministic Governance | No LLM in governance | Layer 2 hardcoded as `confidenceSource: 'llm-self-report'` — type system excludes from routing | Hardcoded after parse, not configurable |
+| **A1** Epistemic Separation | Generation ≠ verification | Understanding Engine (Layer 2) generates claims; Understanding Verifier checks them via oracles. Reasoning quality gate (instruction echo detection) verifies LLM output post-generation. | Separate components, separate files |
+| **A2** First-Class Uncertainty | "I don't know" is valid | `type: 'unknown'` on unresolvable entities; ambiguities surfaced, not hidden. Domain classifier identifies `conversational` and `general-reasoning` tasks — all tasks proceed through LLM dispatch (Vinyan is a general-purpose orchestrator per concept §1), with tool access scoped by domain | `VerifiedClaim.type` field; `classifyTaskDomain()` |
+| **A3** Deterministic Governance | No LLM in governance | Layer 2 hardcoded as `confidenceSource: 'llm-self-report'` — type system excludes from routing. Domain classification is rule-based (same input → same domain) | Hardcoded after parse; `classifyTaskDomain()` uses regex + verb sets |
 | **A4** Content-Addressed Truth | Reproducible understanding | Layer 0-1 are deterministic (same input → same output). Layer 2 is best-effort consistent — not content-addressed. `temperature=0.1` reduces but does not eliminate stochasticity | Deterministic algorithms (L0-1); best-effort + parse fallback (L2) |
 | **A5** Tiered Trust | Deterministic > heuristic > probabilistic | Tier 1.0 (regex) > 0.9 (structural) > 0.4 (LLM). Governance boundary at 0.5 | `tierReliability` field per claim |
-| **A6** Zero-Trust Execution | Workers propose, orchestrator disposes | Understanding claims are proposals; Verifier and oracle pipeline are disposers | Verification step before consumption |
+| **A6** Zero-Trust Execution | Workers propose, orchestrator disposes | Understanding claims are proposals; Verifier and oracle pipeline are disposers. **Defense-in-depth tool scoping**: reasoning tasks see only domain-appropriate tools in prompt AND core-loop strips mutating tool calls post-generation | Verification step; `READONLY_TOOLS` filter in prompt + core-loop |
 | **A7** Prediction Error as Learning | Improvement from delta | Post-task calibration: predicted intent vs actual outcome → enriched SelfModel signatures | `UnderstandingCalibrator`, trace snapshot |
 
 ---

@@ -47,6 +47,11 @@ const ALL_EVENTS: BusEventName[] = [
   // Guardrails
   'guardrail:injection_detected',
   'guardrail:bypass_detected',
+  // K1.5: Security violation (block-not-strip)
+  'security:injection_detected',
+  // K1.1: Contradiction escalation
+  'verification:contradiction_escalated',
+  'verification:contradiction_unresolved',
   // Self-model & oracle
   'selfmodel:calibration_error',
   'oracle:contradiction',

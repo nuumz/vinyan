@@ -7,6 +7,7 @@
  */
 import type { AgentBudget } from '../protocol.ts';
 import type { RoutingDecision } from '../types.ts';
+import type { AgentContract } from '../../core/agent-contract.ts';
 
 /** Session-level tool call limits per routing level (§5: 0/0/20/50). */
 const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
@@ -42,6 +43,25 @@ export class AgentBudgetTracker {
       maxToolCalls,
       delegationDepth: 0,
       maxDelegationDepth: routing.level >= 3 ? 2 : 1,
+    };
+    return new AgentBudgetTracker(budget);
+  }
+
+  /** Factory: create from an AgentContract (K1.2) — mirrors fromRouting but sourced from immutable contract. */
+  static fromContract(contract: AgentContract, contextWindow = 128_000): AgentBudgetTracker {
+    const budget: AgentBudget = {
+      maxTokens: contract.tokenBudget,
+      maxTurns: contract.maxTurns,
+      maxDurationMs: contract.timeLimitMs,
+      contextWindow,
+      base: Math.floor(contract.tokenBudget * 0.6),
+      negotiable: Math.floor(contract.tokenBudget * 0.25),
+      delegation: Math.floor(contract.tokenBudget * 0.15),
+      maxExtensionRequests: 3,
+      maxToolCallsPerTurn: contract.maxToolCallsPerTurn,
+      maxToolCalls: contract.maxToolCalls,
+      delegationDepth: 0,
+      maxDelegationDepth: contract.routingLevel >= 3 ? 2 : 1,
     };
     return new AgentBudgetTracker(budget);
   }
@@ -108,6 +128,7 @@ export class AgentBudgetTracker {
       delegation: Math.floor(allocated * 0.1),
       maxExtensionRequests: 1,
       maxToolCallsPerTurn: this.budget.maxToolCallsPerTurn,
+      maxToolCalls: this.budget.maxToolCalls,
       delegationDepth: this.budget.delegationDepth + 1,
       maxDelegationDepth: this.budget.maxDelegationDepth,
     };
@@ -136,6 +157,7 @@ export class AgentBudgetTracker {
       delegation: this.budget.delegation - this.delegationConsumed,
       maxExtensionRequests: this.budget.maxExtensionRequests - this.extensionRequestCount,
       maxToolCallsPerTurn: this.budget.maxToolCallsPerTurn,
+      maxToolCalls: this.budget.maxToolCalls - this.toolCallsUsed,
       delegationDepth: this.budget.delegationDepth,
       maxDelegationDepth: this.budget.maxDelegationDepth,
     };

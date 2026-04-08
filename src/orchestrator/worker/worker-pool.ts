@@ -360,6 +360,7 @@ export class WorkerPoolImpl implements WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
+    contract?: import('../../core/agent-contract.ts').AgentContract,
   ) {
     const startTime = performance.now();
 

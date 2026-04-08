@@ -13,6 +13,7 @@
 
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
+import { validateInput } from '../guardrails/index.ts';
 import { buildComplexityContext, computeQualityScore } from '../gate/quality-score.ts';
 import { applyPredictionEscalation, LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { type DAGExecutionResult, executeDAG, type NodeDispatcher } from './dag-executor.ts';
@@ -71,6 +72,7 @@ export interface WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
     understanding?: SemanticTaskUnderstanding,
+    contract?: import('../core/agent-contract.ts').AgentContract,
   ): Promise<WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
   getAgentLoopDeps?(): import('./worker/agent-loop.ts').AgentLoopDeps | null;
@@ -172,6 +174,8 @@ export interface OrchestratorDeps {
   traceStore?: import('../db/trace-store.ts').TraceStore;
   /** STU Layer 2: Understanding engine for semantic intent extraction. */
   understandingEngine?: import('./understanding-engine.ts').UnderstandingEngine;
+  /** K2: Provider trust store for recording per-provider success/failure outcomes. */
+  providerTrustStore?: import('../db/provider-trust-store.ts').ProviderTrustStore;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -283,6 +287,38 @@ export function scorePlanByPrediction(
  * into an autonomous agent. Everything flows through here.
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
+  // ── K1.5: Input validation gate — reject prompt injection before any LLM call ──
+  const inputCheck = validateInput(input.goal);
+  if (inputCheck.status === 'rejected') {
+    deps.bus?.emit('security:injection_detected', {
+      taskId: input.id,
+      detections: inputCheck.detections,
+      timestamp: Date.now(),
+    });
+    const securityTrace: ExecutionTrace = {
+      id: `trace-${input.id}-security`,
+      taskId: input.id,
+      workerId: 'kernel',
+      timestamp: Date.now(),
+      routingLevel: 0,
+      approach: 'security-rejection',
+      oracleVerdicts: {},
+      modelUsed: 'none',
+      tokensConsumed: 0,
+      durationMs: 0,
+      outcome: 'failure',
+      failureReason: inputCheck.reason,
+      affectedFiles: [],
+    };
+    await deps.traceCollector.record(securityTrace);
+    return {
+      id: input.id,
+      status: 'failed',
+      mutations: [],
+      trace: securityTrace,
+    };
+  }
+
   // STU: Build SemanticTaskUnderstanding (Layer 0+1) once at ingestion — single source of truth
   const { enrichUnderstanding, enrichWithPerception } = await import('./task-understanding.ts');
   const understandingStart = Date.now();
@@ -1114,8 +1150,37 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         else failedOracles.push(oracleName);
       }
       // ── Contradiction detection (A1: surface epistemic disagreements) ──
-      if (passedOracles.length > 0 && failedOracles.length > 0) {
+      const hasContradiction = passedOracles.length > 0 && failedOracles.length > 0;
+      if (hasContradiction) {
         deps.bus?.emit('oracle:contradiction', {
+          taskId: input.id,
+          passed: passedOracles,
+          failed: failedOracles,
+        });
+
+        // K1.1: Auto-escalate on contradiction — higher routing level brings
+        // more oracles and deeper verification to resolve disagreements.
+        if (routing.level < (3 as RoutingLevel)) {
+          const fromLevel = routing.level;
+          const toLevel = (routing.level + 1) as RoutingLevel;
+          deps.bus?.emit('verification:contradiction_escalated', {
+            taskId: input.id,
+            fromLevel,
+            toLevel,
+            passed: passedOracles,
+            failed: failedOracles,
+          });
+          deps.bus?.emit('task:escalate', {
+            taskId: input.id,
+            fromLevel,
+            toLevel,
+            reason: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
+          });
+          routing = { ...routing, level: toLevel };
+          break; // Exit retry loop — re-enter at higher routing level
+        }
+        // L3 contradiction: nowhere to escalate — surface as unresolved
+        deps.bus?.emit('verification:contradiction_unresolved', {
           taskId: input.id,
           passed: passedOracles,
           failed: failedOracles,
@@ -1541,6 +1606,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           }
         } catch {
           /* FP calibration failure — non-critical */
+        }
+      }
+
+      // K2: Record provider trust outcome for Wilson LB selection
+      if (deps.providerTrustStore && routing.model) {
+        try {
+          deps.providerTrustStore.recordOutcome(routing.model, trace.outcome === 'success');
+        } catch {
+          /* Trust recording failure — non-critical */
         }
       }
 

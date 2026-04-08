@@ -2,6 +2,7 @@ import { HttpTransport } from '../a2a/http-transport.ts';
 import { StdioTransport } from '../a2a/stdio-transport.ts';
 import type { ECPTransport } from '../a2a/transport.ts';
 import { WebSocketTransport } from '../a2a/websocket-transport.ts';
+import { normalizeECPMessage, validateECPVerdict } from '../a2a/ecp-validation.ts';
 import { buildVerdict } from '../core/index.ts';
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import { getOracleEntry, getOraclePath, type OracleRegistryEntry } from './registry.ts';
@@ -80,6 +81,18 @@ export async function runOracle(
   }
 
   const verdict = await transport.verify(hypothesis, timeoutMs);
+
+  // K1.4: Validate ECP verdict envelope — backward compat (warn, don't throw)
+  const normalizedVerdict = normalizeECPMessage(verdict as unknown as Record<string, unknown>);
+  const ecpValidation = validateECPVerdict(normalizedVerdict);
+  if (!ecpValidation.valid) {
+    options.bus?.emit('observability:alert', {
+      detector: 'ecp-validation',
+      severity: 'warning',
+      message: `Invalid ECP verdict from ${oracleName}: ${ecpValidation.error}`,
+      metadata: { oracleName },
+    });
+  }
 
   // ECP §4.4 (A5): Clamp confidence by tier + transport + peer trust
   const transportType = entry?.transport ?? transport.transportType;

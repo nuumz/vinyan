@@ -107,11 +107,18 @@ export interface VinyanBusEvents {
   'guardrail:bypass_detected': { field: string; patterns: string[] };
   'guardrail:violation': { workerId: string; type: string; details?: string };
 
+  // K1.5: Security violation — input rejected at task entry (block, not strip)
+  'security:injection_detected': { taskId: string; detections: string[]; timestamp: number };
+
   // Self-model calibration
   'selfmodel:calibration_error': { taskId: string; error: string };
 
   // Oracle contradiction detection (A1: epistemic separation surfaces disagreements)
   'oracle:contradiction': { taskId: string; passed: string[]; failed: string[] };
+
+  // K1.1: Contradiction escalation — auto-escalate routing level on unresolved oracle conflict
+  'verification:contradiction_escalated': { taskId: string; fromLevel: number; toLevel: number; passed: string[]; failed: string[] };
+  'verification:contradiction_unresolved': { taskId: string; passed: string[]; failed: string[] };
 
   // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
   'oracle:deliberation_request': { taskId: string; oracleName: string; reason: string; suggestedBudget: number };

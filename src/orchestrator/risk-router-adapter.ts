@@ -136,6 +136,7 @@ export class RiskRouterImpl implements RiskRouter {
       decision.model = 'fast'; // maps correctly to fast tier in agent-worker-entry.ts
       decision.budgetTokens = 10_000;
       decision.latencyBudgetMs = 60_000; // non-file tasks need subprocess + LLM + proxy overhead
+      // L1 default: thinking disabled for clean answers. CLI --thinking overrides.
     }
 
     // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)

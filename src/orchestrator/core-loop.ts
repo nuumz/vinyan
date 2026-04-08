@@ -14,7 +14,7 @@
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
 import { buildComplexityContext, computeQualityScore } from '../gate/quality-score.ts';
-import { applyPredictionEscalation } from '../gate/risk-router.ts';
+import { applyPredictionEscalation, LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { type DAGExecutionResult, executeDAG, type NodeDispatcher } from './dag-executor.ts';
 import { type ConfidenceDecision, computePipelineConfidence, deriveConfidenceDecision } from './pipeline-confidence.ts';
 import type {
@@ -108,6 +108,8 @@ interface WorkerResult {
   cacheCreationTokens?: number;
   /** Extensible Thinking: thinking tokens used (from LLM response). */
   thinkingTokensUsed?: number;
+  /** Raw thinking content from the LLM. */
+  thinking?: string;
   durationMs: number;
   proposedContent?: string;
   /** When set, indicates a permanent error — skip retries and escalation. */
@@ -385,7 +387,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   let explorationFlag = false;
   if (routing.level < MAX_ROUTING_LEVEL && Math.random() < EPSILON) {
     const fromLevel = routing.level;
-    routing = { ...routing, level: (routing.level + 1) as RoutingLevel };
+    // R3: model/budget must follow level — re-derive from LEVEL_CONFIG
+    const newLevel = (routing.level + 1) as RoutingLevel;
+    const cfg = LEVEL_CONFIG[newLevel];
+    routing = { ...routing, level: newLevel, model: cfg.model, budgetTokens: cfg.budgetTokens, latencyBudgetMs: cfg.latencyBudgetMs };
     explorationFlag = true;
     deps.bus?.emit('task:explore', { taskId: input.id, fromLevel, toLevel: routing.level });
   }
@@ -397,11 +402,30 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     routing = { ...routing, level: MAX_CONVERSATIONAL_LEVEL };
   }
 
+  // Domain-aware routing cap: general-reasoning + inquire + no tools → max L1.
+  // L2+ adds agentic loop + tools — useless for pure knowledge questions.
+  // Composition matrix (§12): general-reasoning/inquire/none → typical L0-L1.
+  if (
+    understanding.taskDomain === 'general-reasoning' &&
+    understanding.taskIntent === 'inquire' &&
+    understanding.toolRequirement === 'none' &&
+    routing.level > MAX_CONVERSATIONAL_LEVEL
+  ) {
+    routing = { ...routing, level: MAX_CONVERSATIONAL_LEVEL };
+  }
+
   // Capability floor: tasks that need tool execution require minimum L2 (agentic mode).
   // L0-L1 are single-shot text-only — no tool access. Without this floor, the LLM
   // hallucinates tool calls in its text response instead of actually executing them.
   if (understanding.toolRequirement === 'tool-needed' && routing.level < (2 as RoutingLevel)) {
-    routing = { ...routing, level: 2 as RoutingLevel };
+    // R3: model/budget must follow level — re-derive from LEVEL_CONFIG
+    const l2Cfg = LEVEL_CONFIG[2];
+    routing = { ...routing, level: 2 as RoutingLevel, model: l2Cfg.model, budgetTokens: l2Cfg.budgetTokens, latencyBudgetMs: l2Cfg.latencyBudgetMs };
+  }
+
+  // CLI --thinking flag: force enable thinking for debugging
+  if (input.constraints?.includes('THINKING:enabled') && routing.thinkingConfig?.type === 'disabled') {
+    routing = { ...routing, thinkingConfig: { type: 'adaptive', effort: 'low', display: 'summarized' } };
   }
 
   deps.bus?.emit('task:start', { input, routing });
@@ -624,10 +648,16 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           selfModelConfidence: prediction?.confidence,
         });
 
+        // Thinking compiler may downgrade thinking (e.g. Profile A → disabled for reflex tasks).
+        // But if the routing level's LEVEL_CONFIG prescribes thinking (e.g. L1 adaptive:low),
+        // don't let the compiler disable it — the level config is the floor.
+        const compiledThinking = compiledPolicy.thinking;
+        const shouldKeepRouting = compiledThinking.type === 'disabled'
+          && routing.thinkingConfig?.type !== 'disabled';
         routing = {
           ...routing,
           thinkingPolicy: compiledPolicy,
-          thinkingConfig: compiledPolicy.thinking, // backward compat
+          thinkingConfig: shouldKeepRouting ? routing.thinkingConfig : compiledThinking,
         };
 
         deps.bus?.emit('thinking:policy-compiled', {
@@ -1781,6 +1811,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           trace,
           qualityScore,
           answer: workerResult.proposedContent,
+          thinking: workerResult.thinking,
           notes: commitResult?.rejected.length
             ? [`Rejected files: ${commitResult.rejected.map((r) => `${r.path} (${r.reason})`).join(', ')}`]
             : undefined,

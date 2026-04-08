@@ -46,6 +46,8 @@ type WorkerOutputWithCache = WorkerOutput & {
   cacheCreationTokens?: number;
   /** Extensible Thinking: thinking tokens used (from REResponse.tokensUsed.thinkingTokens or char-length proxy). */
   thinkingTokensUsed?: number;
+  /** Raw thinking content from the LLM response. */
+  thinking?: string;
 };
 
 export interface WorkerPoolConfig {
@@ -735,6 +737,7 @@ export class WorkerPoolImpl implements WorkerPool {
       cacheReadTokens: output.cacheReadTokens,
       cacheCreationTokens: output.cacheCreationTokens,
       thinkingTokensUsed: output.thinkingTokensUsed,
+      thinking: output.thinking,
       durationMs: Math.round(performance.now() - startTime),
       proposedContent: output.proposedContent,
       nonRetryableError: output.nonRetryableError,
@@ -928,13 +931,13 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
       durationMs,
     };
     const validated = WorkerOutputSchema.safeParse(candidate);
-    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
-    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
+    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
+    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
   } catch {
     if (response.content?.trim()) {
-      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
+      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
     }
-    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens, thinkingTokensUsed };
+    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
   }
 }
 

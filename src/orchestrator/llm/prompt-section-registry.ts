@@ -579,13 +579,16 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
   registry.register({
     id: 'reasoning-environment',
     target: 'system',
-    cache: 'static',
+    cache: 'ephemeral',
     priority: 25,
     render: (ctx) => {
       const os = ctx.perception.runtime.os;
       if (!os) return null;
       const osName = os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os === 'linux' ? 'Linux' : os;
-      return `[ENVIRONMENT]\nPlatform: ${osName} (${process.arch})`;
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `[ENVIRONMENT]\nPlatform: ${osName} (${process.arch})\nCurrent date: ${dateStr}, ${timeStr}`;
     },
   });
 
@@ -604,11 +607,20 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     cache: 'ephemeral',
     priority: 20,
     render: (ctx) => {
-      const lines = ['[TASK]'];
       const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
       const domain = stu?.taskDomain;
       const intent = stu?.taskIntent;
 
+      // General-reasoning and conversational: send raw goal without [TASK] header.
+      // Structured headers ([TASK], [ROLE]) confuse small models when followed by
+      // non-Latin text — they treat the header as a template and the goal as empty.
+      // The system prompt already frames the assistant role; no header needed.
+      if (!isCodeDomain(domain) && intent !== 'execute') {
+        return clean(ctx.goal);
+      }
+
+      // Code domains and execute intent: keep structured format with metadata.
+      const lines = ['[TASK]'];
       if (ctx.understanding && isCodeDomain(domain)) {
         // Code domains: full metadata (action verb, symbol, frameworks)
         const u = ctx.understanding;
@@ -619,9 +631,6 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       } else if (intent === 'execute' && ctx.understanding) {
         // Execute intent: explicit goal framing for the orchestrator
         lines.push(`Goal: ${ctx.understanding.actionVerb} — ${clean(ctx.goal)}`);
-      } else if (ctx.understanding) {
-        // Inquire/converse: lightweight intent hint
-        lines.push(`Intent: ${ctx.understanding.actionVerb}`);
       }
       lines.push(clean(ctx.goal));
       return lines.join('\n');

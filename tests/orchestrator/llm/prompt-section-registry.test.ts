@@ -239,15 +239,18 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     expect(system).not.toContain('Do NOT claim to have tools');
   });
 
-  it('general-reasoning: task section has intent hint, no code metadata', () => {
+  it('general-reasoning: task section has goal only, no confusing metadata or [TASK] header', () => {
     const registry = createReasoningRegistry();
     const ctx = makeReasoningContext('general-reasoning');
     const user = registry.renderTarget('user', ctx);
 
-    expect(user).toContain('[TASK]');
-    expect(user).toContain('Intent: unknown');
+    // [TASK] header removed for general-reasoning to avoid confusing weaker models
+    // that treat it as a template placeholder when followed by non-Latin text.
+    expect(user).not.toContain('[TASK]');
+    expect(user).not.toContain('Intent:'); // no confusing "Intent: unknown" for non-code inquiries
     expect(user).not.toContain('Action:');
     expect(user).not.toContain('Symbol:');
+    expect(user).toContain(ctx.goal); // goal itself must still be present
   });
 
   it('code-reasoning: task section includes code metadata', () => {
@@ -384,14 +387,17 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     expect(system).not.toContain('operating environment');
   });
 
-  it('conversational: task section has intent hint', () => {
+  it('conversational: task section has goal only, no intent metadata or [TASK] header', () => {
     const registry = createReasoningRegistry();
     const ctx = makeReasoningContext('conversational');
     (ctx.understanding as SemanticTaskUnderstanding).actionVerb = 'greet';
     const user = registry.renderTarget('user', ctx);
 
-    expect(user).toContain('Intent: greet');
+    // [TASK] header removed for conversational — same rationale as general-reasoning
+    expect(user).not.toContain('[TASK]');
+    expect(user).not.toContain('Intent:'); // no confusing metadata for conversational
     expect(user).not.toContain('Action:');
+    expect(user).toContain(ctx.goal); // goal must still be present
   });
 
   // ── Intent-aware prompt framing ────────────────────────────────────

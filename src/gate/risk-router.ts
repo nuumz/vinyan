@@ -155,20 +155,20 @@ export function routeByRisk(
     if (epistemicDeescalated) epistemicDeescalated = false; // floor overrode de-escalation
   }
 
-  // Map level to model + budget (latency budgets sized for remote LLM APIs)
-  const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
-    0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
-    1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },
-    2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
-    3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
-  };
-
   return {
     level,
     ...LEVEL_CONFIG[level],
     ...(epistemicDeescalated ? { epistemicDeescalated } : {}),
   };
 }
+
+/** R3: Canonical model/budget config for a routing level. Exported for adjustment layers. */
+export const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
+  0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
+  1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },
+  2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
+  3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
+};
 
 // ── Prediction-based escalation ──────────────────────────────────
 

@@ -25,9 +25,10 @@ export async function runAgentTask(argv: string[]): Promise<void> {
 
   if (!goal || goal.startsWith('--')) {
     console.error('Usage: vinyan run "task description" [--file path] [--budget tokens] [--retries n] [--timeout ms]');
-    console.error('Flags: --verbose  Show oracle verdict details');
-    console.error('       --quiet    Suppress progress output');
-    console.error('       --summary  Print human-friendly summary to stdout instead of JSON');
+    console.error('Flags: --verbose   Show oracle verdict details');
+    console.error('       --quiet     Suppress progress output');
+    console.error('       --summary   Print human-friendly summary to stdout instead of JSON');
+    console.error('       --thinking  Enable and show LLM thinking process');
     process.exit(2);
   }
 
@@ -45,6 +46,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   const quiet = argv.includes('--quiet');
   const verbose = argv.includes('--verbose');
   const summaryMode = argv.includes('--summary');
+  const showThinking = argv.includes('--thinking');
 
   const input: TaskInput = {
     id: `task-${Date.now().toString(36)}`,
@@ -57,6 +59,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
       maxDurationMs: timeout,
       maxRetries: retries,
     },
+    ...(showThinking ? { constraints: ['THINKING:enabled'] } : {}),
   };
 
   // Create bus and attach listeners BEFORE creating orchestrator
@@ -139,6 +142,10 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
     : '';
 
   output.write(`\n[vinyan] ${status} | ${metrics.totalTraces} attempt(s) | ${result.trace.durationMs}ms${qs}\n`);
+
+  if (result.thinking) {
+    output.write(`\n[thinking]\n${result.thinking}\n[/thinking]\n`);
+  }
 
   if (result.answer) {
     output.write(`\n${result.answer}\n`);

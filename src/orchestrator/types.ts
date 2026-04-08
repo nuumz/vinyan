@@ -305,6 +305,7 @@ export interface TaskResult {
   qualityScore?: QualityScore;
   escalationReason?: string; // If status === 'escalated'
   answer?: string; // Non-mutation tasks: reasoning/Q&A response from the agent
+  thinking?: string; // LLM thinking process (when extended thinking is enabled)
   notes?: string[]; // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
   contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
 }

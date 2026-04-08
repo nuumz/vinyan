@@ -59,10 +59,12 @@ export function assemblePrompt(
   taskType: TaskType = 'code',
   instructions?: InstructionMemory | null,
   understanding?: TaskUnderstanding,
+  /** R2 (§5): routing level gates tool descriptions out of L0-L1 prompts. */
+  routingLevel?: number,
 ): AssembledPrompt {
   // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
-    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding };
+    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel };
     const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
     const userPrompt = reasoningRegistry.renderTarget('user', ctx);
     const sysTokens = estimateTokens(systemPrompt);
@@ -78,7 +80,7 @@ export function assemblePrompt(
   }
 
   // Code tasks: use section registry for composable assembly
-  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding };
+  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel };
   const systemPrompt = defaultRegistry.renderTarget('system', ctx);
   const userPrompt = defaultRegistry.renderTarget('user', ctx);
   const sysTokens = estimateTokens(systemPrompt);

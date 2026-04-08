@@ -123,12 +123,30 @@ export function parseSemanticIntent(raw: string): SemanticIntent | null {
           }))
       : [];
 
+    // Parse new optional fields — graceful degradation: undefined if missing/invalid
+    const goalSummary = typeof parsed.goalSummary === 'string' ? parsed.goalSummary : undefined;
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps.filter((s: unknown) => typeof s === 'string').map(String)
+      : undefined;
+    const successCriteria = Array.isArray(parsed.successCriteria)
+      ? parsed.successCriteria.filter((s: unknown) => typeof s === 'string').map(String)
+      : undefined;
+    const affectedComponents = Array.isArray(parsed.affectedComponents)
+      ? parsed.affectedComponents.filter((s: unknown) => typeof s === 'string').map(String)
+      : undefined;
+    const rootCause = typeof parsed.rootCause === 'string' ? parsed.rootCause : undefined;
+
     return {
       primaryAction: canonicalizePrimaryAction(parsed.primaryAction),
       secondaryActions: Array.isArray(parsed.secondaryActions) ? parsed.secondaryActions.map(String) : [],
       scope: String(parsed.scope),
       implicitConstraints,
       ambiguities,
+      ...(goalSummary ? { goalSummary } : {}),
+      ...(steps?.length ? { steps } : {}),
+      ...(successCriteria?.length ? { successCriteria } : {}),
+      ...(affectedComponents?.length ? { affectedComponents } : {}),
+      ...(rootCause ? { rootCause } : {}),
       // A3 enforcement: hardcoded, never from LLM output
       confidenceSource: 'llm-self-report',
       tierReliability: 0.4,
@@ -200,7 +218,12 @@ Schema:
   "secondaryActions": ["string — implied follow-up actions"],
   "scope": "string — natural-language scope description",
   "implicitConstraints": [{"text": "string — constraint", "polarity": "must | must-not"}],
-  "ambiguities": [{"aspect": "string", "interpretations": ["string"], "confidence": 0.0-1.0}]
+  "ambiguities": [{"aspect": "string", "interpretations": ["string"], "confidence": 0.0-1.0}],
+  "goalSummary": "string — concise 1-2 sentence restatement of the actual goal (required)",
+  "steps": ["string — concrete action steps to achieve the goal"],
+  "successCriteria": ["string — observable criteria for verifying completion"],
+  "affectedComponents": ["string — modules/files/services likely affected"],
+  "rootCause": "string — hypothesized root cause (for bug-fix/investigation, omit otherwise)"
 }`;
 
 // Static few-shot examples (~200 tokens each)
@@ -211,6 +234,11 @@ const FEW_SHOT_EXAMPLES = [
       primaryAction: 'bug-fix',
       secondaryActions: ['add-timeout-handling'],
       scope: 'Authentication/login service timeout logic',
+      goalSummary: 'Fix the timeout bug in the login service that causes authentication failures.',
+      steps: ['Identify the timeout handling code in the login service', 'Fix the timeout logic to handle slow responses gracefully'],
+      successCriteria: ['Authentication succeeds even with slow network responses', 'Existing auth tests pass'],
+      affectedComponents: ['src/services/auth', 'src/routes/login'],
+      rootCause: 'Login service does not handle slow network responses, causing premature timeout.',
       implicitConstraints: [
         { text: 'preserve existing auth flow', polarity: 'must' },
         { text: 'break session management', polarity: 'must-not' },
@@ -224,6 +252,10 @@ const FEW_SHOT_EXAMPLES = [
       primaryAction: 'api-migration',
       secondaryActions: ['update-types', 'update-tests'],
       scope: 'Payment module Stripe integration',
+      goalSummary: 'Migrate the payment module from Stripe API v2 to v3.',
+      steps: ['Update Stripe SDK dependency to v3', 'Refactor payment module API calls', 'Update TypeScript types for new response shapes', 'Update integration tests'],
+      successCriteria: ['All payment flows work with Stripe API v3', 'No v2 API calls remain'],
+      affectedComponents: ['src/payment', 'src/types/stripe'],
       implicitConstraints: [{ text: 'use stripe', polarity: 'must' }],
       ambiguities: [
         {
@@ -232,6 +264,33 @@ const FEW_SHOT_EXAMPLES = [
           confidence: 0.6,
         },
       ],
+    }),
+  },
+  {
+    goal: 'The user registration flow fails intermittently with a 500 error. The error seems related to the database connection pool exhaustion during peak load. We need to fix the connection leak, add proper connection pooling configuration, update the health check endpoint to monitor pool status, and add integration tests for concurrent registration.',
+    response: JSON.stringify({
+      primaryAction: 'bug-fix',
+      secondaryActions: ['configuration', 'add-feature', 'test-improvement'],
+      scope: 'User registration database connection management',
+      goalSummary: 'Fix intermittent 500 errors in user registration caused by database connection pool exhaustion during peak load.',
+      steps: [
+        'Identify and fix the connection leak in the registration handler',
+        'Configure proper connection pooling limits',
+        'Add pool status monitoring to health check endpoint',
+        'Write integration tests for concurrent registration scenarios',
+      ],
+      successCriteria: [
+        'No 500 errors under simulated peak load',
+        'Health check endpoint reports pool status',
+        'Integration tests pass for concurrent registration',
+      ],
+      affectedComponents: ['src/routes/registration', 'src/db/pool', 'src/health'],
+      rootCause: 'Database connections not returned to pool after registration handler errors, causing pool exhaustion under load.',
+      implicitConstraints: [
+        { text: 'preserve existing registration API contract', polarity: 'must' },
+        { text: 'introduce breaking changes to health check response format', polarity: 'must-not' },
+      ],
+      ambiguities: [],
     }),
   },
 ];

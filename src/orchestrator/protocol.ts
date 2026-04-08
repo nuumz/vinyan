@@ -175,7 +175,7 @@ const TaskUnderstandingSchema = z.object({
   acceptanceCriteria: z.array(z.string()),
   expectsMutation: z.boolean(),
   fingerprint: TaskFingerprintSchema.optional(),
-});
+}).passthrough(); // Layer 1/2 fields (resolvedEntities, semanticIntent) survive IPC serialization
 
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────
 
@@ -249,6 +249,8 @@ export const AgentBudgetSchema = z.object({
   delegation: z.number().nonnegative(),
   maxExtensionRequests: z.number().nonnegative().default(3),
   maxToolCallsPerTurn: z.number().positive().default(10),
+  /** Session-level tool call limit per routing level (§5: 0/0/20/50 for L0-L3). */
+  maxToolCalls: z.number().nonnegative().default(50),
   delegationDepth: z.number().nonnegative().default(0),
   maxDelegationDepth: z.number().nonnegative().default(3),
 });
@@ -299,6 +301,7 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
       inputSchema: z.record(z.string(), z.unknown()),
     })),
     priorAttempts: z.array(AgentSessionSummarySchema).optional(),
+    understanding: TaskUnderstandingSchema.optional(),
   }),
   z.object({
     type: z.literal('tool_results'),

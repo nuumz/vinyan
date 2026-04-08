@@ -26,6 +26,7 @@ import type {
   RoutingDecision,
   RoutingLevel,
   SelfModelPrediction,
+  SemanticTaskUnderstanding,
   TaskDAG,
   TaskInput,
   TaskResult,
@@ -69,6 +70,7 @@ export interface WorkerPool {
     memory: WorkingMemoryState,
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
+    understanding?: SemanticTaskUnderstanding,
   ): Promise<WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
   getAgentLoopDeps?(): import('./worker/agent-loop.ts').AgentLoopDeps | null;
@@ -783,7 +785,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
                 goal: node.description || input.goal,
               };
-              const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing);
+              const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding);
               return {
                 nodeId,
                 mutations: result.mutations,
@@ -819,6 +821,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               workingMemory.getSnapshot(),
               plan,
               routing,
+              understanding,
             );
           }
         } else {
@@ -832,6 +835,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             plan,
             routing,
             agentLoopDeps,
+            understanding,
           );
           isAgenticResult = true;
           // Adapt WorkerLoopResult → WorkerResult for downstream compatibility

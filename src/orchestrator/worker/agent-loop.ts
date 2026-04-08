@@ -191,6 +191,7 @@ export async function runAgentLoop(
   plan: TaskDAG | undefined,
   routing: RoutingDecision,
   deps: AgentLoopDeps,
+  understanding?: import('../types.ts').TaskUnderstanding,
 ): Promise<WorkerLoopResult> {
   const startTime = performance.now();
   const budget = AgentBudgetTracker.fromRouting(routing, deps.contextWindow);
@@ -263,6 +264,7 @@ export async function runAgentLoop(
       allowedPaths: input.targetFiles ?? [],
       toolManifest: manifestFor(routing),
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
+      ...(understanding ? { understanding } : {}),
     };
     await session.send(initTurn);
 
@@ -323,21 +325,29 @@ export async function runAgentLoop(
           }
         }
 
-        // Cap tool calls per turn
-        const calls = turn.calls.slice(0, maxToolCallsPerTurn);
+        // Cap tool calls: per-turn limit AND session-level limit (§5: 0/0/20/50)
+        const sessionRemaining = budget.remainingToolCalls;
+        const effectiveLimit = Math.min(maxToolCallsPerTurn, sessionRemaining);
+        const calls = turn.calls.slice(0, effectiveLimit);
         const results: ToolResult[] = [];
 
-        // Synthetic errors for dropped calls
-        for (let i = maxToolCallsPerTurn; i < turn.calls.length; i++) {
+        // Synthetic errors for dropped calls (per-turn or session limit)
+        for (let i = effectiveLimit; i < turn.calls.length; i++) {
           const dropped = turn.calls[i]!;
+          const reason = i >= maxToolCallsPerTurn
+            ? `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`
+            : `Dropped: session tool call limit reached (${budget.remainingToolCalls} remaining)`;
           results.push({
             callId: dropped.id,
             tool: dropped.tool,
             status: 'denied',
-            error: `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`,
+            error: reason,
             durationMs: 0,
           });
         }
+
+        // Track session-level usage
+        budget.recordToolCalls(calls.length);
 
         // Execute allowed calls
         for (const call of calls) {

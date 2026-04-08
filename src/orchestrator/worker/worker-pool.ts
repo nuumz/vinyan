@@ -357,6 +357,7 @@ export class WorkerPoolImpl implements WorkerPool {
     memory: WorkingMemoryState,
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
+    understanding?: import('../types.ts').SemanticTaskUnderstanding,
   ) {
     const startTime = performance.now();
 
@@ -370,7 +371,7 @@ export class WorkerPoolImpl implements WorkerPool {
       };
     }
 
-    const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing);
+    const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding);
 
     // L2/L3: container dispatch when isolation level = 2
     // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -429,6 +430,7 @@ export class WorkerPoolImpl implements WorkerPool {
     memory: WorkingMemoryState,
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
+    understanding?: import('../types.ts').TaskUnderstanding,
   ): WorkerInput {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
@@ -449,7 +451,7 @@ export class WorkerPoolImpl implements WorkerPool {
       allowedPaths: input.targetFiles?.map((f) => f.replace(/\/[^/]+$/, '/')) ?? ['src/'],
       isolationLevel: routingToIsolation(routing.level),
       ...(routing.workerId ? { workerId: routing.workerId } : {}),
-      understanding: buildTaskUnderstanding(input), // Gap 9A: carry understanding to prompt assembly
+      understanding: understanding ?? buildTaskUnderstanding(input),
     };
   }
 
@@ -473,6 +475,7 @@ export class WorkerPoolImpl implements WorkerPool {
       workerInput.taskType,
       instructions,
       workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
+      routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
     );
 
     const startTime = performance.now();

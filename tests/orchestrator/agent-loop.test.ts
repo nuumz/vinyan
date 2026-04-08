@@ -91,7 +91,7 @@ function makeTestInput(overrides?: Partial<TaskInput>): TaskInput {
 
 function makeTestRouting(overrides?: Partial<RoutingDecision>): RoutingDecision {
   return {
-    level: 1,
+    level: 2, // Agent loop only runs at L2+ in production (core-loop.ts:825)
     model: 'test-model',
     budgetTokens: 10000,
     latencyBudgetMs: 30000,
@@ -276,7 +276,7 @@ describe('runAgentLoop', () => {
     const session = new MockAgentSession(infiniteTurns);
     // Use a very small budget routing
     const routing = makeTestRouting({
-      level: 1,
+      level: 2, // Agent loop only runs at L2+ in production
       budgetTokens: 6000, // Small budget: base = 3600, negotiable = 1500, delegation = 900
       latencyBudgetMs: 60000,
     });

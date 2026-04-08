@@ -8,6 +8,9 @@
 import type { AgentBudget } from '../protocol.ts';
 import type { RoutingDecision } from '../types.ts';
 
+/** Session-level tool call limits per routing level (§5: 0/0/20/50). */
+const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
+
 export class AgentBudgetTracker {
   private readonly budget: AgentBudget;
   private extensionRequestCount = 0;
@@ -15,6 +18,7 @@ export class AgentBudgetTracker {
   private negotiableGranted = 0;
   private delegationConsumed = 0;
   private turnsUsed = 0;
+  private toolCallsUsed = 0;
   private readonly startTime: number;
 
   constructor(budget: AgentBudget) {
@@ -24,6 +28,7 @@ export class AgentBudgetTracker {
 
   /** Factory: create from routing decision with sensible defaults */
   static fromRouting(routing: RoutingDecision, contextWindow: number): AgentBudgetTracker {
+    const maxToolCalls = MAX_TOOL_CALLS_BY_LEVEL[routing.level] ?? 50;
     const budget: AgentBudget = {
       maxTokens: routing.budgetTokens,
       maxTurns: routing.level === 1 ? 15 : routing.level === 2 ? 30 : 50,
@@ -33,7 +38,8 @@ export class AgentBudgetTracker {
       negotiable: Math.floor(routing.budgetTokens * 0.25),
       delegation: Math.floor(routing.budgetTokens * 0.15),
       maxExtensionRequests: 3,
-      maxToolCallsPerTurn: 10,
+      maxToolCallsPerTurn: Math.min(10, maxToolCalls),
+      maxToolCalls,
       delegationDepth: 0,
       maxDelegationDepth: routing.level >= 3 ? 2 : 1,
     };
@@ -58,6 +64,16 @@ export class AgentBudgetTracker {
   recordTurn(tokensConsumed: number): void {
     this.turnsUsed++;
     this.baseConsumed += tokensConsumed;
+  }
+
+  /** Record tool calls consumed in a turn (§5 session-level enforcement). */
+  recordToolCalls(count: number): void {
+    this.toolCallsUsed += count;
+  }
+
+  /** Remaining tool calls allowed in this session. */
+  get remainingToolCalls(): number {
+    return Math.max(0, this.budget.maxToolCalls - this.toolCallsUsed);
   }
 
   /** Request more tokens from negotiable pool */

@@ -77,6 +77,7 @@ async function processTask(
     input.goal, input.perception, input.workingMemory, input.plan, input.taskType ?? 'code',
     undefined, // instructions (loaded by in-process path; subprocess doesn't have workspace access)
     input.understanding, // Gap 9A: TaskUnderstanding for enriched prompt
+    input.routingLevel, // R2 (§5): gate tool descriptions out of L0-L1 prompts
   );
 
   const startTime = performance.now();

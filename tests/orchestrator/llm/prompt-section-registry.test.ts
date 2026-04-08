@@ -442,3 +442,99 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     expect(system).toContain('orchestrator');
   });
 });
+
+// ── semantic-context section renders new SemanticIntent fields ──────────
+
+describe('semantic-context — expanded SemanticIntent fields', () => {
+  it('renders goalSummary, steps, successCriteria, affectedComponents, rootCause', () => {
+    const registry = createDefaultRegistry();
+    const ctx = makeContext({
+      understanding: {
+        rawGoal: 'Fix the registration flow',
+        actionVerb: 'fix',
+        actionCategory: 'mutation',
+        targetSymbol: undefined,
+        frameworkContext: [],
+        constraints: [],
+        acceptanceCriteria: [],
+        expectsMutation: true,
+        taskDomain: 'code-mutation',
+        taskIntent: 'execute',
+        toolRequirement: 'none',
+        resolvedEntities: [{ reference: 'registration', resolvedPaths: ['src/routes/reg.ts'], resolution: 'fuzzy-path', confidence: 0.8, confidenceSource: 'evidence-derived' }],
+        understandingDepth: 2,
+        verifiedClaims: [],
+        understandingFingerprint: 'test-fp',
+        semanticIntent: {
+          primaryAction: 'bug-fix',
+          secondaryActions: [],
+          scope: 'Registration flow',
+          goalSummary: 'Fix connection pool exhaustion in registration',
+          steps: ['Find leak', 'Fix pooling'],
+          successCriteria: ['No 500 errors under load'],
+          affectedComponents: ['src/db/pool.ts'],
+          rootCause: 'Connections not returned after error',
+          implicitConstraints: [{ text: 'preserve API contract', polarity: 'must' }],
+          ambiguities: [],
+          confidenceSource: 'llm-self-report',
+          tierReliability: 0.4,
+        },
+      } satisfies SemanticTaskUnderstanding,
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[SEMANTIC CONTEXT]');
+    expect(user).toContain('Summary: Fix connection pool exhaustion');
+    expect(user).toContain('Steps:');
+    expect(user).toContain('Find leak');
+    expect(user).toContain('Done when:');
+    expect(user).toContain('No 500 errors under load');
+    expect(user).toContain('Affected: src/db/pool.ts');
+    expect(user).toContain('Root cause hypothesis: Connections not returned');
+    expect(user).toContain('Intent: bug-fix');
+    expect(user).toContain('MUST: preserve API contract');
+  });
+
+  it('renders correctly when new fields are absent (backward compat)', () => {
+    const registry = createDefaultRegistry();
+    const ctx = makeContext({
+      understanding: {
+        rawGoal: 'Fix the bug',
+        actionVerb: 'fix',
+        actionCategory: 'mutation',
+        targetSymbol: undefined,
+        frameworkContext: [],
+        constraints: [],
+        acceptanceCriteria: [],
+        expectsMutation: true,
+        taskDomain: 'code-mutation',
+        taskIntent: 'execute',
+        toolRequirement: 'none',
+        resolvedEntities: [{ reference: 'auth', resolvedPaths: ['src/auth.ts'], resolution: 'exact', confidence: 1.0, confidenceSource: 'evidence-derived' }],
+        understandingDepth: 2,
+        verifiedClaims: [],
+        understandingFingerprint: 'test-fp',
+        semanticIntent: {
+          primaryAction: 'bug-fix',
+          secondaryActions: [],
+          scope: 'Auth module',
+          implicitConstraints: [],
+          ambiguities: [],
+          confidenceSource: 'llm-self-report',
+          tierReliability: 0.4,
+          // NO goalSummary, steps, successCriteria, affectedComponents, rootCause
+        },
+      } satisfies SemanticTaskUnderstanding,
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[SEMANTIC CONTEXT]');
+    expect(user).toContain('Intent: bug-fix — Auth module');
+    // New fields absent → not rendered
+    expect(user).not.toContain('Summary:');
+    expect(user).not.toContain('Steps:');
+    expect(user).not.toContain('Done when:');
+    expect(user).not.toContain('Affected:');
+    expect(user).not.toContain('Root cause');
+  });
+});

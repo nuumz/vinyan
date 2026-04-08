@@ -85,30 +85,50 @@ export function classifyTaskDomain(
   return 'general-reasoning';
 }
 
-// ── Intent Classification ─────────────────────────────────────────────────
+// ── Intent Classification (Frame-First) ──────────────────────────────────
+//
+// Frame-first design: detect sentence structure (question vs command) before
+// matching individual verbs. This prevents priority inversion where ช่วย/explain
+// triggers execute even in questions like "ช่วยอธิบาย" or "explain how X works".
+//
+// Inquiry frames are checked BEFORE command frames because:
+// - "ทำไมมันถึง error" contains ทำ (command verb) but is clearly a question
+// - "explain the deploy process" contains deploy (command verb) but asks for info
+// - False positive inquiry (answer a question) is cheap — user re-asks as command
+// - False positive execute (act on a question) is dangerous — may cause mutations
 
-/** Imperative/help verbs in Thai and English that signal "do this for me". */
-const EXECUTE_PATTERN = /(?:ช่วย|ทำ(?!ไม|อะไร|ยังไง)|สร้าง|ลบ|แก้|ส่ง|ย้าย|เปิด|ปิด|รัน|ติดตั้ง)|\b(capture|send|create|delete|remove|move|open|close|run|execute|install|deploy|convert|transform|generate|build|start|stop|restart|download|upload|setup|configure|launch|clear|reset|copy|paste|rename|merge|split|compress|extract|backup|restore|schedule|trigger|publish|release|fetch|pull|push|sync|migrate|export|import|format|scan|clean|update|fix|patch|write|make|connect|disconnect)\b/i;
+/** Thai question markers at sentence end — strongest Thai inquiry signal. */
+const THAI_QUESTION_END = /(?:อะไร|ยังไง|อย่างไร|เท่าไหร่|กี่|ไหม|มั้ย|หรือเปล่า|รึเปล่า|ใช่ไหม|ใช่มั้ย|หรือยัง|ได้ไหม|ดีไหม|คืออะไร|หมายความว่า)\s*[?]*\s*$/;
 
-/** Question patterns that signal "tell me about". */
-const INQUIRE_PATTERN = /(?:อะไร|ทำไม|อย่างไร|เท่าไหร่|กี่|ยังไง|หมายความว่า|คืออะไร)|(what|why|how|explain|describe|tell|show|list|compare|difference|define|meaning|which|where|when|who|can you tell|do you know|is it|are there|does it|should|would|could you explain)/i;
+/** Thai inquiry governing verbs — explanation/information requests. */
+const THAI_INQUIRY_GOVERNING = /(?:^\s*(?:อะไร|ทำไม))|(?:อธิบาย|ช่วยอธิบาย|ช่วยบอก|ช่วยเล่า|ช่วยตอบ|ช่วยแนะนำ|เล่าให้ฟัง)/;
+
+/** English inquiry frame — question words at start + explanation request phrases. */
+const ENGLISH_INQUIRY_FRAME = /(?:^\s*(?:how|what|why|where|when|who|which)\b)|(?:^\s*(?:is|are|does|do|can|could|should|would)\s+(?:it|this|that|there|I|we|you|the)\b)|(?:\b(?:explain|describe|tell me|show me how|walk me through|help me understand|want to (?:know|understand)|what does\b.+\bmean)\b)/i;
+
+/** Thai command: ช่วย + action verb compounds, or bare action verbs with negative lookahead. */
+const THAI_COMMAND = /(?:ช่วย(?:รัน|ลบ|สร้าง|แก้|ติดตั้ง|ย้าย|ถอน|ส่ง|เปิด|ปิด|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก))|(?:(?:^|\s)(?:รัน|ติดตั้ง|แก้(?!ตัว|แค้น)|สร้าง|ลบ|เปิด(?!เผย|ใจ|โอกาส)|ปิด(?!บัง|กั้น)|ส่ง(?!ผล|เสริม)|ย้าย|ทำ(?!ไม|อะไร|ยังไง|ได้|ให้|งาน|การ)))/;
+
+/** English command verbs — word-boundary protected. */
+const ENGLISH_COMMAND = /\b(?:fix|create|delete|remove|update|install|deploy|run|execute|build|start|stop|restart|write|refactor|review|analyze|debug|test|migrate|configure|setup|clean|format|generate|publish|release|push|pull|fetch|merge|rebase|checkout|rename|move|copy|show|list|add|implement|change|modify|set|enable|disable|upgrade|downgrade|init|reset|clear|scan|validate|verify|inspect|open|close|connect|disconnect|send|capture|convert|transform|download|upload|launch|paste|split|compress|extract|backup|restore|schedule|trigger|sync|export|import|patch|make)\b/i;
 
 /** Meta-questions about the system itself. */
-const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
+const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
 
 /**
  * Classify task intent — what does the user want the orchestrator to DO?
  * Rule-based (A3-safe): same input always produces same intent.
  *
- * Concept §1: Vinyan is a task orchestrator, not a Q&A chatbot.
- * When intent=execute, response should be goal-oriented (assess, act, or explain limitation).
- * When intent=inquire, response provides information.
+ * Frame-first design: detect sentence-level structure (question frame vs
+ * command frame) before matching individual verbs. This prevents verbs like
+ * ช่วย/explain/deploy from triggering execute when the sentence is clearly
+ * a question (e.g. "ช่วยอธิบาย X คืออะไร", "explain how deploy works").
  *
  * Priority:
- * 1. Greetings/conversational domain → converse
+ * 1. Conversational domain → converse
  * 2. Meta questions about system → inquire
- * 3. Execute patterns (help verbs + action nouns) → execute
- * 4. Question patterns → inquire
+ * 3. Inquiry frame (question markers, explanation requests) → inquire
+ * 4. Command frame (action verbs, imperative mood) → execute
  * 5. Code mutation tasks → execute
  * 6. Default → inquire (safer — doesn't promise action)
  */
@@ -124,11 +144,13 @@ export function classifyTaskIntent(
   // 2. Meta questions about system capabilities
   if (META_PATTERN.test(goal)) return 'inquire';
 
-  // 3. Execute patterns — imperative/help verbs
-  if (EXECUTE_PATTERN.test(goal)) return 'execute';
+  // 3. Inquiry frame — BEFORE commands (fixes priority inversion)
+  if (THAI_QUESTION_END.test(goal) || THAI_INQUIRY_GOVERNING.test(goal) || ENGLISH_INQUIRY_FRAME.test(goal)) {
+    return 'inquire';
+  }
 
-  // 4. Question patterns
-  if (INQUIRE_PATTERN.test(goal)) return 'inquire';
+  // 4. Command frame — action verbs in imperative mood
+  if (THAI_COMMAND.test(goal) || ENGLISH_COMMAND.test(goal)) return 'execute';
 
   // 5. Code mutation tasks are always execute intent
   if (taskDomain === 'code-mutation') return 'execute';
@@ -139,11 +161,15 @@ export function classifyTaskIntent(
 
 // ── Tool requirement patterns ──────────────────────────────────────
 
-/** CLI tools / system commands that require shell_exec or similar tool to execute. */
-const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip|apt|make|cargo|go|python|node|ssh|scp|rsync|kubectl|terraform|aws|gcloud|az|mv|cp|rm|mkdir|chmod|chown|tar|zip|unzip|cat|ls|find|grep|sed|awk|heroku|vercel|netlify|ffmpeg|imagemagick|convert|pandoc)\b/i;
+/** CLI tools / system commands that require shell_exec or similar tool to execute.
+ * Removed ambiguous standalone words: go, node, make, convert — too common in natural language.
+ * These are still caught when combined with CLI-specific arguments in context. */
+const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip|apt|cargo|python|ssh|scp|rsync|kubectl|terraform|aws|gcloud|az|mv|cp|rm|mkdir|chmod|chown|tar|zip|unzip|cat|ls|find|grep|sed|awk|heroku|vercel|netlify|ffmpeg|imagemagick|pandoc)\b/i;
 
-/** Thai action verbs implying system-level execution (not just information). */
-const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
+/** Thai action verbs implying system-level execution (not just information).
+ * Note: 'deploy' matches substrings (e.g. 'redeploy') — acceptable because redeploying also needs tools.
+ * Note: ลง uses boundary guard to prevent matching ลงทะเบียน, ลงทุน, etc. */
+const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
 
 /**
  * Assess whether a task requires tool execution to achieve its goal.

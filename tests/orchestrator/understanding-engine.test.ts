@@ -173,6 +173,54 @@ describe('parseSemanticIntent', () => {
     expect(result).not.toBeNull();
     expect(result!.primaryAction).toBe('performance-optimization');
   });
+
+  test('parses new optional fields (goalSummary, steps, successCriteria, affectedComponents, rootCause)', () => {
+    const json = JSON.stringify({
+      primaryAction: 'bug-fix',
+      scope: 'registration flow',
+      goalSummary: 'Fix connection pool exhaustion',
+      steps: ['Find leak', 'Fix pooling', 'Add tests'],
+      successCriteria: ['No 500 errors under load', 'Health check reports pool status'],
+      affectedComponents: ['src/db/pool.ts', 'src/routes/registration.ts'],
+      rootCause: 'Connections not returned after error',
+    });
+    const result = parseSemanticIntent(json);
+    expect(result).not.toBeNull();
+    expect(result!.goalSummary).toBe('Fix connection pool exhaustion');
+    expect(result!.steps).toEqual(['Find leak', 'Fix pooling', 'Add tests']);
+    expect(result!.successCriteria).toEqual(['No 500 errors under load', 'Health check reports pool status']);
+    expect(result!.affectedComponents).toEqual(['src/db/pool.ts', 'src/routes/registration.ts']);
+    expect(result!.rootCause).toBe('Connections not returned after error');
+  });
+
+  test('missing new optional fields → undefined (graceful degradation)', () => {
+    const result = parseSemanticIntent(VALID_INTENT_JSON);
+    expect(result).not.toBeNull();
+    expect(result!.goalSummary).toBeUndefined();
+    expect(result!.steps).toBeUndefined();
+    expect(result!.successCriteria).toBeUndefined();
+    expect(result!.affectedComponents).toBeUndefined();
+    expect(result!.rootCause).toBeUndefined();
+  });
+
+  test('non-string/non-array values for new fields → ignored', () => {
+    const json = JSON.stringify({
+      primaryAction: 'bug-fix',
+      scope: 'test',
+      goalSummary: 42,            // number instead of string
+      steps: 'not an array',      // string instead of array
+      successCriteria: [1, 2, 3], // numbers in array → filtered out
+      affectedComponents: null,    // null
+      rootCause: { obj: true },   // object instead of string
+    });
+    const result = parseSemanticIntent(json);
+    expect(result).not.toBeNull();
+    expect(result!.goalSummary).toBeUndefined();
+    expect(result!.steps).toBeUndefined();
+    expect(result!.successCriteria).toBeUndefined(); // all filtered, empty → undefined
+    expect(result!.affectedComponents).toBeUndefined();
+    expect(result!.rootCause).toBeUndefined();
+  });
 });
 
 // ── verifyImplicitConstraints ──────────────────────────────────────────

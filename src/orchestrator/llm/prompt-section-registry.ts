@@ -48,6 +48,8 @@ export interface SectionContext {
   /** Gap 9A: Unified task understanding — carries constraints, criteria, action category.
    *  STU Phase B: widened to SemanticTaskUnderstanding for Layer 1+2 fields. */
   understanding?: SemanticTaskUnderstanding | TaskUnderstanding;
+  /** R2 (§5): Routing level — used to gate tool descriptions out of L0-L1 prompts. */
+  routingLevel?: number;
 }
 
 export interface PromptSection {
@@ -164,7 +166,11 @@ Respond with a JSON object matching this structure:
     cache: 'static',
     priority: 40,
     render: (ctx) => {
+      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
+      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
+
       const tools = [...ctx.perception.runtime.availableTools].sort().join(', ');
+      if (!tools) return null;
       return `[AVAILABLE TOOLS]
 ${tools}
 
@@ -241,6 +247,37 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
       // Semantic intent (Layer 2)
       const intent = stu.semanticIntent;
       if (intent) {
+        // Goal summary — most important for worker orientation on long tasks
+        if (intent.goalSummary) {
+          lines.push(`  Summary: ${intent.goalSummary}`);
+        }
+
+        // Action steps — concrete guidance for the worker
+        if (intent.steps?.length) {
+          lines.push('  Steps:');
+          for (const step of intent.steps) {
+            lines.push(`    - ${step}`);
+          }
+        }
+
+        // Success criteria — what "done" looks like
+        if (intent.successCriteria?.length) {
+          lines.push('  Done when:');
+          for (const criterion of intent.successCriteria) {
+            lines.push(`    ✓ ${criterion}`);
+          }
+        }
+
+        // Affected components
+        if (intent.affectedComponents?.length) {
+          lines.push(`  Affected: ${intent.affectedComponents.join(', ')}`);
+        }
+
+        // Root cause hypothesis
+        if (intent.rootCause) {
+          lines.push(`  Root cause hypothesis: ${intent.rootCause}`);
+        }
+
         lines.push(`  Intent: ${intent.primaryAction} — ${intent.scope}`);
 
         // Constraints with polarity
@@ -511,6 +548,9 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     cache: 'static',
     priority: 20,
     render: (ctx) => {
+      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
+      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
+
       let tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
 

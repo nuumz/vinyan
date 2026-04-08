@@ -287,6 +287,54 @@ describe('classifyTaskIntent — code-mutation domain → execute', () => {
   });
 });
 
+describe('classifyTaskIntent — frame-first priority (inquiry before command)', () => {
+  // These tests verify the frame-first design: inquiry frames take priority
+  // over command verbs, preventing priority inversion.
+
+  test('"ช่วยอธิบาย architecture" → inquire (ช่วยอธิบาย is inquiry, not command)', () => {
+    // Old bug: ช่วย matched execute pattern before อธิบาย could match inquiry
+    expect(intentFor('ช่วยอธิบาย architecture')).toBe('inquire');
+  });
+
+  test('"explain the deploy process" → inquire (explain overrides deploy)', () => {
+    expect(intentFor('explain the deploy process')).toBe('inquire');
+  });
+
+  test('"ทำไมมันถึง error" → inquire (ทำไม overrides ทำ)', () => {
+    // Old bug: ทำ (without negative lookahead) could match execute
+    expect(intentFor('ทำไมมันถึง error')).toBe('inquire');
+  });
+
+  test('"how does the build pipeline work" → inquire (how overrides build)', () => {
+    expect(intentFor('how does the build pipeline work')).toBe('inquire');
+  });
+
+  test('"what is docker" → inquire (what overrides docker keyword)', () => {
+    expect(intentFor('what is docker')).toBe('inquire');
+  });
+
+  test('"ช่วยบอกว่า config อยู่ไหน" → inquire (ช่วยบอก is inquiry governing)', () => {
+    expect(intentFor('ช่วยบอกว่า config อยู่ไหน')).toBe('inquire');
+  });
+
+  test('"describe the test infrastructure" → inquire (describe is inquiry frame)', () => {
+    expect(intentFor('describe the test infrastructure')).toBe('inquire');
+  });
+
+  // Verify command verbs still work when NOT in inquiry frame
+  test('"deploy to production" → execute (no inquiry frame)', () => {
+    expect(intentFor('deploy to production')).toBe('execute');
+  });
+
+  test('"ช่วยรัน npm install" → execute (ช่วยรัน is command frame)', () => {
+    expect(intentFor('ช่วยรัน npm install')).toBe('execute');
+  });
+
+  test('"fix the authentication bug" → execute (fix is command, no inquiry context)', () => {
+    expect(intentFor('fix the authentication bug')).toBe('execute');
+  });
+});
+
 describe('classifyTaskIntent — A3 determinism', () => {
   test('same input produces same intent 100 times', () => {
     const results = new Set<string>();
@@ -330,6 +378,18 @@ describe('assessToolRequirement — tool-needed', () => {
   test('Thai action verb (ติดตั้ง) → tool-needed', () => {
     expect(toolFor('ช่วยติดตั้ง dependencies')).toBe('tool-needed');
   });
+
+  test('Thai action verb (ถอน) → tool-needed', () => {
+    expect(toolFor('ช่วยถอน package นี้')).toBe('tool-needed');
+  });
+
+  test('Thai action verb (อัพเดท) → tool-needed', () => {
+    expect(toolFor('อัพเดท dependencies')).toBe('tool-needed');
+  });
+
+  test('Thai action verb (เปิดไฟล์) → tool-needed', () => {
+    expect(toolFor('เปิดไฟล์ config')).toBe('tool-needed');
+  });
 });
 
 describe('assessToolRequirement — CLI mention overrides intent', () => {
@@ -353,6 +413,10 @@ describe('assessToolRequirement — none', () => {
 
   test('execute intent without tool keywords → none', () => {
     expect(toolFor('ช่วยอธิบายเรื่อง architecture')).toBe('none');
+  });
+
+  test('Thai help verb without tool action → none (ช่วยอธิบาย ≠ ช่วยรัน)', () => {
+    expect(toolFor('ช่วยอธิบาย architecture', 'general-reasoning', 'execute')).toBe('none');
   });
 
   test('no CLI mention + inquire intent → none', () => {

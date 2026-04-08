@@ -203,6 +203,16 @@ export interface SemanticIntent {
     selectedInterpretation?: string;
     confidence: number;
   }>;
+  /** Concise 1-2 sentence restatement of the actual goal. */
+  goalSummary?: string;
+  /** Concrete action steps extracted from the task description. */
+  steps?: string[];
+  /** Observable criteria for verifying task completion. */
+  successCriteria?: string[];
+  /** Modules, files, or services likely affected by this task. */
+  affectedComponents?: string[];
+  /** Hypothesized root cause (primarily for bug-fix/investigation tasks). */
+  rootCause?: string;
   /** Always probabilistic — hardcoded post-parse, not from LLM. A3-enforced. */
   confidenceSource: 'llm-self-report';
   /** Always below heuristic threshold. A5-enforced. */

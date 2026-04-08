@@ -89,7 +89,7 @@ export async function runAgentWorkerLoop(
     },
     {
       role: 'user',
-      content: buildInitUserMessage(init.goal, compressedPerception, init.priorAttempts),
+      content: buildInitUserMessage(init.goal, compressedPerception, init.priorAttempts, (init as any).understanding),
     },
   ];
 
@@ -334,8 +334,47 @@ export function buildInitUserMessage(
   goal: string,
   perception: unknown,
   priorAttempts?: unknown[],
+  understanding?: unknown,
 ): string {
-  let msg = `## Task\n${goal}\n\n## Perception\n${JSON.stringify(perception, null, 2)}`;
+  let msg = `## Task\n${goal}`;
+
+  // Render semantic context from enriched understanding (Layer 1+2)
+  if (understanding && typeof understanding === 'object') {
+    const u = understanding as Record<string, unknown>;
+    const intent = u.semanticIntent as Record<string, unknown> | undefined;
+    if (intent) {
+      const lines: string[] = ['\n\n## Semantic Context'];
+      if (typeof intent.goalSummary === 'string') lines.push(`Summary: ${intent.goalSummary}`);
+      if (Array.isArray(intent.steps) && intent.steps.length) {
+        lines.push('Steps:');
+        for (const s of intent.steps) lines.push(`  - ${s}`);
+      }
+      if (Array.isArray(intent.successCriteria) && intent.successCriteria.length) {
+        lines.push('Done when:');
+        for (const c of intent.successCriteria) lines.push(`  - ${c}`);
+      }
+      if (Array.isArray(intent.affectedComponents) && intent.affectedComponents.length) {
+        lines.push(`Affected: ${intent.affectedComponents.join(', ')}`);
+      }
+      if (typeof intent.rootCause === 'string') lines.push(`Root cause hypothesis: ${intent.rootCause}`);
+      lines.push(`Intent: ${intent.primaryAction} — ${intent.scope}`);
+      const constraints = intent.implicitConstraints as Array<{ text: string; polarity: string }> | undefined;
+      if (Array.isArray(constraints)) {
+        for (const c of constraints) {
+          lines.push(`${c.polarity === 'must-not' ? 'MUST NOT' : 'MUST'}: ${c.text}`);
+        }
+      }
+      msg += lines.join('\n');
+    }
+    // Resolved entities (Layer 1)
+    const entities = u.resolvedEntities as Array<{ reference: string; resolvedPaths: string[]; resolution: string }> | undefined;
+    if (Array.isArray(entities) && entities.length) {
+      msg += '\n\nResolved entities:';
+      for (const e of entities) msg += `\n  "${e.reference}" → ${e.resolvedPaths?.join(', ')} (${e.resolution})`;
+    }
+  }
+
+  msg += `\n\n## Perception\n${JSON.stringify(perception, null, 2)}`;
   if (priorAttempts && priorAttempts.length > 0) {
     msg += `\n\n## Prior Attempts\n${JSON.stringify(priorAttempts, null, 2)}`;
   }

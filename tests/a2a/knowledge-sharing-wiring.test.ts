@@ -18,7 +18,7 @@ import { migration005 } from '../../src/db/migrations/005_add_oracle_profiles.ts
 import { OracleProfileStore } from '../../src/db/oracle-profile-store.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
 import type { AbstractPattern } from '../../src/evolution/pattern-abstraction.ts';
-import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
+import { CalibratedSelfModel } from '../../src/orchestrator/prediction/self-model.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');

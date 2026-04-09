@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
+import { OracleCircuitBreaker } from '../../oracle/circuit-breaker.ts';
 import type {
   LLMProvider,
   PrimaryAction,
@@ -20,8 +20,8 @@ import type {
   SemanticIntent,
   SemanticTaskUnderstanding,
   VerifiedClaim,
-} from './types.ts';
-import { PRIMARY_ACTION_VOCAB } from './types.ts';
+} from '../types.ts';
+import { PRIMARY_ACTION_VOCAB } from '../types.ts';
 
 // ── Constants ───────────────────────────────────────────────────────────
 

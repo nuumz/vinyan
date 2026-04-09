@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CalibrationEngineImpl } from '../../src/orchestrator/calibration-engine.ts';
+import { CalibrationEngineImpl } from '../../src/orchestrator/prediction/calibration-engine.ts';
 import type { TestOutcomeDistribution, PredictionDistribution } from '../../src/orchestrator/forward-predictor-types.ts';
 import { CAUSAL_EDGE_WEIGHTS } from '../../src/orchestrator/forward-predictor-types.ts';
 

@@ -11,8 +11,8 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorldGraph } from '../world-graph/world-graph.ts';
-import type { SemanticTaskUnderstanding, VerifiedClaim } from './types.ts';
+import type { WorldGraph } from '../../world-graph/world-graph.ts';
+import type { SemanticTaskUnderstanding, VerifiedClaim } from '../types.ts';
 
 // ── Path-like tokens for scope contradiction detection ──────────────────
 

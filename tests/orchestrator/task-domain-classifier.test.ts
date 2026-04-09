@@ -8,7 +8,7 @@
  * - code-reasoning: code analysis without mutations
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyTaskDomain, classifyTaskIntent, assessToolRequirement } from '../../src/orchestrator/task-understanding.ts';
+import { classifyTaskDomain, classifyTaskIntent, assessToolRequirement } from '../../src/orchestrator/understanding/task-understanding.ts';
 import type { TaskDomain, TaskIntent, TaskType, TaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 function makeUnderstanding(overrides: Partial<TaskUnderstanding> = {}): TaskUnderstanding {

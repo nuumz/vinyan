@@ -22,7 +22,7 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { loadInstructionMemory } from '../llm/instruction-loader.ts';
-import { buildTaskUnderstanding } from '../task-understanding.ts';
+import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';

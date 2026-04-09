@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import type { ThinkingConfig } from './types.ts';
+import type { ThinkingConfig } from '../types.ts';
 import type {
   ThinkingPolicy,
   ThinkingPolicyCompiler,

@@ -4,9 +4,9 @@
  * Deterministic, reads from TraceStore only. No LLM, A3-safe.
  * Detects recurring issues, ranks common failure oracles, computes historical metrics.
  */
-import type { TraceStore } from '../db/trace-store.ts';
-import { computeTaskSignature } from './self-model.ts';
-import type { HistoricalProfile, TaskInput } from './types.ts';
+import type { TraceStore } from '../../db/trace-store.ts';
+import { computeTaskSignature } from '../prediction/self-model.ts';
+import type { HistoricalProfile, TaskInput } from '../types.ts';
 
 /** Threshold for recurring issue detection: same file + verb seen N+ times. */
 const RECURRING_THRESHOLD = 3;

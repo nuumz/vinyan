@@ -3,7 +3,7 @@ import {
   ThinkingPolicySchema,
   TaskUncertaintySignalSchema,
   ThinkingProfileIdSchema,
-} from '../../src/orchestrator/thinking-policy.ts';
+} from '../../src/orchestrator/thinking/thinking-policy.ts';
 
 describe('ThinkingProfileIdSchema', () => {
   test('accepts valid profiles', () => {

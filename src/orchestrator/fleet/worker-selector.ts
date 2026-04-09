@@ -10,11 +10,14 @@
  * Source of truth: design/implementation-plan.md §Phase 4.4
  */
 
-import type { VinyanBus } from '../core/bus.ts';
-import type { WorkerStore } from '../db/worker-store.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import type { WorkerStore } from '../../db/worker-store.ts';
+import type { BudgetEnforcer } from '../../economy/budget-enforcer.ts';
+import { costAwareScore } from '../../economy/cost-aware-scorer.ts';
+import type { CostPredictor } from '../../economy/cost-predictor.ts';
 import type { CapabilityModel } from './capability-model.ts';
-import { checkDataGate, type DataGateStats, type DataGateThresholds } from './data-gate.ts';
-import type { RoutingLevel, TaskFingerprint, WorkerProfile, WorkerSelectionResult } from './types.ts';
+import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../data-gate.ts';
+import type { RoutingLevel, TaskFingerprint, WorkerProfile, WorkerSelectionResult } from '../types.ts';
 
 /** Default cycle duration for staleness penalty (10 minutes). */
 const DEFAULT_CYCLE_DURATION_MS = 600_000;
@@ -28,6 +31,10 @@ export interface WorkerSelectorConfig {
   gateStats: () => DataGateStats; // lazy — recomputed each call
   gateThresholds: DataGateThresholds;
   cycleDurationMs?: number; // default: 600_000 (10 min)
+  /** Economy L2: cost predictor for economy-aware worker scoring. */
+  costPredictor?: CostPredictor;
+  /** Economy L2: budget enforcer for budget pressure signal. */
+  budgetEnforcer?: BudgetEnforcer;
 }
 
 export class WorkerSelector {
@@ -39,6 +46,8 @@ export class WorkerSelector {
   private getStats: () => DataGateStats;
   private thresholds: DataGateThresholds;
   private cycleDurationMs: number;
+  private costPredictor?: CostPredictor;
+  private budgetEnforcer?: BudgetEnforcer;
 
   constructor(config: WorkerSelectorConfig) {
     this.store = config.workerStore;
@@ -49,6 +58,8 @@ export class WorkerSelector {
     this.getStats = config.gateStats;
     this.thresholds = config.gateThresholds;
     this.cycleDurationMs = config.cycleDurationMs ?? DEFAULT_CYCLE_DURATION_MS;
+    this.costPredictor = config.costPredictor;
+    this.budgetEnforcer = config.budgetEnforcer;
   }
 
   /**
@@ -161,9 +172,18 @@ export class WorkerSelector {
     // Quality track record
     const quality = stats.avgQualityScore || 0.5;
 
-    // Cost efficiency: 1 - (avgTokens / budget), clamped
-    const costRatio = budget.maxTokens > 0 ? stats.avgTokenCost / budget.maxTokens : 0;
-    const costEfficiency = Math.max(0.1, Math.min(1.0, 1 - costRatio));
+    // Cost efficiency: economy-aware when available, naive fallback otherwise
+    let costEfficiency: number;
+    if (this.costPredictor) {
+      const taskSig = `${fingerprint.actionVerb}:${fingerprint.fileExtensions.join(',')}:${fingerprint.blastRadiusBucket}`;
+      const prediction = this.costPredictor.predict(taskSig, 2); // L2 as reference level
+      const budgetStatuses = this.budgetEnforcer?.checkBudget() ?? [];
+      const p95Budget = prediction.p95_usd > 0 ? prediction.p95_usd : 1;
+      costEfficiency = costAwareScore(prediction, p95Budget, budgetStatuses);
+    } else {
+      const costRatio = budget.maxTokens > 0 ? stats.avgTokenCost / budget.maxTokens : 0;
+      costEfficiency = Math.max(0.1, Math.min(1.0, 1 - costRatio));
+    }
 
     // Layer C: Staleness penalty — 0.9× per cycle without new traces
     let stalenessPenalty = 1.0;

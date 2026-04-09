@@ -3,7 +3,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import type { ExecutionTrace, TaskInput } from '../../src/orchestrator/types.ts';
-import { profileHistory } from '../../src/orchestrator/historical-profiler.ts';
+import { profileHistory } from '../../src/orchestrator/understanding/historical-profiler.ts';
 
 function makeInput(overrides?: Partial<TaskInput>): TaskInput {
   return {

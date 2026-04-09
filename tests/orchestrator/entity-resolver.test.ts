@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
-import { EntityResolver, PERCEPTION_EXPANSION_THRESHOLD } from '../../src/orchestrator/entity-resolver.ts';
+import { EntityResolver, PERCEPTION_EXPANSION_THRESHOLD } from '../../src/orchestrator/understanding/entity-resolver.ts';
 import type { TaskInput, TaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 function makeInput(overrides?: Partial<TaskInput>): TaskInput {

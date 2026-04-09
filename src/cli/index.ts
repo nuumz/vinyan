@@ -50,9 +50,20 @@ switch (command) {
       process.exit(2);
     }
 
-    // Allow --workspace flag to override
+    // Validate GateRequest format
+    if (!request.params) {
+      console.error('Error: GateRequest requires "params" object with "file_path" and "workspace"');
+      console.error(
+        'Example: {"tool":"write_file","params":{"file_path":"src/foo.ts","content":"...","workspace":"."}}',
+      );
+      process.exit(2);
+    }
+    // Allow --workspace flag to override; default to cwd if missing
     if (wsOverride) {
       request.params.workspace = wsOverride;
+    }
+    if (!request.params.workspace) {
+      request.params.workspace = process.cwd();
     }
 
     try {

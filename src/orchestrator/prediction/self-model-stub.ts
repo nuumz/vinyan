@@ -6,8 +6,8 @@
  *
  * Source of truth: spec/tdd.md §12 (Self-Model), arch D11
  */
-import type { SelfModel } from './core-loop.ts';
-import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from './types.ts';
+import type { SelfModel } from '../core-loop.ts';
+import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from '../types.ts';
 
 export class SelfModelStub implements SelfModel {
   async predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction> {

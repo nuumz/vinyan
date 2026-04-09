@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { MODEL_PARAMS_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
-import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
+import { CalibratedSelfModel } from '../../src/orchestrator/prediction/self-model.ts';
 import type { ExecutionTrace, PerceptualHierarchy, ReasoningPolicy, TaskInput } from '../../src/orchestrator/types.ts';
 
 function makeInput(overrides: Partial<TaskInput> = {}): TaskInput {

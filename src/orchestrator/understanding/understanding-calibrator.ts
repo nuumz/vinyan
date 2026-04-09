@@ -10,7 +10,7 @@
  * Source of truth: docs/design/semantic-task-understanding-system-design.md §5.5, §6.3
  */
 
-import type { ExecutionTrace, SemanticTaskUnderstanding } from './types.ts';
+import type { ExecutionTrace, SemanticTaskUnderstanding } from '../types.ts';
 
 // ── Calibration ─────────────────────────────────────────────────────────
 

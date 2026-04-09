@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { MetricsCollector } from '../../src/observability/metrics.ts';
-import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
+import { CalibratedSelfModel } from '../../src/orchestrator/prediction/self-model.ts';
 import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 import { WorkingMemory } from '../../src/orchestrator/working-memory.ts';
 

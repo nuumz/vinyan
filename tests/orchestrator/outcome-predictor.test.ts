@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { OutcomePredictorImpl } from '../../src/orchestrator/outcome-predictor.ts';
+import { OutcomePredictorImpl } from '../../src/orchestrator/prediction/outcome-predictor.ts';
 import type { SelfModelPrediction } from '../../src/orchestrator/types.ts';
 import type { FileOutcomeStat, PredictionDistribution } from '../../src/orchestrator/forward-predictor-types.ts';
 

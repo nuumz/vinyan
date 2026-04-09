@@ -9,7 +9,7 @@
  * Source of truth: docs/design/extensible-thinking-system-design.md §4.2
  */
 import type { ThinkingConfig } from '../types.ts';
-import type { ThinkingPolicy } from '../thinking-policy.ts';
+import type { ThinkingPolicy } from '../thinking/thinking-policy.ts';
 
 export interface ProviderThinkingParams {
   /** Provider-specific thinking configuration (pass-through to API). */

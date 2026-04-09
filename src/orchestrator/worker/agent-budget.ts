@@ -9,6 +9,25 @@ import type { AgentBudget } from '../protocol.ts';
 import type { RoutingDecision } from '../types.ts';
 import type { AgentContract } from '../../core/agent-contract.ts';
 
+/** Configurable budget allocation ratios and turn limits. */
+export interface AgentBudgetConfig {
+  /** Fraction of total budget for primary work. Default: 0.6 */
+  baseRatio: number;
+  /** Fraction for negotiable extensions. Default: 0.25 */
+  negotiableRatio: number;
+  /** Fraction reserved for delegation to child agents. Default: 0.15 */
+  delegationRatio: number;
+  /** Max turns by routing level. Default: { 1: 15, 2: 30, 3: 50 } */
+  maxTurnsByLevel: Record<number, number>;
+}
+
+export const AGENT_BUDGET_DEFAULTS: AgentBudgetConfig = {
+  baseRatio: 0.6,
+  negotiableRatio: 0.25,
+  delegationRatio: 0.15,
+  maxTurnsByLevel: { 1: 15, 2: 30, 3: 50 },
+};
+
 /** Session-level tool call limits per routing level (§5: 0/0/20/50). */
 const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
 

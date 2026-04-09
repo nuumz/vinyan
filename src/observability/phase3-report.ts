@@ -13,8 +13,8 @@ import type { RuleStore } from '../db/rule-store.ts';
 import type { SkillStore } from '../db/skill-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
-import type { CapabilityModel } from '../orchestrator/capability-model.ts';
-import { evaluateFleet, type FleetMetrics } from '../orchestrator/fleet-evaluator.ts';
+import type { CapabilityModel } from '../orchestrator/fleet/capability-model.ts';
+import { evaluateFleet, type FleetMetrics } from '../orchestrator/fleet/fleet-evaluator.ts';
 
 // ── Types ──────────────────────────────────────────────────────────────
 

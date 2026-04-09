@@ -4,7 +4,7 @@
  * α = 0.2 for 80% nominal coverage
  */
 import { describe, expect, it } from 'bun:test';
-import { CalibrationEngineImpl } from '@vinyan/orchestrator/calibration-engine.ts';
+import { CalibrationEngineImpl } from '@vinyan/orchestrator/prediction/calibration-engine.ts';
 import type { PredictionDistribution } from '@vinyan/orchestrator/forward-predictor-types.ts';
 
 const ALPHA = 0.2;

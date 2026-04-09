@@ -6,7 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
-import { verifyUnderstandingClaims } from '../../src/orchestrator/understanding-verifier.ts';
+import { verifyUnderstandingClaims } from '../../src/orchestrator/understanding/understanding-verifier.ts';
 import type { SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────

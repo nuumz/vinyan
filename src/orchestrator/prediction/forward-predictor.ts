@@ -7,10 +7,10 @@
  * Axiom: A7 (prediction error as learning signal)
  * Axiom: A3 (deterministic governance — tier selection is rule-based)
  */
-import type { ForwardPredictorConfig } from '../config/schema.ts';
-import type { PredictionLedger } from '../db/prediction-ledger.ts';
-import { PredictionTierSelectorImpl } from '../gate/prediction-tier-selector.ts';
-import type { WorldGraph } from '../world-graph/world-graph.ts';
+import type { ForwardPredictorConfig } from '../../config/schema.ts';
+import type { PredictionLedger } from '../../db/prediction-ledger.ts';
+import { PredictionTierSelectorImpl } from '../../gate/prediction-tier-selector.ts';
+import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import { CalibrationEngineImpl } from './calibration-engine.ts';
 import { CausalPredictorImpl } from './causal-predictor.ts';
 import type { FileStatsCache } from './file-stats-cache.ts';
@@ -23,7 +23,7 @@ import type {
 } from './forward-predictor-types.ts';
 import { OutcomePredictorImpl } from './outcome-predictor.ts';
 import type { PercentileCache } from './percentile-cache.ts';
-import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from './types.ts';
+import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from '../types.ts';
 
 // ---------------------------------------------------------------------------
 // Dependencies

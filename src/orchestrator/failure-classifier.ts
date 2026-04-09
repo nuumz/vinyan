@@ -17,6 +17,11 @@ export type FailureCategory =
   | 'test_failure'
   | 'ast_error'
   | 'goal_misalignment'
+  | 'hallucination_file'
+  | 'hallucination_import'
+  | 'hallucination_tool_call'
+  | 'hallucination_symbol'
+  | 'overconfidence'
   | 'unknown';
 
 export interface ClassifiedFailure {

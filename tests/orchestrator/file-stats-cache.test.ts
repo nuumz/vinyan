@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { FileStatsCache } from '../../src/orchestrator/file-stats-cache';
+import { FileStatsCache } from '../../src/orchestrator/prediction/file-stats-cache';
 import type { FileOutcomeStat } from '../../src/orchestrator/forward-predictor-types';
 
 function makeStat(

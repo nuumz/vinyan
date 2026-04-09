@@ -63,7 +63,7 @@ export class SleepCycleRunner {
   private ruleStore?: RuleStore;
   private bus?: VinyanBus;
   private workerStore?: import('../db/worker-store.ts').WorkerStore;
-  private workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
+  private workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
@@ -78,7 +78,7 @@ export class SleepCycleRunner {
     ruleStore?: RuleStore;
     bus?: VinyanBus;
     workerStore?: import('../db/worker-store.ts').WorkerStore;
-    workerLifecycle?: import('../orchestrator/worker-lifecycle.ts').WorkerLifecycle;
+    workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   }) {
     this.traceStore = options.traceStore;

@@ -11,7 +11,7 @@ import { basename, dirname, join } from 'path';
 import type { HypothesisTuple } from '../core/types.ts';
 import { calculateRiskScore, detectEnvironment, type RoutingThresholds, routeByRisk } from '../gate/risk-router.ts';
 import type { RiskRouter } from './core-loop.ts';
-import { computeTaskSignature } from './self-model.ts';
+import { computeTaskSignature } from './prediction/self-model.ts';
 import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, TaskInput } from './types.ts';
 
 type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: string }[] }>;

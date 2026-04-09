@@ -6,9 +6,9 @@ import {
   compileThinkingPolicy,
   PROFILE_DEFINITIONS,
   DefaultThinkingPolicyCompiler,
-} from '../../src/orchestrator/thinking-compiler.ts';
-import { computeTaskUncertainty } from '../../src/orchestrator/uncertainty-computer.ts';
-import type { TaskUncertaintySignal } from '../../src/orchestrator/thinking-policy.ts';
+} from '../../src/orchestrator/thinking/thinking-compiler.ts';
+import { computeTaskUncertainty } from '../../src/orchestrator/thinking/uncertainty-computer.ts';
+import type { TaskUncertaintySignal } from '../../src/orchestrator/thinking/thinking-policy.ts';
 
 // ── selectProfile ─────────────────────────────────────────────────────
 

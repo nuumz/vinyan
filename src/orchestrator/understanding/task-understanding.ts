@@ -11,13 +11,13 @@
  * Gap 2B: goal-based action category (mutation vs analysis vs investigation).
  */
 import { createHash } from 'node:crypto';
-import type { TraceStore } from '../db/trace-store.ts';
-import type { WorldGraph } from '../world-graph/world-graph.ts';
+import type { TraceStore } from '../../db/trace-store.ts';
+import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import { EntityResolver } from './entity-resolver.ts';
 import { profileHistory } from './historical-profiler.ts';
-import { computeTaskSignature } from './self-model.ts';
-import { extractActionVerb } from './task-fingerprint.ts';
-import type { ActionCategory, SemanticTaskUnderstanding, TaskDomain, TaskInput, TaskIntent, TaskType, TaskUnderstanding, ToolRequirement } from './types.ts';
+import { computeTaskSignature } from '../prediction/self-model.ts';
+import { extractActionVerb } from '../task-fingerprint.ts';
+import type { ActionCategory, SemanticTaskUnderstanding, TaskDomain, TaskInput, TaskIntent, TaskType, TaskUnderstanding, ToolRequirement } from '../types.ts';
 import type { UnderstandingEngine } from './understanding-engine.ts';
 
 /** Keywords that indicate software engineering context. */

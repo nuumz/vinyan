@@ -7,6 +7,7 @@
  */
 import { z } from 'zod/v4';
 import { EconomyConfigSchema } from '../economy/economy-config.ts';
+import { HMSConfigSchema } from '../hms/hms-config.ts';
 
 const OracleConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -332,6 +333,8 @@ export const VinyanConfigSchema = z.object({
   ecpV2: ECPv2FlagsSchema.optional(),
   /** Economy Operating System — cost tracking, budgets, market, federation. */
   economy: EconomyConfigSchema.optional(),
+  /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */
+  hms: HMSConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

@@ -10,10 +10,10 @@
  * Source of truth: design/implementation-plan.md §Phase 4.2
  */
 
-import type { VinyanBus } from '../core/bus.ts';
-import type { WorkerStore } from '../db/worker-store.ts';
-import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
-import type { WorkerProfile } from './types.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import type { WorkerStore } from '../../db/worker-store.ts';
+import { wilsonLowerBound } from '../../sleep-cycle/wilson.ts';
+import type { WorkerProfile } from '../types.ts';
 
 export interface WorkerLifecycleConfig {
   workerStore: WorkerStore;

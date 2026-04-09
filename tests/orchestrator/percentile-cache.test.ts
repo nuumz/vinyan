@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { PercentileCache } from '../../src/orchestrator/percentile-cache.ts';
+import { PercentileCache } from '../../src/orchestrator/prediction/percentile-cache.ts';
 
 describe('PercentileCache', () => {
   let cache: PercentileCache;

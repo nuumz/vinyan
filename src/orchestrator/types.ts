@@ -40,7 +40,7 @@ export interface RoutingDecision {
   /** Thinking configuration for this routing level. */
   thinkingConfig?: ThinkingConfig;
   /** Extensible Thinking: compiled policy from 2D routing grid (risk × uncertainty). */
-  thinkingPolicy?: import('./thinking-policy.ts').ThinkingPolicy;
+  thinkingPolicy?: import('./thinking/thinking-policy.ts').ThinkingPolicy;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.

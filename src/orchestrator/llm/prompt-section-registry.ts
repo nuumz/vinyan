@@ -149,15 +149,28 @@ Respond with a JSON object matching this structure:
   registry.register({
     id: 'behavioral-rules',
     target: 'system',
-    cache: 'static',
+    cache: 'ephemeral',
     priority: 30,
-    render: () =>
-      `[BEHAVIORAL RULES]
-- If uncertain about a file's content, say so in "uncertainties" — do NOT guess.
-- Never fabricate import paths, function signatures, or type definitions.
-- When multiple approaches exist, list them in "uncertainties" with trade-offs.
-- Prefer minimal changes — do not refactor code that wasn't mentioned in the task.
-- If the task is ambiguous, propose the safest interpretation and flag alternatives.`,
+    render: (ctx) => {
+      const rules = [
+        '- If uncertain about a file\'s content, say so in "uncertainties" — do NOT guess.',
+        '- Never fabricate import paths, function signatures, or type definitions.',
+        '- When multiple approaches exist, list them in "uncertainties" with trade-offs.',
+        "- Prefer minimal changes — do not refactor code that wasn't mentioned in the task.",
+        '- If the task is ambiguous, propose the safest interpretation and flag alternatives.',
+      ];
+      // HMS: when prior hallucinations detected, add pointed guidance
+      const hasHallucinationFailures = ctx.memory.failedApproaches.some((fa) =>
+        fa.classifiedFailures?.some((cf) => cf.category.startsWith('hallucination_')),
+      );
+      if (hasHallucinationFailures) {
+        rules.push(
+          '- PRIOR HALLUCINATIONS DETECTED: Only reference files listed in [PERCEPTION]. Do NOT invent paths.',
+        );
+        rules.push('- Verify every import path against the dependency cone before proposing.');
+      }
+      return `[BEHAVIORAL RULES]\n${rules.join('\n')}`;
+    },
   });
 
   registry.register({
@@ -295,15 +308,26 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
       // L0 vs L2 caveat (AI-1 gap fix)
       if (intent && stu.actionCategory) {
         const CATEGORY_ACTION_MAP: Record<string, string[]> = {
-          mutation: ['add-feature', 'bug-fix', 'security-fix', 'refactor', 'api-migration',
-            'dependency-update', 'configuration', 'performance-optimization', 'accessibility'],
+          mutation: [
+            'add-feature',
+            'bug-fix',
+            'security-fix',
+            'refactor',
+            'api-migration',
+            'dependency-update',
+            'configuration',
+            'performance-optimization',
+            'accessibility',
+          ],
           analysis: ['documentation'],
           investigation: ['investigation', 'flaky-test-diagnosis'],
           qa: ['test-improvement'],
         };
         const expected = CATEGORY_ACTION_MAP[stu.actionCategory] ?? [];
         if (!expected.includes(intent.primaryAction) && intent.primaryAction !== 'other') {
-          lines.push(`  [CAVEAT] Rule-based classification (${stu.actionCategory}) differs from semantic analysis (${intent.primaryAction}). Prefer the structural classification for safety.`);
+          lines.push(
+            `  [CAVEAT] Rule-based classification (${stu.actionCategory}) differs from semantic analysis (${intent.primaryAction}). Prefer the structural classification for safety.`,
+          );
         }
       }
 
@@ -327,7 +351,10 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
     render: (ctx) => {
       const criteria = ctx.understanding?.acceptanceCriteria ?? [];
       if (criteria.length === 0) return null;
-      const items = criteria.slice(0, 5).map((c) => `  - ${clean(c)}`).join('\n');
+      const items = criteria
+        .slice(0, 5)
+        .map((c) => `  - ${clean(c)}`)
+        .join('\n');
       return `[ACCEPTANCE CRITERIA]\n${items}`;
     },
   });
@@ -430,11 +457,13 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
         // Use structured format when classified failures are available
         if (f.classifiedFailures && f.classifiedFailures.length > 0) {
           const header = `  Attempt ${idx + 1}: ${clean(f.approach)}`;
-          const details = f.classifiedFailures.map((cf) => {
-            const loc = cf.file ? (cf.line ? `${cf.file}:${cf.line}` : cf.file) : '';
-            const prefix = cf.severity === 'error' ? '✗' : '⚠';
-            return `    ${prefix} ${cf.category}${loc ? `: ${loc}` : ''} — ${clean(cf.message)}${cf.suggestedFix ? `\n      → ${clean(cf.suggestedFix)}` : ''}`;
-          }).join('\n');
+          const details = f.classifiedFailures
+            .map((cf) => {
+              const loc = cf.file ? (cf.line ? `${cf.file}:${cf.line}` : cf.file) : '';
+              const prefix = cf.severity === 'error' ? '✗' : '⚠';
+              return `    ${prefix} ${cf.category}${loc ? `: ${loc}` : ''} — ${clean(cf.message)}${cf.suggestedFix ? `\n      → ${clean(cf.suggestedFix)}` : ''}`;
+            })
+            .join('\n');
           return `${header}\n${details}`;
         }
         // Fallback to flat format for backwards compatibility
@@ -586,7 +615,12 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       if (!os) return null;
       const osName = os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os === 'linux' ? 'Linux' : os;
       const now = new Date();
-      const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const dateStr = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
       const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
       return `[ENVIRONMENT]\nPlatform: ${osName} (${process.arch})\nCurrent date: ${dateStr}, ${timeStr}`;
     },
@@ -733,11 +767,13 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       const lines = ctx.memory.failedApproaches.map((f, idx) => {
         if (f.classifiedFailures && f.classifiedFailures.length > 0) {
           const header = `  Attempt ${idx + 1}: ${clean(f.approach)}`;
-          const details = f.classifiedFailures.map((cf) => {
-            const loc = cf.file ? (cf.line ? `${cf.file}:${cf.line}` : cf.file) : '';
-            const prefix = cf.severity === 'error' ? '✗' : '⚠';
-            return `    ${prefix} ${cf.category}${loc ? `: ${loc}` : ''} — ${clean(cf.message)}`;
-          }).join('\n');
+          const details = f.classifiedFailures
+            .map((cf) => {
+              const loc = cf.file ? (cf.line ? `${cf.file}:${cf.line}` : cf.file) : '';
+              const prefix = cf.severity === 'error' ? '✗' : '⚠';
+              return `    ${prefix} ${cf.category}${loc ? `: ${loc}` : ''} — ${clean(cf.message)}`;
+            })
+            .join('\n');
           return `${header}\n${details}`;
         }
         return `  - Avoid: ${clean(f.approach)} (reason: ${clean(f.oracleVerdict)})`;

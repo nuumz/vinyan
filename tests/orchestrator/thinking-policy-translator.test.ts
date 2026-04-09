@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { translatePolicyToProvider } from '../../src/orchestrator/llm/thinking-policy-translator.ts';
-import type { ThinkingPolicy } from '../../src/orchestrator/thinking-policy.ts';
+import type { ThinkingPolicy } from '../../src/orchestrator/thinking/thinking-policy.ts';
 
 function makePolicy(overrides: Partial<ThinkingPolicy>): ThinkingPolicy {
   return {

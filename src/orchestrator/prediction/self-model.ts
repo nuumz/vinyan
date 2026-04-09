@@ -7,10 +7,10 @@
  * Source of truth: spec/tdd.md §12, arch D11, implementation-plan.md §PH3.2
  */
 import type { Database } from 'bun:sqlite';
-import type { VinyanBus } from '../core/bus.ts';
-import type { TraceStore } from '../db/trace-store.ts';
-import type { SelfModel } from './core-loop.ts';
-import { extractActionVerb as sharedExtractActionVerb } from './task-fingerprint.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import type { TraceStore } from '../../db/trace-store.ts';
+import type { SelfModel } from '../core-loop.ts';
+import { extractActionVerb as sharedExtractActionVerb } from '../task-fingerprint.ts';
 import type {
   EpistemicAdjustment,
   ExecutionTrace,
@@ -19,14 +19,22 @@ import type {
   ReasoningPolicy,
   SelfModelPrediction,
   TaskInput,
-} from './types.ts';
+} from '../types.ts';
 
 const BASE_MS_PER_FILE = 2000;
 
-/** Minimum samples in bias window before emitting miscalibration event. */
-const MISCALIBRATION_WINDOW = 20;
-/** Fraction of same-direction errors to trigger alert. */
-const MISCALIBRATION_THRESHOLD = 0.7;
+/** Configurable thresholds for self-model behavior. */
+export interface SelfModelConfig {
+  /** Minimum samples in bias window before emitting miscalibration event. Default: 20 */
+  miscalibrationWindow: number;
+  /** Fraction of same-direction errors to trigger alert. Default: 0.7 */
+  miscalibrationThreshold: number;
+}
+
+export const SELF_MODEL_DEFAULTS: SelfModelConfig = {
+  miscalibrationWindow: 20,
+  miscalibrationThreshold: 0.7,
+};
 
 /** Per-task-type parameter row in `self_model_params` table. */
 interface TaskTypeParams {
@@ -247,17 +255,17 @@ export class CalibratedSelfModel implements SelfModel {
     // G3: Track prediction error direction for systematic miscalibration detection
     const predictionError = error.error.composite;
     this.recentBiases.push(predictionError > 0 ? 'over' : 'under');
-    if (this.recentBiases.length > MISCALIBRATION_WINDOW) {
+    if (this.recentBiases.length > SELF_MODEL_DEFAULTS.miscalibrationWindow) {
       this.recentBiases.shift();
     }
 
-    if (this.bus && this.recentBiases.length >= MISCALIBRATION_WINDOW) {
+    if (this.bus && this.recentBiases.length >= SELF_MODEL_DEFAULTS.miscalibrationWindow) {
       const overCount = this.recentBiases.filter((b) => b === 'over').length;
       const underCount = this.recentBiases.length - overCount;
       const dominantBias =
-        overCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+        overCount > this.recentBiases.length * SELF_MODEL_DEFAULTS.miscalibrationThreshold
           ? ('over' as const)
-          : underCount > this.recentBiases.length * MISCALIBRATION_THRESHOLD
+          : underCount > this.recentBiases.length * SELF_MODEL_DEFAULTS.miscalibrationThreshold
             ? ('under' as const)
             : null;
 
@@ -381,7 +389,7 @@ export class CalibratedSelfModel implements SelfModel {
    * Peer data is treated as having 1/4 the observation count of local data,
    * and only used for task types we haven't seen locally yet.
    */
-  warmStartFromPeer(peerCalibration: import('../a2a/calibration.ts').CalibrationReport, peerWeight = 0.25): number {
+  warmStartFromPeer(peerCalibration: import('../../a2a/calibration.ts').CalibrationReport, peerWeight = 0.25): number {
     let applied = 0;
 
     for (const [taskType, cal] of Object.entries(peerCalibration.per_task_type)) {

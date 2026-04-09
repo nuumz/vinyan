@@ -7,8 +7,8 @@
  * Source of truth: design/implementation-plan.md §Phase 4.3
  */
 import type { Database } from 'bun:sqlite';
-import { fingerprintKey } from './task-fingerprint.ts';
-import type { TaskFingerprint } from './types.ts';
+import { fingerprintKey } from '../task-fingerprint.ts';
+import type { TaskFingerprint } from '../types.ts';
 
 export interface CapabilityScore {
   workerId: string;

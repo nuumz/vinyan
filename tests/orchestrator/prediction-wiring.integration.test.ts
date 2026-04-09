@@ -10,7 +10,7 @@
 import { describe, test, expect } from 'bun:test';
 import { mergeForwardAndSelfModel, scorePlanByPrediction } from '../../src/orchestrator/core-loop.ts';
 import { applyPredictionEscalation } from '../../src/gate/risk-router.ts';
-import { CalibrationEngineImpl } from '../../src/orchestrator/calibration-engine.ts';
+import { CalibrationEngineImpl } from '../../src/orchestrator/prediction/calibration-engine.ts';
 import type { OutcomePrediction, CausalRiskEntry } from '../../src/orchestrator/forward-predictor-types.ts';
 import type { RoutingDecision, SelfModelPrediction, TaskDAG } from '../../src/orchestrator/types.ts';
 

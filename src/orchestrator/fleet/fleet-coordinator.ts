@@ -10,8 +10,8 @@
  * Source of truth: design/implementation-plan.md §PH5.8
  */
 
-import type { VinyanBus } from '../core/bus.ts';
-import type { TaskFingerprint } from './types.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import type { TaskFingerprint } from '../types.ts';
 
 // ── Types ───────────────────────────────────────────────────────
 

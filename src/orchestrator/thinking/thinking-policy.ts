@@ -8,7 +8,7 @@
  * Axiom compliance: A1 (thinking is generation), A3 (deterministic governance), A6 (one-way policy)
  */
 import { z } from 'zod/v4';
-import type { ThinkingConfig } from './types.ts';
+import type { ThinkingConfig } from '../types.ts';
 
 // ── Profile System (4 profiles — AB/CD deferred to Phase 2.3) ───────────
 

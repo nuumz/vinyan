@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CausalPredictorImpl } from '../../src/orchestrator/causal-predictor.ts';
+import { CausalPredictorImpl } from '../../src/orchestrator/prediction/causal-predictor.ts';
 import type { CausalEdge, FileOutcomeStat, CausalEdgeType } from '../../src/orchestrator/forward-predictor-types.ts';
 import { CAUSAL_EDGE_WEIGHTS } from '../../src/orchestrator/forward-predictor-types.ts';
 

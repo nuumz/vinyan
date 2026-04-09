@@ -10,21 +10,14 @@ import { PromptTooLargeError } from '../types.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { OpenAIMessage } from './provider-format.ts';
+import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1_000;
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 15_000,
   balanced: 60_000,
   powerful: 60_000,
 };
-
-function isRetryableError(error: Error): boolean {
-  const msg = error.message;
-  return msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
-}
 
 const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {
   fast: 'google/gemini-2.0-flash-001',
@@ -82,11 +75,8 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         }));
       }
 
-      let lastError: Error | undefined;
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
+      return retryWithBackoff(
+        async (signal) => {
           const response = await fetch(OPENROUTER_BASE_URL, {
             method: 'POST',
             headers: {
@@ -96,62 +86,44 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               'X-Title': 'Vinyan Agent',
             },
             body: JSON.stringify(body),
-            signal: controller.signal,
+            signal,
           });
-          clearTimeout(timer);
 
           if (!response.ok) {
-            if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_RETRIES) {
-              const retryAfter = response.headers.get('retry-after');
-              const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN;
-              const delay = Number.isFinite(parsed) && parsed > 0
-                ? parsed * 1000
-                : BASE_DELAY_MS * Math.pow(2, attempt);
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
             const errorText = await response.text();
-            // 413 or context_length_exceeded → throw typed error for worker-level recovery
             if (response.status === 413 || errorText.includes('context_length_exceeded') || errorText.includes('too large')) {
               const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            throw new Error(`OpenRouter API error ${response.status}: ${errorText}`);
+            // Attach status for retry logic
+            const err = new Error(`OpenRouter API error ${response.status}: ${errorText}`);
+            (err as any).status = response.status;
+            // Attach retry-after header for backoff
+            const retryAfter = response.headers.get('retry-after');
+            if (retryAfter) (err as any).retryAfterHeader = retryAfter;
+            throw err;
           }
 
           const data = (await response.json()) as OpenRouterResponse;
           const choice = data.choices?.[0];
+          if (!choice) throw new Error('OpenRouter returned empty choices');
 
-          if (!choice) {
-            throw new Error('OpenRouter returned empty choices');
-          }
-
-          // Extract tool calls
           const toolCalls: ToolCall[] = [];
           if (choice.message?.tool_calls) {
             for (const tc of choice.message.tool_calls) {
               if (tc.type === 'function') {
                 let params: Record<string, unknown> = {};
-                try {
-                  params = JSON.parse(tc.function.arguments);
-                } catch {
+                try { params = JSON.parse(tc.function.arguments); } catch {
                   console.warn(`[openrouter] Malformed tool arguments for ${tc.function.name}, using empty params`);
                 }
-                toolCalls.push({
-                  id: tc.id,
-                  tool: tc.function.name,
-                  parameters: params,
-                });
+                toolCalls.push({ id: tc.id, tool: tc.function.name, parameters: params });
               }
             }
           }
 
-          // Map finish_reason
           const stopReason: LLMResponse['stopReason'] =
-            choice.finish_reason === 'tool_calls'
-              ? 'tool_use'
-              : choice.finish_reason === 'length'
-                ? 'max_tokens'
+            choice.finish_reason === 'tool_calls' ? 'tool_use'
+              : choice.finish_reason === 'length' ? 'max_tokens'
                 : 'end_turn';
 
           return {
@@ -164,20 +136,20 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             model: data.model ?? model,
             stopReason,
           };
-        } catch (error) {
-          clearTimeout(timer);
-          const isTimeout = (error as Error).name === 'AbortError';
-          lastError = isTimeout
-            ? new Error(`OpenRouter API timeout after ${timeoutMs}ms`)
-            : (error as Error);
-          if (attempt < MAX_RETRIES && (isTimeout || isRetryableError(lastError))) {
-            await new Promise((r) => setTimeout(r, BASE_DELAY_MS * Math.pow(2, attempt)));
-            continue;
-          }
-          throw lastError;
-        }
-      }
-      throw lastError!;
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 1_000,
+          retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
+          timeoutMs,
+          parseRetryAfter: (error: unknown) => {
+            const header = (error as any)?.retryAfterHeader;
+            if (!header) return undefined;
+            const parsed = parseInt(header, 10);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
+          },
+        },
+      );
     },
   };
 }

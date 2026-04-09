@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
-import { CapabilityModel } from '../../src/orchestrator/capability-model.ts';
+import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
 import type { TaskFingerprint } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {

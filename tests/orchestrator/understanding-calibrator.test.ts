@@ -7,7 +7,7 @@ import {
   calibrateUnderstanding,
   computeEnrichedSignature,
   ENRICHMENT_THRESHOLD,
-} from '../../src/orchestrator/understanding-calibrator.ts';
+} from '../../src/orchestrator/understanding/understanding-calibrator.ts';
 import type { ExecutionTrace, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────

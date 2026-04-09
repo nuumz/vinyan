@@ -10,6 +10,7 @@ import { PromptTooLargeError } from '../types.ts';
 import type { CacheControl, LLMProvider, LLMRequest, LLMResponse, ThinkingConfig, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { AnthropicMessage } from './provider-format.ts';
+import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
 
 /**
  * Map CacheControl tier to Anthropic cache_control decision.
@@ -20,22 +21,11 @@ function shouldCache(cc?: CacheControl): boolean {
   return cc?.type === 'static' || cc?.type === 'session';
 }
 
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1_000;
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 30_000,
   balanced: 60_000,
   powerful: 60_000,
 };
-
-function isAnthropicRetryable(error: unknown): boolean {
-  if (error instanceof Error && error.message.includes('timeout')) return true;
-  const status = (error as any)?.status;
-  if (typeof status === 'number') return RETRYABLE_STATUS.has(status);
-  const msg = (error as Error)?.message ?? '';
-  return msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
-}
 
 const INSTRUCTION_HEADER = '[PROJECT INSTRUCTIONS]';
 
@@ -106,13 +96,9 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
         ? (normalizeMessages(request.messages, 'anthropic') as AnthropicMessage[])
         : buildUserMessages(request);
 
-      let lastError: Error | undefined;
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
+      return retryWithBackoff(
+        async (signal) => {
           const thinkingEnabled = isThinkingEnabled(request.thinking);
-          // Build system blocks with tier-aware cache_control
           const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
             {
               type: 'text' as const,
@@ -129,11 +115,9 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             ...(tools?.length ? { tools } : {}),
             ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
             ...buildThinkingParams(request.thinking),
-            signal: controller.signal as any,
+            signal: signal as any,
           });
-          clearTimeout(timer);
 
-          // Extract tool calls and thinking from response
           const toolCalls: ToolCall[] = [];
           let textContent = '';
           let thinking: string | undefined;
@@ -170,31 +154,34 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
                   ? 'max_tokens'
                   : 'end_turn',
           };
-        } catch (error) {
-          clearTimeout(timer);
-          controller.abort(); // Cancel in-flight request on error
-          lastError = error instanceof Error ? error
-            : new Error(controller.signal.aborted ? `Anthropic API timeout after ${timeoutMs}ms` : String(error));
-          // 413 Payload Too Large → throw PromptTooLargeError for worker-level recovery
-          const status = (error as any)?.status;
-          const msg = lastError.message;
-          if (status === 413 || msg.includes('too large') || msg.includes('maximum context length')) {
-            const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
-            throw new PromptTooLargeError(estimate, `anthropic/${model}`, error);
-          }
-          if (attempt < MAX_RETRIES && isAnthropicRetryable(error)) {
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 1_000,
+          retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
+          timeoutMs,
+          isRetryableError: (error: Error) => {
+            if (error.message.includes('timeout')) return true;
+            const msg = error.message;
+            return msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
+          },
+          parseRetryAfter: (error: unknown) => {
+            // PromptTooLargeError should not be retried
+            if (error instanceof PromptTooLargeError) return undefined;
+            // Check for 413 before retry
+            const status = (error as any)?.status;
+            const msg = (error as Error)?.message ?? '';
+            if (status === 413 || msg.includes('too large') || msg.includes('maximum context length')) {
+              const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+              throw new PromptTooLargeError(estimate, `anthropic/${model}`, error);
+            }
             const retryAfter = (error as any)?.headers?.get?.('retry-after');
-            const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN;
-            const delay = Number.isFinite(parsed) && parsed > 0
-              ? parsed * 1000
-              : BASE_DELAY_MS * Math.pow(2, attempt);
-            await new Promise((r) => setTimeout(r, delay));
-            continue;
-          }
-          throw lastError;
-        }
-      }
-      throw lastError!;
+            if (!retryAfter) return undefined;
+            const parsed = parseInt(retryAfter, 10);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
+          },
+        },
+      );
     },
   };
 }

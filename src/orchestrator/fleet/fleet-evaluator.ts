@@ -7,8 +7,8 @@
  * Source of truth: design/implementation-plan.md §Phase 4.5
  */
 
-import type { VinyanBus } from '../core/bus.ts';
-import type { WorkerStore } from '../db/worker-store.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import type { WorkerStore } from '../../db/worker-store.ts';
 import type { CapabilityModel } from './capability-model.ts';
 
 export interface FleetMetrics {

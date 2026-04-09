@@ -24,7 +24,7 @@ import { SkillStore } from '../../src/db/skill-store.ts';
 import { SELF_MODEL_PARAMS_SCHEMA_SQL, TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import { generateEvolutionReport } from '../../src/observability/phase3-report.ts';
-import { CalibratedSelfModel } from '../../src/orchestrator/self-model.ts';
+import { CalibratedSelfModel } from '../../src/orchestrator/prediction/self-model.ts';
 import { SkillManager } from '../../src/orchestrator/skill-manager.ts';
 import type { ExecutionTrace, PerceptualHierarchy } from '../../src/orchestrator/types.ts';
 import { SleepCycleRunner } from '../../src/sleep-cycle/sleep-cycle.ts';

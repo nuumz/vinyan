@@ -10,8 +10,8 @@ import {
   levenshtein,
   parseSemanticIntent,
   verifyImplicitConstraints,
-} from '../../src/orchestrator/understanding-engine.ts';
-import { enrichUnderstandingL2 } from '../../src/orchestrator/task-understanding.ts';
+} from '../../src/orchestrator/understanding/understanding-engine.ts';
+import { enrichUnderstandingL2 } from '../../src/orchestrator/understanding/task-understanding.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────

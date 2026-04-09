@@ -7,7 +7,7 @@
  * Axiom: A5 (Tiered Trust) — deterministic > heuristic > probabilistic
  * Axiom: A7 (Prediction Error as Learning) — statistical evidence improves priors
  */
-import type { SelfModelPrediction } from './types.ts';
+import type { SelfModelPrediction } from '../types.ts';
 import type {
   FileOutcomeStat,
   PredictionDistribution,

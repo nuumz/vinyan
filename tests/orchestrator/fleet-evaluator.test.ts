@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
-import { CapabilityModel } from '../../src/orchestrator/capability-model.ts';
-import { evaluateFleet, giniCoefficient } from '../../src/orchestrator/fleet-evaluator.ts';
+import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
+import { evaluateFleet, giniCoefficient } from '../../src/orchestrator/fleet/fleet-evaluator.ts';
 import type { WorkerProfile } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {

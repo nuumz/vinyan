@@ -5,7 +5,7 @@ import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import type { WorkerProfile } from '../../src/orchestrator/types.ts';
-import { WorkerLifecycle } from '../../src/orchestrator/worker-lifecycle.ts';
+import { WorkerLifecycle } from '../../src/orchestrator/fleet/worker-lifecycle.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');

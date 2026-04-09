@@ -247,7 +247,7 @@ export interface VinyanBusEvents {
   'understanding:calibration': { taskId: string; entityAccuracy: number; categoryMatch: boolean };
 
   // Extensible Thinking events
-  'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
+  'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
   // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
@@ -278,6 +278,12 @@ export interface VinyanBusEvents {
   'economy:federation_cost_broadcast': { taskId: string; computed_usd: number; peerCount: number };
   'economy:peer_price_negotiated': { peerId: string; taskType: string; agreed_usd: number };
   'economy:economic_dispute': { disputeId: string; type: string; resolution: string };
+
+  // Hallucination Mitigation System events
+  'hms:grounding_result': { taskId: string; verified: number; refuted: number; grounding_ratio: number };
+  'hms:overconfidence_detected': { taskId: string; score: number; certainty_markers: number };
+  'hms:risk_scored': { taskId: string; risk: number; primary_signal: string };
+  'hms:cross_validation_complete': { taskId: string; consistency: number; probes_sent: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

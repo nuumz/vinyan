@@ -8,8 +8,8 @@
  */
 import { readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { WorldGraph } from '../world-graph/world-graph.ts';
-import type { ResolvedEntity, TaskInput, TaskUnderstanding } from './types.ts';
+import type { WorldGraph } from '../../world-graph/world-graph.ts';
+import type { ResolvedEntity, TaskInput, TaskUnderstanding } from '../types.ts';
 
 /** Only entities above this threshold expand perception (file contents loaded). */
 export const PERCEPTION_EXPANSION_THRESHOLD = 0.8;

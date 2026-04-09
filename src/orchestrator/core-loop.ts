@@ -156,6 +156,14 @@ export interface OrchestratorDeps {
   dynamicBudgetAllocator?: import('../economy/dynamic-budget-allocator.ts').DynamicBudgetAllocator;
   /** HMS: Hallucination Mitigation System config (disabled by default). */
   hmsConfig?: import('../hms/hms-config.ts').HMSConfig;
+  /** K2.2: Engine selector for trust-weighted provider selection. */
+  engineSelector?: import('./engine-selector.ts').EngineSelector;
+  /** K2.3: Concurrent dispatcher for parallel multi-task execution. */
+  concurrentDispatcher?: import('./concurrent-dispatcher.ts').ConcurrentDispatcher;
+  /** K2.5: MCP client pool for external tool access with oracle verification. */
+  mcpClientPool?: import('../mcp/client.ts').MCPClientPool;
+  /** Crash Recovery: Task checkpoint store for pre-dispatch persistence. */
+  taskCheckpoint?: import('../db/task-checkpoint-store.ts').TaskCheckpointStore;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -413,6 +421,22 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   const startTime = Date.now();
 
   deps.bus?.emit('task:start', { input, routing });
+
+  // Crash Recovery: mark checkpoint complete/failed on task completion
+  const detachCheckpoint = deps.taskCheckpoint && deps.bus
+    ? deps.bus.on('task:complete', ({ result }) => {
+        if (result.id !== input.id) return;
+        try {
+          if (result.status === 'completed') {
+            deps.taskCheckpoint!.complete(result.id);
+          } else {
+            deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
+          }
+        } catch {
+          // Checkpoint update failure is non-fatal
+        }
+      })
+    : undefined;
 
   let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
   const BUDGET_CAP_MULTIPLIER = 6;
@@ -834,6 +858,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
         serializeApproachesToStore(workingMemory, input, deps);
         deps.bus?.emit('task:complete', { result: successResult });
+        detachCheckpoint?.();
         return successResult;
       }
 
@@ -932,6 +957,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     escalationReason: `Task could not be completed after exhausting all routing levels (L0-L3). ${workingMemory.getSnapshot().failedApproaches.length} failed approaches recorded.`,
   };
   deps.bus?.emit('task:complete', { result: escalationResult });
+  detachCheckpoint?.();
   return escalationResult;
 }
 
@@ -966,4 +992,24 @@ function computeFactConfidence(allVerdicts: Record<string, import('../core/types
     .map((v) => v.confidence);
   if (passingConfidences.length === 0) return 0;
   return Math.min(...passingConfidences);
+}
+
+// ---------------------------------------------------------------------------
+// K2.3: Batch execution — dispatch multiple tasks concurrently
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute multiple tasks concurrently using the concurrent dispatcher.
+ * Falls back to sequential execution if no concurrent dispatcher is configured.
+ */
+export async function executeTaskBatch(tasks: TaskInput[], deps: OrchestratorDeps): Promise<TaskResult[]> {
+  if (deps.concurrentDispatcher) {
+    return deps.concurrentDispatcher.dispatch(tasks);
+  }
+  // Fallback: sequential execution
+  const results: TaskResult[] = [];
+  for (const task of tasks) {
+    results.push(await executeTask(task, deps));
+  }
+  return results;
 }

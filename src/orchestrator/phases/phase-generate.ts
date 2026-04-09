@@ -46,6 +46,21 @@ export async function executeGeneratePhase(
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
   const contract = createContract(input, routing);
+
+  // Crash Recovery: persist checkpoint before dispatch
+  try {
+    deps.taskCheckpoint?.save({
+      taskId: input.id,
+      inputJson: JSON.stringify(input),
+      routingLevel: routing.level,
+      planJson: plan ? JSON.stringify({ nodeCount: plan.nodes.length, isFallback: plan.isFallback }) : null,
+      perceptionJson: perception?.taskTarget ? JSON.stringify({ taskTarget: perception.taskTarget.file }) : null,
+      attemptCount: retry + 1,
+    });
+  } catch {
+    // Checkpoint failure is non-fatal — proceed without crash protection
+  }
+
   deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
   const dispatchStart = Date.now();
   let workerResult: WorkerResult;

@@ -195,6 +195,20 @@ export async function executePredictPhase(
     }
   }
 
+  // ── K2.2: Engine Selector — trust-weighted provider override ──
+  if (deps.engineSelector) {
+    const engineSelection = deps.engineSelector.select(routing.level, input.goal.slice(0, 50));
+    if (engineSelection.provider !== 'unknown') {
+      routing = { ...routing, model: engineSelection.provider };
+      deps.bus?.emit('engine:selected', {
+        taskId: input.id,
+        provider: engineSelection.provider,
+        trustScore: engineSelection.trustScore,
+        reason: engineSelection.selectionReason,
+      });
+    }
+  }
+
   return Phase.continue({
     prediction,
     predictionConfidence,

@@ -279,6 +279,12 @@ export interface VinyanBusEvents {
   'economy:peer_price_negotiated': { peerId: string; taskType: string; agreed_usd: number };
   'economy:economic_dispute': { disputeId: string; type: string; resolution: string };
 
+  // K2.2: Engine selection events
+  'engine:selected': { taskId: string; provider: string; trustScore: number; reason: string };
+
+  // Crash Recovery: task checkpoint events
+  'task:recovered': { taskId: string; input: TaskInput; abandoned: boolean };
+
   // Hallucination Mitigation System events
   'hms:grounding_result': { taskId: string; verified: number; refuted: number; grounding_ratio: number };
   'hms:overconfidence_detected': { taskId: string; score: number; certainty_markers: number };

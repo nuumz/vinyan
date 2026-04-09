@@ -108,10 +108,11 @@ export async function executeLearnPhase(
     }
   }
 
-  // ── K2: Record provider trust outcome ──
+  // ── K2: Record provider trust outcome (per-capability when task type available) ──
   if (deps.providerTrustStore && routing.model) {
     try {
-      deps.providerTrustStore.recordOutcome(routing.model, trace.outcome === 'success');
+      const capability = trace.taskTypeSignature ?? '*';
+      deps.providerTrustStore.recordOutcome(routing.model, trace.outcome === 'success', capability);
     } catch {
       /* Trust recording failure — non-critical */
     }

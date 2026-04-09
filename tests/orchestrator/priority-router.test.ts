@@ -45,6 +45,36 @@ describe('selectProvider', () => {
     // Veteran (20/20) should have higher Wilson LB than newbie (1/1)
     expect(result.provider).toBe('veteran');
   });
+
+  test('capability filter uses capability-specific trust data', () => {
+    const store = makeTrustStore();
+    // Provider A: great at code-gen (9/10), bad at review (1/10)
+    for (let i = 0; i < 9; i++) store.recordOutcome('provider-a', true, 'code-gen');
+    store.recordOutcome('provider-a', false, 'code-gen');
+    store.recordOutcome('provider-a', true, 'review');
+    for (let i = 0; i < 9; i++) store.recordOutcome('provider-a', false, 'review');
+
+    // Provider B: great at review (9/10), bad at code-gen (1/10)
+    store.recordOutcome('provider-b', true, 'code-gen');
+    for (let i = 0; i < 9; i++) store.recordOutcome('provider-b', false, 'code-gen');
+    for (let i = 0; i < 9; i++) store.recordOutcome('provider-b', true, 'review');
+    store.recordOutcome('provider-b', false, 'review');
+
+    // Without capability → aggregate, provider-a and provider-b are equal (10 each, same ratio)
+    // With capability → specialized selection
+    const codeGenResult = selectProvider(store, 'provider-b', 'code-gen');
+    expect(codeGenResult.provider).toBe('provider-a');
+
+    const reviewResult = selectProvider(store, 'provider-a', 'review');
+    expect(reviewResult.provider).toBe('provider-b');
+  });
+
+  test('capability filter falls back when no capability data', () => {
+    const store = makeTrustStore();
+    const result = selectProvider(store, 'default', 'nonexistent');
+    expect(result.provider).toBe('default');
+    expect(result.basis).toBe('cold_start');
+  });
 });
 
 describe('ProviderTrustStore', () => {

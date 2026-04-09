@@ -73,6 +73,13 @@ import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
 import { FileStatsCache } from './prediction/file-stats-cache.ts';
 import { PercentileCache } from './prediction/percentile-cache.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
+import { DefaultEngineSelector } from './engine-selector.ts';
+import { MarketScheduler } from '../economy/market/market-scheduler.ts';
+import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
+import { createTaskQueue } from './task-queue.ts';
+import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
+import type { McpSourceZone } from '../mcp/ecp-translation.ts';
+import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -104,6 +111,8 @@ export interface OrchestratorConfig {
 
 export interface Orchestrator {
   executeTask(input: TaskInput): Promise<TaskResult>;
+  /** K2.3: Execute multiple tasks concurrently with file-lock conflict prevention. */
+  executeTaskBatch(tasks: TaskInput[]): Promise<TaskResult[]>;
   traceCollector: TraceCollectorImpl;
   traceListener: { getMetrics: () => import('../bus/trace-listener.ts').TraceTelemetry; detach: () => void };
   bus: VinyanBus;
@@ -289,6 +298,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* HMS wiring is best-effort */
   }
 
+  // K2.5: MCP Client Pool — external tool access with oracle verification
+  let mcpClientPool: MCPClientPool | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const mcpConfig = vinyanConfig.network?.mcp;
+    if (mcpConfig?.client_servers?.length) {
+      const TRUST_MAP: Record<string, McpSourceZone> = {
+        untrusted: 'remote',
+        provisional: 'network',
+        established: 'network',
+        trusted: 'local',
+      };
+      const serverConfigs: MCPServerConfig[] = mcpConfig.client_servers.map(
+        (s: { name: string; command: string; trust_level?: string }) => ({
+          name: s.name,
+          command: s.command,
+          trustLevel: TRUST_MAP[s.trust_level ?? 'untrusted'] ?? ('remote' as McpSourceZone),
+        }),
+      );
+      mcpClientPool = new MCPClientPool(serverConfigs, bus);
+      // Initialize connections in background — don't block startup
+      mcpClientPool.initialize().catch(() => {
+        /* MCP initialization failure is non-fatal */
+      });
+      console.log(`[vinyan] MCP Client Pool: ${serverConfigs.length} server(s) configured`);
+    }
+  } catch {
+    /* MCP client wiring is best-effort */
+  }
+
   // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
   let workerLifecycle: WorkerLifecycle | undefined;
   if (workerStore) {
@@ -314,6 +353,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   if (shadowRunner) {
     const recovered = shadowRunner.recover();
     if (recovered > 0) console.warn(`[vinyan] Recovered ${recovered} stale shadow jobs`);
+  }
+
+  // Crash Recovery: checkpoint store + startup recovery
+  let taskCheckpoint: TaskCheckpointStore | undefined;
+  if (db) {
+    taskCheckpoint = new TaskCheckpointStore(db.getDb());
+    const interrupted = taskCheckpoint.findDispatched();
+    if (interrupted.length > 0) {
+      console.warn(`[vinyan] Found ${interrupted.length} interrupted task(s) from previous session`);
+      for (const task of interrupted) {
+        taskCheckpoint.abandon(task.taskId);
+        try {
+          const input = JSON.parse(task.inputJson);
+          bus.emit('task:recovered', { taskId: task.taskId, input, abandoned: true });
+        } catch {
+          // Malformed checkpoint — just abandon
+        }
+      }
+    }
+    // Periodic cleanup: remove completed/failed/abandoned checkpoints older than 24h
+    taskCheckpoint.cleanup(24 * 60 * 60 * 1000);
   }
 
   const perception = new PerceptionAssemblerImpl({ workspace });
@@ -512,15 +572,37 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     dynamicBudgetAllocator,
     // HMS: Hallucination Mitigation System
     hmsConfig,
+    // K2.5: MCP client pool for external tool access
+    mcpClientPool,
+    // Crash Recovery: task checkpoint store
+    taskCheckpoint,
+    // K2.2: Engine selector for trust-weighted provider selection
+    engineSelector: providerTrustStore
+      ? new DefaultEngineSelector({
+          trustStore: providerTrustStore,
+          bus,
+          marketScheduler: economyConfig?.market?.enabled
+            ? new MarketScheduler(economyConfig.market, bus)
+            : undefined,
+        })
+      : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
       : undefined,
   };
 
+  // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
+  const k2TaskQueue = createTaskQueue({ maxConcurrent: 5 });
+  const executeTaskThunk = (subInput: TaskInput) => executeTask(subInput, deps);
+  deps.concurrentDispatcher = new DefaultConcurrentDispatcher({
+    taskQueue: k2TaskQueue,
+    executeTask: executeTaskThunk,
+    bus,
+  });
+
   // Phase 6.4: Late-bind delegation deps to worker pool
   const delegationRouter = new DelegationRouter();
-  const executeTaskThunk = (subInput: TaskInput) => executeTask(subInput, deps);
   const agentLoopDeps: Partial<AgentLoopDeps> = {
     workspace,
     contextWindow: 128_000,
@@ -629,6 +711,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
       return result;
     },
+    executeTaskBatch: async (tasks: TaskInput[]) => {
+      const { executeTaskBatch } = await import('./core-loop.ts');
+      return executeTaskBatch(tasks, deps);
+    },
     traceCollector,
     traceListener: traceListenerHandle,
     bus,
@@ -656,6 +742,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
+      mcpClientPool?.shutdown().catch(() => {});
       llmProxy?.close();
       worldGraph?.close();
       db?.close();

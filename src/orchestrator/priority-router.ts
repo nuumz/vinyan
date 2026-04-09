@@ -20,12 +20,19 @@ export interface ProviderSelection {
 /**
  * Select the highest-trust provider from known providers.
  * Falls back to defaultProvider when no trust data exists.
+ *
+ * When capability is provided, uses capability-specific trust records.
+ * Falls back to aggregate trust when no capability-specific data exists.
  */
 export function selectProvider(
   trustStore: ProviderTrustStore,
   defaultProvider: string | null,
+  capability?: string,
 ): ProviderSelection {
-  const providers = trustStore.getAllProviders();
+  // When capability provided, try capability-specific records first
+  const providers = capability
+    ? trustStore.getProvidersByCapability(capability)
+    : trustStore.getAllProviders();
 
   // Cold start: no data → use default
   if (providers.length === 0 || !defaultProvider) {

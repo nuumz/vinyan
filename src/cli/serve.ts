@@ -15,9 +15,13 @@ import { loadConfig } from '../config/index.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
+import { createTaskQueue } from '../orchestrator/task-queue.ts';
 
 export async function serve(workspace: string): Promise<void> {
   const orchestrator = createOrchestrator({ workspace });
+
+  // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
+  const taskQueue = createTaskQueue({ maxConcurrent: 4 });
 
   // Load network config for A2A multi-instance
   const vinyanConfig = loadConfig(workspace);
@@ -48,7 +52,7 @@ export async function serve(workspace: string): Promise<void> {
     },
     {
       bus: orchestrator.bus,
-      executeTask: (input) => orchestrator.executeTask(input),
+      executeTask: (input) => taskQueue.enqueue(() => orchestrator.executeTask(input)),
       sessionManager,
       traceStore: orchestrator.traceStore,
       ruleStore: orchestrator.ruleStore,

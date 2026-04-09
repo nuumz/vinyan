@@ -122,6 +122,12 @@ export interface VinyanBusEvents {
 
   // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
   'oracle:deliberation_request': { taskId: string; oracleName: string; reason: string; suggestedBudget: number };
+  // K1.0: A5 Tiered Trust — llm-self-report verdict excluded from gate decisions
+  'oracle:self_report_excluded': { taskId: string; oracleName: string; confidence: number };
+  // K1.3: A6 Zero-Trust — tool call denied by capability scope
+  'agent:tool_denied': { taskId: string; toolName: string; violation?: string };
+  // K1.3: Contract violation policy triggered (kill or tolerance exceeded)
+  'agent:contract_violation': { taskId: string; violations: number; policy: string };
 
   // DAG decomposition fallback (A3: deterministic governance transparency)
   'decomposer:fallback': { taskId: string };

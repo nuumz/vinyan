@@ -22,6 +22,7 @@ import { TraceStore } from '../db/trace-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
+import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
@@ -170,6 +171,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let ruleStore: RuleStore | undefined;
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
+  let providerTrustStore: ProviderTrustStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
@@ -177,6 +179,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     ruleStore = new RuleStore(db.getDb());
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
+    providerTrustStore = new ProviderTrustStore(db.getDb());
   }
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
@@ -438,6 +441,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     traceStore,
     // STU Layer 2: semantic intent extraction
     understandingEngine,
+    // K2.1: Provider trust for Wilson LB selection
+    providerTrustStore,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)

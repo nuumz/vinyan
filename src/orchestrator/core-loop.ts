@@ -16,6 +16,7 @@ import type { VinyanBus } from '../core/bus.ts';
 import { validateInput } from '../guardrails/index.ts';
 import { buildComplexityContext, computeQualityScore } from '../gate/quality-score.ts';
 import { applyPredictionEscalation, LEVEL_CONFIG } from '../gate/risk-router.ts';
+import { createContract } from '../core/agent-contract.ts';
 import { type DAGExecutionResult, executeDAG, type NodeDispatcher } from './dag-executor.ts';
 import { type ConfidenceDecision, computePipelineConfidence, deriveConfidenceDecision } from './pipeline-confidence.ts';
 import type {
@@ -832,6 +833,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       }
 
       // ── Step 4: GENERATE (dispatch to worker) ────────────────────
+      // K1.2: Create immutable AgentContract before dispatch (A3+A6)
+      const contract = createContract(input, routing);
       deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
       const dispatchStart = Date.now();
       let workerResult: WorkerResult;
@@ -851,7 +854,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                 targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
                 goal: node.description || input.goal,
               };
-              const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding);
+              const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract);
               return {
                 nodeId,
                 mutations: result.mutations,
@@ -888,6 +891,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
               plan,
               routing,
               understanding,
+              contract,
             );
           }
         } else {
@@ -902,6 +906,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             routing,
             agentLoopDeps,
             understanding,
+            contract,
           );
           isAgenticResult = true;
           // Adapt WorkerLoopResult → WorkerResult for downstream compatibility

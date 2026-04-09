@@ -55,6 +55,8 @@ const ALL_EVENTS: BusEventName[] = [
   // Self-model & oracle
   'selfmodel:calibration_error',
   'oracle:contradiction',
+  'oracle:self_report_excluded',
+  'agent:tool_denied',
   // Decomposer
   'decomposer:fallback',
   // Phase 4 — Fleet Governance

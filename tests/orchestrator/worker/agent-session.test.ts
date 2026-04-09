@@ -91,6 +91,7 @@ function makeInitTurn(): OrchestratorTurn {
       delegation: 200,
       maxExtensionRequests: 3,
       maxToolCallsPerTurn: 10,
+      maxToolCalls: 20,
       delegationDepth: 0,
       maxDelegationDepth: 3,
     },

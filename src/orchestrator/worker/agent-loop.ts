@@ -28,6 +28,8 @@ import { AgentBudgetTracker } from './agent-budget.ts';
 import { SessionOverlay, type ProposedMutation } from './session-overlay.ts';
 import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
+import type { AgentContract } from '../../core/agent-contract.ts';
+import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
 
@@ -192,12 +194,17 @@ export async function runAgentLoop(
   routing: RoutingDecision,
   deps: AgentLoopDeps,
   understanding?: import('../types.ts').TaskUnderstanding,
+  contract?: AgentContract,
 ): Promise<WorkerLoopResult> {
   const startTime = performance.now();
-  const budget = AgentBudgetTracker.fromRouting(routing, deps.contextWindow);
+  // K1.2: Use contract-based budget when available (A3: immutable contract governs execution)
+  const budget = contract
+    ? AgentBudgetTracker.fromContract(contract, deps.contextWindow)
+    : AgentBudgetTracker.fromRouting(routing, deps.contextWindow);
   const overlay = SessionOverlay.create(deps.workspace, input.id);
   let transcript: WorkerTurn[] = [];
   let tokensConsumed = 0;
+  let contractViolations = 0;
   let session: IAgentSession | null = null;
 
   const toolContext: ToolContext = {
@@ -351,6 +358,35 @@ export async function runAgentLoop(
 
         // Execute allowed calls
         for (const call of calls) {
+          // K1.3: Capability-scoped tool authorization (A6 zero-trust)
+          if (contract) {
+            const auth = authorizeToolCall(contract, call.tool, call.parameters ?? {});
+            if (!auth.authorized) {
+              contractViolations++;
+              results.push({
+                callId: call.id,
+                tool: call.tool,
+                status: 'error',
+                error: auth.violation ?? `Capability denied for ${call.tool}`,
+                durationMs: 0,
+              });
+              deps.bus?.emit('agent:tool_denied', {
+                taskId: input.id,
+                toolName: call.tool,
+                violation: auth.violation,
+              });
+              // Violation policy: kill immediately or after exceeding tolerance
+              if (contract.onViolation === 'kill' || contractViolations > contract.violationTolerance) {
+                deps.bus?.emit('agent:contract_violation', {
+                  taskId: input.id,
+                  violations: contractViolations,
+                  policy: contract.onViolation,
+                });
+                break;
+              }
+              continue;
+            }
+          }
           const toolStart = performance.now();
           let result = await deps.toolExecutor.execute(call, toolContext);
           // Guardrails scan on every tool result (A6)
@@ -363,6 +399,22 @@ export async function runAgentLoop(
             durationMs: Math.round(performance.now() - toolStart),
             isError: result.status !== 'success',
           });
+        }
+
+        // K1.3: Kill session if contract violation policy triggered
+        if (contract && contractViolations > 0) {
+          const shouldKill = contract.onViolation === 'kill' || contractViolations > contract.violationTolerance;
+          if (shouldKill) {
+            return buildUncertainResult(
+              overlay.computeDiff(),
+              [`Contract violation: ${contractViolations} unauthorized tool call(s)`],
+              tokensConsumed,
+              Math.round(performance.now() - startTime),
+              transcript,
+              undefined,
+              `Contract violation: session killed (policy=${contract.onViolation}, violations=${contractViolations}/${contract.violationTolerance})`,
+            );
+          }
         }
 
         // Send results back to worker

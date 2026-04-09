@@ -124,6 +124,7 @@ export const READONLY_TOOLS = new Set([
  * Eliminates dual-fingerprint inconsistency and ensures constraints/criteria reach downstream.
  */
 export interface TaskUnderstanding {
+  [key: string]: unknown; // passthrough fields from STU Layer 1/2 survive IPC serialization
   rawGoal: string;
   actionVerb: string;
   actionCategory: ActionCategory;

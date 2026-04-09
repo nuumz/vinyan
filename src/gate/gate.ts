@@ -323,6 +323,15 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     }
   }
 
+  // K1.0: Filter llm-self-report verdicts from gate decisions (A5 Tiered Trust)
+  // Probabilistic self-reported confidence must not influence governance decisions.
+  // Only evidence-derived and self-model-calibrated sources enter fusion/decision.
+  for (const name of Object.keys(oracleResults)) {
+    if (oracleResults[name]?.confidenceSource === 'llm-self-report') {
+      delete oracleResults[name];
+    }
+  }
+
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
   // Build accuracy map from store for accuracy-based tiebreaking in ambiguous K zone
   let oracleAccuracy: Record<string, { total: number; correct: number }> | undefined;

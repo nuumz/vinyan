@@ -63,6 +63,7 @@ import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
 import { CostPredictor } from '../economy/cost-predictor.ts';
 import { DynamicBudgetAllocator } from '../economy/dynamic-budget-allocator.ts';
 import type { EconomyConfig } from '../economy/economy-config.ts';
+import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
@@ -74,6 +75,8 @@ import { FileStatsCache } from './prediction/file-stats-cache.ts';
 import { PercentileCache } from './prediction/percentile-cache.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
 import { DefaultEngineSelector } from './engine-selector.ts';
+import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
+import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { createTaskQueue } from './task-queue.ts';
@@ -101,6 +104,8 @@ export interface OrchestratorConfig {
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
+  /** Session manager for conversation agent mode (optional — wired into deps if provided). */
+  sessionManager?: import('../api/session-manager.ts').SessionManager;
   /**
    * Allowlist of engine ID prefixes for auto-registration into worker_profiles.
    * Defaults to the legacy LLM vendor list. Pass [] to disable allowlist filtering
@@ -255,6 +260,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let costPredictor: CostPredictor | undefined;
   let dynamicBudgetAllocator: DynamicBudgetAllocator | undefined;
   let economyConfig: EconomyConfig | undefined;
+  let marketScheduler: MarketScheduler | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     economyConfig = vinyanConfig.economy;
@@ -266,6 +272,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // Economy L2: cost prediction + dynamic budgets
       costPredictor = new CostPredictor(costLedger);
       dynamicBudgetAllocator = new DynamicBudgetAllocator(costLedger);
+      // Economy L3: market scheduler — shared across engine-selector + sleep cycle
+      if (economyConfig.market?.enabled) {
+        marketScheduler = new MarketScheduler(economyConfig.market, bus);
+      }
+      // Economy L3→K2.1: settlement → trust ledger feedback loop
+      if (providerTrustStore) {
+        bus.on('market:settlement_accurate', ({ provider, capability }) => {
+          providerTrustStore!.recordOutcome(provider, true, capability ?? '*');
+        });
+        bus.on('market:settlement_inaccurate', ({ provider, capability }) => {
+          providerTrustStore!.recordOutcome(provider, false, capability ?? '*');
+        });
+      }
       // Economy L4: federation cost relay — broadcast costs to A2A peers
       if (economyConfig.federation?.cost_sharing_enabled) {
         const relay = new FederationCostRelay(bus);
@@ -296,6 +315,32 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   } catch {
     /* HMS wiring is best-effort */
+  }
+
+  // Non-LLM Reasoning Engines — Z3 constraint solver, human-in-the-loop bridge
+  let engineRegistry = config.engineRegistry;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    const enginesConfig = vinyanConfig.engines;
+    if (enginesConfig) {
+      if (!engineRegistry) {
+        engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
+      }
+      if (enginesConfig.z3?.enabled) {
+        engineRegistry.register(new Z3ReasoningEngine({ z3Path: enginesConfig.z3.path }));
+        console.log('[vinyan] Z3 Constraint Solver engine registered');
+      }
+      if (enginesConfig.human?.enabled) {
+        engineRegistry.register(new HumanECPBridge({ bus, timeoutMs: enginesConfig.human.timeout_ms }));
+        console.log('[vinyan] Human-in-the-Loop ECP bridge registered');
+      }
+      // Register non-LLM engines as workers (autoRegisterWorkers ran earlier with config.engineRegistry)
+      if (workerStore) {
+        autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist, engineRegistry);
+      }
+    }
+  } catch {
+    /* engine registration is best-effort */
   }
 
   // K2.5: MCP Client Pool — external tool access with oracle verification
@@ -346,7 +391,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const shadowRunner = shadowStore ? new ShadowRunner({ shadowStore, workspace }) : undefined;
   const sleepCycleRunner =
     patternStore && traceStore
-      ? new SleepCycleRunner({ traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle })
+      ? new SleepCycleRunner({
+          traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle,
+          costLedger, marketScheduler,
+        })
       : undefined;
 
   // Shadow: startup recovery (A6 crash-safety)
@@ -401,7 +449,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   const workerPool = new WorkerPoolImpl({
     registry,
-    engineRegistry: config.engineRegistry,
+    engineRegistry: engineRegistry ?? config.engineRegistry,
     workspace,
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
     proxySocketPath: llmProxy?.socketPath,
@@ -488,16 +536,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Phase 5: Instance Coordinator (PH5.8) — cross-instance task delegation
   let instanceCoordinator: InstanceCoordinator | undefined;
+  let federationBudgetPool: FederationBudgetPool | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     const instancesConfig = vinyanConfig.network?.instances;
     if (instancesConfig?.enabled && instancesConfig.peers?.length) {
       const oracleProfileStore = db ? new OracleProfileStore(db.getDb()) : undefined;
+      // Economy L4: create federation budget pool when federation economy is enabled
+      if (economyConfig?.federation?.cost_sharing_enabled) {
+        const fraction = economyConfig.federation.shared_pool_fraction ?? 0.1;
+        federationBudgetPool = new FederationBudgetPool(fraction, bus);
+        // Contribute to pool from local task completions
+        bus.on('economy:cost_recorded', ({ computed_usd }) => {
+          federationBudgetPool!.contribute(computed_usd);
+        });
+      }
       instanceCoordinator = new InstanceCoordinator({
         peerUrls: instancesConfig.peers.map((p: { url: string }) => p.url),
         instanceId: crypto.randomUUID(),
         profileStore: oracleProfileStore,
         bus,
+        federationBudgetPool,
       });
     }
   } catch {
@@ -576,14 +635,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     mcpClientPool,
     // Crash Recovery: task checkpoint store
     taskCheckpoint,
+    // Conversation Agent Mode: session manager for cross-turn context
+    sessionManager: config.sessionManager,
     // K2.2: Engine selector for trust-weighted provider selection
     engineSelector: providerTrustStore
       ? new DefaultEngineSelector({
           trustStore: providerTrustStore,
           bus,
-          marketScheduler: economyConfig?.market?.enabled
-            ? new MarketScheduler(economyConfig.market, bus)
-            : undefined,
+          marketScheduler,
+          costPredictor,
         })
       : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)

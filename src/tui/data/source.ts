@@ -73,6 +73,16 @@ const LOG_ONLY_EVENTS: BusEventName[] = [
   'session:compacted',
   'file:hashChanged',
   'graph:fact',
+  'economy:cost_recorded',
+  'economy:budget_warning',
+  'economy:budget_exceeded',
+  'economy:cost_pattern_detected',
+  'market:auction_completed',
+  'market:phase_transition',
+  'market:auto_activated',
+  'market:settlement_accurate',
+  'market:settlement_inaccurate',
+  'human:review_requested',
 ];
 
 // ── DataSource Interface ────────────────────────────────────────────

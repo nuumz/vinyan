@@ -89,7 +89,7 @@ export async function runAgentWorkerLoop(
     },
     {
       role: 'user',
-      content: buildInitUserMessage(init.goal, compressedPerception, init.priorAttempts, (init as any).understanding),
+      content: buildInitUserMessage(init.goal, compressedPerception, init.priorAttempts, (init as any).understanding, init.conversationHistory),
     },
   ];
 
@@ -335,8 +335,23 @@ export function buildInitUserMessage(
   perception: unknown,
   priorAttempts?: unknown[],
   understanding?: unknown,
+  conversationHistory?: Array<{ role: string; content: string; taskId: string; timestamp: number }>,
 ): string {
-  let msg = `## Task\n${goal}`;
+  let msg = '';
+
+  // Render conversation history first (context for the current turn)
+  if (conversationHistory && conversationHistory.length > 0) {
+    const turns = conversationHistory.map((entry, i) => {
+      const role = entry.role === 'user' ? 'User' : 'Assistant';
+      const content = entry.content.length > 2000
+        ? `${entry.content.slice(0, 2000)}... (truncated)`
+        : entry.content;
+      return `[Turn ${i + 1}] ${role}: ${content}`;
+    });
+    msg += `## Conversation History\nThis is a multi-turn conversation. Prior turns for context:\n${turns.join('\n')}\n\n`;
+  }
+
+  msg += `## Task\n${goal}`;
 
   // Render semantic context from enriched understanding (Layer 1+2)
   if (understanding && typeof understanding === 'object') {

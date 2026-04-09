@@ -21,6 +21,9 @@ import { simpleGlobMatch } from '../core/glob.ts';
 import type { PatternStore } from '../db/pattern-store.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import type { CostLedger } from '../economy/cost-ledger.ts';
+import { CostPatternMiner } from '../economy/cost-pattern-miner.ts';
+import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
 import { generateRule } from '../evolution/rule-generator.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
@@ -53,6 +56,8 @@ export interface SleepCycleResult {
   successPatterns: number;
   decayedPatterns: number;
   rulesPromoted: number;
+  costPatternsFound: number;
+  marketPhaseEvaluated: boolean;
 }
 
 export class SleepCycleRunner {
@@ -65,6 +70,8 @@ export class SleepCycleRunner {
   private workerStore?: import('../db/worker-store.ts').WorkerStore;
   private workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
+  private costLedger?: CostLedger;
+  private marketScheduler?: MarketScheduler;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -80,6 +87,8 @@ export class SleepCycleRunner {
     workerStore?: import('../db/worker-store.ts').WorkerStore;
     workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
+    costLedger?: CostLedger;
+    marketScheduler?: MarketScheduler;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -90,6 +99,8 @@ export class SleepCycleRunner {
     this.workerStore = options.workerStore;
     this.workerLifecycle = options.workerLifecycle;
     this.knowledgeExchange = options.knowledgeExchange;
+    this.costLedger = options.costLedger;
+    this.marketScheduler = options.marketScheduler;
     this.decayExperiment = createExperimentState();
   }
 
@@ -117,6 +128,8 @@ export class SleepCycleRunner {
         successPatterns: 0,
         decayedPatterns: 0,
         rulesPromoted: 0,
+        costPatternsFound: 0,
+        marketPhaseEvaluated: false,
       };
     }
 
@@ -138,6 +151,8 @@ export class SleepCycleRunner {
         successPatterns: 0,
         decayedPatterns: 0,
         rulesPromoted,
+        costPatternsFound: 0,
+        marketPhaseEvaluated: false,
       };
     }
 
@@ -271,6 +286,76 @@ export class SleepCycleRunner {
       this.workerLifecycle.emergencyReactivation();
     }
 
+    // Economy OS: Cost pattern mining (E2.4 → Sleep Cycle integration)
+    let costPatternsFound = 0;
+    if (this.costLedger) {
+      const miner = new CostPatternMiner(this.costLedger);
+      const costPatterns = miner.extract();
+      costPatternsFound = costPatterns.length;
+
+      for (const cp of costPatterns) {
+        // Convert CostPattern to ExtractedPattern for persistence + rule generation
+        const extracted: ExtractedPattern = {
+          id: cp.id,
+          type: cp.type === 'cost-anti-pattern' ? 'anti-pattern' : 'success-pattern',
+          description: cp.description,
+          frequency: cp.observationCount,
+          confidence: cp.confidence,
+          taskTypeSignature: cp.taskTypeSignature,
+          approach: cp.engineId,
+          comparedApproach: cp.comparedEngineId,
+          sourceTraceIds: [],
+          createdAt: cp.detectedAt,
+          decayWeight: 1.0,
+        };
+
+        if (extracted.confidence >= MIN_PATTERN_CONFIDENCE) {
+          this.patternStore.insert(extracted);
+
+          // Generate prefer-model rules from cost patterns
+          if (this.ruleStore) {
+            const rule = generateRule(extracted);
+            if (rule) {
+              this.ruleStore.insert(rule);
+              rulesGenerated++;
+            }
+          }
+        }
+
+        this.bus?.emit('economy:cost_pattern_detected', {
+          patternId: cp.id,
+          type: cp.type,
+          engineId: cp.engineId,
+          taskType: cp.taskTypeSignature,
+        });
+      }
+    }
+
+    // Economy OS: Market phase evaluation (E3 → Sleep Cycle integration)
+    let marketPhaseEvaluated = false;
+    if (this.marketScheduler && this.costLedger) {
+      const entries = this.costLedger.queryByTimeRange(0, Date.now());
+      const engineIds = new Set(entries.map((e) => e.engineId));
+      // Compute per-engine entry counts
+      const perEngine = new Map<string, number>();
+      for (const entry of entries) {
+        perEngine.set(entry.engineId, (perEngine.get(entry.engineId) ?? 0) + 1);
+      }
+      const minTasksPerEngine = perEngine.size > 0 ? Math.min(...perEngine.values()) : 0;
+      this.marketScheduler.evaluatePhase({
+        activeEngines: engineIds.size,
+        minTasksPerEngine,
+        totalTraces: entries.length,
+        auctionCount: this.marketScheduler.getPhase().auctionCount,
+        trustedRemotePeers: 0,
+        minRemotePeerTasks: 0,
+        distinctEnginesWithBids: 0,
+        minSettledBidsPerEngine: 0,
+        dominantWinRate: 0,
+      });
+      marketPhaseEvaluated = true;
+    }
+
     // Apply decay to existing patterns
     const decayedCount = this.applyDecay();
 
@@ -297,6 +382,8 @@ export class SleepCycleRunner {
       successPatterns: newPatterns.filter((p) => p.type === 'success-pattern').length,
       decayedPatterns: decayedCount,
       rulesPromoted,
+      costPatternsFound,
+      marketPhaseEvaluated,
     };
   }
 

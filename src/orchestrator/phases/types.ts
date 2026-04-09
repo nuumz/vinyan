@@ -16,6 +16,7 @@ import type { WorkerLoopResult } from '../worker/agent-loop.ts';
 import type { WorkingMemory } from '../working-memory.ts';
 import type {
   CachedSkill,
+  ConversationEntry,
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
@@ -43,6 +44,8 @@ export interface PhaseContext {
   readonly startTime: number;
   readonly workingMemory: WorkingMemory;
   readonly explorationFlag: boolean;
+  /** Conversation history from prior turns (loaded when sessionId present). */
+  readonly conversationHistory?: ConversationEntry[];
 }
 
 // ---------------------------------------------------------------------------

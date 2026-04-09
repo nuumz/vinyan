@@ -302,6 +302,15 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     })),
     priorAttempts: z.array(AgentSessionSummarySchema).optional(),
     understanding: TaskUnderstandingSchema.optional(),
+    conversationHistory: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string(),
+      taskId: z.string(),
+      timestamp: z.number(),
+      thinking: z.string().optional(),
+      toolsUsed: z.array(z.string()).optional(),
+      tokenEstimate: z.number(),
+    })).optional(),
   }),
   z.object({
     type: z.literal('tool_results'),

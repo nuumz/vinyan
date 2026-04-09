@@ -286,11 +286,28 @@ export interface TaskInput {
   targetFiles?: string[]; // Optional explicit scope
   constraints?: string[]; // User-specified constraints
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
+  /** Conversation session ID — links this task to a multi-turn chat session. */
+  sessionId?: string;
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
     maxRetries: number; // Default: 3 per routing level
   };
+}
+
+// ---------------------------------------------------------------------------
+// Conversation History (→ Conversation Agent Mode)
+// ---------------------------------------------------------------------------
+
+/** A single entry in the conversation history — user message or assistant response. */
+export interface ConversationEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  taskId: string;
+  timestamp: number;
+  thinking?: string;
+  toolsUsed?: string[];
+  tokenEstimate: number;
 }
 
 /** Output of the Orchestrator core loop */
@@ -434,7 +451,7 @@ export type ThinkingConfig =
   | { type: 'adaptive'; effort: 'low' | 'medium' | 'high' | 'max'; display?: 'omitted' | 'summarized' }
   | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
   | { type: 'disabled' }
-  // Phase 3+ type stubs (design §4.1 "Design it now" — type-only, no implementation)
+  // Phase 3+ thinking modes (type-only, provider support not yet implemented — see docs/design §4.1)
   | { type: 'multi-hypothesis'; branches: 2 | 3 | 4;
       diversityConstraint: 'different-patterns' | 'different-resources';
       selectionRule: 'highest-oracle-confidence' | 'first-to-pass' | 'voting-consensus';

@@ -361,6 +361,7 @@ export class WorkerPoolImpl implements WorkerPool {
     routing: RoutingDecision,
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
     contract?: import('../../core/agent-contract.ts').AgentContract,
+    conversationHistory?: import('../types.ts').ConversationEntry[],
   ) {
     const startTime = performance.now();
 
@@ -375,6 +376,8 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding);
+    // Carry conversation history for prompt assembly (not serialized into WorkerInput)
+    const _conversationHistory = conversationHistory;
 
     // L2/L3: container dispatch when isolation level = 2
     // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -411,7 +414,7 @@ export class WorkerPoolImpl implements WorkerPool {
     }
     const output = useSubprocessForTask
       ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing);
+      : await this.dispatchInProcess(workerInput, routing, _conversationHistory);
 
     return this.toWorkerResult(output, startTime);
   }
@@ -460,7 +463,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
   // ── In-process dispatch (default) ───────────────────────────────────
 
-  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision, conversationHistory?: import('../types.ts').ConversationEntry[]): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select engine if available, fallback to tier-based
     const engine = routing.workerId
       ? (this.engineRegistry.selectById(routing.workerId) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
@@ -479,6 +482,7 @@ export class WorkerPoolImpl implements WorkerPool {
       instructions,
       workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
       routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
+      conversationHistory,
     );
 
     const startTime = performance.now();

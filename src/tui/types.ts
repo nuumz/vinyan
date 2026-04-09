@@ -8,7 +8,7 @@ import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 
 // ── View / Navigation ───────────────────────────────────────────────
 
-export type ViewTab = 'tasks' | 'system' | 'peers' | 'events';
+export type ViewTab = 'tasks' | 'system' | 'peers' | 'events' | 'economy';
 export type InputMode = 'normal' | 'command' | 'filter';
 
 // ── Notifications & Feedback ────────────────────────────────────────

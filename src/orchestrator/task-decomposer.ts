@@ -2,7 +2,7 @@
  * Task Decomposer — LLM-assisted decomposition with DAG validation.
  *
  * 3-iteration retry loop: generate DAG → validate → feedback → retry.
- * Falls back to single-node DAG (stub behavior) after max retries.
+ * Falls back to single-node DAG (single-task fallback) after max retries.
  *
  * Source of truth: spec/tdd.md §10, arch D7
  */

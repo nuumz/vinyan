@@ -195,6 +195,7 @@ export async function runAgentLoop(
   deps: AgentLoopDeps,
   understanding?: import('../types.ts').TaskUnderstanding,
   contract?: AgentContract,
+  conversationHistory?: import('../types.ts').ConversationEntry[],
 ): Promise<WorkerLoopResult> {
   const startTime = performance.now();
   // K1.2: Use contract-based budget when available (A3: immutable contract governs execution)
@@ -272,6 +273,7 @@ export async function runAgentLoop(
       toolManifest: manifestFor(routing),
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
       ...(understanding ? { understanding } : {}),
+      ...(conversationHistory?.length ? { conversationHistory } : {}),
     };
     await session.send(initTurn);
 

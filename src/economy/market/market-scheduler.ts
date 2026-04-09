@@ -120,10 +120,41 @@ export class MarketScheduler {
       penaltyType: settlement.penalty_type,
     });
 
-    // Feed back to trust store via bus (if wired)
+    // Feed back to trust store via bus
+    const payload = { provider: bid.bidderId, capability: undefined, taskId: settlement.settlementId };
     if (accurate) {
-      // Settlement was accurate — positive signal
+      this.bus?.emit('market:settlement_accurate', payload);
+    } else {
+      this.bus?.emit('market:settlement_inaccurate', payload);
     }
+  }
+
+  /**
+   * Check if market should auto-activate (A → B transition).
+   * Called from engine-selector before auction attempt.
+   */
+  checkAutoActivation(costRecordCount: number, engineCount: number): boolean {
+    if (this.phaseState.currentPhase !== 'A') return false;
+    const minRecords = this.config.min_cost_records ?? 200;
+    const minBidders = this.config.min_bidders ?? 2;
+    if (costRecordCount >= minRecords && engineCount >= minBidders) {
+      const oldPhase = this.phaseState.currentPhase;
+      this.phaseState.currentPhase = 'B';
+      this.phaseState.activatedAt = Date.now();
+      this.bus?.emit('market:auto_activated', {
+        costRecordCount,
+        engineCount,
+        fromPhase: oldPhase,
+        toPhase: 'B',
+      });
+      this.bus?.emit('market:phase_transition', {
+        from: oldPhase,
+        to: 'B',
+        reason: `Auto-activated: ${costRecordCount} cost records, ${engineCount} engines`,
+      });
+      return true;
+    }
+    return false;
   }
 
   /**

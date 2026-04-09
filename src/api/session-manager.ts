@@ -8,7 +8,7 @@
  */
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
-import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { ConversationEntry, TaskInput, TaskResult } from '../orchestrator/types.ts';
 
 export interface Session {
   id: string;
@@ -184,4 +184,162 @@ export class SessionManager {
     }
     return active.length;
   }
+
+  // ── Conversation Methods (Conversation Agent Mode) ──────
+
+  /** Record a user message in the conversation history. */
+  recordUserTurn(sessionId: string, content: string): void {
+    this.sessionStore.insertMessage({
+      session_id: sessionId,
+      task_id: null,
+      role: 'user',
+      content,
+      thinking: null,
+      tools_used: null,
+      token_estimate: estimateTokens(content),
+      created_at: Date.now(),
+    });
+  }
+
+  /** Record an assistant response from a TaskResult. */
+  recordAssistantTurn(sessionId: string, taskId: string, result: TaskResult): void {
+    const content = result.answer ?? (result.mutations.map(m => `Modified ${m.file}`).join('\n') || '(no response)');
+    const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
+
+    this.sessionStore.insertMessage({
+      session_id: sessionId,
+      task_id: taskId,
+      role: 'assistant',
+      content,
+      thinking: result.thinking ?? null,
+      tools_used: toolsUsed ? JSON.stringify(toolsUsed) : null,
+      token_estimate: estimateTokens(content) + estimateTokens(result.thinking ?? ''),
+      created_at: Date.now(),
+    });
+  }
+
+  /** Get conversation history within a token budget. */
+  getConversationHistory(sessionId: string, maxTokens = 8000): ConversationEntry[] {
+    const rows = this.sessionStore.getRecentMessages(sessionId, maxTokens);
+    return rows
+      .filter(r => r.role === 'user' || r.role === 'assistant')
+      .map(r => ({
+        role: r.role as 'user' | 'assistant',
+        content: r.content,
+        taskId: r.task_id ?? '',
+        timestamp: r.created_at,
+        thinking: r.thinking ?? undefined,
+        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
+        tokenEstimate: r.token_estimate,
+      }));
+  }
+
+  /** Get the number of conversation messages in a session. */
+  getMessageCount(sessionId: string): number {
+    return this.sessionStore.countMessages(sessionId);
+  }
+
+  /** Load working memory JSON from a session (for cross-turn learning). */
+  getSessionWorkingMemory(sessionId: string): string | null {
+    const session = this.sessionStore.getSession(sessionId);
+    return session?.working_memory_json ?? null;
+  }
+
+  /** Persist a working memory snapshot to the session store. */
+  saveSessionWorkingMemory(sessionId: string, memoryJson: string): void {
+    this.sessionStore.updateSessionMemory(sessionId, memoryJson);
+  }
+
+  /**
+   * Get conversation history with compaction for long conversations.
+   * Keeps last `keepRecentTurns` turns verbatim, summarizes older turns
+   * into a structured compact block (rule-based, A3-compliant — no LLM).
+   */
+  getConversationHistoryCompacted(
+    sessionId: string,
+    maxTokens = 8000,
+    keepRecentTurns = 5,
+  ): ConversationEntry[] {
+    const allMessages = this.sessionStore.getMessages(sessionId);
+    if (allMessages.length === 0) return [];
+
+    const entries: ConversationEntry[] = allMessages
+      .filter(r => r.role === 'user' || r.role === 'assistant')
+      .map(r => ({
+        role: r.role as 'user' | 'assistant',
+        content: r.content,
+        taskId: r.task_id ?? '',
+        timestamp: r.created_at,
+        thinking: r.thinking ?? undefined,
+        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
+        tokenEstimate: r.token_estimate,
+      }));
+
+    // Count turns (a turn = one user + one assistant message pair)
+    const turnPairs = Math.ceil(entries.length / 2);
+    if (turnPairs <= keepRecentTurns) {
+      // Short enough — return as-is with token budget enforcement
+      return this.enforceTokenBudget(entries, maxTokens);
+    }
+
+    // Compact older turns into a structured summary
+    const recentStartIdx = Math.max(0, entries.length - keepRecentTurns * 2);
+    const olderEntries = entries.slice(0, recentStartIdx);
+    const recentEntries = entries.slice(recentStartIdx);
+
+    // Build rule-based compact summary from older turns
+    const topics = new Map<string, number>();
+    const filesDiscussed = new Set<string>();
+    for (const entry of olderEntries) {
+      // Extract file references (common patterns)
+      const fileRefs = entry.content.match(/[\w\-./]+\.(ts|js|py|java|tsx|jsx|md|json|yaml|yml)/g);
+      if (fileRefs) {
+        for (const f of fileRefs) filesDiscussed.add(f);
+      }
+      // Count user messages as topic indicators
+      if (entry.role === 'user') {
+        const firstLine = entry.content.split('\n')[0]?.slice(0, 80) ?? '';
+        const topic = firstLine || '(empty)';
+        topics.set(topic, (topics.get(topic) ?? 0) + 1);
+      }
+    }
+
+    const topicSummary = [...topics.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([topic, count]) => `${count > 1 ? `${count}x ` : ''}${topic}`)
+      .join('; ');
+
+    const compactContent = [
+      `[SESSION CONTEXT: ${olderEntries.length} prior messages, ${turnPairs - keepRecentTurns} turns compacted]`,
+      topicSummary ? `Topics: ${topicSummary}` : null,
+      filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 10).join(', ')}` : null,
+    ].filter(Boolean).join('\n');
+
+    const compactEntry: ConversationEntry = {
+      role: 'assistant',
+      content: compactContent,
+      taskId: 'compaction',
+      timestamp: olderEntries[0]?.timestamp ?? Date.now(),
+      tokenEstimate: estimateTokens(compactContent),
+    };
+
+    return this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens);
+  }
+
+  /** Trim entries to fit within token budget, removing oldest first. */
+  private enforceTokenBudget(entries: ConversationEntry[], maxTokens: number): ConversationEntry[] {
+    let totalTokens = entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
+    const result = [...entries];
+    while (totalTokens > maxTokens && result.length > 1) {
+      const removed = result.shift()!;
+      totalTokens -= removed.tokenEstimate;
+    }
+    return result;
+  }
+}
+
+/** Rough token estimation: ~3.5 chars per token for mixed content. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
 }

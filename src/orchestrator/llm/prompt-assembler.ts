@@ -11,7 +11,7 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
-import type { CacheControl, PerceptualHierarchy, TaskDAG, TaskType, TaskUnderstanding, WorkingMemoryState } from '../types.ts';
+import type { CacheControl, ConversationEntry, PerceptualHierarchy, TaskDAG, TaskType, TaskUnderstanding, WorkingMemoryState } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 import type { SectionContext } from './prompt-section-registry.ts';
 import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
@@ -61,10 +61,12 @@ export function assemblePrompt(
   understanding?: TaskUnderstanding,
   /** R2 (§5): routing level gates tool descriptions out of L0-L1 prompts. */
   routingLevel?: number,
+  /** Conversation history from prior turns in the same session. */
+  conversationHistory?: ConversationEntry[],
 ): AssembledPrompt {
   // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
-    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel };
+    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel, conversationHistory };
     const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
     const userPrompt = reasoningRegistry.renderTarget('user', ctx);
     const sysTokens = estimateTokens(systemPrompt);
@@ -80,7 +82,7 @@ export function assemblePrompt(
   }
 
   // Code tasks: use section registry for composable assembly
-  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel };
+  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel, conversationHistory };
   const systemPrompt = defaultRegistry.renderTarget('system', ctx);
   const userPrompt = defaultRegistry.renderTarget('user', ctx);
   const sysTokens = estimateTokens(systemPrompt);

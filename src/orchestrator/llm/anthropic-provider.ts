@@ -205,6 +205,6 @@ function buildThinkingParams(thinking?: ThinkingConfig): Record<string, unknown>
       thinking: { type: 'enabled', budget_tokens: thinking.budgetTokens, ...(thinking.display ? { display: thinking.display } : {}) },
     };
   }
-  // Future thinking types (multi-hypothesis, counterfactual, etc.) — not yet implemented
+  // Future thinking types (multi-hypothesis, counterfactual, etc.) — types defined in types.ts, provider support not yet implemented
   return {};
 }

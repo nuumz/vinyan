@@ -76,6 +76,7 @@ export interface WorkerPool {
     routing: RoutingDecision,
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
+    conversationHistory?: import('./types.ts').ConversationEntry[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
   getAgentLoopDeps?(): import('./worker/agent-loop.ts').AgentLoopDeps | null;
@@ -164,6 +165,8 @@ export interface OrchestratorDeps {
   mcpClientPool?: import('../mcp/client.ts').MCPClientPool;
   /** Crash Recovery: Task checkpoint store for pre-dispatch persistence. */
   taskCheckpoint?: import('../db/task-checkpoint-store.ts').TaskCheckpointStore;
+  /** Session manager for conversation history loading (conversation agent mode). */
+  sessionManager?: import('../api/session-manager.ts').SessionManager;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -261,6 +264,26 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
       }
     : undefined;
   const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id, archiver });
+
+  // Session memory: hydrate from prior turns (A7: cross-turn learning)
+  if (input.sessionId && deps.sessionManager) {
+    try {
+      const memoryJson = deps.sessionManager.getSessionWorkingMemory(input.sessionId);
+      if (memoryJson) {
+        const prior = JSON.parse(memoryJson) as WorkingMemoryState;
+        // Seed failed approaches from prior turns
+        for (const fa of prior.failedApproaches ?? []) {
+          workingMemory.recordFailedApproach(fa.approach, fa.oracleVerdict, fa.verdictConfidence, fa.failureOracle);
+        }
+        // Seed scoped facts from prior turns
+        for (const fact of prior.scopedFacts ?? []) {
+          workingMemory.addScopedFact(fact.target, fact.pattern, fact.verified, fact.hash);
+        }
+      }
+    } catch {
+      // Session memory hydration is best-effort
+    }
+  }
 
   // Cross-task learning: load prior failed approaches
   if (deps.rejectedApproachStore && input.targetFiles?.length) {
@@ -420,6 +443,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   const { workingMemory, explorationFlag } = prep;
   const startTime = Date.now();
 
+  // Conversation Agent Mode: load conversation history if session context present
+  let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
+  if (input.sessionId && deps.sessionManager) {
+    try {
+      const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
+      conversationHistory = deps.sessionManager.getConversationHistory(input.sessionId, historyBudget);
+    } catch {
+      // Non-fatal: proceed without conversation history
+    }
+  }
+
   deps.bus?.emit('task:start', { input, routing });
 
   // Crash Recovery: mark checkpoint complete/failed on task completion
@@ -449,6 +483,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     startTime,
     workingMemory,
     explorationFlag,
+    conversationHistory,
   };
 
   // Outer loop: routing level escalation
@@ -857,6 +892,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         }
 
         serializeApproachesToStore(workingMemory, input, deps);
+        persistSessionMemory(workingMemory, input, deps);
         deps.bus?.emit('task:complete', { result: successResult });
         detachCheckpoint?.();
         return successResult;
@@ -957,6 +993,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     escalationReason: `Task could not be completed after exhausting all routing levels (L0-L3). ${workingMemory.getSnapshot().failedApproaches.length} failed approaches recorded.`,
   };
   deps.bus?.emit('task:complete', { result: escalationResult });
+  persistSessionMemory(workingMemory, input, deps);
   detachCheckpoint?.();
   return escalationResult;
 }
@@ -983,6 +1020,17 @@ function serializeApproachesToStore(workingMemory: WorkingMemory, input: TaskInp
     } catch {
       // Best-effort
     }
+  }
+}
+
+/** Persist working memory snapshot to session store for cross-turn learning. */
+function persistSessionMemory(workingMemory: WorkingMemory, input: TaskInput, deps: OrchestratorDeps): void {
+  if (!input.sessionId || !deps.sessionManager) return;
+  try {
+    const snapshot = workingMemory.getSnapshot();
+    deps.sessionManager.saveSessionWorkingMemory(input.sessionId, JSON.stringify(snapshot));
+  } catch {
+    // Session memory persistence is best-effort
   }
 }
 

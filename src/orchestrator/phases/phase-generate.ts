@@ -43,6 +43,7 @@ export async function executeGeneratePhase(
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
   const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry } = gi;
   let { totalTokensConsumed } = gi;
+  const conversationHistory = ctx.conversationHistory;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
   const contract = createContract(input, routing);
@@ -81,7 +82,7 @@ export async function executeGeneratePhase(
             targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
             goal: node.description || input.goal,
           };
-          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract);
+          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, conversationHistory);
           return {
             nodeId,
             mutations: result.mutations,
@@ -119,6 +120,7 @@ export async function executeGeneratePhase(
           routing,
           understanding,
           contract,
+          conversationHistory,
         );
       }
     } else {
@@ -134,6 +136,7 @@ export async function executeGeneratePhase(
         agentLoopDeps,
         understanding,
         contract,
+        conversationHistory,
       );
       isAgenticResult = true;
       workerResult = {

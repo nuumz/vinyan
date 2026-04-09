@@ -290,6 +290,14 @@ export interface VinyanBusEvents {
   'hms:overconfidence_detected': { taskId: string; score: number; certainty_markers: number };
   'hms:risk_scored': { taskId: string; risk: number; primary_signal: string };
   'hms:cross_validation_complete': { taskId: string; consistency: number; probes_sent: number };
+
+  // Economy OS activation events
+  'human:review_requested': { taskId: string; prompt: string; timeoutMs: number };
+  'human:review_completed': { taskId: string; content: string; reviewerId?: string };
+  'market:auto_activated': { costRecordCount: number; engineCount: number; fromPhase: string; toPhase: string };
+  'market:settlement_accurate': { provider: string; capability?: string; taskId: string };
+  'market:settlement_inaccurate': { provider: string; capability?: string; taskId: string };
+  'economy:cost_pattern_detected': { patternId: string; type: string; engineId: string; taskType: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

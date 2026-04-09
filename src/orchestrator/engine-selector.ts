@@ -13,8 +13,11 @@
  */
 import type { VinyanBus } from '../core/bus.ts';
 import type { ProviderTrustStore } from '../db/provider-trust-store.ts';
-import { LEVEL_CONFIG } from '../gate/risk-router.ts';
+import type { CostPredictor } from '../economy/cost-predictor.ts';
+import type { BidderContext } from '../economy/market/auction-engine.ts';
 import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
+import type { EngineBid } from '../economy/market/schemas.ts';
+import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import type { RoutingLevel } from './types.ts';
 import { selectProvider } from './priority-router.ts';
 import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
@@ -37,6 +40,7 @@ export interface EngineSelectorConfig {
   trustStore: ProviderTrustStore;
   bus?: VinyanBus;
   marketScheduler?: MarketScheduler;
+  costPredictor?: CostPredictor;
 }
 
 export interface EngineSelector {
@@ -47,11 +51,13 @@ export class DefaultEngineSelector implements EngineSelector {
   private trustStore: ProviderTrustStore;
   private bus?: VinyanBus;
   private marketScheduler?: MarketScheduler;
+  private costPredictor?: CostPredictor;
 
   constructor(config: EngineSelectorConfig) {
     this.trustStore = config.trustStore;
     this.bus = config.bus;
     this.marketScheduler = config.marketScheduler;
+    this.costPredictor = config.costPredictor;
   }
 
   select(routingLevel: RoutingLevel, taskType: string, requiredCapabilities?: string[]): EngineSelection {
@@ -72,15 +78,26 @@ export class DefaultEngineSelector implements EngineSelector {
       return score >= minTrust;
     });
 
-    // 3. If MarketScheduler is active, attempt auction-based selection
+    // 3. Auto-activate market if sufficient data
+    if (this.marketScheduler && !this.marketScheduler.isActive() && qualified.length >= 2) {
+      const providerCount = providers.length;
+      // Use total records across all providers as proxy for cost record count
+      const totalRecords = providers.reduce((sum, p) => sum + p.successes + p.failures, 0);
+      this.marketScheduler.checkAutoActivation(totalRecords, providerCount);
+    }
+
+    // 4. If MarketScheduler is active, attempt auction-based selection
     if (this.marketScheduler?.isActive() && qualified.length >= 2) {
-      // Market integration: auction among qualified providers
-      // For now, emit event and fall through to Wilson LB — full auction wiring
-      // requires bid solicitation from providers (future K2.4 work)
-      this.bus?.emit('market:fallback_to_selector', {
-        taskId: taskType,
-        reason: 'Auction bid solicitation not yet wired',
-      });
+      const auctionResult = this.attemptAuction(taskType, routingLevel, qualified, defaultModel ?? 'unknown');
+      if (auctionResult) {
+        this.bus?.emit('engine:selected', {
+          taskId: taskType,
+          provider: auctionResult.provider,
+          trustScore: auctionResult.trustScore,
+          reason: auctionResult.selectionReason,
+        });
+        return auctionResult;
+      }
     }
 
     // 4. Rank by Wilson LB trust score
@@ -112,5 +129,73 @@ export class DefaultEngineSelector implements EngineSelector {
     });
 
     return result;
+  }
+
+  /**
+   * Build bids from qualified providers and run a Vickrey auction.
+   * Returns null if auction fails (falls back to Wilson LB).
+   */
+  private attemptAuction(
+    taskType: string,
+    routingLevel: RoutingLevel,
+    qualified: Array<{ provider: string; successes: number; failures: number }>,
+    defaultModel: string,
+  ): EngineSelection | null {
+    if (!this.marketScheduler) return null;
+
+    const now = Date.now();
+    const budgetTokens = LEVEL_CONFIG[routingLevel]?.budgetTokens ?? 10_000;
+
+    // Generate bids from cost predictor or cold-start
+    const bids: EngineBid[] = [];
+    const contexts = new Map<string, BidderContext>();
+
+    for (const p of qualified) {
+      const prediction = this.costPredictor?.predict(taskType, routingLevel);
+      const total = p.successes + p.failures;
+      const trustScore = total > 0 ? wilsonLowerBound(p.successes, total, 1.96) : 0.5;
+
+      bids.push({
+        bidId: `bid-${p.provider}-${now}`,
+        auctionId: '', // filled by MarketScheduler
+        bidderId: p.provider,
+        bidderType: 'local',
+        estimatedTokensInput: prediction ? Math.round(prediction.predicted_usd * 500_000) : budgetTokens / 2,
+        estimatedTokensOutput: prediction ? Math.round(prediction.predicted_usd * 250_000) : budgetTokens / 2,
+        estimatedDurationMs: 5000,
+        estimatedUsd: prediction?.predicted_usd,
+        declaredConfidence: trustScore,
+        acceptsTokenBudget: budgetTokens,
+        acceptsTimeLimitMs: LEVEL_CONFIG[routingLevel]?.latencyBudgetMs ?? 10_000,
+        submittedAt: now,
+      });
+
+      contexts.set(p.provider, {
+        successes: p.successes,
+        failures: p.failures,
+        capabilityScore: trustScore,
+        bidAccuracy: null, // filled by MarketScheduler
+      });
+    }
+
+    const result = this.marketScheduler.allocate(`task-${taskType}`, bids, contexts, budgetTokens);
+    if (!result) {
+      this.bus?.emit('market:fallback_to_selector', {
+        taskId: taskType,
+        reason: 'Auction returned no winner',
+      });
+      return null;
+    }
+
+    // Find trust score for winner
+    const winner = qualified.find((p) => p.provider === result.winnerId);
+    const winnerTotal = winner ? winner.successes + winner.failures : 0;
+    const winnerTrust = winnerTotal > 0 ? wilsonLowerBound(winner!.successes, winnerTotal, 1.96) : 0.5;
+
+    return {
+      provider: result.winnerId,
+      trustScore: winnerTrust,
+      selectionReason: `auction:score=${result.winnerScore.toFixed(3)}`,
+    };
   }
 }

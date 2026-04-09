@@ -1,5 +1,5 @@
 /**
- * TestGenerator — generative verification interface stub (§17.7).
+ * TestGenerator — generative verification interface (§17.7).
  *
  * After code generation, generates targeted test cases for the proposed changes,
  * runs them, and uses failures as a semantic verification signal.
@@ -34,7 +34,7 @@ export interface TestGenResult {
   tokensUsed: { input: number; output: number };
 }
 
-/** TestGenerator interface — stub for Phase 1B implementation */
+/** TestGenerator interface — implemented by LLMTestGenerator */
 export interface TestGenerator {
   generateAndRun(proposal: WorkerProposal, perception: PerceptualHierarchy): Promise<TestGenResult>;
 }

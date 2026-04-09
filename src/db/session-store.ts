@@ -1,5 +1,5 @@
 /**
- * Session Store — CRUD for API sessions and session tasks.
+ * Session Store — CRUD for API sessions, session tasks, and conversation messages.
  *
  * Follows WorkerStore pattern: SQLite-backed, Zod-validated at boundaries.
  * Source of truth: spec/tdd.md §22.5
@@ -22,6 +22,18 @@ export interface SessionTaskRow {
   task_input_json: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   result_json: string | null;
+  created_at: number;
+}
+
+export interface SessionMessageRow {
+  id: number;
+  session_id: string;
+  task_id: string | null;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  thinking: string | null;
+  tools_used: string | null;
+  token_estimate: number;
   created_at: number;
 }
 
@@ -122,5 +134,50 @@ export class SessionStore {
     return this.db
       .query("SELECT * FROM session_tasks WHERE status IN ('pending', 'running') ORDER BY created_at ASC")
       .all() as SessionTaskRow[];
+  }
+
+  // ── Session Messages (Conversation Agent Mode) ──────────
+
+  insertMessage(msg: Omit<SessionMessageRow, 'id'>): void {
+    this.db.run(
+      `INSERT INTO session_messages (session_id, task_id, role, content, thinking, tools_used, token_estimate, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [msg.session_id, msg.task_id, msg.role, msg.content, msg.thinking, msg.tools_used, msg.token_estimate, msg.created_at],
+    );
+  }
+
+  getMessages(sessionId: string, limit?: number): SessionMessageRow[] {
+    if (limit != null) {
+      return this.db
+        .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?')
+        .all(sessionId, limit) as SessionMessageRow[];
+    }
+    return this.db
+      .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC')
+      .all(sessionId) as SessionMessageRow[];
+  }
+
+  countMessages(sessionId: string): number {
+    const row = this.db.query('SELECT COUNT(*) as count FROM session_messages WHERE session_id = ?').get(sessionId) as { count: number };
+    return row.count;
+  }
+
+  /**
+   * Get recent messages within a token budget (newest first, reversed to chronological order).
+   * Walks backward from newest until token budget is exhausted.
+   */
+  getRecentMessages(sessionId: string, maxTokens: number): SessionMessageRow[] {
+    const all = this.db
+      .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at DESC')
+      .all(sessionId) as SessionMessageRow[];
+
+    const result: SessionMessageRow[] = [];
+    let tokens = 0;
+    for (const msg of all) {
+      tokens += msg.token_estimate;
+      if (tokens > maxTokens && result.length > 0) break;
+      result.push(msg);
+    }
+    return result.reverse(); // chronological order
   }
 }

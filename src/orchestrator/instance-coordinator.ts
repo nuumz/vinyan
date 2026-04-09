@@ -21,6 +21,7 @@ import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import type { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
 import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
+import type { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import type { EventForwarder } from './event-forwarder.ts';
 import type { TaskFingerprint, TaskInput, TaskResult, WorkerProfile, WorkerStats } from './types.ts';
 
@@ -56,6 +57,8 @@ export interface InstanceCoordinatorConfig {
   bus?: VinyanBus;
   /** Event forwarder for broadcasting events to peers. */
   eventForwarder?: EventForwarder;
+  /** Federation budget pool for cost control on delegation. */
+  federationBudgetPool?: FederationBudgetPool;
   /** Max delegation attempts before giving up (default: 2). */
   maxDelegationAttempts?: number;
   /** False positive rate threshold for demotion (default: 0.3). */
@@ -108,6 +111,16 @@ export class InstanceCoordinator {
     const peers = this.getActivePeers();
     if (peers.length === 0) {
       return { delegated: false, reason: 'No peers available' };
+    }
+
+    // Economy: check federation budget before delegation
+    const pool = this.config.federationBudgetPool;
+    if (pool) {
+      const estimatedCost = 0.01; // conservative default; CostPredictor can refine this
+      if (!pool.canAfford(estimatedCost)) {
+        return { delegated: false, reason: 'Federation budget pool exhausted' };
+      }
+      pool.consume(estimatedCost);
     }
 
     for (let attempt = 0; attempt < this.config.maxDelegationAttempts && attempt < peers.length; attempt++) {

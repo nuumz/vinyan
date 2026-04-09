@@ -64,7 +64,7 @@ export class DelegationRouter {
       };
     }
 
-    // R5: Safety invariants (extensible — placeholder for evolution/safety-invariants.ts)
+    // R5: Safety invariants (extensible — see evolution/safety-invariants.ts)
 
     // Approved — calculate allocation (50% cap of remaining)
     const requested = request.requestedTokens ?? DEFAULT_DELEGATION_BUDGET;

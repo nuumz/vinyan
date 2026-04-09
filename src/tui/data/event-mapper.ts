@@ -114,6 +114,23 @@ const EVENT_MAP: Record<string, EventStyle> = {
   'critic:verdict': { domain: 'oracle', icon: '⊙', color: ANSI.cyan, defaultVisible: false },
   'tools:executed': { domain: 'system', icon: '⚙', color: ANSI.gray, defaultVisible: false },
   'decomposer:fallback': { domain: 'system', icon: '↩', color: ANSI.yellow, defaultVisible: true },
+
+  // Economy OS
+  'economy:cost_recorded': { domain: 'system', icon: '$', color: ANSI.gray, defaultVisible: false },
+  'economy:budget_warning': { domain: 'system', icon: '⚠', color: ANSI.yellow, defaultVisible: true },
+  'economy:budget_exceeded': { domain: 'system', icon: '✗', color: ANSI.red, defaultVisible: true },
+  'economy:budget_degraded': { domain: 'system', icon: '↓', color: ANSI.yellow, defaultVisible: true },
+  'economy:cost_pattern_detected': { domain: 'system', icon: '◉', color: ANSI.cyan, defaultVisible: true },
+  'market:auction_started': { domain: 'system', icon: '⊕', color: ANSI.blue, defaultVisible: false },
+  'market:auction_completed': { domain: 'system', icon: '⊕', color: ANSI.green, defaultVisible: true },
+  'market:phase_transition': { domain: 'system', icon: '→', color: ANSI.magenta, defaultVisible: true },
+  'market:auto_activated': { domain: 'system', icon: '▶', color: ANSI.green, defaultVisible: true },
+  'market:settlement_accurate': { domain: 'system', icon: '✓', color: ANSI.green, defaultVisible: false },
+  'market:settlement_inaccurate': { domain: 'system', icon: '✗', color: ANSI.red, defaultVisible: true },
+  'market:fallback_to_selector': { domain: 'system', icon: '↩', color: ANSI.yellow, defaultVisible: false },
+  'human:review_requested': { domain: 'system', icon: '⚠', color: ANSI.yellow, defaultVisible: true },
+  'human:review_completed': { domain: 'system', icon: '✓', color: ANSI.green, defaultVisible: true },
+  'engine:selected': { domain: 'system', icon: '⊙', color: ANSI.blue, defaultVisible: false },
 };
 
 const DEFAULT_STYLE: EventStyle = { domain: 'other', icon: '·', color: ANSI.gray, defaultVisible: false };

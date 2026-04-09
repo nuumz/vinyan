@@ -1,5 +1,5 @@
 /**
- * CriticEngine — LLM-as-Critic interface stub (§17.6).
+ * CriticEngine — LLM-as-Critic interface (§17.6).
  *
  * Implements semantic verification: a second LLM call reviews the Generator's output
  * for correctness beyond what structural oracles can catch (logic errors, misunderstood
@@ -38,7 +38,7 @@ export interface CriticResult {
   tokensUsed: { input: number; output: number };
 }
 
-/** CriticEngine interface — stub for Phase 1B implementation */
+/** CriticEngine interface — implemented by LLMCriticImpl */
 export interface CriticEngine {
   review(
     proposal: WorkerProposal,

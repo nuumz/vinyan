@@ -45,6 +45,7 @@ import { renderHelpOverlay } from './views/help.ts';
 import { PEERS_PANEL_COUNT, renderPeers } from './views/peers.ts';
 import { SYSTEM_PANEL_COUNT, renderSystem } from './views/system.ts';
 import { renderTasks, TASKS_PANEL_COUNT } from './views/tasks.ts';
+import { ECONOMY_PANEL_COUNT, renderEconomy } from './views/economy.ts';
 
 export interface AppConfig {
   state: TUIState;
@@ -56,6 +57,7 @@ const TABS: Array<{ key: string; label: string; tab: ViewTab }> = [
   { key: '2', label: 'System', tab: 'system' },
   { key: '3', label: 'Peers', tab: 'peers' },
   { key: '4', label: 'Events', tab: 'events' },
+  { key: '5', label: 'Economy', tab: 'economy' },
 ];
 
 export class App {
@@ -641,6 +643,8 @@ export class App {
         return PEERS_PANEL_COUNT;
       case 'events':
         return EVENTS_PANEL_COUNT;
+      case 'economy':
+        return ECONOMY_PANEL_COUNT;
       default:
         return 1;
     }
@@ -755,6 +759,9 @@ export class App {
         break;
       case 'events':
         viewContent = renderEvents(state);
+        break;
+      case 'economy':
+        viewContent = renderEconomy(state);
         break;
     }
     lines.push(viewContent);

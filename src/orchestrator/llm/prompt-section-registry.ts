@@ -11,6 +11,7 @@
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
 import type {
   CacheControl,
+  ConversationEntry,
   PerceptualHierarchy,
   SemanticTaskUnderstanding,
   TaskDAG,
@@ -50,6 +51,8 @@ export interface SectionContext {
   understanding?: SemanticTaskUnderstanding | TaskUnderstanding;
   /** R2 (§5): Routing level — used to gate tool descriptions out of L0-L1 prompts. */
   routingLevel?: number;
+  /** Conversation history from prior turns in the same session. */
+  conversationHistory?: ConversationEntry[];
 }
 
 export interface PromptSection {
@@ -513,6 +516,8 @@ Do NOT execute tool calls yourself — propose them and the Orchestrator will ex
     },
   });
 
+  registerConversationHistorySection(registry);
+
   return registry;
 }
 
@@ -782,5 +787,32 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     },
   });
 
+  registerConversationHistorySection(registry);
+
   return registry;
+}
+
+// ── Shared: Conversation History section ────────────────────────────
+
+/** Register the conversation-history prompt section (shared between code and reasoning registries). */
+function registerConversationHistorySection(registry: PromptSectionRegistry): void {
+  registry.register({
+    id: 'conversation-history',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 15, // early in user prompt, before task/perception/plan
+    render: (ctx) => {
+      if (!ctx.conversationHistory?.length) return null;
+      const lines = ctx.conversationHistory.map((entry, i) => {
+        const turnNum = i + 1;
+        const role = entry.role === 'user' ? 'User' : 'Assistant';
+        // Truncate long entries to keep prompt manageable
+        const content = entry.content.length > 2000
+          ? `${entry.content.slice(0, 2000)}... (truncated)`
+          : entry.content;
+        return `[Turn ${turnNum}] ${role}: ${clean(content)}`;
+      });
+      return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
+    },
+  });
 }

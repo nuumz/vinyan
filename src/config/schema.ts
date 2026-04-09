@@ -312,6 +312,23 @@ export const ECPv2FlagsSchema = z.object({
 
 export type ECPv2Flags = z.infer<typeof ECPv2FlagsSchema>;
 
+// ─── Engine Configuration (non-LLM reasoning engines) ──────────────
+
+const EnginesConfigSchema = z.object({
+  z3: z.object({
+    enabled: z.boolean().default(false),
+    /** Path to z3 binary (default: 'z3' from PATH). */
+    path: z.string().default('z3'),
+  }).default(() => ({ enabled: false, path: 'z3' })),
+  human: z.object({
+    enabled: z.boolean().default(false),
+    /** Timeout in ms for human review response (default: 5 minutes). */
+    timeout_ms: z.number().positive().default(300_000),
+  }).default(() => ({ enabled: false, timeout_ms: 300_000 })),
+});
+
+export type EnginesConfig = z.infer<typeof EnginesConfigSchema>;
+
 // ─── Root schema ─────────────────────────────────────────────────────
 
 export const VinyanConfigSchema = z.object({
@@ -335,6 +352,8 @@ export const VinyanConfigSchema = z.object({
   economy: EconomyConfigSchema.optional(),
   /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */
   hms: HMSConfigSchema.optional(),
+  /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
+  engines: EnginesConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

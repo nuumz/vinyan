@@ -23,6 +23,7 @@ import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
+import { z } from 'zod/v4';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSSEStream } from './sse.ts';
 
@@ -295,16 +296,24 @@ export class VinyanAPIServer {
 
   // ── ECP HTTP Verify Handler (PH5.18) ───────────────────
 
+  /** K1.4: Zod schema for HTTP verify request body */
+  private static readonly HttpVerifySchema = z.object({
+    oracle_name: z.string().min(1),
+    hypothesis: z.unknown(),
+    ecp_version: z.string().optional(),
+  });
+
   private async handleHttpVerify(req: Request): Promise<Response> {
     if (!this.deps.runOracle) {
       return jsonResponse({ error: 'Oracle runner not configured' }, 501);
     }
     try {
-      const body = await req.json() as { oracle_name?: string; hypothesis?: unknown };
-      const { oracle_name: oracleName, hypothesis } = body;
-      if (!oracleName || typeof oracleName !== 'string' || !hypothesis) {
-        return jsonResponse({ error: 'Missing oracle_name or hypothesis' }, 400);
+      const body = await req.json();
+      const parsed = VinyanAPIServer.HttpVerifySchema.safeParse(body);
+      if (!parsed.success) {
+        return jsonResponse({ error: `Invalid request: ${parsed.error.message}` }, 400);
       }
+      const { oracle_name: oracleName, hypothesis } = parsed.data;
       const verdict = await this.deps.runOracle(oracleName, hypothesis as never);
       return jsonResponse(verdict);
     } catch (err) {
@@ -314,68 +323,85 @@ export class VinyanAPIServer {
 
   // ── WebSocket ECP Handler (PH5.18) ─────────────────────
 
+  /** K1.4: Zod schema for WebSocket JSON-RPC messages */
+  private static readonly WsMessageSchema = z.object({
+    jsonrpc: z.string().optional(),
+    id: z.union([z.string(), z.number()]).optional(),
+    method: z.string().min(1),
+    params: z.record(z.string(), z.unknown()).optional(),
+  });
+
   private handleWebSocketMessage(
     ws: { send(data: string): void },
     data: string,
     client?: { authenticated: boolean },
   ): void {
+    let rawParsed: unknown;
     try {
-      const msg = JSON.parse(data) as { jsonrpc?: string; id?: string; method?: string; params?: Record<string, unknown> };
-
-      if (msg.method === 'ecp/authenticate') {
-        const token = (msg.params?.token as string) ?? '';
-        const authResult = this.auth.authenticate(
-          new Request('http://localhost', { headers: { Authorization: `Bearer ${token}` } }),
-        );
-        if (client) client.authenticated = authResult.authenticated;
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { authenticated: authResult.authenticated } }));
-        return;
-      }
-
-      if (msg.method === 'ecp/heartbeat') {
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { status: 'ok' } }));
-        return;
-      }
-
-      // Auth required for verify operations
-      if (this.config.authRequired && !client?.authenticated) {
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'Unauthorized' } }));
-        return;
-      }
-
-      if (msg.method === 'ecp/verify') {
-        const oracleName = msg.params?.oracle_name as string;
-        const hypothesis = msg.params?.hypothesis;
-        if (!oracleName || !hypothesis) {
-          ws.send(
-            JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Missing oracle_name or hypothesis' } }),
-          );
-          return;
-        }
-        if (this.deps.runOracle) {
-          this.deps.runOracle(oracleName, hypothesis as never).then(
-            (verdict) => ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: verdict })),
-            (err) =>
-              ws.send(
-                JSON.stringify({
-                  jsonrpc: '2.0',
-                  id: msg.id,
-                  error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
-                }),
-              ),
-          );
-        } else {
-          ws.send(
-            JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Oracle runner not configured' } }),
-          );
-        }
-        return;
-      }
-
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } }));
+      rawParsed = JSON.parse(data);
     } catch {
-      // Malformed message — ignore
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }));
+      return;
     }
+
+    const parsed = VinyanAPIServer.WsMessageSchema.safeParse(rawParsed);
+    if (!parsed.success) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: `Invalid request: ${parsed.error.message}` } }));
+      return;
+    }
+    const msg = parsed.data;
+
+    if (msg.method === 'ecp/authenticate') {
+      const token = (msg.params?.token as string) ?? '';
+      const authResult = this.auth.authenticate(
+        new Request('http://localhost', { headers: { Authorization: `Bearer ${token}` } }),
+      );
+      if (client) client.authenticated = authResult.authenticated;
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { authenticated: authResult.authenticated } }));
+      return;
+    }
+
+    if (msg.method === 'ecp/heartbeat') {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { status: 'ok' } }));
+      return;
+    }
+
+    // Auth required for verify operations
+    if (this.config.authRequired && !client?.authenticated) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'Unauthorized' } }));
+      return;
+    }
+
+    if (msg.method === 'ecp/verify') {
+      const oracleName = msg.params?.oracle_name as string;
+      const hypothesis = msg.params?.hypothesis;
+      if (!oracleName || !hypothesis) {
+        ws.send(
+          JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Missing oracle_name or hypothesis' } }),
+        );
+        return;
+      }
+      if (this.deps.runOracle) {
+        this.deps.runOracle(oracleName, hypothesis as never).then(
+          (verdict) => ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: verdict })),
+          (err) =>
+            ws.send(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+              }),
+            ),
+        );
+      } else {
+        ws.send(
+          JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Oracle runner not configured' } }),
+        );
+      }
+      return;
+    }
+
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } }));
   }
 
   // ── Task Handlers ───────────────────────────────────────

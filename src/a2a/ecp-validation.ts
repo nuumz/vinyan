@@ -38,14 +38,27 @@ export function validateECPVerdict(raw: unknown): {
   return { valid: true, data: result.data };
 }
 
+/** Maximum confidence allowed for probabilistic (LLM self-reported) sources (A5). */
+const LLM_SELF_REPORT_CONFIDENCE_CAP = 0.5;
+
 /**
  * Normalize a raw ECP message for backward compatibility.
  * Missing ecp_version → '1.0'; missing confidence → 0.0.
+ * A5 defense-in-depth: llm-self-report confidence clamped to 0.5.
  */
 export function normalizeECPMessage(raw: Record<string, unknown>): Record<string, unknown> {
+  let confidence = typeof raw.confidence === 'number' ? raw.confidence : 0.0;
+
+  // A5: Probabilistic self-reported confidence must not exceed heuristic tier
+  if (raw.confidence_source === 'llm-self-report') {
+    confidence = Math.min(confidence, LLM_SELF_REPORT_CONFIDENCE_CAP);
+  }
+
   return {
     ecp_version: raw.ecp_version ?? '1.0',
-    confidence: typeof raw.confidence === 'number' ? raw.confidence : 0.0,
+    confidence,
     ...raw,
+    // Override spread to ensure clamped value wins
+    ...(raw.confidence_source === 'llm-self-report' ? { confidence } : {}),
   };
 }

@@ -476,7 +476,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   const BUDGET_CAP_MULTIPLIER = 6; // ~3 routing levels × 2 retries per level
   let totalTokensConsumed = 0;
 
-  while (routing.level <= MAX_ROUTING_LEVEL) {
+  routingLoop: while (routing.level <= MAX_ROUTING_LEVEL) {
     // Track matched skill for feedback loop (H4) — resets on level escalation
     let matchedSkill: CachedSkill | null = null;
     // ECP §7.3: bonus retries granted by oracle deliberation requests
@@ -1182,14 +1182,45 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
             reason: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
           });
           routing = { ...routing, level: toLevel };
-          break; // Exit retry loop — re-enter at higher routing level
+          continue routingLoop; // Skip RETRY EXHAUSTED — re-enter at escalated level
         }
-        // L3 contradiction: nowhere to escalate — surface as unresolved
+        // L3 contradiction: nowhere to escalate — terminal failure (K1.1, spec §7.1)
         deps.bus?.emit('verification:contradiction_unresolved', {
           taskId: input.id,
           passed: passedOracles,
           failed: failedOracles,
         });
+
+        const verdictBooleans: Record<string, boolean> = {};
+        for (const [name, v] of Object.entries(verification.verdicts)) {
+          verdictBooleans[name] = v.verified;
+        }
+        const contradictionTrace: ExecutionTrace = {
+          id: `trace-${input.id}-contradiction`,
+          taskId: input.id,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'contradiction-unresolved',
+          oracleVerdicts: verdictBooleans,
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: Date.now() - startTime,
+          outcome: 'failure',
+          failureReason: `Unresolved oracle contradiction at L${routing.level}: passed=[${passedOracles}] failed=[${failedOracles}]`,
+          affectedFiles: input.targetFiles ?? [],
+        };
+        await deps.traceCollector.record(contradictionTrace);
+
+        const contradictionResult: TaskResult = {
+          id: input.id,
+          status: 'failed',
+          mutations: [],
+          trace: contradictionTrace,
+          contradictions: [`Unresolved at L${routing.level}: passed=[${passedOracles}] failed=[${failedOracles}]`],
+        };
+        deps.bus?.emit('task:complete', { result: contradictionResult });
+        return contradictionResult;
       }
 
       // ── ECP §7.3: Surface deliberation requests from oracles (A2) ──

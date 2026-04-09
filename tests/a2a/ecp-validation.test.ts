@@ -74,4 +74,32 @@ describe('normalizeECPMessage', () => {
     expect(result.type).toBe('pass');
     expect(result.ecp_version).toBe('1.0');
   });
+
+  test('llm-self-report confidence clamped to 0.5 (A5)', () => {
+    const result = normalizeECPMessage({
+      ecp_version: '1.0',
+      confidence: 0.95,
+      confidence_source: 'llm-self-report',
+    });
+    expect(result.confidence).toBe(0.5);
+    expect(result.confidence_source).toBe('llm-self-report');
+  });
+
+  test('non-llm confidence_source not clamped', () => {
+    const result = normalizeECPMessage({
+      ecp_version: '1.0',
+      confidence: 0.95,
+      confidence_source: 'deterministic',
+    });
+    expect(result.confidence).toBe(0.95);
+  });
+
+  test('llm-self-report confidence below cap preserved', () => {
+    const result = normalizeECPMessage({
+      ecp_version: '1.0',
+      confidence: 0.3,
+      confidence_source: 'llm-self-report',
+    });
+    expect(result.confidence).toBe(0.3);
+  });
 });

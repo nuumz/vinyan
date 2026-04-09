@@ -8,7 +8,12 @@
  * Source of truth: spec/tdd.md §12B (Execution Traces), §16 (Core Loop Step 6: LEARN)
  */
 
+import type { VinyanBus } from '../core/bus.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import type { CostLedger } from '../economy/cost-ledger.ts';
+import type { RateCardEntry } from '../economy/economy-config.ts';
+import { computeCost } from '../economy/cost-computer.ts';
+import { resolveRateCard } from '../economy/rate-card.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { TraceCollector } from './core-loop.ts';
 import type { ExecutionTrace } from './types.ts';
@@ -17,10 +22,20 @@ export class TraceCollectorImpl implements TraceCollector {
   private traces: ExecutionTrace[] = [];
   private worldGraph?: WorldGraph;
   private traceStore?: TraceStore;
+  private costLedger?: CostLedger;
+  private rateCards?: Record<string, RateCardEntry>;
+  private bus?: VinyanBus;
 
   constructor(worldGraph?: WorldGraph, traceStore?: TraceStore) {
     this.worldGraph = worldGraph;
     this.traceStore = traceStore;
+  }
+
+  /** Wire economy dependencies after construction (avoids circular deps). */
+  setEconomyDeps(costLedger: CostLedger, rateCards?: Record<string, RateCardEntry>, bus?: VinyanBus): void {
+    this.costLedger = costLedger;
+    this.rateCards = rateCards;
+    this.bus = bus;
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
@@ -32,6 +47,50 @@ export class TraceCollectorImpl implements TraceCollector {
         this.traceStore.insert(trace);
       } catch (err) {
         console.warn('[vinyan] Trace INSERT failed:', err);
+      }
+    }
+
+    // Economy: record cost entry from trace
+    if (this.costLedger && trace.modelUsed) {
+      try {
+        const card = resolveRateCard(trace.modelUsed, this.rateCards);
+        const costResult = computeCost(
+          {
+            input: trace.tokensConsumed,
+            output: 0, // tokensConsumed is total; split unavailable at trace level
+            cacheRead: trace.cacheReadTokens,
+            cacheCreation: trace.cacheCreationTokens,
+          },
+          card,
+        );
+        if (!card) {
+          this.bus?.emit('economy:rate_card_miss', { engineId: trace.modelUsed, fallback: 'estimated' });
+        }
+        this.costLedger.record({
+          id: `${trace.taskId}:${trace.timestamp}`,
+          taskId: trace.taskId,
+          workerId: trace.workerId ?? null,
+          engineId: trace.modelUsed,
+          timestamp: trace.timestamp,
+          tokens_input: trace.tokensConsumed,
+          tokens_output: 0,
+          cache_read_tokens: trace.cacheReadTokens ?? 0,
+          cache_creation_tokens: trace.cacheCreationTokens ?? 0,
+          duration_ms: trace.durationMs,
+          oracle_invocations: Object.keys(trace.oracleVerdicts ?? {}).length,
+          computed_usd: costResult.computed_usd,
+          cost_tier: costResult.cost_tier,
+          routing_level: trace.routingLevel,
+          task_type_signature: trace.taskTypeSignature ?? null,
+        });
+        this.bus?.emit('economy:cost_recorded', {
+          taskId: trace.taskId,
+          engineId: trace.modelUsed,
+          computed_usd: costResult.computed_usd,
+          cost_tier: costResult.cost_tier,
+        });
+      } catch {
+        // Economy recording is best-effort
       }
     }
 

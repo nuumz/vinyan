@@ -177,6 +177,16 @@ export interface OrchestratorDeps {
   understandingEngine?: import('./understanding-engine.ts').UnderstandingEngine;
   /** K2: Provider trust store for recording per-provider success/failure outcomes. */
   providerTrustStore?: import('../db/provider-trust-store.ts').ProviderTrustStore;
+  /** Economy: Cost ledger for persistent cost tracking. */
+  costLedger?: import('../economy/cost-ledger.ts').CostLedger;
+  /** Economy: Budget enforcer for global budget cap enforcement. */
+  budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
+  /** Economy: Rate cards config for cost computation. */
+  economyRateCards?: Record<string, import('../economy/economy-config.ts').RateCardEntry>;
+  /** Economy L2: Cost predictor for per-task-type cost forecasting. */
+  costPredictor?: import('../economy/cost-predictor.ts').CostPredictor;
+  /** Economy L2: Dynamic budget allocator for adaptive per-task budgets. */
+  dynamicBudgetAllocator?: import('../economy/dynamic-budget-allocator.ts').DynamicBudgetAllocator;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;

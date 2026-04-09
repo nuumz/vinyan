@@ -252,6 +252,32 @@ export interface VinyanBusEvents {
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
   'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
+
+  // Economy Operating System events (Layer 1)
+  'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };
+  'economy:budget_warning': { window: 'hour' | 'day' | 'month'; utilization_pct: number; spent_usd: number; limit_usd: number };
+  'economy:budget_exceeded': { window: 'hour' | 'day' | 'month'; spent_usd: number; limit_usd: number; enforcement: string };
+  'economy:budget_degraded': { taskId: string; fromLevel: number; toLevel: number; reason: string };
+  'economy:rate_card_miss': { engineId: string; fallback: string };
+
+  // Economy Layer 2 events
+  'economy:cost_predicted': { taskId: string; predicted_usd: number; confidence: number; basis: string };
+  'economy:budget_allocated': { taskId: string; maxTokens: number; source: string };
+  'economy:cost_pattern_found': { patternId: string; type: string; description: string };
+
+  // Economy Layer 3: Market events
+  'market:auction_started': { auctionId: string; taskId: string; eligibleBidders: number };
+  'market:auction_completed': { auctionId: string; winnerId: string; score: number; bidderCount: number };
+  'market:fallback_to_selector': { taskId: string; reason: string };
+  'market:settlement_recorded': { settlementId: string; bidAccuracy: number; penaltyType: string | null };
+  'market:collusion_suspected': { auctionId: string; bidSpread: number; consecutiveCount: number };
+  'market:phase_transition': { from: string; to: string; reason: string };
+
+  // Economy Layer 4: Federation economy events
+  'economy:federation_cost_received': { fromInstanceId: string; taskId: string; computed_usd: number };
+  'economy:federation_cost_broadcast': { taskId: string; computed_usd: number; peerCount: number };
+  'economy:peer_price_negotiated': { peerId: string; taskType: string; agreed_usd: number };
+  'economy:economic_dispute': { disputeId: string; type: string; resolution: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

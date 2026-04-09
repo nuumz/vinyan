@@ -6,6 +6,7 @@
  * fleet (worker governance), network (multi-instance coordination).
  */
 import { z } from 'zod/v4';
+import { EconomyConfigSchema } from '../economy/economy-config.ts';
 
 const OracleConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -329,6 +330,8 @@ export const VinyanConfigSchema = z.object({
   network: NetworkConfigSchema.optional(),
   /** ECP v2 feature flags — progressive rollout of epistemic improvements. */
   ecpV2: ECPv2FlagsSchema.optional(),
+  /** Economy Operating System — cost tracking, budgets, market, federation. */
+  economy: EconomyConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

@@ -18,7 +18,10 @@ import { migration008 } from './008_re_agnostic_worker_profiles.ts';
 import { migration009 } from './009_add_evidence_archives.ts';
 import { migration010 } from './010_add_action_verb_to_rejected.ts';
 import { migration011 } from './011_add_understanding_trace.ts';
+import { migration012 } from './012_add_economy_tables.ts';
+import { migration013 } from './013_add_market_tables.ts';
+import { migration014 } from './014_add_federation_economy.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011];
+export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014];

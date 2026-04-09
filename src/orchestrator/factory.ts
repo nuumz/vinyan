@@ -58,6 +58,11 @@ import { WorkerLifecycle } from './worker-lifecycle.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { WorkerSelector } from './worker-selector.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { CostLedger } from '../economy/cost-ledger.ts';
+import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
+import { CostPredictor } from '../economy/cost-predictor.ts';
+import { DynamicBudgetAllocator } from '../economy/dynamic-budget-allocator.ts';
+import type { EconomyConfig } from '../economy/economy-config.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import type { AgentLoopDeps } from './worker/agent-loop.ts';
@@ -234,6 +239,29 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* config loading is best-effort */
   }
 
+  // Economy Operating System — cost tracking + budget enforcement
+  let costLedger: CostLedger | undefined;
+  let budgetEnforcer: BudgetEnforcer | undefined;
+  let costPredictor: CostPredictor | undefined;
+  let dynamicBudgetAllocator: DynamicBudgetAllocator | undefined;
+  let economyConfig: EconomyConfig | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    economyConfig = vinyanConfig.economy;
+    if (economyConfig?.enabled && db) {
+      costLedger = new CostLedger(db.getDb());
+      if (economyConfig.budgets) {
+        budgetEnforcer = new BudgetEnforcer(economyConfig.budgets, costLedger, bus);
+      }
+      // Economy L2: cost prediction + dynamic budgets
+      costPredictor = new CostPredictor(costLedger);
+      dynamicBudgetAllocator = new DynamicBudgetAllocator(costLedger);
+      console.log('[vinyan] Economy OS: cost tracking + prediction enabled');
+    }
+  } catch {
+    /* economy wiring is best-effort */
+  }
+
   // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
   let workerLifecycle: WorkerLifecycle | undefined;
   if (workerStore) {
@@ -294,6 +322,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
+  if (costLedger) {
+    traceCollector.setEconomyDeps(costLedger, economyConfig?.rate_cards, bus);
+  }
   const toolExecutor = new ToolExecutor();
 
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
@@ -443,6 +474,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     understandingEngine,
     // K2.1: Provider trust for Wilson LB selection
     providerTrustStore,
+    // Economy Operating System
+    costLedger,
+    budgetEnforcer,
+    economyRateCards: economyConfig?.rate_cards,
+    costPredictor,
+    dynamicBudgetAllocator,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)

@@ -29,8 +29,9 @@ export const INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /---\s*(END|BEGIN)\s*(OF\s+)?(SYSTEM|PROMPT)/i, label: 'delimiter-escape' },
   { pattern: /```\s*(system|prompt|instruction)/i, label: 'delimiter-escape' },
 
-  // Base64-encoded payload (long base64 strings that look like encoded instructions)
-  { pattern: /[A-Za-z0-9+/]{100,}={0,2}/i, label: 'base64-payload' },
+  // Base64-encoded payload — require padding suffix (=, ==) to reduce false positives
+  // on minified code, long URLs, SHA hashes, and other legitimate long alphanumeric strings
+  { pattern: /[A-Za-z0-9+/]{100,}={1,2}/, label: 'base64-payload' },
 ];
 
 export interface InjectionResult {

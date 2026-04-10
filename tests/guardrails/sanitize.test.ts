@@ -54,8 +54,8 @@ describe('sanitizeForPrompt', () => {
       expect(result.cleaned).toContain('[REDACTED: delimiter-escape]');
     });
 
-    test('base64 payload (long encoded string) → redacted', () => {
-      const longBase64 = 'A'.repeat(120); // 120 chars of base64-like content
+    test('base64 payload (long encoded string with padding) → redacted', () => {
+      const longBase64 = 'A'.repeat(120) + '=='; // base64 with required padding
       const result = sanitizeForPrompt(`Execute: ${longBase64}`);
       expect(result.detections).toContain('base64-payload');
       expect(result.cleaned).toContain('[REDACTED: base64-payload]');

@@ -8,6 +8,7 @@
  * K2 adds dynamic, single-use capability tokens.
  */
 import type { AgentContract, Capability } from '../core/agent-contract.ts';
+import { isReadOnlyCommand } from '../orchestrator/tools/shell-policy.ts';
 
 interface AuthorizationResult {
   authorized: boolean;
@@ -55,13 +56,12 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): R
   if (['write_file', 'edit_file', 'create_file', 'replace_string_in_file'].includes(toolName)) {
     return { type: 'file_write', scope: [String(args.path ?? args.filePath ?? '')] };
   }
-  // Shell tools
+  // Shell tools — use centralized shell policy for read-only classification
   if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal') {
     const cmd = String(args.command ?? '');
-    const firstWord = cmd.split(/\s+/)[0] ?? '';
-    const isReadOnly = /^(cat|ls|find|grep|head|tail|wc|diff|echo|type|which)$/.test(firstWord);
+    const firstWord = cmd.trim().split(/\s+/)[0] ?? '';
     return {
-      type: isReadOnly ? 'shell_read' : 'shell_exec',
+      type: isReadOnlyCommand(firstWord) ? 'shell_read' : 'shell_exec',
       scope: [firstWord],
     };
   }

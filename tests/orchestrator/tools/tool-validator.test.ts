@@ -73,13 +73,13 @@ describe('validateToolCall — interpreter safe patterns', () => {
   test('bun --eval is rejected', () => {
     const result = validateToolCall(makeShellCall('bun --eval script'), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain('only allowed with safe sub-commands');
+    expect(result.reason).toContain('only allowed with sub-commands');
   });
 
   test('node -e is rejected', () => {
     const result = validateToolCall(makeShellCall('node -e script'), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain('only allowed with safe sub-commands');
+    expect(result.reason).toContain('only allowed with sub-commands');
   });
 
   test('bun test is allowed', () => {
@@ -100,7 +100,7 @@ describe('validateToolCall — interpreter safe patterns', () => {
   test('python script.py is rejected (sandbox escape)', () => {
     const result = validateToolCall(makeShellCall('python script.py'), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain('only allowed with safe sub-commands');
+    expect(result.reason).toContain('only allowed with sub-commands');
   });
 
   test('python --version is allowed', () => {
@@ -111,7 +111,7 @@ describe('validateToolCall — interpreter safe patterns', () => {
   test('node file.js is rejected (sandbox escape)', () => {
     const result = validateToolCall(makeShellCall('node file.js'), shellExecTool, ctx);
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain('only allowed with safe sub-commands');
+    expect(result.reason).toContain('only allowed with sub-commands');
   });
 
   test('node --version is allowed', () => {

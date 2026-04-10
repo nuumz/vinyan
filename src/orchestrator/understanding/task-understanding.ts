@@ -20,11 +20,45 @@ import { extractActionVerb } from '../task-fingerprint.ts';
 import type { ActionCategory, SemanticTaskUnderstanding, TaskDomain, TaskInput, TaskIntent, TaskType, TaskUnderstanding, ToolRequirement } from '../types.ts';
 import type { UnderstandingEngine } from './understanding-engine.ts';
 
-/** Keywords that indicate software engineering context. */
-const CODE_KEYWORDS = /\b(file|code|src|function|class|module|import|export|test|api|endpoint|bug|error|refactor|deploy|build|compile|lint|type|interface|schema|database|query|migration|docker|ci|cd|pipeline|git|branch|merge|commit|config|env|package|dependency|library|framework|server|client|route|middleware|controller|service|model|component|hook|state|prop|render|template|style|css|html|jsx|tsx|vue|svelte|astro|sql|orm|redis|kafka|queue|socket|auth|token|jwt|oauth|session|cookie|cors|ssl|tls|cert|log|metric|trace|debug|monitor|alert|cron|schedule|script|cli|command|tool|plugin|extension|sdk|worker|thread|process|cache|index|regex|parse|serialize|encode|decode|hash|encrypt|algorithm|data.?structure|linked.?list|tree|graph|stack|heap|sort|search|complexity|runtime|memory|cpu|performance|optimize|benchmark|profil|latency|throughput)\b/i;
+/** Keywords that indicate software engineering context (Set-based O(1) lookup). */
+const CODE_KEYWORD_SET = new Set([
+  'file', 'code', 'src', 'function', 'class', 'module', 'import', 'export', 'test', 'api',
+  'endpoint', 'bug', 'error', 'refactor', 'deploy', 'build', 'compile', 'lint', 'type',
+  'interface', 'schema', 'database', 'query', 'migration', 'docker', 'ci', 'cd', 'pipeline',
+  'git', 'branch', 'merge', 'commit', 'config', 'env', 'package', 'dependency', 'library',
+  'framework', 'server', 'client', 'route', 'middleware', 'controller', 'service', 'model',
+  'component', 'hook', 'state', 'prop', 'render', 'template', 'style', 'css', 'html', 'jsx',
+  'tsx', 'vue', 'svelte', 'astro', 'sql', 'orm', 'redis', 'kafka', 'queue', 'socket', 'auth',
+  'token', 'jwt', 'oauth', 'session', 'cookie', 'cors', 'ssl', 'tls', 'cert', 'log', 'metric',
+  'trace', 'debug', 'monitor', 'alert', 'cron', 'schedule', 'script', 'cli', 'command', 'tool',
+  'plugin', 'extension', 'sdk', 'worker', 'thread', 'process', 'cache', 'index', 'regex',
+  'parse', 'serialize', 'encode', 'decode', 'hash', 'encrypt', 'algorithm', 'tree', 'graph',
+  'stack', 'heap', 'sort', 'search', 'complexity', 'runtime', 'memory', 'cpu', 'performance',
+  'optimize', 'benchmark', 'latency', 'throughput',
+]);
+/** Multi-word code patterns that need regex (compound terms). */
+const CODE_COMPOUND_RE = /\b(data.?structure|linked.?list|profil)\b/i;
 
-/** Keywords that strongly indicate non-software-engineering context. */
-const NON_CODE_KEYWORDS = /\b(screenshot|photo|picture|camera|weather|recipe|cook|translate|song|music|play|movie|game|joke|poem|story|draw|paint|calendar|appointment|reminder|email|message|chat|call|phone|drive|map|direction|flight|hotel|book|shop|buy|order|deliver|price|stock|crypto|bitcoin|exercise|workout|diet|nutrition|health|doctor|medicine|symptom)\b/i;
+function containsCodeKeyword(text: string): boolean {
+  const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
+  if (words.some(w => CODE_KEYWORD_SET.has(w))) return true;
+  return CODE_COMPOUND_RE.test(text);
+}
+
+/** Keywords that strongly indicate non-software-engineering context (Set-based). */
+const NON_CODE_KEYWORD_SET = new Set([
+  'screenshot', 'photo', 'picture', 'camera', 'weather', 'recipe', 'cook', 'translate',
+  'song', 'music', 'play', 'movie', 'game', 'joke', 'poem', 'story', 'draw', 'paint',
+  'calendar', 'appointment', 'reminder', 'email', 'message', 'chat', 'call', 'phone',
+  'drive', 'map', 'direction', 'flight', 'hotel', 'book', 'shop', 'buy', 'order',
+  'deliver', 'price', 'stock', 'crypto', 'bitcoin', 'exercise', 'workout', 'diet',
+  'nutrition', 'health', 'doctor', 'medicine', 'symptom',
+]);
+
+function containsNonCodeKeyword(text: string): boolean {
+  const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
+  return words.some(w => NON_CODE_KEYWORD_SET.has(w));
+}
 
 /** Greeting patterns across common languages. */
 const GREETING_PATTERN = /^\s*(สวัสดี|หวัดดี|hello|hi|hey|good\s+(morning|afternoon|evening)|howdy|こんにちは|你好|bonjour|hola|\u0421\u0430\u043b\u0430\u043c|\u0645\u0631\u062d\u0628\u0627)\s*[!?.,\u0e46]*\s*$/i;
@@ -56,7 +90,7 @@ export function classifyTaskDomain(
 
   // 2. Non-code keywords without any code keywords → general-reasoning
   // Vinyan is a general-purpose orchestrator — LLM responds from knowledge or explains limitations naturally.
-  if (NON_CODE_KEYWORDS.test(goal) && !CODE_KEYWORDS.test(goal)) {
+  if (containsNonCodeKeyword(goal) && !containsCodeKeyword(goal)) {
     return 'general-reasoning';
   }
 
@@ -66,7 +100,7 @@ export function classifyTaskDomain(
   }
 
   // 4. Goal references code concepts
-  if (CODE_KEYWORDS.test(goal)) {
+  if (containsCodeKeyword(goal)) {
     // Code task with mutation verbs → code-mutation
     if (understanding.expectsMutation && taskType === 'code') {
       return 'code-mutation';
@@ -177,8 +211,24 @@ function containsThaiCommand(text: string): boolean {
   return false;
 }
 
-/** English command verbs — word-boundary protected. */
-const ENGLISH_COMMAND = /\b(?:fix|create|delete|remove|update|install|deploy|run|execute|build|start|stop|restart|write|refactor|review|analyze|debug|test|migrate|configure|setup|clean|format|generate|publish|release|push|pull|fetch|merge|rebase|checkout|rename|move|copy|show|list|add|implement|change|modify|set|enable|disable|upgrade|downgrade|init|reset|clear|scan|validate|verify|inspect|open|close|connect|disconnect|send|capture|convert|transform|download|upload|launch|paste|split|compress|extract|backup|restore|schedule|trigger|sync|export|import|patch|make)\b/i;
+/** English command verbs — Set-based O(1) lookup per word. */
+const ENGLISH_COMMAND_VERBS = new Set([
+  'fix', 'create', 'delete', 'remove', 'update', 'install', 'deploy', 'run', 'execute',
+  'build', 'start', 'stop', 'restart', 'write', 'refactor', 'review', 'analyze', 'debug',
+  'test', 'migrate', 'configure', 'setup', 'clean', 'format', 'generate', 'publish',
+  'release', 'push', 'pull', 'fetch', 'merge', 'rebase', 'checkout', 'rename', 'move',
+  'copy', 'show', 'list', 'add', 'implement', 'change', 'modify', 'set', 'enable',
+  'disable', 'upgrade', 'downgrade', 'init', 'reset', 'clear', 'scan', 'validate',
+  'verify', 'inspect', 'open', 'close', 'connect', 'disconnect', 'send', 'capture',
+  'convert', 'transform', 'download', 'upload', 'launch', 'paste', 'split', 'compress',
+  'extract', 'backup', 'restore', 'schedule', 'trigger', 'sync', 'export', 'import',
+  'patch', 'make',
+]);
+
+function containsEnglishCommand(text: string): boolean {
+  const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
+  return words.some(w => ENGLISH_COMMAND_VERBS.has(w));
+}
 
 /** Meta-questions about the system itself. */
 const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
@@ -218,7 +268,7 @@ export function classifyTaskIntent(
   }
 
   // 4. Command frame — action verbs in imperative mood
-  if (containsThaiCommand(goal) || ENGLISH_COMMAND.test(goal)) return 'execute';
+  if (containsThaiCommand(goal) || containsEnglishCommand(goal)) return 'execute';
 
   // 5. Code mutation tasks are always execute intent
   if (taskDomain === 'code-mutation') return 'execute';

@@ -29,7 +29,7 @@ describe('prompt-injection detection', () => {
   });
 
   test('detects base64 payload', () => {
-    const payload = 'A'.repeat(120); // long base64-like string
+    const payload = 'A'.repeat(120) + '=='; // long base64-like string with padding
     const result = detectPromptInjection({ data: payload });
     expect(result.detected).toBe(true);
     expect(result.patterns).toContain('base64-payload');

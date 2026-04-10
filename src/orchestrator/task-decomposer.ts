@@ -185,3 +185,25 @@ function stripCodeBlock(text: string): string {
   const match = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
   return match ? match[1]! : trimmed;
 }
+
+/**
+ * Task Decomposer Stub — returns single-node DAG wrapping the input goal.
+ *
+ * Production fallback when no LLM provider is configured (air-gapped, local dev).
+ * See TaskDecomposerImpl above for the full LLM-assisted implementation.
+ */
+export class TaskDecomposerStub implements TaskDecomposer {
+  async decompose(input: TaskInput, _perception: PerceptualHierarchy, _memory: WorkingMemoryState): Promise<TaskDAG> {
+    return {
+      nodes: [
+        {
+          id: 'n1',
+          description: input.goal,
+          targetFiles: input.targetFiles ?? [],
+          dependencies: [],
+          assignedOracles: ['type', 'dep'],
+        },
+      ],
+    };
+  }
+}

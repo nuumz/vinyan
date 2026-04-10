@@ -345,6 +345,47 @@ describe('classifyTaskIntent — A3 determinism', () => {
   });
 });
 
+describe('classifyTaskIntent — Thai compound masking (false positive prevention)', () => {
+  // These inputs contain command verbs as substrings within non-command compounds.
+  // The compound masking approach should prevent false-positive execute classification.
+  const inquiryCases = [
+    ['เปิดเผยข้อมูล', 'เปิด inside เปิดเผย'],
+    ['เปิดใจรับฟัง', 'เปิด inside เปิดใจ'],
+    ['เปิดโอกาสให้เรียนรู้', 'เปิด inside เปิดโอกาส'],
+    ['ปิดบังความจริง', 'ปิด inside ปิดบัง'],
+    ['ส่งผลกระทบต่อระบบ', 'ส่ง inside ส่งผล'],
+    ['ส่งเสริมการเรียนรู้', 'ส่ง inside ส่งเสริม'],
+    ['แก้ตัวไม่ได้', 'แก้ inside แก้ตัว'],
+    ['สร้างสรรค์ผลงาน', 'สร้าง inside สร้างสรรค์'],
+  ];
+
+  for (const [goal, desc] of inquiryCases) {
+    test(`"${goal}" → NOT execute (${desc})`, () => {
+      expect(intentFor(goal!)).not.toBe('execute');
+    });
+  }
+});
+
+describe('classifyTaskIntent — Thai command verbs without whitespace boundary', () => {
+  // Thai text has no spaces between words — verb follows Thai chars directly.
+  // These should all be detected as execute intent.
+  const executeCases = [
+    'หาวิธีและเปิด google chrome ให้เลย',
+    'อยากให้แอพเปิด google chrome ให้เลย',
+    'ช่วยเปิดไฟล์นี้ให้หน่อย',
+    'อยากให้ทำรายงาน',
+    'ลองสร้างโปรเจกต์ใหม่',
+    'ไปลบไฟล์เก่าออก',
+    'จะย้ายโฟลเดอร์นี้',
+  ];
+
+  for (const goal of executeCases) {
+    test(`"${goal}" → execute`, () => {
+      expect(intentFor(goal)).toBe('execute');
+    });
+  }
+});
+
 // ── assessToolRequirement — capability routing floor ──────────────────────────
 
 function toolFor(rawGoal: string, domain: TaskDomain = 'general-reasoning', intent: TaskIntent = 'execute') {

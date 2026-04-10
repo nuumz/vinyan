@@ -115,6 +115,9 @@ export async function startChat(argv: string[]): Promise<void> {
     prompt: PROMPT,
   });
 
+  let isProcessing = false; // Guard against concurrent executeTask calls
+  let turnCount = 0;
+
   rl.prompt();
 
   rl.on('line', async (line: string) => {
@@ -133,15 +136,25 @@ export async function startChat(argv: string[]): Promise<void> {
       return;
     }
 
+    // Prevent concurrent task execution (readline fires events even while async handler is running)
+    if (isProcessing) {
+      console.log('\x1b[2m  (still processing previous message, please wait...)\x1b[0m');
+      return;
+    }
+    isProcessing = true;
+
     // Record user turn
     sessionManager.recordUserTurn(session.id, input);
 
-    // Build TaskInput
+    // Build TaskInput — let understanding pipeline classify per-turn (D1)
+    // taskType defaults to 'reasoning' but code-related goals with target files
+    // can be classified as code-mutation/code-reasoning by the pipeline.
+    const hasCodeContext = /`[^`]+`|\.(?:ts|js|py|java|tsx|jsx|go|rs)\b/.test(input);
     const taskInput: TaskInput = {
       id: `chat-${Date.now().toString(36)}`,
       source: 'cli',
       goal: input,
-      taskType: 'reasoning',
+      taskType: hasCodeContext ? 'code' : 'reasoning',
       sessionId: session.id,
       budget: DEFAULT_BUDGET,
       ...(showThinking ? { constraints: ['THINKING:enabled'] } : {}),
@@ -183,6 +196,14 @@ export async function startChat(argv: string[]): Promise<void> {
       console.error(`\n\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
     }
 
+    isProcessing = false;
+    turnCount++;
+
+    // Periodic WAL checkpoint to prevent unbounded WAL file growth
+    if (turnCount % 10 === 0) {
+      try { db.checkpoint(); } catch { /* best-effort */ }
+    }
+
     rl.prompt();
   });
 
@@ -203,6 +224,7 @@ export async function startChat(argv: string[]): Promise<void> {
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 // ── Command handler ────────────────────────────────────────

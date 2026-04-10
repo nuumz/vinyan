@@ -444,11 +444,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   const startTime = Date.now();
 
   // Conversation Agent Mode: load conversation history if session context present
+  // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
   let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
   if (input.sessionId && deps.sessionManager) {
     try {
       const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-      conversationHistory = deps.sessionManager.getConversationHistory(input.sessionId, historyBudget);
+      conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
     } catch {
       // Non-fatal: proceed without conversation history
     }

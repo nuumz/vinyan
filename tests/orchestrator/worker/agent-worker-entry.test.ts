@@ -306,14 +306,14 @@ describe('agent-worker-entry', () => {
 
     test('buildInitUserMessage formats task and perception', () => {
       const msg = buildInitUserMessage('Write tests', { files: ['a.ts'] });
-      expect(msg).toContain('## Task');
+      expect(msg).toContain('## Goal');
       expect(msg).toContain('Write tests');
       expect(msg).toContain('a.ts');
     });
 
     test('buildInitUserMessage includes prior attempts when present', () => {
       const msg = buildInitUserMessage('Fix bug', {}, [{ attempt: 1, outcome: 'failed' }]);
-      expect(msg).toContain('## Prior Attempts');
+      expect(msg).toContain('Prior Attempts');
       expect(msg).toContain('failed');
     });
 

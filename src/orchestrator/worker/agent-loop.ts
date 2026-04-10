@@ -77,6 +77,78 @@ export interface AgentLoopDeps {
   };
 }
 
+// ── Session Progress Tracker ────────────────────────────────────────
+
+export class SessionProgress {
+  filesRead = new Set<string>();
+  filesWritten = new Set<string>();
+  toolSuccessCount = 0;
+  toolFailureCount = 0;
+  consecutiveFailures = 0;
+  turnsWithoutProgress = 0;
+  private lastProgressTurn = 0;
+
+  recordToolResult(toolName: string, isError: boolean, output?: string): void {
+    if (isError) {
+      this.toolFailureCount++;
+      this.consecutiveFailures++;
+    } else {
+      this.toolSuccessCount++;
+      this.consecutiveFailures = 0;
+    }
+
+    // Track file operations
+    if (!isError && output) {
+      if (toolName === 'file_read' || toolName === 'search_files' || toolName === 'list_directory') {
+        // Extract path from output if possible
+        const pathMatch = output.match(/^(?:Reading|Searching|Listing)\s+(.+)/);
+        if (pathMatch) this.filesRead.add(pathMatch[1]!);
+      } else if (toolName === 'file_write' || toolName === 'file_patch') {
+        const pathMatch = output.match(/^(?:Wrote|Patched)\s+(.+)/);
+        if (pathMatch) this.filesWritten.add(pathMatch[1]!);
+      }
+    }
+  }
+
+  recordTurn(hadToolCalls: boolean): void {
+    if (hadToolCalls && this.consecutiveFailures === 0) {
+      this.turnsWithoutProgress = 0;
+      this.lastProgressTurn = Date.now();
+    } else {
+      this.turnsWithoutProgress++;
+    }
+  }
+
+  /** Generate a system hint based on current progress state. */
+  getSystemHint(budgetRatio: number, turnsRemaining: number): string | null {
+    const hints: string[] = [];
+
+    // Budget pressure
+    if (budgetRatio >= 0.85) {
+      hints.push('[BUDGET WARNING] You have used 85%+ of your budget. Wrap up NOW — summarize your progress and call attempt_completion.');
+    } else if (budgetRatio >= 0.70) {
+      hints.push('[BUDGET NOTICE] You have used 70%+ of your budget. Start wrapping up — focus only on essential remaining work.');
+    }
+
+    // Turn limit pressure
+    if (turnsRemaining <= 2) {
+      hints.push(`[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`);
+    }
+
+    // Consecutive failures
+    if (this.consecutiveFailures >= 3) {
+      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures. Step back and try a different approach — check file paths, permissions, or try an alternative strategy.`);
+    }
+
+    // Stall detection
+    if (this.turnsWithoutProgress >= 3) {
+      hints.push(`[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`);
+    }
+
+    return hints.length > 0 ? hints.join('\n') : null;
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Fallback token estimation when worker doesn't report tokensConsumed */
@@ -207,6 +279,7 @@ export async function runAgentLoop(
   let tokensConsumed = 0;
   let contractViolations = 0;
   let session: IAgentSession | null = null;
+  const progress = new SessionProgress();
 
   const toolContext: ToolContext = {
     routingLevel: routing.level,
@@ -272,6 +345,8 @@ export async function runAgentLoop(
       allowedPaths: input.targetFiles ?? [],
       toolManifest: manifestFor(routing),
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
+      ...(memory.failedApproaches?.length ? { failedApproaches: memory.failedApproaches } : {}),
+      ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
       ...(understanding ? { understanding } : {}),
       ...(conversationHistory?.length ? { conversationHistory } : {}),
     };
@@ -419,17 +494,49 @@ export async function runAgentLoop(
           }
         }
 
+        // Track progress from tool results
+        for (const r of results) {
+          progress.recordToolResult(r.tool, r.status !== 'success', typeof r.output === 'string' ? r.output : undefined);
+        }
+        progress.recordTurn(results.length > 0);
+
+        // Emit stall event when detected
+        if (progress.turnsWithoutProgress > 3) {
+          deps.bus?.emit('agent:turn_complete', {
+            taskId: input.id,
+            turnId: turn.turnId,
+            tokensConsumed,
+            turnsRemaining: budget.toSnapshot().maxTurns - transcript.length,
+          });
+        }
+
+        // Inject system hints into the last tool result (budget pressure, stalls, guidance)
+        const budgetSnap = budget.toSnapshot();
+        const budgetRatio = tokensConsumed / budgetSnap.maxTokens;
+        const turnsRemaining = budgetSnap.maxTurns - transcript.length;
+        const hint = progress.getSystemHint(budgetRatio, turnsRemaining);
+
+        const finalResults = [...results];
+        if (hint && finalResults.length > 0) {
+          const lastResult = finalResults[finalResults.length - 1]!;
+          const existingOutput = typeof lastResult.output === 'string' ? lastResult.output : JSON.stringify(lastResult.output ?? '');
+          finalResults[finalResults.length - 1] = {
+            ...lastResult,
+            output: `${existingOutput}\n\n${hint}`,
+          };
+        }
+
         // Send results back to worker
         await session.send({
           type: 'tool_results',
           turnId: turn.turnId,
-          results,
+          results: finalResults,
         });
         deps.bus?.emit('agent:turn_complete', {
           taskId: input.id,
           turnId: turn.turnId,
           tokensConsumed,
-          turnsRemaining: budget.toSnapshot().maxTurns - transcript.length,
+          turnsRemaining,
         });
       } else if (turn.type === 'done') {
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);

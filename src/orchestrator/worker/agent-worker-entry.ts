@@ -89,7 +89,11 @@ export async function runAgentWorkerLoop(
     },
     {
       role: 'user',
-      content: buildInitUserMessage(init.goal, compressedPerception, init.priorAttempts, (init as any).understanding, init.conversationHistory),
+      content: buildInitUserMessage(
+        init.goal, compressedPerception, init.priorAttempts,
+        (init as any).understanding, init.conversationHistory,
+        (init as any).failedApproaches, (init as any).acceptanceCriteria,
+      ),
     },
   ];
 
@@ -311,23 +315,60 @@ function logError(msg: string): void {
 }
 
 export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reasoning' = 'code'): string {
+  const common = `You are a Vinyan autonomous agent at routing level L${routingLevel}.
+
+## Reasoning Framework
+For every turn, follow this cycle:
+1. **Assess** — What do I know? What have I accomplished so far?
+2. **Identify gap** — What is still missing or unknown?
+3. **Select action** — Which tool best addresses the gap? Why?
+4. **Execute** — Call the tool with correct parameters.
+5. **Observe** — Did it succeed? What did I learn?
+6. **Decide** — Am I done? Stuck? Need a different approach?
+
+## Progress Tracking
+Mentally track:
+- Files you have read and understood
+- Changes you have made
+- What remains to be done
+- Whether your approach is working or needs adjustment
+
+## Adaptive Strategy
+- If a tool call fails, diagnose WHY before retrying. Do not repeat the same call blindly.
+- If 2+ consecutive failures occur, step back and try a fundamentally different approach.
+- Read before writing — always understand existing code before modifying it.
+- Verify after changing — check that your changes are correct.
+
+## Budget Awareness
+- You have a limited token and turn budget. Work efficiently.
+- If you see a [BUDGET WARNING] message, begin wrapping up — summarize progress and complete.
+- Do not waste turns on unnecessary exploration when you already have enough information.
+
+## Completion Protocol
+- When done: call attempt_completion with status 'done' and include your result in proposedContent.
+- When stuck: call attempt_completion with status 'uncertain', list what you tried and what blocked you.
+- IMPORTANT: You MUST call attempt_completion to signal task end. Never just stop responding.`;
+
   if (taskType === 'reasoning') {
-    return [
-      `You are a Vinyan reasoning agent at routing level L${routingLevel}.`,
-      'Your task is to research, reason about, or answer the given question using available tools.',
-      'You may use file_read, shell_exec, or search tools to gather information before answering.',
-      "When you are done, call attempt_completion with status 'done' and put your full answer in the proposedContent field.",
-      "If you cannot answer, call attempt_completion with status 'uncertain'.",
-      'IMPORTANT: You MUST call attempt_completion to signal task end. Do not just stop responding.',
-    ].join('\n');
+    return `${common}
+
+## Task Type: Research / Reasoning
+Your job is to research, analyze, or answer a question.
+- Use file_read, shell_exec, or search tools to gather evidence.
+- Build your answer from evidence, not assumptions.
+- Cite specific files or outputs that support your conclusions.
+- Put your full answer in the proposedContent field of attempt_completion.`;
   }
-  return [
-    `You are a Vinyan agentic worker at routing level L${routingLevel}.`,
-    'Your task is to use the available tools to accomplish the given goal.',
-    "When you are done, call attempt_completion with status 'done'.",
-    "If you cannot complete the task, call attempt_completion with status 'uncertain'.",
-    'IMPORTANT: You MUST call attempt_completion to signal task end. Do not just stop responding.',
-  ].join('\n');
+
+  return `${common}
+
+## Task Type: Code
+Your job is to implement, fix, or modify code to accomplish the goal.
+- Read target files first to understand the existing code.
+- Plan your changes before writing — consider side effects.
+- After writing, verify your changes (check for syntax errors, run relevant tests if available).
+- Prefer minimal, focused changes over large rewrites.
+- Include a brief summary of what you changed in proposedContent.`;
 }
 
 export function buildInitUserMessage(
@@ -336,10 +377,12 @@ export function buildInitUserMessage(
   priorAttempts?: unknown[],
   understanding?: unknown,
   conversationHistory?: Array<{ role: string; content: string; taskId: string; timestamp: number }>,
+  failedApproaches?: Array<{ approach: string; oracleVerdict: string }>,
+  acceptanceCriteria?: string[],
 ): string {
-  let msg = '';
+  const sections: string[] = [];
 
-  // Render conversation history first (context for the current turn)
+  // Conversation history (multi-turn context)
   if (conversationHistory && conversationHistory.length > 0) {
     const turns = conversationHistory.map((entry, i) => {
       const role = entry.role === 'user' ? 'User' : 'Assistant';
@@ -348,52 +391,118 @@ export function buildInitUserMessage(
         : entry.content;
       return `[Turn ${i + 1}] ${role}: ${content}`;
     });
-    msg += `## Conversation History\nThis is a multi-turn conversation. Prior turns for context:\n${turns.join('\n')}\n\n`;
+    sections.push(`## Conversation History\n${turns.join('\n')}`);
   }
 
-  msg += `## Task\n${goal}`;
+  // Goal — clear and prominent
+  sections.push(`## Goal\n${goal}`);
 
-  // Render semantic context from enriched understanding (Layer 1+2)
+  // Acceptance criteria from task input (if provided separately from understanding)
+  if (acceptanceCriteria && acceptanceCriteria.length > 0) {
+    const items = acceptanceCriteria.map(c => `- [ ] ${c}`).join('\n');
+    sections.push(`## Acceptance Criteria\n${items}`);
+  }
+
+  // Failed approaches — explicit "do NOT try" constraints
+  if (failedApproaches && failedApproaches.length > 0) {
+    const lines = failedApproaches.map((fa, i) =>
+      `${i + 1}. ❌ ${fa.approach} — rejected by: ${fa.oracleVerdict}`
+    );
+    sections.push(`## Failed Approaches (DO NOT repeat)\n${lines.join('\n')}`);
+  }
+
+  // Success criteria and semantic context from understanding
   if (understanding && typeof understanding === 'object') {
     const u = understanding as Record<string, unknown>;
     const intent = u.semanticIntent as Record<string, unknown> | undefined;
     if (intent) {
-      const lines: string[] = ['\n\n## Semantic Context'];
-      if (typeof intent.goalSummary === 'string') lines.push(`Summary: ${intent.goalSummary}`);
-      if (Array.isArray(intent.steps) && intent.steps.length) {
-        lines.push('Steps:');
-        for (const s of intent.steps) lines.push(`  - ${s}`);
-      }
+      // Success criteria as a checklist
       if (Array.isArray(intent.successCriteria) && intent.successCriteria.length) {
-        lines.push('Done when:');
-        for (const c of intent.successCriteria) lines.push(`  - ${c}`);
+        const items = (intent.successCriteria as string[]).map(c => `- [ ] ${c}`).join('\n');
+        sections.push(`## Success Criteria\nYou are done when ALL of these are met:\n${items}`);
+      }
+
+      // Actionable context
+      const contextLines: string[] = [];
+      if (typeof intent.goalSummary === 'string') contextLines.push(`Summary: ${intent.goalSummary}`);
+      if (typeof intent.primaryAction === 'string') contextLines.push(`Action: ${intent.primaryAction} — ${intent.scope ?? ''}`);
+      if (typeof intent.rootCause === 'string') contextLines.push(`Root cause hypothesis: ${intent.rootCause}`);
+      if (Array.isArray(intent.steps) && intent.steps.length) {
+        contextLines.push('Suggested approach:');
+        for (const s of intent.steps) contextLines.push(`  1. ${s}`);
       }
       if (Array.isArray(intent.affectedComponents) && intent.affectedComponents.length) {
-        lines.push(`Affected: ${intent.affectedComponents.join(', ')}`);
+        contextLines.push(`Key files/components: ${(intent.affectedComponents as string[]).join(', ')}`);
       }
-      if (typeof intent.rootCause === 'string') lines.push(`Root cause hypothesis: ${intent.rootCause}`);
-      lines.push(`Intent: ${intent.primaryAction} — ${intent.scope}`);
+
+      // Constraints as clear rules
       const constraints = intent.implicitConstraints as Array<{ text: string; polarity: string }> | undefined;
-      if (Array.isArray(constraints)) {
+      if (Array.isArray(constraints) && constraints.length) {
+        contextLines.push('Constraints:');
         for (const c of constraints) {
-          lines.push(`${c.polarity === 'must-not' ? 'MUST NOT' : 'MUST'}: ${c.text}`);
+          contextLines.push(`  ${c.polarity === 'must-not' ? '❌ MUST NOT' : '✅ MUST'}: ${c.text}`);
         }
       }
-      msg += lines.join('\n');
+
+      if (contextLines.length) sections.push(`## Context\n${contextLines.join('\n')}`);
     }
-    // Resolved entities (Layer 1)
+
+    // Resolved entities — show as a quick reference
     const entities = u.resolvedEntities as Array<{ reference: string; resolvedPaths: string[]; resolution: string }> | undefined;
     if (Array.isArray(entities) && entities.length) {
-      msg += '\n\nResolved entities:';
-      for (const e of entities) msg += `\n  "${e.reference}" → ${e.resolvedPaths?.join(', ')} (${e.resolution})`;
+      const entityLines = entities.map(e => `- "${e.reference}" → ${e.resolvedPaths?.join(', ')} (${e.resolution})`);
+      sections.push(`## Resolved References\n${entityLines.join('\n')}`);
     }
   }
 
-  msg += `\n\n## Perception\n${JSON.stringify(perception, null, 2)}`;
+  // Prior attempts — formatted as lessons, not raw JSON
   if (priorAttempts && priorAttempts.length > 0) {
-    msg += `\n\n## Prior Attempts\n${JSON.stringify(priorAttempts, null, 2)}`;
+    const lessons: string[] = [];
+    for (let i = 0; i < priorAttempts.length; i++) {
+      const attempt = priorAttempts[i] as Record<string, unknown>;
+      const outcome = attempt.outcome ?? attempt.status ?? 'unknown';
+      const approach = attempt.approach ?? attempt.description ?? 'unspecified';
+      const reason = attempt.failureReason ?? attempt.reason ?? attempt.error ?? '';
+      lessons.push(`${i + 1}. Approach: ${approach}\n   Result: ${outcome}${reason ? `\n   Lesson: ${reason}` : ''}`);
+    }
+    sections.push(`## Prior Attempts (DO NOT repeat these)\n${lessons.join('\n')}`);
   }
-  return msg;
+
+  // Perception — key data for the agent
+  if (perception && typeof perception === 'object') {
+    const p = perception as Record<string, unknown>;
+    const perceptionLines: string[] = [];
+
+    // Extract useful fields rather than dumping raw JSON
+    if (p.taskTarget && typeof p.taskTarget === 'object') {
+      const tt = p.taskTarget as Record<string, unknown>;
+      if (tt.file) perceptionLines.push(`Target file: ${tt.file}`);
+      if (tt.content && typeof tt.content === 'string') {
+        const content = tt.content.length > 3000 ? `${tt.content.slice(0, 3000)}\n... (truncated)` : tt.content;
+        perceptionLines.push(`Content:\n\`\`\`\n${content}\n\`\`\``);
+      }
+    }
+    if (p.depCone && Array.isArray(p.depCone)) {
+      perceptionLines.push(`Dependencies: ${(p.depCone as string[]).slice(0, 20).join(', ')}`);
+    }
+    if (p.diagnostics && Array.isArray(p.diagnostics) && (p.diagnostics as unknown[]).length > 0) {
+      perceptionLines.push(`Diagnostics:\n${JSON.stringify(p.diagnostics, null, 2)}`);
+    }
+    if (p.worldFacts && Array.isArray(p.worldFacts) && (p.worldFacts as unknown[]).length > 0) {
+      const facts = (p.worldFacts as Array<Record<string, unknown>>).slice(0, 10);
+      const factLines = facts.map(f => `- ${f.key}: ${f.value} (${f.tier_reliability ?? 'unknown'} reliability)`);
+      perceptionLines.push(`Known facts:\n${factLines.join('\n')}`);
+    }
+
+    if (perceptionLines.length > 0) {
+      sections.push(`## Workspace Context\n${perceptionLines.join('\n\n')}`);
+    } else {
+      // Fallback to raw JSON if we couldn't extract structured data
+      sections.push(`## Workspace Context\n${JSON.stringify(perception, null, 2)}`);
+    }
+  }
+
+  return sections.join('\n\n');
 }
 
 export function estimateHistoryTokens(history: HistoryMessage[]): number {

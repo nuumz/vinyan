@@ -100,6 +100,67 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
     }),
   );
 
+  // Agent session lifecycle — show what the agent is thinking/doing
+  detachers.push(
+    bus.on('agent:session_start', ({ taskId, routingLevel, budget }) => {
+      write(`${dim('[vinyan]')} Agent session started ${dim(`(L${routingLevel}, ${budget.maxTurns} turns, ${budget.maxTokens} tokens)`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:thinking', ({ rationale }) => {
+      // Truncate long rationale to keep output scannable
+      const text = rationale.length > 200 ? `${rationale.slice(0, 200)}…` : rationale;
+      write(`${dim('[vinyan]')} ${dim('💭')} ${text}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:tool_executed', ({ toolName, durationMs, isError }) => {
+      const status = isError ? red('ERR') : green('OK');
+      write(`${dim('[vinyan]')}   → ${bold(toolName)} ${status} ${dim(`(${durationMs}ms)`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:turn_complete', ({ tokensConsumed, turnsRemaining }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')}   Turn complete — ${dim(`${tokensConsumed} tokens used, ${turnsRemaining} turns left`)}`);
+      }
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:session_end', ({ outcome, tokensConsumed, turnsUsed, durationMs }) => {
+      const outcomeStr = outcome === 'completed' ? green(outcome) : outcome === 'uncertain' ? yellow(outcome) : red(outcome);
+      write(`${dim('[vinyan]')} Agent session ${outcomeStr} — ${turnsUsed} turns, ${tokensConsumed} tokens, ${dim(`${Math.round(durationMs / 1000)}s`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:tool_denied', ({ toolName, violation }) => {
+      write(`${dim('[vinyan]')} ${red('Tool denied')}: ${bold(toolName)}${violation ? ` — ${violation}` : ''}`);
+    }),
+  );
+
+  // Phase timing
+  detachers.push(
+    bus.on('phase:timing', ({ phase, durationMs }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')}   ${phase} ${dim(`${durationMs}ms`)}`);
+      }
+    }),
+  );
+
+  // Task understanding
+  detachers.push(
+    bus.on('understanding:layer0_complete', ({ verb, category }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')} Understanding: ${bold(verb)} → ${category}`);
+      }
+    }),
+  );
+
   // Tool remediation events
   detachers.push(
     bus.on('tool:failure_classified', ({ type, recoverable, error }) => {

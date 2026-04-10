@@ -72,6 +72,7 @@ export class WorkerSelector {
     budget: { maxTokens: number; timeoutMs: number },
     excludeWorkerIds?: string[],
     taskId?: string,
+    isEscalated?: boolean,
   ): WorkerSelectionResult {
     // Check data gate — fallback to tier if insufficient data
     const gate = checkDataGate('fleet_routing', this.getStats(), this.thresholds);
@@ -85,8 +86,8 @@ export class WorkerSelector {
       return this.tierFallback(routingLevel);
     }
 
-    // Epsilon-worker exploration (never selects probation/demoted)
-    if (Math.random() < this.epsilon && candidates.length > 1) {
+    // Epsilon-worker exploration (never selects probation/demoted, skip on escalated tasks)
+    if (!isEscalated && Math.random() < this.epsilon && candidates.length > 1) {
       return this.exploreRandomWorker(candidates, fingerprint, budget, taskId);
     }
 

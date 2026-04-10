@@ -166,7 +166,7 @@ export function routeByRisk(
 export const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
   0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
   1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },
-  2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 30_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
+  2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 90_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
   3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
 };
 

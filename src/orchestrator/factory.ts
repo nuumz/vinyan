@@ -1072,6 +1072,17 @@ function autoRegisterWorkers(
 ): void {
   // Register LLM providers from the legacy registry
   for (const provider of registry.listProviders()) {
+    // tool-uses tier is a utility tier (intent resolver, remediation) — not a general worker
+    if (provider.tier === 'tool-uses') {
+      // Clean up any stale worker profile from prior sessions
+      const staleId = `worker-${provider.id}`;
+      const stale = workerStore.findById(staleId);
+      if (stale && stale.status !== 'demoted') {
+        workerStore.updateStatus(staleId, 'demoted', 'tool-uses tier excluded from worker pool');
+      }
+      continue;
+    }
+
     // M12: Validate engine against allowlist before registration. Empty allowlist = no filter.
     if (allowlist.length > 0 && !allowlist.some((p) => provider.id.startsWith(p))) {
       console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);

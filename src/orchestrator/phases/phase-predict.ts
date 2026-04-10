@@ -127,6 +127,7 @@ export async function executePredictPhase(
       { maxTokens: input.budget.maxTokens, timeoutMs: input.budget.maxDurationMs },
       undefined,
       input.id,
+      routing.isEscalated,
     );
     workerSelection = selection;
 

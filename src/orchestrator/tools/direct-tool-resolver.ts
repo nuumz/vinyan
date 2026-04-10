@@ -120,6 +120,9 @@ const THAI_PARTICLES = /(?:\s+(?:ให้เลย|ให้หน่อย|ใ
 /** Thai patterns for app launch. */
 const THAI_APP_LAUNCH = /(?:อยาก(?:ให้)?)?(?:ช่วย)?(?:เปิด(?:แอพ|แอป|โปรแกรม|แอปพลิเคชัน)?|รัน|launch|open|start)\s+(.+)/i;
 
+/** Bare app name pattern: "แอพ X" / "แอป X" (implied open). */
+const THAI_BARE_APP = /^(?:แอพ|แอป|โปรแกรม)\s+(.+)/i;
+
 /** English patterns for app launch. */
 const EN_APP_LAUNCH = /(?:open|launch|start|run)\s+(?:app\s+|application\s+)?(.+)/i;
 
@@ -165,7 +168,20 @@ export function classifyDirectTool(goal: string): DirectToolClassification | nul
     }
   }
 
-  // 4. App launch — English
+  // 4. Bare app name — "แอพ X" (implied open)
+  const bareMatch = trimmed.match(THAI_BARE_APP);
+  if (bareMatch?.[1]) {
+    const raw = bareMatch[1].replace(THAI_PARTICLES, '').trim();
+    const appName = normalizeAppName(raw);
+    if (appName && APP_MAP.has(appName)) {
+      return { type: 'app_launch', target: appName, confidence: 0.85 };
+    }
+    if (appName) {
+      return { type: 'app_launch', target: appName, confidence: 0.65 };
+    }
+  }
+
+  // 5. App launch — English
   const enMatch = trimmed.match(EN_APP_LAUNCH);
   if (enMatch?.[1]) {
     const appName = normalizeAppName(enMatch[1].trim());

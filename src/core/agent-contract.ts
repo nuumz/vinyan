@@ -72,7 +72,7 @@ const DEFAULT_CAPABILITIES: Record<number, Capability[]> = {
     // L2 analytical — read + write in workspace
     { type: 'file_read', paths: ['**'] },
     { type: 'file_write', paths: ['src/**', 'tests/**'] },
-    { type: 'shell_exec', commands: ['bun', 'tsc', 'biome'] },
+    { type: 'shell_exec', commands: ['bun', 'tsc', 'biome', 'eslint', 'prettier', 'git', 'open', 'xdg-open'] },
     { type: 'shell_read', commands: ['**'] },
     { type: 'llm_call', providers: ['*'] },
     // Phase 7e: MCP access at L2+. Servers are gated by name but

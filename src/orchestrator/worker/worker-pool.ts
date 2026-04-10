@@ -417,7 +417,11 @@ export class WorkerPoolImpl implements WorkerPool {
       ? this.engineRegistry.selectById(routing.workerId)
       : this.engineRegistry.selectForRoutingLevel(routing.level);
     const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
-    const useSubprocessForTask = this.useSubprocess && routing.level >= 2 && isLLMEngine;
+    // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
+    // is only needed when the worker writes to disk. This avoids LLM proxy overhead
+    // for reasoning/agentic tasks that only read + reason.
+    const hasFileMutations = input.targetFiles && input.targetFiles.length > 0;
+    const useSubprocessForTask = this.useSubprocess && routing.level >= 2 && isLLMEngine && hasFileMutations;
     if (!isLLMEngine && routing.level >= 2) {
       console.warn(
         `[vinyan] RE dispatch: engine '${selectedEngine?.id}' (type: ${selectedEngine?.engineType}) is non-LLM — subprocess isolation unavailable. Dispatching in-process (isolation degraded).`,

@@ -296,6 +296,8 @@ export interface VinyanBusEvents {
     routingLevel: number;
     source?: 'agent' | 'orchestrator';
   };
+  /** Agent thinking/rationale — what the LLM is reasoning about this turn. */
+  'agent:thinking': { taskId: string; turnId: string; rationale: string };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability

@@ -167,12 +167,12 @@ describe('resolveIntent', () => {
       .rejects.toThrow();
   });
 
-  test('respects timeout', async () => {
+  test('respects timeout', { timeout: 15000 }, async () => {
     const slowProvider: LLMProvider = {
       id: 'slow-provider',
       tier: 'fast',
       async generate(_req: LLMRequest): Promise<LLMResponse> {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await new Promise((resolve) => setTimeout(resolve, 15000));
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'hi', reasoning: 'x' }),
           toolCalls: [],

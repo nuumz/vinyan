@@ -108,7 +108,7 @@ export interface IntentResolverDeps {
   bus?: VinyanBus;
 }
 
-const INTENT_TIMEOUT_MS = 3000;
+const INTENT_TIMEOUT_MS = 8000;
 
 export async function resolveIntent(
   input: TaskInput,

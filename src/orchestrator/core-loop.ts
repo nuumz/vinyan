@@ -271,8 +271,9 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
         confidence: intentResolution.confidence,
         reasoning: intentResolution.reasoning,
       });
-    } catch {
+    } catch (err) {
       // Intent resolution failure is non-fatal — fall back to regex-based classification
+      const reason = err instanceof Error ? err.message : String(err);
       const { fallbackStrategy } = await import('./intent-resolver.ts');
       const strategy = fallbackStrategy(
         understanding.taskDomain,
@@ -283,7 +284,7 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
         strategy,
         refinedGoal: input.goal,
         confidence: 0.5,
-        reasoning: 'Fallback: regex-based classification (LLM unavailable)',
+        reasoning: `Fallback: regex-based (${reason})`,
       };
       deps.bus?.emit('intent:resolved', {
         taskId: input.id,
@@ -486,9 +487,13 @@ async function buildConversationalResult(
   if (provider) {
     try {
       const response = await provider.generate({
-        systemPrompt: 'You are a helpful assistant. Match the user\'s language. Answer concisely.',
-        userPrompt: intent.refinedGoal,
+        systemPrompt: `You are Vinyan, a friendly assistant. Respond naturally and briefly. Match the user's language.
+Never reveal your underlying model name or provider — you are Vinyan.
+Do NOT use JSON, code blocks, or LaTeX formatting.
+Do NOT narrate your reasoning process — just respond directly to the user.`,
+        userPrompt: input.goal,
         maxTokens: 1000,
+        temperature: 0.3,
       });
       answer = response.content;
     } catch {

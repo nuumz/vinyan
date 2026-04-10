@@ -21,6 +21,7 @@ import { WorkingMemory } from './working-memory.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
+  IntentResolution,
   PerceptualHierarchy,
   PredictionError,
   ReasoningPolicy,
@@ -167,6 +168,8 @@ export interface OrchestratorDeps {
   taskCheckpoint?: import('../db/task-checkpoint-store.ts').TaskCheckpointStore;
   /** Session manager for conversation history loading (conversation agent mode). */
   sessionManager?: import('../api/session-manager.ts').SessionManager;
+  /** LLM provider registry for Intent Resolver pre-routing classification. */
+  llmRegistry?: import('./llm/provider-registry.ts').LLMProviderRegistry;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -197,6 +200,7 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
   routing: RoutingDecision;
   workingMemory: WorkingMemory;
   explorationFlag: boolean;
+  intentResolution?: IntentResolution;
 } | TaskResult> {
   // ── K1.5: Input validation gate ──
   const inputCheck = validateInput(input.goal);
@@ -246,6 +250,49 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
     entitiesResolved: understanding.resolvedEntities.length,
     isRecurring: understanding.historicalProfile?.isRecurring ?? false,
   });
+
+  // ── LLM Intent Resolution — semantic classification before pipeline ──
+  // Skip for code-mutation tasks (already well-classified by regex) and tasks with explicit target files.
+  const needsIntentResolution = deps.llmRegistry
+    && understanding.taskDomain !== 'code-mutation'
+    && !(input.targetFiles?.length);
+  let intentResolution: IntentResolution | undefined;
+  if (needsIntentResolution && deps.llmRegistry) {
+    try {
+      const { resolveIntent } = await import('./intent-resolver.ts');
+      intentResolution = await resolveIntent(input, {
+        registry: deps.llmRegistry,
+        availableTools: deps.toolExecutor?.getToolNames(),
+        bus: deps.bus,
+      });
+      deps.bus?.emit('intent:resolved', {
+        taskId: input.id,
+        strategy: intentResolution.strategy,
+        confidence: intentResolution.confidence,
+        reasoning: intentResolution.reasoning,
+      });
+    } catch {
+      // Intent resolution failure is non-fatal — fall back to regex-based classification
+      const { fallbackStrategy } = await import('./intent-resolver.ts');
+      const strategy = fallbackStrategy(
+        understanding.taskDomain,
+        understanding.taskIntent,
+        understanding.toolRequirement,
+      );
+      intentResolution = {
+        strategy,
+        refinedGoal: input.goal,
+        confidence: 0.5,
+        reasoning: 'Fallback: regex-based classification (LLM unavailable)',
+      };
+      deps.bus?.emit('intent:resolved', {
+        taskId: input.id,
+        strategy: intentResolution.strategy,
+        confidence: intentResolution.confidence,
+        reasoning: intentResolution.reasoning,
+      });
+    }
+  }
 
   // G2: Wire archiver for rejected approaches
   const archiver = deps.rejectedApproachStore
@@ -422,7 +469,104 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
     }
   }
 
-  return { understanding, routing, workingMemory, explorationFlag };
+  return { understanding, routing, workingMemory, explorationFlag, intentResolution };
+}
+
+// ---------------------------------------------------------------------------
+// Strategy short-circuit helpers
+// ---------------------------------------------------------------------------
+
+async function buildConversationalResult(
+  input: TaskInput,
+  intent: IntentResolution,
+  deps: OrchestratorDeps,
+): Promise<TaskResult> {
+  const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
+  let answer = intent.refinedGoal;
+  if (provider) {
+    try {
+      const response = await provider.generate({
+        systemPrompt: 'You are a helpful assistant. Match the user\'s language. Answer concisely.',
+        userPrompt: intent.refinedGoal,
+        maxTokens: 1000,
+      });
+      answer = response.content;
+    } catch {
+      answer = intent.refinedGoal;
+    }
+  }
+  const trace: ExecutionTrace = {
+    id: `trace-${input.id}-conversational`,
+    taskId: input.id,
+    workerId: 'intent-resolver',
+    timestamp: Date.now(),
+    routingLevel: 0,
+    approach: 'conversational-shortcircuit',
+    oracleVerdicts: {},
+    modelUsed: provider?.id ?? 'none',
+    tokensConsumed: 0,
+    durationMs: 0,
+    outcome: 'success',
+    affectedFiles: [],
+  };
+  await deps.traceCollector.record(trace);
+  deps.bus?.emit('trace:record', { trace });
+  const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
+  deps.bus?.emit('task:complete', { result });
+  return result;
+}
+
+async function executeDirectTool(
+  input: TaskInput,
+  intent: IntentResolution,
+  deps: OrchestratorDeps,
+): Promise<TaskResult | null> {
+  if (!deps.toolExecutor || !intent.directToolCall) return null;
+  const toolCall = {
+    id: `tc-intent-${input.id}`,
+    tool: intent.directToolCall.tool,
+    parameters: intent.directToolCall.parameters,
+  };
+  const context = {
+    workspace: deps.workspace ?? process.cwd(),
+    allowedPaths: [] as string[],
+    routingLevel: 2 as const,
+  };
+  try {
+    const results = await deps.toolExecutor.executeProposedTools([toolCall], context);
+    const toolResult = results[0];
+    const trace: ExecutionTrace = {
+      id: `trace-${input.id}-direct-tool`,
+      taskId: input.id,
+      workerId: 'intent-resolver',
+      timestamp: Date.now(),
+      routingLevel: 2,
+      approach: 'direct-tool-shortcircuit',
+      oracleVerdicts: {},
+      modelUsed: 'none',
+      tokensConsumed: 0,
+      durationMs: toolResult?.durationMs ?? 0,
+      outcome: toolResult?.status === 'success' ? 'success' : 'failure',
+      failureReason: toolResult?.error,
+      affectedFiles: [],
+    };
+    await deps.traceCollector.record(trace);
+    deps.bus?.emit('trace:record', { trace });
+    const answer = toolResult?.status === 'success'
+      ? (typeof toolResult.output === 'string' ? toolResult.output : JSON.stringify(toolResult.output))
+      : toolResult?.error ?? 'Tool execution failed';
+    const result: TaskResult = {
+      id: input.id,
+      status: toolResult?.status === 'success' ? 'completed' : 'failed',
+      mutations: [],
+      trace,
+      answer,
+    };
+    deps.bus?.emit('task:complete', { result });
+    return result;
+  } catch {
+    return null; // Fall through to pipeline
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +582,35 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
   const prep = await prepareExecution(input, deps);
   if ('status' in prep) return prep; // Early return (security rejection or budget block)
+
+  // ── Strategy routing — short-circuit non-pipeline strategies ──
+  const intentResolution = prep.intentResolution;
+  if (intentResolution) {
+    if (intentResolution.strategy === 'conversational') {
+      return buildConversationalResult(input, intentResolution, deps);
+    }
+    // Direct-tool: use deterministic resolver to generate platform-correct command (A3)
+    if (intentResolution.strategy === 'direct-tool') {
+      const { classifyDirectTool, resolveCommand } = await import('./tools/direct-tool-resolver.ts');
+      const classification = classifyDirectTool(input.goal);
+      if (classification && classification.confidence >= 0.7) {
+        const command = resolveCommand(classification, process.platform);
+        if (command) {
+          intentResolution.directToolCall = { tool: 'shell_exec', parameters: { command } };
+        }
+      }
+    }
+    if (intentResolution.strategy === 'direct-tool' && intentResolution.directToolCall) {
+      const directResult = await executeDirectTool(input, intentResolution, deps);
+      if (directResult) return directResult;
+      // Fall through to pipeline if direct tool execution failed
+    }
+    if (intentResolution.strategy === 'agentic-workflow' && intentResolution.workflowPrompt) {
+      // Rewrite goal with the LLM-generated workflow prompt for maximum downstream quality
+      input = { ...input, goal: intentResolution.workflowPrompt };
+    }
+  }
+  // 'full-pipeline' or failed resolution → existing 6-phase loop
 
   let { understanding, routing } = prep;
   const { workingMemory, explorationFlag } = prep;

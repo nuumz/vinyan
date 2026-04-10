@@ -16,6 +16,7 @@ import type { TraceTelemetry } from '../bus/trace-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { createBus } from '../core/bus.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
+import { CommandApprovalGate } from '../orchestrator/tools/command-approval-gate.ts';
 import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 
 export async function runAgentTask(argv: string[]): Promise<void> {
@@ -71,20 +72,23 @@ export async function runAgentTask(argv: string[]): Promise<void> {
 
   // Create bus and attach listeners BEFORE creating orchestrator
   const bus = createBus();
+  const commandApprovalGate = new CommandApprovalGate(bus);
 
   let detachProgress: (() => void) | undefined;
   if (!quiet) {
     detachProgress = attachCLIProgressListener(bus, {
       verbose,
       color: process.stderr.isTTY ?? false,
+      commandApprovalGate,
     });
   }
 
   const traceListenerHandle = attachTraceListener(bus);
-  const orchestrator = createOrchestrator({ workspace, bus, llmProxy: true });
+  const orchestrator = createOrchestrator({ workspace, bus, llmProxy: true, commandApprovalGate });
 
   // Graceful shutdown on signals
   const shutdown = () => {
+    commandApprovalGate.clear();
     detachProgress?.();
     orchestrator.close();
     process.exit(130);

@@ -8,8 +8,8 @@
 > For capability model → [agent-contract.ts](../../src/core/agent-contract.ts), [tool-authorization.ts](../../src/security/tool-authorization.ts).
 > For core axioms → [concept.md](concept.md).
 
-**Date:** 2026-04-08
-**Status:** v2 — updated for K1 infrastructure (contracts, tool auth, ECP validation, contradiction escalation)
+**Date:** 2026-04-10
+**Status:** v3 — added Intent Resolver (LLM-powered pre-routing classification with strategy short-circuits)
 **Confidence:** HIGH — derived from actual failure cases, not theoretical design
 
 ---
@@ -34,7 +34,7 @@ This spec prevents future regressions by defining **invariants** — properties 
 | P1 | **Capability over economy** | A task that needs tools MUST get tool access. Sending it to text-only mode to save tokens is always wrong. False positive (L2 for a question) costs tokens. False negative (hallucinated tools at L1) produces wrong answers. |
 | P2 | **Signal strength determines gate order** | Strongest signals (explicit CLI command mention) must be checked before weaker signals (intent classification). A regex match on `git` is stronger evidence of tool need than heuristic intent classification. |
 | P3 | **Classification dimensions are orthogonal** | Domain (what it's about), Intent (what user wants), and Capability (what system resources are needed) are independent dimensions. No dimension gates another — they compose. |
-| P4 | **A3: Deterministic governance** | All routing decisions are rule-based. Same input → same routing. No LLM in the decision path. |
+| P4 | **A3: Deterministic governance** | All routing decisions are rule-based. Same input → same routing. No LLM in the decision path. LLM Intent Resolver is an advisory pre-routing step with deterministic fallback — it short-circuits non-pipeline strategies but does not influence routing level decisions within the pipeline. |
 | P5 | **Floors override ceilings** | When a floor (minimum level) and a ceiling (maximum level) conflict, the floor wins. Safety > economy. |
 | P6 | **Observable failures drive design** | Every routing rule must trace to a real failure case or a provable failure scenario. No speculative rules. |
 
@@ -112,6 +112,20 @@ The routing pipeline is a **sequential transformation** from task input to execu
 │  │  Domain  │  │  Intent  │  │ Tool Requirement │               │
 │  └──────────┘  └──────────┘  └──────────────────┘               │
 │       ↓              ↓               ↓                          │
+│  Stage 1.5: Intent Resolution (LLM-powered, advisory)           │
+│  ┌──────────────────────────────────────┐                       │
+│  │ resolveIntent() — fast-tier LLM      │                       │
+│  │ Skipped when: code-mutation domain   │                       │
+│  │   OR targetFiles present             │                       │
+│  │ Fallback: regex classifiers (Stage 1)│                       │
+│  │                                      │                       │
+│  │ Strategy → short-circuit:            │                       │
+│  │  conversational → direct LLM answer  │                       │
+│  │  direct-tool → single tool exec      │                       │
+│  │  agentic-workflow → rewrite goal     │                       │
+│  │  full-pipeline → continue below ↓    │                       │
+│  └──────────────────────────────────────┘                       │
+│       ↓ (full-pipeline only)                                    │
 │  Stage 2: Risk Assessment                                       │
 │  ┌──────────────────────────────────────┐                       │
 │  │ calculateRiskScore() → routeByRisk() │                       │
@@ -152,6 +166,34 @@ The routing pipeline is a **sequential transformation** from task input to execu
 │  └──────────────────────────────────────┘                       │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+### 4.1 Stage 1.5: Intent Resolution — Design Rationale
+
+**Problem:** The regex-based classifiers in Stage 1 (`classifyTaskDomain`, `classifyTaskIntent`, `assessToolRequirement`) work reliably for code tasks but fail on natural language variation for non-code tasks. "เปิดแอพ Google Chrome", "ถ่ายรูปหน้าจอ", "ส่งอีเมล" and other OS/tool commands are not covered by hardcoded patterns.
+
+**Solution:** A fast-tier LLM call (`resolveIntent()` in `intent-resolver.ts`) that semantically understands the user's goal and classifies into one of 4 execution strategies:
+
+| Strategy | Meaning | Action |
+|----------|---------|--------|
+| `conversational` | Greeting, question, meta-query | Short-circuit: direct LLM answer, skip pipeline |
+| `direct-tool` | Single tool invocation | Short-circuit: execute one tool call, skip pipeline |
+| `agentic-workflow` | Multi-step task needing planning | Rewrite `input.goal` with LLM-generated workflow prompt, continue pipeline |
+| `full-pipeline` | Code modification with file targets | No-op: continue to Stage 2 as before |
+
+**A3 compliance:** The Intent Resolver is advisory — it does NOT influence routing level (L0-L3) within the pipeline. Its short-circuits are strategy-level decisions (whether to enter the pipeline), not governance decisions (how the pipeline routes). When LLM is unavailable, `fallbackStrategy()` maps Stage 1 regex results to a strategy deterministically.
+
+**Activation guard:** Intent resolution is skipped when:
+- `taskDomain === 'code-mutation'` (regex classifier already handles these well)
+- `targetFiles` is present (task has explicit code scope — always full-pipeline)
+- No LLM provider is available (graceful degradation to regex-only path)
+
+**Cost:** ~200 tokens per intent resolution call using fast-tier LLM. Zero cost for code tasks (skipped).
+
+**Invariants:**
+- IR1: Intent resolution NEVER fires for tasks with `targetFiles` (preserves L0 zero-LLM guarantee).
+- IR2: Intent resolution NEVER fires for `code-mutation` domain (regex classifiers are sufficient).
+- IR3: When LLM is unavailable, behavior is identical to pre-Intent-Resolver pipeline.
+- IR4: Hallucinated tool names in `directToolCall` are normalized to `shell_exec` (known tool whitelist check).
 
 ---
 
@@ -456,21 +498,25 @@ Any implementation change to the classification or routing pipeline MUST pass th
 - All tests in `tests/orchestrator/task-domain-classifier.test.ts` pass
 - All tests in `tests/orchestrator/core-loop-integration.test.ts` pass
 - All tests in `tests/orchestrator/core-loop-pipeline-confidence.test.ts` pass
+- All tests in `tests/orchestrator/intent-resolver.test.ts` pass (16 tests: strategy classification, fallback, timeout, error handling)
 
 ### Invariant checks
 - P1: No task with `tool-needed` routes to L0 or L1 (grep for capability floor)
-- P4: No Math.random() or LLM call in classification functions
+- P4: No Math.random() or LLM call in classification functions (Stage 1). Intent Resolver (Stage 1.5) is LLM-powered but advisory with deterministic fallback.
 - P5: Capability floor is applied AFTER text-only cap
 - O5: No adjustment after capability floor lowers the level
+- IR1: Intent Resolver never fires for tasks with `targetFiles` (preserves L0)
+- IR2: Intent Resolver never fires for `code-mutation` domain
 
 ---
 
 ## 14. Graduated Extensions
 
-### 14.1 Now current scope (code-complete, pending wiring)
+### 14.1 Now current scope (code-complete)
 
 | Extension | Status | Implementation | Spec reference |
 |-----------|--------|----------------|----------------|
+| LLM Intent Resolver (pre-routing strategy classification) | **Implemented** | `intent-resolver.ts`; wired in `core-loop.ts` `prepareExecution()` | §4.1 |
 | Fine-grained tool categories (`file_read`, `file_write`, `shell_exec`, `shell_read`, `llm_call`) | Code-complete | `CapabilitySchema` in [agent-contract.ts](../../src/core/agent-contract.ts); `classifyTool()` in [tool-authorization.ts](../../src/security/tool-authorization.ts) | §9.1 |
 | Capability token rejection (replaces A6 strip) | Code-complete | `authorizeToolCall()` in [tool-authorization.ts](../../src/security/tool-authorization.ts) | §9.1, G3 |
 | Oracle contradiction escalation | Implemented | Pass/fail partition + auto-escalate in [core-loop.ts](../../src/orchestrator/core-loop.ts) | §7.1 |

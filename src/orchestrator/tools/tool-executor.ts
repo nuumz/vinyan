@@ -10,19 +10,22 @@ import { createHash } from 'crypto';
 import type { Evidence } from '../../core/types.ts';
 import type { ToolCall, ToolResult } from '../types.ts';
 import { BUILT_IN_TOOLS } from './built-in-tools.ts';
+import type { CommandApprovalGate } from './command-approval-gate.ts';
 import type { Tool, ToolContext } from './tool-interface.ts';
 import { validateToolCall } from './tool-validator.ts';
 
 export class ToolExecutor {
   private tools: Map<string, Tool>;
+  private commandApprovalGate?: CommandApprovalGate;
 
-  constructor(additionalTools?: Map<string, Tool>) {
+  constructor(additionalTools?: Map<string, Tool>, commandApprovalGate?: CommandApprovalGate) {
     this.tools = new Map(BUILT_IN_TOOLS);
     if (additionalTools) {
       for (const [name, tool] of additionalTools) {
         this.tools.set(name, tool);
       }
     }
+    this.commandApprovalGate = commandApprovalGate;
   }
 
   async executeProposedTools(calls: ToolCall[], context: ToolContext): Promise<ToolResult[]> {
@@ -45,6 +48,19 @@ export class ToolExecutor {
 
       const validation = validateToolCall(call, tool, context);
       if (!validation.valid) {
+        // If the command can be user-approved, ask before denying
+        if (validation.canApprove && this.commandApprovalGate) {
+          const command = (call.parameters.command as string) ?? '';
+          const decision = await this.commandApprovalGate.requestApproval(command, validation.reason ?? 'Unknown');
+          if (decision === 'approved') {
+            // User approved — execute the tool bypassing allowlist
+            const result = await tool.execute({ ...call.parameters, callId: call.id }, context);
+            result.callId = call.id;
+            result.durationMs = Math.round(performance.now() - startTime);
+            results.push(result);
+            continue;
+          }
+        }
         results.push({
           callId: call.id,
           tool: call.tool,

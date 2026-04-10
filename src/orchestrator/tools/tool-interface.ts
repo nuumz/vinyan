@@ -42,4 +42,6 @@ export interface ToolContext {
 export interface ToolValidationResult {
   valid: boolean;
   reason?: string;
+  /** If true, user can interactively approve this denied tool call. */
+  canApprove?: boolean;
 }

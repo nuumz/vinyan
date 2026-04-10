@@ -111,6 +111,31 @@ export type TaskIntent = 'execute' | 'inquire' | 'converse';
  */
 export type ToolRequirement = 'none' | 'tool-needed';
 
+// ---------------------------------------------------------------------------
+// Intent Resolution (pre-pipeline LLM classification)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execution strategy — determined by LLM Intent Resolver before the pipeline.
+ * Replaces regex-based classification with semantic understanding.
+ */
+export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
+
+/** Result of LLM-powered intent resolution. */
+export interface IntentResolution {
+  strategy: ExecutionStrategy;
+  /** LLM-rewritten goal for clarity and precision */
+  refinedGoal: string;
+  /** For direct-tool: the tool call the LLM identified */
+  directToolCall?: { tool: string; parameters: Record<string, unknown> };
+  /** For agentic-workflow: LLM-generated workflow prompt optimized for execution */
+  workflowPrompt?: string;
+  /** Confidence in strategy selection (0-1) */
+  confidence: number;
+  /** LLM reasoning trace for observability */
+  reasoning: string;
+}
+
 /** Read-only tools available for non-mutating reasoning tasks. */
 export const READONLY_TOOLS = new Set([
   'file_read', 'search_grep', 'directory_list', 'git_status', 'git_diff', 'web_search',

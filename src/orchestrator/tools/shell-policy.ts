@@ -14,6 +14,8 @@ export interface CommandPolicy {
   allowed: boolean;
   readOnly: boolean;
   reason?: string;
+  /** If true, user can approve this command interactively (allowlist miss, not security violation). */
+  canApprove?: boolean;
 }
 
 interface CommandRule {
@@ -75,6 +77,24 @@ const COMMAND_RULES = new Map<string, CommandRule>([
   ['echo', { readOnly: true }],
   ['type', { readOnly: true }],
   ['which', { readOnly: true }],
+
+  // OS interaction tools (safe, no file mutation)
+  ['open', { readOnly: true }],       // macOS: app/file/URL launcher
+  ['xdg-open', { readOnly: true }],   // Linux: app/file/URL launcher
+  ['start', { readOnly: true }],      // Windows: app/file/URL launcher
+  ['pbcopy', { readOnly: false }],
+  ['pbpaste', { readOnly: true }],
+  ['say', { readOnly: true }],
+
+  // System info (read-only)
+  ['date', { readOnly: true }],
+  ['whoami', { readOnly: true }],
+  ['hostname', { readOnly: true }],
+  ['uname', { readOnly: true }],
+  ['sw_vers', { readOnly: true }],
+  ['pwd', { readOnly: true }],
+  ['env', { readOnly: true }],
+  ['printenv', { readOnly: true }],
 ]);
 
 /**
@@ -89,7 +109,7 @@ export function evaluateCommand(parsed: ParsedShellCommand): CommandPolicy {
 
   const rule = COMMAND_RULES.get(parsed.executable);
   if (!rule) {
-    return { allowed: false, readOnly: false, reason: `Shell command '${parsed.executable}' is not in allowlist` };
+    return { allowed: false, readOnly: false, reason: `Shell command '${parsed.executable}' is not in allowlist`, canApprove: true };
   }
 
   // Subcommand restrictions (bun, node, python)

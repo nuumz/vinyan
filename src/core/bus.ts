@@ -83,6 +83,9 @@ export interface VinyanBusEvents {
   // Tool execution (Phase 2 — G1)
   'tools:executed': { taskId: string; results: ToolResult[] };
 
+  // Tool approval — user prompted to approve commands not in allowlist
+  'tool:approval_required': { requestId: string; command: string; reason: string };
+
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
@@ -238,6 +241,9 @@ export interface VinyanBusEvents {
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
   'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
+
+  // Intent Resolution (pre-pipeline LLM classification)
+  'intent:resolved': { taskId: string; strategy: string; confidence: number; reasoning: string };
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };

@@ -110,6 +110,8 @@ export interface OrchestratorConfig {
    * (useful when using a custom engineRegistry with non-LLM REs).
    */
   workerModelAllowlist?: string[];
+  /** Command approval gate — enables interactive approval for unlisted shell commands. */
+  commandApprovalGate?: import('./tools/command-approval-gate.ts').CommandApprovalGate;
 }
 
 export interface Orchestrator {
@@ -458,7 +460,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   if (costLedger) {
     traceCollector.setEconomyDeps(costLedger, economyConfig?.rate_cards, bus);
   }
-  const toolExecutor = new ToolExecutor();
+  const toolExecutor = new ToolExecutor(undefined, config.commandApprovalGate);
 
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
   const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
@@ -635,6 +637,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskCheckpoint,
     // Conversation Agent Mode: session manager for cross-turn context
     sessionManager: config.sessionManager,
+    // Intent Resolver: LLM registry for pre-routing semantic classification
+    llmRegistry: registry,
     // K2.2: Engine selector for trust-weighted provider selection
     engineSelector: providerTrustStore
       ? new DefaultEngineSelector({

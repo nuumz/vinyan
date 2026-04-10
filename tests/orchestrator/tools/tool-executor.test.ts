@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createBus } from '../../../src/core/bus.ts';
 import { BUILT_IN_TOOLS } from '../../../src/orchestrator/tools/built-in-tools.ts';
+import { CommandApprovalGate } from '../../../src/orchestrator/tools/command-approval-gate.ts';
 import { ToolExecutor, toolResultToEvidence } from '../../../src/orchestrator/tools/tool-executor.ts';
 import type { ToolContext } from '../../../src/orchestrator/tools/tool-interface.ts';
 import { validateToolCall } from '../../../src/orchestrator/tools/tool-validator.ts';
@@ -277,5 +279,92 @@ describe('ToolExecutor.partitionBySideEffect', () => {
     ];
     const { readOnly } = executor.partitionBySideEffect(calls);
     expect(readOnly.map((c) => c.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('ToolExecutor — command approval gate', () => {
+  test('unlisted shell command is approved when user accepts', async () => {
+    const bus = createBus();
+    const gate = new CommandApprovalGate(bus);
+    const approvalExecutor = new ToolExecutor(undefined, gate);
+
+    // Auto-approve any command
+    bus.on('tool:approval_required', ({ requestId }) => {
+      gate.resolve(requestId, 'approved');
+    });
+
+    const ctx = makeContext({ routingLevel: 2 });
+    const results = await approvalExecutor.executeProposedTools(
+      [makeCall('shell_exec', { command: 'echo hello' })],
+      ctx,
+    );
+    // 'echo' is in allowlist so no approval needed — this tests the normal path
+    expect(results[0]!.status).toBe('success');
+  });
+
+  test('unlisted shell command is denied when user rejects', async () => {
+    const bus = createBus();
+    const gate = new CommandApprovalGate(bus);
+    const approvalExecutor = new ToolExecutor(undefined, gate);
+
+    // Auto-reject any command
+    bus.on('tool:approval_required', ({ requestId }) => {
+      gate.resolve(requestId, 'rejected');
+    });
+
+    const ctx = makeContext({ routingLevel: 2 });
+    const results = await approvalExecutor.executeProposedTools(
+      [makeCall('shell_exec', { command: 'google-chrome' })],
+      ctx,
+    );
+    expect(results[0]!.status).toBe('denied');
+    expect(results[0]!.error).toContain('not in allowlist');
+  });
+
+  test('unlisted command executes when user approves', async () => {
+    const bus = createBus();
+    const gate = new CommandApprovalGate(bus);
+    const approvalExecutor = new ToolExecutor(undefined, gate);
+
+    bus.on('tool:approval_required', ({ requestId }) => {
+      gate.resolve(requestId, 'approved');
+    });
+
+    const ctx = makeContext({ routingLevel: 2 });
+    // 'true' is a real command that exits 0 on all Unix systems
+    const results = await approvalExecutor.executeProposedTools(
+      [makeCall('shell_exec', { command: 'true' })],
+      ctx,
+    );
+    expect(results[0]!.status).toBe('success');
+  });
+
+  test('without approval gate, unlisted command is denied immediately', async () => {
+    const ctx = makeContext({ routingLevel: 2 });
+    const results = await executor.executeProposedTools(
+      [makeCall('shell_exec', { command: 'google-chrome' })],
+      ctx,
+    );
+    expect(results[0]!.status).toBe('denied');
+  });
+
+  test('metacharacter command is NOT approvable (hard deny)', async () => {
+    const bus = createBus();
+    const gate = new CommandApprovalGate(bus);
+    const approvalExecutor = new ToolExecutor(undefined, gate);
+
+    let approvalRequested = false;
+    bus.on('tool:approval_required', ({ requestId }) => {
+      approvalRequested = true;
+      gate.resolve(requestId, 'approved');
+    });
+
+    const ctx = makeContext({ routingLevel: 2 });
+    const results = await approvalExecutor.executeProposedTools(
+      [makeCall('shell_exec', { command: 'echo hello; rm -rf /' })],
+      ctx,
+    );
+    expect(results[0]!.status).toBe('denied');
+    expect(approvalRequested).toBe(false); // No approval prompt for security violations
   });
 });

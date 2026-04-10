@@ -59,7 +59,7 @@ export function validateToolCall(call: ToolCall, tool: Tool, context: ToolContex
       const parsed = parseShellCommand(command);
       const policy = evaluateCommand(parsed);
       if (!policy.allowed) {
-        return { valid: false, reason: policy.reason ?? `Shell command '${parsed.executable}' denied` };
+        return { valid: false, reason: policy.reason ?? `Shell command '${parsed.executable}' denied`, canApprove: policy.canApprove };
       }
     }
   }

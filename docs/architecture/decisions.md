@@ -35,6 +35,9 @@
 ┌─────────────────────▼──────────────────────────────────────────────────┐
 │              Vinyan Orchestrator (rule-based, non-LLM)                 │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │         Intent Resolver (LLM, advisory → strategy routing)       │  │
+│  │  conversational│direct-tool│agentic-workflow → short-circuit     │  │
+│  │  full-pipeline → ↓                                               │  │
 │  │ Core Loop: Perceive → Predict → Plan → Generate → Verify → Learn │  │
 │  └─────────┬───────────┬─────────────┬────────────┬─────────────────┘  │
 │            │           │             │            │                    │

@@ -128,6 +128,21 @@ describe('evaluateCommand — git restrictions', () => {
   });
 });
 
+describe('evaluateCommand — open (macOS)', () => {
+  test('open -a app is allowed', () => {
+    expect(evaluate('open -a "Google Chrome"').allowed).toBe(true);
+  });
+
+  test('open is read-only', () => {
+    expect(evaluate('open -a Safari').readOnly).toBe(true);
+  });
+
+  test('open with backslash-escaped spaces is allowed', () => {
+    const result = evaluate('open -a Google\\ Chrome');
+    expect(result.allowed).toBe(true);
+  });
+});
+
 describe('isReadOnlyCommand', () => {
   test('read-only commands return true', () => {
     expect(isReadOnlyCommand('cat')).toBe(true);
@@ -137,6 +152,7 @@ describe('isReadOnlyCommand', () => {
     expect(isReadOnlyCommand('echo')).toBe(true);
     expect(isReadOnlyCommand('which')).toBe(true);
     expect(isReadOnlyCommand('tsc')).toBe(true);
+    expect(isReadOnlyCommand('open')).toBe(true);
   });
 
   test('write commands return false', () => {

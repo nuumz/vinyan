@@ -71,9 +71,9 @@ describe('parseShellCommand', () => {
     expect(parsed.hasMetacharacters).toBe(true);
   });
 
-  test('detects backslash escape', () => {
-    const parsed = parseShellCommand('git status\\nrm -rf /');
-    expect(parsed.hasMetacharacters).toBe(true);
+  test('backslash is not a metacharacter (used for escaping spaces)', () => {
+    const parsed = parseShellCommand('open -a Google\\ Chrome');
+    expect(parsed.hasMetacharacters).toBe(false);
   });
 
   test('safe command has no metacharacters', () => {

@@ -561,17 +561,16 @@ If uncertain, say what you don't know — never fabricate facts about the codeba
 Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       }
 
-      // Execute intent: orchestrator framing — assess capability, act or explain limitation
+      // Execute intent: general-purpose agent — use tools to accomplish the task
       if (intent === 'execute') {
         return `[ROLE]
-You are Vinyan, a task orchestrator.
+You are Vinyan, a general-purpose task agent.
+You CAN interact with the user's OS through the tools listed in this prompt (shell commands, file operations, etc.).
 When the user asks you to do something:
-1. State the goal clearly (one sentence).
-2. Check: do you have tools listed in this prompt that can accomplish this? If YES → propose the action.
-3. If NO tools are available for this task → you MUST say "I don't have the ability to do that directly" FIRST, then suggest the single most direct way the user can do it themselves.
-CRITICAL: You can NOT launch applications, open browsers, run shell commands, or interact with the OS unless a tool is explicitly listed above. Do not say "ได้ครับ" or "Sure" for actions you cannot perform.
-Be concise. One recommended approach — not a tutorial of all options.
-Match the user's language naturally. Be specific to their platform.
+1. Identify the most direct way to accomplish it using available tools.
+2. Propose the tool call. Be specific — include the exact command or parameters.
+3. If no tool can accomplish the task, explain briefly and suggest the simplest alternative.
+Be concise. Match the user's language naturally. Be specific to their platform.
 Never reveal your underlying model name or provider — you are Vinyan.
 Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       }
@@ -607,19 +606,28 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       let tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
 
-      // A6 defense-in-depth: filter tools by task domain.
-      // code-reasoning gets read-only tools only; general-reasoning gets none.
-      const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
-      if (domain === 'general-reasoning' || domain === 'conversational') {
-        // General reasoning & conversational: no tools (answer from knowledge)
-        return null;
+      // A6 defense-in-depth: filter tools by task domain and intent.
+      const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
+      const domain = stu?.taskDomain;
+      const intent = stu?.taskIntent;
+
+      // Execute intent: expose tools regardless of domain — agent needs them to act
+      if (intent !== 'execute') {
+        if (domain === 'conversational') {
+          // Conversational: no tools (answer from knowledge)
+          return null;
+        }
+        if (domain === 'general-reasoning') {
+          // General reasoning (inquire): no tools
+          return null;
+        }
+        if (domain === 'code-reasoning') {
+          // Code reasoning: read-only tools only
+          tools = tools.filter((t) => READONLY_TOOLS.has(t));
+          if (!tools.length) return null;
+        }
       }
-      if (domain === 'code-reasoning') {
-        // Code reasoning: read-only tools only
-        tools = tools.filter((t) => READONLY_TOOLS.has(t));
-        if (!tools.length) return null;
-      }
-      // code-mutation: all tools (default)
+      // code-mutation or execute intent: all tools
 
       const lines = [`[AVAILABLE TOOLS]`, [...tools].sort().join(', ')];
       lines.push(`\nRuntime: ${process.platform} (${process.arch})`);

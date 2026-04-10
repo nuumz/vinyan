@@ -26,7 +26,7 @@ export interface ParsedShellCommand {
  */
 const META_CHARS = new Set([
   ';', '|', '&', '`', '$', '(', ')', '{', '}',
-  '>', '<', '\n', '\\',
+  '>', '<', '\n',
 ]);
 
 /**

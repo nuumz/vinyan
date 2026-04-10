@@ -7,12 +7,16 @@
  * Pure observer — does not modify core loop behavior (A3 compliance).
  * Source of truth: spec/tdd.md §1A.8, §1C.4
  */
+import * as readline from 'readline';
 import type { VinyanBus } from '../core/bus.ts';
+import type { CommandApprovalGate } from '../orchestrator/tools/command-approval-gate.ts';
 
 export interface CLIProgressOptions {
   output?: NodeJS.WritableStream;
   verbose?: boolean;
   color?: boolean;
+  /** Command approval gate — enables interactive approval for unlisted shell commands. */
+  commandApprovalGate?: CommandApprovalGate;
 }
 
 export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressOptions): () => void {
@@ -29,6 +33,12 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   const write = (msg: string) => out.write(`${msg}\n`);
 
   const detachers: Array<() => void> = [];
+
+  detachers.push(
+    bus.on('intent:resolved', ({ strategy, confidence, reasoning }) => {
+      write(`${dim('[vinyan]')} Intent: ${bold(strategy)} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+    }),
+  );
 
   detachers.push(
     bus.on('task:start', ({ input, routing }) => {
@@ -135,6 +145,29 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
       );
     }),
   );
+
+  // Interactive command approval — prompt user for unlisted shell commands
+  const approvalGate = options?.commandApprovalGate;
+  if (approvalGate) {
+    detachers.push(
+      bus.on('tool:approval_required', ({ requestId, command, reason }) => {
+        write(`${dim('[vinyan]')} ${yellow('⚠ Command not in allowlist:')} ${bold(command)}`);
+        write(`${dim('[vinyan]')} ${dim(reason)}`);
+
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        rl.question(`${dim('[vinyan]')} Allow this command? [y/N] `, (answer) => {
+          rl.close();
+          const approved = answer.trim().toLowerCase() === 'y';
+          approvalGate.resolve(requestId, approved ? 'approved' : 'rejected');
+          if (approved) {
+            write(`${dim('[vinyan]')} ${green('Approved')}`);
+          } else {
+            write(`${dim('[vinyan]')} ${red('Rejected')}`);
+          }
+        });
+      }),
+    );
+  }
 
   return () => {
     for (const detach of detachers) detach();

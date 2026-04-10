@@ -287,7 +287,7 @@ const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip
 /** Thai action verbs implying system-level execution (not just information).
  * Note: 'deploy' matches substrings (e.g. 'redeploy') — acceptable because redeploying also needs tools.
  * Note: ลง uses boundary guard to prevent matching ลงทะเบียน, ลงทุน, etc. */
-const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดโปรแกรม|เปิดเว็บ|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
+const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดแอป|เปิดโปรแกรม|เปิดเว็บ|เปิดเบราว์เซอร์|ปิดแอพ|ปิดแอป|ปิดโปรแกรม|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
 
 /**
  * Assess whether a task requires tool execution to achieve its goal.

@@ -270,6 +270,14 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     expect(system).not.toContain('shell_exec');
   });
 
+  it('general-reasoning + execute intent: tools ARE shown', () => {
+    const registry = createReasoningRegistry();
+    const system = registry.renderTarget('system', makeReasoningContext('general-reasoning', {}, 'execute'));
+
+    expect(system).toContain('[AVAILABLE TOOLS]');
+    expect(system).toContain('shell_exec');
+  });
+
   it('conversational: no tools shown', () => {
     const registry = createReasoningRegistry();
     const system = registry.renderTarget('system', makeReasoningContext('conversational'));
@@ -402,14 +410,14 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
 
   // ── Intent-aware prompt framing ────────────────────────────────────
 
-  it('execute intent: role is task orchestrator with goal framing', () => {
+  it('execute intent: role is general-purpose task agent', () => {
     const registry = createReasoningRegistry();
     const system = registry.renderTarget('system', makeReasoningContext('general-reasoning', {}, 'execute'));
 
-    expect(system).toContain('task orchestrator');
-    expect(system).toContain('goal');
+    expect(system).toContain('task agent');
+    expect(system).toContain('available tools');
     expect(system).not.toContain('helpful assistant');
-    expect(system).not.toContain('Do NOT claim to have tools');
+    expect(system).not.toContain('You can NOT launch applications');
   });
 
   it('execute intent: task section has Goal line', () => {
@@ -428,7 +436,7 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     const system = registry.renderTarget('system', makeReasoningContext('general-reasoning', {}, 'inquire'));
 
     expect(system).toContain('helpful assistant');
-    expect(system).not.toContain('task orchestrator');
+    expect(system).not.toContain('task agent');
   });
 
   it('converse intent: role is friendly assistant', () => {
@@ -436,7 +444,7 @@ describe('createReasoningRegistry — domain-aware prompts', () => {
     const system = registry.renderTarget('system', makeReasoningContext('conversational', {}, 'converse'));
 
     expect(system).toContain('friendly assistant');
-    expect(system).not.toContain('task orchestrator');
+    expect(system).not.toContain('task agent');
     expect(system).not.toContain('helpful assistant');
   });
 

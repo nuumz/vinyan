@@ -49,9 +49,14 @@ Respond as JSON with these fields:
 
 Strategy rules:
 - "conversational": greetings, questions, explanations, meta-questions about the system
-- "direct-tool": single tool invocation — open app, run command, capture screenshot, check status
-- "agentic-workflow": multi-step tasks needing planning — refactor+deploy, build+test+release, complex workflows
+- "direct-tool": a SINGLE fire-and-forget action with no expected textual output — open/launch an app, run a command, navigate to a URL. The action itself IS the result.
+- "agentic-workflow": multi-step tasks needing planning, information gathering, or synthesis — summarize/list/find/analyze content, refactor+deploy, build+test+release, complex workflows
 - "full-pipeline": code modification tasks with file targets, bug fixes, feature additions
+
+CRITICAL discrimination rules (apply BEFORE choosing a strategy):
+- If the goal contains verbs like "summarize", "list", "find all", "analyze", "report", "explain", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool". These require reading + processing + synthesizing = "agentic-workflow".
+- If the goal asks for information FROM an app or file (e.g., "summarize TODOs from notes") → "agentic-workflow", NOT "direct-tool". Opening the app alone does not answer the question.
+- "direct-tool" is ONLY correct when the action itself is the entire goal (e.g., "open Chrome", "run the server"). If the user needs a RESPONSE or ANSWER, it is NOT "direct-tool".
 
 Available tools (use ONLY these exact names — do NOT invent tool names):
 - shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }
@@ -114,7 +119,7 @@ export async function resolveIntent(
   input: TaskInput,
   deps: IntentResolverDeps,
 ): Promise<IntentResolution> {
-  const provider = deps.registry.selectByTier('fast') ?? deps.registry.selectByTier('balanced');
+  const provider = deps.registry.selectByTier('tool-uses') ?? deps.registry.selectByTier('fast') ?? deps.registry.selectByTier('balanced');
   if (!provider) {
     throw new Error('No LLM provider available for intent resolution');
   }
@@ -137,11 +142,34 @@ Available tools: ${toolList}`;
     INTENT_TIMEOUT_MS,
   );
 
-  const content = response.content.trim();
+  let content = response.content.trim();
 
   // Strip markdown fences if present (defensive)
-  const jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const parsed = IntentResponseSchema.parse(JSON.parse(jsonStr));
+  let jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
+  let parsed: z.infer<typeof IntentResponseSchema>;
+  try {
+    parsed = IntentResponseSchema.parse(JSON.parse(jsonStr));
+  } catch (firstError) {
+    // Fast-tier model returned non-JSON — retry with balanced tier before giving up
+    const balancedProvider = deps.registry.selectByTier('balanced');
+    if (balancedProvider && balancedProvider.id !== provider.id) {
+      const retryResponse = await withTimeout(
+        balancedProvider.generate({
+          systemPrompt: INTENT_SYSTEM_PROMPT,
+          userPrompt,
+          maxTokens: 500,
+          temperature: 0,
+        }),
+        INTENT_TIMEOUT_MS,
+      );
+      content = retryResponse.content.trim();
+      jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      parsed = IntentResponseSchema.parse(JSON.parse(jsonStr));
+    } else {
+      throw firstError;
+    }
+  }
 
   // Defensive: normalize hallucinated tool names to shell_exec
   let directToolCall = parsed.directToolCall;

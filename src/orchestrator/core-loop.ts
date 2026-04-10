@@ -170,6 +170,8 @@ export interface OrchestratorDeps {
   sessionManager?: import('../api/session-manager.ts').SessionManager;
   /** LLM provider registry for Intent Resolver pre-routing classification. */
   llmRegistry?: import('./llm/provider-registry.ts').LLMProviderRegistry;
+  /** Remediation engine for automatic tool failure recovery (fast-tier LLM). */
+  remediationEngine?: import('./remediation-engine.ts').RemediationEngine;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -538,8 +540,106 @@ async function executeDirectTool(
     routingLevel: 2 as const,
   };
   try {
-    const results = await deps.toolExecutor.executeProposedTools([toolCall], context);
-    const toolResult = results[0];
+    let results = await deps.toolExecutor.executeProposedTools([toolCall], context);
+    let toolResult = results[0];
+    let modelUsed = 'none';
+
+    // ── Remediation: if tool failed with recoverable error, try discovery then LLM fix ──
+    if (toolResult?.status !== 'success' && toolResult?.error) {
+      const { classifyToolFailure } = await import('./tool-failure-classifier.ts');
+      const exitCode = extractExitCode(toolResult.error);
+      const analysis = classifyToolFailure(exitCode, toolResult.error);
+
+      deps.bus?.emit('tool:failure_classified', {
+        taskId: input.id,
+        type: analysis.type,
+        recoverable: analysis.recoverable,
+        error: toolResult.error,
+      });
+
+      // Step 1: Deterministic app discovery (no LLM, fast)
+      if (analysis.type === 'not_found' && intent.directToolCall?.tool === 'shell_exec') {
+        const { discoverApp } = await import('./tools/direct-tool-resolver.ts');
+        const command = (toolCall.parameters.command as string) ?? '';
+        // Extract the app name from "open -a <name>" pattern
+        const appNameMatch = command.match(/open\s+-a\s+(?:"([^"]+)"|(\S+))/);
+        const failedAppName = appNameMatch?.[1] ?? appNameMatch?.[2];
+        if (failedAppName) {
+          const discovered = await discoverApp(failedAppName);
+          if (discovered && discovered.toLowerCase() !== failedAppName.toLowerCase()) {
+            const correctedCommand = `open -a ${quoteArgForDiscovery(discovered)}`;
+            deps.bus?.emit('tool:remediation_attempted', {
+              taskId: input.id,
+              correctedCommand,
+              confidence: 1.0,
+              reasoning: `Discovered installed app: "${discovered}"`,
+            });
+            const retryCall = {
+              id: `tc-discover-${input.id}`,
+              tool: toolCall.tool,
+              parameters: { ...toolCall.parameters, command: correctedCommand },
+            };
+            results = await deps.toolExecutor.executeProposedTools([retryCall], context);
+            toolResult = results[0];
+            modelUsed = 'discovery';
+            if (toolResult?.status === 'success') {
+              deps.bus?.emit('tool:remediation_succeeded', {
+                taskId: input.id,
+                correctedCommand,
+              });
+            }
+          }
+        }
+      }
+
+      // Step 2: LLM remediation (if discovery didn't work)
+      if (toolResult?.status !== 'success' && analysis.recoverable && deps.remediationEngine) {
+        const command = (toolCall.parameters.command as string) ?? '';
+        const suggestion = await deps.remediationEngine.suggest(
+          input.goal, command, analysis, process.platform,
+        );
+
+        if (
+          suggestion.action === 'retry_corrected'
+          && suggestion.correctedCommand
+          && suggestion.confidence >= deps.remediationEngine.confidenceThreshold
+        ) {
+          deps.bus?.emit('tool:remediation_attempted', {
+            taskId: input.id,
+            correctedCommand: suggestion.correctedCommand,
+            confidence: suggestion.confidence,
+            reasoning: suggestion.reasoning,
+          });
+
+          const retryCall = {
+            id: `tc-remediate-${input.id}`,
+            tool: toolCall.tool,
+            parameters: { ...toolCall.parameters, command: suggestion.correctedCommand },
+          };
+          results = await deps.toolExecutor.executeProposedTools([retryCall], context);
+          toolResult = results[0];
+          modelUsed = deps.remediationEngine.providerId ?? 'remediation';
+
+          if (toolResult?.status === 'success') {
+            deps.bus?.emit('tool:remediation_succeeded', {
+              taskId: input.id,
+              correctedCommand: suggestion.correctedCommand,
+            });
+          } else {
+            deps.bus?.emit('tool:remediation_failed', {
+              taskId: input.id,
+              reason: toolResult?.error ?? 'Corrected command also failed',
+            });
+          }
+        } else {
+          deps.bus?.emit('tool:remediation_failed', {
+            taskId: input.id,
+            reason: suggestion.reasoning,
+          });
+        }
+      }
+    }
+
     const trace: ExecutionTrace = {
       id: `trace-${input.id}-direct-tool`,
       taskId: input.id,
@@ -548,7 +648,7 @@ async function executeDirectTool(
       routingLevel: 2,
       approach: 'direct-tool-shortcircuit',
       oracleVerdicts: {},
-      modelUsed: 'none',
+      modelUsed,
       tokensConsumed: 0,
       durationMs: toolResult?.durationMs ?? 0,
       outcome: toolResult?.status === 'success' ? 'success' : 'failure',
@@ -560,6 +660,13 @@ async function executeDirectTool(
     const answer = toolResult?.status === 'success'
       ? (typeof toolResult.output === 'string' ? toolResult.output : JSON.stringify(toolResult.output))
       : toolResult?.error ?? 'Tool execution failed';
+
+    // Guard: if tool "succeeded" but produced no meaningful output, fall through
+    // to the pipeline — the direct-tool shortcircuit didn't actually answer the user.
+    if (toolResult?.status === 'success' && (!answer || !answer.trim())) {
+      return null;
+    }
+
     const result: TaskResult = {
       id: input.id,
       status: toolResult?.status === 'success' ? 'completed' : 'failed',
@@ -572,6 +679,18 @@ async function executeDirectTool(
   } catch {
     return null; // Fall through to pipeline
   }
+}
+
+/** Extract exit code from error string like "Exit code 127: ..." */
+function extractExitCode(error: string): number {
+  const match = error.match(/Exit code (\d+)/i);
+  return match?.[1] ? parseInt(match[1], 10) : 1;
+}
+
+/** Shell-safe quoting for discovered app names. */
+function quoteArgForDiscovery(s: string): string {
+  if (/^[a-zA-Z0-9_./:@-]+$/.test(s)) return s;
+  return `"${s.replace(/"/g, '\\"')}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +738,19 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
   let { understanding, routing } = prep;
   const { workingMemory, explorationFlag } = prep;
+
+  // Agentic-workflow requires tool access → minimum L2 (L0-L1 have 0 tool calls)
+  if (intentResolution?.strategy === 'agentic-workflow' && routing.level < 2) {
+    const { LEVEL_CONFIG } = await import('../gate/risk-router.ts');
+    const l2 = LEVEL_CONFIG[2];
+    routing = {
+      ...routing,
+      level: 2,
+      model: routing.model ?? l2.model,
+      budgetTokens: Math.max(routing.budgetTokens, l2.budgetTokens),
+      latencyBudgetMs: Math.max(routing.latencyBudgetMs, l2.latencyBudgetMs),
+    };
+  }
   const startTime = Date.now();
 
   // Conversation Agent Mode: load conversation history if session context present
@@ -722,14 +854,18 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ═══════════════════════════════════════════════════════════════
       // Step 1: PERCEIVE
       // ═══════════════════════════════════════════════════════════════
+      const perceiveStart = Date.now();
       const perceiveResult = await executePerceivePhase(ctx, routing, understanding, totalTokensConsumed);
+      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'perceive', durationMs: Date.now() - perceiveStart, routingLevel: routing.level });
       const { perception } = perceiveResult.value;
       understanding = perceiveResult.value.understanding;
 
       // ═══════════════════════════════════════════════════════════════
       // Step 2: PREDICT + SELECT WORKER
       // ═══════════════════════════════════════════════════════════════
+      const predictStart = Date.now();
       const predictOutcome = await executePredictPhase(ctx, routing, perception, understanding);
+      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'predict', durationMs: Date.now() - predictStart, routingLevel: routing.level });
       if (predictOutcome.action === 'return') return predictOutcome.result;
       const { prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction, workerSelection } = predictOutcome.value;
       routing = predictOutcome.value.routing;
@@ -738,13 +874,16 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ═══════════════════════════════════════════════════════════════
       // Step 3: PLAN
       // ═══════════════════════════════════════════════════════════════
+      const planStart = Date.now();
       const planOutcome = await executePlanPhase(ctx, routing, perception, understanding, forwardPrediction);
+      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'plan', durationMs: Date.now() - planStart, routingLevel: routing.level });
       if (planOutcome.action === 'return') return planOutcome.result;
       const { plan } = planOutcome.value;
 
       // ═══════════════════════════════════════════════════════════════
       // Step 4: GENERATE
       // ═══════════════════════════════════════════════════════════════
+      const generateStart = Date.now();
       const generateOutcome = await executeGeneratePhase(ctx, {
         routing,
         perception,
@@ -759,12 +898,14 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       if (generateOutcome.action === 'return') return generateOutcome.result;
       if (generateOutcome.action === 'retry') continue;
       if (generateOutcome.action === 'throw') throw generateOutcome.error;
+      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'generate', durationMs: Date.now() - generateStart, routingLevel: routing.level });
       const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
       totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
 
       // ═══════════════════════════════════════════════════════════════
       // Step 5: VERIFY
       // ═══════════════════════════════════════════════════════════════
+      const verifyStart = Date.now();
       const verifyOutcome = await executeVerifyPhase(ctx, {
         routing,
         perception,
@@ -788,6 +929,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         routing = verifyOutcome.routing;
         continue routingLoop;
       }
+      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'verify', durationMs: Date.now() - verifyStart, routingLevel: routing.level });
       const {
         verification, passedOracles, failedOracles, verificationConfidence,
         qualityScore, shouldCommit, trace,

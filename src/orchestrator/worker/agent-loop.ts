@@ -135,13 +135,13 @@ export class SessionProgress {
       hints.push(`[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`);
     }
 
-    // Consecutive failures
-    if (this.consecutiveFailures >= 3) {
-      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures. Step back and try a different approach — check file paths, permissions, or try an alternative strategy.`);
+    // Consecutive failures (lowered from 3 — burns fewer turns on dead ends)
+    if (this.consecutiveFailures >= 2) {
+      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures. Step back and try a different approach. Before editing a file, ALWAYS read it first to understand its current content and structure.`);
     }
 
-    // Stall detection
-    if (this.turnsWithoutProgress >= 3) {
+    // Stall detection (lowered from 3 — earlier intervention)
+    if (this.turnsWithoutProgress >= 2) {
       hints.push(`[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`);
     }
 
@@ -390,10 +390,10 @@ export async function runAgentLoop(
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
 
-        // EO #5: Check if transcript compaction is warranted
+        // EO #5: Check if transcript compaction is warranted (lowered from 0.7 — preserves context earlier)
         const snap = budget.toSnapshot();
         const pressureRatio = tokensConsumed / snap.maxTokens;
-        if (pressureRatio > 0.7 && transcript.length > 5) {
+        if (pressureRatio > 0.5 && transcript.length > 5) {
           const partition = partitionTranscript(transcript);
           deps.bus?.emit('agent:transcript_compaction', {
             taskId: input.id,

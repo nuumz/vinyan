@@ -2,7 +2,7 @@
  * Tests for direct-tool-resolver — deterministic platform-aware command resolution.
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyDirectTool, resolveCommand } from '../../../src/orchestrator/tools/direct-tool-resolver.ts';
+import { classifyDirectTool, clearDiscoveryCache, discoverApp, resolveCommand } from '../../../src/orchestrator/tools/direct-tool-resolver.ts';
 
 describe('classifyDirectTool', () => {
   // ── Thai app launch ──
@@ -133,6 +133,25 @@ describe('resolveCommand', () => {
     expect(cmd).toBe('open readme.md');
   });
 
+  // ── Office apps ──
+  test('macOS: outlook → open -a "Microsoft Outlook"', () => {
+    const classification = classifyDirectTool('เปิดแอพ outlook');
+    const cmd = resolveCommand(classification!, 'darwin');
+    expect(cmd).toBe('open -a "Microsoft Outlook"');
+  });
+
+  test('macOS: word → open -a "Microsoft Word"', () => {
+    const classification = classifyDirectTool('open word');
+    const cmd = resolveCommand(classification!, 'darwin');
+    expect(cmd).toBe('open -a "Microsoft Word"');
+  });
+
+  test('macOS: excel → open -a "Microsoft Excel"', () => {
+    const classification = classifyDirectTool('open excel');
+    const cmd = resolveCommand(classification!, 'darwin');
+    expect(cmd).toBe('open -a "Microsoft Excel"');
+  });
+
   // ── Linux ──
   test('Linux: google chrome → google-chrome', () => {
     const classification = classifyDirectTool('open google chrome');
@@ -151,5 +170,22 @@ describe('resolveCommand', () => {
     const classification = classifyDirectTool('open google chrome');
     const cmd = resolveCommand(classification!, 'win32');
     expect(cmd).toBe('start "" chrome');
+  });
+});
+
+describe('discoverApp', () => {
+  test('returns null on non-darwin platform', async () => {
+    const result = await discoverApp('outlook', 'linux');
+    expect(result).toBeNull();
+  });
+
+  // This test runs on macOS only — discovers real installed apps
+  test('discovers apps from /Applications/ on macOS', async () => {
+    clearDiscoveryCache();
+    if (process.platform !== 'darwin') return; // skip on non-macOS
+
+    // Safari should always exist on macOS
+    const result = await discoverApp('safari');
+    expect(result).toBe('Safari');
   });
 });

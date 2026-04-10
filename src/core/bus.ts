@@ -30,6 +30,7 @@ export interface VinyanBusEvents {
   // Spec-required (§1C.4)
   'task:start': { input: TaskInput; routing: RoutingDecision };
   'task:complete': { result: TaskResult };
+  'phase:timing': { taskId: string; phase: string; durationMs: number; routingLevel: number };
   'worker:dispatch': { taskId: string; routing: RoutingDecision };
   'oracle:verdict': { taskId: string; oracleName: string; verdict: OracleVerdict };
   'critic:verdict': { taskId: string; accepted: boolean; confidence: number; reason?: string };
@@ -85,6 +86,12 @@ export interface VinyanBusEvents {
 
   // Tool approval — user prompted to approve commands not in allowlist
   'tool:approval_required': { requestId: string; command: string; reason: string };
+
+  // Tool remediation — automatic error recovery for failed tool executions
+  'tool:failure_classified': { taskId: string; type: string; recoverable: boolean; error: string };
+  'tool:remediation_attempted': { taskId: string; correctedCommand: string; confidence: number; reasoning: string };
+  'tool:remediation_succeeded': { taskId: string; correctedCommand: string };
+  'tool:remediation_failed': { taskId: string; reason: string };
 
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };

@@ -40,8 +40,8 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     this.workspace = config.workspace;
     this.worldGraph = config.worldGraph;
     this.causalEdgeExtractor = config.causalEdgeExtractor;
-    this.maxTotalChars = config.maxTotalChars ?? 6000; // ~2000 tokens at 3 chars/token
-    this.maxPerFileChars = config.maxPerFileChars ?? 4000;
+    this.maxTotalChars = config.maxTotalChars ?? 24000; // ~8000 tokens at 3 chars/token (raised from 6K — context starvation was #1 bottleneck)
+    this.maxPerFileChars = config.maxPerFileChars ?? 12000;
     this.availableTools = config.availableTools ?? [
       'file_read',
       'file_write',

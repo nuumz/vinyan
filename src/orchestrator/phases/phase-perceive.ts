@@ -8,6 +8,7 @@
 
 import { resolve as resolvePath } from 'node:path';
 import type { RoutingDecision, SemanticTaskUnderstanding } from '../types.ts';
+import { buildLightweightIntent } from '../understanding/lightweight-intent.ts';
 import type { PhaseContext, PerceiveResult, PhaseContinue } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -52,6 +53,14 @@ export async function executePerceivePhase(
       hasIntent: understanding.semanticIntent != null,
       depth: understanding.understandingDepth,
     });
+  } else if (!understanding.semanticIntent) {
+    // ── Lightweight L0-L1 success criteria (rule-based, zero tokens) ──
+    // Without this, L0-L1 workers get no goal clarity — just the raw goal text.
+    // Generates basic semanticIntent from Layer 0+1 metadata (actionVerb, constraints, entities).
+    understanding = {
+      ...understanding,
+      semanticIntent: buildLightweightIntent(understanding, input),
+    };
   }
 
   // ── STU Phase C: Understanding Verification (A1: separate from generation) ──

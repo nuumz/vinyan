@@ -69,6 +69,16 @@ const APP_MAP = new Map<string, PlatformApp>([
   ['figma', { darwin: 'Figma', linux: 'figma', win32: 'figma' }],
   ['spotify', { darwin: 'Spotify', linux: 'spotify', win32: 'spotify' }],
 
+  // Microsoft Office
+  ['outlook', { darwin: 'Microsoft Outlook', linux: 'outlook', win32: 'outlook' }],
+  ['microsoft outlook', { darwin: 'Microsoft Outlook', linux: 'outlook', win32: 'outlook' }],
+  ['word', { darwin: 'Microsoft Word', linux: 'libreoffice --writer', win32: 'winword' }],
+  ['microsoft word', { darwin: 'Microsoft Word', linux: 'libreoffice --writer', win32: 'winword' }],
+  ['excel', { darwin: 'Microsoft Excel', linux: 'libreoffice --calc', win32: 'excel' }],
+  ['microsoft excel', { darwin: 'Microsoft Excel', linux: 'libreoffice --calc', win32: 'excel' }],
+  ['powerpoint', { darwin: 'Microsoft PowerPoint', linux: 'libreoffice --impress', win32: 'powerpnt' }],
+  ['onenote', { darwin: 'Microsoft OneNote', linux: 'onenote', win32: 'onenote' }],
+
   // System
   ['finder', { darwin: 'Finder', linux: 'nautilus', win32: 'explorer' }],
   ['activity monitor', { darwin: 'Activity Monitor', linux: 'gnome-system-monitor', win32: 'taskmgr' }],
@@ -255,4 +265,60 @@ function resolveAppLaunch(app: PlatformApp, platform: string): string {
 function quoteArg(s: string): string {
   if (/^[a-zA-Z0-9_./:@-]+$/.test(s)) return s;
   return `"${s.replace(/"/g, '\\"')}"`;
+}
+
+// ---------------------------------------------------------------------------
+// App Discovery — search installed apps on the system
+// ---------------------------------------------------------------------------
+
+/** Cache of discovered apps: app directory listing → Set of app names (without .app). */
+let discoveryCache: string[] | null = null;
+
+/**
+ * Discover an installed app by fuzzy-matching against /Applications/.
+ * Returns the app name (e.g., "Microsoft Outlook") or null if not found.
+ *
+ * macOS only — returns null on other platforms.
+ * Results are cached per process lifetime.
+ */
+export async function discoverApp(searchName: string, platform: string = process.platform): Promise<string | null> {
+  if (platform !== 'darwin') return null;
+
+  try {
+    // Lazy-load and cache the app list
+    if (!discoveryCache) {
+      const proc = Bun.spawn(['ls', '/Applications/'], { stdout: 'pipe', stderr: 'pipe' });
+      const stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+      discoveryCache = stdout
+        .split('\n')
+        .filter((name) => name.endsWith('.app'))
+        .map((name) => name.replace(/\.app$/, ''));
+    }
+
+    const needle = searchName.toLowerCase();
+
+    // 1. Exact match (case-insensitive)
+    const exact = discoveryCache.find((app) => app.toLowerCase() === needle);
+    if (exact) return exact;
+
+    // 2. Contains match — e.g., "outlook" matches "Microsoft Outlook"
+    const contains = discoveryCache.filter((app) => app.toLowerCase().includes(needle));
+    if (contains.length === 1) return contains[0];
+
+    // 3. Multiple matches — prefer shortest name (most specific)
+    if (contains.length > 1) {
+      contains.sort((a, b) => a.length - b.length);
+      return contains[0];
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the discovery cache (useful for testing). */
+export function clearDiscoveryCache(): void {
+  discoveryCache = null;
 }

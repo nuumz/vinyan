@@ -9,6 +9,8 @@ const LEVEL_TO_TIER: Record<RoutingLevel, LLMProvider['tier'] | null> = {
   1: 'fast',
   2: 'balanced',
   3: 'powerful',
+  // Note: 'tool-uses' tier is not mapped to a routing level — it's selected explicitly
+  // by components that need structured output / function calling (intent resolver, remediation)
 };
 
 export class LLMProviderRegistry {

@@ -25,6 +25,7 @@ const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 30_000,
   balanced: 60_000,
   powerful: 60_000,
+  'tool-uses': 30_000,
 };
 
 const INSTRUCTION_HEADER = '[PROJECT INSTRUCTIONS]';

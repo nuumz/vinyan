@@ -199,7 +199,27 @@ export async function executeVerifyPhase(
   );
 
   // ── Pipeline confidence (L1+ only) ──────────────────────────
-  const verificationConfidence = verification.aggregateConfidence ?? (verification.passed ? 0.85 : 0.3);
+  let verificationConfidence = verification.aggregateConfidence ?? (verification.passed ? 0.85 : 0.3);
+
+  // ── HMS: Hallucination Mitigation (A1: separate verification component) ──
+  if (deps.hmsConfig?.enabled) {
+    const { analyzeForHallucinations } = await import('../../hms/hms-feedback.ts');
+    const { attenuateConfidence } = await import('../../hms/risk-scorer.ts');
+    const hmsResult = analyzeForHallucinations(
+      { mutations: workerResult.mutations },
+      deps.workspace ?? process.cwd(),
+      deps.hmsConfig,
+    );
+    if (hmsResult) {
+      verificationConfidence = attenuateConfidence(verificationConfidence, hmsResult.risk);
+      deps.bus?.emit('hms:risk_scored', {
+        taskId: input.id,
+        risk: hmsResult.risk.score,
+        primary_signal: hmsResult.risk.primary_signal,
+      });
+    }
+  }
+
   let pipelineConf: ReturnType<typeof computePipelineConfidence> | undefined;
   let confidenceDecision: ConfidenceDecision | undefined;
 

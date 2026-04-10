@@ -8,10 +8,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
 import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
+import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
 
 let tempDir: string;
@@ -24,6 +24,8 @@ beforeEach(() => {
   writeFileSync(
     join(tempDir, 'vinyan.json'),
     JSON.stringify({
+      // Pipeline tests: oracles disabled to isolate core-loop logic (routing, escalation, budget).
+      // For oracle integration, see tests/integration/oracle-gate.test.ts which exercises real oracles.
       oracles: {
         type: { enabled: false },
         dep: { enabled: false },
@@ -159,11 +161,12 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     }
   });
 
-  test('7. factory creates working orchestrator with default config', () => {
+  test('7. factory creates orchestrator that can execute a task', async () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, useSubprocess: false });
-    expect(orchestrator).toHaveProperty('executeTask');
-    expect(orchestrator).toHaveProperty('traceCollector');
-    expect(typeof orchestrator.executeTask).toBe('function');
+    // Behavior: actually call executeTask — don't just check property existence
+    const result = await orchestrator.executeTask(makeInput({ id: 'factory-smoke' }));
+    expect(result.id).toBe('factory-smoke');
+    expect(['completed', 'failed', 'escalated']).toContain(result.status);
   });
 
   test('8. task ID preserved in result', async () => {

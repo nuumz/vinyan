@@ -33,9 +33,9 @@ describe('Tool Execution Wiring (G1)', () => {
       { level: 0, model: null, budgetTokens: 0, latencyBudgetMs: 100 },
     );
 
-    expect(result).toHaveProperty('proposedToolCalls');
-    expect(Array.isArray(result.proposedToolCalls)).toBe(true);
-    expect(result.proposedToolCalls).toHaveLength(0);
+    // Behavior: verify L0 path produces empty tool calls (not just property existence)
+    expect(result.proposedToolCalls).toEqual([]);
+    expect(result.mutations).toBeDefined();
   });
 
   test('ToolExecutor called when proposedToolCalls is non-empty', async () => {

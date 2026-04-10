@@ -17,12 +17,14 @@ const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 15_000,
   balanced: 60_000,
   powerful: 60_000,
+  'tool-uses': 15_000,
 };
 
 const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {
-  fast: 'google/gemini-2.0-flash-001',
-  balanced: 'anthropic/claude-sonnet-4',
-  powerful: 'anthropic/claude-opus-4',
+  fast: 'google/gemma-4-31b-it:free',
+  balanced: 'anthropic/claude-sonnet-4.6',
+  powerful: 'anthropic/claude-opus-4.6',
+  'tool-uses': 'anthropic/claude-haiku-4.5',
 };
 
 export interface OpenRouterProviderConfig {
@@ -36,7 +38,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
   const apiKey = config.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
 
-  const envModelKey = `OPENROUTER_${config.tier.toUpperCase()}_MODEL`;
+  const envModelKey = `OPENROUTER_${config.tier.toUpperCase().replace(/-/g, '_')}_MODEL`;
   const model = config.model ?? process.env[envModelKey] ?? DEFAULT_MODELS[config.tier];
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS[config.tier];
 
@@ -160,7 +162,7 @@ export function registerOpenRouterProviders(
   apiKey?: string,
 ): number {
   let count = 0;
-  for (const tier of ['fast', 'balanced', 'powerful'] as const) {
+  for (const tier of ['fast', 'balanced', 'powerful', 'tool-uses'] as const) {
     const provider = createOpenRouterProvider({ tier, apiKey });
     if (provider) {
       registry.register(provider);

@@ -11,6 +11,8 @@
     "check": "tsc --noEmit && biome check src/ tests/",
     "test": "bun test tests/a2a tests/api tests/bus tests/cli tests/config tests/core tests/db tests/ecp-conformance tests/evolution tests/guardrails tests/helpers tests/mcp tests/observability tests/property tests/security tests/sleep-cycle tests/tui",
     "test:integration": "bun test tests/gate tests/oracle tests/orchestrator tests/world-graph tests/integration",
+    "test:benchmark": "bun test tests/orchestrator/e2e-benchmark.test.ts",
+    "test:smoke": "bun test tests/smoke/ --timeout 120000",
     "build:worker": "bun build src/orchestrator/worker/worker-entry.ts --outfile dist/worker-entry.js --target bun",
     "test:slow": "bun test load-tests/ --timeout 120000",
     "test:all": "bun run test && bun run test:integration"

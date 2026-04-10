@@ -56,6 +56,7 @@ import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { WorkerSelector } from './fleet/worker-selector.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { RemediationEngine } from './remediation-engine.ts';
 import { CostLedger } from '../economy/cost-ledger.ts';
 import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
 import { CostPredictor } from '../economy/cost-predictor.ts';
@@ -474,6 +475,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const understandingProvider = registry.selectByTier('fast') ?? registry.selectByTier('balanced');
   const understandingEngine = understandingProvider ? new UnderstandingEngine(understandingProvider) : undefined;
 
+  // Remediation engine — tool-uses tier for structured output / problem-solving
+  const remediationProvider = registry.selectByTier('tool-uses') ?? registry.selectByTier('fast') ?? registry.selectByTier('balanced');
+  const remediationEngine = remediationProvider ? new RemediationEngine(remediationProvider) : undefined;
+
   // Startup logging — confirm active components (P3.0 Gap 7)
   const components = [
     `self-model: ${selfModel.constructor.name}`,
@@ -639,6 +644,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     sessionManager: config.sessionManager,
     // Intent Resolver: LLM registry for pre-routing semantic classification
     llmRegistry: registry,
+    remediationEngine,
     // K2.2: Engine selector for trust-weighted provider selection
     engineSelector: providerTrustStore
       ? new DefaultEngineSelector({

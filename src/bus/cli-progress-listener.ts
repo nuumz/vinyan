@@ -98,6 +98,32 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
     }),
   );
 
+  // Tool remediation events
+  detachers.push(
+    bus.on('tool:failure_classified', ({ type, recoverable, error }) => {
+      const shortError = error.length > 100 ? `${error.slice(0, 100)}...` : error;
+      write(`${dim('[vinyan]')} Tool failed: ${bold(type)}${recoverable ? ' (attempting fix)' : ''} — ${dim(shortError)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('tool:remediation_attempted', ({ correctedCommand, confidence }) => {
+      write(`${dim('[vinyan]')} ${yellow('Retrying')}: ${bold(correctedCommand)} (confidence: ${confidence.toFixed(2)})`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('tool:remediation_succeeded', ({ correctedCommand }) => {
+      write(`${dim('[vinyan]')} ${green('Remediation succeeded')}: ${correctedCommand}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('tool:remediation_failed', ({ reason }) => {
+      write(`${dim('[vinyan]')} ${red('Remediation failed')}: ${reason}`);
+    }),
+  );
+
   // Evolution engine events
   detachers.push(
     bus.on('evolution:rulesApplied', ({ taskId, rules }) => {

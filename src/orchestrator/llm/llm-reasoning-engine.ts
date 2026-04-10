@@ -26,7 +26,7 @@ export class LLMReasoningEngine implements ReasoningEngine {
   readonly engineType = 'llm' as const;
   readonly id: string;
   readonly capabilities: string[];
-  readonly tier: 'fast' | 'balanced' | 'powerful';
+  readonly tier: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
   readonly maxContextTokens?: number;
 
   /**
@@ -104,7 +104,7 @@ export class ReasoningEngineRegistry {
     return this.selectByTier(tier);
   }
 
-  selectByTier(tier: 'fast' | 'balanced' | 'powerful'): ReasoningEngine | undefined {
+  selectByTier(tier: 'fast' | 'balanced' | 'powerful' | 'tool-uses'): ReasoningEngine | undefined {
     for (const engine of this.engines.values()) {
       if (engine.tier === tier) return engine;
     }
@@ -115,7 +115,7 @@ export class ReasoningEngineRegistry {
    * Capability-first selection — the primary path for future non-LLM REs.
    * Falls back to tier-based if no capability-declaring engine is found.
    */
-  selectByCapability(required: string[], preferredTier?: 'fast' | 'balanced' | 'powerful'): ReasoningEngine | undefined {
+  selectByCapability(required: string[], preferredTier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses'): ReasoningEngine | undefined {
     const capable = Array.from(this.engines.values()).filter(
       (e) => required.every((c) => e.capabilities.includes(c)),
     );

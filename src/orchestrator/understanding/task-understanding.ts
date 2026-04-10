@@ -158,6 +158,7 @@ const ENGLISH_INQUIRY_FRAME = /(?:^\s*(?:how|what|why|where|when|who|which)\b)|(
 const THAI_COMMAND_VERBS = [
   'รัน', 'ติดตั้ง', 'แก้', 'สร้าง', 'ลบ', 'เปิด', 'ปิด',
   'ส่ง', 'ย้าย', 'ทำ', 'ถอน', 'อัพเดท', 'อัปเดต', 'คัดลอก',
+  'ตรวจสอบ', 'ตรวจ', 'เช็ค', 'ดู',
 ];
 
 /**
@@ -177,13 +178,15 @@ const THAI_NON_COMMAND_COMPOUNDS = [
   'ส่งผล', 'ส่งเสริม',
   // สร้าง → non-action meanings
   'สร้างสรรค์', 'สร้างเสริม',
+  // ดู → non-action meanings
+  'ดูเหมือน', 'ดูแล', 'ดูจะ', 'ดูว่า', 'ดูเป็น',
 ].sort((a, b) => b.length - a.length); // longest first
 
 /** ช่วย + action verb compounds — always command. */
-const THAI_HELP_COMMAND_RE = /ช่วย(?:รัน|ลบ|สร้าง|แก้|ติดตั้ง|ย้าย|ถอน|ส่ง|เปิด|ปิด|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
+const THAI_HELP_COMMAND_RE = /ช่วย(?:รัน|ลบ|สร้าง|แก้|ติดตั้ง|ย้าย|ถอน|ส่ง|เปิด|ปิด|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|ตรวจ|เช็ค|ดู)/;
 
 /** อยากให้ ... verb — Thai request pattern, always command. */
-const THAI_WANT_COMMAND_RE = /อยากให้.*?(?:รัน|สร้าง|ลบ|เปิด|ปิด|แก้|ติดตั้ง|ย้าย|ส่ง|ทำ)/;
+const THAI_WANT_COMMAND_RE = /อยากให้.*?(?:รัน|สร้าง|ลบ|เปิด|ปิด|แก้|ติดตั้ง|ย้าย|ส่ง|ทำ|ตรวจสอบ|ตรวจ|เช็ค|ดู)/;
 
 /**
  * Detect Thai command intent using compound-aware masking.
@@ -287,7 +290,7 @@ const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip
 /** Thai action verbs implying system-level execution (not just information).
  * Note: 'deploy' matches substrings (e.g. 'redeploy') — acceptable because redeploying also needs tools.
  * Note: ลง uses boundary guard to prevent matching ลงทะเบียน, ลงทุน, etc. */
-const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดแอป|เปิดโปรแกรม|เปิดเว็บ|เปิดเบราว์เซอร์|ปิดแอพ|ปิดแอป|ปิดโปรแกรม|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก)/;
+const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดแอป|เปิดโปรแกรม|เปิดเว็บ|เปิดเบราว์เซอร์|ปิดแอพ|ปิดแอป|ปิดโปรแกรม|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|เช็ค)/;
 
 /**
  * Assess whether a task requires tool execution to achieve its goal.

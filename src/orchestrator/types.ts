@@ -933,7 +933,7 @@ export interface ToolResult {
 /** LLM provider abstraction */
 export interface LLMProvider {
   id: string;
-  tier: 'fast' | 'balanced' | 'powerful';
+  tier: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
   capabilities?: string[]; // e.g., ['tool_use', 'vision', 'long_context']
   maxContextTokens?: number; // Provider's context window size
   supportsToolUse?: boolean; // Whether provider supports tool_use stop reason
@@ -1030,7 +1030,7 @@ export interface ReasoningEngine {
   /** Formal capability declaration — PRIMARY selector for routing (replaces tier-only selection). */
   capabilities: string[];
   /** Advisory tier — backward compat with tier-based routing. Optional for non-LLM REs. */
-  tier?: 'fast' | 'balanced' | 'powerful';
+  tier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
   maxContextTokens?: number;
   execute(request: RERequest): Promise<REResponse>;
 }

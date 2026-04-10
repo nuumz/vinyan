@@ -59,17 +59,19 @@ describe('RiskRouterImpl', () => {
     const decision = await router.assessInitialLevel(makeInput({ targetFiles: ['src/foo.ts'] }));
     // Verifies Phase 0 functions are called and produce a valid RoutingDecision
     expect(decision.level).toBeGreaterThanOrEqual(0);
-    expect(decision).toHaveProperty('model');
-    expect(decision).toHaveProperty('budgetTokens');
+    expect(typeof decision.model).toBe('string');
+    expect(decision.budgetTokens).toBeGreaterThanOrEqual(0);
   });
 
-  test('returns valid RoutingDecision shape', async () => {
+  test('returns complete RoutingDecision with realistic values', async () => {
     const router = new RiskRouterImpl(mockDepVerify(5));
     const decision = await router.assessInitialLevel(makeInput({ targetFiles: ['src/foo.ts'] }));
-    expect(decision).toHaveProperty('level');
-    expect(decision).toHaveProperty('model');
-    expect(decision).toHaveProperty('budgetTokens');
-    expect(decision).toHaveProperty('latencyBudgetMs');
+    // Behavior: verify actual routing values, not just property existence
+    expect(decision.level).toBeGreaterThanOrEqual(0);
+    expect(decision.level).toBeLessThanOrEqual(3);
+    expect(typeof decision.model).toBe('string');
+    expect(decision.budgetTokens).toBeGreaterThan(0);
+    expect(decision.latencyBudgetMs).toBeGreaterThan(0);
   });
 
   test('selfModel epistemic signal is passed to routeByRisk', async () => {

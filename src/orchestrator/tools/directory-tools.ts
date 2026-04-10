@@ -25,6 +25,7 @@ export const directoryList: Tool = {
       category: 'file_read',
       sideEffect: false,
       minRoutingLevel: 2,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {

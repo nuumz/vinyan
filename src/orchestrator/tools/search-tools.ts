@@ -28,6 +28,7 @@ export const searchGrep: Tool = {
       category: 'search',
       sideEffect: false,
       minRoutingLevel: 1,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {
@@ -92,6 +93,7 @@ export const searchSemantic: Tool = {
       category: 'search',
       sideEffect: false,
       minRoutingLevel: 1,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {

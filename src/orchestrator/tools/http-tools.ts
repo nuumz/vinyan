@@ -26,6 +26,7 @@ export const httpGet: Tool = {
       category: 'shell',
       sideEffect: false,
       minRoutingLevel: 2,
+      toolKind: 'executable',
     };
   },
   async execute(params, _context) {

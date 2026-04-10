@@ -27,6 +27,7 @@ export const shellExec: Tool = {
       category: 'shell',
       sideEffect: true,
       minRoutingLevel: 2,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {

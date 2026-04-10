@@ -40,6 +40,7 @@ export const attemptCompletion: Tool = {
       category: 'control',
       sideEffect: false,
       minRoutingLevel: 0,
+      toolKind: 'control',
     };
   },
   async execute(params) {
@@ -77,6 +78,7 @@ export const requestBudgetExtension: Tool = {
       category: 'control',
       sideEffect: false,
       minRoutingLevel: 1,
+      toolKind: 'control',
     };
   },
   async execute(params) {
@@ -112,6 +114,7 @@ export const delegateTask: Tool = {
       category: 'delegation',
       sideEffect: true,
       minRoutingLevel: 2,
+      toolKind: 'control',
     };
   },
   async execute(params, context) {

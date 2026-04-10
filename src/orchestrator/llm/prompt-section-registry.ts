@@ -20,6 +20,7 @@ import type {
   WorkingMemoryState,
 } from '../types.ts';
 import { READONLY_TOOLS } from '../types.ts';
+import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
@@ -185,13 +186,26 @@ Respond with a JSON object matching this structure:
       // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
       if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
 
-      const tools = [...ctx.perception.runtime.availableTools].sort().join(', ');
-      if (!tools) return null;
-      return `[AVAILABLE TOOLS]
-${tools}
+      const allTools = [...ctx.perception.runtime.availableTools].sort();
+      if (!allTools.length) return null;
 
-Runtime: ${process.platform} (${process.arch})
-Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.`;
+      // Classify tools by kind using BUILT_IN_TOOLS registry
+      const executable: string[] = [];
+      const control: string[] = [];
+      for (const name of allTools) {
+        const tool = BUILT_IN_TOOLS.get(name);
+        const kind = tool?.descriptor().toolKind ?? 'executable';
+        if (kind === 'control') control.push(name);
+        else executable.push(name);
+      }
+
+      const lines = ['[AVAILABLE TOOLS]'];
+      if (executable.length) lines.push(`Executable: ${executable.join(', ')}`);
+      if (control.length) lines.push(`Control (orchestrator signals — do not execute, only propose): ${control.join(', ')}`);
+      lines.push('');
+      lines.push(`Runtime: ${process.platform} (${process.arch})`);
+      lines.push('Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.');
+      return lines.join('\n');
     },
   });
 

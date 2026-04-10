@@ -299,6 +299,7 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
       name: z.string(),
       description: z.string(),
       inputSchema: z.record(z.string(), z.unknown()),
+      toolKind: z.enum(['executable', 'control']).optional(),
     })),
     priorAttempts: z.array(AgentSessionSummarySchema).optional(),
     understanding: TaskUnderstandingSchema.optional(),

@@ -29,6 +29,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     console.error('       --quiet     Suppress progress output');
     console.error('       --summary   Print human-friendly summary to stdout instead of JSON');
     console.error('       --thinking  Enable and show LLM thinking process');
+    console.error('       --tool      Enable tool execution (shell, file ops) for non-code tasks');
     process.exit(2);
   }
 
@@ -47,6 +48,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   const verbose = argv.includes('--verbose');
   const summaryMode = argv.includes('--summary');
   const showThinking = argv.includes('--thinking');
+  const enableTools = argv.includes('--tool');
 
   const input: TaskInput = {
     id: `task-${Date.now().toString(36)}`,
@@ -59,7 +61,12 @@ export async function runAgentTask(argv: string[]): Promise<void> {
       maxDurationMs: timeout,
       maxRetries: retries,
     },
-    ...(showThinking ? { constraints: ['THINKING:enabled'] } : {}),
+    ...((showThinking || enableTools) ? {
+      constraints: [
+        ...(showThinking ? ['THINKING:enabled'] : []),
+        ...(enableTools ? ['TOOLS:enabled'] : []),
+      ],
+    } : {}),
   };
 
   // Create bus and attach listeners BEFORE creating orchestrator

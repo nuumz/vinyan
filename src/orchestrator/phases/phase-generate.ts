@@ -245,7 +245,9 @@ export async function executeGeneratePhase(
       }
 
       // Check 2: A6 defense-in-depth — strip mutating tool calls from non-mutation domains
-      if (understanding.taskDomain !== 'code-mutation' && workerResult.proposedToolCalls.length > 0) {
+      // Exception: tool-needed tasks explicitly require tool execution (e.g. "open Chrome", CLI commands)
+      const shouldFilterTools = understanding.taskDomain !== 'code-mutation' && understanding.toolRequirement !== 'tool-needed';
+      if (shouldFilterTools && workerResult.proposedToolCalls.length > 0) {
         const { READONLY_TOOLS } = await import('../types.ts');
         workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter(
           (tc) => READONLY_TOOLS.has(tc.tool),

@@ -73,4 +73,30 @@ describe('manifestFor', () => {
     expect(byName.get('attempt_completion')!.sideEffect).toBe(false);
     expect(byName.get('shell_exec')!.sideEffect).toBe(true);
   });
+
+  test('toolKind distinguishes executable from control tools', () => {
+    const manifest = manifestFor(routing(3));
+    const byName = new Map(manifest.map((d) => [d.name, d]));
+
+    // Executable tools
+    expect(byName.get('file_read')!.toolKind).toBe('executable');
+    expect(byName.get('file_write')!.toolKind).toBe('executable');
+    expect(byName.get('file_edit')!.toolKind).toBe('executable');
+    expect(byName.get('shell_exec')!.toolKind).toBe('executable');
+    expect(byName.get('search_grep')!.toolKind).toBe('executable');
+    expect(byName.get('git_status')!.toolKind).toBe('executable');
+    expect(byName.get('http_get')!.toolKind).toBe('executable');
+
+    // Control tools
+    expect(byName.get('attempt_completion')!.toolKind).toBe('control');
+    expect(byName.get('request_budget_extension')!.toolKind).toBe('control');
+    expect(byName.get('delegate_task')!.toolKind).toBe('control');
+  });
+
+  test('all descriptors have toolKind set', () => {
+    const manifest = manifestFor(routing(3));
+    for (const d of manifest) {
+      expect(['executable', 'control']).toContain(d.toolKind);
+    }
+  });
 });

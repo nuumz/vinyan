@@ -2,6 +2,8 @@ import type { IsolationLevel, RoutingLevel, ToolResult } from '../types.ts';
 
 export type ToolCategory = 'file_read' | 'file_write' | 'search' | 'shell' | 'vcs' | 'delegation' | 'control';
 
+export type ToolKind = 'executable' | 'control';
+
 export interface ToolDescriptor {
   name: string;
   description: string;
@@ -13,6 +15,8 @@ export interface ToolDescriptor {
   category: ToolCategory;
   sideEffect: boolean;
   minRoutingLevel: RoutingLevel;
+  /** Whether this tool executes real work or is an orchestrator control signal. */
+  toolKind: ToolKind;
 }
 
 export interface Tool {

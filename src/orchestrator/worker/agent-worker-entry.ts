@@ -119,7 +119,7 @@ export async function runAgentWorkerLoop(
         userPrompt: '',    // already in history
         maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
         messages: history,
-        tools: init.toolManifest.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema })),
+        tools: init.toolManifest.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema, kind: t.toolKind ?? 'executable' })),
       });
     } catch (err) {
       // PromptTooLargeError → compress history and retry once

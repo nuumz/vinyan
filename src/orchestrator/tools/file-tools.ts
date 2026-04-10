@@ -25,6 +25,7 @@ export const fileRead: Tool = {
       category: 'file_read',
       sideEffect: false,
       minRoutingLevel: 0,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {
@@ -82,6 +83,7 @@ export const fileWrite: Tool = {
       category: 'file_write',
       sideEffect: true,
       minRoutingLevel: 2,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {
@@ -140,6 +142,7 @@ export const fileEdit: Tool = {
       category: 'file_write',
       sideEffect: true,
       minRoutingLevel: 2,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {

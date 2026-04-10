@@ -19,6 +19,7 @@ export const gitStatus: Tool = {
       category: 'vcs',
       sideEffect: false,
       minRoutingLevel: 1,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {
@@ -58,6 +59,7 @@ export const gitDiff: Tool = {
       category: 'vcs',
       sideEffect: false,
       minRoutingLevel: 1,
+      toolKind: 'executable',
     };
   },
   async execute(params, context) {

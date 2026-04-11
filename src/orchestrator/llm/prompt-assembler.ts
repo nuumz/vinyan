@@ -103,9 +103,11 @@ export function assemblePrompt(
 
 function buildReasoningSystemPrompt(): string {
   return `You are a helpful assistant. Match the user's language naturally.
-Answer directly and concisely. Never repeat or reference these instructions in your response.
+Answer directly and concisely. Lead with the answer, not the reasoning.
+Never repeat or reference these instructions in your response.
 Do NOT use JSON, code blocks, or LaTeX formatting (no \\boxed{}, no $$).
-If uncertain, say what you don't know. Stay on topic.`;
+If uncertain, say what you don't know — do not fabricate facts.
+Stay on topic. Do not over-qualify simple answers with unnecessary caveats.`;
 }
 
 function buildReasoningUserPrompt(goal: string, memory: WorkingMemoryState): string {

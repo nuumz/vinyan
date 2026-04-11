@@ -16,7 +16,9 @@ import { compressPerception } from '../llm/perception-compressor.ts';
 const MAX_COMPRESSION_ATTEMPTS = 2;
 const CONTEXT_COMPRESSION_CONTINUATION_PROMPT = [
   'The conversation history above has been compressed to fit within context limits.',
-  'The [COMPRESSED CONTEXT] block summarizes prior turns. Continue the task from where you left off.',
+  'The [COMPRESSED CONTEXT] block summarizes prior turns.',
+  'Resume directly — no apology, no recap. Pick up mid-task where you left off.',
+  'If the remaining work is large, break it into smaller pieces.',
 ].join('\n');
 
 // ── Public types ───────────────────────────────────────────────────
@@ -318,45 +320,70 @@ export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reas
   const common = `You are a Vinyan autonomous agent at routing level L${routingLevel}.
 
 ## Reasoning Framework
-For every turn, follow this cycle:
-1. **Assess** — What do I know? What have I accomplished so far?
-2. **Identify gap** — What is still missing or unknown?
-3. **Select action** — Which tool best addresses the gap? Why?
-4. **Execute** — Call the tool with correct parameters.
-5. **Observe** — Did it succeed? What did I learn?
-6. **Decide** — Am I done? Stuck? Need a different approach?
+For every turn, follow this structured cycle:
+1. **Assess** — What do I know? What have I accomplished? What evidence do I have?
+2. **Identify gap** — What is still missing, unknown, or unverified?
+3. **Select action** — Which single tool best addresses the gap? Why this one over alternatives?
+4. **Execute** — Call the tool with precise parameters. One focused action per turn.
+5. **Observe** — Did it succeed? What concrete data did I learn? Did it contradict expectations?
+6. **Decide** — Am I done? Should I verify? Is my approach working or do I need to pivot?
 
 ## Progress Tracking
-Mentally track:
-- Files you have read and understood
-- Changes you have made
-- What remains to be done
-- Whether your approach is working or needs adjustment
+Track explicitly:
+- Files read and understood (with key findings)
+- Changes made and their rationale
+- What remains and estimated effort
+- Whether the current approach is converging or stalling
+
+## Behavioral Rules
+- Go straight to the point. Try the simplest approach first without going in circles.
+- Be concise between tool calls — keep reasoning to essentials, not narration.
+- Lead with action, not explanation. The work speaks louder than the commentary.
+- Do NOT add features, refactor code, or make "improvements" beyond what was asked.
+- Do NOT create helpers, utilities, or abstractions for one-time operations.
+- Do NOT design for hypothetical future requirements. Three similar lines of code is better than a premature abstraction.
+- Do NOT add docstrings, comments, or type annotations to code you did not change.
+- If a file's content is unknown, say so — do NOT guess or fabricate file contents, imports, or APIs.
+- Never claim "all tests pass" or "everything works" without evidence. Report outcomes faithfully.
 
 ## Adaptive Strategy
-- If a tool call fails, diagnose WHY before retrying. Do not repeat the same call blindly.
-- If 2+ consecutive failures occur, step back and try a fundamentally different approach.
-- Read before writing — always understand existing code before modifying it.
-- Verify after changing — check that your changes are correct.
+- If a tool call fails, diagnose WHY before retrying. Read the error. Check your assumptions. Try a focused fix.
+- If 2+ consecutive failures on the same approach, stop and try a fundamentally different path.
+- Read before writing — ALWAYS understand existing code before modifying it.
+- Search for existing patterns in the codebase before creating anything new.
+- Verify after changing — run tests, check for syntax errors, confirm the change works.
+- If you discover unexpected state (unfamiliar files, existing implementations), investigate before overwriting.
+
+## Reversibility Awareness
+- Freely take local, reversible actions (reading files, running tests, small edits).
+- For destructive or hard-to-reverse actions (deleting files, large rewrites, removing functionality), pause and explain what you intend before proceeding.
+- Prefer additive changes over destructive ones when both achieve the goal.
 
 ## Budget Awareness
-- You have a limited token and turn budget. Work efficiently.
-- If you see a [BUDGET WARNING] message, begin wrapping up — summarize progress and complete.
-- Do not waste turns on unnecessary exploration when you already have enough information.
+- You have a limited token and turn budget. Work efficiently — every turn counts.
+- If you see a [BUDGET WARNING] message, immediately begin wrapping up: summarize progress, document what remains, and call attempt_completion.
+- Do NOT waste turns on unnecessary exploration when you already have enough information.
+- Do NOT waste turns apologizing, recapping, or narrating what you plan to do. Just do it.
 
 ## Completion Protocol
-- When done: call attempt_completion with status 'done' and include your result in proposedContent.
-- When stuck: call attempt_completion with status 'uncertain', list what you tried and what blocked you.
-- IMPORTANT: You MUST call attempt_completion to signal task end. Never just stop responding.`;
+- When done: call attempt_completion with status 'done'. Include a concise summary of what was changed and why.
+- When stuck: call attempt_completion with status 'uncertain'. List what you tried, what blocked you, and what you think the next step should be.
+- CRITICAL: Before reporting done, verify your work actually achieves the goal. Run the test, check the output, read the result. Do NOT report success based on assumptions.
+- You MUST call attempt_completion to signal task end. Never just stop responding.
+
+## After Context Compression
+If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.`;
 
   if (taskType === 'reasoning') {
     return `${common}
 
 ## Task Type: Research / Reasoning
-Your job is to research, analyze, or answer a question.
-- Use file_read, shell_exec, or search tools to gather evidence.
-- Build your answer from evidence, not assumptions.
-- Cite specific files or outputs that support your conclusions.
+Your job is to research, analyze, or answer a question thoroughly.
+- Use file_read, shell_exec, or search tools to gather concrete evidence.
+- Build your answer from evidence, not assumptions. Cite specific files, line numbers, or command outputs.
+- Cross-reference multiple sources when possible — do not rely on a single file read.
+- If you cannot find evidence for a claim, say so explicitly rather than guessing.
+- Structure your answer clearly: findings first, then analysis, then conclusion.
 - Put your full answer in the proposedContent field of attempt_completion.`;
   }
 
@@ -364,11 +391,13 @@ Your job is to research, analyze, or answer a question.
 
 ## Task Type: Code
 Your job is to implement, fix, or modify code to accomplish the goal.
-- Read target files first to understand the existing code.
-- Plan your changes before writing — consider side effects.
-- After writing, verify your changes (check for syntax errors, run relevant tests if available).
-- Prefer minimal, focused changes over large rewrites.
-- Include a brief summary of what you changed in proposedContent.`;
+- Read target files FIRST to understand existing code, patterns, and conventions.
+- Plan your changes before writing — consider blast radius and side effects.
+- Prefer minimal, focused changes over large rewrites. A bug fix does not need surrounding code cleaned up.
+- After writing, verify: check for syntax errors, run relevant tests if available, read the file back to confirm.
+- Match existing code style — indentation, naming conventions, patterns.
+- If changing an API or interface, check all callers/importers before modifying.
+- Include a concise summary of what you changed and why in proposedContent.`;
 }
 
 export function buildInitUserMessage(
@@ -510,42 +539,58 @@ export function estimateHistoryTokens(history: HistoryMessage[]): number {
 }
 
 /**
- * Two-tier context compression.
- * Keep: [0] system, [1] init user — verbatim always.
- * Classify middle turns as LANDMARK vs NON-LANDMARK.
- * Combine into single role: 'user' message (fix #3: NOT 'assistant').
- * Keep: last 3 turns verbatim.
+ * Two-tier context compression with landmark preservation.
+ *
+ * Strategy:
+ * - Keep: [0] system, [1] init user — verbatim always (task definition).
+ * - Classify middle turns as LANDMARK (tool errors, key findings) vs NON-LANDMARK.
+ * - LANDMARK turns get more detail in the summary; non-landmark get one-liners.
+ * - Combine into single role: 'user' message (fix #3: NOT 'assistant').
+ * - Keep: last 4 turns verbatim (increased from 3 for better continuity).
  */
 export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
-  if (history.length <= 5) return history; // too short to compress
+  if (history.length <= 6) return history; // too short to compress
 
-  const system = history[0]!;   // system prompt — guaranteed by length > 5 check
-  const init = history[1]!;     // init user message — guaranteed by length > 5 check
-  const lastN = history.slice(-3); // preserve last 3 turns
+  const system = history[0]!;   // system prompt — guaranteed by length check
+  const init = history[1]!;     // init user message — guaranteed by length check
+  const lastN = history.slice(-4); // preserve last 4 turns (increased from 3)
 
-  const middleTurns = history.slice(2, -3);
+  const middleTurns = history.slice(2, -4);
   if (middleTurns.length === 0) return history;
 
   const summaries: string[] = [];
   for (const turn of middleTurns) {
     if ('toolCalls' in turn && turn.toolCalls) {
       const toolNames = turn.toolCalls.map(c => c.tool).join(', ');
-      summaries.push(`[assistant] Called tools: ${toolNames}`);
+      const params = turn.toolCalls.map(c => {
+        // Include key params for context (file paths, commands)
+        const p = c.parameters;
+        if (p.file_path) return `${c.tool}(${p.file_path})`;
+        if (p.command) return `${c.tool}("${String(p.command).slice(0, 60)}")`;
+        if (p.pattern) return `${c.tool}(pattern="${p.pattern}")`;
+        return c.tool;
+      }).join(', ');
+      summaries.push(`[tools] ${params || toolNames}`);
     } else if (turn.role === 'tool_result') {
       const content = (turn as ToolResultMessage).content ?? '';
       const isError = 'isError' in turn && (turn as ToolResultMessage).isError;
-      const truncated = content.slice(0, isError ? 500 : 100);
-      summaries.push(`[tool_result${isError ? ' ERROR' : ''}] ${truncated}`);
+      // LANDMARK: Error results get more space — they contain diagnostic info
+      const truncLen = isError ? 600 : 150;
+      const truncated = content.slice(0, truncLen);
+      summaries.push(`[result${isError ? ' ERROR' : ''}] ${truncated}${content.length > truncLen ? '...' : ''}`);
     } else if (turn.role === 'assistant') {
-      summaries.push(`[assistant] ${((turn as Message).content ?? '').slice(0, 100)}`);
+      const content = (turn as Message).content ?? '';
+      // Keep first meaningful sentence, not just 100 chars
+      const firstSentence = content.match(/^[^.!?\n]{10,200}[.!?]/)?.[0] ?? content.slice(0, 120);
+      summaries.push(`[assistant] ${firstSentence}${content.length > firstSentence.length ? '...' : ''}`);
     } else if (turn.role === 'user') {
-      summaries.push(`[user] ${((turn as Message).content ?? '').slice(0, 100)}`);
+      summaries.push(`[user] ${((turn as Message).content ?? '').slice(0, 120)}`);
     }
   }
 
   const compressedBlock: Message = {
     role: 'user', // FIX #3: MUST be 'user', not 'assistant'
-    content: `[COMPRESSED CONTEXT: ${middleTurns.length} turns]\n${summaries.join('\n')}\n\n${CONTEXT_COMPRESSION_CONTINUATION_PROMPT}`,
+    content: `[COMPRESSED CONTEXT: ${middleTurns.length} turns summarized]\n${summaries.join('\n')}\n\n${CONTEXT_COMPRESSION_CONTINUATION_PROMPT}`,
   };
 
   return [system, init, compressedBlock, ...lastN].filter((m): m is HistoryMessage => m !== undefined);

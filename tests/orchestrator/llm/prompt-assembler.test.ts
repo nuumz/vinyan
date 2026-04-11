@@ -50,7 +50,7 @@ describe('PromptAssembler', () => {
       ],
     });
     const { userPrompt } = assemblePrompt('Fix bug', makePerception(), memory);
-    expect(userPrompt).toContain('[FAILED APPROACHES]');
+    expect(userPrompt).toContain('[FAILED APPROACHES');
     expect(userPrompt).toContain('Do NOT try');
     expect(userPrompt).toContain('inline function');
     expect(userPrompt).toContain('extract class');

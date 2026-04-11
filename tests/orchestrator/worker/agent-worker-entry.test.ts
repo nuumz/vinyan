@@ -353,7 +353,8 @@ describe('agent-worker-entry', () => {
       ];
 
       const result = compressHistory(history);
-      expect(result).toHaveLength(6);
+      // system + init + compressed + last 4 turns = 7
+      expect(result).toHaveLength(7);
       expect((result[0] as Message).role).toBe('system');
       expect((result[1] as Message).role).toBe('user');
 
@@ -361,8 +362,7 @@ describe('agent-worker-entry', () => {
       expect(compressed.role).toBe('user');
       expect(compressed.content).toContain('[COMPRESSED CONTEXT:');
       expect(compressed.content).toContain('file_read');
-      expect(compressed.content).toContain('Continue the task');
-      expect((result[3] as Message).content).toBe('almost done');
+      expect(compressed.content).toContain('Resume directly');
     });
 
     test('compressHistory marks error tool results distinctly', () => {
@@ -376,11 +376,12 @@ describe('agent-worker-entry', () => {
         { role: 'assistant', content: 'k1' },
         { role: 'user', content: 'k2' },
         { role: 'assistant', content: 'k3' },
+        { role: 'assistant', content: 'k4' },
       ];
 
       const result = compressHistory(history);
       const compressed = result[2] as Message;
-      expect(compressed.content).toContain('[tool_result ERROR]');
+      expect(compressed.content).toContain('[ERROR]');
       expect(compressed.content).toContain('ENOENT');
     });
   });

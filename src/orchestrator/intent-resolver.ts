@@ -45,18 +45,42 @@ Respond as JSON with these fields:
 - refinedGoal: restate the goal clearly and precisely (in the same language as the user)
 - reasoning: brief explanation of your classification (1 sentence, English)
 - directToolCall: (only if strategy="direct-tool") { "tool": "<tool_name>", "parameters": {...} }
-- workflowPrompt: (only if strategy="agentic-workflow") a detailed execution prompt for the downstream agent
+- workflowPrompt: (only if strategy="agentic-workflow") a detailed, step-by-step execution prompt for the downstream agent
 
-Strategy rules:
-- "conversational": greetings, questions, explanations, meta-questions about the system
-- "direct-tool": a SINGLE fire-and-forget action with no expected textual output — open/launch an app, run a command, navigate to a URL. The action itself IS the result.
-- "agentic-workflow": multi-step tasks needing planning, information gathering, or synthesis — summarize/list/find/analyze content, refactor+deploy, build+test+release, complex workflows
-- "full-pipeline": code modification tasks with file targets, bug fixes, feature additions
+Strategy definitions:
+- "conversational": greetings, questions, explanations, meta-questions, opinion requests. No action needed — answer from knowledge.
+- "direct-tool": a SINGLE fire-and-forget action with no expected textual output — the action itself IS the result. Examples: open an app, run a server, launch a URL.
+- "agentic-workflow": multi-step tasks needing planning, information gathering, or synthesis — summarize, analyze, refactor+deploy, build+test+release, research tasks.
+- "full-pipeline": code modification tasks with clear file targets — bug fixes, feature additions, refactoring.
 
-CRITICAL discrimination rules (apply BEFORE choosing a strategy):
-- If the goal contains verbs like "summarize", "list", "find all", "analyze", "report", "explain", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool". These require reading + processing + synthesizing = "agentic-workflow".
-- If the goal asks for information FROM an app or file (e.g., "summarize TODOs from notes") → "agentic-workflow", NOT "direct-tool". Opening the app alone does not answer the question.
-- "direct-tool" is ONLY correct when the action itself is the entire goal (e.g., "open Chrome", "run the server"). If the user needs a RESPONSE or ANSWER, it is NOT "direct-tool".
+CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
+
+1. CONVERSATIONAL test — Does the user want information or explanation?
+   - Questions phrased as "what is", "how does", "why does", "explain" → "conversational"
+   - Greetings, small talk, opinions → "conversational"
+   - Meta-questions about system capabilities → "conversational"
+
+2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
+   - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
+   - If the user wants an ANSWER, SUMMARY, LIST, or REPORT → NEVER "direct-tool"
+   - Words like "summarize", "list", "find all", "analyze", "report", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool"
+   - Asking about a file's content → NOT "direct-tool" (reading is not opening)
+
+3. FULL-PIPELINE test — Is this a focused code change?
+   - Has explicit file targets AND involves code modification → "full-pipeline"
+   - Bug fix, implement feature, refactor specific module → "full-pipeline"
+   - If it requires multi-file coordination OR exploration first → "agentic-workflow" instead
+
+4. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
+   - Multi-step tasks, research, analysis, synthesis
+   - Tasks requiring exploration before action
+   - Tasks spanning multiple files without clear targets
+
+workflowPrompt guidelines (for "agentic-workflow" ONLY):
+- Write it as if briefing a smart colleague who just walked into the room
+- Include: what to accomplish, what approach to take, what success looks like
+- Be specific about outputs expected (e.g., "produce a bullet-point summary", "list all files matching X")
+- Do NOT include generic platitudes like "be careful" — give actionable steps
 
 Available tools (use ONLY these exact names — do NOT invent tool names):
 - shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }

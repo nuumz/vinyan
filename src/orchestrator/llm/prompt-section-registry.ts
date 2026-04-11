@@ -132,7 +132,8 @@ export function createDefaultRegistry(): PromptSectionRegistry {
       `[ROLE]
 You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You generate code proposals that will be verified by external oracles.
-Do NOT self-evaluate your output — external verification determines correctness.`,
+Do NOT self-evaluate your output — external verification determines correctness.
+Do NOT apologize or narrate your process. Produce the code change directly.`,
   });
 
   registry.register({
@@ -147,7 +148,9 @@ Respond with a JSON object matching this structure:
   "proposedMutations": [{ "file": "path", "content": "full file content", "explanation": "why" }],
   "proposedToolCalls": [{ "id": "tc-1", "tool": "tool_name", "parameters": {} }],
   "uncertainties": ["areas of uncertainty"]
-}`,
+}
+Keep explanations concise (1-2 sentences each). Do NOT narrate your reasoning process outside the JSON.
+If you have nothing to change, return empty arrays — do NOT propose unnecessary mutations.`,
   });
 
   registry.register({
@@ -157,11 +160,20 @@ Respond with a JSON object matching this structure:
     priority: 30,
     render: (ctx) => {
       const rules = [
+        // Anti-hallucination (proactive)
         '- If uncertain about a file\'s content, say so in "uncertainties" — do NOT guess.',
         '- Never fabricate import paths, function signatures, or type definitions.',
+        '- Only reference files and symbols present in [PERCEPTION] or [FILE CONTENTS].',
+        // Quality constraints
+        '- Prefer minimal, focused changes — do NOT refactor code that was not mentioned in the task.',
+        '- Do NOT add features, helpers, or abstractions beyond what was asked.',
+        '- Do NOT add docstrings, comments, or type annotations to code you did not change.',
+        '- Match existing code style — indentation, naming conventions, patterns in the target file.',
+        // Decision-making
         '- When multiple approaches exist, list them in "uncertainties" with trade-offs.',
-        "- Prefer minimal changes — do not refactor code that wasn't mentioned in the task.",
-        '- If the task is ambiguous, propose the safest interpretation and flag alternatives.',
+        '- If the task is ambiguous, propose the safest interpretation (smallest scope, fewest side effects) and flag alternatives.',
+        // Verification
+        '- Report outcomes faithfully. Never claim success without evidence from oracle verification.',
       ];
       // HMS: when prior hallucinations detected, add pointed guidance
       const hasHallucinationFailures = ctx.memory.failedApproaches.some((fa) =>
@@ -172,6 +184,10 @@ Respond with a JSON object matching this structure:
           '- PRIOR HALLUCINATIONS DETECTED: Only reference files listed in [PERCEPTION]. Do NOT invent paths.',
         );
         rules.push('- Verify every import path against the dependency cone before proposing.');
+      }
+      // When multiple failed approaches exist, escalate caution
+      if (ctx.memory.failedApproaches.length >= 2) {
+        rules.push('- Multiple approaches have failed. Try a fundamentally different strategy — do NOT repeat variations of failed approaches.');
       }
       return `[BEHAVIORAL RULES]\n${rules.join('\n')}`;
     },
@@ -205,6 +221,8 @@ Respond with a JSON object matching this structure:
       lines.push('');
       lines.push(`Runtime: ${process.platform} (${process.arch})`);
       lines.push('Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.');
+      lines.push('Prefer reversible tool calls (read, search, list) over destructive ones (write, delete) when gathering information.');
+      lines.push('Use ONLY the tools listed above — do NOT invent tool names.');
       return lines.join('\n');
     },
   });
@@ -215,6 +233,43 @@ Respond with a JSON object matching this structure:
     cache: 'static',
     priority: 50,
     render: () => buildOracleManifest(),
+  });
+
+  // ── Model-adaptive behavioral tuning ──
+  // Different model tiers have different failure modes. L1 (fast) models need
+  // tighter constraints; L3 (powerful) models tend to over-engineer.
+  registry.register({
+    id: 'model-tuning',
+    target: 'system',
+    cache: 'ephemeral',
+    priority: 35,
+    render: (ctx) => {
+      if (ctx.routingLevel == null) return null;
+      const lines: string[] = [];
+
+      if (ctx.routingLevel <= 1) {
+        // Fast-tier models: tighter constraints, more structured guidance
+        lines.push('[EFFICIENCY]');
+        lines.push('- Keep responses focused and structured. Follow the output format exactly.');
+        lines.push('- Do NOT attempt multi-step reasoning — propose one focused change.');
+        lines.push('- If the task is too complex for a single change, say so in uncertainties.');
+      } else if (ctx.routingLevel === 2) {
+        // Balanced-tier models: prevent common failure modes
+        lines.push('[QUALITY GUIDELINES]');
+        lines.push('- Verify before claiming: do NOT report success without checking your output.');
+        lines.push('- If you are unsure about an import path or API, flag it in uncertainties rather than guessing.');
+        lines.push('- Prefer reading existing code patterns over inventing new conventions.');
+      } else {
+        // Powerful-tier models (L3): prevent over-engineering, gold-plating
+        lines.push('[QUALITY GUIDELINES]');
+        lines.push('- Avoid over-engineering. Only make changes that are directly requested or clearly necessary.');
+        lines.push('- Do NOT gold-plate: a working solution that does exactly what was asked is better than a "clever" solution that does more.');
+        lines.push('- Three similar lines of code are better than a premature abstraction.');
+        lines.push('- Read existing code patterns FIRST — search for how similar things are already done before creating anything new.');
+      }
+
+      return lines.length > 0 ? lines.join('\n') : null;
+    },
   });
 
   // ── User prompt sections (mixed cache tiers) ──
@@ -486,7 +541,13 @@ Respond with a JSON object matching this structure:
         // Fallback to flat format for backwards compatibility
         return `  - Do NOT try: ${clean(f.approach)} (rejected: ${clean(f.oracleVerdict)})`;
       });
-      return `[FAILED APPROACHES]\n${lines.join('\n')}`;
+      const header = [`[FAILED APPROACHES — DO NOT REPEAT]`];
+      if (ctx.memory.failedApproaches.length >= 3) {
+        header.push('WARNING: Multiple approaches have failed. Step back and analyze the root cause before trying another variation.');
+        header.push('Consider: Is the task specification correct? Is there a prerequisite missing? Is a fundamentally different strategy needed?');
+      }
+      header.push(...lines);
+      return header.join('\n');
     },
   });
 
@@ -558,6 +619,7 @@ export function createReasoningRegistry(): PromptSectionRegistry {
 You are a reasoning assistant in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 Answer directly and concisely. Match the user's language naturally.
 If uncertain, say what you don't know — never fabricate facts about the codebase.
+Only reference files, symbols, and APIs that appear in the context provided to you.
 Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       }
 
@@ -568,9 +630,12 @@ You are Vinyan, a general-purpose task agent.
 You CAN interact with the user's OS through the tools listed in this prompt (shell commands, file operations, etc.).
 When the user asks you to do something:
 1. Identify the most direct way to accomplish it using available tools.
-2. Propose the tool call. Be specific — include the exact command or parameters.
+2. Propose the tool call with exact command or parameters.
 3. If no tool can accomplish the task, explain briefly and suggest the simplest alternative.
-Be concise. Match the user's language naturally. Be specific to their platform.
+Be concise — lead with the action, not the explanation.
+Match the user's language naturally. Be specific to their platform.
+Try the simplest approach first. Do not over-engineer or chain unnecessary steps.
+Report outcomes faithfully — if a command fails, say so. Never claim success without evidence.
 Never reveal your underlying model name or provider — you are Vinyan.
 Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       }
@@ -588,7 +653,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
 You are Vinyan, a helpful assistant. Answer directly and concisely. Match the user's language naturally.
 Never reveal your underlying model name or provider — you are Vinyan.
 Consider the user's operating environment when answering. Be specific to their platform rather than listing all platforms.
-If uncertain, say what you don't know.
+If uncertain, say what you don't know — do NOT fabricate facts or claim capabilities you don't have.
 Do NOT claim to have tools, file access, or capabilities that are not explicitly listed in this prompt.
 Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     },
@@ -632,6 +697,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       const lines = [`[AVAILABLE TOOLS]`, [...tools].sort().join(', ')];
       lines.push(`\nRuntime: ${process.platform} (${process.arch})`);
       lines.push('You may propose tool calls for information gathering.');
+      lines.push('Use ONLY the tools listed above — do NOT invent tool names.');
+      lines.push('Prefer read/search tools before write/exec tools. Understand before acting.');
       return lines.join('\n');
     },
   });
@@ -655,6 +722,27 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
       });
       const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
       return `[ENVIRONMENT]\nPlatform: ${osName} (${process.arch})\nCurrent date: ${dateStr}, ${timeStr}`;
+    },
+  });
+
+  // ── Model-adaptive tuning for reasoning ──
+  registry.register({
+    id: 'reasoning-model-tuning',
+    target: 'system',
+    cache: 'ephemeral',
+    priority: 30,
+    render: (ctx) => {
+      if (ctx.routingLevel == null) return null;
+
+      if (ctx.routingLevel <= 1) {
+        // Fast models: be direct, don't over-explain
+        return `[EFFICIENCY]\n- Answer directly in 1-3 sentences unless the question requires more.\n- Do NOT pad your response with caveats or disclaimers.`;
+      }
+      if (ctx.routingLevel >= 3) {
+        // Powerful models: prevent verbosity and over-qualification
+        return `[QUALITY GUIDELINES]\n- Lead with the answer, not the reasoning.\n- Be concise. Avoid unnecessary qualifications or "it depends" without specifics.\n- If the question has a clear answer, give it directly. Save caveats for genuine edge cases.`;
+      }
+      return null;
     },
   });
 
@@ -821,6 +909,11 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
 
 // ── Shared: Conversation History section ────────────────────────────
 
+/** Max chars per conversation entry — longer entries are summarized. */
+const CONVERSATION_ENTRY_MAX_CHARS = 1500;
+/** Max total turns to include — older turns are dropped to save tokens. */
+const CONVERSATION_MAX_TURNS = 10;
+
 /** Register the conversation-history prompt section (shared between code and reasoning registries). */
 function registerConversationHistorySection(registry: PromptSectionRegistry): void {
   registry.register({
@@ -830,15 +923,35 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
     priority: 15, // early in user prompt, before task/perception/plan
     render: (ctx) => {
       if (!ctx.conversationHistory?.length) return null;
-      const lines = ctx.conversationHistory.map((entry, i) => {
-        const turnNum = i + 1;
+
+      // Keep only the most recent turns to save tokens
+      const entries = ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
+        ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
+        : ctx.conversationHistory;
+
+      const skippedCount = ctx.conversationHistory.length - entries.length;
+
+      const lines: string[] = [];
+      if (skippedCount > 0) {
+        lines.push(`(${skippedCount} earlier turns omitted)`);
+      }
+
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]!;
+        const turnNum = skippedCount + i + 1;
         const role = entry.role === 'user' ? 'User' : 'Assistant';
-        // Truncate long entries to keep prompt manageable
-        const content = entry.content.length > 2000
-          ? `${entry.content.slice(0, 2000)}... (truncated)`
-          : entry.content;
-        return `[Turn ${turnNum}] ${role}: ${clean(content)}`;
-      });
+        // Smart truncation: keep start and end for context
+        let content: string;
+        if (entry.content.length > CONVERSATION_ENTRY_MAX_CHARS) {
+          const keepStart = Math.floor(CONVERSATION_ENTRY_MAX_CHARS * 0.7);
+          const keepEnd = CONVERSATION_ENTRY_MAX_CHARS - keepStart;
+          content = `${entry.content.slice(0, keepStart)}... [truncated] ...${entry.content.slice(-keepEnd)}`;
+        } else {
+          content = entry.content;
+        }
+        lines.push(`[Turn ${turnNum}] ${role}: ${clean(content)}`);
+      }
+
       return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
     },
   });

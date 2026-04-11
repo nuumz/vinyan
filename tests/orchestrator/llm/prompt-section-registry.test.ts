@@ -69,7 +69,7 @@ describe('PromptSectionRegistry', () => {
 describe('createDefaultRegistry', () => {
   it('registers 17 sections', () => {
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(17);
+    expect(registry.getSectionIds()).toHaveLength(18);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {
@@ -90,7 +90,7 @@ describe('createDefaultRegistry', () => {
 
     expect(system).toContain('do NOT guess');
     expect(system).toContain('Never fabricate import paths');
-    expect(system).toContain('minimal changes');
+    expect(system).toContain('minimal, focused changes');
   });
 
   it('user prompt contains TASK section', () => {
@@ -151,7 +151,7 @@ describe('createDefaultRegistry', () => {
     });
     const user = registry.renderTarget('user', ctx);
 
-    expect(user).toContain('[FAILED APPROACHES]');
+    expect(user).toContain('[FAILED APPROACHES');
     expect(user).toContain('Do NOT try: regex replace');
   });
 
@@ -161,7 +161,7 @@ describe('createDefaultRegistry', () => {
 
     // No facts, no constraints, no hypotheses, no plan
     expect(user).not.toContain('[KNOWN FACTS]');
-    expect(user).not.toContain('[FAILED APPROACHES]');
+    expect(user).not.toContain('[FAILED APPROACHES');
     expect(user).not.toContain('[USER CONSTRAINTS]');
     expect(user).not.toContain('[HYPOTHESES]');
     expect(user).not.toContain('[PLAN]');

@@ -212,6 +212,12 @@ const SYSTEM_PROMPT = `You are a task understanding engine for an autonomous cod
 Given a task goal and codebase context, extract structured understanding.
 Output ONLY valid JSON — no explanation, no markdown fences.
 
+Your extraction must be:
+- Actionable: steps should be concrete enough to guide implementation
+- Grounded: only reference files/modules mentioned in the context or clearly implied
+- Conservative: when uncertain about scope, prefer the narrower interpretation
+- Falsifiable: success criteria should be observable and testable
+
 Schema:
 {
   "primaryAction": "one of: ${PRIMARY_ACTION_VOCAB.join(' | ')}",
@@ -220,8 +226,8 @@ Schema:
   "implicitConstraints": [{"text": "string — constraint", "polarity": "must | must-not"}],
   "ambiguities": [{"aspect": "string", "interpretations": ["string"], "confidence": 0.0-1.0}],
   "goalSummary": "string — concise 1-2 sentence restatement of the actual goal (required)",
-  "steps": ["string — concrete action steps to achieve the goal"],
-  "successCriteria": ["string — observable criteria for verifying completion"],
+  "steps": ["string — concrete action steps to achieve the goal (required, 2-6 steps)"],
+  "successCriteria": ["string — observable criteria for verifying completion (required, 1-3 criteria)"],
   "affectedComponents": ["string — modules/files/services likely affected"],
   "rootCause": "string — hypothesized root cause (for bug-fix/investigation, omit otherwise)"
 }`;

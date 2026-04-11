@@ -329,11 +329,26 @@ For every turn, follow this structured cycle:
 6. **Decide** — Am I done? Should I verify? Is my approach working or do I need to pivot?
 
 ## Progress Tracking
-Track explicitly:
-- Files read and understood (with key findings)
+Track explicitly in your reasoning:
+- Files read and understood (with key findings from each)
 - Changes made and their rationale
 - What remains and estimated effort
 - Whether the current approach is converging or stalling
+
+## Loop Detection
+Watch for these red flags in your own behavior:
+- Reading the same file you already read — check [SESSION STATE] before reading again.
+- Calling the same tool with the same parameters — if the system warns [DUPLICATE WARNING], STOP and try a different approach.
+- Making the same edit that was already rejected — read the oracle verdict carefully before retrying.
+- Going back and forth between two files without making progress — step back and reconsider.
+If you detect yourself looping, explicitly acknowledge it and choose a fundamentally different strategy.
+
+## Session State Awareness
+Tool results may include a [SESSION STATE] block showing:
+- Files you have already read/modified in this session
+- Recent tool failures with their error messages
+- Key findings from prior turns
+Use this information to avoid redundant work and to inform your next action.
 
 ## Behavioral Rules
 - Go straight to the point. Try the simplest approach first without going in circles.
@@ -347,12 +362,17 @@ Track explicitly:
 - Never claim "all tests pass" or "everything works" without evidence. Report outcomes faithfully.
 
 ## Adaptive Strategy
-- If a tool call fails, diagnose WHY before retrying. Read the error. Check your assumptions. Try a focused fix.
-- If 2+ consecutive failures on the same approach, stop and try a fundamentally different path.
+- If a tool call fails, diagnose WHY before retrying:
+  1. Read the error message carefully — what exactly went wrong?
+  2. Check your assumptions — is the file path correct? Does the function exist?
+  3. Try a DIFFERENT fix, not a variation of the same one.
+- If 2+ consecutive failures, you MUST pivot to a fundamentally different approach. Do NOT try a third variation.
+- If the system says [FORCED PIVOT], you MUST change strategy entirely or call attempt_completion.
 - Read before writing — ALWAYS understand existing code before modifying it.
 - Search for existing patterns in the codebase before creating anything new.
-- Verify after changing — run tests, check for syntax errors, confirm the change works.
+- Verify after changing — run tests, check for syntax errors, read the file back to confirm.
 - If you discover unexpected state (unfamiliar files, existing implementations), investigate before overwriting.
+- When stuck: state what you've tried, what failed, and what you think the root cause is. Then try the most different approach you can think of.
 
 ## Reversibility Awareness
 - Freely take local, reversible actions (reading files, running tests, small edits).
@@ -539,48 +559,70 @@ export function estimateHistoryTokens(history: HistoryMessage[]): number {
 }
 
 /**
- * Two-tier context compression with landmark preservation.
+ * Two-tier context compression with landmark preservation and session state.
  *
  * Strategy:
  * - Keep: [0] system, [1] init user — verbatim always (task definition).
- * - Classify middle turns as LANDMARK (tool errors, key findings) vs NON-LANDMARK.
+ * - Classify middle turns as LANDMARK (tool errors, key file reads, oracle verdicts) vs NON-LANDMARK.
  * - LANDMARK turns get more detail in the summary; non-landmark get one-liners.
+ * - Extract a session state summary: files touched, errors encountered, approaches tried.
  * - Combine into single role: 'user' message (fix #3: NOT 'assistant').
- * - Keep: last 4 turns verbatim (increased from 3 for better continuity).
+ * - Keep: last 4 turns verbatim.
  */
 export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
   if (history.length <= 6) return history; // too short to compress
 
   const system = history[0]!;   // system prompt — guaranteed by length check
   const init = history[1]!;     // init user message — guaranteed by length check
-  const lastN = history.slice(-4); // preserve last 4 turns (increased from 3)
+  const lastN = history.slice(-4); // preserve last 4 turns
 
   const middleTurns = history.slice(2, -4);
   if (middleTurns.length === 0) return history;
 
+  // Phase 1: Extract session state (survives compression as structured data)
+  const filesRead = new Set<string>();
+  const filesWritten = new Set<string>();
+  const errors: string[] = [];
+  const oracleVerdicts: string[] = [];
+
   const summaries: string[] = [];
   for (const turn of middleTurns) {
     if ('toolCalls' in turn && turn.toolCalls) {
-      const toolNames = turn.toolCalls.map(c => c.tool).join(', ');
       const params = turn.toolCalls.map(c => {
-        // Include key params for context (file paths, commands)
         const p = c.parameters;
-        if (p.file_path) return `${c.tool}(${p.file_path})`;
-        if (p.command) return `${c.tool}("${String(p.command).slice(0, 60)}")`;
-        if (p.pattern) return `${c.tool}(pattern="${p.pattern}")`;
+        // Track file operations for session state
+        if (c.tool === 'file_read' && p.file_path) {
+          filesRead.add(String(p.file_path));
+          return `file_read(${p.file_path})`;
+        }
+        if ((c.tool === 'file_write' || c.tool === 'file_edit') && p.file_path) {
+          filesWritten.add(String(p.file_path));
+          return `${c.tool}(${p.file_path})`;
+        }
+        if (p.command) return `shell_exec("${String(p.command).slice(0, 60)}")`;
+        if (p.pattern) return `search_grep(pattern="${p.pattern}")`;
         return c.tool;
       }).join(', ');
-      summaries.push(`[tools] ${params || toolNames}`);
+      summaries.push(`[tools] ${params}`);
     } else if (turn.role === 'tool_result') {
       const content = (turn as ToolResultMessage).content ?? '';
       const isError = 'isError' in turn && (turn as ToolResultMessage).isError;
-      // LANDMARK: Error results get more space — they contain diagnostic info
-      const truncLen = isError ? 600 : 150;
-      const truncated = content.slice(0, truncLen);
-      summaries.push(`[result${isError ? ' ERROR' : ''}] ${truncated}${content.length > truncLen ? '...' : ''}`);
+
+      if (isError) {
+        // LANDMARK: Errors are critical context — keep more detail
+        const errorSnippet = content.slice(0, 400);
+        errors.push(errorSnippet);
+        summaries.push(`[ERROR] ${errorSnippet}${content.length > 400 ? '...' : ''}`);
+      } else {
+        // Extract oracle verdicts if present
+        const verdictMatch = content.match(/(?:oracle|verdict|verification).*?(?:pass|fail|error|warning)[^\n]*/i);
+        if (verdictMatch) {
+          oracleVerdicts.push(verdictMatch[0].slice(0, 200));
+        }
+        summaries.push(`[result] ${content.slice(0, 150)}${content.length > 150 ? '...' : ''}`);
+      }
     } else if (turn.role === 'assistant') {
       const content = (turn as Message).content ?? '';
-      // Keep first meaningful sentence, not just 100 chars
       const firstSentence = content.match(/^[^.!?\n]{10,200}[.!?]/)?.[0] ?? content.slice(0, 120);
       summaries.push(`[assistant] ${firstSentence}${content.length > firstSentence.length ? '...' : ''}`);
     } else if (turn.role === 'user') {
@@ -588,9 +630,31 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
     }
   }
 
+  // Phase 2: Build session state block (persists across compression)
+  const stateLines: string[] = [];
+  if (filesRead.size > 0) {
+    stateLines.push(`Files already read: ${[...filesRead].join(', ')}`);
+  }
+  if (filesWritten.size > 0) {
+    stateLines.push(`Files modified: ${[...filesWritten].join(', ')}`);
+  }
+  if (errors.length > 0) {
+    stateLines.push(`Errors encountered (${errors.length}):`);
+    for (const e of errors.slice(-3)) {
+      stateLines.push(`  - ${e.slice(0, 200)}`);
+    }
+  }
+  if (oracleVerdicts.length > 0) {
+    stateLines.push(`Oracle verdicts: ${oracleVerdicts.join('; ')}`);
+  }
+
+  const sessionState = stateLines.length > 0
+    ? `\n[SESSION STATE — from compressed turns]\n${stateLines.join('\n')}\n`
+    : '';
+
   const compressedBlock: Message = {
     role: 'user', // FIX #3: MUST be 'user', not 'assistant'
-    content: `[COMPRESSED CONTEXT: ${middleTurns.length} turns summarized]\n${summaries.join('\n')}\n\n${CONTEXT_COMPRESSION_CONTINUATION_PROMPT}`,
+    content: `[COMPRESSED CONTEXT: ${middleTurns.length} turns summarized]${sessionState}\n${summaries.join('\n')}\n\n${CONTEXT_COMPRESSION_CONTINUATION_PROMPT}`,
   };
 
   return [system, init, compressedBlock, ...lastN].filter((m): m is HistoryMessage => m !== undefined);

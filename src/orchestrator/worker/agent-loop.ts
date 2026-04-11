@@ -88,10 +88,32 @@ export class SessionProgress {
   turnsWithoutProgress = 0;
   private lastProgressTurn = 0;
 
-  recordToolResult(toolName: string, isError: boolean, output?: string): void {
+  /** Track recent tool calls for deduplication detection */
+  private recentToolCalls: Array<{ tool: string; paramsKey: string; turn: number }> = [];
+  private currentTurn = 0;
+
+  /** Track failed approaches with reasons for re-injection after compression */
+  failedToolCalls: Array<{ tool: string; params: string; error: string; turn: number }> = [];
+
+  /** Track key findings from tool results for session state */
+  keyFindings: string[] = [];
+
+  recordToolResult(toolName: string, isError: boolean, output?: string, callParams?: Record<string, unknown>): void {
     if (isError) {
       this.toolFailureCount++;
       this.consecutiveFailures++;
+      // Record failed tool call for context preservation
+      if (output) {
+        const paramsStr = callParams ? JSON.stringify(callParams).slice(0, 200) : '';
+        this.failedToolCalls.push({
+          tool: toolName,
+          params: paramsStr,
+          error: (output ?? '').slice(0, 300),
+          turn: this.currentTurn,
+        });
+        // Keep only last 5 failures to bound memory
+        if (this.failedToolCalls.length > 5) this.failedToolCalls.shift();
+      }
     } else {
       this.toolSuccessCount++;
       this.consecutiveFailures = 0;
@@ -100,7 +122,6 @@ export class SessionProgress {
     // Track file operations
     if (!isError && output) {
       if (toolName === 'file_read' || toolName === 'search_files' || toolName === 'list_directory') {
-        // Extract path from output if possible
         const pathMatch = output.match(/^(?:Reading|Searching|Listing)\s+(.+)/);
         if (pathMatch) this.filesRead.add(pathMatch[1]!);
       } else if (toolName === 'file_write' || toolName === 'file_patch') {
@@ -110,13 +131,61 @@ export class SessionProgress {
     }
   }
 
+  /** Check if a tool call is a duplicate of a recent one */
+  checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
+    const paramsKey = JSON.stringify(params);
+    const match = this.recentToolCalls.find(
+      (c) => c.tool === toolName && c.paramsKey === paramsKey,
+    );
+    if (match) {
+      return `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`;
+    }
+    this.recentToolCalls.push({ tool: toolName, paramsKey, turn: this.currentTurn });
+    // Keep last 8 tool calls
+    if (this.recentToolCalls.length > 8) this.recentToolCalls.shift();
+    return null;
+  }
+
   recordTurn(hadToolCalls: boolean): void {
+    this.currentTurn++;
     if (hadToolCalls && this.consecutiveFailures === 0) {
       this.turnsWithoutProgress = 0;
       this.lastProgressTurn = Date.now();
     } else {
       this.turnsWithoutProgress++;
     }
+  }
+
+  /** Build a session state snapshot that can be injected into tool results.
+   *  This gives the agent persistent awareness of what it has done so far. */
+  buildSessionSnapshot(): string | null {
+    const lines: string[] = [];
+
+    if (this.filesRead.size > 0 || this.filesWritten.size > 0) {
+      lines.push('[SESSION STATE]');
+      if (this.filesRead.size > 0) {
+        lines.push(`Files read: ${[...this.filesRead].slice(-10).join(', ')}`);
+      }
+      if (this.filesWritten.size > 0) {
+        lines.push(`Files modified: ${[...this.filesWritten].slice(-10).join(', ')}`);
+      }
+    }
+
+    if (this.failedToolCalls.length > 0) {
+      lines.push('Recent failures:');
+      for (const f of this.failedToolCalls.slice(-3)) {
+        lines.push(`  - ${f.tool}${f.params ? `(${f.params.slice(0, 80)})` : ''}: ${f.error.slice(0, 150)}`);
+      }
+    }
+
+    if (this.keyFindings.length > 0) {
+      lines.push('Key findings:');
+      for (const finding of this.keyFindings.slice(-5)) {
+        lines.push(`  - ${finding}`);
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n') : null;
   }
 
   /** Generate a system hint based on current progress state. */
@@ -135,14 +204,24 @@ export class SessionProgress {
       hints.push(`[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`);
     }
 
-    // Consecutive failures (lowered from 3 — burns fewer turns on dead ends)
+    // Consecutive failures — enriched with what failed
     if (this.consecutiveFailures >= 2) {
-      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures. Step back and try a different approach. Before editing a file, ALWAYS read it first to understand its current content and structure.`);
+      const recentFails = this.failedToolCalls.slice(-this.consecutiveFailures);
+      const failSummary = recentFails.map((f) => `${f.tool}: ${f.error.slice(0, 80)}`).join('; ');
+      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures (${failSummary}). Step back and try a fundamentally different approach. Before editing a file, ALWAYS read it first to understand its current content.`);
     }
 
-    // Stall detection (lowered from 3 — earlier intervention)
-    if (this.turnsWithoutProgress >= 2) {
+    // Stall detection — stronger, with forced pivot at 3+ turns
+    if (this.turnsWithoutProgress >= 3) {
+      hints.push(`[FORCED PIVOT] No progress for ${this.turnsWithoutProgress} turns. You MUST try a fundamentally different approach or call attempt_completion with status 'uncertain'. Do NOT repeat any approach you have already tried.`);
+    } else if (this.turnsWithoutProgress >= 2) {
       hints.push(`[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`);
+    }
+
+    // Session state snapshot — always inject when there's notable context
+    const snapshot = this.buildSessionSnapshot();
+    if (snapshot) {
+      hints.push(snapshot);
     }
 
     return hints.length > 0 ? hints.join('\n') : null;
@@ -494,11 +573,29 @@ export async function runAgentLoop(
           }
         }
 
-        // Track progress from tool results
-        for (const r of results) {
-          progress.recordToolResult(r.tool, r.status !== 'success', typeof r.output === 'string' ? r.output : undefined);
+        // Track progress from tool results (with params for dedup and failure tracking)
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i]!;
+          const originalCall = turn.calls[i];
+          progress.recordToolResult(
+            r.tool,
+            r.status !== 'success',
+            typeof r.output === 'string' ? r.output : undefined,
+            originalCall?.parameters as Record<string, unknown> | undefined,
+          );
         }
         progress.recordTurn(results.length > 0);
+
+        // Check for duplicate tool calls and inject warnings
+        for (let i = 0; i < turn.calls.length && i < results.length; i++) {
+          const call = turn.calls[i]!;
+          const dupWarning = progress.checkDuplicate(call.tool, (call.parameters ?? {}) as Record<string, unknown>);
+          if (dupWarning && results[i]) {
+            const r = results[i]!;
+            const existingOutput = typeof r.output === 'string' ? r.output : JSON.stringify(r.output ?? '');
+            results[i] = { ...r, output: `${existingOutput}\n\n${dupWarning}` };
+          }
+        }
 
         // Emit stall event when detected
         if (progress.turnsWithoutProgress > 3) {

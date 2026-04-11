@@ -1,12 +1,13 @@
 /**
  * Config Schema — Zod schema for vinyan.json matching TDD §2.
  *
- * Phase 0 config: version + oracles only.
- * Phase 1+ configs (routing, isolation, evolution, escalation) are accepted
- * under an optional `phase1` namespace for forward-compatibility but are
- * NOT consumed by any Phase 0 code path.
+ * Core config: version + oracles.
+ * Optional sections: orchestrator (routing/isolation/evolution/escalation),
+ * fleet (worker governance), network (multi-instance coordination).
  */
-import { z } from "zod/v4";
+import { z } from 'zod/v4';
+import { EconomyConfigSchema } from '../economy/economy-config.ts';
+import { HMSConfigSchema } from '../hms/hms-config.ts';
 
 const OracleConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -14,40 +15,48 @@ const OracleConfigSchema = z.object({
   command: z.string().optional(),
   timeout_ms: z.number().positive().optional(),
   /** Trust tier — determines confidence range and conflict resolution priority. */
-  tier: z.enum(["deterministic", "heuristic", "probabilistic", "speculative"]).default("deterministic"),
+  tier: z.enum(['deterministic', 'heuristic', 'probabilistic', 'speculative']).default('deterministic'),
   /** Behavior on timeout: 'block' = fail-closed, 'warn' = skip oracle and continue. */
-  timeout_behavior: z.enum(["block", "warn"]).default("block"),
+  timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
 
-// ─── Phase 1+ schemas (not used in Phase 0) ─────────────────────────
+// ─── Orchestrator schemas (routing, isolation, evolution, escalation) ─
 
 /** 4-level routing thresholds — Phase 1 Orchestrator (→ TDD §16). */
-const LatencyBudgetsSchema = z.object({
-  l0: z.number().positive().default(100),
-  l1: z.number().positive().default(2000),
-  l2: z.number().positive().default(10000),
-  l3: z.number().positive().default(60000),
-});
+const LatencyBudgetsSchema = z
+  .object({
+    l0: z.number().positive().default(100),
+    l1: z.number().positive().default(2000),
+    l2: z.number().positive().default(10000),
+    l3: z.number().positive().default(60000),
+  })
+  .refine((data) => data.l0 < data.l1 && data.l1 < data.l2 && data.l2 < data.l3, {
+    message: 'Latency budgets must be strictly ordered: l0 < l1 < l2 < l3',
+  });
 
-const RoutingConfigSchema = z.object({
-  l0_max_risk: z.number().min(0).max(1).default(0.2),
-  l1_max_risk: z.number().min(0).max(1).default(0.4),
-  l2_max_risk: z.number().min(0).max(1).default(0.7),
-  l0_l1_model: z.string().default("claude-haiku"),
-  l2_model: z.string().default("claude-sonnet"),
-  l3_model: z.string().default("claude-opus"),
-  l1_budget_tokens: z.number().positive().default(10000),
-  l2_budget_tokens: z.number().positive().default(50000),
-  l3_budget_tokens: z.number().positive().default(100000),
-  latency_budgets_ms: LatencyBudgetsSchema.default(() => defaults(LatencyBudgetsSchema)),
-});
+const RoutingConfigSchema = z
+  .object({
+    l0_max_risk: z.number().min(0).max(1).default(0.2),
+    l1_max_risk: z.number().min(0).max(1).default(0.4),
+    l2_max_risk: z.number().min(0).max(1).default(0.7),
+    l0_l1_model: z.string().default('claude-haiku'),
+    l2_model: z.string().default('claude-sonnet'),
+    l3_model: z.string().default('claude-opus'),
+    l1_budget_tokens: z.number().positive().default(10000),
+    l2_budget_tokens: z.number().positive().default(50000),
+    l3_budget_tokens: z.number().positive().default(100000),
+    latency_budgets_ms: LatencyBudgetsSchema.default(() => defaults(LatencyBudgetsSchema)),
+  })
+  .refine((data) => data.l0_max_risk < data.l1_max_risk && data.l1_max_risk < data.l2_max_risk, {
+    message: 'Risk thresholds must be strictly ordered: l0_max_risk < l1_max_risk < l2_max_risk',
+  });
 
 const IsolationConfigSchema = z.object({
   l0_max_risk: z.number().min(0).max(1).default(0.2),
   l1_max_risk: z.number().min(0).max(1).default(0.7),
-  container_image: z.string().default("vinyan-sandbox:latest"),
+  container_image: z.string().default('vinyan-sandbox:latest'),
   /** L2 container overlay strategy: 'tmpdir' = host-created temp dirs, 'docker-tmpfs' = in-container tmpfs */
-  overlay_strategy: z.enum(["tmpdir", "docker-tmpfs"]).default("tmpdir"),
+  overlay_strategy: z.enum(['tmpdir', 'docker-tmpfs']).default('tmpdir'),
   /** Shadow validation budget in ms (async, separate from L3 online 60s budget) */
   shadow_budget_ms: z.number().positive().default(300_000),
   /** Max PHE workers for shadow validation (0 = no PHE, just test suite) */
@@ -74,14 +83,215 @@ const EvolutionConfigSchema = z.object({
 const EscalationConfigSchema = z.object({
   max_retries_before_human: z.number().positive().default(3),
   risk_threshold_for_notification: z.number().min(0).max(1).default(0.8),
-  channel: z.enum(["matrix", "slack", "stdout"]).default("stdout"),
+  channel: z.enum(['matrix', 'slack', 'stdout']).default('stdout'),
 });
 
-const Phase1ConfigSchema = z.object({
+// ─── ForwardPredictor schema ────────────────────────────────────────
+
+const ForwardPredictorConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  tiers: z
+    .object({
+      statistical: z.object({
+        min_traces: z.number().positive().default(100),
+      }).default(() => ({ min_traces: 100 })),
+      causal: z.object({
+        min_traces: z.number().positive().default(100),
+        min_edges: z.number().positive().default(50),
+      }).default(() => ({ min_traces: 100, min_edges: 50 })),
+    })
+    .default(() => ({
+      statistical: { min_traces: 100 },
+      causal: { min_traces: 100, min_edges: 50 },
+    })),
+  budgets: z
+    .object({
+      prediction_timeout_ms: z.number().positive().default(3000),
+      max_alternative_plans: z.number().positive().default(3),
+    })
+    .default(() => ({ prediction_timeout_ms: 3000, max_alternative_plans: 3 })),
+  calibration: z
+    .object({
+      temporal_decay_half_life_days: z.number().positive().default(30),
+      miscalibration_threshold: z.number().min(0).max(1).default(0.4),
+      miscalibration_window: z.number().positive().default(20),
+    })
+    .default(() => ({
+      temporal_decay_half_life_days: 30,
+      miscalibration_threshold: 0.4,
+      miscalibration_window: 20,
+    })),
+});
+
+export type ForwardPredictorConfig = z.infer<typeof ForwardPredictorConfigSchema>;
+
+// ─── Extensible Thinking schema ─────────────────────────────────────
+
+const ExtensibleThinkingConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  modes: z.array(
+    z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']),
+  ).default(['adaptive']),
+  /** Configurable 2D grid boundaries (no hardcoded magic numbers). */
+  thresholds: z.object({
+    riskBoundary: z.number().min(0).max(1).default(0.35),
+    uncertaintyBoundary: z.number().min(0).max(1).default(0.50),
+  }).default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.50 })),
+  /** Data gate overrides for thinking feature activation. */
+  data_gate_overrides: z.object({
+    uncertainty_min_traces: z.number().positive().default(200),
+    calibration_min_traces: z.number().positive().default(50),
+  }).optional(),
+  /** Audit sample rate for high-confidence tasks (default: 5%). */
+  audit_sample_rate: z.number().min(0).max(1).default(0.05),
+});
+
+export type ExtensibleThinkingConfig = z.infer<typeof ExtensibleThinkingConfigSchema>;
+
+const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
   evolution: EvolutionConfigSchema.default(() => defaults(EvolutionConfigSchema)),
   escalation: EscalationConfigSchema.default(() => defaults(EscalationConfigSchema)),
+  forward_predictor: ForwardPredictorConfigSchema.default(() => defaults(ForwardPredictorConfigSchema)),
+  /** Extensible Thinking — 2D routing grid (risk × uncertainty). */
+  extensible_thinking: ExtensibleThinkingConfigSchema.default(() => defaults(ExtensibleThinkingConfigSchema)),
+});
+
+// ─── Fleet Governance schema ────────────────────────────────────────
+
+const FleetConfigSchema = z.object({
+  worker_identity_granularity: z.enum(['model', 'model+temp', 'full']).default('full'),
+  probation_min_tasks: z.number().positive().default(30),
+  demotion_window_tasks: z.number().positive().default(30),
+  demotion_max_reentries: z.number().min(0).default(3),
+  reentry_cooldown_sessions: z.number().positive().default(50),
+  epsilon_worker: z.number().min(0.03).max(0.3).default(0.1),
+  diversity_cap_pct: z.number().min(0.05).max(0.95).default(0.7),
+  max_active_workers: z.number().positive().default(10),
+  capability_min_traces: z.number().positive().default(5),
+  negative_capability_threshold: z.number().min(0).max(1).default(0.6),
+  staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
+});
+
+// ─── Network schema (multi-instance coordination) ───────────────────
+
+const APIConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().positive().default(3927),
+  bind: z.string().default('127.0.0.1'),
+  auth_required: z.boolean().default(true),
+  session_compaction_threshold: z.number().positive().default(20),
+  rate_limit_enabled: z.boolean().default(true),
+});
+
+const InstancesConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  listen_port: z.number().positive().default(3928),
+  heartbeat_interval_ms: z.number().positive().default(15_000),
+  heartbeat_timeout_ms: z.number().positive().default(45_000),
+  peers: z
+    .array(
+      z.object({
+        url: z.string(),
+        trust_level: z.enum(['untrusted', 'provisional', 'established', 'trusted']).default('untrusted'),
+      }),
+    )
+    .default([]),
+});
+
+const A2AConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Max confidence for any A2A-received verdict (applied via clampFull). */
+  confidence_cap: z.number().min(0).max(1).default(0.5),
+  streaming_enabled: z.boolean().default(false),
+  allowed_methods: z
+    .array(z.enum(['tasks/send', 'tasks/get', 'tasks/cancel']))
+    .default(['tasks/send', 'tasks/get', 'tasks/cancel']),
+});
+
+const KnowledgeSharingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Tier 0: relay file hash invalidations in real-time. */
+  file_invalidation_enabled: z.boolean().default(true),
+  /** Tier 2: batch exchange patterns/rules on sleep cycle. */
+  batch_exchange_enabled: z.boolean().default(true),
+  /** Max items in probation queue before rejecting new imports. */
+  max_probation_queue: z.number().positive().default(100),
+  /** Tier 3: gossip-based knowledge propagation for fleet scale. */
+  gossip_enabled: z.boolean().default(false),
+  /** Gossip fanout: number of peers to forward each item to. */
+  gossip_fanout: z.number().positive().default(3),
+  /** Max gossip hops before item is dropped. */
+  gossip_max_hops: z.number().positive().default(6),
+  /** Dedup window in ms for content-hash based deduplication. */
+  gossip_dampening_window_ms: z.number().positive().default(10_000),
+});
+
+const TrustConfigSchema = z.object({
+  /** Wilson LB threshold: untrusted → provisional. */
+  promotion_untrusted_lb: z.number().min(0).max(1).default(0.6),
+  /** Wilson LB threshold: provisional → established. */
+  promotion_provisional_lb: z.number().min(0).max(1).default(0.7),
+  /** Wilson LB threshold: established → trusted. */
+  promotion_established_lb: z.number().min(0).max(1).default(0.8),
+  /** Min interactions before first promotion. */
+  promotion_min_interactions: z.number().positive().default(10),
+  /** Consecutive failures to trigger demotion by one level. */
+  demotion_on_consecutive_failures: z.number().positive().default(5),
+  /** Days of inactivity before trust decays one level. */
+  inactivity_decay_days: z.number().positive().default(7),
+  /** Enable cross-instance trust attestation sharing. */
+  trust_sharing_enabled: z.boolean().default(false),
+  /** Max trust level achievable from remote attestations alone. */
+  max_remote_trust: z.number().min(0).max(1).default(0.4),
+  /** Min interactions before this instance can attest about a peer. */
+  attestation_min_interactions: z.number().positive().default(20),
+  /** Max attesters considered per subject (anti-Sybil). */
+  attestation_max_attesters: z.number().positive().default(3),
+});
+
+const CoordinationConfigSchema = z.object({
+  intent_declaration_enabled: z.boolean().default(false),
+  negotiation_enabled: z.boolean().default(false),
+  commitment_tracking_enabled: z.boolean().default(false),
+});
+
+const TracingConfigSchema = z.object({
+  distributed_enabled: z.boolean().default(false),
+  w3c_trace_context_enabled: z.boolean().default(true),
+  /** Sampling rate for distributed traces (0.0–1.0). */
+  sample_rate: z.number().min(0).max(1).default(0.1),
+});
+
+const PolyglotConfigSchema = z.object({
+  enabled_languages: z.array(z.string()).default(['typescript']),
+  language_detection: z.enum(['auto', 'config']).default('auto'),
+});
+
+const MCPConfigSchema = z.object({
+  server_enabled: z.boolean().default(false),
+  client_servers: z
+    .array(
+      z.object({
+        name: z.string(),
+        command: z.string(),
+        trust_level: z.enum(['untrusted', 'provisional', 'established', 'trusted']).default('untrusted'),
+      }),
+    )
+    .default([]),
+});
+
+const NetworkConfigSchema = z.object({
+  api: APIConfigSchema.optional(),
+  instances: InstancesConfigSchema.optional(),
+  polyglot: PolyglotConfigSchema.optional(),
+  mcp: MCPConfigSchema.optional(),
+  a2a: A2AConfigSchema.optional(),
+  knowledge_sharing: KnowledgeSharingConfigSchema.optional(),
+  trust: TrustConfigSchema.optional(),
+  coordination: CoordinationConfigSchema.optional(),
+  tracing: TracingConfigSchema.optional(),
 });
 
 // ─── Helper ──────────────────────────────────────────────────────────
@@ -91,19 +301,59 @@ function defaults<T extends z.ZodType>(schema: T): z.output<T> {
   return schema.parse({});
 }
 
+// ─── ECP v2 Feature Flags ────────────────────────────────────────────
+
+export const ECPv2FlagsSchema = z.object({
+  /** Gates B1 (Zod confidence default 0.5) + B2 (zero-oracle quality 0.5). HIGH risk. */
+  ECP_V2_SCHEMA_DEFAULTS: z.boolean().default(false),
+  /** Gates B5-B10 (enrichment, wiring, pipeline split, calibration). MEDIUM risk. */
+  ECP_V2_ENRICHMENT: z.boolean().default(false),
+});
+
+export type ECPv2Flags = z.infer<typeof ECPv2FlagsSchema>;
+
+// ─── Engine Configuration (non-LLM reasoning engines) ──────────────
+
+const EnginesConfigSchema = z.object({
+  z3: z.object({
+    enabled: z.boolean().default(false),
+    /** Path to z3 binary (default: 'z3' from PATH). */
+    path: z.string().default('z3'),
+  }).default(() => ({ enabled: false, path: 'z3' })),
+  human: z.object({
+    enabled: z.boolean().default(false),
+    /** Timeout in ms for human review response (default: 5 minutes). */
+    timeout_ms: z.number().positive().default(300_000),
+  }).default(() => ({ enabled: false, timeout_ms: 300_000 })),
+});
+
+export type EnginesConfig = z.infer<typeof EnginesConfigSchema>;
+
 // ─── Root schema ─────────────────────────────────────────────────────
 
 export const VinyanConfigSchema = z.object({
   version: z.number().default(1),
   oracles: z.record(z.string(), OracleConfigSchema).default({
-    ast: { enabled: true, languages: ["typescript"], tier: "deterministic", timeout_behavior: "block" },
-    type: { enabled: true, command: "tsc --noEmit", tier: "deterministic", timeout_behavior: "block" },
-    dep: { enabled: true, tier: "heuristic", timeout_behavior: "block" },
-    test: { enabled: false, timeout_ms: 5000, tier: "deterministic", timeout_behavior: "warn" },
-    lint: { enabled: false, timeout_ms: 1000, tier: "deterministic", timeout_behavior: "warn" },
+    ast: { enabled: true, languages: ['typescript'], tier: 'deterministic', timeout_behavior: 'block' },
+    type: { enabled: true, command: 'tsc --noEmit', tier: 'deterministic', timeout_behavior: 'block' },
+    dep: { enabled: true, tier: 'heuristic', timeout_behavior: 'block' },
+    test: { enabled: false, timeout_ms: 5000, tier: 'deterministic', timeout_behavior: 'warn' },
+    lint: { enabled: false, timeout_ms: 1000, tier: 'deterministic', timeout_behavior: 'warn' },
   }),
-  /** Phase 1+ config — accepted for forward-compat, not used in Phase 0. */
-  phase1: Phase1ConfigSchema.optional(),
+  /** Orchestrator config — routing, isolation, evolution, escalation. */
+  orchestrator: OrchestratorConfigSchema.optional(),
+  /** Fleet Governance — worker identity, probation, demotion, diversity. */
+  fleet: FleetConfigSchema.optional(),
+  /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
+  network: NetworkConfigSchema.optional(),
+  /** ECP v2 feature flags — progressive rollout of epistemic improvements. */
+  ecpV2: ECPv2FlagsSchema.optional(),
+  /** Economy Operating System — cost tracking, budgets, market, federation. */
+  economy: EconomyConfigSchema.optional(),
+  /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */
+  hms: HMSConfigSchema.optional(),
+  /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
+  engines: EnginesConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

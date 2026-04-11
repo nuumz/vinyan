@@ -4,7 +4,7 @@
  * TDD §5: maxAgeDays=30, keepLastSessions=10, maxFactCount=50,000.
  * Runs every N storeFact() calls (default: 100).
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from 'bun:sqlite';
 
 export interface RetentionConfig {
   maxAgeDays: number;
@@ -18,9 +18,11 @@ export const DEFAULT_RETENTION: RetentionConfig = {
   maxFactCount: 50_000,
 };
 
-/** Run retention policy. Returns number of facts deleted. */
+/** Run retention policy. Returns number of fact rows deleted (excludes CASCADE junction rows). */
 export function runRetention(db: Database, config: RetentionConfig = DEFAULT_RETENTION): number {
-  let deleted = 0;
+  const countFacts = () => (db.query('SELECT COUNT(*) as cnt FROM facts').get() as { cnt: number }).cnt;
+
+  const beforeAll = countFacts();
 
   // Step 1: Find protected session IDs (last N sessions by most recent fact)
   const protectedSessions = db
@@ -39,31 +41,24 @@ export function runRetention(db: Database, config: RetentionConfig = DEFAULT_RET
   const cutoff = Date.now() - config.maxAgeDays * 24 * 60 * 60 * 1000;
 
   if (protectedIds.size > 0) {
-    const placeholders = [...protectedIds].map(() => "?").join(",");
-    const result = db
-      .query(
-        `DELETE FROM facts WHERE verified_at < ? AND (session_id IS NULL OR session_id NOT IN (${placeholders}))`,
-      )
-      .run(cutoff, ...protectedIds);
-    deleted += result.changes;
+    const placeholders = [...protectedIds].map(() => '?').join(',');
+    db.query(
+      `DELETE FROM facts WHERE verified_at < ? AND (session_id IS NULL OR session_id NOT IN (${placeholders}))`,
+    ).run(cutoff, ...protectedIds);
   } else {
-    const result = db.query("DELETE FROM facts WHERE verified_at < ?").run(cutoff);
-    deleted += result.changes;
+    db.query('DELETE FROM facts WHERE verified_at < ?').run(cutoff);
   }
 
   // Step 3: Hard cap — if still over maxFactCount, delete oldest beyond cap
-  const countRow = db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
-  if (countRow.cnt > config.maxFactCount) {
-    const excess = countRow.cnt - config.maxFactCount;
-    const result = db
-      .query(
-        `DELETE FROM facts WHERE id IN (
-           SELECT id FROM facts ORDER BY verified_at ASC LIMIT ?
-         )`,
-      )
-      .run(excess);
-    deleted += result.changes;
+  const afterAge = countFacts();
+  if (afterAge > config.maxFactCount) {
+    const excess = afterAge - config.maxFactCount;
+    db.query(
+      `DELETE FROM facts WHERE id IN (
+         SELECT id FROM facts ORDER BY verified_at ASC LIMIT ?
+       )`,
+    ).run(excess);
   }
 
-  return deleted;
+  return beforeAll - countFacts();
 }

@@ -1,7 +1,12 @@
-import { createHash } from "crypto";
-import { readFileSync } from "fs";
-import type { HypothesisTuple, OracleVerdict, Evidence } from "../../core/types.ts";
-import { buildVerdict } from "../../core/index.ts";
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { buildVerdict } from '../../core/index.ts';
+import { fromScalar } from '../../core/subjective-opinion.ts';
+import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+
+const BASE_RATE = 0.5;
+const TTL_MS = 600_000;
 
 /**
  * Type Verifier — spawns `tsc --noEmit` on the workspace and parses diagnostic output.
@@ -19,7 +24,7 @@ interface TscDiagnostic {
 /** Parse tsc diagnostic output format: file(line,col): error TSxxxx: message */
 function parseTscOutput(output: string): TscDiagnostic[] {
   const diagnostics: TscDiagnostic[] = [];
-  const lines = output.split("\n");
+  const lines = output.split('\n');
 
   for (const line of lines) {
     // Match: path/to/file.ts(line,col): error TS1234: message
@@ -42,24 +47,79 @@ function parseTscOutput(output: string): TscDiagnostic[] {
 /** Resolve path to tsc binary from this package's node_modules. */
 function resolveTscPath(): string {
   // Use the tsc installed in our own node_modules, not bunx (which depends on CWD's .npmrc)
-  const localTsc = new URL("../../../node_modules/.bin/tsc", import.meta.url).pathname;
+  const localTsc = new URL('../../../node_modules/.bin/tsc', import.meta.url).pathname;
   return localTsc;
 }
 
-/** Run tsc --noEmit and return diagnostics. */
-async function runTsc(workspace: string, target?: string): Promise<{ diagnostics: TscDiagnostic[]; exitCode: number }> {
-  const args = ["--noEmit", "--pretty", "false", "--project", workspace];
+const TSC_TIMEOUT_MS = 30_000;
+const DEDUP_WINDOW_MS = 5_000;
+
+type TscResult = { diagnostics: TscDiagnostic[]; exitCode: number; timedOut?: boolean };
+
+/** Dedup cache: concurrent tsc runs for the same workspace share one invocation. */
+const pendingTsc = new Map<string, Promise<TscResult>>();
+
+/** Ensure .vinyan cache directory exists and return tsBuildInfoFile path. */
+function tsBuildInfoPath(workspace: string): string {
+  const cacheDir = join(workspace, '.vinyan');
+  if (!existsSync(cacheDir)) {
+    mkdirSync(cacheDir, { recursive: true });
+  }
+  return join(cacheDir, 'tsbuildinfo');
+}
+
+/** Core tsc invocation with incremental mode. */
+async function runTscCore(workspace: string): Promise<TscResult> {
+  const buildInfoFile = tsBuildInfoPath(workspace);
+  const args = [
+    '--noEmit', '--pretty', 'false', '--project', workspace,
+    '--incremental', '--tsBuildInfoFile', buildInfoFile,
+  ];
 
   const proc = Bun.spawn([resolveTscPath(), ...args], {
     cwd: workspace,
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
 
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<'timeout'>((r) => {
+    timer = setTimeout(() => r('timeout'), TSC_TIMEOUT_MS);
+  });
+  const processPromise = (async () => {
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    return { stdout, exitCode };
+  })();
 
-  return { diagnostics: parseTscOutput(stdout), exitCode };
+  const result = await Promise.race([processPromise, timeoutPromise]);
+  clearTimeout(timer!);
+  if (result === 'timeout') {
+    proc.kill();
+    return { diagnostics: [], exitCode: -1, timedOut: true };
+  }
+
+  return { diagnostics: parseTscOutput(result.stdout), exitCode: result.exitCode };
+}
+
+/** Run tsc --noEmit with dedup: concurrent calls for the same workspace share one invocation. */
+async function runTsc(workspace: string): Promise<TscResult> {
+  const cached = pendingTsc.get(workspace);
+  if (cached) return cached;
+
+  const promise = runTscCore(workspace);
+  pendingTsc.set(workspace, promise);
+  promise.then(
+    () => setTimeout(() => pendingTsc.delete(workspace), DEDUP_WINDOW_MS),
+    () => pendingTsc.delete(workspace),
+  );
+
+  return promise;
+}
+
+/** Clear the tsc dedup cache — exposed for testing. */
+export function clearTscCache(): void {
+  pendingTsc.clear();
 }
 
 export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {
@@ -68,7 +128,25 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
   const target = hypothesis.target;
 
   try {
-    const { diagnostics } = await runTsc(workspace);
+    const tscResult = await runTsc(workspace);
+
+    // A2: Timeout → uncertain rather than unknown (partial information available)
+    if (tscResult.timedOut) {
+      return buildVerdict({
+        verified: false,
+        type: 'uncertain',
+        confidence: 0.2,
+        evidence: [],
+        fileHashes: {},
+        reason: `Type verification timed out after ${TSC_TIMEOUT_MS}ms`,
+        errorCode: 'TIMEOUT',
+        durationMs: Math.round(performance.now() - startTime),
+        opinion: fromScalar(0.2, BASE_RATE),
+        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      });
+    }
+
+    const { diagnostics } = tscResult;
 
     // Filter diagnostics to target file if specified
     const targetDiags = target
@@ -85,29 +163,35 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
     const fileHashes: Record<string, string> = {};
     try {
       const content = readFileSync(target);
-      fileHashes[target] = createHash("sha256").update(content).digest("hex");
+      fileHashes[target] = createHash('sha256').update(content).digest('hex');
     } catch {
       // target might be a symbol path, not a file — that's fine
     }
 
     return buildVerdict({
       verified: targetDiags.length === 0,
+      type: 'known',
+      confidence: 1.0,
       evidence,
       fileHashes,
       reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,
-      errorCode: targetDiags.length > 0 ? "TYPE_MISMATCH" : undefined,
-      duration_ms: Math.round(performance.now() - startTime),
+      errorCode: targetDiags.length > 0 ? 'TYPE_MISMATCH' : undefined,
+      durationMs: Math.round(performance.now() - startTime),
+      opinion: fromScalar(1.0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   } catch (err) {
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Type verification failed: ${err instanceof Error ? err.message : String(err)}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: Math.round(performance.now() - startTime),
+      errorCode: 'ORACLE_CRASH',
+      durationMs: Math.round(performance.now() - startTime),
+      opinion: fromScalar(0, BASE_RATE),
+      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
     });
   }
 }

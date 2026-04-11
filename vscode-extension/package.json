@@ -1,0 +1,53 @@
+{
+  "name": "vinyan",
+  "displayName": "Vinyan — Epistemic Orchestration",
+  "description": "AI agent verification, oracle verdicts, and world graph integration",
+  "version": "0.1.0",
+  "publisher": "vinyan",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Linters", "Other"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "vinyan.submitTask", "title": "Vinyan: Submit Task" },
+      { "command": "vinyan.submitTaskFromFile", "title": "Vinyan: Submit Task From Current File" },
+      { "command": "vinyan.showWorldGraph", "title": "Vinyan: Show World Graph" },
+      { "command": "vinyan.refreshFacts", "title": "Vinyan: Refresh Facts" },
+      { "command": "vinyan.showEvents", "title": "Vinyan: Show Event Stream" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "vinyan", "title": "Vinyan", "icon": "media/icon.svg" }]
+    },
+    "views": {
+      "vinyan": [
+        { "id": "vinyan.worldGraph", "name": "World Graph" },
+        { "id": "vinyan.tasks", "name": "Tasks" }
+      ]
+    },
+    "configuration": {
+      "title": "Vinyan",
+      "properties": {
+        "vinyan.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3927",
+          "description": "Vinyan API server URL"
+        },
+        "vinyan.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-connect on startup"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

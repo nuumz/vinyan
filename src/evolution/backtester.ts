@@ -5,15 +5,17 @@
  * Anti-lookahead: validation window STRICTLY newer than training.
  * Pass criteria: prevent ≥50% of historical failures WITHOUT blocking successes.
  *
- * Source of truth: vinyan-tdd.md §2 (Evolution Engine), Phase 2.6
+ * Source of truth: spec/tdd.md §2 (Evolution Engine), Phase 2.6
  */
-import type { EvolutionaryRule, ExecutionTrace } from "../orchestrator/types.ts";
+
+import { simpleGlobMatch } from '../core/glob.ts';
+import type { EvolutionaryRule, ExecutionTrace } from '../orchestrator/types.ts';
 
 export interface BacktestResult {
   pass: boolean;
   effectiveness: number;
-  prevented: number;       // failures that would have been prevented
-  falsePositives: number;  // successes that would have been blocked
+  prevented: number; // failures that would have been prevented
+  falsePositives: number; // successes that would have been blocked
   totalFailures: number;
   totalSuccesses: number;
   trainingSize: number;
@@ -30,10 +32,7 @@ export interface BacktestResult {
  * 4. Count how many validation-set successes the rule would have blocked
  * 5. Pass if prevented ≥ 50% of failures AND falsePositives === 0
  */
-export function backtestRule(
-  rule: EvolutionaryRule,
-  traces: ExecutionTrace[],
-): BacktestResult {
+export function backtestRule(rule: EvolutionaryRule, traces: ExecutionTrace[]): BacktestResult {
   if (traces.length < 5) {
     return {
       pass: false,
@@ -53,18 +52,31 @@ export function backtestRule(
   // 80/20 temporal split
   const splitIndex = Math.floor(sorted.length * 0.8);
   const training = sorted.slice(0, splitIndex);
-  const validation = sorted.slice(splitIndex);
+  let validation = sorted.slice(splitIndex);
 
-  // Anti-lookahead check: validation must be strictly newer
+  // Anti-lookahead check: validation must be strictly newer than training
   const trainingMaxTime = training[training.length - 1]?.timestamp ?? 0;
   const validationMinTime = validation[0]?.timestamp ?? 0;
   if (validationMinTime <= trainingMaxTime && validation.length > 0 && training.length > 0) {
-    // This shouldn't happen with sorted data, but guard against it
+    // Filter out validation traces that overlap with training (duplicate timestamps)
+    validation = validation.filter((t) => t.timestamp > trainingMaxTime);
+    if (validation.length === 0) {
+      return {
+        pass: false,
+        effectiveness: 0,
+        prevented: 0,
+        falsePositives: 0,
+        totalFailures: 0,
+        totalSuccesses: 0,
+        trainingSize: training.length,
+        validationSize: 0,
+      };
+    }
   }
 
   // Count failures and successes in validation set
-  const failures = validation.filter(t => t.outcome === "failure");
-  const successes = validation.filter(t => t.outcome === "success");
+  const failures = validation.filter((t) => t.outcome === 'failure');
+  const successes = validation.filter((t) => t.outcome === 'success');
 
   // Simulate rule application: would this rule have affected each trace?
   let prevented = 0;
@@ -110,31 +122,169 @@ export function backtestRule(
 function wouldRuleApply(rule: EvolutionaryRule, trace: ExecutionTrace): boolean {
   const c = rule.condition;
 
-  if (c.file_pattern) {
-    const traceFiles = trace.affected_files.join(",");
-    if (!simpleGlobMatch(c.file_pattern, traceFiles)) return false;
+  if (c.filePattern) {
+    const matches = trace.affectedFiles.some((f) => simpleGlobMatch(c.filePattern!, f));
+    if (!matches) return false;
   }
 
-  if (c.oracle_name) {
+  if (c.oracleName) {
     const oracleNames = Object.keys(trace.oracleVerdicts);
-    if (!oracleNames.includes(c.oracle_name)) return false;
+    if (!oracleNames.includes(c.oracleName)) return false;
   }
 
-  if (c.risk_above !== undefined) {
-    const riskScore = trace.risk_score ?? 0;
-    if (riskScore <= c.risk_above) return false;
+  if (c.riskAbove !== undefined) {
+    const riskScore = trace.riskScore ?? 0;
+    if (riskScore <= c.riskAbove) return false;
   }
 
-  if (c.model_pattern) {
-    if (!trace.model_used.includes(c.model_pattern)) return false;
+  if (c.modelPattern) {
+    if (!trace.modelUsed.includes(c.modelPattern)) return false;
   }
 
   return true;
 }
 
-function simpleGlobMatch(pattern: string, value: string): boolean {
-  const regex = new RegExp(
-    pattern.replace(/\./g, "\\.").replace(/\*/g, ".*"),
-  );
-  return regex.test(value);
+/**
+ * PH3.6: Compute expected quality impact of a rule on a set of traces.
+ * Returns average quality before, estimated quality after, and the delta.
+ */
+export function computeQualityImpact(
+  rule: EvolutionaryRule,
+  traces: ExecutionTrace[],
+): { avgQualityBefore: number; estimatedQualityAfter: number; impact: number } {
+  const matching: number[] = [];
+  const nonMatchingAtTarget: number[] = [];
+
+  // Determine target level from rule parameters
+  const targetLevel = typeof rule.parameters.toLevel === 'number' ? rule.parameters.toLevel : undefined;
+
+  for (const trace of traces) {
+    const quality = trace.qualityScore?.composite;
+    if (quality == null) continue;
+
+    if (wouldRuleApply(rule, trace)) {
+      matching.push(quality);
+    } else if (targetLevel != null && trace.routingLevel === targetLevel) {
+      nonMatchingAtTarget.push(quality);
+    }
+  }
+
+  if (matching.length === 0) {
+    return { avgQualityBefore: 0, estimatedQualityAfter: 0, impact: 0 };
+  }
+
+  const avgBefore = matching.reduce((a, b) => a + b, 0) / matching.length;
+  // Estimate "after" from traces at target level, or use avgBefore if no data
+  const avgAfter =
+    nonMatchingAtTarget.length > 0
+      ? nonMatchingAtTarget.reduce((a, b) => a + b, 0) / nonMatchingAtTarget.length
+      : avgBefore;
+
+  return {
+    avgQualityBefore: avgBefore,
+    estimatedQualityAfter: avgAfter,
+    impact: avgAfter - avgBefore,
+  };
+}
+
+/**
+ * Backtest a worker assignment rule.
+ * Instead of failure prevention, compares quality:
+ *   traces assigned to `workerId` vs traces assigned to other workers
+ *   for matching task type signature.
+ *
+ * Pass criteria: assigned worker's avg quality ≥ fleet average for matching tasks.
+ */
+export function backtestWorkerAssignment(rule: EvolutionaryRule, traces: ExecutionTrace[]): BacktestResult {
+  if (traces.length < 5 || rule.action !== 'assign-worker') {
+    return {
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: 0,
+      validationSize: 0,
+    };
+  }
+
+  const workerId = typeof rule.parameters.workerId === 'string' ? rule.parameters.workerId : undefined;
+  if (!workerId) {
+    return {
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: 0,
+      validationSize: 0,
+    };
+  }
+
+  // Filter traces that match the rule's condition (task type / file pattern)
+  const matching = traces.filter((t) => wouldRuleApply(rule, t));
+  if (matching.length < 5) {
+    return {
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: matching.length,
+      validationSize: 0,
+    };
+  }
+
+  // Sort by timestamp, 80/20 split
+  const sorted = [...matching].sort((a, b) => a.timestamp - b.timestamp);
+  const splitIndex = Math.floor(sorted.length * 0.8);
+  const validation = sorted.slice(splitIndex);
+
+  if (validation.length === 0) {
+    return {
+      pass: false,
+      effectiveness: 0,
+      prevented: 0,
+      falsePositives: 0,
+      totalFailures: 0,
+      totalSuccesses: 0,
+      trainingSize: splitIndex,
+      validationSize: 0,
+    };
+  }
+
+  // Compare assigned worker quality vs others in validation set
+  const workerTraces = validation.filter((t) => t.workerId === workerId);
+  const otherTraces = validation.filter((t) => t.workerId !== workerId);
+
+  const workerAvgQuality = avgQuality(workerTraces);
+  const otherAvgQuality = avgQuality(otherTraces);
+
+  // Effectiveness = quality advantage (capped at 1.0)
+  const qualityDelta = workerAvgQuality - otherAvgQuality;
+  const effectiveness = Math.min(1.0, Math.max(0, qualityDelta));
+
+  // Pass if assigned worker is at least as good (delta >= 0) and has evidence
+  const pass = qualityDelta >= 0 && workerTraces.length >= 2;
+
+  return {
+    pass,
+    effectiveness,
+    prevented: workerTraces.filter((t) => t.outcome === 'success').length,
+    falsePositives: 0,
+    totalFailures: validation.filter((t) => t.outcome === 'failure').length,
+    totalSuccesses: validation.filter((t) => t.outcome === 'success').length,
+    trainingSize: splitIndex,
+    validationSize: validation.length,
+  };
+}
+
+function avgQuality(traces: ExecutionTrace[]): number {
+  if (traces.length === 0) return 0;
+  const qualityTraces = traces.filter((t) => t.qualityScore?.composite != null);
+  if (qualityTraces.length === 0) return 0;
+  return qualityTraces.reduce((s, t) => s + (t.qualityScore?.composite ?? 0), 0) / qualityTraces.length;
 }

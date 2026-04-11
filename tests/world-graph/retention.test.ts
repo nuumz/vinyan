@@ -1,10 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { WorldGraph } from "../../src/world-graph/world-graph.ts";
-import { runRetention } from "../../src/world-graph/retention.ts";
-import { Database } from "bun:sqlite";
-import { SCHEMA_SQL } from "../../src/world-graph/schema.ts";
+import type { Database } from 'bun:sqlite';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { runRetention } from '../../src/world-graph/retention.ts';
+import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
-describe("World Graph Retention", () => {
+describe('World Graph Retention', () => {
   let wg: WorldGraph;
 
   beforeEach(() => {
@@ -15,25 +14,25 @@ describe("World Graph Retention", () => {
     wg.close();
   });
 
-  function storeFacts(count: number, options?: { sessionId?: string; age_ms?: number }) {
+  function storeFacts(count: number, options?: { sessionId?: string; ageMs?: number }) {
     const now = Date.now();
     for (let i = 0; i < count; i++) {
       wg.storeFact({
         target: `file-${i}.ts`,
         pattern: `pattern-${i}`,
         evidence: [{ file: `file-${i}.ts`, line: 1, snippet: `x${i}` }],
-        oracle_name: "ast-oracle",
-        file_hash: `hash-${i}`,
-        source_file: `file-${i}.ts`,
-        verified_at: now - (options?.age_ms ?? 0),
-        session_id: options?.sessionId,
+        oracleName: 'ast-oracle',
+        fileHash: `hash-${i}`,
+        sourceFile: `file-${i}.ts`,
+        verifiedAt: now - (options?.ageMs ?? 0),
+        sessionId: options?.sessionId,
         confidence: 1.0,
       });
     }
   }
 
-  test("deletes facts older than maxAgeDays", () => {
-    const DAY_MS = 24 * 60 * 60 * 1000;
+  test('deletes facts older than maxAgeDays', () => {
+    const DayMs = 24 * 60 * 60 * 1000;
 
     // Store old facts (40 days old) with distinct targets
     for (let i = 0; i < 5; i++) {
@@ -41,19 +40,19 @@ describe("World Graph Retention", () => {
         target: `old-${i}.ts`,
         pattern: `old-pattern-${i}`,
         evidence: [{ file: `old-${i}.ts`, line: 1, snippet: `x${i}` }],
-        oracle_name: "ast-oracle",
-        file_hash: `old-hash-${i}`,
-        source_file: `old-${i}.ts`,
-        verified_at: Date.now() - 40 * DAY_MS,
-        session_id: "old-session",
+        oracleName: 'ast-oracle',
+        fileHash: `old-hash-${i}`,
+        sourceFile: `old-${i}.ts`,
+        verifiedAt: Date.now() - 40 * DayMs,
+        sessionId: 'old-session',
         confidence: 1.0,
       });
     }
     // Store recent facts
-    storeFacts(3, { sessionId: "new-session" });
+    storeFacts(3, { sessionId: 'new-session' });
 
     const db = (wg as any).db as Database;
-    const before = db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
+    const before = db.query('SELECT COUNT(*) as cnt FROM facts').get() as { cnt: number };
     expect(before.cnt).toBe(8);
 
     const deleted = runRetention(db, {
@@ -62,29 +61,30 @@ describe("World Graph Retention", () => {
       maxFactCount: 50_000,
     });
 
-    expect(deleted).toBeGreaterThan(0);
+    // Exactly 5 old facts deleted (source counts fact rows, not CASCADE junction rows)
+    expect(deleted).toBe(5);
     // Old facts gone
-    expect(wg.queryFacts("old-0.ts")).toHaveLength(0);
-    expect(wg.queryFacts("old-1.ts")).toHaveLength(0);
+    expect(wg.queryFacts('old-0.ts')).toHaveLength(0);
+    expect(wg.queryFacts('old-1.ts')).toHaveLength(0);
     // New facts remain
-    expect(wg.queryFacts("file-0.ts")).toHaveLength(1);
+    expect(wg.queryFacts('file-0.ts')).toHaveLength(1);
   });
 
-  test("protects facts from recent sessions", () => {
-    const DAY_MS = 24 * 60 * 60 * 1000;
+  test('protects facts from recent sessions', () => {
+    const DayMs = 24 * 60 * 60 * 1000;
 
     // Old facts in a "protected" session
-    storeFacts(3, { age_ms: 40 * DAY_MS, sessionId: "protected-session" });
+    storeFacts(3, { ageMs: 40 * DayMs, sessionId: 'protected-session' });
     // Recent fact in same session to make it "recent"
     wg.storeFact({
-      target: "recent.ts",
-      pattern: "p",
-      evidence: [{ file: "recent.ts", line: 1, snippet: "x" }],
-      oracle_name: "ast-oracle",
-      file_hash: "h",
-      source_file: "recent.ts",
-      verified_at: Date.now(),
-      session_id: "protected-session",
+      target: 'recent.ts',
+      pattern: 'p',
+      evidence: [{ file: 'recent.ts', line: 1, snippet: 'x' }],
+      oracleName: 'ast-oracle',
+      fileHash: 'h',
+      sourceFile: 'recent.ts',
+      verifiedAt: Date.now(),
+      sessionId: 'protected-session',
       confidence: 1.0,
     });
 
@@ -99,11 +99,11 @@ describe("World Graph Retention", () => {
     expect(deleted).toBe(0);
   });
 
-  test("enforces maxFactCount hard cap", () => {
-    storeFacts(15, { sessionId: "s1" });
+  test('enforces maxFactCount hard cap', () => {
+    storeFacts(15, { sessionId: 's1' });
 
     const db = (wg as any).db as Database;
-    const before = db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
+    const before = db.query('SELECT COUNT(*) as cnt FROM facts').get() as { cnt: number };
     expect(before.cnt).toBe(15);
 
     const deleted = runRetention(db, {
@@ -112,14 +112,15 @@ describe("World Graph Retention", () => {
       maxFactCount: 10,
     });
 
-    expect(deleted).toBeGreaterThan(0);
-    const remaining = db.query("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
+    // Exactly 5 excess facts deleted (15 - 10 = 5)
+    expect(deleted).toBe(5);
+    const remaining = db.query('SELECT COUNT(*) as cnt FROM facts').get() as { cnt: number };
     expect(remaining.cnt).toBe(10);
   });
 
-  test("automatic retention via storeFact interval", () => {
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    const smallWg = new WorldGraph(":memory:", {
+  test('automatic retention via storeFact interval', () => {
+    const DayMs = 24 * 60 * 60 * 1000;
+    const smallWg = new WorldGraph(':memory:', {
       retentionInterval: 5, // run every 5 stores
       retention: { maxAgeDays: 1, keepLastSessions: 0, maxFactCount: 50_000 },
     });
@@ -128,37 +129,37 @@ describe("World Graph Retention", () => {
     for (let i = 0; i < 4; i++) {
       smallWg.storeFact({
         target: `old-${i}.ts`,
-        pattern: "p",
-        evidence: [{ file: `old-${i}.ts`, line: 1, snippet: "x" }],
-        oracle_name: "ast-oracle",
-        file_hash: `h-${i}`,
-        source_file: `old-${i}.ts`,
-        verified_at: Date.now() - 2 * DAY_MS,
+        pattern: 'p',
+        evidence: [{ file: `old-${i}.ts`, line: 1, snippet: 'x' }],
+        oracleName: 'ast-oracle',
+        fileHash: `h-${i}`,
+        sourceFile: `old-${i}.ts`,
+        verifiedAt: Date.now() - 2 * DayMs,
         confidence: 1.0,
       });
     }
 
     // 5th store triggers retention
     smallWg.storeFact({
-      target: "new.ts",
-      pattern: "p",
-      evidence: [{ file: "new.ts", line: 1, snippet: "x" }],
-      oracle_name: "ast-oracle",
-      file_hash: "h-new",
-      source_file: "new.ts",
-      verified_at: Date.now(),
+      target: 'new.ts',
+      pattern: 'p',
+      evidence: [{ file: 'new.ts', line: 1, snippet: 'x' }],
+      oracleName: 'ast-oracle',
+      fileHash: 'h-new',
+      sourceFile: 'new.ts',
+      verifiedAt: Date.now(),
       confidence: 1.0,
     });
 
     // Old facts should be gone, new one remains
-    expect(smallWg.queryFacts("old-0.ts")).toHaveLength(0);
-    expect(smallWg.queryFacts("new.ts")).toHaveLength(1);
+    expect(smallWg.queryFacts('old-0.ts')).toHaveLength(0);
+    expect(smallWg.queryFacts('new.ts')).toHaveLength(1);
 
     smallWg.close();
   });
 
-  test("no-op when nothing to delete", () => {
-    storeFacts(3, { sessionId: "s1" });
+  test('no-op when nothing to delete', () => {
+    storeFacts(3, { sessionId: 's1' });
 
     const db = (wg as any).db as Database;
     const deleted = runRetention(db, {

@@ -1,17 +1,14 @@
 /**
  * VinyanDB — shared SQLite database for trace storage and model parameters.
  *
- * Follows world-graph/world-graph.ts pattern: WAL mode, foreign keys, schema exec.
+ * Phase 5: Uses MigrationRunner for versioned schema management.
  * Path: <workspace>/.vinyan/vinyan.db
  */
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
-import { dirname } from "path";
-import { TRACE_SCHEMA_SQL, MODEL_PARAMS_SCHEMA_SQL } from "./trace-schema.ts";
-import { PATTERN_SCHEMA_SQL } from "./pattern-schema.ts";
-import { SHADOW_SCHEMA_SQL } from "./shadow-schema.ts";
-import { SKILL_SCHEMA_SQL } from "./skill-schema.ts";
-import { RULE_SCHEMA_SQL } from "./rule-schema.ts";
+import { Database } from 'bun:sqlite';
+import { mkdirSync } from 'fs';
+import { dirname } from 'path';
+import { ALL_MIGRATIONS, MigrationRunner } from './migrations/index.ts';
+import { migratePipelineConfidenceColumns, migrateThinkingColumns, migrateTranscriptColumns } from './trace-schema.ts';
 
 export class VinyanDB {
   private db: Database;
@@ -21,21 +18,36 @@ export class VinyanDB {
     mkdirSync(dirname(dbPath), { recursive: true });
 
     this.db = new Database(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
-    this.db.exec(TRACE_SCHEMA_SQL);
-    this.db.exec(MODEL_PARAMS_SCHEMA_SQL);
-    this.db.exec(PATTERN_SCHEMA_SQL);
-    this.db.exec(SHADOW_SCHEMA_SQL);
-    this.db.exec(SKILL_SCHEMA_SQL);
-    this.db.exec(RULE_SCHEMA_SQL);
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec('PRAGMA foreign_keys = ON');
+
+    // Apply versioned migrations (TDD §20)
+    const runner = new MigrationRunner();
+    runner.migrate(this.db, ALL_MIGRATIONS);
+
+    // Safe column additions for EHD Phase 3 (idempotent ALTER TABLE)
+    migratePipelineConfidenceColumns(this.db);
+    // Safe column additions for Phase 6 transcript storage (idempotent)
+    migrateTranscriptColumns(this.db);
+    // Safe column additions for Extensible Thinking (idempotent)
+    migrateThinkingColumns(this.db);
   }
 
   getDb(): Database {
     return this.db;
   }
 
+  /** Flush WAL file to prevent unbounded growth in long-running sessions. */
+  checkpoint(): void {
+    try {
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (err) {
+      console.warn('[vinyan] WAL checkpoint failed:', err);
+    }
+  }
+
   close(): void {
+    this.checkpoint();
     this.db.close();
   }
 }

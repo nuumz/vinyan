@@ -1,56 +1,102 @@
-import { describe, test, expect } from "bun:test";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
-import { runOracle } from "../../src/oracle/runner.ts";
-import type { HypothesisTuple } from "../../src/core/types.ts";
+import { describe, expect, test } from 'bun:test';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+import type { HypothesisTuple } from '../../src/core/types.ts';
+import { registerOracle } from '../../src/oracle/registry.ts';
+import { runOracle } from '../../src/oracle/runner.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const fixturesDir = resolve(__dirname, "fixtures");
+const fixturesDir = resolve(__dirname, 'fixtures');
 
 const baseHypothesis: HypothesisTuple = {
-  target: "src/test.ts",
-  pattern: "symbol-exists",
-  workspace: "/tmp/test-workspace",
+  target: 'src/test.ts',
+  pattern: 'symbol-exists',
+  workspace: '/tmp/test-workspace',
 };
 
-describe("OracleRunner", () => {
-  test("echo oracle: stdio protocol round-trip", async () => {
-    const verdict = await runOracle("test-echo", baseHypothesis, {
-      oraclePath: resolve(fixturesDir, "echo-oracle.ts"),
+describe('OracleRunner', () => {
+  test('echo oracle: stdio protocol round-trip', async () => {
+    const verdict = await runOracle('test-echo', baseHypothesis, {
+      oraclePath: resolve(fixturesDir, 'echo-oracle.ts'),
     });
 
     expect(verdict.verified).toBe(true);
     expect(verdict.evidence).toHaveLength(1);
-    expect(verdict.evidence[0]!.file).toBe("src/test.ts");
-    expect(verdict.evidence[0]!.snippet).toBe("echo: symbol-exists");
-    expect(verdict.fileHashes["src/test.ts"]).toBe("test-hash");
-    expect(verdict.duration_ms).toBeGreaterThan(0);
+    expect(verdict.evidence[0]!.file).toBe('src/test.ts');
+    expect(verdict.evidence[0]!.snippet).toBe('echo: symbol-exists');
+    expect(verdict.fileHashes['src/test.ts']).toBe('test-hash');
+    expect(verdict.durationMs).toBeGreaterThan(0);
   });
 
-  test("timeout: kills hanging oracle and returns timeout verdict", async () => {
-    const verdict = await runOracle("test-hang", baseHypothesis, {
-      oraclePath: resolve(fixturesDir, "hang-oracle.ts"),
-      timeout_ms: 500,
+  test('timeout: kills hanging oracle and returns timeout verdict', async () => {
+    const verdict = await runOracle('test-hang', baseHypothesis, {
+      oraclePath: resolve(fixturesDir, 'hang-oracle.ts'),
+      timeoutMs: 500,
     });
 
     expect(verdict.verified).toBe(false);
-    expect(verdict.reason).toContain("timed out");
-    expect(verdict.duration_ms).toBeGreaterThanOrEqual(400);
+    expect(verdict.reason).toContain('timed out');
+    expect(verdict.durationMs).toBeGreaterThanOrEqual(400);
   });
 
-  test("bad output: returns parse error verdict", async () => {
-    const verdict = await runOracle("test-bad", baseHypothesis, {
-      oraclePath: resolve(fixturesDir, "bad-output-oracle.ts"),
+  test('bad output: returns parse error verdict', async () => {
+    const verdict = await runOracle('test-bad', baseHypothesis, {
+      oraclePath: resolve(fixturesDir, 'bad-output-oracle.ts'),
     });
 
     expect(verdict.verified).toBe(false);
-    expect(verdict.reason).toContain("Failed to parse oracle output");
+    expect(verdict.reason).toContain('Failed to parse oracle output');
   });
 
-  test("unknown oracle: returns error verdict", async () => {
-    const verdict = await runOracle("nonexistent-oracle", baseHypothesis);
+  test('unknown oracle: returns error verdict', async () => {
+    const verdict = await runOracle('nonexistent-oracle', baseHypothesis);
 
     expect(verdict.verified).toBe(false);
-    expect(verdict.reason).toContain("Unknown oracle");
+    expect(verdict.reason).toContain('Unknown oracle');
+  });
+
+  test('I17: emits guardrail:violation for speculative oracle at routing level < 2', async () => {
+    registerOracle('test-speculative', {
+      command: `bun run ${resolve(fixturesDir, 'echo-oracle.ts')}`,
+      tier: 'speculative',
+    });
+
+    const violations: unknown[] = [];
+    const mockBus = {
+      emit(event: string, payload: unknown) {
+        if (event === 'guardrail:violation') violations.push(payload);
+      },
+    };
+
+    await runOracle('test-speculative', baseHypothesis, {
+      routingLevel: 1,
+      bus: mockBus,
+    });
+
+    expect(violations).toHaveLength(1);
+    const v = violations[0] as { rule: string; severity: string };
+    expect(v.rule).toBe('I17');
+    expect(v.severity).toBe('error');
+  });
+
+  test('I17: no violation emitted for speculative oracle at routing level >= 2', async () => {
+    registerOracle('test-speculative-l2', {
+      command: `bun run ${resolve(fixturesDir, 'echo-oracle.ts')}`,
+      tier: 'speculative',
+    });
+
+    const violations: unknown[] = [];
+    const mockBus = {
+      emit(event: string, payload: unknown) {
+        if (event === 'guardrail:violation') violations.push(payload);
+      },
+    };
+
+    await runOracle('test-speculative-l2', baseHypothesis, {
+      routingLevel: 2,
+      bus: mockBus,
+    });
+
+    expect(violations).toHaveLength(0);
   });
 });

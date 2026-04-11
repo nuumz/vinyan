@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS facts (
   source_file TEXT NOT NULL,
   verified_at INTEGER NOT NULL,
   session_id  TEXT,
-  confidence  REAL DEFAULT 1.0
+  confidence  REAL DEFAULT 1.0,
+  valid_until  INTEGER,
+  decay_model  TEXT DEFAULT 'none'
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_target ON facts(target);
@@ -46,6 +48,39 @@ AFTER UPDATE OF current_hash ON file_hashes
 BEGIN
   DELETE FROM facts WHERE id IN (
     SELECT fact_id FROM fact_evidence_files WHERE file_path = NEW.path
-  ) AND source_file != NEW.path AND file_hash != NEW.current_hash;
+  ) AND source_file != NEW.path;
 END;
+
+CREATE TABLE IF NOT EXISTS falsifiable_conditions (
+  fact_id        TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+  scope          TEXT NOT NULL,
+  target         TEXT NOT NULL,
+  event          TEXT NOT NULL,
+  raw_condition  TEXT NOT NULL,
+  PRIMARY KEY (fact_id, raw_condition)
+);
+CREATE INDEX IF NOT EXISTS idx_fc_scope_target ON falsifiable_conditions(scope, target);
+
+CREATE TABLE IF NOT EXISTS dependency_edges (
+  from_file TEXT NOT NULL,
+  to_file TEXT NOT NULL,
+  edge_type TEXT NOT NULL DEFAULT 'imports',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (from_file, to_file, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_dep_edges_to ON dependency_edges(to_file);
+
+CREATE TABLE IF NOT EXISTS causal_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_file TEXT NOT NULL,
+  target_file TEXT NOT NULL,
+  oracle_name TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  observed_at INTEGER NOT NULL,
+  observation_count INTEGER DEFAULT 1,
+  last_observed_at INTEGER NOT NULL,
+  UNIQUE(source_file, target_file, oracle_name)
+);
+CREATE INDEX IF NOT EXISTS idx_causal_source ON causal_edges(source_file);
+CREATE INDEX IF NOT EXISTS idx_causal_target ON causal_edges(target_file);
 `;

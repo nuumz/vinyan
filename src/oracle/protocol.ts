@@ -1,4 +1,8 @@
-import { z } from "zod/v4";
+import { z } from 'zod/v4';
+import { SubjectiveOpinionSchema as _SOS } from '../core/subjective-opinion.ts';
+
+// Re-export SubjectiveOpinionSchema for protocol consumers
+export { SubjectiveOpinionSchema } from '../core/subjective-opinion.ts';
 
 /** Zod schema for validating oracle input (HypothesisTuple). */
 export const HypothesisTupleSchema = z.object({
@@ -23,17 +27,18 @@ export const QualityScoreSchema = z.object({
   simplificationGain: z.number().optional(),
   testMutationScore: z.number().optional(),
   composite: z.number(),
-  dimensions_available: z.number().default(2),
-  phase: z.enum(["phase0", "phase1", "phase2"]).default("phase0"),
+  dimensionsAvailable: z.number().default(2),
+  phase: z.enum(['phase0', 'phase1', 'phase2']).default('phase0'),
 });
 
 /** Oracle error codes for programmatic handling. */
 export const OracleErrorCodeSchema = z.enum([
-  "TIMEOUT",
-  "PARSE_ERROR",
-  "TYPE_MISMATCH",
-  "SYMBOL_NOT_FOUND",
-  "ORACLE_CRASH",
+  'TIMEOUT',
+  'PARSE_ERROR',
+  'TYPE_MISMATCH',
+  'SYMBOL_NOT_FOUND',
+  'ORACLE_CRASH',
+  'GUARDRAIL_BLOCKED',
 ]);
 
 /** Zod schema for validating oracle output (OracleVerdict). */
@@ -45,24 +50,32 @@ const DeliberationRequestSchema = z.object({
 
 /** Temporal context schema — Phase 1+ ECP extension. */
 const TemporalContextSchema = z.object({
-  valid_from: z.number(),
-  valid_until: z.number(),
-  decay_model: z.enum(["linear", "step", "none"]),
+  validFrom: z.number(),
+  validUntil: z.number(),
+  decayModel: z.enum(['linear', 'step', 'none', 'exponential']),
+  halfLife: z.number().optional(),
 });
 
 /** Zod schema for validating oracle output (OracleVerdict). */
 export const OracleVerdictSchema = z.object({
   verified: z.boolean(),
-  type: z.enum(["known", "unknown", "uncertain", "contradictory"]).default("known"),
-  confidence: z.number().min(0).max(1).default(1.0),
+  type: z.enum(['known', 'unknown', 'uncertain', 'contradictory']).default('known'),
+  confidence: z.number().min(0).max(1).default(0.5),
   evidence: z.array(EvidenceSchema),
-  falsifiable_by: z.array(z.string()).optional(),
+  falsifiableBy: z.array(z.string()).optional(),
   fileHashes: z.record(z.string(), z.string()),
   reason: z.string().optional(),
   errorCode: OracleErrorCodeSchema.optional(),
   oracleName: z.string().optional(),
-  duration_ms: z.number(),
+  durationMs: z.number(),
   qualityScore: QualityScoreSchema.optional(),
-  deliberation_request: DeliberationRequestSchema.optional(),
-  temporal_context: TemporalContextSchema.optional(),
+  deliberationRequest: DeliberationRequestSchema.optional(),
+  temporalContext: TemporalContextSchema.optional(),
+
+  // ── ECP v2 additions (all optional for backward compat) ──
+  opinion: _SOS.optional(),
+  tierReliability: z.number().min(0).max(1).optional(),
+  engineCertainty: z.number().min(0).max(1).optional(),
+  confidenceSource: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),
+  confidenceReported: z.boolean().optional(),
 });

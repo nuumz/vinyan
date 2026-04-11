@@ -1,0 +1,12 @@
+{
+  "name": "@vinyan/ecp-conformance",
+  "version": "0.1.0",
+  "description": "ECP conformance test suite — validates oracle implementations against the ECP specification",
+  "type": "module",
+  "main": "src/index.ts",
+  "license": "Apache-2.0",
+  "private": true,
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

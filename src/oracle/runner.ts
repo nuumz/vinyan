@@ -1,111 +1,191 @@
-import type { HypothesisTuple, OracleVerdict } from "../core/types.ts";
-import { buildVerdict } from "../core/index.ts";
-import { OracleVerdictSchema } from "./protocol.ts";
-import { getOraclePath } from "./registry.ts";
+import { HttpTransport } from '../a2a/http-transport.ts';
+import { StdioTransport } from '../a2a/stdio-transport.ts';
+import type { ECPTransport } from '../a2a/transport.ts';
+import { WebSocketTransport } from '../a2a/websocket-transport.ts';
+import { normalizeECPMessage, validateECPVerdict } from '../a2a/ecp-validation.ts';
+import { buildVerdict } from '../core/index.ts';
+import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
+import { getOracleEntry, getOraclePath, type OracleRegistryEntry } from './registry.ts';
+import { clampFull, type PeerTrustLevel } from './tier-clamp.ts';
 
 export interface RunOracleOptions {
-  timeout_ms?: number;
+  timeoutMs?: number;
   /** Override oracle path (for testing or custom oracles). */
   oraclePath?: string;
+  /** Override command (for polyglot oracles — PH5.10). */
+  command?: string;
+  /** Optional transport override — defaults to StdioTransport. */
+  transport?: ECPTransport;
+  /** Peer trust level — only applies when transport is A2A. */
+  peerTrust?: PeerTrustLevel;
+  /** Endpoint URL (for websocket or http transport). */
+  endpoint?: string;
+  /** Auth token for websocket or http transport. */
+  authToken?: string;
+  /** Current routing level — used for Safety Invariant I17 enforcement. */
+  routingLevel?: number;
+  /** Optional bus for emitting safety guardrail events (I17). */
+  bus?: { emit(event: string, payload: unknown): void };
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * Run an oracle as a child process.
- * Writes HypothesisTuple as JSON to stdin, reads OracleVerdict from stdout.
- * Enforces timeout — kills process and returns verified=false on timeout.
+ * Run an oracle via the configured transport.
+ * Default: StdioTransport (child process, stdin/stdout JSON).
+ * Phase B2+: A2ATransport (HTTP to remote peer).
  */
 export async function runOracle(
   oracleName: string,
   hypothesis: HypothesisTuple,
   options: RunOracleOptions = {},
 ): Promise<OracleVerdict> {
+  const entry = getOracleEntry(oracleName);
+  const customCommand = options.command ?? entry?.command;
   const oraclePath = options.oraclePath ?? getOraclePath(oracleName);
-  if (!oraclePath) {
+  const timeoutMs = options.timeoutMs ?? entry?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // Safety Invariant I17: speculative-tier oracles require L2+ routing isolation (PH5.8).
+  // Full enforcement: REJECT (not just warn) when routing level < 2.
+  if (entry?.tier === 'speculative' && (options.routingLevel ?? 0) < 2) {
+    options.bus?.emit('guardrail:violation', {
+      rule: 'I17',
+      detail: `Speculative oracle '${oracleName}' rejected at routing level ${options.routingLevel ?? 0} — requires L2+`,
+      severity: 'error',
+    });
     return buildVerdict({
       verified: false,
-      type: "unknown",
+      type: 'unknown',
+      confidence: 0,
+      evidence: [],
+      fileHashes: {},
+      reason: `I17 violation: speculative oracle '${oracleName}' requires routing level L2+ (current: L${options.routingLevel ?? 0})`,
+      errorCode: 'GUARDRAIL_BLOCKED',
+      durationMs: 0,
+    });
+  }
+
+  // Resolve transport: explicit > websocket (from registry) > http > stdio
+  const transport = options.transport ?? resolveTransport(oracleName, entry, customCommand, oraclePath, options);
+  if (!transport) {
+    return buildVerdict({
+      verified: false,
+      type: 'unknown',
       confidence: 0,
       evidence: [],
       fileHashes: {},
       reason: `Unknown oracle: ${oracleName}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms: 0,
+      errorCode: 'ORACLE_CRASH',
+      durationMs: 0,
     });
   }
 
-  const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-  const startTime = performance.now();
+  const verdict = await transport.verify(hypothesis, timeoutMs);
 
-  const proc = Bun.spawn(["bun", "run", oraclePath], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  // Write hypothesis to stdin
-  const input = JSON.stringify(hypothesis) + "\n";
-  proc.stdin.write(input);
-  proc.stdin.end();
-
-  // Race between process completion and timeout
-  const timeoutPromise = new Promise<"timeout">((resolve) => {
-    setTimeout(() => resolve("timeout"), timeoutMs);
-  });
-
-  const processPromise = (async () => {
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    return { stdout, exitCode };
-  })();
-
-  const result = await Promise.race([processPromise, timeoutPromise]);
-
-  if (result === "timeout") {
-    proc.kill();
-    return buildVerdict({
-      verified: false,
-      type: "unknown",
-      confidence: 0,
-      evidence: [],
-      fileHashes: {},
-      reason: `Oracle '${oracleName}' timed out after ${timeoutMs}ms`,
-      errorCode: "TIMEOUT",
-      duration_ms: timeoutMs,
+  // K1.4: Validate ECP verdict envelope — backward compat (warn, don't throw)
+  const normalizedVerdict = normalizeECPMessage(verdict as unknown as Record<string, unknown>);
+  const ecpValidation = validateECPVerdict(normalizedVerdict);
+  if (!ecpValidation.valid) {
+    options.bus?.emit('observability:alert', {
+      detector: 'ecp-validation',
+      severity: 'warning',
+      message: `Invalid ECP verdict from ${oracleName}: ${ecpValidation.error}`,
+      metadata: { oracleName },
     });
   }
 
-  const duration_ms = Math.round(performance.now() - startTime);
+  // ECP §4.4 (A5): Clamp confidence by tier + transport + peer trust
+  const transportType = entry?.transport ?? transport.transportType;
+  const clampedConfidence = clampFull(verdict.confidence, entry?.tier, transportType, options.peerTrust);
 
-  if (result.exitCode !== 0) {
-    return buildVerdict({
-      verified: false,
-      type: "unknown",
-      confidence: 0,
-      evidence: [],
-      fileHashes: {},
-      reason: `Oracle '${oracleName}' exited with code ${result.exitCode}`,
-      errorCode: "ORACLE_CRASH",
-      duration_ms,
-    });
+  // A2: Distinguish genuine epistemic uncertainty from errors.
+  if (!verdict.verified && clampedConfidence > 0 && clampedConfidence < 0.5 && verdict.type === 'unknown') {
+    return enrichVerdictWithRegistryData(
+      {
+        ...verdict,
+        type: 'uncertain' as const,
+        confidence: clampedConfidence,
+        oracleName,
+        durationMs: verdict.durationMs,
+      },
+      entry,
+    );
   }
 
-  // Parse and validate the oracle's output
-  try {
-    const raw = JSON.parse(result.stdout.trim());
-    const verdict = OracleVerdictSchema.parse(raw);
-    return { ...verdict, oracleName, duration_ms };
-  } catch (err) {
-    return buildVerdict({
-      verified: false,
-      type: "unknown",
-      confidence: 0,
-      evidence: [],
-      fileHashes: {},
-      reason: `Failed to parse oracle output: ${err instanceof Error ? err.message : String(err)}`,
-      errorCode: "PARSE_ERROR",
-      duration_ms,
-    });
+  return enrichVerdictWithRegistryData(
+    { ...verdict, confidence: clampedConfidence, oracleName, durationMs: verdict.durationMs },
+    entry,
+  );
+}
+
+// ── ECP v2: Enrich verdict with registry metadata ──────────────────
+
+/** Tier → reliability mapping. Deterministic oracles are most reliable. */
+const TIER_RELIABILITY: Record<string, number> = {
+  deterministic: 0.95,
+  heuristic: 0.70,
+  probabilistic: 0.50,
+  speculative: 0.30,
+};
+
+/**
+ * ECP v2: Enrich an OracleVerdict with metadata from the oracle registry entry.
+ * Sets tierReliability, confidenceSource, confidenceReported.
+ */
+export function enrichVerdictWithRegistryData(
+  verdict: OracleVerdict,
+  registryEntry?: OracleRegistryEntry,
+): OracleVerdict {
+  if (!registryEntry) return verdict;
+
+  const tierReliability = TIER_RELIABILITY[registryEntry.tier ?? 'deterministic'] ?? 0.95;
+  const confidenceSource: OracleVerdict['confidenceSource'] =
+    registryEntry.tier === 'deterministic' ? 'evidence-derived' : 'evidence-derived';
+
+  return {
+    ...verdict,
+    tierReliability: verdict.tierReliability ?? tierReliability,
+    confidenceSource: verdict.confidenceSource ?? confidenceSource,
+    confidenceReported: verdict.confidenceReported ?? true,
+  };
+}
+
+/** Persistent WebSocket transport cache — reuse connections across invocations. */
+const wsTransportCache = new Map<string, WebSocketTransport>();
+
+function resolveTransport(
+  oracleName: string,
+  entry: { transport?: string; command?: string } | undefined,
+  customCommand: string | undefined,
+  oraclePath: string | undefined,
+  options: RunOracleOptions,
+): ECPTransport | null {
+  const transportType = entry?.transport;
+
+  // WebSocket transport — persistent connection via cache
+  if (transportType === 'websocket') {
+    const endpoint = options.endpoint ?? (entry as { endpoint?: string })?.endpoint;
+    if (!endpoint) return null;
+
+    const cacheKey = `${oracleName}:${endpoint}`;
+    let ws = wsTransportCache.get(cacheKey);
+    if (!ws || !ws.isConnected) {
+      ws = new WebSocketTransport({ endpoint, oracleName, authToken: options.authToken });
+      ws.connect();
+      wsTransportCache.set(cacheKey, ws);
+    }
+    return ws;
   }
+
+  // HTTP transport — stateless POST to remote oracle endpoint (PH5.18)
+  if (transportType === 'http') {
+    const endpoint = options.endpoint ?? (entry as { endpoint?: string })?.endpoint;
+    if (!endpoint) return null;
+    return new HttpTransport({ endpoint, authToken: options.authToken });
+  }
+
+  // Default: stdio transport
+  if (!customCommand && !oraclePath) return null;
+  const spawnArgs = customCommand ? customCommand.split(/\s+/) : ['bun', 'run', oraclePath!];
+  return new StdioTransport({ spawnArgs, oracleName });
 }

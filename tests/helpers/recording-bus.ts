@@ -1,7 +1,7 @@
 /**
  * Test helper — records bus events for assertions.
  */
-import type { VinyanBus, BusEventName } from "../../src/core/bus.ts";
+import type { BusEventName, VinyanBus } from '../../src/core/bus.ts';
 
 export interface RecordedEvent {
   event: string;

@@ -5,9 +5,9 @@
  * Returns McCabe number (starts at 1 for the function body).
  *
  * Used by QualityScore to compute simplificationGain = 1 - (after/before).
- * Source of truth: vinyan-tdd.md §10 D10
+ * Source of truth: spec/tdd.md §10 D10
  */
-import ts from "typescript";
+import ts from 'typescript';
 
 /**
  * Compute McCabe cyclomatic complexity of TypeScript/JavaScript source.
@@ -18,7 +18,7 @@ export function computeCyclomaticComplexity(source: string): number {
 
   let sourceFile: ts.SourceFile;
   try {
-    sourceFile = ts.createSourceFile("input.ts", source, ts.ScriptTarget.Latest, true);
+    sourceFile = ts.createSourceFile('input.ts', source, ts.ScriptTarget.Latest, true);
   } catch {
     return 1;
   }
@@ -30,7 +30,7 @@ export function computeCyclomaticComplexity(source: string): number {
       // Branching
       case ts.SyntaxKind.IfStatement:
       case ts.SyntaxKind.ConditionalExpression: // ternary ?:
-      case ts.SyntaxKind.CaseClause:            // switch case
+      case ts.SyntaxKind.CaseClause: // switch case
       case ts.SyntaxKind.CatchClause:
       // Loops
       case ts.SyntaxKind.ForStatement:

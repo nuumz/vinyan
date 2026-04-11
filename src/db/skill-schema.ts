@@ -4,7 +4,7 @@
  * Skills are formed from Sleep Cycle success patterns. Lifecycle: probation → active → demoted.
  * Risk-tiered verification: hash-only / structural / full.
  *
- * Source of truth: vinyan-tdd.md §12B (Skill Formation), Phase 2.5
+ * Source of truth: spec/tdd.md §12B (Skill Formation), Phase 2.5
  */
 
 export const SKILL_SCHEMA_SQL = `
@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS cached_skills (
   risk_at_creation     REAL NOT NULL,
   dep_cone_hashes      TEXT NOT NULL,
   last_verified_at     INTEGER NOT NULL,
-  verification_profile TEXT NOT NULL CHECK(verification_profile IN ('hash-only', 'structural', 'full'))
+  verification_profile TEXT NOT NULL CHECK(verification_profile IN ('hash-only', 'structural', 'full')),
+  origin               TEXT CHECK(origin IN ('local', 'a2a', 'mcp')) DEFAULT 'local',
+  composed_of          TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_skills_status ON cached_skills(status);

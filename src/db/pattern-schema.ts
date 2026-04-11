@@ -1,24 +1,27 @@
 /**
  * Pattern Store Schema — SQLite tables for Sleep Cycle extracted patterns.
  *
- * Source of truth: vinyan-tdd.md §12B (Sleep Cycle)
+ * Source of truth: spec/tdd.md §12B (Sleep Cycle)
  */
 
 export const PATTERN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS extracted_patterns (
   id                  TEXT PRIMARY KEY,
-  type                TEXT NOT NULL CHECK(type IN ('anti-pattern', 'success-pattern')),
+  type                TEXT NOT NULL CHECK(type IN ('anti-pattern', 'success-pattern', 'worker-performance')),
   description         TEXT NOT NULL,
   frequency           INTEGER NOT NULL,
   confidence          REAL NOT NULL,
-  task_type_signature TEXT NOT NULL,
+  task_type_signature    TEXT NOT NULL,
   approach            TEXT,
   compared_approach   TEXT,
   quality_delta       REAL,
   source_trace_ids    TEXT NOT NULL,
   created_at          INTEGER NOT NULL,
   expires_at          INTEGER,
-  decay_weight        REAL NOT NULL DEFAULT 1.0
+  decay_weight        REAL NOT NULL DEFAULT 1.0,
+  derived_from        TEXT,
+  worker_id           TEXT,
+  compared_worker_id  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_patterns_type ON extracted_patterns(type);

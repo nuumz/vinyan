@@ -328,6 +328,88 @@ export function renderAgentPolicies(): string {
   ].join('\n\n');
 }
 
+// ── Subagent role policies (Phase 7c-1) ─────────────────────────────
+//
+// When the parent agent spawns a child via `delegate_task` with a
+// `subagentType`, the child needs a role-specific preamble at the top of its
+// system prompt that (a) names the role for the LLM, (b) narrows the tools
+// the child is allowed to call, and (c) sets expectations for what "done"
+// looks like in that role. These renderers produce that preamble.
+//
+// The three canonical types mirror Claude Code's Agent tool taxonomy:
+//   - explore        — read-only, fast scans of the codebase
+//   - plan           — read-only, designs an implementation plan
+//   - general-purpose — default, full agent with scope-bound write access
+//
+// Callers MUST treat any unknown subagent type as 'general-purpose' so the
+// feature degrades gracefully.
+
+export type SubagentType = 'explore' | 'plan' | 'general-purpose';
+
+/** Parse a raw string into a known SubagentType, defaulting to general-purpose. */
+export function normalizeSubagentType(raw: string | null | undefined): SubagentType {
+  if (raw === 'explore' || raw === 'plan' || raw === 'general-purpose') return raw;
+  // Accept common aliases — LLMs occasionally emit 'general' without the suffix.
+  if (raw === 'general') return 'general-purpose';
+  return 'general-purpose';
+}
+
+/**
+ * Render the role preamble for a given subagent type. Returned string is
+ * designed to be prepended to `buildSystemPrompt` output as a `## ROLE` header
+ * that overrides the default "autonomous agent at L{n}" framing with a more
+ * specific mission.
+ */
+export function renderSubagentRolePolicy(type: SubagentType): string {
+  switch (type) {
+    case 'explore':
+      return [
+        '## Subagent Role: Explore',
+        'You are an EXPLORE subagent spawned by a parent agent to investigate the',
+        'codebase and report findings. Your job is to gather facts — file paths,',
+        'symbol definitions, call graphs, search results — so the parent can make',
+        'an informed decision. You are READ-ONLY.',
+        '- DO use read / search / list tools (Glob, Grep, file_read, list_directory).',
+        '- DO batch independent searches into a single turn for efficiency.',
+        '- DO NOT call file_write, file_edit, shell_exec, or any mutation tool.',
+        '  If you think a mutation is needed, report the recommendation to the parent',
+        '  via attempt_completion — do NOT attempt the mutation yourself.',
+        '- DO NOT run tests, builds, or long-running shell commands.',
+        '- DO NOT delegate further — explore subagents have delegationDepth=0 leaves.',
+        'Return a concise factual report in attempt_completion.proposedContent using',
+        '`file_path:line_number` citations. Lead with findings, not narration.',
+      ].join('\n');
+
+    case 'plan':
+      return [
+        '## Subagent Role: Plan',
+        'You are a PLAN subagent spawned by a parent agent to design an implementation',
+        'strategy. Your job is to produce a step-by-step plan, identify the critical',
+        'files to change, and weigh architectural trade-offs. You are READ-ONLY.',
+        '- DO read target files, search for patterns, inspect dependency relationships.',
+        '- DO think through edge cases and enumerate the concrete change list.',
+        '- DO NOT call any mutation tool. You produce a plan, not an implementation.',
+        '- DO NOT run tests or builds — the parent will validate after applying the plan.',
+        '- DO NOT delegate further — plan subagents are leaves.',
+        'Return the plan in attempt_completion.proposedContent as an ordered list:',
+        '  1. Step (file:line) — what to change and why',
+        '  2. ...',
+        'Call out critical ordering constraints, blast radius, and risks explicitly.',
+      ].join('\n');
+
+    case 'general-purpose':
+      return [
+        '## Subagent Role: General-Purpose',
+        'You are a GENERAL-PURPOSE subagent spawned by a parent agent to carry out a',
+        'bounded sub-task. You have access to the same tool manifest as the parent,',
+        'scoped to the target files the parent delegated. Follow the full agent',
+        'protocol — read before writing, verify after changing, report concisely.',
+        'Remember: you are a leaf. Do NOT re-delegate unless the parent explicitly',
+        'authorized a deeper delegation depth.',
+      ].join('\n');
+  }
+}
+
 /** Format an ISO-8601 timestamp as human-readable local text. */
 function formatDateIsoHuman(iso: string): string {
   const d = new Date(iso);

@@ -36,7 +36,15 @@ export interface ToolContext {
   allowedPaths: string[];
   workspace: string;
   overlayDir?: string;
-  onDelegate?: (req: { goal: string; targetFiles: string[]; requiredTools?: string[]; context?: string; requestedTokens?: number }) => Promise<ToolResult>;
+  onDelegate?: (req: {
+    goal: string;
+    targetFiles: string[];
+    requiredTools?: string[];
+    context?: string;
+    requestedTokens?: number;
+    /** Phase 7c-1: typed subagent (explore/plan/general-purpose). */
+    subagentType?: 'explore' | 'plan' | 'general-purpose';
+  }) => Promise<ToolResult>;
 }
 
 export interface ToolValidationResult {

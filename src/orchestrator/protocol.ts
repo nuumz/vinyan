@@ -343,6 +343,18 @@ const AgentSessionSummarySchema = z.object({
   suggestedNextStep: z.string().optional(),
 });
 
+/**
+ * Subagent type taxonomy (Phase 7c-1). Mirrors Claude Code's Agent tool
+ * subagent_type parameter. Unknown values MUST degrade to 'general-purpose'
+ * downstream — see `normalizeSubagentType` in shared-prompt-sections.ts.
+ *
+ * Declared ahead of OrchestratorTurnSchema because the `init` variant references
+ * it — z.discriminatedUnion evaluates its argument eagerly, so any forward
+ * reference becomes a runtime "cannot access before initialization" error.
+ */
+export const SubagentTypeSchema = z.enum(['explore', 'plan', 'general-purpose']);
+export type SubagentTypeProto = z.infer<typeof SubagentTypeSchema>;
+
 /** Orchestrator → Worker turns (ndjson) */
 export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
   z.object({
@@ -370,6 +382,8 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     instructions: InstructionMemorySchema.optional(),
     /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the agent worker. */
     environment: EnvironmentInfoSchema.optional(),
+    /** Phase 7c-1: typed subagent role when this worker was spawned via delegate_task. */
+    subagentType: SubagentTypeSchema.optional(),
     conversationHistory: z
       .array(
         z.object({
@@ -430,5 +444,11 @@ export const DelegationRequestSchema = z.object({
   requiredTools: z.array(z.string()).optional(),
   context: z.string().optional(),
   requestedTokens: z.number().optional(),
+  /**
+   * Phase 7c-1: typed subagents. Lets the parent narrow the child's tool
+   * manifest and role framing. Optional for backwards compatibility —
+   * omitted → treated as 'general-purpose'.
+   */
+  subagentType: SubagentTypeSchema.optional(),
 });
 export type DelegationRequest = z.infer<typeof DelegationRequestSchema>;

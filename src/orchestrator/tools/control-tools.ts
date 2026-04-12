@@ -2,8 +2,8 @@
  * Control tools (Phase 6) — attempt_completion, request_budget_extension, delegate_task.
  */
 
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeResult } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const attemptCompletion: Tool = {
   name: 'attempt_completion',
@@ -46,7 +46,11 @@ export const attemptCompletion: Tool = {
   async execute(params) {
     // Control tool — the agent loop intercepts this before execution
     return makeResult((params.callId as string) ?? '', 'attempt_completion', {
-      output: JSON.stringify({ status: params.status, summary: params.summary, proposedContent: params.proposedContent }),
+      output: JSON.stringify({
+        status: params.status,
+        summary: params.summary,
+        proposedContent: params.proposedContent,
+      }),
     });
   },
 };
@@ -92,7 +96,11 @@ export const requestBudgetExtension: Tool = {
 export const delegateTask: Tool = {
   name: 'delegate_task',
   description:
-    'Delegate a sub-task to a child worker. The child runs through the full pipeline with bounded scope.',
+    'Delegate a sub-task to a typed subagent. Use `subagentType` to pick the right role: ' +
+    "'explore' for read-only codebase investigation, 'plan' for read-only implementation planning, " +
+    "or 'general-purpose' for a bounded write-capable child task. Omitting subagentType defaults to " +
+    "'general-purpose'. Explore and plan subagents are READ-ONLY and cannot mutate files or run " +
+    'destructive commands — use them to survey or design before you delegate the actual change.',
   minIsolationLevel: 1,
   category: 'delegation',
   sideEffect: true,
@@ -104,8 +112,20 @@ export const delegateTask: Tool = {
         type: 'object',
         properties: {
           goal: { type: 'string', description: 'Natural language description of the sub-task' },
-          targetFiles: { type: 'array', description: 'Files the sub-task is scoped to' },
-          requiredTools: { type: 'array', description: 'Tools the sub-task needs (optional)' },
+          subagentType: {
+            type: 'string',
+            description:
+              "Subagent role. 'explore' = read-only codebase survey, 'plan' = read-only " +
+              "implementation plan, 'general-purpose' = full write-capable bounded child. " +
+              "Defaults to 'general-purpose' if omitted.",
+            enum: ['explore', 'plan', 'general-purpose'],
+          },
+          targetFiles: { type: 'array', description: 'Files the sub-task is scoped to', items: { type: 'string' } },
+          requiredTools: {
+            type: 'array',
+            description: 'Tools the sub-task needs (optional)',
+            items: { type: 'string' },
+          },
           context: { type: 'string', description: 'Additional context for the sub-task (optional)' },
           requestedTokens: { type: 'number', description: 'Token budget for the sub-task (optional)' },
         },

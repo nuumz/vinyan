@@ -418,6 +418,40 @@ describe('agent-worker-entry', () => {
       expect(prompt).not.toContain('[PROJECT INSTRUCTIONS]');
     });
 
+    test('buildSystemPrompt includes subagent role preamble for explore type', () => {
+      const prompt = buildSystemPrompt(2, 'reasoning', { subagentType: 'explore' });
+      expect(prompt).toContain('## Subagent Role: Explore');
+      expect(prompt).toContain('READ-ONLY');
+      // Role preamble must sit in the prelude — before the L{n} framing line
+      expect(prompt.indexOf('## Subagent Role: Explore')).toBeLessThan(prompt.indexOf('L2'));
+    });
+
+    test('buildSystemPrompt includes subagent role preamble for plan type', () => {
+      const prompt = buildSystemPrompt(2, 'reasoning', { subagentType: 'plan' });
+      expect(prompt).toContain('## Subagent Role: Plan');
+      expect(prompt).toContain('step-by-step plan');
+    });
+
+    test('buildSystemPrompt includes subagent role preamble for general-purpose type', () => {
+      const prompt = buildSystemPrompt(2, 'code', { subagentType: 'general-purpose' });
+      expect(prompt).toContain('## Subagent Role: General-Purpose');
+      expect(prompt).toContain('same tool manifest');
+    });
+
+    test('buildSystemPrompt normalizes unknown subagentType to general-purpose', () => {
+      // String type is allowed by BuildSystemPromptOptions for forward-compat;
+      // anything non-canonical must fall back to general-purpose.
+      const prompt = buildSystemPrompt(2, 'code', { subagentType: 'mystery-role' as unknown as 'general-purpose' });
+      expect(prompt).toContain('## Subagent Role: General-Purpose');
+      expect(prompt).not.toContain('## Subagent Role: Explore');
+      expect(prompt).not.toContain('## Subagent Role: Plan');
+    });
+
+    test('buildSystemPrompt omits subagent preamble when not a subagent', () => {
+      const prompt = buildSystemPrompt(2);
+      expect(prompt).not.toContain('## Subagent Role:');
+    });
+
     test('buildInitUserMessage formats task and perception', () => {
       const msg = buildInitUserMessage('Write tests', { files: ['a.ts'] });
       expect(msg).toContain('## Goal');

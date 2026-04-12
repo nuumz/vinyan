@@ -542,6 +542,9 @@ export async function runAgentLoop(
       ...(conversationHistory?.length ? { conversationHistory } : {}),
       ...(instructions ? { instructions } : {}),
       environment,
+      // Phase 7c-1: forward typed subagent role so the child worker can
+      // render its role preamble. Omitted for root tasks (undefined).
+      ...(input.subagentType ? { subagentType: input.subagentType } : {}),
     };
     await session.send(initTurn);
 

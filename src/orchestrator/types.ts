@@ -328,6 +328,14 @@ export interface TaskInput {
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   /** Conversation session ID — links this task to a multi-turn chat session. */
   sessionId?: string;
+  /**
+   * Phase 7c-1: typed subagent role. Populated when this task was spawned
+   * by a parent via `delegate_task` with an explicit `subagentType`. The
+   * child worker uses it to (a) render a role preamble in its system prompt
+   * and (b) enforce role-specific tool gating in the delegation router.
+   * Absent / root tasks run with the full agent manifest.
+   */
+  subagentType?: 'explore' | 'plan' | 'general-purpose';
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout

@@ -12,9 +12,12 @@ import type { InstructionMemory } from '../llm/instruction-hierarchy.ts';
 import { compressPerception } from '../llm/perception-compressor.ts';
 import {
   type EnvironmentInfo,
+  normalizeSubagentType,
   renderAgentPolicies,
   renderEnvironmentSection,
   renderInstructionHierarchy,
+  renderSubagentRolePolicy,
+  type SubagentType,
 } from '../llm/shared-prompt-sections.ts';
 import { REMINDER_PROTOCOL_DESCRIPTION } from '../llm/vinyan-reminder.ts';
 import { OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
@@ -97,11 +100,14 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
   // validated (InstructionMemorySchema / EnvironmentInfoSchema) at parse time.
   const instructions = (init as { instructions?: InstructionMemory }).instructions;
   const environment = (init as { environment?: EnvironmentInfo }).environment;
+  // Phase 7c-1: typed subagent role — populated only when this worker was
+  // spawned by a parent via delegate_task with an explicit subagentType.
+  const subagentType = (init as { subagentType?: SubagentType }).subagentType;
 
   const history: HistoryMessage[] = [
     {
       role: 'system',
-      content: buildSystemPrompt(init.routingLevel, taskType, { instructions, environment }),
+      content: buildSystemPrompt(init.routingLevel, taskType, { instructions, environment, subagentType }),
     },
     {
       role: 'user',
@@ -376,6 +382,12 @@ export interface BuildSystemPromptOptions {
   instructions?: InstructionMemory | null;
   /** Phase 7a: OS / cwd / date / git snapshot gathered in orchestrator. */
   environment?: EnvironmentInfo | null;
+  /**
+   * Phase 7c-1: typed subagent role. When populated the prompt is prepended
+   * with a role preamble that narrows the agent's mission (explore / plan /
+   * general-purpose). Absent → full general-purpose agent framing.
+   */
+  subagentType?: SubagentType | string | null;
 }
 
 export function buildSystemPrompt(
@@ -388,7 +400,11 @@ export function buildSystemPrompt(
   // renderers so agent mode and structured mode produce identical output.
   const envBlock = renderEnvironmentSection(opts.environment);
   const instructionsBlock = renderInstructionHierarchy(opts.instructions);
-  const prelude = [envBlock, instructionsBlock].filter(Boolean).join('\n\n');
+  // Phase 7c-1: subagent role preamble — only emitted when this worker is
+  // running under a typed delegation spawn. Root tasks never supply it and
+  // keep the original "autonomous agent at L{n}" framing.
+  const subagentBlock = opts.subagentType ? renderSubagentRolePolicy(normalizeSubagentType(opts.subagentType)) : null;
+  const prelude = [envBlock, instructionsBlock, subagentBlock].filter(Boolean).join('\n\n');
   const preludeSection = prelude ? `${prelude}\n\n` : '';
 
   const common = `${preludeSection}You are a Vinyan autonomous agent at routing level L${routingLevel}.

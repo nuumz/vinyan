@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { buildSubTaskInput, DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type { AgentBudget, DelegationRequest } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
 import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
-import { DelegationRouter, buildSubTaskInput } from '../../src/orchestrator/delegation-router.ts';
 
 function makeBudget(overrides: Partial<AgentBudget> = {}): AgentBudget {
   return {
@@ -56,9 +56,7 @@ describe('DelegationRouter', () => {
 
   describe('canDelegate', () => {
     it('R1: blocks when delegation depth limit reached', () => {
-      const budget = new AgentBudgetTracker(
-        makeBudget({ delegationDepth: 3, maxDelegationDepth: 3 }),
-      );
+      const budget = new AgentBudgetTracker(makeBudget({ delegationDepth: 3, maxDelegationDepth: 3 }));
       const result = router.canDelegate(makeRequest(), budget, makeParent());
 
       expect(result.allowed).toBe(false);
@@ -67,9 +65,7 @@ describe('DelegationRouter', () => {
     });
 
     it('R1: blocks when no delegation budget remaining', () => {
-      const budget = new AgentBudgetTracker(
-        makeBudget({ delegation: 0 }),
-      );
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 0 }));
       const result = router.canDelegate(makeRequest(), budget, makeParent());
 
       expect(result.allowed).toBe(false);
@@ -156,6 +152,118 @@ describe('DelegationRouter', () => {
       expect(result.allocatedTokens).toBe(8000);
     });
   });
+
+  // ── Phase 7c-1: typed subagent gating ────────────────────────────
+
+  describe('typed subagent roles (Phase 7c-1)', () => {
+    it("R2 exemption: 'explore' subagent allowed to walk outside parent scope", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      // Explore is read-only, so out-of-scope reads are safe.
+      const request = makeRequest({
+        subagentType: 'explore',
+        targetFiles: ['src/completely/unrelated.ts'],
+      });
+      const parent = makeParent({ targetFiles: ['src/foo.ts'] });
+
+      const result = router.canDelegate(request, budget, parent);
+
+      expect(result.allowed).toBe(true);
+    });
+
+    it("R2 exemption: 'plan' subagent allowed to walk outside parent scope", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'plan',
+        targetFiles: ['src/other/module.ts'],
+      });
+      const parent = makeParent({ targetFiles: ['src/foo.ts'] });
+
+      const result = router.canDelegate(request, budget, parent);
+
+      expect(result.allowed).toBe(true);
+    });
+
+    it("R2 still enforced for 'general-purpose' subagent", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'general-purpose',
+        targetFiles: ['src/secret.ts'],
+      });
+      const parent = makeParent({ targetFiles: ['src/foo.ts'] });
+
+      const result = router.canDelegate(request, budget, parent);
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('out of parent scope');
+    });
+
+    it("R7: 'explore' cannot request file_write", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'explore',
+        requiredTools: ['file_read', 'file_write'],
+      });
+
+      const result = router.canDelegate(request, budget, makeParent());
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('read-only');
+      expect(result.reason).toContain('file_write');
+    });
+
+    it("R7: 'plan' cannot request file_edit / file_patch / file_delete", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'plan',
+        requiredTools: ['file_edit'],
+      });
+
+      const result = router.canDelegate(request, budget, makeParent());
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('read-only');
+      expect(result.reason).toContain('file_edit');
+    });
+
+    it("R7: 'explore' cannot re-delegate via delegate_task", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'explore',
+        requiredTools: ['delegate_task'],
+      });
+
+      const result = router.canDelegate(request, budget, makeParent());
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('read-only');
+    });
+
+    it("R7 does NOT block 'general-purpose' from requesting file_write", () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      const request = makeRequest({
+        subagentType: 'general-purpose',
+        requiredTools: ['file_write'],
+      });
+
+      const result = router.canDelegate(request, budget, makeParent());
+
+      expect(result.allowed).toBe(true);
+    });
+
+    it('read-only role scope exemption does not override R6 shell_exec block', () => {
+      const budget = new AgentBudgetTracker(makeBudget({ delegation: 5000 }));
+      // shell_exec is in MUTATION_TOOLS, so it fails R7 before reaching R6 — but
+      // it MUST be blocked one way or another. Assert the request is denied.
+      const request = makeRequest({
+        subagentType: 'explore',
+        requiredTools: ['shell_exec'],
+      });
+
+      const result = router.canDelegate(request, budget, makeParent());
+
+      expect(result.allowed).toBe(false);
+    });
+  });
 });
 
 describe('buildSubTaskInput', () => {
@@ -189,5 +297,50 @@ describe('buildSubTaskInput', () => {
 
     // Child should not have parent's constraints
     expect(result.constraints).toBeUndefined();
+  });
+
+  // Phase 7c-1: subagentType plumbing
+  it("defaults missing subagentType to 'general-purpose'", () => {
+    const request: DelegationRequest = {
+      goal: 'Sub-task',
+      targetFiles: ['src/foo.ts'],
+    };
+    const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+    expect(result.subagentType).toBe('general-purpose');
+  });
+
+  it("propagates explicit 'explore' subagentType and forces reasoning taskType", () => {
+    const request: DelegationRequest = {
+      goal: 'Survey the codebase',
+      targetFiles: ['src/foo.ts'],
+      subagentType: 'explore',
+    };
+    const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+    expect(result.subagentType).toBe('explore');
+    // Read-only roles always run as reasoning so the prompt assembler picks
+    // the reasoning registry path instead of the code/mutation one.
+    expect(result.taskType).toBe('reasoning');
+  });
+
+  it("propagates 'plan' subagentType and forces reasoning taskType", () => {
+    const request: DelegationRequest = {
+      goal: 'Design the migration',
+      targetFiles: ['src/foo.ts'],
+      subagentType: 'plan',
+    };
+    const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+    expect(result.subagentType).toBe('plan');
+    expect(result.taskType).toBe('reasoning');
+  });
+
+  it("'general-purpose' keeps code taskType when targetFiles present", () => {
+    const request: DelegationRequest = {
+      goal: 'Refactor',
+      targetFiles: ['src/foo.ts'],
+      subagentType: 'general-purpose',
+    };
+    const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+    expect(result.subagentType).toBe('general-purpose');
+    expect(result.taskType).toBe('code');
   });
 });

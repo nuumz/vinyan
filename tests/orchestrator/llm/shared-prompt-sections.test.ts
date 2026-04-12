@@ -11,6 +11,7 @@ import type { InstructionMemory, InstructionSource } from '../../../src/orchestr
 import {
   computeEnvironmentInfo,
   type EnvironmentInfo,
+  normalizeSubagentType,
   renderAgentPolicies,
   renderCitationsTonePolicy,
   renderEnvironmentSection,
@@ -18,6 +19,7 @@ import {
   renderGitSafetyPolicy,
   renderInstructionHierarchy,
   renderParallelToolsPolicy,
+  renderSubagentRolePolicy,
   renderToolResultSafetyPolicy,
   TIER_HEADER_LABELS,
   TIER_TRUST_HINT,
@@ -408,5 +410,74 @@ describe('renderAgentPolicies', () => {
     // rather than discovering it via token budget regressions in production.
     // Current baseline: ~4.4KB for all five blocks.
     expect(renderAgentPolicies().length).toBeLessThan(5120);
+  });
+});
+
+// ── Phase 7c-1 typed subagent role renderers ───────────────────────
+
+describe('normalizeSubagentType', () => {
+  test('accepts canonical values unchanged', () => {
+    expect(normalizeSubagentType('explore')).toBe('explore');
+    expect(normalizeSubagentType('plan')).toBe('plan');
+    expect(normalizeSubagentType('general-purpose')).toBe('general-purpose');
+  });
+
+  test("maps 'general' alias to 'general-purpose'", () => {
+    expect(normalizeSubagentType('general')).toBe('general-purpose');
+  });
+
+  test("defaults unknown / null / undefined to 'general-purpose'", () => {
+    expect(normalizeSubagentType(null)).toBe('general-purpose');
+    expect(normalizeSubagentType(undefined)).toBe('general-purpose');
+    expect(normalizeSubagentType('')).toBe('general-purpose');
+    expect(normalizeSubagentType('Explore')).toBe('general-purpose'); // case-sensitive on purpose
+    expect(normalizeSubagentType('mystery')).toBe('general-purpose');
+  });
+});
+
+describe('renderSubagentRolePolicy', () => {
+  test('explore role: read-only framing with search tool whitelist', () => {
+    const out = renderSubagentRolePolicy('explore');
+    expect(out).toContain('## Subagent Role: Explore');
+    expect(out).toContain('READ-ONLY');
+    expect(out).toContain('Grep');
+    expect(out).toContain('file_read');
+    // Explicit blocks on mutation tools
+    expect(out).toContain('file_write');
+    expect(out).toContain('file_edit');
+    expect(out).toContain('shell_exec');
+    // Leaf: no re-delegation
+    expect(out).toContain('DO NOT delegate further');
+    // Reporting format
+    expect(out).toContain('attempt_completion');
+    expect(out).toContain('file_path:line_number');
+  });
+
+  test('plan role: read-only design framing', () => {
+    const out = renderSubagentRolePolicy('plan');
+    expect(out).toContain('## Subagent Role: Plan');
+    expect(out).toContain('READ-ONLY');
+    expect(out).toContain('mutation tool');
+    expect(out).toContain('step-by-step plan');
+    expect(out).toContain('DO NOT delegate further');
+    // Plan role should NOT claim Grep/file_read whitelist wording — that's explore
+    expect(out).not.toContain('## Subagent Role: Explore');
+  });
+
+  test('general-purpose role: full manifest + leaf note', () => {
+    const out = renderSubagentRolePolicy('general-purpose');
+    expect(out).toContain('## Subagent Role: General-Purpose');
+    expect(out).toContain('same tool manifest');
+    expect(out).toContain('leaf');
+    expect(out).toContain('scoped to the target files');
+  });
+
+  test('all three roles render distinct content', () => {
+    const explore = renderSubagentRolePolicy('explore');
+    const plan = renderSubagentRolePolicy('plan');
+    const general = renderSubagentRolePolicy('general-purpose');
+    expect(explore).not.toBe(plan);
+    expect(plan).not.toBe(general);
+    expect(explore).not.toBe(general);
   });
 });

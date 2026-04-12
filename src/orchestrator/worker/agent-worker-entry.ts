@@ -11,6 +11,7 @@ import { OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
 import type { HistoryMessage, LLMProvider, Message, ToolResultMessage } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
 import { compressPerception } from '../llm/perception-compressor.ts';
+import { REMINDER_PROTOCOL_DESCRIPTION } from '../llm/vinyan-reminder.ts';
 
 // ── Constants ──────────────────────────────────────────────────────
 const MAX_COMPRESSION_ATTEMPTS = 2;
@@ -349,6 +350,8 @@ Tool results may include a [SESSION STATE] block showing:
 - Recent tool failures with their error messages
 - Key findings from prior turns
 Use this information to avoid redundant work and to inform your next action.
+
+${REMINDER_PROTOCOL_DESCRIPTION}
 
 ## Behavioral Rules
 - Go straight to the point. Try the simplest approach first without going in circles.

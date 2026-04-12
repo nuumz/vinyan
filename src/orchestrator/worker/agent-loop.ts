@@ -32,6 +32,7 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
+import { wrapReminder } from '../llm/vinyan-reminder.ts';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -152,14 +153,21 @@ export class SessionProgress {
     }
   }
 
-  /** Check if a tool call is a duplicate of a recent one */
+  /**
+   * Check if a tool call is a duplicate of a recent one.
+   * Returns the warning already wrapped in a `<vinyan-reminder>` block so the
+   * caller can append it directly to a tool result's output without having to
+   * remember the tagging convention. Returns null on a first-time call.
+   */
   checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
     const paramsKey = stableStringify(params);
     const match = this.recentToolCalls.find(
       (c) => c.tool === toolName && c.paramsKey === paramsKey,
     );
     if (match) {
-      return `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`;
+      return wrapReminder(
+        `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`,
+      );
     }
     this.recentToolCalls.push({ tool: toolName, paramsKey, turn: this.currentTurn });
     // Keep last 8 tool calls
@@ -209,7 +217,12 @@ export class SessionProgress {
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
-  /** Generate a system hint based on current progress state. */
+  /**
+   * Generate a system hint based on current progress state.
+   * Returns the hint already wrapped in a `<vinyan-reminder>` block so callers
+   * can append it directly to tool-result output. Returns null when there is
+   * nothing to say (so callers can skip injection entirely).
+   */
   getSystemHint(budgetRatio: number, turnsRemaining: number): string | null {
     const hints: string[] = [];
 
@@ -245,7 +258,7 @@ export class SessionProgress {
       hints.push(snapshot);
     }
 
-    return hints.length > 0 ? hints.join('\n') : null;
+    return wrapReminder(hints.length > 0 ? hints.join('\n') : null);
   }
 }
 

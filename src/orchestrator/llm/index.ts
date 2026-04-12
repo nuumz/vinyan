@@ -15,6 +15,11 @@ export {
 } from './openrouter-provider.ts';
 export { type AssembledPrompt, assemblePrompt } from './prompt-assembler.ts';
 export {
+  wrapReminder,
+  hasReminderBlock,
+  REMINDER_PROTOCOL_DESCRIPTION,
+} from './vinyan-reminder.ts';
+export {
   clearInstructionCache,
   type InstructionMemory,
   loadInstructionMemory,

@@ -178,6 +178,35 @@ describe('SessionProgress', () => {
     expect(hint).toContain('GUIDANCE');
     expect(hint).toContain('FORCED PIVOT');
   });
+
+  test('getSystemHint wraps output in <vinyan-reminder> tags', () => {
+    const sp = new SessionProgress();
+    const hint = sp.getSystemHint(0.90, 1);
+    expect(hint).not.toBeNull();
+    // Reminder protocol: hint output is a tagged block so the worker LLM can
+    // clearly distinguish system guidance from tool output.
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('BUDGET WARNING');
+  });
+
+  test('getSystemHint returns null (no empty tags) when there is nothing to say', () => {
+    const sp = new SessionProgress();
+    // No budget pressure, no stalls, no failures — must return null, not an
+    // empty `<vinyan-reminder></vinyan-reminder>` block.
+    expect(sp.getSystemHint(0.3, 8)).toBeNull();
+  });
+
+  test('checkDuplicate returns a reminder-wrapped warning on re-call', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const dup = sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    expect(dup).not.toBeNull();
+    expect(dup!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(dup!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(dup).toContain('DUPLICATE WARNING');
+    expect(dup).toContain('file_read');
+  });
 });
 
 // ── buildSystemPrompt ───────────────────────────────────────────────
@@ -207,6 +236,20 @@ describe('buildSystemPrompt', () => {
     const reasoningPrompt = buildSystemPrompt(1, 'reasoning');
     expect(codePrompt).toContain('attempt_completion');
     expect(reasoningPrompt).toContain('attempt_completion');
+  });
+
+  test('system prompt documents the reminder protocol and tag format', () => {
+    // The worker LLM must know how to interpret <vinyan-reminder> tags that
+    // the orchestrator injects into tool results. The protocol section lives
+    // in the common system prompt body, so it should appear for both task types.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Reminder Protocol');
+      expect(prompt).toContain('<vinyan-reminder>');
+      expect(prompt).toContain('Authoritative');
+      expect(prompt).toContain('Non-interactive');
+      expect(prompt).toContain('Refreshable');
+    }
   });
 
   test('both types mention budget awareness', () => {

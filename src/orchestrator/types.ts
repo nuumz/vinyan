@@ -138,7 +138,12 @@ export interface IntentResolution {
 
 /** Read-only tools available for non-mutating reasoning tasks. */
 export const READONLY_TOOLS = new Set([
-  'file_read', 'search_grep', 'directory_list', 'git_status', 'git_diff', 'web_search',
+  'file_read',
+  'search_grep',
+  'directory_list',
+  'git_status',
+  'git_diff',
+  'web_search',
 ]);
 
 /**
@@ -203,10 +208,20 @@ export interface HistoricalProfile {
  *  LLM output is canonicalized to one of these values post-parse.
  *  New values require a code change — intentional friction to avoid unbounded growth. */
 export const PRIMARY_ACTION_VOCAB = [
-  'add-feature', 'bug-fix', 'security-fix', 'performance-optimization',
-  'refactor', 'api-migration', 'dependency-update', 'test-improvement',
-  'documentation', 'configuration', 'investigation', 'flaky-test-diagnosis',
-  'accessibility', 'other',
+  'add-feature',
+  'bug-fix',
+  'security-fix',
+  'performance-optimization',
+  'refactor',
+  'api-migration',
+  'dependency-update',
+  'test-improvement',
+  'documentation',
+  'configuration',
+  'investigation',
+  'flaky-test-diagnosis',
+  'accessibility',
+  'other',
 ] as const;
 export type PrimaryAction = (typeof PRIMARY_ACTION_VOCAB)[number];
 
@@ -313,11 +328,54 @@ export interface TaskInput {
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   /** Conversation session ID — links this task to a multi-turn chat session. */
   sessionId?: string;
+  /**
+   * Phase 7c-1: typed subagent role. Populated when this task was spawned
+   * by a parent via `delegate_task` with an explicit `subagentType`. The
+   * child worker uses it to (a) render a role preamble in its system prompt
+   * and (b) enforce role-specific tool gating in the delegation router.
+   * Absent / root tasks run with the full agent manifest.
+   */
+  subagentType?: 'explore' | 'plan' | 'general-purpose';
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
     maxRetries: number; // Default: 3 per routing level
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session Plan (→ Phase 7c-2, Vinyan's equivalent of Claude Code's TodoWrite)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single todo item in the session plan. Stored on the orchestrator side —
+ * the agent writes the whole list via `plan_update` each time it changes, and
+ * the orchestrator renders the current snapshot back into every subsequent
+ * tool result as a `[PLAN]` block so the LLM stays anchored without the list
+ * bloating raw context.
+ *
+ * Invariant enforced by the orchestrator:
+ *   - at most ONE item may carry `status: 'in_progress'` at any time
+ *   - `content` and `activeForm` are non-empty trimmed strings
+ *   - `id` is monotonically assigned on first insertion and remains stable
+ *     across updates keyed by array position
+ */
+export interface PlanTodo {
+  /** Monotonic 1-based identifier assigned when the item is first added. */
+  id: number;
+  /** Imperative phrasing of the task: "Run the test suite". */
+  content: string;
+  /** Present-continuous phrasing: "Running the test suite". */
+  activeForm: string;
+  /** Workflow state — exactly one may be 'in_progress' at a time. */
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** A plan_update call's wire shape — id is not required on the way in. */
+export interface PlanTodoInput {
+  content: string;
+  activeForm: string;
+  status: 'pending' | 'in_progress' | 'completed';
 }
 
 // ---------------------------------------------------------------------------
@@ -477,16 +535,22 @@ export type ThinkingConfig =
   | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
   | { type: 'disabled' }
   // Phase 3+ thinking modes (type-only, provider support not yet implemented — see docs/design §4.1)
-  | { type: 'multi-hypothesis'; branches: 2 | 3 | 4;
+  | {
+      type: 'multi-hypothesis';
+      branches: 2 | 3 | 4;
       diversityConstraint: 'different-patterns' | 'different-resources';
       selectionRule: 'highest-oracle-confidence' | 'first-to-pass' | 'voting-consensus';
       allFailBehavior: 'escalate-level' | 'return-best-effort' | 'refuse';
-      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random'; }
-  | { type: 'counterfactual'; trigger: 'verification_failure';
-      maxRetries: number; constraintSource: 'working-memory'; }
-  | { type: 'deliberative'; checkpoints: number; depthLimit: number; }
-  | { type: 'debate'; participants: string[]; debateTurns: number;
-      arbitrationRule: 'oracle-score' | 'evidence-weight'; };
+      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random';
+    }
+  | { type: 'counterfactual'; trigger: 'verification_failure'; maxRetries: number; constraintSource: 'working-memory' }
+  | { type: 'deliberative'; checkpoints: number; depthLimit: number }
+  | {
+      type: 'debate';
+      participants: string[];
+      debateTurns: number;
+      arbitrationRule: 'oracle-score' | 'evidence-weight';
+    };
 
 /** Cache control marker for prompt caching — 3-tier strategy.
  *  - static: system prompt (role, oracle manifest, format) — stable across sessions (~1hr effective TTL)
@@ -884,6 +948,10 @@ export interface WorkerInput {
   workerId?: string;
   /** Gap 9A: Unified task understanding — carries constraints, criteria, action category to prompt assembly. */
   understanding?: TaskUnderstanding;
+  /** Phase 7a: M1-M4 instruction hierarchy resolved in-process and shipped through IPC. */
+  instructions?: import('./llm/instruction-hierarchy.ts').InstructionMemory;
+  /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
+  environment?: import('./llm/shared-prompt-sections.ts').EnvironmentInfo;
 }
 
 /** Output from a worker process */

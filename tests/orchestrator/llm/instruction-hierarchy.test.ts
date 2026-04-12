@@ -842,12 +842,18 @@ describe('writeProposal → approveProposal → resolveInstructions (Phase 5 e2e
     expect(learned).toHaveLength(0);
   });
 
-  test('duplicate-slug approval is blocked and existing entry is preserved', () => {
+  test('duplicate-slug proposal is blocked upstream and existing entry is preserved', () => {
     writeProposal(workspace, makeProposal({ slug: 'stable' }));
     approveProposal(workspace, 'stable', 'alice');
 
-    writeProposal(workspace, makeProposal({ slug: 'stable', description: 'second attempt' }));
-    expect(() => approveProposal(workspace, 'stable', 'alice')).toThrow(/already exists/);
+    // Phase 6: writeProposal itself refuses a slug that already exists in
+    // approved M4 — the worker never writes a duplicate to pending/, and the
+    // reviewer never sees one. This is stricter than Phase 5's approval-time
+    // guard, which remains in place as a backstop for side-channel writes
+    // (covered by tests/orchestrator/memory/memory-proposals.test.ts).
+    expect(() => writeProposal(workspace, makeProposal({ slug: 'stable', description: 'second attempt' }))).toThrow(
+      /duplicate/,
+    );
 
     // resolve still sees exactly one learned entry for this slug.
     const result = resolveInstructions({

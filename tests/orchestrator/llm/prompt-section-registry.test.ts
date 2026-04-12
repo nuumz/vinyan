@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { PromptSectionRegistry, createDefaultRegistry, createReasoningRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import {
+  createDefaultRegistry,
+  createReasoningRegistry,
+  PromptSectionRegistry,
+} from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { SemanticTaskUnderstanding, TaskDomain, TaskIntent } from '../../../src/orchestrator/types.ts';
 
 function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
@@ -67,9 +71,9 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 17 sections', () => {
+  it('registers 19 sections', () => {
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(18);
+    expect(registry.getSectionIds()).toHaveLength(19);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {
@@ -111,7 +115,12 @@ describe('createDefaultRegistry', () => {
   it('user prompt includes instructions when present', () => {
     const registry = createDefaultRegistry();
     const ctx = makeContext({
-      instructions: { content: 'Use Bun for everything', contentHash: 'abc123', filePath: '/workspace/VINYAN.md', sources: [] },
+      instructions: {
+        content: 'Use Bun for everything',
+        contentHash: 'abc123',
+        filePath: '/workspace/VINYAN.md',
+        sources: [],
+      },
     });
     const user = registry.renderTarget('user', ctx);
 
@@ -176,7 +185,15 @@ describe('createDefaultRegistry', () => {
         dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 1 },
         diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
         verifiedFacts: [
-          { target: 'src/auth.ts', pattern: 'export function login', verified_at: 1, hash: 'h1', confidence: 0.95, oracleName: 'ast', tierReliability: 0.99 },
+          {
+            target: 'src/auth.ts',
+            pattern: 'export function login',
+            verified_at: 1,
+            hash: 'h1',
+            confidence: 0.95,
+            oracleName: 'ast',
+            tierReliability: 0.99,
+          },
         ],
         runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: ['bun'] },
       },
@@ -524,7 +541,15 @@ describe('semantic-context — expanded SemanticIntent fields', () => {
         taskDomain: 'code-mutation',
         taskIntent: 'execute',
         toolRequirement: 'none',
-        resolvedEntities: [{ reference: 'registration', resolvedPaths: ['src/routes/reg.ts'], resolution: 'fuzzy-path', confidence: 0.8, confidenceSource: 'evidence-derived' }],
+        resolvedEntities: [
+          {
+            reference: 'registration',
+            resolvedPaths: ['src/routes/reg.ts'],
+            resolution: 'fuzzy-path',
+            confidence: 0.8,
+            confidenceSource: 'evidence-derived',
+          },
+        ],
         understandingDepth: 2,
         verifiedClaims: [],
         understandingFingerprint: 'test-fp',
@@ -573,7 +598,15 @@ describe('semantic-context — expanded SemanticIntent fields', () => {
         taskDomain: 'code-mutation',
         taskIntent: 'execute',
         toolRequirement: 'none',
-        resolvedEntities: [{ reference: 'auth', resolvedPaths: ['src/auth.ts'], resolution: 'exact', confidence: 1.0, confidenceSource: 'evidence-derived' }],
+        resolvedEntities: [
+          {
+            reference: 'auth',
+            resolvedPaths: ['src/auth.ts'],
+            resolution: 'exact',
+            confidence: 1.0,
+            confidenceSource: 'evidence-derived',
+          },
+        ],
         understandingDepth: 2,
         verifiedClaims: [],
         understandingFingerprint: 'test-fp',

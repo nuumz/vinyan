@@ -7,12 +7,28 @@
  * Source of truth: implementation-plan §6.3, protocol.ts (IPC schemas)
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  */
+
+import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
-import type { DelegationRequest } from '../protocol.ts';
-import type { OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { authorizeToolCall } from '../../security/tool-authorization.ts';
+import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
+import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
+import type { HookConfig } from '../hooks/hook-schema.ts';
+import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
+import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
+import { wrapReminder } from '../llm/vinyan-reminder.ts';
+import { countPendingProposals } from '../memory/memory-proposals.ts';
+import { evaluatePermission } from '../permissions/permission-checker.ts';
+import type { PermissionConfig } from '../permissions/permission-schema.ts';
+import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { scanToolResult } from '../tools/built-in-tools.ts';
+import type { Tool, ToolContext } from '../tools/tool-interface.ts';
+import { manifestFor } from '../tools/tool-manifest.ts';
 import type {
   AgentSessionSummary,
   PerceptualHierarchy,
+  PlanTodo,
+  PlanTodoInput,
   RoutingDecision,
   TaskDAG,
   TaskInput,
@@ -21,19 +37,11 @@ import type {
   ToolResult,
   WorkingMemoryState,
 } from '../types.ts';
-import type { ToolContext } from '../tools/tool-interface.ts';
+import { AgentBudgetTracker } from './agent-budget.ts';
 import type { IAgentSession } from './agent-session.ts';
 import { AgentSession, type SubprocessHandle } from './agent-session.ts';
-import { AgentBudgetTracker } from './agent-budget.ts';
-import { SessionOverlay, type ProposedMutation } from './session-overlay.ts';
+import { type ProposedMutation, SessionOverlay } from './session-overlay.ts';
 import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
-import { manifestFor } from '../tools/tool-manifest.ts';
-import type { AgentContract } from '../../core/agent-contract.ts';
-import { authorizeToolCall } from '../../security/tool-authorization.ts';
-import { scanToolResult } from '../tools/built-in-tools.ts';
-import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
-import { wrapReminder } from '../llm/vinyan-reminder.ts';
-import { countPendingProposals } from '../memory/memory-proposals.ts';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -75,8 +83,34 @@ export interface AgentLoopDeps {
   createSession?: (proc: SubprocessHandle) => IAgentSession;
   /** @deprecated P1-6: Replaced by deterministic structure-preserve compaction. Kept for backwards compat. */
   compactionLlm?: {
-    generate(request: { messages: Array<{ role: string; content: string }>; maxTokens?: number }): Promise<{ content: string; tokensConsumed: number }>;
+    generate(request: {
+      messages: Array<{ role: string; content: string }>;
+      maxTokens?: number;
+    }): Promise<{ content: string; tokensConsumed: number }>;
   };
+  /**
+   * Phase 7d-1: optional hook config. When set, the agent loop fires
+   * PreToolUse hooks before each tool execution and PostToolUse hooks
+   * after. Absent / empty config means hooks are inert — the loop behaves
+   * exactly as it did in Phase 7c-2.
+   */
+  hookConfig?: HookConfig;
+  /**
+   * Phase 7d-2: optional permission DSL config. When set, each tool call
+   * is checked against the DSL's deny/allow rules BEFORE Pre-tool hooks
+   * run. A `deny` short-circuits the call as a denied result; an `allow`
+   * lets it proceed as normal; a `pass` (no matching rule) defers to
+   * later layers. Absent config is inert.
+   */
+  permissionConfig?: PermissionConfig;
+  /**
+   * Phase 7e: extra tools (e.g. MCP adapters) to surface in the tool
+   * manifest. These are merged on top of the built-in tools by
+   * `manifestFor`. The same map is assumed to already be registered
+   * with the concrete `toolExecutor` so the worker can invoke them;
+   * the agent loop only uses it for descriptor discovery.
+   */
+  extraTools?: ReadonlyMap<string, Tool>;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -96,9 +130,7 @@ function stableStringify(value: unknown): string {
     return `[${value.map(stableStringify).join(',')}]`;
   }
   const keys = Object.keys(value as Record<string, unknown>).sort();
-  const entries = keys.map(
-    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
-  );
+  const entries = keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`);
   return `{${entries.join(',')}}`;
 }
 
@@ -129,6 +161,78 @@ export class SessionProgress {
    * `runAgentLoop`; 0 means "no backlog" and suppresses the hint entirely.
    */
   pendingMemoryProposals = 0;
+
+  /**
+   * Phase 7c-2: the current session todo plan installed by `plan_update`.
+   * Ordered, monotonic-id'd. Rendered into the `[PLAN]` block of
+   * `buildSessionSnapshot()` so the LLM sees its own plan echoed back on
+   * every tool-result turn. Empty array → plan block is suppressed.
+   */
+  plan: PlanTodo[] = [];
+  /** Next id to hand out to a newly-inserted plan item. */
+  private nextPlanId = 1;
+  /** Hard cap to stop runaway plans from inflating the reminder block. */
+  static readonly MAX_PLAN_ITEMS = 50;
+
+  /**
+   * Install (replace) the session plan from a `plan_update` tool call. The
+   * orchestrator enforces the TodoWrite-style single-in-progress invariant
+   * and non-empty string fields here so the LLM can't wedge the renderer by
+   * sending malformed payloads. Returns a result discriminator that the
+   * `plan_update` tool propagates to the worker as a tool-result status.
+   */
+  recordPlanUpdate(todos: PlanTodoInput[]): { ok: true; count: number } | { ok: false; error: string } {
+    if (todos.length > SessionProgress.MAX_PLAN_ITEMS) {
+      return {
+        ok: false,
+        error: `plan has ${todos.length} items; max ${SessionProgress.MAX_PLAN_ITEMS}. Consolidate coarser steps.`,
+      };
+    }
+    let inProgressCount = 0;
+    const validated: Array<Omit<PlanTodo, 'id'>> = [];
+    for (let i = 0; i < todos.length; i++) {
+      const t = todos[i];
+      if (t == null || typeof t !== 'object') {
+        return { ok: false, error: `item ${i}: must be an object` };
+      }
+      const content = typeof t.content === 'string' ? t.content.trim() : '';
+      const activeForm = typeof t.activeForm === 'string' ? t.activeForm.trim() : '';
+      const status = t.status;
+      if (!content) return { ok: false, error: `item ${i}: content is required and must be non-empty` };
+      if (!activeForm) return { ok: false, error: `item ${i}: activeForm is required and must be non-empty` };
+      if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+        return {
+          ok: false,
+          error: `item ${i}: status must be 'pending' | 'in_progress' | 'completed', got ${JSON.stringify(status)}`,
+        };
+      }
+      if (status === 'in_progress') inProgressCount++;
+      validated.push({ content, activeForm, status });
+    }
+    if (inProgressCount > 1) {
+      return {
+        ok: false,
+        error: `exactly one item may be 'in_progress'; got ${inProgressCount}. Mark the others 'pending'.`,
+      };
+    }
+    // Replace the plan. Each call gets fresh ids — stable-id tracking across
+    // updates adds complexity without observable value (the plan is rendered
+    // as markdown, not addressed by id).
+    this.plan = validated.map((t) => ({ id: this.nextPlanId++, ...t }));
+    return { ok: true, count: this.plan.length };
+  }
+
+  /** Render the current plan as a markdown checklist for reminder injection. */
+  renderPlanBlock(): string | null {
+    if (this.plan.length === 0) return null;
+    const lines = ['[PLAN]'];
+    for (const item of this.plan) {
+      const marker = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[-]' : '[ ]';
+      const label = item.status === 'in_progress' ? item.activeForm : item.content;
+      lines.push(`  ${marker} ${label}`);
+    }
+    return lines.join('\n');
+  }
 
   recordToolResult(toolName: string, isError: boolean, output?: string, callParams?: Record<string, unknown>): void {
     if (isError) {
@@ -171,9 +275,7 @@ export class SessionProgress {
    */
   checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
     const paramsKey = stableStringify(params);
-    const match = this.recentToolCalls.find(
-      (c) => c.tool === toolName && c.paramsKey === paramsKey,
-    );
+    const match = this.recentToolCalls.find((c) => c.tool === toolName && c.paramsKey === paramsKey);
     if (match) {
       return wrapReminder(
         `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`,
@@ -199,6 +301,13 @@ export class SessionProgress {
    *  This gives the agent persistent awareness of what it has done so far. */
   buildSessionSnapshot(): string | null {
     const lines: string[] = [];
+
+    // Phase 7c-2: plan block goes first so it's prominent. The agent reads
+    // top-down and checking the plan against the state below keeps it honest.
+    const planBlock = this.renderPlanBlock();
+    if (planBlock) {
+      lines.push(planBlock);
+    }
 
     if (this.filesRead.size > 0 || this.filesWritten.size > 0) {
       lines.push('[SESSION STATE]');
@@ -238,8 +347,7 @@ export class SessionProgress {
         guidance =
           ' — queue is overloaded; do NOT call memory_propose this session unless your finding is exceptional and non-duplicative.';
       } else if (n >= 4) {
-        guidance =
-          ' — review the existing backlog before proposing more to avoid duplicates.';
+        guidance = ' — review the existing backlog before proposing more to avoid duplicates.';
       } else {
         guidance = '';
       }
@@ -260,28 +368,40 @@ export class SessionProgress {
 
     // Budget pressure
     if (budgetRatio >= 0.85) {
-      hints.push('[BUDGET WARNING] You have used 85%+ of your budget. Wrap up NOW — summarize your progress and call attempt_completion.');
-    } else if (budgetRatio >= 0.70) {
-      hints.push('[BUDGET NOTICE] You have used 70%+ of your budget. Start wrapping up — focus only on essential remaining work.');
+      hints.push(
+        '[BUDGET WARNING] You have used 85%+ of your budget. Wrap up NOW — summarize your progress and call attempt_completion.',
+      );
+    } else if (budgetRatio >= 0.7) {
+      hints.push(
+        '[BUDGET NOTICE] You have used 70%+ of your budget. Start wrapping up — focus only on essential remaining work.',
+      );
     }
 
     // Turn limit pressure
     if (turnsRemaining <= 2) {
-      hints.push(`[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`);
+      hints.push(
+        `[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`,
+      );
     }
 
     // Consecutive failures — enriched with what failed
     if (this.consecutiveFailures >= 2) {
       const recentFails = this.failedToolCalls.slice(-this.consecutiveFailures);
       const failSummary = recentFails.map((f) => `${f.tool}: ${f.error.slice(0, 80)}`).join('; ');
-      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures (${failSummary}). Step back and try a fundamentally different approach. Before editing a file, ALWAYS read it first to understand its current content.`);
+      hints.push(
+        `[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures (${failSummary}). Step back and try a fundamentally different approach. Before editing a file, ALWAYS read it first to understand its current content.`,
+      );
     }
 
     // Stall detection — stronger, with forced pivot at 3+ turns
     if (this.turnsWithoutProgress >= 3) {
-      hints.push(`[FORCED PIVOT] No progress for ${this.turnsWithoutProgress} turns. You MUST try a fundamentally different approach or call attempt_completion with status 'uncertain'. Do NOT repeat any approach you have already tried.`);
+      hints.push(
+        `[FORCED PIVOT] No progress for ${this.turnsWithoutProgress} turns. You MUST try a fundamentally different approach or call attempt_completion with status 'uncertain'. Do NOT repeat any approach you have already tried.`,
+      );
     } else if (this.turnsWithoutProgress >= 2) {
-      hints.push(`[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`);
+      hints.push(
+        `[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`,
+      );
     }
 
     // Session state snapshot — always inject when there's notable context
@@ -325,7 +445,7 @@ function buildUncertainResult(
 
 /** Detect permanent errors (auth, config) from uncertainty messages. */
 const NON_RETRYABLE_PATTERNS = [
-  /\b40[13]\b/,          // 401 Unauthorized, 403 Forbidden
+  /\b40[13]\b/, // 401 Unauthorized, 403 Forbidden
   /invalid.api.key/i,
   /user not found/i,
   /authentication/i,
@@ -334,7 +454,7 @@ const NON_RETRYABLE_PATTERNS = [
 
 function detectNonRetryableError(uncertainties: string[]): string | undefined {
   const joined = uncertainties.join(' ');
-  return NON_RETRYABLE_PATTERNS.some(p => p.test(joined)) ? joined : undefined;
+  return NON_RETRYABLE_PATTERNS.some((p) => p.test(joined)) ? joined : undefined;
 }
 
 // ── Delegation handler (Phase 6.4) ───────────────────────────────────
@@ -447,6 +567,10 @@ export async function runAgentLoop(
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)
         : undefined,
+    // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
+    // install new plan snapshots. The callback runs synchronously and returns
+    // a validation result the tool propagates back as a tool-result status.
+    onPlanUpdate: (todos) => progress.recordPlanUpdate(todos),
   };
 
   try {
@@ -482,11 +606,33 @@ export async function runAgentLoop(
             // Forward worker stderr to orchestrator stderr for visibility
             process.stderr.write(`[worker:${input.id}] ${text}`);
           }
-        } catch { /* reader closed */ }
+        } catch {
+          /* reader closed */
+        }
       })();
     }
 
     session = deps.createSession?.(proc) ?? new AgentSession(proc);
+
+    // Phase 7a: resolve M1-M4 instruction hierarchy in-process (we have workspace
+    // access here; the subprocess worker does not). This closes the gap where
+    // L2+ agent mode workers never saw VINYAN.md / .vinyan/rules/ / learned.md.
+    // Best-effort — a broken instruction tier must never block the session.
+    let instructions: ReturnType<typeof loadInstructionMemoryForTask> = null;
+    try {
+      instructions = loadInstructionMemoryForTask({
+        workspace: deps.workspace,
+        targetFiles: input.targetFiles,
+        taskType: input.taskType ?? 'code',
+        ...(understanding?.actionVerb ? { actionVerb: understanding.actionVerb } : {}),
+      });
+    } catch {
+      // Instruction loader errors are non-fatal — proceed without project rules.
+    }
+
+    // Phase 7a: snapshot OS / cwd / date / git state so the worker can render
+    // its own [ENVIRONMENT] block without re-probing the filesystem.
+    const environment = computeEnvironmentInfo(deps.workspace);
 
     // Build and send init turn
     const initTurn: OrchestratorTurn = {
@@ -500,12 +646,17 @@ export async function runAgentLoop(
       ...(plan ? { plan } : {}),
       budget: budget.toSnapshot(),
       allowedPaths: input.targetFiles ?? [],
-      toolManifest: manifestFor(routing),
+      toolManifest: manifestFor(routing, deps.extraTools),
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
       ...(memory.failedApproaches?.length ? { failedApproaches: memory.failedApproaches } : {}),
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
       ...(understanding ? { understanding } : {}),
       ...(conversationHistory?.length ? { conversationHistory } : {}),
+      ...(instructions ? { instructions } : {}),
+      environment,
+      // Phase 7c-1: forward typed subagent role so the child worker can
+      // render its role preamble. Omitted for root tasks (undefined).
+      ...(input.subagentType ? { subagentType: input.subagentType } : {}),
     };
     await session.send(initTurn);
 
@@ -575,9 +726,10 @@ export async function runAgentLoop(
         // Synthetic errors for dropped calls (per-turn or session limit)
         for (let i = effectiveLimit; i < turn.calls.length; i++) {
           const dropped = turn.calls[i]!;
-          const reason = i >= maxToolCallsPerTurn
-            ? `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`
-            : `Dropped: session tool call limit reached (${budget.remainingToolCalls} remaining)`;
+          const reason =
+            i >= maxToolCallsPerTurn
+              ? `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`
+              : `Dropped: session tool call limit reached (${budget.remainingToolCalls} remaining)`;
           results.push({
             callId: dropped.id,
             tool: dropped.tool,
@@ -621,10 +773,92 @@ export async function runAgentLoop(
               continue;
             }
           }
+          // Phase 7d-2: Permission DSL gate. Runs after contract auth but
+          // before hooks so an operator-declared deny rule short-circuits
+          // without paying the cost of spawning a shell hook. Deny wins;
+          // allow is explicit; no match falls through to hooks/executor.
+          if (deps.permissionConfig) {
+            const perm = evaluatePermission(deps.permissionConfig, call.tool, call.parameters ?? {});
+            if (perm.decision === 'deny') {
+              results.push({
+                callId: call.id,
+                tool: call.tool,
+                status: 'denied',
+                error: `Permission denied: ${perm.reason ?? 'policy violation'}`,
+                durationMs: 0,
+              });
+              deps.bus?.emit('agent:tool_denied', {
+                taskId: input.id,
+                toolName: call.tool,
+                violation: `Permission DSL: ${perm.reason ?? 'denied'}`,
+              });
+              continue;
+            }
+          }
+
+          // Phase 7d-1: PreToolUse hooks. Any hook that exits non-zero
+          // (or returns `{decision: "block"}`) converts the call into a
+          // denied result without invoking the tool executor. Hooks run
+          // only when deps.hookConfig is wired — absent config is inert.
+          if (deps.hookConfig) {
+            const pre = await dispatchPreToolUse(
+              deps.hookConfig,
+              {
+                event: 'PreToolUse',
+                tool_name: call.tool,
+                tool_input: (call.parameters ?? {}) as Record<string, unknown>,
+              },
+              { cwd: deps.workspace },
+            );
+            if (pre.blocked) {
+              results.push({
+                callId: call.id,
+                tool: call.tool,
+                status: 'denied',
+                error: `Hook blocked PreToolUse: ${pre.reason ?? 'hook returned non-zero exit'}`,
+                durationMs: 0,
+              });
+              deps.bus?.emit('agent:tool_denied', {
+                taskId: input.id,
+                toolName: call.tool,
+                violation: `PreToolUse hook: ${pre.reason ?? 'blocked'}`,
+              });
+              continue;
+            }
+          }
+
           const toolStart = performance.now();
           let result = await deps.toolExecutor.execute(call, toolContext);
           // Guardrails scan on every tool result (A6)
           result = scanToolResult(result, deps.guardrailsScan);
+
+          // Phase 7d-1: PostToolUse hooks. These observe the already-
+          // committed result and cannot unwind it. Non-zero exits become
+          // `[POST-HOOK WARNING]` annotations tacked onto the tool output
+          // so the LLM can see what the hook complained about.
+          if (deps.hookConfig) {
+            const toolOutputText =
+              typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+            const post = await dispatchPostToolUse(
+              deps.hookConfig,
+              {
+                event: 'PostToolUse',
+                tool_name: call.tool,
+                tool_input: (call.parameters ?? {}) as Record<string, unknown>,
+                tool_output: toolOutputText,
+                tool_status: result.status,
+              },
+              { cwd: deps.workspace },
+            );
+            if (post.warnings.length > 0) {
+              const warningText = post.warnings.map((w) => `[POST-HOOK WARNING] ${w}`).join('\n');
+              result = {
+                ...result,
+                output: `${toolOutputText}\n\n${warningText}`,
+              };
+            }
+          }
+
           results.push(result);
           deps.bus?.emit('agent:tool_executed', {
             taskId: input.id,
@@ -694,7 +928,8 @@ export async function runAgentLoop(
         const finalResults = [...results];
         if (hint && finalResults.length > 0) {
           const lastResult = finalResults[finalResults.length - 1]!;
-          const existingOutput = typeof lastResult.output === 'string' ? lastResult.output : JSON.stringify(lastResult.output ?? '');
+          const existingOutput =
+            typeof lastResult.output === 'string' ? lastResult.output : JSON.stringify(lastResult.output ?? '');
           finalResults[finalResults.length - 1] = {
             ...lastResult,
             output: `${existingOutput}\n\n${hint}`,

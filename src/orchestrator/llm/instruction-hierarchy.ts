@@ -98,8 +98,17 @@ export interface InstructionContext {
 /** Per-source cache keyed by absolute path. Invalidated by content hash. */
 const sourceCache = new Map<string, InstructionSource>();
 
-/** Resolved merged cache keyed by (workspace + target file set + task type). */
-const resolvedCache = new Map<string, InstructionMemory>();
+/**
+ * Resolved merged cache keyed by (workspace + target file set + task type + action).
+ * Each entry stores the merged result plus the full discovery fingerprint
+ * (path@hash pairs across every discovered source, filtered or not) so we can
+ * invalidate precisely when any source is added, modified, or deleted.
+ */
+interface ResolvedCacheEntry {
+  readonly memory: InstructionMemory;
+  readonly discoveryFingerprint: string;
+}
+const resolvedCache = new Map<string, ResolvedCacheEntry>();
 
 /** Clear all caches (for testing or config reload). */
 export function clearInstructionHierarchyCache(): void {
@@ -519,15 +528,18 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
   const targetKey = (ctx.targetFiles ?? []).slice().sort().join('|');
   const cacheKey = `${ctx.workspace}\0${targetKey}\0${ctx.taskType ?? ''}\0${ctx.actionVerb ?? ''}`;
 
-  // Check cache, but also invalidate if any source file has changed
+  // Check cache, but also invalidate if any source file has changed.
+  // The discovery fingerprint includes both file paths and content hashes so
+  // deletions, additions, path reorderings, AND content edits are all detected
+  // — a pure content-hash concat could theoretically collide across different
+  // file manifests.
   const allSources = discoverSources(ctx.workspace);
+  const discoveryFingerprint = allSources
+    .map((s) => `${s.filePath}@${s.contentHash}`)
+    .join('|');
   const cached = resolvedCache.get(cacheKey);
-  if (cached) {
-    const cachedHashes = cached.sources.map((s) => s.contentHash).join('');
-    const currentHashes = allSources.map((s) => s.contentHash).join('');
-    if (cachedHashes === currentHashes) {
-      return cached;
-    }
+  if (cached && cached.discoveryFingerprint === discoveryFingerprint) {
+    return cached.memory;
   }
 
   if (allSources.length === 0) return null;
@@ -557,7 +569,9 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
     const ai = a.discoveryIndex ?? Number.MAX_SAFE_INTEGER;
     const bi = b.discoveryIndex ?? Number.MAX_SAFE_INTEGER;
     if (ai !== bi) return ai - bi;
-    return a.filePath.localeCompare(b.filePath);
+    // Pin locale to 'en-US' so cross-platform order is deterministic regardless
+    // of the host OS locale (localeCompare with no args varies by system).
+    return a.filePath.localeCompare(b.filePath, 'en-US');
   });
 
   // Merge: concat content with tier headers. Enforce total size cap.
@@ -585,7 +599,7 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
     filePath: primaryPath,
     sources: applicable,
   };
-  resolvedCache.set(cacheKey, result);
+  resolvedCache.set(cacheKey, { memory: result, discoveryFingerprint });
   return result;
 }
 

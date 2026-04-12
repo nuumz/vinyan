@@ -106,7 +106,18 @@ describe('SessionProgress', () => {
     expect(hint).toContain('different approach');
   });
 
-  test('getSystemHint returns stall warning on 3+ turns without progress', () => {
+  test('getSystemHint returns stall warning at 2 turns without progress', () => {
+    const sp = new SessionProgress();
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+
+    const hint = sp.getSystemHint(0.3, 8);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('2 turns');
+  });
+
+  test('getSystemHint escalates to forced pivot at 3+ turns without progress', () => {
     const sp = new SessionProgress();
     sp.recordTurn(false);
     sp.recordTurn(false);
@@ -114,8 +125,36 @@ describe('SessionProgress', () => {
 
     const hint = sp.getSystemHint(0.3, 8);
     expect(hint).not.toBeNull();
-    expect(hint).toContain('STALL WARNING');
+    // 3+ stalled turns escalates from warning to forced pivot
+    expect(hint).toContain('FORCED PIVOT');
     expect(hint).toContain('3 turns');
+  });
+
+  test('checkDuplicate detects identical calls regardless of key order', () => {
+    const sp = new SessionProgress();
+    // First call — not a duplicate
+    const first = sp.checkDuplicate('file_read', { file_path: '/a.ts', limit: 100 });
+    expect(first).toBeNull();
+
+    // Same params, different key order — MUST still be detected as duplicate
+    const second = sp.checkDuplicate('file_read', { limit: 100, file_path: '/a.ts' });
+    expect(second).not.toBeNull();
+    expect(second).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate detects identical calls with nested objects in different key order', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { HOME: '/', USER: 'x' } });
+    const dup = sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { USER: 'x', HOME: '/' } });
+    expect(dup).not.toBeNull();
+    expect(dup).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate does NOT flag different params as duplicates', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const different = sp.checkDuplicate('file_read', { file_path: '/b.ts' });
+    expect(different).toBeNull();
   });
 
   test('getSystemHint combines multiple warnings', () => {
@@ -132,11 +171,12 @@ describe('SessionProgress', () => {
     // Budget at 90%, only 1 turn remaining
     const hint = sp.getSystemHint(0.90, 1);
     expect(hint).not.toBeNull();
-    // Should contain all four warnings
+    // Should contain all four warnings — at 3 stalled turns, the stall
+    // warning escalates to a forced pivot.
     expect(hint).toContain('BUDGET WARNING');
     expect(hint).toContain('TURNS WARNING');
     expect(hint).toContain('GUIDANCE');
-    expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('FORCED PIVOT');
   });
 });
 

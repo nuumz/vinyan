@@ -304,6 +304,42 @@ That's all.`,
     expect(second!.content).toContain('Content B');
     expect(first).not.toBe(second);
   });
+
+  test('invalidates cache when a scoped rule file is deleted', () => {
+    // Start with two scoped rules
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Base');
+    mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
+    writeFileSync(join(workspace, '.vinyan', 'rules', 'keep.md'), 'Keep me');
+    writeFileSync(join(workspace, '.vinyan', 'rules', 'drop.md'), 'Drop me');
+
+    const first = resolveInstructions({ workspace });
+    expect(first!.content).toContain('Keep me');
+    expect(first!.content).toContain('Drop me');
+
+    // Delete drop.md — cache MUST invalidate so it disappears from the merged output
+    rmSync(join(workspace, '.vinyan', 'rules', 'drop.md'));
+    const second = resolveInstructions({ workspace });
+    expect(second!.content).toContain('Keep me');
+    expect(second!.content).not.toContain('Drop me');
+    expect(first).not.toBe(second);
+  });
+
+  test('invalidates cache when a new scoped rule file is added', () => {
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Base');
+    mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
+    writeFileSync(join(workspace, '.vinyan', 'rules', 'one.md'), 'Rule one');
+
+    const first = resolveInstructions({ workspace });
+    expect(first!.content).toContain('Rule one');
+    expect(first!.content).not.toContain('Rule two');
+
+    // Add a new rule — cache MUST invalidate so it appears in the merged output
+    writeFileSync(join(workspace, '.vinyan', 'rules', 'two.md'), 'Rule two');
+    const second = resolveInstructions({ workspace });
+    expect(second!.content).toContain('Rule one');
+    expect(second!.content).toContain('Rule two');
+    expect(first).not.toBe(second);
+  });
 });
 
 describe('ecosystem hospitality', () => {

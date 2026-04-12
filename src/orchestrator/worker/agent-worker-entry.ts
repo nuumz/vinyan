@@ -590,12 +590,16 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
     if ('toolCalls' in turn && turn.toolCalls) {
       const params = turn.toolCalls.map(c => {
         const p = c.parameters;
-        // Track file operations for session state
-        if (c.tool === 'file_read' && p.file_path) {
+        // Track file operations for session state. Cover all filesystem tool
+        // names so attribution survives compaction regardless of which
+        // read/write tool the worker used.
+        const READ_TOOLS = new Set(['file_read', 'search_files', 'list_directory', 'grep_search', 'search_grep']);
+        const WRITE_TOOLS = new Set(['file_write', 'file_edit', 'file_patch']);
+        if (READ_TOOLS.has(c.tool) && p.file_path) {
           filesRead.add(String(p.file_path));
-          return `file_read(${p.file_path})`;
+          return `${c.tool}(${p.file_path})`;
         }
-        if ((c.tool === 'file_write' || c.tool === 'file_edit') && p.file_path) {
+        if (WRITE_TOOLS.has(c.tool) && p.file_path) {
           filesWritten.add(String(p.file_path));
           return `${c.tool}(${p.file_path})`;
         }

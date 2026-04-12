@@ -79,6 +79,27 @@ export interface AgentLoopDeps {
 
 // ── Session Progress Tracker ────────────────────────────────────────
 
+/**
+ * Stable JSON stringifier for duplicate-detection keys.
+ * Recursively sorts object keys so `{a:1,b:2}` and `{b:2,a:1}` produce identical strings.
+ * This is critical because tool calls reconstructed from JSON may have non-deterministic
+ * key order (e.g., when merged from multiple sources), and duplicate detection must match
+ * semantically identical calls regardless of key ordering.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const entries = keys.map(
+    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
+  );
+  return `{${entries.join(',')}}`;
+}
+
 export class SessionProgress {
   filesRead = new Set<string>();
   filesWritten = new Set<string>();
@@ -133,7 +154,7 @@ export class SessionProgress {
 
   /** Check if a tool call is a duplicate of a recent one */
   checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
-    const paramsKey = JSON.stringify(params);
+    const paramsKey = stableStringify(params);
     const match = this.recentToolCalls.find(
       (c) => c.tool === toolName && c.paramsKey === paramsKey,
     );

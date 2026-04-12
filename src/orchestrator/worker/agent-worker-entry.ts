@@ -232,12 +232,17 @@ export async function runAgentWorkerLoop(
         const params = completionCall.parameters;
         const status = (params.status as string) ?? 'done';
         if (status === 'uncertain') {
+          // Agent Conversation: needsUserInput disambiguates
+          //   * false/absent → code-fact uncertainty (orchestrator may retry/escalate)
+          //   * true         → user-intent uncertainty (orchestrator asks the user)
+          const needsUserInput = params.needsUserInput === true;
           writeTurn(io, {
             type: 'uncertain',
             turnId: `t${turnCount}`,
             reason: (params.summary as string) ?? 'Worker reported uncertainty',
             uncertainties: (params.uncertainties as string[]) ?? [],
             tokensConsumed: totalTokensConsumed,
+            ...(needsUserInput ? { needsUserInput: true } : {}),
           });
         } else {
           writeTurn(io, {
@@ -421,7 +426,9 @@ ${REMINDER_PROTOCOL_DESCRIPTION}
 
 ## Completion Protocol
 - When done: call attempt_completion with status 'done'. Include a concise summary of what was changed and why.
-- When stuck: call attempt_completion with status 'uncertain'. List what you tried, what blocked you, and what you think the next step should be.
+- When stuck on a MISSING CODE FACT (e.g., "I cannot find function X", "the test file does not exist"): call attempt_completion with status 'uncertain' and leave needsUserInput=false. List what you tried and what blocked you — the orchestrator may retry at a higher routing level or escalate.
+- When stuck because the USER'S INTENT is ambiguous (e.g., "which of these two files did you mean?", "should I preserve the old behavior or replace it?", "what name should the new parameter have?"): call attempt_completion with status 'uncertain' AND set needsUserInput=true. Phrase each entry in 'uncertainties' as a direct question to the user. The orchestrator will surface them to the user and wait for an answer in the next turn — do NOT retry or guess.
+- Do NOT set needsUserInput=true for uncertainties that could be resolved by reading more files or running more tools yourself. Only use it for genuine intent ambiguity.
 - CRITICAL: Before reporting done, verify your work actually achieves the goal. Run the test, check the output, read the result. Do NOT report success based on assumptions.
 - You MUST call attempt_completion to signal task end. Never just stop responding.
 

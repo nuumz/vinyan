@@ -767,12 +767,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
   deps.bus?.emit('task:start', { input, routing });
 
-  // Crash Recovery: mark checkpoint complete/failed on task completion
+  // Crash Recovery: mark checkpoint complete/failed on task completion.
+  // Agent Conversation: input-required is treated as completed from the
+  // checkpoint's perspective — this turn's work is done; the agent just
+  // asked the user for clarification before the next turn.
   const detachCheckpoint = deps.taskCheckpoint && deps.bus
     ? deps.bus.on('task:complete', ({ result }) => {
         if (result.id !== input.id) return;
         try {
-          if (result.status === 'completed') {
+          if (result.status === 'completed' || result.status === 'input-required') {
             deps.taskCheckpoint!.complete(result.id);
           } else {
             deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
@@ -901,6 +904,67 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'generate', durationMs: Date.now() - generateStart, routingLevel: routing.level });
       const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
       totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
+
+      // ═══════════════════════════════════════════════════════════════
+      // Agent Conversation: input-required short-circuit
+      // ═══════════════════════════════════════════════════════════════
+      //
+      // When the agent calls attempt_completion with needsUserInput=true,
+      // its `uncertainties` are phrased as questions to the user. This is
+      // a collaborative pause, not a failure — do NOT run verify, do NOT
+      // retry, do NOT escalate. Build an input-required TaskResult and
+      // return immediately. The calling layer (CLI chat, API client) is
+      // responsible for surfacing the questions and submitting the next
+      // user turn.
+      //
+      // Axiom safety:
+      //  - A1 (Epistemic Separation): no verification is needed because
+      //    no mutations were committed (asserted below) and no claims are
+      //    being accepted — we're just passing the agent's questions up.
+      //  - A6 (Zero-Trust Execution): defense-in-depth — if mutations are
+      //    somehow present, fall through to the normal verify path.
+      if (
+        isAgenticResult
+        && lastAgentResult?.needsUserInput === true
+        && workerResult.mutations.length === 0
+      ) {
+        const inputRequiredTrace: ExecutionTrace = {
+          id: `trace-${input.id}-input-required`,
+          taskId: input.id,
+          sessionId: input.sessionId,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'input-required-pause',
+          approachDescription: 'Agent requested clarification from the user',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: workerResult.tokensConsumed,
+          durationMs: Date.now() - startTime,
+          // Outcome is 'success' because the current turn completed cleanly —
+          // the agent explicitly decided to pause and ask rather than fail.
+          // ExecutionTrace.outcome does not yet have a dedicated 'input-required'
+          // value; when it is extended, this mapping should change.
+          outcome: 'success',
+          affectedFiles: input.targetFiles ?? [],
+          workerSelectionAudit: lastWorkerSelection,
+        };
+        await deps.traceCollector.record(inputRequiredTrace);
+        deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
+
+        const inputRequiredResult: TaskResult = {
+          id: input.id,
+          status: 'input-required',
+          mutations: [],
+          trace: inputRequiredTrace,
+          clarificationNeeded: [...lastAgentResult.uncertainties],
+          // Preserve any proposedContent (e.g., partial summary) so the
+          // user sees context alongside the questions.
+          ...(lastAgentResult.proposedContent ? { answer: lastAgentResult.proposedContent } : {}),
+        };
+        deps.bus?.emit('task:complete', { result: inputRequiredResult });
+        return inputRequiredResult;
+      }
 
       // ═══════════════════════════════════════════════════════════════
       // Step 5: VERIFY

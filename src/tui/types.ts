@@ -94,7 +94,7 @@ export interface TaskDisplayState {
   goal: string;
   source: string;
   routingLevel: number;
-  status: 'running' | 'completed' | 'failed' | 'escalated' | 'uncertain' | 'approval_required';
+  status: 'running' | 'completed' | 'failed' | 'escalated' | 'uncertain' | 'approval_required' | 'input-required';
   startedAt: number;
   completedAt?: number;
   durationMs?: number;

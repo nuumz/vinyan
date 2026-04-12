@@ -215,7 +215,15 @@ export class A2ABridge {
 
   /** Map Vinyan TaskResult to A2A Task with artifacts, applying confidence cap */
   private mapResultToA2ATask(taskId: string, result: TaskResult): A2ATask {
-    const state = result.status === 'completed' ? 'completed' : 'failed';
+    // Agent Conversation: Vinyan's `input-required` status is lexically
+    // aligned with A2A's `A2ATaskState` `'input-required'`, so it bridges
+    // directly without translation.
+    const state: A2ATask['status']['state'] =
+      result.status === 'completed'
+        ? 'completed'
+        : result.status === 'input-required'
+          ? 'input-required'
+          : 'failed';
 
     // Build artifacts from mutations — apply I13 confidence cap on verdicts
     const artifacts = result.mutations.map((m) => {
@@ -242,6 +250,15 @@ export class A2ABridge {
         text: `Task ${result.status}. ${result.mutations.length} mutation(s).`,
       },
     ];
+
+    // Agent Conversation: surface clarification questions in the summary so
+    // A2A peers can see what the agent is asking for.
+    if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
+      summaryParts.push({
+        type: 'text',
+        text: `Clarification needed:\n${result.clarificationNeeded.map((q) => `- ${q}`).join('\n')}`,
+      });
+    }
 
     if (result.escalationReason) {
       summaryParts.push({ type: 'text', text: `Escalation: ${result.escalationReason}` });

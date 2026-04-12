@@ -348,6 +348,12 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     uncertainties: z.array(z.string()),
     suggestedNextStep: z.string().optional(),
     tokensConsumed: z.number().optional(),
+    /**
+     * Agent Conversation: when true, the `uncertainties` are questions to the
+     * user (not code-fact uncertainties). Orchestrator surfaces them as a
+     * clarification request instead of retrying/escalating. Default false.
+     */
+    needsUserInput: z.boolean().optional(),
   }),
 ]);
 export type WorkerTurn = z.infer<typeof WorkerTurnSchema>;

@@ -8,7 +8,7 @@ import { makeResult } from './built-in-tools.ts';
 export const attemptCompletion: Tool = {
   name: 'attempt_completion',
   description:
-    'Signal task completion or uncertainty. Use status "done" when the task is complete, or "uncertain" when you cannot proceed.',
+    'Signal task completion or uncertainty. Use status "done" when the task is complete, or "uncertain" when you cannot proceed. Set needsUserInput=true when the uncertainty is about what the USER wants (phrase each uncertainty as a question to the user); leave needsUserInput=false/absent when the uncertainty is about a missing code fact that a retry or higher routing level could resolve.',
   minIsolationLevel: 0,
   category: 'control',
   sideEffect: false,
@@ -28,7 +28,13 @@ export const attemptCompletion: Tool = {
           uncertainties: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Reasons for uncertainty (required when status=uncertain).',
+            description:
+              "Reasons for uncertainty (required when status=uncertain). When needsUserInput=true, each entry MUST be phrased as a question directed at the user (e.g., 'Which file should I modify — auth.ts or auth-v2.ts?').",
+          },
+          needsUserInput: {
+            type: 'boolean',
+            description:
+              "Set to true ONLY when status='uncertain' AND the uncertainty is about user intent (what they want), not about code facts. When true, the orchestrator will NOT retry or escalate — it will surface your `uncertainties` as clarification questions to the user and wait for the next user turn. Use this for ambiguous goals, missing preferences, or choices the user must make. Default false.",
           },
           proposedContent: {
             type: 'string',
@@ -46,7 +52,12 @@ export const attemptCompletion: Tool = {
   async execute(params) {
     // Control tool — the agent loop intercepts this before execution
     return makeResult((params.callId as string) ?? '', 'attempt_completion', {
-      output: JSON.stringify({ status: params.status, summary: params.summary, proposedContent: params.proposedContent }),
+      output: JSON.stringify({
+        status: params.status,
+        summary: params.summary,
+        proposedContent: params.proposedContent,
+        needsUserInput: params.needsUserInput,
+      }),
     });
   },
 };

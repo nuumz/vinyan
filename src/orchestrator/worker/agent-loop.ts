@@ -50,6 +50,13 @@ export interface WorkerLoopResult {
   proposedToolCalls: ToolCall[];
   /** When set, indicates a permanent error that should not be retried or escalated. */
   nonRetryableError?: string;
+  /**
+   * Agent Conversation: true when the agent called attempt_completion with
+   * needsUserInput=true, i.e., the `uncertainties` are user-facing questions.
+   * The core loop short-circuits this into a TaskResult with
+   * status='input-required' (no retry, no escalation).
+   */
+  needsUserInput?: boolean;
 }
 
 export interface AgentLoopDeps {
@@ -309,6 +316,7 @@ function buildUncertainResult(
   transcript: WorkerTurn[],
   proposedContent?: string,
   nonRetryableError?: string,
+  needsUserInput?: boolean,
 ): WorkerLoopResult {
   return {
     mutations,
@@ -320,6 +328,7 @@ function buildUncertainResult(
     isUncertain: true,
     proposedToolCalls: [],
     nonRetryableError,
+    ...(needsUserInput ? { needsUserInput: true } : {}),
   };
 }
 
@@ -748,9 +757,11 @@ export async function runAgentLoop(
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
 
+        // Agent Conversation: input-required is a distinct outcome from plain uncertain
+        const needsUserInput = turn.needsUserInput === true;
         deps.bus?.emit('agent:session_end', {
           taskId: input.id,
-          outcome: 'uncertain',
+          outcome: needsUserInput ? 'input_required' : 'uncertain',
           tokensConsumed,
           turnsUsed: transcript.length,
           durationMs: Math.round(performance.now() - startTime),
@@ -763,7 +774,10 @@ export async function runAgentLoop(
           performance.now() - startTime,
           transcript,
           undefined,
-          detectNonRetryableError(turn.uncertainties),
+          // When the agent explicitly requests user input, do NOT classify this
+          // as a non-retryable error — it's a collaborative pause, not a hard failure.
+          needsUserInput ? undefined : detectNonRetryableError(turn.uncertainties),
+          needsUserInput,
         );
       }
     }

@@ -12,10 +12,7 @@
 import type { VinyanBus } from '../core/bus.ts';
 import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 
-export function attachOracleAccuracyListener(
-  bus: VinyanBus,
-  store: OracleAccuracyStore,
-): () => void {
+export function attachOracleAccuracyListener(bus: VinyanBus, store: OracleAccuracyStore): () => void {
   const detach = bus.on('task:complete', ({ result }) => {
     try {
       const affectedFiles = result.trace.affectedFiles;
@@ -27,6 +24,8 @@ export function attachOracleAccuracyListener(
         store.resolveByFiles(affectedFiles, 'confirmed_wrong');
       }
       // status === "escalated" → leave as pending (outcome not yet determined)
+      // status === "input-required" → leave as pending (no oracle ran; agent
+      //   paused to ask the user — resolution deferred until a later turn)
     } catch {
       // Accuracy tracking is best-effort — never break the core loop
     }

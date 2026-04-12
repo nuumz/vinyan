@@ -3,7 +3,7 @@
  *
  * Syntax: vinyan run "task description" --file src/foo.ts --budget 50000 [--retries 3] [--timeout 60000]
  * Output: TaskResult as JSON to stdout, progress to stderr
- * Exit:   0=completed, 1=failed, 2=escalated, 3=uncertain
+ * Exit:   0=completed, 1=failed, 2=escalated, 3=uncertain, 4=input-required
  *
  * CLI is a bus consumer — it observes the core loop via event listeners
  * without modifying execution behavior (A3 compliance).
@@ -129,6 +129,11 @@ export async function runAgentTask(argv: string[]): Promise<void> {
       case 'uncertain':
         process.exit(3);
         break;
+      case 'input-required':
+        // Agent asked the user for clarification. `vinyan run` is a one-shot
+        // command — it has no way to prompt; surface the questions and exit 4.
+        process.exit(4);
+        break;
     }
   } catch (err) {
     detachProgress?.();
@@ -146,7 +151,9 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
         ? 'ESCALATED'
         : result.status === 'uncertain'
           ? 'UNCERTAIN'
-          : 'FAILED';
+          : result.status === 'input-required'
+            ? 'INPUT-REQUIRED'
+            : 'FAILED';
 
   const qs = result.qualityScore && !Number.isNaN(result.qualityScore.composite)
     ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
@@ -160,6 +167,12 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
 
   if (result.answer) {
     output.write(`\n${result.answer}\n`);
+  }
+
+  if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
+    output.write('\n[vinyan] Clarification needed:\n');
+    for (const q of result.clarificationNeeded) output.write(`  - ${q}\n`);
+    output.write('[vinyan] Re-run with `vinyan chat` for interactive follow-up.\n');
   }
 
   if (result.escalationReason) {

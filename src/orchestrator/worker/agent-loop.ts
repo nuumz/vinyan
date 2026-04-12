@@ -18,6 +18,8 @@ import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
 import { countPendingProposals } from '../memory/memory-proposals.ts';
+import { evaluatePermission } from '../permissions/permission-checker.ts';
+import type { PermissionConfig } from '../permissions/permission-schema.ts';
 import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import type { ToolContext } from '../tools/tool-interface.ts';
@@ -93,6 +95,14 @@ export interface AgentLoopDeps {
    * exactly as it did in Phase 7c-2.
    */
   hookConfig?: HookConfig;
+  /**
+   * Phase 7d-2: optional permission DSL config. When set, each tool call
+   * is checked against the DSL's deny/allow rules BEFORE Pre-tool hooks
+   * run. A `deny` short-circuits the call as a denied result; an `allow`
+   * lets it proceed as normal; a `pass` (no matching rule) defers to
+   * later layers. Absent config is inert.
+   */
+  permissionConfig?: PermissionConfig;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -755,6 +765,29 @@ export async function runAgentLoop(
               continue;
             }
           }
+          // Phase 7d-2: Permission DSL gate. Runs after contract auth but
+          // before hooks so an operator-declared deny rule short-circuits
+          // without paying the cost of spawning a shell hook. Deny wins;
+          // allow is explicit; no match falls through to hooks/executor.
+          if (deps.permissionConfig) {
+            const perm = evaluatePermission(deps.permissionConfig, call.tool, call.parameters ?? {});
+            if (perm.decision === 'deny') {
+              results.push({
+                callId: call.id,
+                tool: call.tool,
+                status: 'denied',
+                error: `Permission denied: ${perm.reason ?? 'policy violation'}`,
+                durationMs: 0,
+              });
+              deps.bus?.emit('agent:tool_denied', {
+                taskId: input.id,
+                toolName: call.tool,
+                violation: `Permission DSL: ${perm.reason ?? 'denied'}`,
+              });
+              continue;
+            }
+          }
+
           // Phase 7d-1: PreToolUse hooks. Any hook that exits non-zero
           // (or returns `{decision: "block"}`) converts the call into a
           // denied result without invoking the tool executor. Hooks run

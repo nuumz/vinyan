@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookConfigSchema } from '../../src/orchestrator/hooks/hook-schema.ts';
 import { writeProposal } from '../../src/orchestrator/memory/memory-proposals.ts';
+import { PermissionConfigSchema } from '../../src/orchestrator/permissions/permission-schema.ts';
 import type { OrchestratorTurn, TerminateReason, WorkerTurn } from '../../src/orchestrator/protocol.ts';
 import type { ToolContext } from '../../src/orchestrator/tools/tool-interface.ts';
 import type {
@@ -637,5 +638,198 @@ describe('runAgentLoop', () => {
     // No hook warnings should be attached when hookConfig is undefined.
     expect(output).not.toContain('[POST-HOOK WARNING]');
     expect(output).toContain('clean output');
+  });
+
+  // ── Phase 7d-2: permission DSL integration ──────────────────────────
+
+  it('permission DSL deny rule short-circuits the tool call before hooks run', async () => {
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'shell_exec', parameters: { command: 'rm -rf /tmp/foo' } }],
+        rationale: 'cleanup',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    let executorCalls = 0;
+    const deps = makeDeps(session, {
+      toolExecutor: {
+        async execute(call: ToolCall): Promise<ToolResult> {
+          executorCalls++;
+          return { callId: call.id, tool: call.tool, status: 'success', output: 'should not run', durationMs: 1 };
+        },
+      },
+      permissionConfig: PermissionConfigSchema.parse({
+        deny: [{ tool: 'shell_exec', match: 'rm\\s+-rf', reason: 'destructive command blocked' }],
+      }),
+      // Attach a passing hook too so we can verify the denied error comes
+      // from the DSL (which short-circuits first) and not from the hook.
+      hookConfig: HookConfigSchema.parse({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '.*',
+              hooks: [{ command: `sh -c 'echo hook-fired >&2; exit 0'` }],
+            },
+          ],
+        },
+      }),
+    });
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    expect(executorCalls).toBe(0);
+
+    const toolResultsTurn = session.sent.find((t) => t.type === 'tool_results') as Extract<
+      OrchestratorTurn,
+      { type: 'tool_results' }
+    >;
+    expect(toolResultsTurn).toBeDefined();
+    const firstResult = toolResultsTurn.results[0]!;
+    expect(firstResult.status).toBe('denied');
+    expect(firstResult.error).toContain('Permission denied');
+    expect(firstResult.error).toContain('destructive command blocked');
+  });
+
+  it('permission DSL allow rule lets the tool call through', async () => {
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'file_write', parameters: { file_path: 'src/x.ts', content: 'x' } }],
+        rationale: 'writing',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    let executorCalls = 0;
+    const deps = makeDeps(session, {
+      toolExecutor: {
+        async execute(call: ToolCall): Promise<ToolResult> {
+          executorCalls++;
+          return { callId: call.id, tool: call.tool, status: 'success', output: 'wrote src/x.ts', durationMs: 1 };
+        },
+      },
+      permissionConfig: PermissionConfigSchema.parse({
+        allow: [{ tool: 'file_write', match: 'src/' }],
+      }),
+    });
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    expect(executorCalls).toBe(1);
+    const toolResultsTurn = session.sent.find((t) => t.type === 'tool_results') as Extract<
+      OrchestratorTurn,
+      { type: 'tool_results' }
+    >;
+    expect(toolResultsTurn.results[0]!.status).toBe('success');
+    expect(toolResultsTurn.results[0]!.output).toContain('wrote src/x.ts');
+  });
+
+  it('permission DSL pass-through (no matching rule) lets the tool call proceed', async () => {
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { file_path: 'src/x.ts' } }],
+        rationale: 'reading',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    let executorCalls = 0;
+    const deps = makeDeps(session, {
+      toolExecutor: {
+        async execute(call: ToolCall): Promise<ToolResult> {
+          executorCalls++;
+          return { callId: call.id, tool: call.tool, status: 'success', output: 'file contents', durationMs: 1 };
+        },
+      },
+      permissionConfig: PermissionConfigSchema.parse({
+        deny: [{ tool: 'shell_exec' }],
+        allow: [{ tool: 'file_write' }],
+      }),
+    });
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    // No rule matched `file_read` — the DSL passed through and the executor ran.
+    expect(executorCalls).toBe(1);
+    const toolResultsTurn = session.sent.find((t) => t.type === 'tool_results') as Extract<
+      OrchestratorTurn,
+      { type: 'tool_results' }
+    >;
+    expect(toolResultsTurn.results[0]!.status).toBe('success');
+  });
+
+  it('permissionConfig absent → loop behaves exactly as before', async () => {
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'shell_exec', parameters: { command: 'rm -rf /tmp/x' } }],
+        rationale: 'cleanup',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    let executorCalls = 0;
+    const deps = makeDeps(session, {
+      toolExecutor: {
+        async execute(call: ToolCall): Promise<ToolResult> {
+          executorCalls++;
+          return { callId: call.id, tool: call.tool, status: 'success', output: 'cleaned up', durationMs: 1 };
+        },
+      },
+      // No permissionConfig.
+    });
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    // Without a DSL config, even destructive-looking commands reach the executor.
+    expect(executorCalls).toBe(1);
+    const toolResultsTurn = session.sent.find((t) => t.type === 'tool_results') as Extract<
+      OrchestratorTurn,
+      { type: 'tool_results' }
+    >;
+    expect(toolResultsTurn.results[0]!.status).toBe('success');
   });
 });

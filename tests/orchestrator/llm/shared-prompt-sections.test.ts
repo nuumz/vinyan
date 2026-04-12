@@ -11,8 +11,14 @@ import type { InstructionMemory, InstructionSource } from '../../../src/orchestr
 import {
   computeEnvironmentInfo,
   type EnvironmentInfo,
+  renderAgentPolicies,
+  renderCitationsTonePolicy,
   renderEnvironmentSection,
+  renderExecutingCarePolicy,
+  renderGitSafetyPolicy,
   renderInstructionHierarchy,
+  renderParallelToolsPolicy,
+  renderToolResultSafetyPolicy,
   TIER_HEADER_LABELS,
   TIER_TRUST_HINT,
 } from '../../../src/orchestrator/llm/shared-prompt-sections.ts';
@@ -267,5 +273,140 @@ describe('computeEnvironmentInfo', () => {
       expect(info.gitBranch).toBeTruthy();
       expect(typeof info.gitDirty).toBe('boolean');
     }
+  });
+});
+
+// ── Phase 7b behavioral policy renderers ───────────────────────────
+
+describe('renderParallelToolsPolicy', () => {
+  test('mentions parallel execution and batching guidance', () => {
+    const out = renderParallelToolsPolicy();
+    expect(out).toContain('## Parallel Tool Execution');
+    expect(out).toContain('batch');
+    expect(out).toContain('Independent calls');
+    expect(out).toContain('Dependent calls');
+  });
+
+  test('warns against batching destructive calls blindly', () => {
+    const out = renderParallelToolsPolicy();
+    expect(out).toContain('destructive');
+    expect(out).toContain('executing-care');
+  });
+});
+
+describe('renderExecutingCarePolicy', () => {
+  test('enumerates concrete destructive operations', () => {
+    const out = renderExecutingCarePolicy();
+    expect(out).toContain('## Executing Actions With Care');
+    expect(out).toContain('rm -rf');
+    expect(out).toContain('git reset --hard');
+    expect(out).toContain('force-push');
+    expect(out).toContain('dropping database tables');
+  });
+
+  test('tells the agent not to delete unfamiliar state as a shortcut', () => {
+    const out = renderExecutingCarePolicy();
+    expect(out).toContain('investigate');
+    expect(out).toContain('in-progress work');
+  });
+
+  test('covers shared-state operations (PRs, messages, infra)', () => {
+    const out = renderExecutingCarePolicy();
+    expect(out).toContain('pushing code');
+    expect(out).toContain('PRs');
+  });
+});
+
+describe('renderGitSafetyPolicy', () => {
+  test('covers no-commit-without-asking rule', () => {
+    const out = renderGitSafetyPolicy();
+    expect(out).toContain('## Git Safety Protocol');
+    expect(out).toContain('NEVER commit');
+    expect(out).toContain('NEVER push');
+  });
+
+  test('covers amend / force-push / hook-skipping footguns', () => {
+    const out = renderGitSafetyPolicy();
+    expect(out).toContain('NEVER amend');
+    expect(out).toContain('main/master');
+    expect(out).toContain('--no-verify');
+    expect(out).toContain('--no-gpg-sign');
+  });
+
+  test('forbids staging wildcards that could leak secrets', () => {
+    const out = renderGitSafetyPolicy();
+    expect(out).toContain('git add .');
+    expect(out).toContain('git add -A');
+    expect(out).toContain('.env');
+  });
+
+  test('instructs pre-commit hook recovery via new commit', () => {
+    const out = renderGitSafetyPolicy();
+    expect(out).toContain('pre-commit hook');
+    expect(out).toContain('NEW commit');
+    expect(out).toContain('--amend');
+  });
+});
+
+describe('renderCitationsTonePolicy', () => {
+  test('specifies file_path:line_number citation format', () => {
+    const out = renderCitationsTonePolicy();
+    expect(out).toContain('## Citations, Tone, and Style');
+    expect(out).toContain('file_path:line_number');
+  });
+
+  test('specifies owner/repo#123 GitHub reference format', () => {
+    const out = renderCitationsTonePolicy();
+    expect(out).toContain('owner/repo#123');
+  });
+
+  test('forbids emojis unless explicitly requested', () => {
+    const out = renderCitationsTonePolicy();
+    expect(out).toContain('emojis');
+    expect(out).toContain('explicitly');
+  });
+});
+
+describe('renderToolResultSafetyPolicy', () => {
+  test('warns about prompt injection in tool results', () => {
+    const out = renderToolResultSafetyPolicy();
+    expect(out).toContain('## Tool Result Safety');
+    expect(out).toContain('prompt injection');
+    expect(out).toContain('ignore previous instructions');
+  });
+
+  test('clarifies vinyan-reminder tag trust boundary', () => {
+    const out = renderToolResultSafetyPolicy();
+    expect(out).toContain('vinyan-reminder');
+    expect(out).toContain('orchestrator');
+  });
+});
+
+describe('renderAgentPolicies', () => {
+  test('combines all five policy blocks in order', () => {
+    const out = renderAgentPolicies();
+    const parallelIdx = out.indexOf('## Parallel Tool Execution');
+    const careIdx = out.indexOf('## Executing Actions With Care');
+    const gitIdx = out.indexOf('## Git Safety Protocol');
+    const citeIdx = out.indexOf('## Citations, Tone, and Style');
+    const toolIdx = out.indexOf('## Tool Result Safety');
+    // All five must be present
+    expect(parallelIdx).toBeGreaterThan(-1);
+    expect(careIdx).toBeGreaterThan(-1);
+    expect(gitIdx).toBeGreaterThan(-1);
+    expect(citeIdx).toBeGreaterThan(-1);
+    expect(toolIdx).toBeGreaterThan(-1);
+    // Order: parallel → care → git → cite → tool
+    expect(careIdx).toBeGreaterThan(parallelIdx);
+    expect(gitIdx).toBeGreaterThan(careIdx);
+    expect(citeIdx).toBeGreaterThan(gitIdx);
+    expect(toolIdx).toBeGreaterThan(citeIdx);
+  });
+
+  test('output stays under 5KB to keep system prompt overhead bounded', () => {
+    // Guard: if a future edit doubles the length, we want to notice in CI
+    // rather than discovering it via token budget regressions in production.
+    // Current baseline: ~4.4KB for all five blocks.
+    expect(renderAgentPolicies().length).toBeLessThan(5120);
   });
 });

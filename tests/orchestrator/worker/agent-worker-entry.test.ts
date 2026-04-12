@@ -355,6 +355,27 @@ describe('agent-worker-entry', () => {
       expect(prompt).toContain('attempt_completion');
     });
 
+    test('buildSystemPrompt includes Phase 7b behavioral policies', () => {
+      const prompt = buildSystemPrompt(2);
+      // Parallel tool execution guidance
+      expect(prompt).toContain('## Parallel Tool Execution');
+      expect(prompt).toContain('batch');
+      // Executing care / reversibility
+      expect(prompt).toContain('## Executing Actions With Care');
+      expect(prompt).toContain('rm -rf');
+      // Git safety protocol
+      expect(prompt).toContain('## Git Safety Protocol');
+      expect(prompt).toContain('NEVER force-push');
+      expect(prompt).toContain('--no-verify');
+      // Citations and tone
+      expect(prompt).toContain('## Citations, Tone, and Style');
+      expect(prompt).toContain('file_path:line_number');
+      expect(prompt).toContain('owner/repo#123');
+      // Tool result safety
+      expect(prompt).toContain('## Tool Result Safety');
+      expect(prompt).toContain('prompt injection');
+    });
+
     test('buildSystemPrompt renders environment + instruction prelude when supplied', () => {
       const prompt = buildSystemPrompt(2, 'code', {
         environment: {

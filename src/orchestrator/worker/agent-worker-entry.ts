@@ -12,6 +12,7 @@ import type { InstructionMemory } from '../llm/instruction-hierarchy.ts';
 import { compressPerception } from '../llm/perception-compressor.ts';
 import {
   type EnvironmentInfo,
+  renderAgentPolicies,
   renderEnvironmentSection,
   renderInstructionHierarchy,
 } from '../llm/shared-prompt-sections.ts';
@@ -449,10 +450,7 @@ ${REMINDER_PROTOCOL_DESCRIPTION}
 - If you discover unexpected state (unfamiliar files, existing implementations), investigate before overwriting.
 - When stuck: state what you've tried, what failed, and what you think the root cause is. Then try the most different approach you can think of.
 
-## Reversibility Awareness
-- Freely take local, reversible actions (reading files, running tests, small edits).
-- For destructive or hard-to-reverse actions (deleting files, large rewrites, removing functionality), pause and explain what you intend before proceeding.
-- Prefer additive changes over destructive ones when both achieve the goal.
+${renderAgentPolicies()}
 
 ## Budget Awareness
 - You have a limited token and turn budget. Work efficiently — every turn counts.

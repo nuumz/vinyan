@@ -1,15 +1,15 @@
 /**
  * Tests for the multi-tier instruction hierarchy.
  */
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { join } from 'path';
 import {
-  resolveInstructions,
-  parseFrontmatter,
-  matchesGlob,
   clearInstructionHierarchyCache,
+  matchesGlob,
+  parseFrontmatter,
+  resolveInstructions,
 } from '../../../src/orchestrator/llm/instruction-hierarchy.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -484,5 +484,219 @@ Not for refactoring`,
     const fixResult = resolveInstructions({ workspace, actionVerb: 'fix' });
     expect(fixResult).not.toBeNull();
     expect(fixResult!.content).toContain('Not for refactoring');
+  });
+});
+
+// ── Phase 4: structured M4 learned.md reader ────────────────────────
+
+describe('learned.md structured reader (Phase 4)', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    clearInstructionHierarchyCache();
+    workspace = makeTempWorkspace('learned-entries');
+  });
+
+  afterEach(() => {
+    cleanupWorkspace(workspace);
+  });
+
+  /** Helper to write a single well-formed approved-entry block to learned.md. */
+  function writeEntry(
+    filename: string,
+    opts: {
+      slug: string;
+      category?: string;
+      tier?: string;
+      confidence?: number;
+      description: string;
+      applyTo?: string[];
+      body: string;
+    },
+  ): void {
+    const {
+      slug,
+      category = 'convention',
+      tier = 'heuristic',
+      confidence = 0.85,
+      description,
+      applyTo = [],
+      body,
+    } = opts;
+    const meta = `<!-- vinyan-memory-entry: slug=${slug}, category=${category}, tier=${tier}, confidence=${confidence}, proposedBy=worker, approvedBy=alice, approvedAt=2026-01-01T00:00:00.000Z -->`;
+    const heading = `## ${slug} (${category})`;
+    const applyToLine = applyTo.length ? `\n**Applies to**: ${applyTo.join(', ')}` : '';
+    const block = `${meta}\n${heading}\n\n**Summary**: ${description}${applyToLine}\n\n${body}`;
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    const existing = existsSync(filename) ? readFileSync(filename, 'utf-8') : '';
+    writeFileSync(filename, existing ? `${existing}\n\n${block}\n` : `${block}\n`);
+  }
+
+  test('hand-authored learned.md (no markers) still loads as a single source', () => {
+    // Backwards-compat path: pre-Phase 4 format — one opaque instruction source
+    // covering the whole file, no per-entry filtering.
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    writeFileSync(join(workspace, '.vinyan', 'memory', 'learned.md'), '# Hand-authored\n\nUse async/await everywhere.');
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    expect(learned).toHaveLength(1);
+    expect(learned[0]!.content).toContain('Use async/await everywhere.');
+  });
+
+  test('multi-entry learned.md emits one InstructionSource per approved rule', () => {
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    writeEntry(learnedPath, {
+      slug: 'rule-alpha',
+      description: 'Alpha convention.',
+      body: 'Body for alpha.',
+    });
+    writeEntry(learnedPath, {
+      slug: 'rule-beta',
+      description: 'Beta convention.',
+      body: 'Body for beta.',
+    });
+    writeEntry(learnedPath, {
+      slug: 'rule-gamma',
+      description: 'Gamma convention.',
+      body: 'Body for gamma.',
+    });
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    expect(learned).toHaveLength(3);
+    // Each source should carry its per-entry description in frontmatter so
+    // buildSectionHeader can render it in the merged prompt.
+    const descriptions = learned.map((s) => s.frontmatter.description);
+    expect(descriptions).toEqual(['Alpha convention.', 'Beta convention.', 'Gamma convention.']);
+  });
+
+  test('per-entry applyTo filters each rule against target files independently', () => {
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    // Three rules: one API-only, one UI-only, one always-active (no applyTo).
+    writeEntry(learnedPath, {
+      slug: 'api-rule',
+      description: 'API convention.',
+      applyTo: ['src/api/**'],
+      body: 'API bodies.',
+    });
+    writeEntry(learnedPath, {
+      slug: 'ui-rule',
+      description: 'UI convention.',
+      applyTo: ['src/ui/**'],
+      body: 'UI bodies.',
+    });
+    writeEntry(learnedPath, {
+      slug: 'global-rule',
+      description: 'Always active.',
+      body: 'Global body.',
+    });
+
+    // Task targets an API file only. Expect: api-rule + global-rule kept,
+    // ui-rule filtered out.
+    const apiResult = resolveInstructions({
+      workspace,
+      targetFiles: ['src/api/users.ts'],
+    });
+    expect(apiResult).not.toBeNull();
+    const apiLearnedSlugs = apiResult!.sources
+      .filter((s) => s.tier === 'learned')
+      .map((s) => s.frontmatter.description);
+    expect(apiLearnedSlugs).toContain('API convention.');
+    expect(apiLearnedSlugs).toContain('Always active.');
+    expect(apiLearnedSlugs).not.toContain('UI convention.');
+
+    clearInstructionHierarchyCache();
+
+    // Task targets a UI file. Expect: ui-rule + global-rule kept, api-rule out.
+    const uiResult = resolveInstructions({
+      workspace,
+      targetFiles: ['src/ui/button.tsx'],
+    });
+    expect(uiResult).not.toBeNull();
+    const uiLearnedSlugs = uiResult!.sources.filter((s) => s.tier === 'learned').map((s) => s.frontmatter.description);
+    expect(uiLearnedSlugs).toContain('UI convention.');
+    expect(uiLearnedSlugs).toContain('Always active.');
+    expect(uiLearnedSlugs).not.toContain('API convention.');
+  });
+
+  test('learned rule with applyTo is dropped when no target files supplied', () => {
+    // Scoped learned rule requires target files to match — same behavior as
+    // scoped M3 rules. Without targetFiles it must NOT appear.
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    writeEntry(learnedPath, {
+      slug: 'scoped-only',
+      description: 'Only for API.',
+      applyTo: ['src/api/**'],
+      body: 'API body.',
+    });
+
+    const result = resolveInstructions({ workspace });
+    // No project source, no matching scoped learned rule → null.
+    expect(result).toBeNull();
+  });
+
+  test('learned tier still comes after project/scoped tiers in merge order', () => {
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Project instructions');
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    writeEntry(learnedPath, {
+      slug: 'learned-rule',
+      description: 'Learned rule.',
+      body: 'Learned body.',
+    });
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    const tiers = result!.sources.map((s) => s.tier);
+    expect(tiers.indexOf('project')).toBeLessThan(tiers.indexOf('learned'));
+  });
+
+  test('invalidates cache when a new approved entry is appended', () => {
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    writeEntry(learnedPath, {
+      slug: 'first',
+      description: 'First rule.',
+      body: 'First body.',
+    });
+
+    const first = resolveInstructions({ workspace });
+    expect(first!.sources.filter((s) => s.tier === 'learned')).toHaveLength(1);
+
+    // Append another entry — the discovery fingerprint must change and the
+    // cache must invalidate so the new entry appears in the next resolve.
+    writeEntry(learnedPath, {
+      slug: 'second',
+      description: 'Second rule.',
+      body: 'Second body.',
+    });
+
+    const second = resolveInstructions({ workspace });
+    expect(second!.sources.filter((s) => s.tier === 'learned')).toHaveLength(2);
+    expect(first).not.toBe(second);
+  });
+
+  test('per-entry tier flows into InstructionSource frontmatter', () => {
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    writeEntry(learnedPath, {
+      slug: 'strong-rule',
+      tier: 'deterministic',
+      description: 'Strong rule.',
+      body: 'Strong body.',
+    });
+    writeEntry(learnedPath, {
+      slug: 'weak-rule',
+      tier: 'probabilistic',
+      description: 'Weak rule.',
+      body: 'Weak body.',
+    });
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    const tiers = learned.map((s) => s.frontmatter.tier);
+    expect(tiers).toContain('deterministic');
+    expect(tiers).toContain('probabilistic');
   });
 });

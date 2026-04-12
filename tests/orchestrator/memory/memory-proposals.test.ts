@@ -9,15 +9,7 @@
  *   - memoryPropose tool: success path + oracle rejection path
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -26,9 +18,11 @@ import {
   CONFIDENCE_FLOOR,
   countPendingProposals,
   LEARNED_FILE_REL,
+  type LearnedEntry,
   listPendingProposals,
   MAX_PROPOSAL_SIZE,
   type MemoryProposal,
+  parseLearnedMdEntries,
   parseProposalFile,
   PENDING_DIR_REL,
   REJECTED_DIR_REL,
@@ -53,8 +47,7 @@ function makeValidProposal(overrides: Partial<MemoryProposal> = {}): MemoryPropo
     confidence: 0.85,
     applyTo: ['tests/**/*.test.ts'],
     description: 'Use bun:test for all test files in this repo.',
-    body:
-      '## Rule\n\nAll tests use `bun:test`, not `vitest` or `jest`.\n\n## Rationale\n\nThe repo is a Bun project.',
+    body: '## Rule\n\nAll tests use `bun:test`, not `vitest` or `jest`.\n\n## Rationale\n\nThe repo is a Bun project.',
     evidence: [
       {
         filePath: 'tests/orchestrator/tools/tool-validator.test.ts',
@@ -212,9 +205,7 @@ describe('serializeProposal', () => {
   });
 
   test('emits applyTo as a YAML list', () => {
-    const out = serializeProposal(
-      makeValidProposal({ applyTo: ['src/**/*.ts', 'tests/**/*.test.ts'] }),
-    );
+    const out = serializeProposal(makeValidProposal({ applyTo: ['src/**/*.ts', 'tests/**/*.test.ts'] }));
     expect(out).toContain('applyTo:');
     expect(out).toContain('  - "src/**/*.ts"');
     expect(out).toContain('  - "tests/**/*.test.ts"');
@@ -279,9 +270,7 @@ describe('writeProposal', () => {
   });
 
   test('rejects invalid proposal by throwing', () => {
-    expect(() =>
-      writeProposal(workspace, makeValidProposal({ confidence: 0.5 })),
-    ).toThrow(/confidence_floor/);
+    expect(() => writeProposal(workspace, makeValidProposal({ confidence: 0.5 }))).toThrow(/confidence_floor/);
     // Nothing should have been written.
     expect(existsSync(join(workspace, PENDING_DIR_REL))).toBe(false);
   });
@@ -407,9 +396,7 @@ describe('memoryPropose tool', () => {
         confidence: 0.85,
         description: 'Always use bun:test',
         body: 'Rationale: this is a Bun project.',
-        evidence: [
-          { file_path: 'package.json', note: 'Bun listed as runtime' },
-        ],
+        evidence: [{ file_path: 'package.json', note: 'Bun listed as runtime' }],
         proposed_by: 'worker-7',
         session_id: 'session-xyz',
       },
@@ -616,18 +603,13 @@ describe('approveProposal', () => {
   });
 
   test('includes applyTo line in the rendered block when present', () => {
-    writeProposal(
-      workspace,
-      makeValidProposal({ slug: 'scoped', applyTo: ['src/**/*.ts'] }),
-    );
+    writeProposal(workspace, makeValidProposal({ slug: 'scoped', applyTo: ['src/**/*.ts'] }));
     const result = approveProposal(workspace, 'scoped', 'alice');
     expect(result.appendedBlock).toContain('**Applies to**: src/**/*.ts');
   });
 
   test('throws when the slug cannot be resolved', () => {
-    expect(() => approveProposal(workspace, 'does-not-exist', 'alice')).toThrow(
-      /no pending proposals/,
-    );
+    expect(() => approveProposal(workspace, 'does-not-exist', 'alice')).toThrow(/no pending proposals/);
   });
 
   test('escapes reviewer name so HTML comment stays safe', () => {
@@ -706,9 +688,7 @@ describe('rejectProposal', () => {
 
   test('throws when slug does not match any pending file', () => {
     writeProposal(workspace, makeValidProposal({ slug: 'real' }));
-    expect(() => rejectProposal(workspace, 'fake', 'alice', 'nope')).toThrow(
-      /no pending proposal matching/,
-    );
+    expect(() => rejectProposal(workspace, 'fake', 'alice', 'nope')).toThrow(/no pending proposal matching/);
     // Real pending file should still be there.
     const pending = listPendingProposals(workspace);
     expect(pending.length).toBe(1);
@@ -721,5 +701,222 @@ describe('rejectProposal', () => {
     expect(existsSync(join(workspace, REJECTED_DIR_REL))).toBe(true);
     const entries = readdirSync(join(workspace, REJECTED_DIR_REL));
     expect(entries.length).toBe(1);
+  });
+});
+
+// ── parseLearnedMdEntries (Phase 4 structured reader) ───────────────
+
+describe('parseLearnedMdEntries', () => {
+  test('returns empty array on empty input', () => {
+    expect(parseLearnedMdEntries('')).toEqual([]);
+  });
+
+  test('returns empty array when no entry markers present (hand-authored file)', () => {
+    // A plain hand-authored learned.md. Must be treated as opaque by the
+    // caller so backwards compat is preserved.
+    const content = `<!-- Vinyan M4 learned conventions. -->
+
+## Always use semicolons
+
+This is a hand-authored rule without the approval metadata comment.
+`;
+    expect(parseLearnedMdEntries(content)).toEqual([]);
+  });
+
+  test('parses a single approved entry end-to-end', () => {
+    // Match the exact shape emitted by approveProposal → renderApprovedBlock:
+    //   <!-- vinyan-memory-entry: slug=..., category=..., tier=..., confidence=..., proposedBy=..., approvedBy=..., approvedAt=... -->
+    //   ## <slug> (<category>)
+    //
+    //   **Summary**: <description>
+    //   **Applies to**: <globs>
+    //
+    //   <body>
+    writeProposal(
+      workspace,
+      makeValidProposal({
+        slug: 'prefer-bun',
+        applyTo: ['tests/**/*.ts', 'src/**/*.test.ts'],
+        description: 'Use bun:test everywhere in this repo.',
+      }),
+    );
+    approveProposal(workspace, 'prefer-bun', 'alice');
+
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    const entries = parseLearnedMdEntries(learned);
+    expect(entries).toHaveLength(1);
+
+    const entry = entries[0]!;
+    expect(entry.slug).toBe('prefer-bun');
+    expect(entry.category).toBe('convention');
+    expect(entry.tier).toBe('heuristic');
+    expect(entry.confidence).toBeCloseTo(0.85, 5);
+    expect(entry.proposedBy).toBe('worker-42');
+    expect(entry.approvedBy).toBe('alice');
+    expect(entry.approvedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(entry.description).toBe('Use bun:test everywhere in this repo.');
+    expect(entry.applyTo).toEqual(['tests/**/*.ts', 'src/**/*.test.ts']);
+    // Body retains the heading + summary + applies-to + rule text so
+    // downstream consumers can render the entry as-is in debug dumps.
+    expect(entry.body).toContain('## prefer-bun (convention)');
+    expect(entry.body).toContain('**Summary**: Use bun:test everywhere in this repo.');
+    expect(entry.body).toContain('## Rule');
+    expect(entry.body).toContain('bun:test');
+  });
+
+  test('parses multiple approved entries preserving approval order', () => {
+    // Approve three proposals in sequence. Each one is appended to learned.md
+    // with a fresh entry marker, so the parser must find all three in order.
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-one', description: 'First rule.' }));
+    approveProposal(workspace, 'rule-one', 'alice');
+
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-two', description: 'Second rule.' }));
+    approveProposal(workspace, 'rule-two', 'bob');
+
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-three', description: 'Third rule.' }));
+    approveProposal(workspace, 'rule-three', 'carol');
+
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    const entries = parseLearnedMdEntries(learned);
+    expect(entries.map((e) => e.slug)).toEqual(['rule-one', 'rule-two', 'rule-three']);
+    expect(entries.map((e) => e.approvedBy)).toEqual(['alice', 'bob', 'carol']);
+    expect(entries.map((e) => e.description)).toEqual(['First rule.', 'Second rule.', 'Third rule.']);
+  });
+
+  test('extracts applyTo list correctly across different proposal shapes', () => {
+    // Proposal with no applyTo → entry.applyTo is empty (always-active rule).
+    writeProposal(workspace, makeValidProposal({ slug: 'always-on', applyTo: undefined }));
+    approveProposal(workspace, 'always-on', 'alice');
+
+    // Proposal with a single glob.
+    writeProposal(workspace, makeValidProposal({ slug: 'single-glob', applyTo: ['src/api/**'] }));
+    approveProposal(workspace, 'single-glob', 'alice');
+
+    // Proposal with several globs — must all be preserved.
+    writeProposal(
+      workspace,
+      makeValidProposal({
+        slug: 'multi-glob',
+        applyTo: ['src/api/**', 'src/routes/**', 'tests/api/**'],
+      }),
+    );
+    approveProposal(workspace, 'multi-glob', 'alice');
+
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    const entries = parseLearnedMdEntries(learned);
+    expect(entries).toHaveLength(3);
+
+    const byS = (s: string): LearnedEntry => entries.find((e) => e.slug === s)!;
+    expect(byS('always-on').applyTo).toEqual([]);
+    expect(byS('single-glob').applyTo).toEqual(['src/api/**']);
+    expect(byS('multi-glob').applyTo).toEqual(['src/api/**', 'src/routes/**', 'tests/api/**']);
+  });
+
+  test('is robust to entries with no body below the metadata', () => {
+    // A minimally-viable entry: marker + heading only. Still valid — the
+    // parser should return it without crashing and the body should contain
+    // at least the heading.
+    const content = `<!-- vinyan-memory-entry: slug=bare-entry, category=finding, tier=heuristic, confidence=0.75, proposedBy=bot, approvedBy=alice, approvedAt=2026-01-01T00:00:00.000Z -->
+## bare-entry (finding)
+`;
+    const entries = parseLearnedMdEntries(content);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.slug).toBe('bare-entry');
+    expect(entries[0]!.description).toBe('');
+    expect(entries[0]!.applyTo).toEqual([]);
+    expect(entries[0]!.body).toContain('## bare-entry (finding)');
+  });
+
+  test('tolerates whitespace and blank lines between entries', () => {
+    // Real approveProposal output uses blank-line separation. The parser
+    // must not lose either entry when they are separated by multiple blank
+    // lines, indentation-free body text, or trailing newlines.
+    const content = `<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->
+
+<!-- vinyan-memory-entry: slug=alpha, category=convention, tier=heuristic, confidence=0.90, proposedBy=worker-1, approvedBy=alice, approvedAt=2026-01-01T00:00:00.000Z -->
+## alpha (convention)
+
+**Summary**: Alpha rule.
+
+Body of alpha.
+
+
+<!-- vinyan-memory-entry: slug=beta, category=finding, tier=deterministic, confidence=0.95, proposedBy=worker-2, approvedBy=alice, approvedAt=2026-01-02T00:00:00.000Z -->
+## beta (finding)
+
+**Summary**: Beta rule.
+**Applies to**: src/**/*.ts
+
+Body of beta.
+`;
+    const entries = parseLearnedMdEntries(content);
+    expect(entries.map((e) => e.slug)).toEqual(['alpha', 'beta']);
+    expect(entries[0]!.tier).toBe('heuristic');
+    expect(entries[1]!.tier).toBe('deterministic');
+    expect(entries[1]!.applyTo).toEqual(['src/**/*.ts']);
+  });
+
+  test('does NOT treat a marker lookalike inside a body as a new entry', () => {
+    // A rule body that merely *describes* the marker format (e.g. in
+    // documentation) must not fake a new entry. The marker must appear at
+    // line start to count. Here we indent the lookalike so the anchored
+    // regex misses it.
+    const content = `<!-- vinyan-memory-entry: slug=only-one, category=finding, tier=heuristic, confidence=0.8, proposedBy=w, approvedBy=a, approvedAt=2026-01-01T00:00:00.000Z -->
+## only-one (finding)
+
+**Summary**: Only one entry expected.
+
+Some body text that mentions the marker in an indented code block:
+
+    <!-- vinyan-memory-entry: slug=fake, category=finding, tier=heuristic, confidence=0.8, proposedBy=x, approvedBy=y, approvedAt=2026-01-01T00:00:00.000Z -->
+
+End of body.
+`;
+    const entries = parseLearnedMdEntries(content);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.slug).toBe('only-one');
+  });
+
+  test('skips malformed entries (missing closing --> or empty slug)', () => {
+    // A dangling marker with no closing `-->` is dropped silently, but
+    // subsequent well-formed entries must still be returned.
+    const content = `<!-- vinyan-memory-entry: slug=, category=finding, tier=heuristic, confidence=0.8, proposedBy=w, approvedBy=a, approvedAt=2026-01-01T00:00:00.000Z -->
+## (finding)
+
+<!-- vinyan-memory-entry: slug=good, category=finding, tier=heuristic, confidence=0.8, proposedBy=w, approvedBy=a, approvedAt=2026-01-01T00:00:00.000Z -->
+## good (finding)
+
+**Summary**: Valid entry.
+`;
+    const entries = parseLearnedMdEntries(content);
+    // Empty-slug entry is rejected; good entry is kept.
+    expect(entries.map((e) => e.slug)).toEqual(['good']);
+  });
+
+  test('round-trips a real approved entry through approveProposal', () => {
+    // Belt-and-suspenders: start from a real proposal, approve it via the
+    // normal flow, then parse the learned.md that approval produced. The
+    // extracted metadata must exactly match the proposal inputs.
+    const proposal = makeValidProposal({
+      slug: 'round-trip',
+      tier: 'deterministic',
+      confidence: 0.92,
+      description: 'A round-tripped rule.',
+      applyTo: ['src/core/**', '*.ts'],
+    });
+    writeProposal(workspace, proposal);
+    approveProposal(workspace, 'round-trip', 'alice');
+
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    const entries = parseLearnedMdEntries(learned);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!;
+    expect(entry.slug).toBe('round-trip');
+    expect(entry.tier).toBe('deterministic');
+    expect(entry.confidence).toBeCloseTo(0.92, 5);
+    expect(entry.description).toBe('A round-tripped rule.');
+    expect(entry.applyTo).toEqual(['src/core/**', '*.ts']);
+    expect(entry.proposedBy).toBe('worker-42');
+    expect(entry.approvedBy).toBe('alice');
   });
 });

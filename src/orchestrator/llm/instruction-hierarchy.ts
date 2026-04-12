@@ -20,6 +20,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import { join, dirname, resolve, isAbsolute } from 'path';
 import { homedir } from 'os';
+import { parseLearnedMdEntries, type LearnedEntry } from '../memory/memory-proposals.ts';
 
 /** Max per-file instruction size (50KB) — prevents context window blowout. */
 const MAX_INSTRUCTION_SIZE = 50_000;
@@ -152,7 +153,10 @@ export function parseFrontmatter(content: string): { frontmatter: RuleFrontmatte
     }
 
     // List continuation for any recognized list key
-    if (listMatch && (currentKey === 'taskTypes' || currentKey === 'applyToActions' || currentKey === 'excludeActions')) {
+    if (
+      listMatch &&
+      (currentKey === 'taskTypes' || currentKey === 'applyToActions' || currentKey === 'excludeActions')
+    ) {
       const val = listMatch[1]!.replace(/^["']|["']$/g, '');
       if (currentKey === 'taskTypes') {
         if (val === 'code' || val === 'reasoning') {
@@ -206,9 +210,7 @@ export function parseFrontmatter(content: string): { frontmatter: RuleFrontmatte
             .slice(1, value.endsWith(']') ? -1 : undefined)
             .split(',')
             .map((s) => s.trim().replace(/^["']|["']$/g, ''));
-          frontmatter.taskTypes = parts.filter(
-            (p): p is 'code' | 'reasoning' => p === 'code' || p === 'reasoning',
-          );
+          frontmatter.taskTypes = parts.filter((p): p is 'code' | 'reasoning' => p === 'code' || p === 'reasoning');
         } else if (value && (value === 'code' || value === 'reasoning')) {
           frontmatter.taskTypes = [value];
         }
@@ -383,8 +385,15 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
       i += 1;
     } else if (ch === '{') {
       const end = g.indexOf('}', i);
-      if (end < 0) { re += '\\{'; i += 1; continue; }
-      const options = g.slice(i + 1, end).split(',').map((o) => o.trim());
+      if (end < 0) {
+        re += '\\{';
+        i += 1;
+        continue;
+      }
+      const options = g
+        .slice(i + 1, end)
+        .split(',')
+        .map((o) => o.trim());
       re += `(?:${options.map((o) => o.replace(/[.+^$|()[\]\\]/g, '\\$&')).join('|')})`;
       i = end + 1;
     } else if (/[.+^$|()[\]\\]/.test(ch)) {
@@ -491,10 +500,98 @@ function discoverSources(workspace: string): InstructionSource[] {
     }
   }
 
-  // M4: Learned conventions (agent-proposed, human-reviewed)
-  push(loadSource(join(workspace, '.vinyan', 'memory', 'learned.md'), 'learned'));
+  // M4: Learned conventions (agent-proposed, human-reviewed). Multi-entry
+  // learned.md files are split into one InstructionSource per approved rule
+  // so that per-entry `applyTo` / `tier` metadata reach the ruleAppliesToContext
+  // filter. Hand-authored single-source learned.md (no entry markers) still
+  // works via the legacy opaque load path inside loadLearnedSources.
+  for (const learnedSource of loadLearnedSources(join(workspace, '.vinyan', 'memory', 'learned.md'))) {
+    push(learnedSource);
+  }
 
   return sources;
+}
+
+/**
+ * Phase 4 structured M4 reader.
+ *
+ * Returns zero or more InstructionSources for `.vinyan/memory/learned.md`:
+ *
+ *  - **Multi-entry file** (contains `<!-- vinyan-memory-entry: ... -->` markers
+ *    written by `approveProposal`): emit one synthetic InstructionSource per
+ *    entry, each carrying the per-rule `applyTo`, `tier`, and `description`
+ *    on its `frontmatter`. This lets `ruleAppliesToContext` filter each rule
+ *    against the current task's target files independently — matching the
+ *    semantics of scoped `.vinyan/rules/` files.
+ *
+ *  - **Hand-authored file** (no markers): fall back to the legacy opaque
+ *    loader so existing human-written learned.md continues to work. The whole
+ *    file appears as one InstructionSource tagged as `learned`.
+ *
+ *  - **Missing / oversize / unreadable**: returns an empty array. Errors are
+ *    swallowed by design — a broken learned.md should never block instruction
+ *    resolution for the rest of the tier hierarchy.
+ *
+ * Cache: we do NOT populate `sourceCache` for synthetic per-entry sources
+ * (they share a single underlying file, so the per-path cache would collide).
+ * The outer `resolvedCache` in `resolveInstructions` absorbs the repeated
+ * parse work whenever target files / context are stable.
+ */
+function loadLearnedSources(filePath: string): InstructionSource[] {
+  if (!existsSync(filePath)) return [];
+  try {
+    const stat = statSync(filePath);
+    if (stat.size > MAX_INSTRUCTION_SIZE) return [];
+    const raw = readFileSync(filePath, 'utf-8');
+    const entries = parseLearnedMdEntries(raw);
+    if (entries.length === 0) {
+      // Legacy single-source path for hand-authored learned.md.
+      const legacy = loadSource(filePath, 'learned');
+      return legacy ? [legacy] : [];
+    }
+    return entries.map((entry) => synthesizeLearnedEntrySource(filePath, entry));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build a synthetic InstructionSource for one parsed learned.md entry.
+ *
+ * The `filePath` is the real `.vinyan/memory/learned.md` path so deletion
+ * detection and UI rendering still point at a real file. Uniqueness inside
+ * `discoverSources` is preserved by (a) distinct per-entry `contentHash`
+ * values and (b) distinct `discoveryIndex` assignments — the resolveInstructions
+ * fingerprint concatenates `path@hash` pairs into a string, so two entries
+ * from the same file remain distinguishable even when they share a filePath.
+ */
+function synthesizeLearnedEntrySource(filePath: string, entry: LearnedEntry): InstructionSource {
+  const frontmatter: RuleFrontmatter = {
+    tier: entry.tier,
+    description: entry.description || `M4 learned: ${entry.slug}`,
+  };
+  if (entry.applyTo.length > 0) {
+    frontmatter.applyTo = [...entry.applyTo];
+  }
+
+  // The synthetic source's `content` is the entry's markdown body exactly as
+  // it lives in learned.md. `buildSectionHeader` will prepend a tier label
+  // that surfaces description + applyTo, so we do not duplicate that metadata
+  // inside the content itself.
+  const content = entry.body;
+
+  // Hash salted with slug so two entries that happen to share identical
+  // body text still produce distinct hashes for the discovery fingerprint.
+  const contentHash = createHash('sha256').update(`${entry.slug}\0${content}`).digest('hex');
+
+  return {
+    tier: 'learned',
+    filePath,
+    content,
+    contentHash,
+    frontmatter,
+    includes: [],
+  };
 }
 
 /** Recursively find all .md files in a directory. */
@@ -534,9 +631,7 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
   // — a pure content-hash concat could theoretically collide across different
   // file manifests.
   const allSources = discoverSources(ctx.workspace);
-  const discoveryFingerprint = allSources
-    .map((s) => `${s.filePath}@${s.contentHash}`)
-    .join('|');
+  const discoveryFingerprint = allSources.map((s) => `${s.filePath}@${s.contentHash}`).join('|');
   const cached = resolvedCache.get(cacheKey);
   if (cached && cached.discoveryFingerprint === discoveryFingerprint) {
     return cached.memory;
@@ -581,7 +676,9 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
     const header = buildSectionHeader(source);
     const piece = `${header}\n${source.content.trim()}`;
     if (totalSize + piece.length > MAX_MERGED_SIZE) {
-      parts.push(`<!-- Instruction hierarchy truncated: ${applicable.length - parts.length} remaining sources omitted due to ${MAX_MERGED_SIZE}-byte cap -->`);
+      parts.push(
+        `<!-- Instruction hierarchy truncated: ${applicable.length - parts.length} remaining sources omitted due to ${MAX_MERGED_SIZE}-byte cap -->`,
+      );
       break;
     }
     parts.push(piece);
@@ -590,8 +687,7 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
 
   const merged = parts.join('\n\n');
   const contentHash = createHash('sha256').update(merged).digest('hex');
-  const primaryPath = applicable.find((s) => s.tier === 'project')?.filePath
-    ?? applicable[0]!.filePath;
+  const primaryPath = applicable.find((s) => s.tier === 'project')?.filePath ?? applicable[0]!.filePath;
 
   const result: InstructionMemory = {
     content: merged,
@@ -612,9 +708,7 @@ function buildSectionHeader(source: InstructionSource): string {
     learned: 'LEARNED CONVENTIONS (agent-proposed, human-verified)',
   }[source.tier];
   const desc = source.frontmatter.description ? ` — ${source.frontmatter.description}` : '';
-  const applyTo = source.frontmatter.applyTo?.length
-    ? ` (applies to: ${source.frontmatter.applyTo.join(', ')})`
-    : '';
+  const applyTo = source.frontmatter.applyTo?.length ? ` (applies to: ${source.frontmatter.applyTo.join(', ')})` : '';
   return `<!-- ${tierLabel}${desc}${applyTo} -->`;
 }
 

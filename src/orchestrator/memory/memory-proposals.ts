@@ -19,15 +19,7 @@
  */
 
 import { createHash } from 'crypto';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -110,18 +102,10 @@ export const EVIDENCE_FLOOR = 1;
 export const MAX_PROPOSAL_SIZE = 5_000;
 
 /** Whitelisted categories. */
-const ALLOWED_CATEGORIES: ReadonlySet<ProposalCategory> = new Set([
-  'convention',
-  'anti-pattern',
-  'finding',
-]);
+const ALLOWED_CATEGORIES: ReadonlySet<ProposalCategory> = new Set(['convention', 'anti-pattern', 'finding']);
 
 /** Whitelisted tiers. */
-const ALLOWED_TIERS: ReadonlySet<ProposalTier> = new Set([
-  'deterministic',
-  'heuristic',
-  'probabilistic',
-]);
+const ALLOWED_TIERS: ReadonlySet<ProposalTier> = new Set(['deterministic', 'heuristic', 'probabilistic']);
 
 /** Slug format: lowercase letters, digits, dashes. No path separators, no dots. */
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -305,10 +289,7 @@ export function serializeProposal(proposal: MemoryProposal): string {
  * and multi-line markdown belongs in the body.
  */
 function yamlString(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\r?\n/g, '\\n');
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n');
   return `"${escaped}"`;
 }
 
@@ -330,9 +311,7 @@ export const PENDING_DIR_REL = join('.vinyan', 'memory', 'pending');
 export function writeProposal(workspace: string, proposal: MemoryProposal): ProposalWriteResult {
   const validation = validateProposal(proposal);
   if (!validation.valid) {
-    throw new Error(
-      `memory proposal rejected by oracle (${validation.failedCheck}): ${validation.reason}`,
-    );
+    throw new Error(`memory proposal rejected by oracle (${validation.failedCheck}): ${validation.reason}`);
   }
 
   const pendingDir = resolve(workspace, PENDING_DIR_REL);
@@ -372,7 +351,9 @@ export function listPendingProposals(workspace: string): PendingProposalFile[] {
   const pendingDir = resolve(workspace, PENDING_DIR_REL);
   if (!existsSync(pendingDir)) return [];
 
-  const entries = readdirSync(pendingDir).filter((f) => f.endsWith('.md')).sort();
+  const entries = readdirSync(pendingDir)
+    .filter((f) => f.endsWith('.md'))
+    .sort();
   return entries.map((filename) => {
     const fullPath = join(pendingDir, filename);
     return {
@@ -438,7 +419,10 @@ export function parseProposalFile(content: string): ParsedProposal | null {
   if (closing < 0) return null;
 
   const fmBlock = content.slice(4, closing);
-  const body = content.slice(closing + 4).replace(/^\r?\n/, '').trimEnd();
+  const body = content
+    .slice(closing + 4)
+    .replace(/^\r?\n/, '')
+    .trimEnd();
 
   let slug = '';
   let proposedBy = '';
@@ -542,9 +526,7 @@ function unquoteYamlString(value: string): string {
 export class AmbiguousProposalError extends Error {
   readonly candidates: string[];
   constructor(slug: string, candidates: string[]) {
-    super(
-      `ambiguous slug "${slug}" — matches ${candidates.length} pending proposals: ${candidates.join(', ')}`,
-    );
+    super(`ambiguous slug "${slug}" — matches ${candidates.length} pending proposals: ${candidates.join(', ')}`);
     this.name = 'AmbiguousProposalError';
     this.candidates = candidates;
   }
@@ -559,10 +541,7 @@ export class AmbiguousProposalError extends Error {
  *   - A bare slug (`use-bun-test`) — matches files ending in `__<slug>.md`
  *   - A slug with `.md` suffix (`use-bun-test.md`) — normalized to bare slug
  */
-export function resolveProposalBySlug(
-  workspace: string,
-  handle: string,
-): PendingProposalFile {
+export function resolveProposalBySlug(workspace: string, handle: string): PendingProposalFile {
   const pending = listPendingProposals(workspace);
   if (pending.length === 0) {
     throw new Error('no pending proposals — nothing to resolve');
@@ -621,11 +600,7 @@ export interface RejectResult {
  * entries in force unless explicitly shadowed, so append-order doesn't
  * change rule semantics.
  */
-export function approveProposal(
-  workspace: string,
-  handle: string,
-  reviewer: string,
-): ApproveResult {
+export function approveProposal(workspace: string, handle: string, reviewer: string): ApproveResult {
   const pending = resolveProposalBySlug(workspace, handle);
   const parsed = parseProposalFile(pending.content);
   if (!parsed) {
@@ -647,8 +622,7 @@ export function approveProposal(
     appendFileSync(learnedPath, `${separator}${block}\n`);
   } else {
     // Fresh learned.md — write a header comment so humans know the format.
-    const header =
-      '<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->\n\n';
+    const header = '<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->\n\n';
     writeFileSync(learnedPath, `${header}${block}\n`);
   }
 
@@ -670,20 +644,14 @@ export function approveProposal(
  * prepend a rejection header. The pending file is removed. The rejected
  * archive preserves the original proposal for audit purposes.
  */
-export function rejectProposal(
-  workspace: string,
-  handle: string,
-  reviewer: string,
-  reason: string,
-): RejectResult {
+export function rejectProposal(workspace: string, handle: string, reviewer: string, reason: string): RejectResult {
   const pending = resolveProposalBySlug(workspace, handle);
 
   const rejectedDir = resolve(workspace, REJECTED_DIR_REL);
   mkdirSync(rejectedDir, { recursive: true });
 
   const rejectedAt = new Date().toISOString();
-  const rejectionHeader =
-    `<!-- vinyan-memory-rejected: by="${escapeCommentValue(reviewer)}", at="${rejectedAt}", reason="${escapeCommentValue(reason)}" -->\n\n`;
+  const rejectionHeader = `<!-- vinyan-memory-rejected: by="${escapeCommentValue(reviewer)}", at="${rejectedAt}", reason="${escapeCommentValue(reason)}" -->\n\n`;
 
   const rejectedPath = join(rejectedDir, pending.filename);
   writeFileSync(rejectedPath, `${rejectionHeader}${pending.content}`);
@@ -697,11 +665,7 @@ export function rejectProposal(
 
 // ── Internal helpers ────────────────────────────────────────────────
 
-function renderApprovedBlock(
-  parsed: ParsedProposal,
-  reviewer: string,
-  approvedAt: string,
-): string {
+function renderApprovedBlock(parsed: ParsedProposal, reviewer: string, approvedAt: string): string {
   const metaFields = [
     `slug=${parsed.slug}`,
     `category=${parsed.category}`,
@@ -712,8 +676,7 @@ function renderApprovedBlock(
     `approvedAt=${approvedAt}`,
   ];
   const metaComment = `<!-- vinyan-memory-entry: ${metaFields.join(', ')} -->`;
-  const applyToLine =
-    parsed.applyTo.length > 0 ? `\n**Applies to**: ${parsed.applyTo.join(', ')}` : '';
+  const applyToLine = parsed.applyTo.length > 0 ? `\n**Applies to**: ${parsed.applyTo.join(', ')}` : '';
   const heading = `## ${parsed.slug} (${parsed.category})`;
   const summary = `**Summary**: ${parsed.description}${applyToLine}`;
   return `${metaComment}\n${heading}\n\n${summary}\n\n${parsed.body.trim()}`;
@@ -738,4 +701,179 @@ function filenameToSlug(filename: string): string {
 /** Remove a pending file after approval / rejection. */
 function unlinkPending(path: string): void {
   unlinkSync(path);
+}
+
+// ── M4 learned.md reader (Phase 4) ──────────────────────────────────
+
+/**
+ * One parsed entry from a multi-entry `learned.md` file. Each entry carries
+ * the per-rule metadata that `approveProposal` wrote into the HTML comment
+ * marker, plus the glob list extracted from the `**Applies to**:` body line.
+ *
+ * The READ path for learned.md needs per-entry granularity because
+ * `instruction-hierarchy.ts` filters rules by `applyTo` at the InstructionSource
+ * level. Before Phase 4 the whole file was loaded as ONE opaque source, so
+ * every approved rule appeared in every worker's prompt regardless of whether
+ * its scope matched — defeating the `applyTo` metadata that Phase 3 wrote
+ * during approval.
+ */
+export interface LearnedEntry {
+  /** Slug from the metadata comment — stable identifier for the entry. */
+  slug: string;
+  /** Proposal category: convention / anti-pattern / finding. */
+  category: ProposalCategory;
+  /** Trust tier hint the LLM should factor in when weighing this rule. */
+  tier: ProposalTier;
+  /** Confidence [0, 1] from the original proposal. */
+  confidence: number;
+  /** Agent identifier that proposed this rule. */
+  proposedBy: string;
+  /** Human reviewer that approved it. */
+  approvedBy: string;
+  /** ISO-8601 approval timestamp. */
+  approvedAt: string;
+  /** Human description from the `**Summary**:` body line (may be empty). */
+  description: string;
+  /** Glob patterns from the `**Applies to**:` body line (empty ⇒ always active). */
+  applyTo: string[];
+  /** Full markdown body below the metadata comment, including heading. */
+  body: string;
+}
+
+/** Line-start match for the approved-entry metadata comment. */
+const LEARNED_ENTRY_MARKER_RE = /^<!-- vinyan-memory-entry:/gm;
+
+/**
+ * Parse a multi-entry `learned.md` file into discrete `LearnedEntry` records.
+ *
+ * Each entry written by `approveProposal` / `renderApprovedBlock` starts with a
+ * line of the form:
+ *
+ *   <!-- vinyan-memory-entry: slug=..., category=..., tier=..., confidence=..., proposedBy=..., approvedBy=..., approvedAt=... -->
+ *
+ * followed by a `## <slug> (<category>)` heading, `**Summary**:` and
+ * (optional) `**Applies to**:` lines, and the rule body. Entries are separated
+ * by blank lines and append-only to the file.
+ *
+ * Returns an **empty array** when no marker is present — the caller should
+ * then treat the file as an opaque single instruction source for
+ * backwards-compatibility with hand-authored `learned.md` files that do not
+ * follow the marker convention.
+ *
+ * The marker regex is anchored at line start (`/^.../m`) so a stray
+ * `<!-- vinyan-memory-entry: -->` appearing mid-line inside a body cannot
+ * fake a new entry boundary. `escapeCommentValue` guarantees approval metadata
+ * never contains a nested `-->`, so the closing delimiter is always the first
+ * `-->` after the marker.
+ */
+export function parseLearnedMdEntries(content: string): LearnedEntry[] {
+  // Cheap fast-path: if the marker string does not appear at all we can skip
+  // the regex entirely. Most hand-authored learned.md files hit this branch.
+  if (!content.includes('<!-- vinyan-memory-entry:')) return [];
+
+  // Collect the starting offset of every line-anchored marker. Using
+  // matchAll keeps the loop side-effect free and avoids the regex's internal
+  // `lastIndex` state leaking between calls (the RE has the /g flag).
+  LEARNED_ENTRY_MARKER_RE.lastIndex = 0;
+  const starts: number[] = [];
+  for (const match of content.matchAll(LEARNED_ENTRY_MARKER_RE)) {
+    if (typeof match.index === 'number') starts.push(match.index);
+  }
+  if (starts.length === 0) return [];
+
+  const entries: LearnedEntry[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const blockStart = starts[i] ?? 0;
+    const blockEnd = starts[i + 1] ?? content.length;
+    const block = content.slice(blockStart, blockEnd);
+    const entry = parseSingleLearnedEntry(block);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+/** Parse a single block starting at a `vinyan-memory-entry` marker. */
+function parseSingleLearnedEntry(block: string): LearnedEntry | null {
+  const metaClose = block.indexOf('-->');
+  if (metaClose < 0) return null;
+
+  const metaRaw = block
+    .slice(0, metaClose)
+    .replace(/^<!-- vinyan-memory-entry:/, '')
+    .trim();
+  const meta = parseLearnedEntryMeta(metaRaw);
+  const slug = meta.slug ?? '';
+  if (!slug) return null;
+
+  const afterMeta = block
+    .slice(metaClose + 3)
+    .replace(/^\r?\n/, '')
+    .trimEnd();
+  const confidenceParsed = Number.parseFloat(meta.confidence ?? '');
+  const confidence = Number.isFinite(confidenceParsed) ? confidenceParsed : 0;
+  const { description, applyTo } = extractLearnedBodyFields(afterMeta);
+
+  return {
+    slug,
+    category: (meta.category ?? 'finding') as ProposalCategory,
+    tier: (meta.tier ?? 'heuristic') as ProposalTier,
+    confidence,
+    proposedBy: meta.proposedBy ?? '',
+    approvedBy: meta.approvedBy ?? '',
+    approvedAt: meta.approvedAt ?? '',
+    description,
+    applyTo,
+    body: afterMeta,
+  };
+}
+
+/**
+ * Scan the body of a learned.md entry for its `**Summary**:` and
+ * `**Applies to**:` lines. Line-based scan (not regex-on-whole-body) so
+ * occurrences of these markers deeper in the rule body are not picked up.
+ * The first occurrence of each field wins; later duplicates are ignored.
+ */
+function extractLearnedBodyFields(body: string): {
+  description: string;
+  applyTo: string[];
+} {
+  let description = '';
+  let applyTo: string[] = [];
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!description) {
+      const summaryMatch = line.match(/^\*\*Summary\*\*:\s*(.*)$/);
+      if (summaryMatch) {
+        description = (summaryMatch[1] ?? '').trim();
+      }
+    }
+    if (applyTo.length === 0) {
+      const appliesMatch = line.match(/^\*\*Applies to\*\*:\s*(.*)$/);
+      if (appliesMatch) {
+        applyTo = (appliesMatch[1] ?? '')
+          .split(',')
+          .map((g) => g.trim())
+          .filter((g) => g.length > 0);
+      }
+    }
+  }
+  return { description, applyTo };
+}
+
+/**
+ * Parse the comma-separated `key=value` pairs from a `vinyan-memory-entry`
+ * metadata comment body. Duplicate keys: last-wins. Values containing commas
+ * are not supported — `renderApprovedBlock` only emits comma-free scalars, so
+ * this stays simple on purpose.
+ */
+function parseLearnedEntryMeta(meta: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of meta.split(',')) {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx < 0) continue;
+    const key = pair.slice(0, eqIdx).trim();
+    const value = pair.slice(eqIdx + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
 }

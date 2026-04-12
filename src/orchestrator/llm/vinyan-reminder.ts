@@ -62,4 +62,5 @@ Common reminder contents:
   - [FORCED PIVOT] — no progress for 3+ turns, MUST try a fundamentally different approach
   - [GUIDANCE] — consecutive tool failures with error context
   - [DUPLICATE WARNING] — you called the same tool with the same parameters already
+  - [MEMORY QUEUE] — count of memory proposals awaiting human review. When present, check whether your finding is already covered before proposing another; at 10+ pending, do NOT propose more this session unless the finding is exceptional.
 When you see these tags, adjust your next action. Do NOT continue the same pattern that triggered the warning, and do NOT echo the reminder text back in your reply.`;

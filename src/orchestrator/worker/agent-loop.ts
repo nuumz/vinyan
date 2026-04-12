@@ -33,6 +33,7 @@ import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
+import { countPendingProposals } from '../memory/memory-proposals.ts';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -119,6 +120,15 @@ export class SessionProgress {
 
   /** Track key findings from tool results for session state */
   keyFindings: string[] = [];
+
+  /**
+   * Phase 3d: Count of pending `memory_propose` proposals awaiting human
+   * review at session start. Surfaced via `buildSessionSnapshot` as a
+   * `[MEMORY QUEUE]` line so L2+ workers know the backlog before calling
+   * `memory_propose` themselves. Set once by the orchestrator in
+   * `runAgentLoop`; 0 means "no backlog" and suppresses the hint entirely.
+   */
+  pendingMemoryProposals = 0;
 
   recordToolResult(toolName: string, isError: boolean, output?: string, callParams?: Record<string, unknown>): void {
     if (isError) {
@@ -212,6 +222,28 @@ export class SessionProgress {
       for (const finding of this.keyFindings.slice(-5)) {
         lines.push(`  - ${finding}`);
       }
+    }
+
+    // Phase 3d: surface the memory_propose review backlog so L2+ workers can
+    // choose whether to add to it or defer. Three escalation bands keep the
+    // signal proportional to the pressure:
+    //   1   – 3:  soft awareness notice
+    //   4   – 9:  nudge to check existing pending before proposing more
+    //   10+    :  strong backpressure — queue is already overloaded
+    if (this.pendingMemoryProposals > 0) {
+      const n = this.pendingMemoryProposals;
+      const plural = n === 1 ? 'proposal' : 'proposals';
+      let guidance: string;
+      if (n >= 10) {
+        guidance =
+          ' — queue is overloaded; do NOT call memory_propose this session unless your finding is exceptional and non-duplicative.';
+      } else if (n >= 4) {
+        guidance =
+          ' — review the existing backlog before proposing more to avoid duplicates.';
+      } else {
+        guidance = '';
+      }
+      lines.push(`[MEMORY QUEUE] ${n} memory ${plural} awaiting human review${guidance}`);
     }
 
     return lines.length > 0 ? lines.join('\n') : null;
@@ -393,6 +425,18 @@ export async function runAgentLoop(
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
+
+  // Phase 3d: Prime the session with the memory_propose review backlog so
+  // L2+ workers see it in every turn's `<vinyan-reminder>` snapshot. The
+  // helper is best-effort — a missing or unreadable pending directory is a
+  // fresh workspace (count = 0), not an error we should fail the session on.
+  if (routing.level >= 2) {
+    try {
+      progress.pendingMemoryProposals = countPendingProposals(deps.workspace);
+    } catch {
+      // Non-fatal: absent / unreadable directory → no memory queue hint.
+    }
+  }
 
   const toolContext: ToolContext = {
     routingLevel: routing.level,

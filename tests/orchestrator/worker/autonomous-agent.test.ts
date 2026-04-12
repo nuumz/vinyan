@@ -207,6 +207,88 @@ describe('SessionProgress', () => {
     expect(dup).toContain('DUPLICATE WARNING');
     expect(dup).toContain('file_read');
   });
+
+  // ── Phase 3d: memory-proposal backlog surfacing ────────────────────
+
+  test('buildSessionSnapshot omits [MEMORY QUEUE] when no pending proposals', () => {
+    const sp = new SessionProgress();
+    // pendingMemoryProposals defaults to 0, so no memory line should appear.
+    expect(sp.pendingMemoryProposals).toBe(0);
+    expect(sp.buildSessionSnapshot()).toBeNull();
+  });
+
+  test('buildSessionSnapshot adds [MEMORY QUEUE] line with singular noun for exactly 1', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 1;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).not.toBeNull();
+    expect(snap).toContain('[MEMORY QUEUE]');
+    expect(snap).toContain('1 memory proposal');
+    // Singular form — do not render "1 memory proposals".
+    expect(snap).not.toContain('1 memory proposals');
+  });
+
+  test('buildSessionSnapshot pluralizes noun for 2+ proposals', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).toContain('3 memory proposals');
+  });
+
+  test('buildSessionSnapshot stays silent at low backlog (<= 3)', () => {
+    // At 1-3, the snapshot should NOT nag with duplicate-avoidance advice:
+    // that pressure escalation only kicks in once the backlog is larger.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).not.toContain('review the existing backlog');
+    expect(snap).not.toContain('overloaded');
+  });
+
+  test('buildSessionSnapshot adds duplicate-avoidance nudge at 4+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 5;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('5 memory proposals');
+    expect(snap).toContain('review the existing backlog');
+  });
+
+  test('buildSessionSnapshot escalates to strong backpressure at 10+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 12;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('12 memory proposals');
+    expect(snap).toContain('overloaded');
+    // Must tell the worker to stop proposing entirely (backpressure).
+    expect(snap).toContain('do NOT call memory_propose');
+  });
+
+  test('getSystemHint wraps [MEMORY QUEUE] in a <vinyan-reminder> block', () => {
+    // The memory-queue line must flow through the same reminder pipeline as
+    // every other session-state hint so the worker LLM parses it the same way.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 2;
+    // No budget pressure, no stall — the memory queue is the ONLY hint.
+    const hint = sp.getSystemHint(0.2, 10);
+    expect(hint).not.toBeNull();
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('2 memory proposals');
+  });
+
+  test('getSystemHint combines [MEMORY QUEUE] with other warnings', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 4;
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+    // Budget warning + stall warning + memory queue — all three should coexist.
+    const hint = sp.getSystemHint(0.72, 5);
+    expect(hint).toContain('BUDGET NOTICE');
+    expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('4 memory proposals');
+  });
 });
 
 // ── buildSystemPrompt ───────────────────────────────────────────────

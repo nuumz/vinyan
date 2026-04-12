@@ -383,6 +383,22 @@ export function listPendingProposals(workspace: string): PendingProposalFile[] {
   });
 }
 
+/**
+ * Cheap count of pending proposals — does NOT read file contents. Used by the
+ * agent loop at session start (Phase 3d) to surface the review backlog to L2+
+ * workers via a `<vinyan-reminder>` `[MEMORY QUEUE]` line, so workers know to
+ * check existing pending proposals before stuffing the queue with duplicates.
+ *
+ * Returns 0 when the pending directory does not exist (a fresh workspace) or
+ * contains no markdown files. Non-md files are ignored — matches the filter
+ * used by `listPendingProposals` so the two functions stay in lockstep.
+ */
+export function countPendingProposals(workspace: string): number {
+  const pendingDir = resolve(workspace, PENDING_DIR_REL);
+  if (!existsSync(pendingDir)) return 0;
+  return readdirSync(pendingDir).filter((f) => f.endsWith('.md')).length;
+}
+
 // ── Proposal parsing ────────────────────────────────────────────────
 
 /**

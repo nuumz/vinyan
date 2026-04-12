@@ -12,6 +12,7 @@ export {
   EVIDENCE_FLOOR,
   MAX_PROPOSAL_SIZE,
   PENDING_DIR_REL,
+  countPendingProposals,
   listPendingProposals,
   type MemoryProposal,
   type PendingProposalFile,

@@ -9,13 +9,22 @@
  *   - memoryPropose tool: success path + oracle rejection path
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   AmbiguousProposalError,
   approveProposal,
   CONFIDENCE_FLOOR,
+  countPendingProposals,
   LEARNED_FILE_REL,
   listPendingProposals,
   MAX_PROPOSAL_SIZE,
@@ -322,6 +331,45 @@ describe('listPendingProposals', () => {
       expect(p.content.length).toBeGreaterThan(0);
       expect(p.content).toContain('category: convention');
     }
+  });
+});
+
+// ── countPendingProposals (Phase 3d) ────────────────────────────────
+
+describe('countPendingProposals', () => {
+  test('returns 0 when the pending directory does not exist', () => {
+    // Fresh workspace — `.vinyan/memory/pending/` has not been created yet.
+    expect(countPendingProposals(workspace)).toBe(0);
+  });
+
+  test('returns 0 when the pending directory exists but is empty', () => {
+    // Create the directory without any proposals — common transient state
+    // right after a proposal is approved and the last pending file is
+    // unlinked.
+    mkdirSync(join(workspace, PENDING_DIR_REL), { recursive: true });
+    expect(countPendingProposals(workspace)).toBe(0);
+  });
+
+  test('counts only .md files — ignores other extensions and subdirs', () => {
+    // Seed the real file, then drop some non-markdown noise that must not
+    // be counted. This guards against drift between listPendingProposals
+    // (which only returns .md entries) and countPendingProposals.
+    writeProposal(workspace, makeValidProposal({ slug: 'real-proposal' }));
+    const pendingDir = join(workspace, PENDING_DIR_REL);
+    writeFileSync(join(pendingDir, 'README.txt'), 'just a note');
+    writeFileSync(join(pendingDir, 'scratch.json'), '{}');
+    mkdirSync(join(pendingDir, 'subdir'), { recursive: true });
+
+    expect(countPendingProposals(workspace)).toBe(1);
+    // listPendingProposals must stay in lockstep with countPendingProposals.
+    expect(listPendingProposals(workspace).length).toBe(1);
+  });
+
+  test('returns N when N proposals are present', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-one' }));
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-two' }));
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-three' }));
+    expect(countPendingProposals(workspace)).toBe(3);
   });
 });
 

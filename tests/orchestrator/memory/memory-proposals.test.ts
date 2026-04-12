@@ -18,6 +18,7 @@ import {
   CONFIDENCE_FLOOR,
   countPendingProposals,
   LEARNED_FILE_REL,
+  LEARNED_MD_MAX_SIZE,
   type LearnedEntry,
   listPendingProposals,
   MAX_PROPOSAL_SIZE,
@@ -632,6 +633,73 @@ describe('approveProposal', () => {
     writeProposal(workspace, makeValidProposal({ slug: 'path-check' }));
     const result = approveProposal(workspace, 'path-check', 'alice');
     expect(result.learnedPath).toContain(LEARNED_FILE_REL);
+  });
+
+  // ── Phase 5 hardening: duplicate-slug guard + size cap ───────────
+
+  test('refuses to approve a duplicate slug already present in learned.md', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'dup-rule' }));
+    approveProposal(workspace, 'dup-rule', 'alice');
+
+    // Second proposal uses the same slug — should be blocked at approval time.
+    writeProposal(workspace, makeValidProposal({ slug: 'dup-rule', description: 'second attempt' }));
+    expect(() => approveProposal(workspace, 'dup-rule', 'alice')).toThrow(/already exists/);
+
+    // learned.md must still have exactly one entry — the guard short-circuited
+    // before the append, so the first approval is untouched.
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    const markers = learned.match(/vinyan-memory-entry/g) ?? [];
+    expect(markers.length).toBe(1);
+    // The second pending proposal is still on disk so the reviewer can act on it.
+    const pending = listPendingProposals(workspace);
+    expect(pending.length).toBe(1);
+  });
+
+  test('duplicate-slug guard does not block distinct slugs that share a prefix', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'prefix' }));
+    approveProposal(workspace, 'prefix', 'alice');
+    writeProposal(workspace, makeValidProposal({ slug: 'prefix-extra', description: 'different rule' }));
+    expect(() => approveProposal(workspace, 'prefix-extra', 'alice')).not.toThrow();
+    const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
+    expect((learned.match(/vinyan-memory-entry/g) ?? []).length).toBe(2);
+  });
+
+  test('refuses to approve when learned.md would exceed LEARNED_MD_MAX_SIZE', () => {
+    // Pre-seed learned.md with a single valid marker so the parser works, then
+    // pad past the cap. We construct a minimally-valid existing entry so the
+    // duplicate-slug guard (which runs first) is satisfied for the new slug.
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    const header = '<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->\n\n';
+    const existingMarker =
+      '<!-- vinyan-memory-entry: slug=existing, category=convention, tier=heuristic, confidence=0.8, proposedBy=w, approvedBy=a, approvedAt=2026-01-01T00:00:00.000Z -->\n';
+    const existingBody = '## existing (convention)\n\n**Summary**: existing rule\n\nbody\n\n';
+    // Pad the body so existing + new block comfortably exceeds the cap.
+    const pad = 'x'.repeat(LEARNED_MD_MAX_SIZE - 500);
+    writeFileSync(join(workspace, LEARNED_FILE_REL), `${header}${existingMarker}${existingBody}${pad}\n`);
+
+    writeProposal(workspace, makeValidProposal({ slug: 'overflow-rule' }));
+    expect(() => approveProposal(workspace, 'overflow-rule', 'alice')).toThrow(/cap/);
+
+    // Pending file must remain on disk so the reviewer can prune first.
+    const pending = listPendingProposals(workspace);
+    expect(pending.some((p) => p.filename.includes('overflow-rule'))).toBe(true);
+  });
+
+  test('size-cap error message includes the projected byte count and prune hint', () => {
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    const pad = 'y'.repeat(LEARNED_MD_MAX_SIZE);
+    writeFileSync(join(workspace, LEARNED_FILE_REL), pad);
+
+    writeProposal(workspace, makeValidProposal({ slug: 'too-big' }));
+    let caught: Error | null = null;
+    try {
+      approveProposal(workspace, 'too-big', 'alice');
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toMatch(/cap/);
+    expect(caught!.message).toMatch(/Prune/);
   });
 });
 

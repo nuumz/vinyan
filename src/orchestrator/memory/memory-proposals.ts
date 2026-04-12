@@ -573,6 +573,21 @@ export const LEARNED_FILE_REL = join('.vinyan', 'memory', 'learned.md');
 /** Workspace-relative directory for rejected proposals. */
 export const REJECTED_DIR_REL = join('.vinyan', 'memory', 'rejected');
 
+/**
+ * Hard cap on the serialized size of `.vinyan/memory/learned.md`, in bytes.
+ *
+ * Sized with headroom under `MAX_INSTRUCTION_SIZE` (50 KB) in
+ * `instruction-hierarchy.ts`: once learned.md exceeds that cap, the instruction
+ * loader silently drops the file and every approved convention goes dark. We
+ * keep 5 KB of headroom so one more approval can never land the file over the
+ * loader's ceiling.
+ *
+ * Exceeding this cap during approval is a signal that the review CLI should
+ * prune or re-summarize older entries; `approveProposal` refuses the write so
+ * the failure surfaces to the human reviewer instead of silently truncating.
+ */
+export const LEARNED_MD_MAX_SIZE = 45_000;
+
 export interface ApproveResult {
   /** Absolute path of learned.md after append. */
   learnedPath: string;
@@ -615,21 +630,49 @@ export function approveProposal(workspace: string, handle: string, reviewer: str
   const learnedPath = resolve(workspace, LEARNED_FILE_REL);
   mkdirSync(resolve(workspace, '.vinyan', 'memory'), { recursive: true });
 
-  if (existsSync(learnedPath)) {
-    // Append with a leading blank line so entries don't merge into each other.
-    const existing = readFileSync(learnedPath, 'utf-8');
-    const separator = existing.endsWith('\n') ? '\n' : '\n\n';
-    appendFileSync(learnedPath, `${separator}${block}\n`);
-  } else {
-    // Fresh learned.md — write a header comment so humans know the format.
-    const header = '<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->\n\n';
-    writeFileSync(learnedPath, `${header}${block}\n`);
+  // Read once up front so the duplicate-slug and size-cap checks both operate
+  // on the same snapshot, and so we can compute the post-append size without
+  // actually committing the write.
+  const existing = existsSync(learnedPath) ? readFileSync(learnedPath, 'utf-8') : '';
+
+  // Duplicate-slug guard. Two approved entries with the same slug would break
+  // the discovery fingerprint in instruction-hierarchy (slug-salted hashes
+  // would collide) and leave the reviewer unable to tell which rule applies.
+  // We refuse the write and leave the pending file in place so the reviewer
+  // can rename/merge/reject it explicitly.
+  if (existing.length > 0) {
+    const existingEntries = parseLearnedMdEntries(existing);
+    if (existingEntries.some((e) => e.slug === slug)) {
+      throw new Error(
+        `cannot approve "${slug}": an entry with this slug already exists in ${LEARNED_FILE_REL}. ` +
+          `Rename the proposal, reject it, or prune the existing entry before re-approving.`,
+      );
+    }
   }
 
-  // Remove from pending — rely on Node's fs.rmSync through renameSync to a
-  // sentinel path, then unlink. Simpler: unlink via writeFileSync of empty
-  // then delete. We use renameSync into a temporary path and delete it
-  // atomically-ish, which also prevents readdir from picking up a stale entry.
+  // Size-cap enforcement. We project the exact bytes that would be written —
+  // header (for fresh files) or separator (for existing files) — and refuse
+  // the append if the result would exceed LEARNED_MD_MAX_SIZE. The reviewer
+  // must prune old entries before adding new ones once the cap is reached.
+  const header = '<!-- Vinyan M4 learned conventions. Agent-proposed, human-approved. -->\n\n';
+  const separator = existing.endsWith('\n') || existing.length === 0 ? '\n' : '\n\n';
+  const appendPayload = existing.length > 0 ? `${separator}${block}\n` : `${header}${block}\n`;
+  const projectedSize = existing.length + appendPayload.length;
+  if (projectedSize > LEARNED_MD_MAX_SIZE) {
+    throw new Error(
+      `cannot approve "${slug}": ${LEARNED_FILE_REL} would reach ${projectedSize} bytes ` +
+        `(cap ${LEARNED_MD_MAX_SIZE}). Prune older entries via the review CLI before approving new ones.`,
+    );
+  }
+
+  if (existing.length > 0) {
+    appendFileSync(learnedPath, appendPayload);
+  } else {
+    writeFileSync(learnedPath, appendPayload);
+  }
+
+  // Remove the pending file last so a failure above leaves the proposal
+  // intact for the reviewer to retry after pruning / renaming.
   unlinkPending(pending.path);
 
   return {

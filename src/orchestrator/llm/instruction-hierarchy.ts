@@ -50,6 +50,12 @@ export interface RuleFrontmatter {
   applyToActions?: string[];
   /** Do NOT apply when task action matches any of these verbs. */
   excludeActions?: string[];
+  /**
+   * Proposal confidence in [0, 1]. Currently populated only for M4 learned
+   * entries synthesized from `.vinyan/memory/learned.md` so the LLM can weigh
+   * heuristic rules against deterministic ones. Hand-authored rules omit it.
+   */
+  confidence?: number;
 }
 
 /** A single instruction source (file) with metadata. */
@@ -573,6 +579,11 @@ function synthesizeLearnedEntrySource(filePath: string, entry: LearnedEntry): In
   if (entry.applyTo.length > 0) {
     frontmatter.applyTo = [...entry.applyTo];
   }
+  // Carry the proposer's confidence through to buildSectionHeader so the LLM
+  // can weigh a heuristic 0.72 rule differently from a deterministic 0.95 one.
+  if (Number.isFinite(entry.confidence)) {
+    frontmatter.confidence = entry.confidence;
+  }
 
   // The synthetic source's `content` is the entry's markdown body exactly as
   // it lives in learned.md. `buildSectionHeader` will prepend a tier label
@@ -709,7 +720,28 @@ function buildSectionHeader(source: InstructionSource): string {
   }[source.tier];
   const desc = source.frontmatter.description ? ` — ${source.frontmatter.description}` : '';
   const applyTo = source.frontmatter.applyTo?.length ? ` (applies to: ${source.frontmatter.applyTo.join(', ')})` : '';
-  return `<!-- ${tierLabel}${desc}${applyTo} -->`;
+  const weight = buildLearnedWeightLabel(source);
+  return `<!-- ${tierLabel}${desc}${applyTo}${weight} -->`;
+}
+
+/**
+ * Emit a ` [trust=<tier> confidence=<c.toFixed(2)>]` label for M4 learned
+ * entries so the worker can weigh probabilistic rules lower than deterministic
+ * ones. Returns an empty string for any non-learned source or when neither
+ * trust tier nor confidence is known, keeping section headers stable for
+ * hand-authored M1/M2/M3 sources.
+ */
+function buildLearnedWeightLabel(source: InstructionSource): string {
+  if (source.tier !== 'learned') return '';
+  const parts: string[] = [];
+  if (source.frontmatter.tier) {
+    parts.push(`trust=${source.frontmatter.tier}`);
+  }
+  if (typeof source.frontmatter.confidence === 'number' && Number.isFinite(source.frontmatter.confidence)) {
+    parts.push(`confidence=${source.frontmatter.confidence.toFixed(2)}`);
+  }
+  if (parts.length === 0) return '';
+  return ` [${parts.join(' ')}]`;
 }
 
 // ── Backwards-compatible single-file loader ──────────────────────────

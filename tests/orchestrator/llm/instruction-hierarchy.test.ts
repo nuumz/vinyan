@@ -11,6 +11,12 @@ import {
   parseFrontmatter,
   resolveInstructions,
 } from '../../../src/orchestrator/llm/instruction-hierarchy.ts';
+import {
+  approveProposal,
+  LEARNED_FILE_REL,
+  type MemoryProposal,
+  writeProposal,
+} from '../../../src/orchestrator/memory/memory-proposals.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -698,5 +704,210 @@ describe('learned.md structured reader (Phase 4)', () => {
     const tiers = learned.map((s) => s.frontmatter.tier);
     expect(tiers).toContain('deterministic');
     expect(tiers).toContain('probabilistic');
+  });
+});
+
+// ── Phase 5: production hardening (weight labels + end-to-end) ──────
+
+describe('learned.md section headers (Phase 5 weight labels)', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    clearInstructionHierarchyCache();
+    workspace = makeTempWorkspace('learned-weights');
+  });
+
+  afterEach(() => {
+    cleanupWorkspace(workspace);
+  });
+
+  /** Inline helper mirroring the Phase 4 block writer. */
+  function writeEntry(opts: {
+    slug: string;
+    tier?: string;
+    confidence?: number;
+    description: string;
+    body: string;
+  }): void {
+    const { slug, tier = 'heuristic', confidence = 0.85, description, body } = opts;
+    const meta = `<!-- vinyan-memory-entry: slug=${slug}, category=convention, tier=${tier}, confidence=${confidence}, proposedBy=worker, approvedBy=alice, approvedAt=2026-01-01T00:00:00.000Z -->`;
+    const block = `${meta}\n## ${slug} (convention)\n\n**Summary**: ${description}\n\n${body}`;
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
+    const existing = existsSync(learnedPath) ? readFileSync(learnedPath, 'utf-8') : '';
+    writeFileSync(learnedPath, existing ? `${existing}\n\n${block}\n` : `${block}\n`);
+  }
+
+  test('merged content surfaces trust tier and confidence for learned entries', () => {
+    // Give resolveInstructions a non-scoped project anchor so the merge is
+    // guaranteed to include our learned entry.
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Project root');
+    writeEntry({
+      slug: 'weighted-rule',
+      tier: 'deterministic',
+      confidence: 0.92,
+      description: 'Deterministic rule with high confidence.',
+      body: 'Body.',
+    });
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    // The section header for the learned entry should carry a machine-readable
+    // weight label the LLM can attend to.
+    expect(result!.content).toMatch(/trust=deterministic/);
+    expect(result!.content).toMatch(/confidence=0\.92/);
+  });
+
+  test('probabilistic rules get a distinct weight label', () => {
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Project root');
+    writeEntry({
+      slug: 'soft-rule',
+      tier: 'probabilistic',
+      confidence: 0.71,
+      description: 'Probabilistic rule at the floor.',
+      body: 'Body.',
+    });
+    const result = resolveInstructions({ workspace });
+    expect(result!.content).toMatch(/trust=probabilistic/);
+    expect(result!.content).toMatch(/confidence=0\.71/);
+  });
+
+  test('non-learned tiers do not receive weight labels', () => {
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Project root');
+    const result = resolveInstructions({ workspace });
+    expect(result!.content).not.toMatch(/trust=/);
+    expect(result!.content).not.toMatch(/confidence=/);
+  });
+});
+
+describe('writeProposal → approveProposal → resolveInstructions (Phase 5 e2e)', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    clearInstructionHierarchyCache();
+    workspace = makeTempWorkspace('memory-e2e');
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Project root instructions.');
+  });
+
+  afterEach(() => {
+    cleanupWorkspace(workspace);
+  });
+
+  function makeProposal(overrides: Partial<MemoryProposal> = {}): MemoryProposal {
+    return {
+      slug: 'e2e-rule',
+      proposedBy: 'worker-e2e',
+      sessionId: 'session-e2e',
+      category: 'convention',
+      tier: 'heuristic',
+      confidence: 0.88,
+      applyTo: ['src/api/**/*.ts'],
+      description: 'API handlers must return typed responses.',
+      body: '## Rule\n\nAPI handlers return typed responses.',
+      evidence: [{ filePath: 'src/api/users.ts', note: 'existing handler already returns typed.' }],
+      ...overrides,
+    };
+  }
+
+  test('approved proposal surfaces in resolveInstructions output with weight label', () => {
+    writeProposal(workspace, makeProposal());
+    approveProposal(workspace, 'e2e-rule', 'alice');
+
+    // Task is scoped to the API glob, so the rule must match.
+    const result = resolveInstructions({
+      workspace,
+      targetFiles: ['src/api/users.ts'],
+    });
+    expect(result).not.toBeNull();
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    expect(learned).toHaveLength(1);
+    expect(learned[0]!.frontmatter.description).toBe('API handlers must return typed responses.');
+    expect(learned[0]!.frontmatter.confidence).toBe(0.88);
+    // The merged prompt carries the confidence label for worker visibility.
+    expect(result!.content).toMatch(/confidence=0\.88/);
+  });
+
+  test('approved rule filtered out when target files do not match applyTo', () => {
+    writeProposal(workspace, makeProposal({ slug: 'api-only', applyTo: ['src/api/**'] }));
+    approveProposal(workspace, 'api-only', 'alice');
+
+    // Task targets UI, so the API-only rule must NOT surface.
+    const result = resolveInstructions({
+      workspace,
+      targetFiles: ['src/ui/button.tsx'],
+    });
+    // Project tier still carries VINYAN.md, but no learned source.
+    expect(result).not.toBeNull();
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    expect(learned).toHaveLength(0);
+  });
+
+  test('duplicate-slug approval is blocked and existing entry is preserved', () => {
+    writeProposal(workspace, makeProposal({ slug: 'stable' }));
+    approveProposal(workspace, 'stable', 'alice');
+
+    writeProposal(workspace, makeProposal({ slug: 'stable', description: 'second attempt' }));
+    expect(() => approveProposal(workspace, 'stable', 'alice')).toThrow(/already exists/);
+
+    // resolve still sees exactly one learned entry for this slug.
+    const result = resolveInstructions({
+      workspace,
+      targetFiles: ['src/api/users.ts'],
+    });
+    const learned = result!.sources.filter((s) => s.tier === 'learned');
+    expect(learned).toHaveLength(1);
+    expect(learned[0]!.frontmatter.description).toBe('API handlers must return typed responses.');
+  });
+
+  test('multiple approvals chain and each per-entry applyTo filters independently', () => {
+    writeProposal(
+      workspace,
+      makeProposal({ slug: 'api-rule', applyTo: ['src/api/**'], description: 'API rule text.' }),
+    );
+    approveProposal(workspace, 'api-rule', 'alice');
+
+    writeProposal(
+      workspace,
+      makeProposal({
+        slug: 'ui-rule',
+        applyTo: ['src/ui/**'],
+        description: 'UI rule text.',
+      }),
+    );
+    approveProposal(workspace, 'ui-rule', 'alice');
+
+    writeProposal(
+      workspace,
+      makeProposal({
+        slug: 'global-rule',
+        applyTo: undefined,
+        description: 'Always-on rule.',
+      }),
+    );
+    approveProposal(workspace, 'global-rule', 'alice');
+
+    // API task: api-rule + global-rule
+    const apiResult = resolveInstructions({ workspace, targetFiles: ['src/api/users.ts'] });
+    const apiSlugs = apiResult!.sources.filter((s) => s.tier === 'learned').map((s) => s.frontmatter.description);
+    expect(apiSlugs).toContain('API rule text.');
+    expect(apiSlugs).toContain('Always-on rule.');
+    expect(apiSlugs).not.toContain('UI rule text.');
+
+    clearInstructionHierarchyCache();
+
+    // UI task: ui-rule + global-rule
+    const uiResult = resolveInstructions({ workspace, targetFiles: ['src/ui/button.tsx'] });
+    const uiSlugs = uiResult!.sources.filter((s) => s.tier === 'learned').map((s) => s.frontmatter.description);
+    expect(uiSlugs).toContain('UI rule text.');
+    expect(uiSlugs).toContain('Always-on rule.');
+    expect(uiSlugs).not.toContain('API rule text.');
+  });
+
+  test('learned.md path constant matches what resolveInstructions reads from', () => {
+    writeProposal(workspace, makeProposal());
+    const result = approveProposal(workspace, 'e2e-rule', 'alice');
+    // The path the approver wrote to is exactly where instruction-hierarchy looks.
+    expect(result.learnedPath).toContain(LEARNED_FILE_REL);
+    expect(existsSync(result.learnedPath)).toBe(true);
   });
 });

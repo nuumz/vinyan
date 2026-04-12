@@ -12,6 +12,7 @@ export {
   countPendingProposals,
   EVIDENCE_FLOOR,
   LEARNED_FILE_REL,
+  LEARNED_MD_MAX_SIZE,
   type LearnedEntry,
   listPendingProposals,
   MAX_PROPOSAL_SIZE,

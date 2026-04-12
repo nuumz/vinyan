@@ -295,6 +295,35 @@ export function renderCitationsTonePolicy(): string {
 }
 
 /**
+ * Plan tracking policy (Phase 7c-2). Teaches the agent when and how to use
+ * `plan_update` — Vinyan's structured-todo equivalent of Claude Code's
+ * TodoWrite. Orchestration guarantees the installed plan is echoed back as
+ * a `[PLAN]` block on every tool-result turn, so the LLM only writes once
+ * per change and reads from the reminder after.
+ */
+export function renderPlanTrackingPolicy(): string {
+  return [
+    '## Plan Tracking (plan_update)',
+    'For tasks with 3+ non-trivial steps, call `plan_update` to install a todo',
+    'list before you start working. The orchestrator echoes the plan back in',
+    'every subsequent tool result as a `[PLAN]` block — you do NOT need to',
+    'restate it in your own reasoning, just consult the reminder.',
+    'Rules:',
+    '- Each item has { content, activeForm, status }. content = imperative',
+    '  ("Run the test suite"), activeForm = present-continuous ("Running the',
+    '  test suite"), status ∈ pending | in_progress | completed.',
+    '- EXACTLY ONE item may be in_progress at a time. Mark the current step',
+    '  in_progress when you begin it and completed the instant you finish.',
+    '- Call `plan_update` to REPLACE the whole list whenever status changes',
+    '  or you discover a new step. Do not try to update a single item.',
+    '- Skip the plan for simple one-step tasks (< 3 steps, trivial fixes).',
+    '  The overhead is only worth it for multi-step work.',
+    '- Never mark a step completed if it partially succeeded or left errors.',
+    '  If blocked, keep it in_progress and add a new step describing the fix.',
+  ].join('\n');
+}
+
+/**
  * Tool result safety / prompt-injection defense. Tells the worker to treat
  * external content (web pages, file contents, shell output, MCP results) as
  * data, not instructions.
@@ -324,6 +353,7 @@ export function renderAgentPolicies(): string {
     renderExecutingCarePolicy(),
     renderGitSafetyPolicy(),
     renderCitationsTonePolicy(),
+    renderPlanTrackingPolicy(),
     renderToolResultSafetyPolicy(),
   ].join('\n\n');
 }

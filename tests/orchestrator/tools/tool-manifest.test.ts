@@ -3,8 +3,8 @@
  * Phase 6.0: Agentic Worker Protocol.
  */
 import { describe, expect, test } from 'bun:test';
-import type { RoutingDecision } from '@vinyan/orchestrator/types.ts';
 import { manifestFor } from '@vinyan/orchestrator/tools/tool-manifest.ts';
+import type { RoutingDecision } from '@vinyan/orchestrator/types.ts';
 
 function routing(level: 0 | 1 | 2 | 3): RoutingDecision {
   return { level, model: level === 0 ? null : 'test-model', budgetTokens: 10000, latencyBudgetMs: 30000 };
@@ -25,6 +25,9 @@ describe('manifestFor', () => {
     expect(names).toContain('git_diff');
     expect(names).toContain('attempt_completion');
     expect(names).toContain('request_budget_extension');
+    // Phase 7c-2: plan_update is L1+ (available as soon as there are tools
+    // to plan around) so L1 read-only exploration workers can track progress.
+    expect(names).toContain('plan_update');
     // Should NOT include write tools
     expect(names).not.toContain('file_write');
     expect(names).not.toContain('file_edit');
@@ -91,6 +94,7 @@ describe('manifestFor', () => {
     expect(byName.get('attempt_completion')!.toolKind).toBe('control');
     expect(byName.get('request_budget_extension')!.toolKind).toBe('control');
     expect(byName.get('delegate_task')!.toolKind).toBe('control');
+    expect(byName.get('plan_update')!.toolKind).toBe('control');
   });
 
   test('all descriptors have toolKind set', () => {

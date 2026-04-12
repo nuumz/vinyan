@@ -5,10 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { SessionProgress } from '../../../src/orchestrator/worker/agent-loop.ts';
-import {
-  buildInitUserMessage,
-  buildSystemPrompt,
-} from '../../../src/orchestrator/worker/agent-worker-entry.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../../src/orchestrator/worker/agent-worker-entry.ts';
 
 // ── SessionProgress ─────────────────────────────────────────────────
 
@@ -77,7 +74,7 @@ describe('SessionProgress', () => {
 
   test('getSystemHint returns urgent warning at 85%', () => {
     const sp = new SessionProgress();
-    const hint = sp.getSystemHint(0.90, 3);
+    const hint = sp.getSystemHint(0.9, 3);
     expect(hint).not.toBeNull();
     expect(hint).toContain('BUDGET WARNING');
     expect(hint).toContain('85%');
@@ -169,7 +166,7 @@ describe('SessionProgress', () => {
     sp.recordTurn(true);
 
     // Budget at 90%, only 1 turn remaining
-    const hint = sp.getSystemHint(0.90, 1);
+    const hint = sp.getSystemHint(0.9, 1);
     expect(hint).not.toBeNull();
     // Should contain all four warnings — at 3 stalled turns, the stall
     // warning escalates to a forced pivot.
@@ -181,7 +178,7 @@ describe('SessionProgress', () => {
 
   test('getSystemHint wraps output in <vinyan-reminder> tags', () => {
     const sp = new SessionProgress();
-    const hint = sp.getSystemHint(0.90, 1);
+    const hint = sp.getSystemHint(0.9, 1);
     expect(hint).not.toBeNull();
     // Reminder protocol: hint output is a tagged block so the worker LLM can
     // clearly distinguish system guidance from tool output.
@@ -288,6 +285,193 @@ describe('SessionProgress', () => {
     expect(hint).toContain('STALL WARNING');
     expect(hint).toContain('[MEMORY QUEUE]');
     expect(hint).toContain('4 memory proposals');
+  });
+
+  // ── Phase 7c-2: plan_update / session plan tracking ─────────────────
+
+  test('recordPlanUpdate accepts a well-formed plan and assigns monotonic ids', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'Read the file', activeForm: 'Reading the file', status: 'completed' },
+      { content: 'Edit the function', activeForm: 'Editing the function', status: 'in_progress' },
+      { content: 'Run tests', activeForm: 'Running tests', status: 'pending' },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.count).toBe(3);
+    expect(sp.plan).toHaveLength(3);
+    // Ids must be unique and ordered.
+    const ids = sp.plan.map((t) => t.id);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids[0]! < ids[1]!).toBe(true);
+    expect(ids[1]! < ids[2]!).toBe(true);
+  });
+
+  test('recordPlanUpdate replaces the previous plan on each call', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'pending' },
+      { content: 'B', activeForm: 'Doing B', status: 'pending' },
+    ]);
+    expect(sp.plan).toHaveLength(2);
+
+    const r = sp.recordPlanUpdate([{ content: 'C', activeForm: 'Doing C', status: 'in_progress' }]);
+    expect(r.ok).toBe(true);
+    // Plan is replaced, not merged.
+    expect(sp.plan).toHaveLength(1);
+    expect(sp.plan[0]!.content).toBe('C');
+    // Ids keep counting upward (monotonic) — the second batch gets fresh ids
+    // beyond the first batch, which is what we want for dedup/history tracking.
+    expect(sp.plan[0]!.id).toBeGreaterThan(2);
+  });
+
+  test('recordPlanUpdate rejects a plan with more than one in_progress item', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'in_progress' },
+      { content: 'B', activeForm: 'Doing B', status: 'in_progress' },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('in_progress');
+      expect(r.error).toContain('2');
+    }
+    // Rejected plans must NOT be installed.
+    expect(sp.plan).toHaveLength(0);
+  });
+
+  test('recordPlanUpdate allows zero in_progress items (all pending or completed)', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'pending' },
+      { content: 'B', activeForm: 'Doing B', status: 'completed' },
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  test('recordPlanUpdate rejects an item with empty content', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([{ content: '   ', activeForm: 'Doing A', status: 'pending' }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('content');
+  });
+
+  test('recordPlanUpdate rejects an item with empty activeForm', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([{ content: 'A', activeForm: '', status: 'pending' }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('activeForm');
+  });
+
+  test('recordPlanUpdate rejects an item with an invalid status', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      // biome-ignore lint/suspicious/noExplicitAny: exercising runtime validation
+      { content: 'A', activeForm: 'Doing A', status: 'blocked' as any },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('status');
+  });
+
+  test('recordPlanUpdate rejects plans above MAX_PLAN_ITEMS', () => {
+    const sp = new SessionProgress();
+    const big = Array.from({ length: SessionProgress.MAX_PLAN_ITEMS + 1 }, (_, i) => ({
+      content: `step ${i}`,
+      activeForm: `Doing step ${i}`,
+      status: 'pending' as const,
+    }));
+    const r = sp.recordPlanUpdate(big);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain(String(SessionProgress.MAX_PLAN_ITEMS));
+      expect(r.error).toContain(String(SessionProgress.MAX_PLAN_ITEMS + 1));
+    }
+  });
+
+  test('recordPlanUpdate accepts an empty plan (clearing is legal)', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'A', activeForm: 'Doing A', status: 'pending' }]);
+    expect(sp.plan).toHaveLength(1);
+    const r = sp.recordPlanUpdate([]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.count).toBe(0);
+    expect(sp.plan).toHaveLength(0);
+  });
+
+  test('recordPlanUpdate trims whitespace around content and activeForm', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: '  Read file  ', activeForm: '  Reading file  ', status: 'in_progress' }]);
+    expect(sp.plan[0]!.content).toBe('Read file');
+    expect(sp.plan[0]!.activeForm).toBe('Reading file');
+  });
+
+  test('renderPlanBlock returns null for an empty plan', () => {
+    const sp = new SessionProgress();
+    expect(sp.renderPlanBlock()).toBeNull();
+  });
+
+  test('renderPlanBlock produces a markdown checklist with correct status markers', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'Read file', activeForm: 'Reading file', status: 'completed' },
+      { content: 'Edit code', activeForm: 'Editing code', status: 'in_progress' },
+      { content: 'Run tests', activeForm: 'Running tests', status: 'pending' },
+    ]);
+    const block = sp.renderPlanBlock();
+    expect(block).not.toBeNull();
+    expect(block).toContain('[PLAN]');
+    // Completed → [x] with the imperative form.
+    expect(block).toContain('[x] Read file');
+    // In progress → [-] with the present-continuous (activeForm).
+    expect(block).toContain('[-] Editing code');
+    // Pending → [ ] with the imperative form.
+    expect(block).toContain('[ ] Run tests');
+  });
+
+  test('renderPlanBlock preserves plan ordering', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'First', activeForm: 'Doing first', status: 'completed' },
+      { content: 'Second', activeForm: 'Doing second', status: 'completed' },
+      { content: 'Third', activeForm: 'Doing third', status: 'pending' },
+    ]);
+    const block = sp.renderPlanBlock()!;
+    const firstIdx = block.indexOf('First');
+    const secondIdx = block.indexOf('Second');
+    const thirdIdx = block.indexOf('Third');
+    expect(firstIdx).toBeGreaterThan(-1);
+    expect(secondIdx).toBeGreaterThan(firstIdx);
+    expect(thirdIdx).toBeGreaterThan(secondIdx);
+  });
+
+  test('buildSessionSnapshot includes the plan block at the top when plan is non-empty', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'Refactor', activeForm: 'Refactoring', status: 'in_progress' }]);
+    // Add other state so we can assert relative ordering.
+    sp.pendingMemoryProposals = 2;
+    sp.recordToolResult('file_read', false, 'Reading /tmp/x.ts');
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).not.toBeNull();
+    const planIdx = snap!.indexOf('[PLAN]');
+    const memIdx = snap!.indexOf('[MEMORY QUEUE]');
+    expect(planIdx).toBe(0); // plan goes first
+    expect(memIdx).toBeGreaterThan(planIdx);
+  });
+
+  test('getSystemHint wraps the plan block inside <vinyan-reminder> tags', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'Run tests', activeForm: 'Running tests', status: 'in_progress' }]);
+    const hint = sp.getSystemHint(0.2, 10);
+    expect(hint).not.toBeNull();
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('[PLAN]');
+    expect(hint).toContain('[-] Running tests');
+  });
+
+  test('empty plan remains invisible in getSystemHint when nothing else to say', () => {
+    const sp = new SessionProgress();
+    // No plan, no failures, no stall — hint must be null.
+    expect(sp.getSystemHint(0.2, 10)).toBeNull();
   });
 });
 
@@ -444,12 +628,7 @@ describe('buildInitUserMessage', () => {
       },
     };
 
-    const msg = buildInitUserMessage(
-      'Add sort to table',
-      {},
-      undefined,
-      understanding,
-    );
+    const msg = buildInitUserMessage('Add sort to table', {}, undefined, understanding);
     expect(msg).toContain('## Success Criteria');
     expect(msg).toContain('You are done when ALL of these are met');
     expect(msg).toContain('- [ ] Table headers are clickable');
@@ -462,9 +641,7 @@ describe('buildInitUserMessage', () => {
       taskTarget: { file: 'src/components/table.ts', content: 'export class Table {}' },
       depCone: ['src/utils/sort.ts', 'src/types.ts'],
       diagnostics: [{ file: 'table.ts', line: 10, message: 'unused variable' }],
-      worldFacts: [
-        { key: 'framework', value: 'React', tier_reliability: 'deterministic' },
-      ],
+      worldFacts: [{ key: 'framework', value: 'React', tier_reliability: 'deterministic' }],
     };
 
     const msg = buildInitUserMessage('Fix table', perception);
@@ -488,15 +665,11 @@ describe('buildInitUserMessage', () => {
   });
 
   test('prior attempts rendered as lessons with approach/result/lesson format', () => {
-    const msg = buildInitUserMessage(
-      'Refactor module',
-      {},
-      [
-        { approach: 'Inline all functions', outcome: 'failed', failureReason: 'Circular dependency detected' },
-        { approach: 'Extract to utils', outcome: 'partial', failureReason: 'Missing type exports' },
-        { description: 'Try DI pattern', status: 'failed', error: 'Too many constructor params' },
-      ],
-    );
+    const msg = buildInitUserMessage('Refactor module', {}, [
+      { approach: 'Inline all functions', outcome: 'failed', failureReason: 'Circular dependency detected' },
+      { approach: 'Extract to utils', outcome: 'partial', failureReason: 'Missing type exports' },
+      { description: 'Try DI pattern', status: 'failed', error: 'Too many constructor params' },
+    ]);
     expect(msg).toContain('## Prior Attempts (DO NOT repeat these)');
 
     // First attempt

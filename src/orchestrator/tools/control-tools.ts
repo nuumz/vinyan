@@ -1,7 +1,10 @@
 /**
- * Control tools (Phase 6) — attempt_completion, request_budget_extension, delegate_task.
+ * Control tools — attempt_completion, request_budget_extension, delegate_task,
+ * plan_update. These are `toolKind: 'control'` tools intercepted by the agent
+ * loop rather than executed as normal work.
  */
 
+import type { PlanTodoInput } from '../types.ts';
 import { makeResult } from './built-in-tools.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
@@ -146,5 +149,88 @@ export const delegateTask: Tool = {
       });
     }
     return context.onDelegate(params as any);
+  },
+};
+
+/**
+ * Phase 7c-2: `plan_update` — Vinyan's equivalent of Claude Code's TodoWrite.
+ * Installs a fresh snapshot of the session's todo plan on the orchestrator
+ * side. The next turn's tool-result stream carries the plan back to the
+ * worker as a `[PLAN]` block injected into the session-state reminder, so
+ * the LLM stays anchored to its own plan without having to restate it.
+ *
+ * Semantics:
+ *   - REPLACES the whole plan each call (no partial updates, no tombstones).
+ *     Simpler than delta updates — the LLM rewrites the whole list every time
+ *     it changes anything, mirroring TodoWrite's contract.
+ *   - Exactly ONE item may be `in_progress` at a time (orchestrator enforces).
+ *   - `content` / `activeForm` must be non-empty trimmed strings.
+ *   - 50 items maximum — if the plan grows beyond that the agent is probably
+ *     going too granular and should consolidate.
+ */
+export const planUpdate: Tool = {
+  name: 'plan_update',
+  description:
+    'Install or replace the current session plan as an ordered list of todos. ' +
+    'Exactly one item may have status "in_progress" at a time; the others must ' +
+    'be "pending" or "completed". Use this tool to (a) break a complex task into ' +
+    'concrete steps before starting, (b) mark steps completed as you finish them, ' +
+    'and (c) add new steps you discover. The plan you install is echoed back in ' +
+    "the next turn's [PLAN] block so you stay anchored — you do NOT need to " +
+    'repeat the list in your own reasoning. Use sparingly: simple tasks need no plan.',
+  minIsolationLevel: 0,
+  category: 'control',
+  sideEffect: false,
+  descriptor(): ToolDescriptor {
+    return {
+      name: 'plan_update',
+      description: this.description,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description:
+              'Ordered list of todo items. Each item: { content, activeForm, status }. ' +
+              'content = imperative ("Run tests"), activeForm = present-continuous ("Running tests"), ' +
+              'status ∈ pending | in_progress | completed. At most ONE may be in_progress.',
+            items: { type: 'object' },
+          },
+        },
+        required: ['todos'],
+      },
+      category: 'control',
+      sideEffect: false,
+      minRoutingLevel: 1,
+      toolKind: 'control',
+    };
+  },
+  async execute(params, context) {
+    // Control tool — handled by agent loop via context.onPlanUpdate.
+    // If the callback isn't wired (e.g. structured worker mode, unit tests),
+    // surface a denied status rather than silently accepting and discarding.
+    if (!context.onPlanUpdate) {
+      return makeResult((params.callId as string) ?? '', 'plan_update', {
+        status: 'denied',
+        error: 'plan_update is not available in this worker mode',
+      });
+    }
+    const rawTodos = (params as { todos?: unknown }).todos;
+    if (!Array.isArray(rawTodos)) {
+      return makeResult((params.callId as string) ?? '', 'plan_update', {
+        status: 'error',
+        error: 'plan_update: `todos` must be an array',
+      });
+    }
+    const result = context.onPlanUpdate(rawTodos as PlanTodoInput[]);
+    if (!result.ok) {
+      return makeResult((params.callId as string) ?? '', 'plan_update', {
+        status: 'error',
+        error: `plan_update rejected: ${result.error}`,
+      });
+    }
+    return makeResult((params.callId as string) ?? '', 'plan_update', {
+      output: `plan_update: installed ${result.count} todo(s)`,
+    });
   },
 };

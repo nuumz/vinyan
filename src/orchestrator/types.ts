@@ -344,6 +344,41 @@ export interface TaskInput {
 }
 
 // ---------------------------------------------------------------------------
+// Session Plan (→ Phase 7c-2, Vinyan's equivalent of Claude Code's TodoWrite)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single todo item in the session plan. Stored on the orchestrator side —
+ * the agent writes the whole list via `plan_update` each time it changes, and
+ * the orchestrator renders the current snapshot back into every subsequent
+ * tool result as a `[PLAN]` block so the LLM stays anchored without the list
+ * bloating raw context.
+ *
+ * Invariant enforced by the orchestrator:
+ *   - at most ONE item may carry `status: 'in_progress'` at any time
+ *   - `content` and `activeForm` are non-empty trimmed strings
+ *   - `id` is monotonically assigned on first insertion and remains stable
+ *     across updates keyed by array position
+ */
+export interface PlanTodo {
+  /** Monotonic 1-based identifier assigned when the item is first added. */
+  id: number;
+  /** Imperative phrasing of the task: "Run the test suite". */
+  content: string;
+  /** Present-continuous phrasing: "Running the test suite". */
+  activeForm: string;
+  /** Workflow state — exactly one may be 'in_progress' at a time. */
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** A plan_update call's wire shape — id is not required on the way in. */
+export interface PlanTodoInput {
+  content: string;
+  activeForm: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+// ---------------------------------------------------------------------------
 // Conversation History (→ Conversation Agent Mode)
 // ---------------------------------------------------------------------------
 

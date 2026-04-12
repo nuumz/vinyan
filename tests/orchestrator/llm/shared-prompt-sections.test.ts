@@ -19,6 +19,7 @@ import {
   renderGitSafetyPolicy,
   renderInstructionHierarchy,
   renderParallelToolsPolicy,
+  renderPlanTrackingPolicy,
   renderSubagentRolePolicy,
   renderToolResultSafetyPolicy,
   TIER_HEADER_LABELS,
@@ -369,6 +370,36 @@ describe('renderCitationsTonePolicy', () => {
   });
 });
 
+describe('renderPlanTrackingPolicy', () => {
+  test('mentions plan_update tool and [PLAN] reminder feedback loop', () => {
+    const out = renderPlanTrackingPolicy();
+    expect(out).toContain('## Plan Tracking');
+    expect(out).toContain('plan_update');
+    expect(out).toContain('[PLAN]');
+  });
+
+  test('specifies the three-field todo shape', () => {
+    const out = renderPlanTrackingPolicy();
+    expect(out).toContain('content');
+    expect(out).toContain('activeForm');
+    expect(out).toContain('status');
+    expect(out).toContain('pending');
+    expect(out).toContain('in_progress');
+    expect(out).toContain('completed');
+  });
+
+  test('enforces the single-in-progress invariant in the description', () => {
+    const out = renderPlanTrackingPolicy();
+    expect(out).toContain('EXACTLY ONE');
+    expect(out).toContain('in_progress');
+  });
+
+  test('tells the agent to skip plans for simple tasks', () => {
+    const out = renderPlanTrackingPolicy();
+    expect(out.toLowerCase()).toContain('simple');
+  });
+});
+
 describe('renderToolResultSafetyPolicy', () => {
   test('warns about prompt injection in tool results', () => {
     const out = renderToolResultSafetyPolicy();
@@ -385,31 +416,34 @@ describe('renderToolResultSafetyPolicy', () => {
 });
 
 describe('renderAgentPolicies', () => {
-  test('combines all five policy blocks in order', () => {
+  test('combines all six policy blocks in order', () => {
     const out = renderAgentPolicies();
     const parallelIdx = out.indexOf('## Parallel Tool Execution');
     const careIdx = out.indexOf('## Executing Actions With Care');
     const gitIdx = out.indexOf('## Git Safety Protocol');
     const citeIdx = out.indexOf('## Citations, Tone, and Style');
+    const planIdx = out.indexOf('## Plan Tracking');
     const toolIdx = out.indexOf('## Tool Result Safety');
-    // All five must be present
+    // All six must be present
     expect(parallelIdx).toBeGreaterThan(-1);
     expect(careIdx).toBeGreaterThan(-1);
     expect(gitIdx).toBeGreaterThan(-1);
     expect(citeIdx).toBeGreaterThan(-1);
+    expect(planIdx).toBeGreaterThan(-1);
     expect(toolIdx).toBeGreaterThan(-1);
-    // Order: parallel → care → git → cite → tool
+    // Order: parallel → care → git → cite → plan → tool
     expect(careIdx).toBeGreaterThan(parallelIdx);
     expect(gitIdx).toBeGreaterThan(careIdx);
     expect(citeIdx).toBeGreaterThan(gitIdx);
-    expect(toolIdx).toBeGreaterThan(citeIdx);
+    expect(planIdx).toBeGreaterThan(citeIdx);
+    expect(toolIdx).toBeGreaterThan(planIdx);
   });
 
-  test('output stays under 5KB to keep system prompt overhead bounded', () => {
+  test('output stays under 6KB to keep system prompt overhead bounded', () => {
     // Guard: if a future edit doubles the length, we want to notice in CI
     // rather than discovering it via token budget regressions in production.
-    // Current baseline: ~4.4KB for all five blocks.
-    expect(renderAgentPolicies().length).toBeLessThan(5120);
+    // Current baseline: ~5.4KB for all six blocks (Phase 7c-2 adds plan tracking).
+    expect(renderAgentPolicies().length).toBeLessThan(6144);
   });
 });
 

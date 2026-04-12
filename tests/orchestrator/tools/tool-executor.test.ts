@@ -185,13 +185,15 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 14 built-in tools', () => {
-    expect(executor.getToolNames()).toHaveLength(14);
+  test('getToolNames returns all 15 built-in tools', () => {
+    expect(executor.getToolNames()).toHaveLength(15);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');
     expect(executor.getToolNames()).toContain('http_get');
     expect(executor.getToolNames()).toContain('memory_propose');
+    // Phase 7c-2: plan_update is a control tool exposed at L1+.
+    expect(executor.getToolNames()).toContain('plan_update');
   });
 });
 
@@ -333,19 +335,13 @@ describe('ToolExecutor — command approval gate', () => {
 
     const ctx = makeContext({ routingLevel: 2 });
     // 'true' is a real command that exits 0 on all Unix systems
-    const results = await approvalExecutor.executeProposedTools(
-      [makeCall('shell_exec', { command: 'true' })],
-      ctx,
-    );
+    const results = await approvalExecutor.executeProposedTools([makeCall('shell_exec', { command: 'true' })], ctx);
     expect(results[0]!.status).toBe('success');
   });
 
   test('without approval gate, unlisted command is denied immediately', async () => {
     const ctx = makeContext({ routingLevel: 2 });
-    const results = await executor.executeProposedTools(
-      [makeCall('shell_exec', { command: 'google-chrome' })],
-      ctx,
-    );
+    const results = await executor.executeProposedTools([makeCall('shell_exec', { command: 'google-chrome' })], ctx);
     expect(results[0]!.status).toBe('denied');
   });
 

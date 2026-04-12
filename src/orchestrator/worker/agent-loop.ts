@@ -23,6 +23,8 @@ import { manifestFor } from '../tools/tool-manifest.ts';
 import type {
   AgentSessionSummary,
   PerceptualHierarchy,
+  PlanTodo,
+  PlanTodoInput,
   RoutingDecision,
   TaskDAG,
   TaskInput,
@@ -133,6 +135,78 @@ export class SessionProgress {
    */
   pendingMemoryProposals = 0;
 
+  /**
+   * Phase 7c-2: the current session todo plan installed by `plan_update`.
+   * Ordered, monotonic-id'd. Rendered into the `[PLAN]` block of
+   * `buildSessionSnapshot()` so the LLM sees its own plan echoed back on
+   * every tool-result turn. Empty array → plan block is suppressed.
+   */
+  plan: PlanTodo[] = [];
+  /** Next id to hand out to a newly-inserted plan item. */
+  private nextPlanId = 1;
+  /** Hard cap to stop runaway plans from inflating the reminder block. */
+  static readonly MAX_PLAN_ITEMS = 50;
+
+  /**
+   * Install (replace) the session plan from a `plan_update` tool call. The
+   * orchestrator enforces the TodoWrite-style single-in-progress invariant
+   * and non-empty string fields here so the LLM can't wedge the renderer by
+   * sending malformed payloads. Returns a result discriminator that the
+   * `plan_update` tool propagates to the worker as a tool-result status.
+   */
+  recordPlanUpdate(todos: PlanTodoInput[]): { ok: true; count: number } | { ok: false; error: string } {
+    if (todos.length > SessionProgress.MAX_PLAN_ITEMS) {
+      return {
+        ok: false,
+        error: `plan has ${todos.length} items; max ${SessionProgress.MAX_PLAN_ITEMS}. Consolidate coarser steps.`,
+      };
+    }
+    let inProgressCount = 0;
+    const validated: Array<Omit<PlanTodo, 'id'>> = [];
+    for (let i = 0; i < todos.length; i++) {
+      const t = todos[i];
+      if (t == null || typeof t !== 'object') {
+        return { ok: false, error: `item ${i}: must be an object` };
+      }
+      const content = typeof t.content === 'string' ? t.content.trim() : '';
+      const activeForm = typeof t.activeForm === 'string' ? t.activeForm.trim() : '';
+      const status = t.status;
+      if (!content) return { ok: false, error: `item ${i}: content is required and must be non-empty` };
+      if (!activeForm) return { ok: false, error: `item ${i}: activeForm is required and must be non-empty` };
+      if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+        return {
+          ok: false,
+          error: `item ${i}: status must be 'pending' | 'in_progress' | 'completed', got ${JSON.stringify(status)}`,
+        };
+      }
+      if (status === 'in_progress') inProgressCount++;
+      validated.push({ content, activeForm, status });
+    }
+    if (inProgressCount > 1) {
+      return {
+        ok: false,
+        error: `exactly one item may be 'in_progress'; got ${inProgressCount}. Mark the others 'pending'.`,
+      };
+    }
+    // Replace the plan. Each call gets fresh ids — stable-id tracking across
+    // updates adds complexity without observable value (the plan is rendered
+    // as markdown, not addressed by id).
+    this.plan = validated.map((t) => ({ id: this.nextPlanId++, ...t }));
+    return { ok: true, count: this.plan.length };
+  }
+
+  /** Render the current plan as a markdown checklist for reminder injection. */
+  renderPlanBlock(): string | null {
+    if (this.plan.length === 0) return null;
+    const lines = ['[PLAN]'];
+    for (const item of this.plan) {
+      const marker = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[-]' : '[ ]';
+      const label = item.status === 'in_progress' ? item.activeForm : item.content;
+      lines.push(`  ${marker} ${label}`);
+    }
+    return lines.join('\n');
+  }
+
   recordToolResult(toolName: string, isError: boolean, output?: string, callParams?: Record<string, unknown>): void {
     if (isError) {
       this.toolFailureCount++;
@@ -200,6 +274,13 @@ export class SessionProgress {
    *  This gives the agent persistent awareness of what it has done so far. */
   buildSessionSnapshot(): string | null {
     const lines: string[] = [];
+
+    // Phase 7c-2: plan block goes first so it's prominent. The agent reads
+    // top-down and checking the plan against the state below keeps it honest.
+    const planBlock = this.renderPlanBlock();
+    if (planBlock) {
+      lines.push(planBlock);
+    }
 
     if (this.filesRead.size > 0 || this.filesWritten.size > 0) {
       lines.push('[SESSION STATE]');
@@ -459,6 +540,10 @@ export async function runAgentLoop(
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)
         : undefined,
+    // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
+    // install new plan snapshots. The callback runs synchronously and returns
+    // a validation result the tool propagates back as a tool-result status.
+    onPlanUpdate: (todos) => progress.recordPlanUpdate(todos),
   };
 
   try {

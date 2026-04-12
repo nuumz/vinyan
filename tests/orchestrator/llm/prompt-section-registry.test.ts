@@ -111,12 +111,61 @@ describe('createDefaultRegistry', () => {
   it('user prompt includes instructions when present', () => {
     const registry = createDefaultRegistry();
     const ctx = makeContext({
-      instructions: { content: 'Use Bun for everything', contentHash: 'abc123', filePath: '/workspace/VINYAN.md' },
+      instructions: { content: 'Use Bun for everything', contentHash: 'abc123', filePath: '/workspace/VINYAN.md', sources: [] },
     });
     const user = registry.renderTarget('user', ctx);
 
     expect(user).toContain('[PROJECT INSTRUCTIONS]');
     expect(user).toContain('Use Bun for everything');
+  });
+
+  it('user prompt renders tiered instruction sources with provenance headers', () => {
+    const registry = createDefaultRegistry();
+    const ctx = makeContext({
+      instructions: {
+        content: 'merged',
+        contentHash: 'h',
+        filePath: '/workspace/VINYAN.md',
+        sources: [
+          {
+            tier: 'project',
+            filePath: '/workspace/VINYAN.md',
+            content: 'Root project rules',
+            contentHash: 'h1',
+            frontmatter: {},
+            includes: [],
+          },
+          {
+            tier: 'scoped-rule',
+            filePath: '/workspace/.vinyan/rules/api.md',
+            content: 'Use async/await',
+            contentHash: 'h2',
+            frontmatter: { applyTo: ['src/api/**'], description: 'API conventions' },
+            includes: [],
+          },
+          {
+            tier: 'learned',
+            filePath: '/workspace/.vinyan/memory/learned.md',
+            content: 'Prefer early returns',
+            contentHash: 'h3',
+            frontmatter: {},
+            includes: [],
+          },
+        ],
+      },
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[PROJECT INSTRUCTIONS]');
+    expect(user).toContain('PROJECT INSTRUCTIONS');
+    expect(user).toContain('SCOPED RULE');
+    expect(user).toContain('API conventions');
+    expect(user).toContain('src/api/**');
+    expect(user).toContain('LEARNED CONVENTIONS');
+    expect(user).toContain('agent-proposed, human-verified');
+    expect(user).toContain('Root project rules');
+    expect(user).toContain('Use async/await');
+    expect(user).toContain('Prefer early returns');
   });
 
   it('user prompt includes KNOWN FACTS with trust annotations', () => {

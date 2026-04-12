@@ -21,7 +21,7 @@ import type { WorkerPool } from '../core-loop.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from './agent-loop.ts';
 import { assemblePrompt } from '../llm/prompt-assembler.ts';
-import { loadInstructionMemory } from '../llm/instruction-loader.ts';
+import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
@@ -472,7 +472,11 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    const instructions = loadInstructionMemory(this.workspace);
+    const instructions = loadInstructionMemoryForTask({
+      workspace: this.workspace,
+      targetFiles: workerInput.allowedPaths,
+      taskType: workerInput.taskType,
+    });
     const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,

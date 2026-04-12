@@ -365,3 +365,65 @@ describe('ToolExecutor — command approval gate', () => {
     expect(approvalRequested).toBe(false); // No approval prompt for security violations
   });
 });
+
+// Phase 7e: registerTool — MCP tools are added after orchestrator startup
+// (once the MCP client pool finishes its async initialize()).
+describe('Phase 7e: registerTool', () => {
+  test('registerTool adds a tool discoverable by getToolNames', () => {
+    const fresh = new ToolExecutor();
+    expect(fresh.getToolNames()).not.toContain('mcp__gh__issue');
+    fresh.registerTool('mcp__gh__issue', {
+      name: 'mcp__gh__issue',
+      description: 'fake mcp tool',
+      minIsolationLevel: 2,
+      category: 'delegation',
+      sideEffect: true,
+      descriptor: () => ({
+        name: 'mcp__gh__issue',
+        description: 'fake mcp tool',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        category: 'delegation',
+        sideEffect: true,
+        minRoutingLevel: 2,
+        toolKind: 'executable',
+      }),
+      execute: async () => ({
+        callId: '',
+        tool: 'mcp__gh__issue',
+        status: 'success',
+        output: 'ok',
+        durationMs: 0,
+      }),
+    });
+    expect(fresh.getToolNames()).toContain('mcp__gh__issue');
+  });
+
+  test('registered tool is invocable via executeProposedTools', async () => {
+    const fresh = new ToolExecutor();
+    let called = false;
+    fresh.registerTool('mcp__gh__issue', {
+      name: 'mcp__gh__issue',
+      description: 'fake mcp tool',
+      minIsolationLevel: 2,
+      category: 'delegation',
+      sideEffect: true,
+      descriptor: () => ({
+        name: 'mcp__gh__issue',
+        description: 'fake mcp tool',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        category: 'delegation',
+        sideEffect: true,
+        minRoutingLevel: 2,
+        toolKind: 'executable',
+      }),
+      execute: async () => {
+        called = true;
+        return { callId: '', tool: 'mcp__gh__issue', status: 'success', output: 'ok', durationMs: 0 };
+      },
+    });
+    const ctx: ToolContext = { routingLevel: 2, allowedPaths: [], workspace: tempDir };
+    const results = await fresh.executeProposedTools([{ id: 'c-1', tool: 'mcp__gh__issue', parameters: {} }], ctx);
+    expect(called).toBe(true);
+    expect(results[0]!.status).toBe('success');
+  });
+});

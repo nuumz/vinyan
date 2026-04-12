@@ -22,7 +22,7 @@ import { evaluatePermission } from '../permissions/permission-checker.ts';
 import type { PermissionConfig } from '../permissions/permission-schema.ts';
 import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
-import type { ToolContext } from '../tools/tool-interface.ts';
+import type { Tool, ToolContext } from '../tools/tool-interface.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
 import type {
   AgentSessionSummary,
@@ -103,6 +103,14 @@ export interface AgentLoopDeps {
    * later layers. Absent config is inert.
    */
   permissionConfig?: PermissionConfig;
+  /**
+   * Phase 7e: extra tools (e.g. MCP adapters) to surface in the tool
+   * manifest. These are merged on top of the built-in tools by
+   * `manifestFor`. The same map is assumed to already be registered
+   * with the concrete `toolExecutor` so the worker can invoke them;
+   * the agent loop only uses it for descriptor discovery.
+   */
+  extraTools?: ReadonlyMap<string, Tool>;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -638,7 +646,7 @@ export async function runAgentLoop(
       ...(plan ? { plan } : {}),
       budget: budget.toSnapshot(),
       allowedPaths: input.targetFiles ?? [],
-      toolManifest: manifestFor(routing),
+      toolManifest: manifestFor(routing, deps.extraTools),
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
       ...(memory.failedApproaches?.length ? { failedApproaches: memory.failedApproaches } : {}),
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),

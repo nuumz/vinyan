@@ -3,6 +3,7 @@
  * Phase 6.0: Agentic Worker Protocol.
  */
 import { describe, expect, test } from 'bun:test';
+import type { Tool, ToolDescriptor } from '@vinyan/orchestrator/tools/tool-interface.ts';
 import { manifestFor } from '@vinyan/orchestrator/tools/tool-manifest.ts';
 import type { RoutingDecision } from '@vinyan/orchestrator/types.ts';
 
@@ -102,5 +103,64 @@ describe('manifestFor', () => {
     for (const d of manifest) {
       expect(['executable', 'control']).toContain(d.toolKind);
     }
+  });
+
+  // Phase 7e: extraTools merge (MCP adapter integration point)
+  describe('extraTools', () => {
+    function fakeTool(name: string, minRoutingLevel: 0 | 1 | 2 | 3): Tool {
+      const desc: ToolDescriptor = {
+        name,
+        description: `fake ${name}`,
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        category: 'delegation',
+        sideEffect: true,
+        minRoutingLevel,
+        toolKind: 'executable',
+      };
+      // IsolationLevel is 0|1|2; clamp 3 to 2 for the fake tool's
+      // isolation value (routing filtering still uses `minRoutingLevel`).
+      const isolation = (minRoutingLevel === 3 ? 2 : minRoutingLevel) as 0 | 1 | 2;
+      return {
+        name,
+        description: desc.description,
+        minIsolationLevel: isolation,
+        category: 'delegation',
+        sideEffect: true,
+        descriptor: () => desc,
+        execute: async () => ({
+          callId: '',
+          tool: name,
+          status: 'success',
+          durationMs: 0,
+        }),
+      };
+    }
+
+    test('extra tools are merged on top of built-ins at the same routing level', () => {
+      const extra = new Map<string, Tool>([['mcp__gh__create_issue', fakeTool('mcp__gh__create_issue', 2)]]);
+      const manifest = manifestFor(routing(2), extra);
+      const names = manifest.map((d) => d.name);
+      expect(names).toContain('file_write');
+      expect(names).toContain('mcp__gh__create_issue');
+    });
+
+    test('extra tools are filtered by routing level like built-ins', () => {
+      const extra = new Map<string, Tool>([['mcp__gh__create_issue', fakeTool('mcp__gh__create_issue', 2)]]);
+      // L1 should NOT see the L2-gated MCP tool.
+      const manifest = manifestFor(routing(1), extra);
+      const names = manifest.map((d) => d.name);
+      expect(names).not.toContain('mcp__gh__create_issue');
+    });
+
+    test('L0 with extra tools still returns empty manifest', () => {
+      const extra = new Map<string, Tool>([['mcp__fs__read', fakeTool('mcp__fs__read', 2)]]);
+      expect(manifestFor(routing(0), extra)).toEqual([]);
+    });
+
+    test('omitting extra tools preserves built-in-only behavior', () => {
+      const withExtras = manifestFor(routing(2), new Map());
+      const withoutExtras = manifestFor(routing(2));
+      expect(withExtras.map((d) => d.name).sort()).toEqual(withoutExtras.map((d) => d.name).sort());
+    });
   });
 });

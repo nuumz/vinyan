@@ -3,8 +3,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createContract } from '../../src/core/agent-contract.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
 
 const mockTask: TaskInput = {
   id: 'test-task-1',
@@ -51,6 +51,8 @@ describe('createContract', () => {
     expect(types).toContain('file_write');
     expect(types).toContain('shell_exec');
     expect(types).toContain('llm_call');
+    // Phase 7e: MCP access at L2+
+    expect(types).toContain('mcp_call');
     expect(contract.maxToolCalls).toBe(20);
   });
 
@@ -62,7 +64,15 @@ describe('createContract', () => {
     expect(types).toContain('file_write');
     expect(types).toContain('shell_exec');
     expect(types).toContain('llm_call');
+    expect(types).toContain('mcp_call');
     expect(contract.maxToolCalls).toBe(50);
+  });
+
+  test('L0/L1 → no mcp_call capability', () => {
+    const l0 = createContract(mockTask, makeRouting(0));
+    const l1 = createContract(mockTask, makeRouting(1));
+    expect(l0.capabilities.map((c) => c.type)).not.toContain('mcp_call');
+    expect(l1.capabilities.map((c) => c.type)).not.toContain('mcp_call');
   });
 
   test('contract taskId matches input', () => {

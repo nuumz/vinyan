@@ -476,6 +476,7 @@ export class WorkerPoolImpl implements WorkerPool {
       workspace: this.workspace,
       targetFiles: workerInput.allowedPaths,
       taskType: workerInput.taskType,
+      actionVerb: workerInput.understanding?.actionVerb,
     });
     const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,

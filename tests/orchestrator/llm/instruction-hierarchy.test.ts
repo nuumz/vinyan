@@ -305,3 +305,148 @@ That's all.`,
     expect(first).not.toBe(second);
   });
 });
+
+describe('ecosystem hospitality', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    clearInstructionHierarchyCache();
+    workspace = makeTempWorkspace('ecosystem');
+  });
+
+  afterEach(() => {
+    cleanupWorkspace(workspace);
+  });
+
+  test('reads AGENTS.md as project source when VINYAN.md absent', () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), 'Agents-native project');
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    expect(result!.content).toContain('Agents-native project');
+    expect(result!.sources.some((s) => s.filePath.endsWith('AGENTS.md'))).toBe(true);
+  });
+
+  test('reads CLAUDE.md as project source', () => {
+    writeFileSync(join(workspace, 'CLAUDE.md'), 'Claude Code project');
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    expect(result!.content).toContain('Claude Code project');
+  });
+
+  test('reads .github/copilot-instructions.md as project source', () => {
+    mkdirSync(join(workspace, '.github'), { recursive: true });
+    writeFileSync(join(workspace, '.github', 'copilot-instructions.md'), 'Copilot project');
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    expect(result!.content).toContain('Copilot project');
+  });
+
+  test('VINYAN.md takes precedence over ecosystem files when both present', () => {
+    writeFileSync(join(workspace, 'VINYAN.md'), 'Vinyan native');
+    writeFileSync(join(workspace, 'AGENTS.md'), 'Agents fallback');
+    writeFileSync(join(workspace, 'CLAUDE.md'), 'Claude fallback');
+
+    const result = resolveInstructions({ workspace });
+    expect(result).not.toBeNull();
+    // Both should be loaded, but VINYAN.md content appears first
+    const vinyanIdx = result!.content.indexOf('Vinyan native');
+    const agentsIdx = result!.content.indexOf('Agents fallback');
+    expect(vinyanIdx).toBeGreaterThanOrEqual(0);
+    expect(agentsIdx).toBeGreaterThanOrEqual(0);
+    expect(vinyanIdx).toBeLessThan(agentsIdx);
+  });
+
+  test('reads .claude/rules and .github/instructions as scoped rule dirs', () => {
+    mkdirSync(join(workspace, '.claude', 'rules'), { recursive: true });
+    writeFileSync(join(workspace, '.claude', 'rules', 'claude-rule.md'), 'Claude rule');
+
+    mkdirSync(join(workspace, '.github', 'instructions'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.github', 'instructions', 'api.instructions.md'),
+      `---
+applyTo:
+  - "src/api/**"
+---
+Copilot API rules`,
+    );
+
+    const result = resolveInstructions({
+      workspace,
+      targetFiles: ['src/api/user.ts'],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.content).toContain('Claude rule');
+    expect(result!.content).toContain('Copilot API rules');
+  });
+});
+
+describe('task-context filtering', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    clearInstructionHierarchyCache();
+    workspace = makeTempWorkspace('ctx-filter');
+  });
+
+  afterEach(() => {
+    cleanupWorkspace(workspace);
+  });
+
+  test('taskTypes filter excludes rule for wrong task type', () => {
+    mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.vinyan', 'rules', 'code-only.md'),
+      `---
+taskTypes:
+  - code
+---
+Code-only rule`,
+    );
+
+    const codeResult = resolveInstructions({ workspace, taskType: 'code' });
+    expect(codeResult).not.toBeNull();
+    expect(codeResult!.content).toContain('Code-only rule');
+
+    const reasoningResult = resolveInstructions({ workspace, taskType: 'reasoning' });
+    expect(reasoningResult).toBeNull();
+  });
+
+  test('applyToActions filter includes rule only for matching action', () => {
+    mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.vinyan', 'rules', 'fix-only.md'),
+      `---
+applyToActions:
+  - fix
+  - debug
+---
+Debug/fix conventions`,
+    );
+
+    const fixResult = resolveInstructions({ workspace, actionVerb: 'fix' });
+    expect(fixResult).not.toBeNull();
+    expect(fixResult!.content).toContain('Debug/fix conventions');
+
+    const addResult = resolveInstructions({ workspace, actionVerb: 'add' });
+    expect(addResult).toBeNull();
+  });
+
+  test('excludeActions filter skips rule for excluded actions', () => {
+    mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.vinyan', 'rules', 'not-for-refactor.md'),
+      `---
+excludeActions:
+  - refactor
+---
+Not for refactoring`,
+    );
+
+    const refactorResult = resolveInstructions({ workspace, actionVerb: 'refactor' });
+    expect(refactorResult).toBeNull();
+
+    const fixResult = resolveInstructions({ workspace, actionVerb: 'fix' });
+    expect(fixResult).not.toBeNull();
+    expect(fixResult!.content).toContain('Not for refactoring');
+  });
+});

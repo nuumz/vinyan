@@ -43,6 +43,12 @@ export interface RuleFrontmatter {
   description?: string;
   /** Trust tier hint — affects how LLM weighs this rule. */
   tier?: 'deterministic' | 'heuristic' | 'probabilistic';
+  /** Task types this rule applies to. 'code' | 'reasoning'. If omitted, both. */
+  taskTypes?: Array<'code' | 'reasoning'>;
+  /** Only apply when task matches these action verbs (fix, refactor, add, etc.). */
+  applyToActions?: string[];
+  /** Do NOT apply when task action matches any of these verbs. */
+  excludeActions?: string[];
 }
 
 /** A single instruction source (file) with metadata. */
@@ -59,6 +65,8 @@ export interface InstructionSource {
   frontmatter: RuleFrontmatter;
   /** Set of files included via @include (for invalidation tracking). */
   includes: string[];
+  /** Discovery order within tier — preserves intentional file ordering (e.g., VINYAN.md before AGENTS.md). */
+  discoveryIndex?: number;
 }
 
 /** Resolved instruction memory — the final merged view for a specific task context. */
@@ -81,6 +89,8 @@ export interface InstructionContext {
   targetFiles?: string[];
   /** Task type — influences which rules apply. */
   taskType?: 'code' | 'reasoning';
+  /** Action verb from task understanding (e.g., 'fix', 'refactor'). Enables applyToActions/excludeActions filtering. */
+  actionVerb?: string;
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────
@@ -132,6 +142,24 @@ export function parseFrontmatter(content: string): { frontmatter: RuleFrontmatte
       continue;
     }
 
+    // List continuation for any recognized list key
+    if (listMatch && (currentKey === 'taskTypes' || currentKey === 'applyToActions' || currentKey === 'excludeActions')) {
+      const val = listMatch[1]!.replace(/^["']|["']$/g, '');
+      if (currentKey === 'taskTypes') {
+        if (val === 'code' || val === 'reasoning') {
+          if (!frontmatter.taskTypes) frontmatter.taskTypes = [];
+          frontmatter.taskTypes.push(val);
+        }
+      } else if (currentKey === 'applyToActions') {
+        if (!frontmatter.applyToActions) frontmatter.applyToActions = [];
+        frontmatter.applyToActions.push(val);
+      } else if (currentKey === 'excludeActions') {
+        if (!frontmatter.excludeActions) frontmatter.excludeActions = [];
+        frontmatter.excludeActions.push(val);
+      }
+      continue;
+    }
+
     // key: value
     const kvMatch = line.match(/^([a-zA-Z_][\w-]*)\s*:\s*(.*)$/);
     if (kvMatch) {
@@ -162,6 +190,30 @@ export function parseFrontmatter(content: string): { frontmatter: RuleFrontmatte
         const t = value.replace(/^["']|["']$/g, '');
         if (t === 'deterministic' || t === 'heuristic' || t === 'probabilistic') {
           frontmatter.tier = t;
+        }
+      } else if (key === 'taskTypes') {
+        if (value.startsWith('[')) {
+          const parts = value
+            .slice(1, value.endsWith(']') ? -1 : undefined)
+            .split(',')
+            .map((s) => s.trim().replace(/^["']|["']$/g, ''));
+          frontmatter.taskTypes = parts.filter(
+            (p): p is 'code' | 'reasoning' => p === 'code' || p === 'reasoning',
+          );
+        } else if (value && (value === 'code' || value === 'reasoning')) {
+          frontmatter.taskTypes = [value];
+        }
+      } else if (key === 'applyToActions' || key === 'excludeActions') {
+        const field = key;
+        if (value.startsWith('[')) {
+          const parts = value
+            .slice(1, value.endsWith(']') ? -1 : undefined)
+            .split(',')
+            .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+            .filter(Boolean);
+          frontmatter[field] = parts;
+        } else if (value) {
+          frontmatter[field] = [value.replace(/^["']|["']$/g, '')];
         }
       }
     }
@@ -342,14 +394,30 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
   }
 }
 
-/** Check if a rule's applyTo patterns match any of the target files. */
-function ruleAppliesToContext(rule: InstructionSource, targetFiles: string[]): boolean {
-  const applyTo = rule.frontmatter.applyTo;
-  // No applyTo → rule is always active
-  if (!applyTo || applyTo.length === 0) return true;
-  // Has applyTo but no target files → skip (rule is scoped, no scope to match)
-  if (targetFiles.length === 0) return false;
-  // Match if any target file matches any pattern
+/** Check if a rule applies to the current task context (files + task type + action). */
+function ruleAppliesToContext(rule: InstructionSource, ctx: InstructionContext): boolean {
+  const fm = rule.frontmatter;
+  const targetFiles = ctx.targetFiles ?? [];
+
+  // Task type filter
+  if (fm.taskTypes && fm.taskTypes.length > 0 && ctx.taskType) {
+    if (!fm.taskTypes.includes(ctx.taskType)) return false;
+  }
+
+  // Action-verb filters
+  if (ctx.actionVerb) {
+    const verb = ctx.actionVerb.toLowerCase();
+    if (fm.excludeActions?.some((a) => a.toLowerCase() === verb)) return false;
+    if (fm.applyToActions && fm.applyToActions.length > 0) {
+      if (!fm.applyToActions.some((a) => a.toLowerCase() === verb)) return false;
+    }
+  }
+
+  // File-glob filter (applyTo)
+  const applyTo = fm.applyTo;
+  if (!applyTo || applyTo.length === 0) return true; // always-active rule
+  if (targetFiles.length === 0) return false; // scoped rule, no scope to match
+
   for (const file of targetFiles) {
     for (const pattern of applyTo) {
       if (matchesGlob(file, pattern)) return true;
@@ -361,40 +429,61 @@ function ruleAppliesToContext(rule: InstructionSource, targetFiles: string[]): b
 // ── Tier discovery ────────────────────────────────────────────────────
 
 /**
+ * Discovery order for the M2 "project" tier.
+ *
+ * Ecosystem hospitality: Vinyan reads its own VINYAN.md first, but also
+ * honors AGENTS.md (cross-ecosystem standard), CLAUDE.md (Claude Code),
+ * and .github/copilot-instructions.md (VSCode Copilot) so existing repos
+ * work without migration. Earlier files win on conflict, and Vinyan-specific
+ * entries stay first to preserve Vinyan's semantics.
+ */
+const PROJECT_TIER_CANDIDATES = [
+  'VINYAN.md',
+  'AGENTS.md',
+  'CLAUDE.md',
+  '.claude/CLAUDE.md',
+  '.github/copilot-instructions.md',
+] as const;
+
+/**
  * Walk the workspace to find all instruction sources across tiers.
  * Does NOT apply filtering — that happens in resolveInstructions().
  */
 function discoverSources(workspace: string): InstructionSource[] {
   const sources: InstructionSource[] = [];
+  let discoveryIndex = 0;
+  const push = (source: InstructionSource | null) => {
+    if (source) sources.push({ ...source, discoveryIndex: discoveryIndex++ });
+  };
 
   // M1: User preferences (cross-project)
-  const userPrefsPath = join(homedir(), '.vinyan', 'preferences.md');
-  const userSource = loadSource(userPrefsPath, 'user');
-  if (userSource) sources.push(userSource);
+  push(loadSource(join(homedir(), '.vinyan', 'preferences.md'), 'user'));
 
-  // M2: Project root VINYAN.md
-  const projectPath = join(workspace, 'VINYAN.md');
-  const projectSource = loadSource(projectPath, 'project');
-  if (projectSource) sources.push(projectSource);
+  // M2: Project root — Vinyan-native first, then ecosystem-compatible.
+  for (const candidate of PROJECT_TIER_CANDIDATES) {
+    push(loadSource(join(workspace, candidate), 'project'));
+  }
 
-  // M3: Scoped rules (./.vinyan/rules/**/*.md)
-  const rulesDir = join(workspace, '.vinyan', 'rules');
-  if (existsSync(rulesDir)) {
+  // M3: Scoped rules from Vinyan-native + Claude Code + Copilot locations.
+  const scopedRuleDirs = [
+    join(workspace, '.vinyan', 'rules'),
+    join(workspace, '.claude', 'rules'),
+    join(workspace, '.github', 'instructions'),
+  ];
+  for (const rulesDir of scopedRuleDirs) {
+    if (!existsSync(rulesDir)) continue;
     try {
       const ruleFiles = walkMarkdownFiles(rulesDir);
       for (const ruleFile of ruleFiles) {
-        const source = loadSource(ruleFile, 'scoped-rule');
-        if (source) sources.push(source);
+        push(loadSource(ruleFile, 'scoped-rule'));
       }
     } catch {
-      // Silently skip broken rules dir
+      // Silently skip unreadable rules dir
     }
   }
 
   // M4: Learned conventions (agent-proposed, human-reviewed)
-  const learnedPath = join(workspace, '.vinyan', 'memory', 'learned.md');
-  const learnedSource = loadSource(learnedPath, 'learned');
-  if (learnedSource) sources.push(learnedSource);
+  push(loadSource(join(workspace, '.vinyan', 'memory', 'learned.md'), 'learned'));
 
   return sources;
 }
@@ -426,9 +515,9 @@ function walkMarkdownFiles(dir: string): string[] {
  * sorts by priority, and returns a merged InstructionMemory.
  */
 export function resolveInstructions(ctx: InstructionContext): InstructionMemory | null {
-  // Cache key: (workspace + sorted target files + task type)
+  // Cache key: (workspace + sorted target files + task type + action verb)
   const targetKey = (ctx.targetFiles ?? []).slice().sort().join('|');
-  const cacheKey = `${ctx.workspace}\0${targetKey}\0${ctx.taskType ?? ''}`;
+  const cacheKey = `${ctx.workspace}\0${targetKey}\0${ctx.taskType ?? ''}\0${ctx.actionVerb ?? ''}`;
 
   // Check cache, but also invalidate if any source file has changed
   const allSources = discoverSources(ctx.workspace);
@@ -443,9 +532,8 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
 
   if (allSources.length === 0) return null;
 
-  // Filter rules by applyTo context
-  const targetFiles = ctx.targetFiles ?? [];
-  const applicable = allSources.filter((s) => ruleAppliesToContext(s, targetFiles));
+  // Filter rules by applyTo / taskType / action verb context
+  const applicable = allSources.filter((s) => ruleAppliesToContext(s, ctx));
   if (applicable.length === 0) return null;
 
   // Sort by merge order:
@@ -464,6 +552,11 @@ export function resolveInstructions(ctx: InstructionContext): InstructionMemory 
     const pa = a.frontmatter.priority ?? 50;
     const pb = b.frontmatter.priority ?? 50;
     if (pa !== pb) return pa - pb;
+    // Preserve discovery order so PROJECT_TIER_CANDIDATES ordering is stable
+    // (e.g., VINYAN.md comes before AGENTS.md even though A < V alphabetically).
+    const ai = a.discoveryIndex ?? Number.MAX_SAFE_INTEGER;
+    const bi = b.discoveryIndex ?? Number.MAX_SAFE_INTEGER;
+    if (ai !== bi) return ai - bi;
     return a.filePath.localeCompare(b.filePath);
   });
 

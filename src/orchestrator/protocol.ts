@@ -8,6 +8,8 @@
  */
 import { z } from 'zod/v4';
 import { EvidenceSchema } from '../oracle/protocol.ts';
+import type { InstructionMemory } from './llm/instruction-hierarchy.ts';
+import type { EnvironmentInfo } from './llm/shared-prompt-sections.ts';
 
 // ── Routing enums ────────────────────────────────────────────────────
 
@@ -125,19 +127,23 @@ export const WorkingMemoryStateSchema = z.object({
   activeHypotheses: z.array(ActiveHypothesisSchema),
   unresolvedUncertainties: z.array(UnresolvedUncertaintySchema),
   scopedFacts: z.array(ScopedFactSchema),
-  priorAttempts: z.array(z.object({
-    sessionId: z.string(),
-    attempt: z.number(),
-    outcome: z.enum(['uncertain', 'max_tokens', 'timeout', 'oracle_failed']),
-    filesRead: z.array(z.string()),
-    filesWritten: z.array(z.string()),
-    turnsCompleted: z.number(),
-    tokensConsumed: z.number(),
-    failurePoint: z.string(),
-    lastIntent: z.string(),
-    uncertainties: z.array(z.string()),
-    suggestedNextStep: z.string().optional(),
-  })).optional(),
+  priorAttempts: z
+    .array(
+      z.object({
+        sessionId: z.string(),
+        attempt: z.number(),
+        outcome: z.enum(['uncertain', 'max_tokens', 'timeout', 'oracle_failed']),
+        filesRead: z.array(z.string()),
+        filesWritten: z.array(z.string()),
+        turnsCompleted: z.number(),
+        tokensConsumed: z.number(),
+        failurePoint: z.string(),
+        lastIntent: z.string(),
+        uncertainties: z.array(z.string()),
+        suggestedNextStep: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
 // ── TaskDAG ──────────────────────────────────────────────────────────
@@ -165,17 +171,68 @@ const TaskFingerprintSchema = z.object({
   oracleFailurePattern: z.string().optional(),
 });
 
-const TaskUnderstandingSchema = z.object({
-  rawGoal: z.string(),
-  actionVerb: z.string(),
-  actionCategory: z.enum(['mutation', 'analysis', 'investigation', 'design', 'qa']),
-  targetSymbol: z.string().optional(),
-  frameworkContext: z.array(z.string()),
-  constraints: z.array(z.string()),
-  acceptanceCriteria: z.array(z.string()),
-  expectsMutation: z.boolean(),
-  fingerprint: TaskFingerprintSchema.optional(),
-}).passthrough(); // Layer 1/2 fields (resolvedEntities, semanticIntent) survive IPC serialization
+const TaskUnderstandingSchema = z
+  .object({
+    rawGoal: z.string(),
+    actionVerb: z.string(),
+    actionCategory: z.enum(['mutation', 'analysis', 'investigation', 'design', 'qa']),
+    targetSymbol: z.string().optional(),
+    frameworkContext: z.array(z.string()),
+    constraints: z.array(z.string()),
+    acceptanceCriteria: z.array(z.string()),
+    expectsMutation: z.boolean(),
+    fingerprint: TaskFingerprintSchema.optional(),
+  })
+  .passthrough(); // Layer 1/2 fields (resolvedEntities, semanticIntent) survive IPC serialization
+
+// ── InstructionMemory (M1-M4 hierarchy — Phase 7a) ───────────────────
+
+/**
+ * Merged instruction memory sent from orchestrator → worker subprocess.
+ * Produced by `resolveInstructions` / `loadInstructionMemoryForTask` in-process
+ * and serialized through the subprocess boundary so worker-side rendering can
+ * produce the same tier-provenance headers as in-process assembly.
+ *
+ * Uses `z.custom<InstructionMemory>` rather than a structural schema so the
+ * Zod-inferred type is exactly `InstructionMemory` — the structural variant
+ * would collapse `RuleFrontmatter`'s typed optional fields into a generic
+ * `Record<string, unknown>`, breaking type compatibility with call sites that
+ * expect the full interface shape.
+ */
+export const InstructionMemorySchema = z.custom<InstructionMemory>(
+  (value) => {
+    if (value == null || typeof value !== 'object') return false;
+    const v = value as Partial<InstructionMemory>;
+    return (
+      typeof v.content === 'string' &&
+      typeof v.contentHash === 'string' &&
+      typeof v.filePath === 'string' &&
+      Array.isArray(v.sources)
+    );
+  },
+  { message: 'Expected InstructionMemory object' },
+);
+
+// ── EnvironmentInfo (Phase 7a) ───────────────────────────────────────
+
+/**
+ * Runtime environment snapshot — cwd, platform, wall-clock, git branch/dirty.
+ * Gathered by the orchestrator and shipped to the worker so the subprocess
+ * can render its own [ENVIRONMENT] block without re-probing the filesystem.
+ */
+export const EnvironmentInfoSchema = z.custom<EnvironmentInfo>(
+  (value) => {
+    if (value == null || typeof value !== 'object') return false;
+    const v = value as Partial<EnvironmentInfo>;
+    return (
+      typeof v.cwd === 'string' &&
+      typeof v.platform === 'string' &&
+      typeof v.arch === 'string' &&
+      typeof v.dateIso === 'string'
+    );
+  },
+  { message: 'Expected EnvironmentInfo object' },
+);
 
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────
 
@@ -197,6 +254,10 @@ export const WorkerInputSchema = z.object({
   isolationLevel: IsolationLevelSchema,
   workerId: z.string().optional(),
   understanding: TaskUnderstandingSchema.optional(),
+  /** Phase 7a: M1-M4 instruction hierarchy resolved in-process, shipped through IPC. */
+  instructions: InstructionMemorySchema.optional(),
+  /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
+  environment: EnvironmentInfoSchema.optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────
@@ -295,23 +356,33 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     plan: TaskDAGSchema.optional(),
     budget: AgentBudgetSchema,
     allowedPaths: z.array(z.string()),
-    toolManifest: z.array(z.object({
-      name: z.string(),
-      description: z.string(),
-      inputSchema: z.record(z.string(), z.unknown()),
-      toolKind: z.enum(['executable', 'control']).optional(),
-    })),
+    toolManifest: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string(),
+        inputSchema: z.record(z.string(), z.unknown()),
+        toolKind: z.enum(['executable', 'control']).optional(),
+      }),
+    ),
     priorAttempts: z.array(AgentSessionSummarySchema).optional(),
     understanding: TaskUnderstandingSchema.optional(),
-    conversationHistory: z.array(z.object({
-      role: z.enum(['user', 'assistant']),
-      content: z.string(),
-      taskId: z.string(),
-      timestamp: z.number(),
-      thinking: z.string().optional(),
-      toolsUsed: z.array(z.string()).optional(),
-      tokenEstimate: z.number(),
-    })).optional(),
+    /** Phase 7a: M1-M4 instruction hierarchy resolved in-process, shipped to agent worker. */
+    instructions: InstructionMemorySchema.optional(),
+    /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the agent worker. */
+    environment: EnvironmentInfoSchema.optional(),
+    conversationHistory: z
+      .array(
+        z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string(),
+          taskId: z.string(),
+          timestamp: z.number(),
+          thinking: z.string().optional(),
+          toolsUsed: z.array(z.string()).optional(),
+          tokenEstimate: z.number(),
+        }),
+      )
+      .optional(),
   }),
   z.object({
     type: z.literal('tool_results'),

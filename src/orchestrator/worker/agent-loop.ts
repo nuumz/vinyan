@@ -7,9 +7,19 @@
  * Source of truth: implementation-plan §6.3, protocol.ts (IPC schemas)
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  */
+
+import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
-import type { DelegationRequest } from '../protocol.ts';
-import type { OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { authorizeToolCall } from '../../security/tool-authorization.ts';
+import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
+import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
+import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
+import { wrapReminder } from '../llm/vinyan-reminder.ts';
+import { countPendingProposals } from '../memory/memory-proposals.ts';
+import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { scanToolResult } from '../tools/built-in-tools.ts';
+import type { ToolContext } from '../tools/tool-interface.ts';
+import { manifestFor } from '../tools/tool-manifest.ts';
 import type {
   AgentSessionSummary,
   PerceptualHierarchy,
@@ -21,19 +31,11 @@ import type {
   ToolResult,
   WorkingMemoryState,
 } from '../types.ts';
-import type { ToolContext } from '../tools/tool-interface.ts';
+import { AgentBudgetTracker } from './agent-budget.ts';
 import type { IAgentSession } from './agent-session.ts';
 import { AgentSession, type SubprocessHandle } from './agent-session.ts';
-import { AgentBudgetTracker } from './agent-budget.ts';
-import { SessionOverlay, type ProposedMutation } from './session-overlay.ts';
+import { type ProposedMutation, SessionOverlay } from './session-overlay.ts';
 import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
-import { manifestFor } from '../tools/tool-manifest.ts';
-import type { AgentContract } from '../../core/agent-contract.ts';
-import { authorizeToolCall } from '../../security/tool-authorization.ts';
-import { scanToolResult } from '../tools/built-in-tools.ts';
-import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
-import { wrapReminder } from '../llm/vinyan-reminder.ts';
-import { countPendingProposals } from '../memory/memory-proposals.ts';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -75,7 +77,10 @@ export interface AgentLoopDeps {
   createSession?: (proc: SubprocessHandle) => IAgentSession;
   /** @deprecated P1-6: Replaced by deterministic structure-preserve compaction. Kept for backwards compat. */
   compactionLlm?: {
-    generate(request: { messages: Array<{ role: string; content: string }>; maxTokens?: number }): Promise<{ content: string; tokensConsumed: number }>;
+    generate(request: {
+      messages: Array<{ role: string; content: string }>;
+      maxTokens?: number;
+    }): Promise<{ content: string; tokensConsumed: number }>;
   };
 }
 
@@ -96,9 +101,7 @@ function stableStringify(value: unknown): string {
     return `[${value.map(stableStringify).join(',')}]`;
   }
   const keys = Object.keys(value as Record<string, unknown>).sort();
-  const entries = keys.map(
-    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
-  );
+  const entries = keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`);
   return `{${entries.join(',')}}`;
 }
 
@@ -171,9 +174,7 @@ export class SessionProgress {
    */
   checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
     const paramsKey = stableStringify(params);
-    const match = this.recentToolCalls.find(
-      (c) => c.tool === toolName && c.paramsKey === paramsKey,
-    );
+    const match = this.recentToolCalls.find((c) => c.tool === toolName && c.paramsKey === paramsKey);
     if (match) {
       return wrapReminder(
         `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`,
@@ -238,8 +239,7 @@ export class SessionProgress {
         guidance =
           ' — queue is overloaded; do NOT call memory_propose this session unless your finding is exceptional and non-duplicative.';
       } else if (n >= 4) {
-        guidance =
-          ' — review the existing backlog before proposing more to avoid duplicates.';
+        guidance = ' — review the existing backlog before proposing more to avoid duplicates.';
       } else {
         guidance = '';
       }
@@ -260,28 +260,40 @@ export class SessionProgress {
 
     // Budget pressure
     if (budgetRatio >= 0.85) {
-      hints.push('[BUDGET WARNING] You have used 85%+ of your budget. Wrap up NOW — summarize your progress and call attempt_completion.');
-    } else if (budgetRatio >= 0.70) {
-      hints.push('[BUDGET NOTICE] You have used 70%+ of your budget. Start wrapping up — focus only on essential remaining work.');
+      hints.push(
+        '[BUDGET WARNING] You have used 85%+ of your budget. Wrap up NOW — summarize your progress and call attempt_completion.',
+      );
+    } else if (budgetRatio >= 0.7) {
+      hints.push(
+        '[BUDGET NOTICE] You have used 70%+ of your budget. Start wrapping up — focus only on essential remaining work.',
+      );
     }
 
     // Turn limit pressure
     if (turnsRemaining <= 2) {
-      hints.push(`[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`);
+      hints.push(
+        `[TURNS WARNING] Only ${turnsRemaining} turn(s) remaining. Finalize your work and call attempt_completion.`,
+      );
     }
 
     // Consecutive failures — enriched with what failed
     if (this.consecutiveFailures >= 2) {
       const recentFails = this.failedToolCalls.slice(-this.consecutiveFailures);
       const failSummary = recentFails.map((f) => `${f.tool}: ${f.error.slice(0, 80)}`).join('; ');
-      hints.push(`[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures (${failSummary}). Step back and try a fundamentally different approach. Before editing a file, ALWAYS read it first to understand its current content.`);
+      hints.push(
+        `[GUIDANCE] ${this.consecutiveFailures} consecutive tool failures (${failSummary}). Step back and try a fundamentally different approach. Before editing a file, ALWAYS read it first to understand its current content.`,
+      );
     }
 
     // Stall detection — stronger, with forced pivot at 3+ turns
     if (this.turnsWithoutProgress >= 3) {
-      hints.push(`[FORCED PIVOT] No progress for ${this.turnsWithoutProgress} turns. You MUST try a fundamentally different approach or call attempt_completion with status 'uncertain'. Do NOT repeat any approach you have already tried.`);
+      hints.push(
+        `[FORCED PIVOT] No progress for ${this.turnsWithoutProgress} turns. You MUST try a fundamentally different approach or call attempt_completion with status 'uncertain'. Do NOT repeat any approach you have already tried.`,
+      );
     } else if (this.turnsWithoutProgress >= 2) {
-      hints.push(`[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`);
+      hints.push(
+        `[STALL WARNING] No progress detected for ${this.turnsWithoutProgress} turns. Either make progress or call attempt_completion with status 'uncertain'.`,
+      );
     }
 
     // Session state snapshot — always inject when there's notable context
@@ -325,7 +337,7 @@ function buildUncertainResult(
 
 /** Detect permanent errors (auth, config) from uncertainty messages. */
 const NON_RETRYABLE_PATTERNS = [
-  /\b40[13]\b/,          // 401 Unauthorized, 403 Forbidden
+  /\b40[13]\b/, // 401 Unauthorized, 403 Forbidden
   /invalid.api.key/i,
   /user not found/i,
   /authentication/i,
@@ -334,7 +346,7 @@ const NON_RETRYABLE_PATTERNS = [
 
 function detectNonRetryableError(uncertainties: string[]): string | undefined {
   const joined = uncertainties.join(' ');
-  return NON_RETRYABLE_PATTERNS.some(p => p.test(joined)) ? joined : undefined;
+  return NON_RETRYABLE_PATTERNS.some((p) => p.test(joined)) ? joined : undefined;
 }
 
 // ── Delegation handler (Phase 6.4) ───────────────────────────────────
@@ -482,11 +494,33 @@ export async function runAgentLoop(
             // Forward worker stderr to orchestrator stderr for visibility
             process.stderr.write(`[worker:${input.id}] ${text}`);
           }
-        } catch { /* reader closed */ }
+        } catch {
+          /* reader closed */
+        }
       })();
     }
 
     session = deps.createSession?.(proc) ?? new AgentSession(proc);
+
+    // Phase 7a: resolve M1-M4 instruction hierarchy in-process (we have workspace
+    // access here; the subprocess worker does not). This closes the gap where
+    // L2+ agent mode workers never saw VINYAN.md / .vinyan/rules/ / learned.md.
+    // Best-effort — a broken instruction tier must never block the session.
+    let instructions: ReturnType<typeof loadInstructionMemoryForTask> = null;
+    try {
+      instructions = loadInstructionMemoryForTask({
+        workspace: deps.workspace,
+        targetFiles: input.targetFiles,
+        taskType: input.taskType ?? 'code',
+        ...(understanding?.actionVerb ? { actionVerb: understanding.actionVerb } : {}),
+      });
+    } catch {
+      // Instruction loader errors are non-fatal — proceed without project rules.
+    }
+
+    // Phase 7a: snapshot OS / cwd / date / git state so the worker can render
+    // its own [ENVIRONMENT] block without re-probing the filesystem.
+    const environment = computeEnvironmentInfo(deps.workspace);
 
     // Build and send init turn
     const initTurn: OrchestratorTurn = {
@@ -506,6 +540,8 @@ export async function runAgentLoop(
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
       ...(understanding ? { understanding } : {}),
       ...(conversationHistory?.length ? { conversationHistory } : {}),
+      ...(instructions ? { instructions } : {}),
+      environment,
     };
     await session.send(initTurn);
 
@@ -575,9 +611,10 @@ export async function runAgentLoop(
         // Synthetic errors for dropped calls (per-turn or session limit)
         for (let i = effectiveLimit; i < turn.calls.length; i++) {
           const dropped = turn.calls[i]!;
-          const reason = i >= maxToolCallsPerTurn
-            ? `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`
-            : `Dropped: session tool call limit reached (${budget.remainingToolCalls} remaining)`;
+          const reason =
+            i >= maxToolCallsPerTurn
+              ? `Dropped: exceeded maxToolCallsPerTurn (${maxToolCallsPerTurn})`
+              : `Dropped: session tool call limit reached (${budget.remainingToolCalls} remaining)`;
           results.push({
             callId: dropped.id,
             tool: dropped.tool,
@@ -694,7 +731,8 @@ export async function runAgentLoop(
         const finalResults = [...results];
         if (hint && finalResults.length > 0) {
           const lastResult = finalResults[finalResults.length - 1]!;
-          const existingOutput = typeof lastResult.output === 'string' ? lastResult.output : JSON.stringify(lastResult.output ?? '');
+          const existingOutput =
+            typeof lastResult.output === 'string' ? lastResult.output : JSON.stringify(lastResult.output ?? '');
           finalResults[finalResults.length - 1] = {
             ...lastResult,
             output: `${existingOutput}\n\n${hint}`,

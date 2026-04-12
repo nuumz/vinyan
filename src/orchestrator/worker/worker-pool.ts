@@ -17,19 +17,19 @@ function resolveWorkerEntryPath(): string {
   if (existsSync(bundled)) return bundled;
   return resolve(import.meta.dir, 'worker-entry.ts');
 }
-import type { WorkerPool } from '../core-loop.ts';
+
 import type { VinyanBus } from '../../core/bus.ts';
-import type { AgentLoopDeps } from './agent-loop.ts';
-import { assemblePrompt } from '../llm/prompt-assembler.ts';
+import type { WorkerPool } from '../core-loop.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
-import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
+import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 import {
   type IsolationLevel,
-  type PerceptualHierarchy,
   type PerceptionRole,
+  type PerceptualHierarchy,
   PromptTooLargeError,
   type REResponse,
   type RoutingDecision,
@@ -39,6 +39,8 @@ import {
   type WorkerOutput,
   type WorkingMemoryState,
 } from '../types.ts';
+import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
+import type { AgentLoopDeps } from './agent-loop.ts';
 
 /** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
 type WorkerOutputWithCache = WorkerOutput & {
@@ -95,7 +97,7 @@ export class Semaphore {
       this.current++;
       return;
     }
-    await new Promise<void>(resolve => this.queue.push(resolve));
+    await new Promise<void>((resolve) => this.queue.push(resolve));
     this.current++;
   }
 
@@ -105,7 +107,9 @@ export class Semaphore {
     if (next) next();
   }
 
-  get activeCount(): number { return this.current; }
+  get activeCount(): number {
+    return this.current;
+  }
 }
 
 // ── Line Reader (for warm worker stdout) ──────────────────────────────
@@ -162,7 +166,9 @@ export class LineReader {
   readLine(): Promise<string | null> {
     if (this.lines.length > 0) return Promise.resolve(this.lines.shift()!);
     if (this.done) return Promise.resolve(null);
-    return new Promise((r) => { this.waiting = r; });
+    return new Promise((r) => {
+      this.waiting = r;
+    });
   }
 }
 
@@ -191,9 +197,7 @@ export class WarmWorkerPool {
     private bus?: VinyanBus,
   ) {
     // Eager background init — start spawning immediately, don't block first acquire
-    this._readyPromise = Promise.all(
-      Array.from({ length: this.poolSize }, () => this.spawnWorker()),
-    ).then(() => {});
+    this._readyPromise = Promise.all(Array.from({ length: this.poolSize }, () => this.spawnWorker())).then(() => {});
   }
 
   /** Wait until all initial workers are ready. Used by tests only — production code never awaits this. */
@@ -274,15 +278,27 @@ export class WarmWorkerPool {
     worker.busy = true; // prevent reuse
     const idx = this.workers.indexOf(worker);
     if (idx !== -1) this.workers.splice(idx, 1);
-    try { worker.proc.kill(); } catch { /* already dead */ }
+    try {
+      worker.proc.kill();
+    } catch {
+      /* already dead */
+    }
     // Spawn replacement in background
     this.spawnWorker();
   }
 
   shutdown(): void {
     for (const w of this.workers) {
-      try { w.stdin.end(); } catch { /* ignore */ }
-      try { w.proc.kill(); } catch { /* ignore */ }
+      try {
+        w.stdin.end();
+      } catch {
+        /* ignore */
+      }
+      try {
+        w.proc.kill();
+      } catch {
+        /* ignore */
+      }
     }
     this.workers = [];
   }
@@ -344,12 +360,7 @@ export class WorkerPoolImpl implements WorkerPool {
       { level: 2, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
       this.proxySocketPath,
     );
-    this.warmPool = new WarmWorkerPool(
-      this.workerEntryPath,
-      warmEnv,
-      this.warmPoolConfig.poolSize,
-      this.bus,
-    );
+    this.warmPool = new WarmWorkerPool(this.workerEntryPath, warmEnv, this.warmPoolConfig.poolSize, this.bus);
     return this.warmPool;
   }
 
@@ -377,7 +388,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
     const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding);
     // Carry conversation history for prompt assembly (not serialized into WorkerInput)
-    const _conversationHistory = conversationHistory;
+    const ConversationHistory = conversationHistory;
 
     // L2/L3: container dispatch when isolation level = 2
     // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -414,7 +425,7 @@ export class WorkerPoolImpl implements WorkerPool {
     }
     const output = useSubprocessForTask
       ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing, _conversationHistory);
+      : await this.dispatchInProcess(workerInput, routing, ConversationHistory);
 
     return this.toWorkerResult(output, startTime);
   }
@@ -440,8 +451,32 @@ export class WorkerPoolImpl implements WorkerPool {
   ): WorkerInput {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
-      perception, memory, 'generator', routing.level,
+      perception,
+      memory,
+      'generator',
+      routing.level,
     );
+    const resolvedUnderstanding = understanding ?? buildTaskUnderstanding(input);
+
+    // Phase 7a: resolve M1-M4 instructions in-process so the subprocess path
+    // (which has no workspace access) still sees VINYAN.md / .vinyan/rules /
+    // learned.md. Best-effort — loader errors are non-fatal.
+    let instructions: ReturnType<typeof loadInstructionMemoryForTask> = null;
+    try {
+      instructions = loadInstructionMemoryForTask({
+        workspace: this.workspace,
+        targetFiles: input.targetFiles,
+        taskType: input.taskType,
+        ...(resolvedUnderstanding.actionVerb ? { actionVerb: resolvedUnderstanding.actionVerb } : {}),
+      });
+    } catch {
+      // Non-fatal: missing / broken instructions must never block dispatch.
+    }
+
+    // Phase 7a: snapshot OS/cwd/date/git so the worker renders a stable
+    // [ENVIRONMENT] block regardless of dispatch mode.
+    const environment = computeEnvironmentInfo(this.workspace);
+
     return {
       taskId: input.id,
       goal: input.goal,
@@ -457,13 +492,19 @@ export class WorkerPoolImpl implements WorkerPool {
       allowedPaths: input.targetFiles?.map((f) => f.replace(/\/[^/]+$/, '/')) ?? ['src/'],
       isolationLevel: routingToIsolation(routing.level),
       ...(routing.workerId ? { workerId: routing.workerId } : {}),
-      understanding: understanding ?? buildTaskUnderstanding(input),
+      understanding: resolvedUnderstanding,
+      ...(instructions ? { instructions } : {}),
+      environment,
     };
   }
 
   // ── In-process dispatch (default) ───────────────────────────────────
 
-  private async dispatchInProcess(workerInput: WorkerInput, routing: RoutingDecision, conversationHistory?: import('../types.ts').ConversationEntry[]): Promise<WorkerOutput> {
+  private async dispatchInProcess(
+    workerInput: WorkerInput,
+    routing: RoutingDecision,
+    conversationHistory?: import('../types.ts').ConversationEntry[],
+  ): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select engine if available, fallback to tier-based
     const engine = routing.workerId
       ? (this.engineRegistry.selectById(routing.workerId) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
@@ -472,12 +513,10 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    const instructions = loadInstructionMemoryForTask({
-      workspace: this.workspace,
-      targetFiles: workerInput.allowedPaths,
-      taskType: workerInput.taskType,
-      actionVerb: workerInput.understanding?.actionVerb,
-    });
+    // Phase 7a: instructions + environment are resolved once in buildWorkerInput
+    // so both dispatch paths (in-process + subprocess) render the same context.
+    const instructions = workerInput.instructions ?? null;
+    const environment = workerInput.environment ?? null;
     const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
@@ -488,6 +527,7 @@ export class WorkerPoolImpl implements WorkerPool {
       workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
       routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
       conversationHistory,
+      environment, // Phase 7a: OS/cwd/git block rendered by shared section
     );
 
     const startTime = performance.now();
@@ -554,7 +594,11 @@ export class WorkerPoolImpl implements WorkerPool {
     return this.dispatchColdSubprocess(workerInput, routing);
   }
 
-  private async dispatchWarm(worker: WarmWorker, workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
+  private async dispatchWarm(
+    worker: WarmWorker,
+    workerInput: WorkerInput,
+    routing: RoutingDecision,
+  ): Promise<WorkerOutput> {
     const validated = WorkerInputSchema.parse(workerInput);
 
     try {
@@ -616,10 +660,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));
 
     const processPromise = (async () => {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       const exitCode = await proc.exited;
       return { stdout, stderr, exitCode };
     })();
@@ -793,12 +834,26 @@ export class WorkerPoolImpl implements WorkerPool {
 // ── Environment ─────────────────────────────────────────────────────────
 
 /** Minimal env allowlist for worker subprocesses — prevents leaking credentials. */
-const WORKER_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'TERM', 'BUN_INSTALL', 'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_EXTRA_CA_CERTS'];
+const WORKER_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'LANG',
+  'TERM',
+  'BUN_INSTALL',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_EXTRA_CA_CERTS',
+];
 
 /** Known provider env var names — only the relevant key is forwarded. */
 const PROVIDER_ENV_KEYS = [
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY',
-  'OPENROUTER_FAST_MODEL', 'OPENROUTER_BALANCED_MODEL', 'OPENROUTER_POWERFUL_MODEL',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GOOGLE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_FAST_MODEL',
+  'OPENROUTER_BALANCED_MODEL',
+  'OPENROUTER_POWERFUL_MODEL',
 ];
 
 function buildWorkerEnv(routing: RoutingDecision, proxySocketPath?: string): Record<string, string | undefined> {
@@ -840,11 +895,9 @@ export function pruneForRole(
     // Strip detailed oracleVerdict text — keep directional signals only
     const prunedMemory: WorkingMemoryState = {
       ...memory,
-      failedApproaches: memory.failedApproaches.map(fa => ({
+      failedApproaches: memory.failedApproaches.map((fa) => ({
         ...fa,
-        oracleVerdict: fa.failureOracle
-          ? `Failed: ${fa.failureOracle} oracle`
-          : 'Failed: verification',
+        oracleVerdict: fa.failureOracle ? `Failed: ${fa.failureOracle} oracle` : 'Failed: verification',
       })),
     };
 
@@ -892,7 +945,7 @@ function routingToIsolation(level: RoutingDecision['level']): IsolationLevel {
 
 /** HTTP status codes that indicate permanent auth/config failures — retrying won't help. */
 const NON_RETRYABLE_PATTERNS = [
-  /\b40[13]\b/,          // 401 Unauthorized, 403 Forbidden
+  /\b40[13]\b/, // 401 Unauthorized, 403 Forbidden
   /invalid.api.key/i,
   /user not found/i,
   /authentication/i,
@@ -900,7 +953,7 @@ const NON_RETRYABLE_PATTERNS = [
 ];
 
 function isNonRetryableError(msg: string): boolean {
-  return NON_RETRYABLE_PATTERNS.some(p => p.test(msg));
+  return NON_RETRYABLE_PATTERNS.some((p) => p.test(msg));
 }
 
 function emptyOutput(taskId: string, tokens = 0): WorkerOutput {
@@ -927,8 +980,8 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
   const cacheReadTokens = response.tokensUsed.cacheRead;
   const cacheCreationTokens = response.tokensUsed.cacheCreation;
   // Extensible Thinking: capture thinking token usage (explicit field or char-length proxy)
-  const thinkingTokensUsed = response.tokensUsed.thinkingTokens
-    ?? (response.thinking ? Math.ceil(response.thinking.length / 4) : undefined);
+  const thinkingTokensUsed =
+    response.tokensUsed.thinkingTokens ?? (response.thinking ? Math.ceil(response.thinking.length / 4) : undefined);
   try {
     const cleaned = stripCodeBlock(response.content);
     const parsed = JSON.parse(cleaned);
@@ -941,13 +994,40 @@ function parseWorkerOutputFromRE(taskId: string, response: REResponse, durationM
       durationMs,
     };
     const validated = WorkerOutputSchema.safeParse(candidate);
-    if (validated.success) return { ...validated.data, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
-    return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
+    if (validated.success)
+      return {
+        ...validated.data,
+        cacheReadTokens,
+        cacheCreationTokens,
+        thinkingTokensUsed,
+        thinking: response.thinking,
+      };
+    return {
+      ...emptyOutput(taskId, tokens),
+      proposedContent: response.content,
+      cacheReadTokens,
+      cacheCreationTokens,
+      thinkingTokensUsed,
+      thinking: response.thinking,
+    };
   } catch {
     if (response.content?.trim()) {
-      return { ...emptyOutput(taskId, tokens), proposedContent: response.content, cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
+      return {
+        ...emptyOutput(taskId, tokens),
+        proposedContent: response.content,
+        cacheReadTokens,
+        cacheCreationTokens,
+        thinkingTokensUsed,
+        thinking: response.thinking,
+      };
     }
-    return { ...emptyOutput(taskId, tokens), cacheReadTokens, cacheCreationTokens, thinkingTokensUsed, thinking: response.thinking };
+    return {
+      ...emptyOutput(taskId, tokens),
+      cacheReadTokens,
+      cacheCreationTokens,
+      thinkingTokensUsed,
+      thinking: response.thinking,
+    };
   }
 }
 

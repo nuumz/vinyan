@@ -9,6 +9,7 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
   ConversationEntry,
@@ -20,62 +21,16 @@ import type {
   WorkingMemoryState,
 } from '../types.ts';
 import { READONLY_TOOLS } from '../types.ts';
-import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
+import {
+  type EnvironmentInfo,
+  renderEnvironmentSection,
+  renderInstructionHierarchy,
+} from './shared-prompt-sections.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
   return sanitizeForPrompt(s).cleaned;
-}
-
-/** Tier header labels for instruction rendering — shows the LLM the provenance of each rule. */
-const TIER_HEADER_LABELS: Record<string, string> = {
-  user: 'USER PREFERENCES (cross-project)',
-  project: 'PROJECT INSTRUCTIONS',
-  'scoped-rule': 'SCOPED RULE',
-  learned: 'LEARNED CONVENTIONS (agent-proposed, human-verified)',
-};
-
-/** Trust hint for each tier — informs how strictly the LLM should follow. */
-const TIER_TRUST_HINT: Record<string, string> = {
-  user: 'HIGH — user intent',
-  project: 'HIGH — project intent',
-  'scoped-rule': 'HIGH — project rule',
-  learned: 'MEDIUM — agent-learned, needs independent verification',
-};
-
-/**
- * Render the instruction section with tier-aware structure.
- * When instructions are from the multi-tier hierarchy, render each source
- * with a clear provenance header so the LLM can weigh rules by trust tier.
- * Falls back to flat rendering for legacy single-file instructions.
- */
-function renderInstructionSection(instructions?: InstructionMemory | null): string | null {
-  if (!instructions) return null;
-
-  // Multi-tier path: render each source with provenance header
-  if (instructions.sources && instructions.sources.length > 0) {
-    const parts: string[] = ['[PROJECT INSTRUCTIONS]'];
-    parts.push('The following instructions come from multiple sources in precedence order.');
-    parts.push('Later rules override earlier rules on conflict. Respect scoped rules for their target file patterns.');
-    parts.push('');
-
-    for (const source of instructions.sources) {
-      const tierLabel = TIER_HEADER_LABELS[source.tier] ?? source.tier;
-      const trust = TIER_TRUST_HINT[source.tier] ?? '';
-      const applyTo = source.frontmatter.applyTo?.length
-        ? ` (applies to: ${source.frontmatter.applyTo.join(', ')})`
-        : '';
-      const desc = source.frontmatter.description ? ` — ${source.frontmatter.description}` : '';
-      parts.push(`── ${tierLabel}${desc}${applyTo} [${trust}] ──`);
-      parts.push(clean(source.content.trim()));
-      parts.push('');
-    }
-    return parts.join('\n').trimEnd();
-  }
-
-  // Legacy path: single-file flat rendering
-  return `[PROJECT INSTRUCTIONS]\n${clean(instructions.content)}`;
 }
 
 /** Check if the task domain requires code-centric prompt context. */
@@ -104,6 +59,8 @@ export interface SectionContext {
   routingLevel?: number;
   /** Conversation history from prior turns in the same session. */
   conversationHistory?: ConversationEntry[];
+  /** Phase 7a: OS/cwd/date/git snapshot — shown in [ENVIRONMENT] system block. */
+  environment?: EnvironmentInfo | null;
 }
 
 export interface PromptSection {
@@ -186,6 +143,16 @@ Do NOT self-evaluate your output — external verification determines correctnes
 Do NOT apologize or narrate your process. Produce the code change directly.`,
   });
 
+  // Phase 7a: [ENVIRONMENT] — cwd / OS / date / git branch for code tasks.
+  // Cache tier ephemeral because cwd is stable per session but date / git state change.
+  registry.register({
+    id: 'environment',
+    target: 'system',
+    cache: 'ephemeral',
+    priority: 15,
+    render: (ctx) => renderEnvironmentSection(ctx.environment),
+  });
+
   registry.register({
     id: 'output-format',
     target: 'system',
@@ -237,7 +204,9 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
       }
       // When multiple failed approaches exist, escalate caution
       if (ctx.memory.failedApproaches.length >= 2) {
-        rules.push('- Multiple approaches have failed. Try a fundamentally different strategy — do NOT repeat variations of failed approaches.');
+        rules.push(
+          '- Multiple approaches have failed. Try a fundamentally different strategy — do NOT repeat variations of failed approaches.',
+        );
       }
       return `[BEHAVIORAL RULES]\n${rules.join('\n')}`;
     },
@@ -267,11 +236,14 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
 
       const lines = ['[AVAILABLE TOOLS]'];
       if (executable.length) lines.push(`Executable: ${executable.join(', ')}`);
-      if (control.length) lines.push(`Control (orchestrator signals — do not execute, only propose): ${control.join(', ')}`);
+      if (control.length)
+        lines.push(`Control (orchestrator signals — do not execute, only propose): ${control.join(', ')}`);
       lines.push('');
       lines.push(`Runtime: ${process.platform} (${process.arch})`);
       lines.push('Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.');
-      lines.push('Prefer reversible tool calls (read, search, list) over destructive ones (write, delete) when gathering information.');
+      lines.push(
+        'Prefer reversible tool calls (read, search, list) over destructive ones (write, delete) when gathering information.',
+      );
       lines.push('Use ONLY the tools listed above — do NOT invent tool names.');
       return lines.join('\n');
     },
@@ -313,9 +285,13 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
         // Powerful-tier models (L3): prevent over-engineering, gold-plating
         lines.push('[QUALITY GUIDELINES]');
         lines.push('- Avoid over-engineering. Only make changes that are directly requested or clearly necessary.');
-        lines.push('- Do NOT gold-plate: a working solution that does exactly what was asked is better than a "clever" solution that does more.');
+        lines.push(
+          '- Do NOT gold-plate: a working solution that does exactly what was asked is better than a "clever" solution that does more.',
+        );
         lines.push('- Three similar lines of code are better than a premature abstraction.');
-        lines.push('- Read existing code patterns FIRST — search for how similar things are already done before creating anything new.');
+        lines.push(
+          '- Read existing code patterns FIRST — search for how similar things are already done before creating anything new.',
+        );
       }
 
       return lines.length > 0 ? lines.join('\n') : null;
@@ -329,7 +305,7 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => renderInstructionSection(ctx.instructions),
+    render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
   registry.register({
@@ -593,8 +569,12 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
       });
       const header = [`[FAILED APPROACHES — DO NOT REPEAT]`];
       if (ctx.memory.failedApproaches.length >= 3) {
-        header.push('WARNING: Multiple approaches have failed. Step back and analyze the root cause before trying another variation.');
-        header.push('Consider: Is the task specification correct? Is there a prerequisite missing? Is a fundamentally different strategy needed?');
+        header.push(
+          'WARNING: Multiple approaches have failed. Step back and analyze the root cause before trying another variation.',
+        );
+        header.push(
+          'Consider: Is the task specification correct? Is there a prerequisite missing? Is a fundamentally different strategy needed?',
+        );
       }
       header.push(...lines);
       return header.join('\n');
@@ -753,13 +733,18 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     },
   });
 
-  // Environment context — available for ALL domains (OS info is always relevant)
+  // Environment context — available for ALL domains (OS info is always relevant).
+  // Phase 7a: prefer rich ctx.environment (cwd + git) when present, fall back to
+  // OS-only from perception.runtime for backwards compat.
   registry.register({
     id: 'reasoning-environment',
     target: 'system',
     cache: 'ephemeral',
     priority: 25,
     render: (ctx) => {
+      const shared = renderEnvironmentSection(ctx.environment);
+      if (shared) return shared;
+
       const os = ctx.perception.runtime.os;
       if (!os) return null;
       const osName = os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os === 'linux' ? 'Linux' : os;
@@ -802,7 +787,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => renderInstructionSection(ctx.instructions),
+    render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
   registry.register({
@@ -975,9 +960,10 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
       if (!ctx.conversationHistory?.length) return null;
 
       // Keep only the most recent turns to save tokens
-      const entries = ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
-        ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
-        : ctx.conversationHistory;
+      const entries =
+        ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
+          ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
+          : ctx.conversationHistory;
 
       const skippedCount = ctx.conversationHistory.length - entries.length;
 

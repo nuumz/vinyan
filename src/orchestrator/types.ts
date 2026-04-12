@@ -138,7 +138,12 @@ export interface IntentResolution {
 
 /** Read-only tools available for non-mutating reasoning tasks. */
 export const READONLY_TOOLS = new Set([
-  'file_read', 'search_grep', 'directory_list', 'git_status', 'git_diff', 'web_search',
+  'file_read',
+  'search_grep',
+  'directory_list',
+  'git_status',
+  'git_diff',
+  'web_search',
 ]);
 
 /**
@@ -203,10 +208,20 @@ export interface HistoricalProfile {
  *  LLM output is canonicalized to one of these values post-parse.
  *  New values require a code change — intentional friction to avoid unbounded growth. */
 export const PRIMARY_ACTION_VOCAB = [
-  'add-feature', 'bug-fix', 'security-fix', 'performance-optimization',
-  'refactor', 'api-migration', 'dependency-update', 'test-improvement',
-  'documentation', 'configuration', 'investigation', 'flaky-test-diagnosis',
-  'accessibility', 'other',
+  'add-feature',
+  'bug-fix',
+  'security-fix',
+  'performance-optimization',
+  'refactor',
+  'api-migration',
+  'dependency-update',
+  'test-improvement',
+  'documentation',
+  'configuration',
+  'investigation',
+  'flaky-test-diagnosis',
+  'accessibility',
+  'other',
 ] as const;
 export type PrimaryAction = (typeof PRIMARY_ACTION_VOCAB)[number];
 
@@ -477,16 +492,22 @@ export type ThinkingConfig =
   | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
   | { type: 'disabled' }
   // Phase 3+ thinking modes (type-only, provider support not yet implemented — see docs/design §4.1)
-  | { type: 'multi-hypothesis'; branches: 2 | 3 | 4;
+  | {
+      type: 'multi-hypothesis';
+      branches: 2 | 3 | 4;
       diversityConstraint: 'different-patterns' | 'different-resources';
       selectionRule: 'highest-oracle-confidence' | 'first-to-pass' | 'voting-consensus';
       allFailBehavior: 'escalate-level' | 'return-best-effort' | 'refuse';
-      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random'; }
-  | { type: 'counterfactual'; trigger: 'verification_failure';
-      maxRetries: number; constraintSource: 'working-memory'; }
-  | { type: 'deliberative'; checkpoints: number; depthLimit: number; }
-  | { type: 'debate'; participants: string[]; debateTurns: number;
-      arbitrationRule: 'oracle-score' | 'evidence-weight'; };
+      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random';
+    }
+  | { type: 'counterfactual'; trigger: 'verification_failure'; maxRetries: number; constraintSource: 'working-memory' }
+  | { type: 'deliberative'; checkpoints: number; depthLimit: number }
+  | {
+      type: 'debate';
+      participants: string[];
+      debateTurns: number;
+      arbitrationRule: 'oracle-score' | 'evidence-weight';
+    };
 
 /** Cache control marker for prompt caching — 3-tier strategy.
  *  - static: system prompt (role, oracle manifest, format) — stable across sessions (~1hr effective TTL)
@@ -884,6 +905,10 @@ export interface WorkerInput {
   workerId?: string;
   /** Gap 9A: Unified task understanding — carries constraints, criteria, action category to prompt assembly. */
   understanding?: TaskUnderstanding;
+  /** Phase 7a: M1-M4 instruction hierarchy resolved in-process and shipped through IPC. */
+  instructions?: import('./llm/instruction-hierarchy.ts').InstructionMemory;
+  /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
+  environment?: import('./llm/shared-prompt-sections.ts').EnvironmentInfo;
 }
 
 /** Output from a worker process */

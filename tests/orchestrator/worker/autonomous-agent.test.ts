@@ -260,6 +260,54 @@ describe('buildSystemPrompt', () => {
     expect(codePrompt).toContain('Budget Awareness');
     expect(reasoningPrompt).toContain('Budget Awareness');
   });
+
+  test('L2+ prompts include the memory_propose capability section', () => {
+    // The memory_propose tool is L2+ only, so its usage instructions should
+    // only appear when the prompt is built for L2+ workers.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Memory Proposals');
+      expect(prompt).toContain('memory_propose');
+      // The three core categories should be listed so the agent knows the whitelist.
+      expect(prompt).toContain('convention');
+      expect(prompt).toContain('anti-pattern');
+      expect(prompt).toContain('finding');
+      // The confidence floor must be explicit to prevent timid spam proposals.
+      expect(prompt).toContain('0.7');
+      // Must emphasize async review so agents know the proposal does NOT affect this session.
+      expect(prompt.toLowerCase()).toContain('human');
+      expect(prompt).toContain('pending');
+    }
+  });
+
+  test('L2+ prompts instruct the agent NOT to spam or distract from the task', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    // "Do NOT use it for" guidance should be present.
+    expect(prompt).toContain('Do NOT');
+    // Scarcity signal — prompt should say most tasks need zero proposals.
+    expect(prompt.toLowerCase()).toMatch(/sparingly|most tasks need zero|one or two/);
+  });
+
+  test('L1 prompt omits the memory_propose section (tool unavailable)', () => {
+    // At L1 the memory_propose tool is not in the manifest, so describing it
+    // would be wasted context. The section must be gated on routingLevel >= 2.
+    const prompt = buildSystemPrompt(1, 'code');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L0 prompt also omits the memory_propose section', () => {
+    const prompt = buildSystemPrompt(0, 'reasoning');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L3 prompt includes the memory_propose section', () => {
+    // Deep agentic workers also have memory_propose available.
+    const prompt = buildSystemPrompt(3, 'code');
+    expect(prompt).toContain('Memory Proposals');
+    expect(prompt).toContain('memory_propose');
+  });
 });
 
 // ── buildInitUserMessage ────────────────────────────────────────────

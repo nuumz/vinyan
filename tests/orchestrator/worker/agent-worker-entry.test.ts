@@ -5,6 +5,7 @@
  * instead of spawning a real subprocess.
  */
 import { describe, expect, test } from 'bun:test';
+import { createScriptedMockProvider, type ScriptedMockResponse } from '../../../src/orchestrator/llm/mock-provider.ts';
 import type { WorkerTurn } from '../../../src/orchestrator/protocol.ts';
 import type { HistoryMessage, Message } from '../../../src/orchestrator/types.ts';
 import {
@@ -15,10 +16,6 @@ import {
   runAgentWorkerLoop,
   type WorkerIO,
 } from '../../../src/orchestrator/worker/agent-worker-entry.ts';
-import {
-  createScriptedMockProvider,
-  type ScriptedMockResponse,
-} from '../../../src/orchestrator/llm/mock-provider.ts';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 
@@ -42,15 +39,31 @@ function makeInitTurn(overrides?: Record<string, unknown>): string {
       scopedFacts: [],
     },
     budget: {
-      maxTokens: 10000, maxTurns: 10, maxDurationMs: 60000, contextWindow: 128000,
-      base: 5000, negotiable: 3000, delegation: 2000,
-      maxExtensionRequests: 3, maxToolCallsPerTurn: 10, delegationDepth: 0, maxDelegationDepth: 3,
+      maxTokens: 10000,
+      maxTurns: 10,
+      maxDurationMs: 60000,
+      contextWindow: 128000,
+      base: 5000,
+      negotiable: 3000,
+      delegation: 2000,
+      maxExtensionRequests: 3,
+      maxToolCallsPerTurn: 10,
+      delegationDepth: 0,
+      maxDelegationDepth: 3,
     },
     allowedPaths: ['/tmp'],
     toolManifest: [
       { name: 'file_read', description: 'Read a file', inputSchema: { path: { type: 'string' } } },
-      { name: 'file_write', description: 'Write a file', inputSchema: { path: { type: 'string' }, content: { type: 'string' } } },
-      { name: 'attempt_completion', description: 'Signal task completion', inputSchema: { status: { type: 'string' } } },
+      {
+        name: 'file_write',
+        description: 'Write a file',
+        inputSchema: { path: { type: 'string' }, content: { type: 'string' } },
+      },
+      {
+        name: 'attempt_completion',
+        description: 'Signal task completion',
+        inputSchema: { status: { type: 'string' } },
+      },
     ],
     ...overrides,
   };
@@ -59,8 +72,9 @@ function makeInitTurn(overrides?: Record<string, unknown>): string {
 
 function makeToolResults(turnId: string, results: Array<{ callId: string; tool: string; output: string }>): string {
   return JSON.stringify({
-    type: 'tool_results', turnId,
-    results: results.map(r => ({ ...r, status: 'success', durationMs: 10 })),
+    type: 'tool_results',
+    turnId,
+    results: results.map((r) => ({ ...r, status: 'success', durationMs: 10 })),
   });
 }
 
@@ -68,25 +82,31 @@ function makeTerminateTurn(): string {
   return JSON.stringify({ type: 'terminate', reason: 'orchestrator_abort' });
 }
 
-function createTestIO(inputLines: string[]): { io: WorkerIO; outputs: string[] } {
+function createTestIo(inputLines: string[]): { io: WorkerIO; outputs: string[] } {
   const queue = [...inputLines];
   const outputs: string[] = [];
   return {
     io: {
-      async readLine(): Promise<string | null> { return queue.shift() ?? null; },
-      writeLine(line: string): void { outputs.push(line); },
+      async readLine(): Promise<string | null> {
+        return queue.shift() ?? null;
+      },
+      writeLine(line: string): void {
+        outputs.push(line);
+      },
     },
     outputs,
   };
 }
 
 function parseOutputs(outputs: string[]): WorkerTurn[] {
-  return outputs.map(line => JSON.parse(line.trim()));
+  return outputs.map((line) => JSON.parse(line.trim()));
 }
 
 /** Type-narrowing helper to avoid verbose discriminated union checks in every test. */
 function expectTurn<T extends WorkerTurn['type']>(
-  turns: WorkerTurn[], index: number, type: T,
+  turns: WorkerTurn[],
+  index: number,
+  type: T,
 ): Extract<WorkerTurn, { type: T }> {
   const turn = turns[index];
   expect(turn).toBeDefined();
@@ -108,11 +128,17 @@ describe('agent-worker-entry', () => {
         {
           stopReason: 'tool_use',
           content: 'Done',
-          toolCalls: [{ id: 'tc2', tool: 'attempt_completion', parameters: { status: 'done', proposedContent: 'Created hello function' } }],
+          toolCalls: [
+            {
+              id: 'tc2',
+              tool: 'attempt_completion',
+              parameters: { status: 'done', proposedContent: 'Created hello function' },
+            },
+          ],
         },
       ]);
 
-      const { io, outputs } = createTestIO([
+      const { io, outputs } = createTestIo([
         makeInitTurn(),
         makeToolResults('t1', [{ callId: 'tc1', tool: 'file_read', output: 'export function hello() {}' }]),
       ]);
@@ -135,7 +161,7 @@ describe('agent-worker-entry', () => {
       const provider = createScriptedMockProvider([
         { stopReason: 'end_turn', content: 'The answer is 42', toolCalls: [] },
       ]);
-      const { io, outputs } = createTestIO([makeInitTurn()]);
+      const { io, outputs } = createTestIo([makeInitTurn()]);
 
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
@@ -149,7 +175,7 @@ describe('agent-worker-entry', () => {
         { stopReason: 'max_tokens', content: 'Partial response...', toolCalls: [] },
         { stopReason: 'end_turn', content: 'Finished after compression', toolCalls: [] },
       ]);
-      const { io, outputs } = createTestIO([makeInitTurn()]);
+      const { io, outputs } = createTestIo([makeInitTurn()]);
 
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
@@ -164,7 +190,7 @@ describe('agent-worker-entry', () => {
         { stopReason: 'max_tokens', content: 'partial 2', toolCalls: [] },
         { stopReason: 'max_tokens', content: 'partial 3', toolCalls: [] },
       ]);
-      const { io, outputs } = createTestIO([makeInitTurn()]);
+      const { io, outputs } = createTestIo([makeInitTurn()]);
 
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
@@ -179,13 +205,20 @@ describe('agent-worker-entry', () => {
         {
           stopReason: 'tool_use',
           content: 'I am blocked',
-          toolCalls: [{
-            id: 'tc1', tool: 'attempt_completion',
-            parameters: { status: 'uncertain', summary: 'Cannot find the required module', uncertainties: ['Missing dependency', 'Unclear API shape'] },
-          }],
+          toolCalls: [
+            {
+              id: 'tc1',
+              tool: 'attempt_completion',
+              parameters: {
+                status: 'uncertain',
+                summary: 'Cannot find the required module',
+                uncertainties: ['Missing dependency', 'Unclear API shape'],
+              },
+            },
+          ],
         },
       ]);
-      const { io, outputs } = createTestIO([makeInitTurn()]);
+      const { io, outputs } = createTestIo([makeInitTurn()]);
 
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
@@ -206,7 +239,7 @@ describe('agent-worker-entry', () => {
           ],
         },
       ]);
-      const { io, outputs } = createTestIO([
+      const { io, outputs } = createTestIo([
         makeInitTurn(),
         makeToolResults('t1', [{ callId: 'tc1', tool: 'file_write', output: 'Written' }]),
       ]);
@@ -225,10 +258,14 @@ describe('agent-worker-entry', () => {
 
     test('terminate from orchestrator exits gracefully', async () => {
       const provider = createScriptedMockProvider([
-        { stopReason: 'tool_use', content: 'Reading file', toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'x.ts' } }] },
+        {
+          stopReason: 'tool_use',
+          content: 'Reading file',
+          toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'x.ts' } }],
+        },
         { stopReason: 'end_turn', content: 'Should not reach here', toolCalls: [] },
       ]);
-      const { io, outputs } = createTestIO([makeInitTurn(), makeTerminateTurn()]);
+      const { io, outputs } = createTestIo([makeInitTurn(), makeTerminateTurn()]);
 
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
@@ -238,22 +275,31 @@ describe('agent-worker-entry', () => {
 
     test('max turns exhausted emits uncertain', async () => {
       const responses: ScriptedMockResponse[] = Array.from({ length: 3 }, (_, i) => ({
-        stopReason: 'tool_use' as const, content: 'call ' + i,
+        stopReason: 'tool_use' as const,
+        content: 'call ' + i,
         toolCalls: [{ id: 'tc' + i, tool: 'file_read', parameters: { path: 'f' + i + '.ts' } }],
       }));
       responses.push({ stopReason: 'end_turn', content: 'unreachable', toolCalls: [] });
 
       const provider = createScriptedMockProvider(responses);
       const toolResults = Array.from({ length: 3 }, (_, i) =>
-        makeToolResults('t' + (i + 1), [{ callId: 'tc' + i, tool: 'file_read', output: 'c' + i }])
+        makeToolResults('t' + (i + 1), [{ callId: 'tc' + i, tool: 'file_read', output: 'c' + i }]),
       );
 
-      const { io, outputs } = createTestIO([
+      const { io, outputs } = createTestIo([
         makeInitTurn({
           budget: {
-            maxTokens: 10000, maxTurns: 3, maxDurationMs: 60000, contextWindow: 128000,
-            base: 5000, negotiable: 3000, delegation: 2000,
-            maxExtensionRequests: 3, maxToolCallsPerTurn: 10, delegationDepth: 0, maxDelegationDepth: 3,
+            maxTokens: 10000,
+            maxTurns: 3,
+            maxDurationMs: 60000,
+            contextWindow: 128000,
+            base: 5000,
+            negotiable: 3000,
+            delegation: 2000,
+            maxExtensionRequests: 3,
+            maxToolCallsPerTurn: 10,
+            delegationDepth: 0,
+            maxDelegationDepth: 3,
           },
         }),
         ...toolResults,
@@ -267,24 +313,29 @@ describe('agent-worker-entry', () => {
 
     test('no init turn on stdin exits with no output', async () => {
       const provider = createScriptedMockProvider([]);
-      const { io, outputs } = createTestIO([]);
+      const { io, outputs } = createTestIo([]);
       await runAgentWorkerLoop(provider, io);
       expect(outputs).toHaveLength(0);
     });
 
     test('invalid init turn exits with no output', async () => {
       const provider = createScriptedMockProvider([]);
-      const { io, outputs } = createTestIO(['{"type":"tool_results"}']);
+      const { io, outputs } = createTestIo(['{"type":"tool_results"}']);
       await runAgentWorkerLoop(provider, io);
       expect(outputs).toHaveLength(0);
     });
 
     test('tokens are accumulated across turns', async () => {
       const provider = createScriptedMockProvider([
-        { stopReason: 'tool_use', content: 'Step 1', toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'a.ts' } }], tokensUsed: { input: 200, output: 100 } },
+        {
+          stopReason: 'tool_use',
+          content: 'Step 1',
+          toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'a.ts' } }],
+          tokensUsed: { input: 200, output: 100 },
+        },
         { stopReason: 'end_turn', content: 'Done', toolCalls: [], tokensUsed: { input: 300, output: 150 } },
       ]);
-      const { io, outputs } = createTestIO([
+      const { io, outputs } = createTestIo([
         makeInitTurn(),
         makeToolResults('t1', [{ callId: 'tc1', tool: 'file_read', output: 'content' }]),
       ]);
@@ -302,6 +353,103 @@ describe('agent-worker-entry', () => {
       const prompt = buildSystemPrompt(2);
       expect(prompt).toContain('L2');
       expect(prompt).toContain('attempt_completion');
+    });
+
+    test('buildSystemPrompt includes Phase 7b behavioral policies', () => {
+      const prompt = buildSystemPrompt(2);
+      // Parallel tool execution guidance
+      expect(prompt).toContain('## Parallel Tool Execution');
+      expect(prompt).toContain('batch');
+      // Executing care / reversibility
+      expect(prompt).toContain('## Executing Actions With Care');
+      expect(prompt).toContain('rm -rf');
+      // Git safety protocol
+      expect(prompt).toContain('## Git Safety Protocol');
+      expect(prompt).toContain('NEVER force-push');
+      expect(prompt).toContain('--no-verify');
+      // Citations and tone
+      expect(prompt).toContain('## Citations, Tone, and Style');
+      expect(prompt).toContain('file_path:line_number');
+      expect(prompt).toContain('owner/repo#123');
+      // Tool result safety
+      expect(prompt).toContain('## Tool Result Safety');
+      expect(prompt).toContain('prompt injection');
+    });
+
+    test('buildSystemPrompt renders environment + instruction prelude when supplied', () => {
+      const prompt = buildSystemPrompt(2, 'code', {
+        environment: {
+          cwd: '/ws/demo',
+          platform: 'linux',
+          arch: 'x64',
+          dateIso: '2026-04-12T12:00:00.000Z',
+          isGitRepo: true,
+          gitBranch: 'feature/agent-loop',
+          gitDirty: false,
+        },
+        instructions: {
+          content: 'merged',
+          contentHash: 'hash',
+          filePath: '/ws/demo/VINYAN.md',
+          sources: [
+            {
+              tier: 'project',
+              filePath: '/ws/demo/VINYAN.md',
+              content: 'Use bun:test for all tests',
+              contentHash: 'h1',
+              frontmatter: { description: 'Project conventions' },
+              includes: [],
+            },
+          ],
+        },
+      });
+      expect(prompt).toContain('[ENVIRONMENT]');
+      expect(prompt).toContain('Working directory: /ws/demo');
+      expect(prompt).toContain('Git: feature/agent-loop');
+      expect(prompt).toContain('[PROJECT INSTRUCTIONS]');
+      expect(prompt).toContain('Use bun:test for all tests');
+      // Prelude must appear before the L2 routing-level body
+      expect(prompt.indexOf('[ENVIRONMENT]')).toBeLessThan(prompt.indexOf('L2'));
+    });
+
+    test('buildSystemPrompt omits prelude when options are empty', () => {
+      const prompt = buildSystemPrompt(2);
+      expect(prompt).not.toContain('[ENVIRONMENT]');
+      expect(prompt).not.toContain('[PROJECT INSTRUCTIONS]');
+    });
+
+    test('buildSystemPrompt includes subagent role preamble for explore type', () => {
+      const prompt = buildSystemPrompt(2, 'reasoning', { subagentType: 'explore' });
+      expect(prompt).toContain('## Subagent Role: Explore');
+      expect(prompt).toContain('READ-ONLY');
+      // Role preamble must sit in the prelude — before the L{n} framing line
+      expect(prompt.indexOf('## Subagent Role: Explore')).toBeLessThan(prompt.indexOf('L2'));
+    });
+
+    test('buildSystemPrompt includes subagent role preamble for plan type', () => {
+      const prompt = buildSystemPrompt(2, 'reasoning', { subagentType: 'plan' });
+      expect(prompt).toContain('## Subagent Role: Plan');
+      expect(prompt).toContain('step-by-step plan');
+    });
+
+    test('buildSystemPrompt includes subagent role preamble for general-purpose type', () => {
+      const prompt = buildSystemPrompt(2, 'code', { subagentType: 'general-purpose' });
+      expect(prompt).toContain('## Subagent Role: General-Purpose');
+      expect(prompt).toContain('same tool manifest');
+    });
+
+    test('buildSystemPrompt normalizes unknown subagentType to general-purpose', () => {
+      // String type is allowed by BuildSystemPromptOptions for forward-compat;
+      // anything non-canonical must fall back to general-purpose.
+      const prompt = buildSystemPrompt(2, 'code', { subagentType: 'mystery-role' as unknown as 'general-purpose' });
+      expect(prompt).toContain('## Subagent Role: General-Purpose');
+      expect(prompt).not.toContain('## Subagent Role: Explore');
+      expect(prompt).not.toContain('## Subagent Role: Plan');
+    });
+
+    test('buildSystemPrompt omits subagent preamble when not a subagent', () => {
+      const prompt = buildSystemPrompt(2);
+      expect(prompt).not.toContain('## Subagent Role:');
     });
 
     test('buildInitUserMessage formats task and perception', () => {

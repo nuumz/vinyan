@@ -81,7 +81,26 @@ export interface ProposalValidationResult {
     | 'category_whitelist'
     | 'tier_whitelist'
     | 'slug_safety'
+    | 'duplicate'
     | 'contradiction';
+}
+
+/**
+ * Optional workspace-state context passed to `validateProposal` so it can
+ * reject duplicates before the proposal ever hits disk. Callers that already
+ * know the existing slug sets (e.g., `writeProposal`) populate this; callers
+ * that only want to grammar-check a proposal (e.g., unit tests of individual
+ * oracle rules) can leave it undefined and the duplicate check is skipped.
+ *
+ * `approvedSlugs` and `pendingSlugs` are **sets** rather than arrays so the
+ * check is O(1) and the caller's intent ("is this slug already taken") is
+ * explicit in the shape. The validator never mutates them.
+ */
+export interface ProposalContext {
+  /** Slugs already present in `.vinyan/memory/learned.md` (post-approval). */
+  approvedSlugs?: ReadonlySet<string>;
+  /** Slugs already present as `<ts>__<slug>.md` in `.vinyan/memory/pending/`. */
+  pendingSlugs?: ReadonlySet<string>;
 }
 
 /** Outcome of writing a validated proposal to disk. */
@@ -123,12 +142,14 @@ const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
  *   5. Confidence floor — confidence ≥ CONFIDENCE_FLOOR.
  *   6. Evidence floor — at least EVIDENCE_FLOOR entries with non-empty paths.
  *   7. Size limit — serialized form ≤ MAX_PROPOSAL_SIZE bytes.
+ *   8. Duplicate slug (Phase 6, only when `context` is supplied) —
+ *      proposal.slug must not collide with an approved M4 entry or a
+ *      pending proposal already on disk.
  *
- * Non-contradiction against existing M4 is out of scope here (requires loading
- * the current learned.md and running a semantic diff); that is a Phase 3b
- * concern handled by the review CLI.
+ * Semantic non-contradiction against existing M4 (semantic diff, not just
+ * slug collision) is still out of scope here; that is a future phase.
  */
-export function validateProposal(proposal: MemoryProposal): ProposalValidationResult {
+export function validateProposal(proposal: MemoryProposal, context?: ProposalContext): ProposalValidationResult {
   // 1. Grammar — presence and basic typing.
   if (!proposal || typeof proposal !== 'object') {
     return { valid: false, failedCheck: 'grammar', reason: 'proposal must be an object' };
@@ -244,6 +265,31 @@ export function validateProposal(proposal: MemoryProposal): ProposalValidationRe
     };
   }
 
+  // 8. Duplicate-slug guard (Phase 6). Only runs when the caller supplied
+  // workspace context — this keeps unit tests of the other oracle rules
+  // free of fs setup. `writeProposal` always supplies both sets. Approved
+  // collisions are reported before pending collisions because "already
+  // approved" is a stronger signal for the agent's recovery logic (it
+  // should rename the slug, not wait for the reviewer).
+  if (context?.approvedSlugs?.has(proposal.slug)) {
+    return {
+      valid: false,
+      failedCheck: 'duplicate',
+      reason:
+        `slug "${proposal.slug}" already exists in approved M4 learned.md. ` +
+        `Choose a different slug or propose an amendment under a new name.`,
+    };
+  }
+  if (context?.pendingSlugs?.has(proposal.slug)) {
+    return {
+      valid: false,
+      failedCheck: 'duplicate',
+      reason:
+        `slug "${proposal.slug}" already has a pending proposal awaiting review. ` +
+        `Check the existing pending entry before proposing a duplicate.`,
+    };
+  }
+
   return { valid: true };
 }
 
@@ -305,11 +351,21 @@ export const PENDING_DIR_REL = join('.vinyan', 'memory', 'pending');
  * ordering and guarantees uniqueness even if the agent proposes multiple
  * rules with the same slug in rapid succession.
  *
+ * Phase 6: the validator receives the current approved + pending slug sets
+ * so duplicate proposals are rejected **before** they hit disk. A worker that
+ * proposes a slug already in either set gets an immediate oracle error with
+ * actionable guidance — saving both worker tokens and human review cycles.
+ *
  * Throws if validation fails, so callers must handle the error and surface
  * it back to the worker as a tool failure rather than silently dropping it.
  */
 export function writeProposal(workspace: string, proposal: MemoryProposal): ProposalWriteResult {
-  const validation = validateProposal(proposal);
+  // Build the duplicate-detection context from disk. Both collectors swallow
+  // fs errors into empty sets — a fresh workspace with no learned.md and no
+  // pending/ is a valid starting state, not a failure.
+  const approvedSlugs = collectApprovedSlugs(workspace);
+  const pendingSlugs = collectPendingSlugs(workspace);
+  const validation = validateProposal(proposal, { approvedSlugs, pendingSlugs });
   if (!validation.valid) {
     throw new Error(`memory proposal rejected by oracle (${validation.failedCheck}): ${validation.reason}`);
   }
@@ -328,6 +384,38 @@ export function writeProposal(workspace: string, proposal: MemoryProposal): Prop
     path: fullPath,
     contentHash: createHash('sha256').update(content).digest('hex'),
   };
+}
+
+/**
+ * Collect slugs from the current `.vinyan/memory/learned.md`. Silently returns
+ * an empty set on a missing file, an unreadable file, or a hand-authored file
+ * without the `vinyan-memory-entry` markers (`parseLearnedMdEntries` returns
+ * `[]` in that case). Hand-authored files cannot participate in slug dedup
+ * because they have no structured slug — this matches the Phase 4 read path.
+ */
+function collectApprovedSlugs(workspace: string): Set<string> {
+  const learnedPath = resolve(workspace, LEARNED_FILE_REL);
+  if (!existsSync(learnedPath)) return new Set();
+  try {
+    const content = readFileSync(learnedPath, 'utf-8');
+    return new Set(parseLearnedMdEntries(content).map((e) => e.slug));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Collect slugs from the current `.vinyan/memory/pending/` directory by
+ * parsing each filename's `<timestamp>__<slug>.md` suffix. Uses
+ * `listPendingProposals` as the underlying enumerator so the two paths stay
+ * in lockstep and both respect the same `.md`-only filter.
+ */
+function collectPendingSlugs(workspace: string): Set<string> {
+  try {
+    return new Set(listPendingProposals(workspace).map((f) => filenameToSlug(f.filename)));
+  } catch {
+    return new Set();
+  }
 }
 
 // ── Pending reader (for future CLI / reminder injection) ────────────

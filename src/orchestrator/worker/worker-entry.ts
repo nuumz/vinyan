@@ -74,10 +74,16 @@ async function processTask(
   }
 
   const { systemPrompt, userPrompt } = assemblePrompt(
-    input.goal, input.perception, input.workingMemory, input.plan, input.taskType ?? 'code',
-    undefined, // instructions (loaded by in-process path; subprocess doesn't have workspace access)
+    input.goal,
+    input.perception,
+    input.workingMemory,
+    input.plan,
+    input.taskType ?? 'code',
+    input.instructions ?? null, // Phase 7a: M1-M4 hierarchy resolved in-process, shipped via WorkerInput
     input.understanding, // Gap 9A: TaskUnderstanding for enriched prompt
     input.routingLevel, // R2 (§5): gate tool descriptions out of L0-L1 prompts
+    undefined, // conversationHistory (structured subprocess path is single-shot)
+    input.environment ?? null, // Phase 7a: OS/cwd/git snapshot
   );
 
   const startTime = performance.now();

@@ -1,4 +1,4 @@
-import type { IsolationLevel, RoutingLevel, ToolResult } from '../types.ts';
+import type { IsolationLevel, PlanTodoInput, RoutingLevel, ToolResult } from '../types.ts';
 
 export type ToolCategory = 'file_read' | 'file_write' | 'search' | 'shell' | 'vcs' | 'delegation' | 'control';
 
@@ -36,7 +36,23 @@ export interface ToolContext {
   allowedPaths: string[];
   workspace: string;
   overlayDir?: string;
-  onDelegate?: (req: { goal: string; targetFiles: string[]; requiredTools?: string[]; context?: string; requestedTokens?: number }) => Promise<ToolResult>;
+  onDelegate?: (req: {
+    goal: string;
+    targetFiles: string[];
+    requiredTools?: string[];
+    context?: string;
+    requestedTokens?: number;
+    /** Phase 7c-1: typed subagent (explore/plan/general-purpose). */
+    subagentType?: 'explore' | 'plan' | 'general-purpose';
+  }) => Promise<ToolResult>;
+  /**
+   * Phase 7c-2: plan_update hook. The agent loop binds this to its
+   * `SessionProgress.recordPlanUpdate` so the control tool can install a new
+   * snapshot of the session plan without needing orchestrator state passed
+   * through the tool executor. Returns a validation error message if the
+   * plan was rejected (e.g. two items in_progress), or null on success.
+   */
+  onPlanUpdate?: (todos: PlanTodoInput[]) => { ok: true; count: number } | { ok: false; error: string };
 }
 
 export interface ToolValidationResult {

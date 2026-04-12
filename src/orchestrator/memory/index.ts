@@ -20,6 +20,7 @@ export {
   PENDING_DIR_REL,
   type PendingProposalFile,
   type ProposalCategory,
+  type ProposalContext,
   type ProposalEvidence,
   type ProposalTier,
   type ProposalValidationResult,

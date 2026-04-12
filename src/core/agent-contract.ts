@@ -9,8 +9,7 @@
  * A6 compliance: least privilege — L0 gets nothing, L3 gets everything.
  */
 import { z } from 'zod/v4';
-import type { RoutingDecision } from '../orchestrator/types.ts';
-import type { TaskInput } from '../orchestrator/types.ts';
+import type { RoutingDecision, TaskInput } from '../orchestrator/types.ts';
 
 // ── Capability Schema ───────────────────────────────────────────────
 
@@ -21,6 +20,10 @@ export const CapabilitySchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('shell_exec'), commands: z.array(z.string()) }),
   z.object({ type: z.literal('shell_read'), commands: z.array(z.string()) }),
   z.object({ type: z.literal('llm_call'), providers: z.array(z.string()) }),
+  // Phase 7e: external MCP servers. Scope is the server name (the part
+  // between the `mcp__` prefix and the second `__`). `['*']` grants
+  // access to every connected MCP server.
+  z.object({ type: z.literal('mcp_call'), servers: z.array(z.string()) }),
 ]);
 
 export type Capability = z.infer<typeof CapabilitySchema>;
@@ -72,6 +75,11 @@ const DEFAULT_CAPABILITIES: Record<number, Capability[]> = {
     { type: 'shell_exec', commands: ['bun', 'tsc', 'biome'] },
     { type: 'shell_read', commands: ['**'] },
     { type: 'llm_call', providers: ['*'] },
+    // Phase 7e: MCP access at L2+. Servers are gated by name but
+    // default to wildcard — the connection itself is the access check,
+    // since connecting to an MCP server is an operator decision in
+    // vinyan.json, not an agent decision.
+    { type: 'mcp_call', servers: ['*'] },
   ],
   3: [
     // L3 deliberative — full access
@@ -80,6 +88,7 @@ const DEFAULT_CAPABILITIES: Record<number, Capability[]> = {
     { type: 'shell_exec', commands: ['**'] },
     { type: 'shell_read', commands: ['**'] },
     { type: 'llm_call', providers: ['*'] },
+    { type: 'mcp_call', servers: ['*'] },
   ],
 };
 

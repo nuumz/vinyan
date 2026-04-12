@@ -12,6 +12,8 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
+import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
+import type { HookConfig } from '../hooks/hook-schema.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
@@ -84,6 +86,13 @@ export interface AgentLoopDeps {
       maxTokens?: number;
     }): Promise<{ content: string; tokensConsumed: number }>;
   };
+  /**
+   * Phase 7d-1: optional hook config. When set, the agent loop fires
+   * PreToolUse hooks before each tool execution and PostToolUse hooks
+   * after. Absent / empty config means hooks are inert — the loop behaves
+   * exactly as it did in Phase 7c-2.
+   */
+  hookConfig?: HookConfig;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -746,10 +755,69 @@ export async function runAgentLoop(
               continue;
             }
           }
+          // Phase 7d-1: PreToolUse hooks. Any hook that exits non-zero
+          // (or returns `{decision: "block"}`) converts the call into a
+          // denied result without invoking the tool executor. Hooks run
+          // only when deps.hookConfig is wired — absent config is inert.
+          if (deps.hookConfig) {
+            const pre = await dispatchPreToolUse(
+              deps.hookConfig,
+              {
+                event: 'PreToolUse',
+                tool_name: call.tool,
+                tool_input: (call.parameters ?? {}) as Record<string, unknown>,
+              },
+              { cwd: deps.workspace },
+            );
+            if (pre.blocked) {
+              results.push({
+                callId: call.id,
+                tool: call.tool,
+                status: 'denied',
+                error: `Hook blocked PreToolUse: ${pre.reason ?? 'hook returned non-zero exit'}`,
+                durationMs: 0,
+              });
+              deps.bus?.emit('agent:tool_denied', {
+                taskId: input.id,
+                toolName: call.tool,
+                violation: `PreToolUse hook: ${pre.reason ?? 'blocked'}`,
+              });
+              continue;
+            }
+          }
+
           const toolStart = performance.now();
           let result = await deps.toolExecutor.execute(call, toolContext);
           // Guardrails scan on every tool result (A6)
           result = scanToolResult(result, deps.guardrailsScan);
+
+          // Phase 7d-1: PostToolUse hooks. These observe the already-
+          // committed result and cannot unwind it. Non-zero exits become
+          // `[POST-HOOK WARNING]` annotations tacked onto the tool output
+          // so the LLM can see what the hook complained about.
+          if (deps.hookConfig) {
+            const toolOutputText =
+              typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+            const post = await dispatchPostToolUse(
+              deps.hookConfig,
+              {
+                event: 'PostToolUse',
+                tool_name: call.tool,
+                tool_input: (call.parameters ?? {}) as Record<string, unknown>,
+                tool_output: toolOutputText,
+                tool_status: result.status,
+              },
+              { cwd: deps.workspace },
+            );
+            if (post.warnings.length > 0) {
+              const warningText = post.warnings.map((w) => `[POST-HOOK WARNING] ${w}`).join('\n');
+              result = {
+                ...result,
+                output: `${toolOutputText}\n\n${warningText}`,
+              };
+            }
+          }
+
           results.push(result);
           deps.bus?.emit('agent:tool_executed', {
             taskId: input.id,

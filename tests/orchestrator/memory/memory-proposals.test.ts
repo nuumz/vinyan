@@ -9,15 +9,22 @@
  *   - memoryPropose tool: success path + oracle rejection path
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  AmbiguousProposalError,
+  approveProposal,
   CONFIDENCE_FLOOR,
+  LEARNED_FILE_REL,
   listPendingProposals,
   MAX_PROPOSAL_SIZE,
   type MemoryProposal,
+  parseProposalFile,
   PENDING_DIR_REL,
+  REJECTED_DIR_REL,
+  rejectProposal,
+  resolveProposalBySlug,
   serializeProposal,
   validateProposal,
   writeProposal,
@@ -421,5 +428,250 @@ describe('memoryPropose tool', () => {
     );
     expect(result.status).toBe('error');
     expect(result.error).toContain('evidence_floor');
+  });
+});
+
+// ── parseProposalFile ───────────────────────────────────────────────
+
+describe('parseProposalFile', () => {
+  test('round-trips the fields emitted by serializeProposal', () => {
+    const proposal = makeValidProposal({
+      description: 'Keep tests in bun:test — never mix jest.',
+      applyTo: ['tests/**/*.test.ts', 'src/**/*.spec.ts'],
+    });
+    const serialized = serializeProposal(proposal);
+    const parsed = parseProposalFile(serialized);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed!.proposedBy).toBe(proposal.proposedBy);
+    expect(parsed!.sessionId).toBe(proposal.sessionId);
+    expect(parsed!.category).toBe(proposal.category);
+    expect(parsed!.tier).toBe(proposal.tier);
+    expect(parsed!.confidence).toBe(proposal.confidence);
+    expect(parsed!.description).toBe(proposal.description);
+    expect(parsed!.applyTo).toEqual(proposal.applyTo!);
+    // Body is recoverable even though it lives below the frontmatter.
+    expect(parsed!.body).toContain('## Rule');
+    expect(parsed!.body).toContain('`bun:test`');
+  });
+
+  test('returns null for content without frontmatter', () => {
+    expect(parseProposalFile('just plain markdown\n\n# hi')).toBeNull();
+  });
+
+  test('returns null for content with unterminated frontmatter', () => {
+    expect(parseProposalFile('---\nslug: "x"\nno closing marker')).toBeNull();
+  });
+
+  test('decodes escaped newlines, quotes, and backslashes', () => {
+    // Simulate what `yamlString` produces for edgy content.
+    const content = [
+      '---',
+      'proposedBy: "worker-1"',
+      'proposedAt: "2026-04-12T00:00:00.000Z"',
+      'sessionId: "abc"',
+      'category: convention',
+      'tier: heuristic',
+      'confidence: 0.9',
+      'description: "has \\"quotes\\" and \\n newlines"',
+      '---',
+      '',
+      'body',
+    ].join('\n');
+    const parsed = parseProposalFile(content);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.description).toBe('has "quotes" and \n newlines');
+  });
+});
+
+// ── resolveProposalBySlug ───────────────────────────────────────────
+
+describe('resolveProposalBySlug', () => {
+  test('resolves by bare slug when exactly one match exists', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'lonely-rule' }));
+    const result = resolveProposalBySlug(workspace, 'lonely-rule');
+    expect(result.filename).toContain('lonely-rule');
+  });
+
+  test('resolves by slug with .md suffix', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-md' }));
+    const result = resolveProposalBySlug(workspace, 'rule-md.md');
+    expect(result.filename).toContain('rule-md');
+  });
+
+  test('resolves by full filename', () => {
+    const write = writeProposal(workspace, makeValidProposal({ slug: 'full-fn' }));
+    const filename = write.path.split('/').pop()!;
+    const result = resolveProposalBySlug(workspace, filename);
+    expect(result.filename).toBe(filename);
+  });
+
+  test('throws clean error when no pending files exist', () => {
+    expect(() => resolveProposalBySlug(workspace, 'anything')).toThrow(/no pending proposals/);
+  });
+
+  test('throws not-found error when slug does not match', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'real-rule' }));
+    expect(() => resolveProposalBySlug(workspace, 'ghost-rule')).toThrow(/no pending proposal matching/);
+  });
+
+  test('throws AmbiguousProposalError when multiple pending files share a slug', async () => {
+    // Need different filenames — same slug, different timestamps.
+    writeProposal(workspace, makeValidProposal({ slug: 'twin-rule' }));
+    // Bump the clock by a millisecond so the second filename differs.
+    await new Promise((r) => setTimeout(r, 5));
+    writeProposal(workspace, makeValidProposal({ slug: 'twin-rule' }));
+
+    let thrown: unknown = null;
+    try {
+      resolveProposalBySlug(workspace, 'twin-rule');
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AmbiguousProposalError);
+    expect((thrown as AmbiguousProposalError).candidates.length).toBe(2);
+    expect((thrown as AmbiguousProposalError).candidates[0]).toContain('twin-rule');
+  });
+});
+
+// ── approveProposal ─────────────────────────────────────────────────
+
+describe('approveProposal', () => {
+  test('creates learned.md and appends the rendered block', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'first-rule' }));
+    const result = approveProposal(workspace, 'first-rule', 'alice');
+
+    expect(existsSync(result.learnedPath)).toBe(true);
+    const learned = readFileSync(result.learnedPath, 'utf-8');
+    expect(learned).toContain('## first-rule (convention)');
+    expect(learned).toContain('confidence=0.85');
+    expect(learned).toContain('approvedBy=alice');
+    expect(learned).toContain('vinyan-memory-entry');
+    // The pending file was removed.
+    expect(existsSync(join(workspace, PENDING_DIR_REL, result.consumedPending))).toBe(false);
+  });
+
+  test('appends subsequent approvals as distinct blocks', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-a' }));
+    approveProposal(workspace, 'rule-a', 'alice');
+
+    writeProposal(workspace, makeValidProposal({ slug: 'rule-b', description: 'Rule B text' }));
+    const second = approveProposal(workspace, 'rule-b', 'alice');
+
+    const learned = readFileSync(second.learnedPath, 'utf-8');
+    expect(learned).toContain('## rule-a (convention)');
+    expect(learned).toContain('## rule-b (convention)');
+    expect(learned).toContain('Rule B text');
+    // Two vinyan-memory-entry markers — one per approved proposal.
+    const markers = learned.match(/vinyan-memory-entry/g) ?? [];
+    expect(markers.length).toBe(2);
+  });
+
+  test('includes applyTo line in the rendered block when present', () => {
+    writeProposal(
+      workspace,
+      makeValidProposal({ slug: 'scoped', applyTo: ['src/**/*.ts'] }),
+    );
+    const result = approveProposal(workspace, 'scoped', 'alice');
+    expect(result.appendedBlock).toContain('**Applies to**: src/**/*.ts');
+  });
+
+  test('throws when the slug cannot be resolved', () => {
+    expect(() => approveProposal(workspace, 'does-not-exist', 'alice')).toThrow(
+      /no pending proposals/,
+    );
+  });
+
+  test('escapes reviewer name so HTML comment stays safe', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'escape-test' }));
+    const result = approveProposal(workspace, 'escape-test', 'alice <script>');
+    // `<` and `>` are stripped by escapeCommentValue so the HTML comment
+    // cannot accidentally close or include a tag.
+    expect(result.appendedBlock).not.toContain('<script>');
+    expect(result.appendedBlock).toContain('approvedBy=alice script');
+  });
+
+  test('writes a header comment when learned.md is created fresh', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'fresh-file' }));
+    const result = approveProposal(workspace, 'fresh-file', 'alice');
+    const learned = readFileSync(result.learnedPath, 'utf-8');
+    expect(learned).toContain('Vinyan M4 learned conventions');
+  });
+
+  test('learned.md is at the correct workspace path', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'path-check' }));
+    const result = approveProposal(workspace, 'path-check', 'alice');
+    expect(result.learnedPath).toContain(LEARNED_FILE_REL);
+  });
+});
+
+// ── rejectProposal ──────────────────────────────────────────────────
+
+describe('rejectProposal', () => {
+  test('moves pending file to rejected/ and prepends a rejection header', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'bad-idea' }));
+    const result = rejectProposal(workspace, 'bad-idea', 'alice', 'not actually a convention');
+
+    expect(result.rejectedPath).toContain(REJECTED_DIR_REL);
+    expect(existsSync(result.rejectedPath)).toBe(true);
+
+    const archived = readFileSync(result.rejectedPath, 'utf-8');
+    expect(archived).toContain('vinyan-memory-rejected');
+    expect(archived).toContain('by="alice"');
+    expect(archived).toContain('not actually a convention');
+    // Original content is preserved below the header.
+    expect(archived).toContain('category: convention');
+    expect(archived).toContain('## Rule');
+
+    // The pending file is gone.
+    expect(existsSync(join(workspace, PENDING_DIR_REL, result.consumedPending))).toBe(false);
+  });
+
+  test('learned.md is NOT touched by a rejection', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'rejected-one' }));
+    rejectProposal(workspace, 'rejected-one', 'alice', 'no evidence');
+    expect(existsSync(join(workspace, LEARNED_FILE_REL))).toBe(false);
+  });
+
+  test('escapes malicious reason text so HTML comment stays safe', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'reason-escape' }));
+    const result = rejectProposal(
+      workspace,
+      'reason-escape',
+      'alice',
+      'contains --> comment-breaker and <tag> injection',
+    );
+    const archived = readFileSync(result.rejectedPath, 'utf-8');
+    // The rejection header is a single HTML comment. Extract its reason field
+    // and assert the injection sequences are gone from the reason text itself —
+    // the legitimate closing `-->` of the comment is still present by design.
+    const reasonMatch = archived.match(/reason="([^"]*)"/);
+    expect(reasonMatch).not.toBeNull();
+    const reason = reasonMatch![1]!;
+    expect(reason).not.toContain('-->');
+    expect(reason).not.toContain('<tag>');
+    // `--+` runs collapse to en-dash (U+2013).
+    expect(reason).toContain('–');
+    // And the header still closes cleanly.
+    expect(archived).toMatch(/vinyan-memory-rejected:[^\n]*-->/);
+  });
+
+  test('throws when slug does not match any pending file', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'real' }));
+    expect(() => rejectProposal(workspace, 'fake', 'alice', 'nope')).toThrow(
+      /no pending proposal matching/,
+    );
+    // Real pending file should still be there.
+    const pending = listPendingProposals(workspace);
+    expect(pending.length).toBe(1);
+  });
+
+  test('rejected directory is created lazily on first rejection', () => {
+    expect(existsSync(join(workspace, REJECTED_DIR_REL))).toBe(false);
+    writeProposal(workspace, makeValidProposal({ slug: 'lazy-dir' }));
+    rejectProposal(workspace, 'lazy-dir', 'alice', 'reason');
+    expect(existsSync(join(workspace, REJECTED_DIR_REL))).toBe(true);
+    const entries = readdirSync(join(workspace, REJECTED_DIR_REL));
+    expect(entries.length).toBe(1);
   });
 });

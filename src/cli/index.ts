@@ -157,9 +157,15 @@ switch (command) {
     break;
   }
 
+  case 'memory': {
+    const { runMemoryCommand } = await import('./memory.ts');
+    await runMemoryCommand(process.argv.slice(3));
+    break;
+  }
+
   default:
     console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]        Initialize vinyan.json\n  gate               Run oracle gate (JSON on stdin)\n  analyze [dir]      Analyze session logs\n  run "task"         Run autonomous agent task\n  chat               Interactive conversation agent mode\n  patterns           Export/import patterns for cross-project transfer\n  status             Show system status summary\n  metrics            Print full system metrics as JSON\n  rules              List evolutionary rules\n  skills             List cached skills\n  economy [sub]      Economy OS: budget, costs, market, trust, federation\n  serve              Start the API server (Phase 5)\n  mcp                Start MCP server over stdio (Phase 5)\n  oracle test <name> Test an oracle implementation\n  tui [subcommand]   Interactive Terminal UI (default: full dashboard)`,
+      `Usage: vinyan <command>\n\nCommands:\n  init [path]        Initialize vinyan.json\n  gate               Run oracle gate (JSON on stdin)\n  analyze [dir]      Analyze session logs\n  run "task"         Run autonomous agent task\n  chat               Interactive conversation agent mode\n  patterns           Export/import patterns for cross-project transfer\n  status             Show system status summary\n  metrics            Print full system metrics as JSON\n  rules              List evolutionary rules\n  skills             List cached skills\n  memory [sub]       Review agent-proposed M4 memory (list|show|approve|reject)\n  economy [sub]      Economy OS: budget, costs, market, trust, federation\n  serve              Start the API server (Phase 5)\n  mcp                Start MCP server over stdio (Phase 5)\n  oracle test <name> Test an oracle implementation\n  tui [subcommand]   Interactive Terminal UI (default: full dashboard)`,
     );
     process.exit(1);
 }

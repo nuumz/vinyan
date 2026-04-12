@@ -28,6 +28,56 @@ function clean(s: string): string {
   return sanitizeForPrompt(s).cleaned;
 }
 
+/** Tier header labels for instruction rendering — shows the LLM the provenance of each rule. */
+const TIER_HEADER_LABELS: Record<string, string> = {
+  user: 'USER PREFERENCES (cross-project)',
+  project: 'PROJECT INSTRUCTIONS',
+  'scoped-rule': 'SCOPED RULE',
+  learned: 'LEARNED CONVENTIONS (agent-proposed, human-verified)',
+};
+
+/** Trust hint for each tier — informs how strictly the LLM should follow. */
+const TIER_TRUST_HINT: Record<string, string> = {
+  user: 'HIGH — user intent',
+  project: 'HIGH — project intent',
+  'scoped-rule': 'HIGH — project rule',
+  learned: 'MEDIUM — agent-learned, needs independent verification',
+};
+
+/**
+ * Render the instruction section with tier-aware structure.
+ * When instructions are from the multi-tier hierarchy, render each source
+ * with a clear provenance header so the LLM can weigh rules by trust tier.
+ * Falls back to flat rendering for legacy single-file instructions.
+ */
+function renderInstructionSection(instructions?: InstructionMemory | null): string | null {
+  if (!instructions) return null;
+
+  // Multi-tier path: render each source with provenance header
+  if (instructions.sources && instructions.sources.length > 0) {
+    const parts: string[] = ['[PROJECT INSTRUCTIONS]'];
+    parts.push('The following instructions come from multiple sources in precedence order.');
+    parts.push('Later rules override earlier rules on conflict. Respect scoped rules for their target file patterns.');
+    parts.push('');
+
+    for (const source of instructions.sources) {
+      const tierLabel = TIER_HEADER_LABELS[source.tier] ?? source.tier;
+      const trust = TIER_TRUST_HINT[source.tier] ?? '';
+      const applyTo = source.frontmatter.applyTo?.length
+        ? ` (applies to: ${source.frontmatter.applyTo.join(', ')})`
+        : '';
+      const desc = source.frontmatter.description ? ` — ${source.frontmatter.description}` : '';
+      parts.push(`── ${tierLabel}${desc}${applyTo} [${trust}] ──`);
+      parts.push(clean(source.content.trim()));
+      parts.push('');
+    }
+    return parts.join('\n').trimEnd();
+  }
+
+  // Legacy path: single-file flat rendering
+  return `[PROJECT INSTRUCTIONS]\n${clean(instructions.content)}`;
+}
+
 /** Check if the task domain requires code-centric prompt context. */
 function isCodeDomain(domain?: TaskDomain): boolean {
   return domain === 'code-mutation' || domain === 'code-reasoning';
@@ -279,7 +329,7 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => (ctx.instructions ? `[PROJECT INSTRUCTIONS]\n${clean(ctx.instructions.content)}` : null),
+    render: (ctx) => renderInstructionSection(ctx.instructions),
   });
 
   registry.register({
@@ -752,7 +802,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => (ctx.instructions ? `[PROJECT INSTRUCTIONS]\n${clean(ctx.instructions.content)}` : null),
+    render: (ctx) => renderInstructionSection(ctx.instructions),
   });
 
   registry.register({

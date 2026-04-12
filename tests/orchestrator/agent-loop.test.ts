@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runAgentLoop, type AgentLoopDeps, type WorkerLoopResult } from '../../src/orchestrator/worker/agent-loop.ts';
+import { writeProposal } from '../../src/orchestrator/memory/memory-proposals.ts';
 import type { IAgentSession, SessionState } from '../../src/orchestrator/worker/agent-session.ts';
 import type { OrchestratorTurn, TerminateReason, WorkerTurn } from '../../src/orchestrator/protocol.ts';
 import type {
@@ -305,5 +306,106 @@ describe('runAgentLoop', () => {
     // Transcript should have some turns but not all 100
     expect(result.transcript.length).toBeGreaterThan(0);
     expect(result.transcript.length).toBeLessThan(100);
+  });
+
+  // ── Phase 3d: memory-propose backlog surfacing ──────────────────────
+
+  it('surfaces the memory_propose backlog to L2+ workers via tool-result reminder', async () => {
+    // Seed two pending proposals into the workspace — these would normally
+    // be written by earlier sessions calling memory_propose. The loop MUST
+    // read this backlog at session start and surface it in a reminder so
+    // the new worker knows how many proposals are already awaiting review.
+    writeProposal(testWorkspace, {
+      slug: 'rule-alpha',
+      proposedBy: 'prior-worker',
+      sessionId: 'prior-session',
+      category: 'convention',
+      tier: 'heuristic',
+      confidence: 0.85,
+      description: 'Test rule alpha from a prior session.',
+      body: '## Rule\n\nTest rule alpha.',
+      evidence: [{ filePath: 'src/foo.ts', note: 'example evidence' }],
+    });
+    writeProposal(testWorkspace, {
+      slug: 'rule-beta',
+      proposedBy: 'prior-worker',
+      sessionId: 'prior-session',
+      category: 'finding',
+      tier: 'heuristic',
+      confidence: 0.80,
+      description: 'Test rule beta from a prior session.',
+      body: '## Finding\n\nTest rule beta.',
+      evidence: [{ filePath: 'src/bar.ts', note: 'example evidence' }],
+    });
+
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }],
+        rationale: 'reading',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', proposedContent: 'ok', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    const deps = makeDeps(session);
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    // The orchestrator should have sent tool_results back with the memory
+    // queue reminder appended to the last result's output.
+    const toolResultsTurns = session.sent.filter(
+      (t) => t.type === 'tool_results',
+    ) as Extract<OrchestratorTurn, { type: 'tool_results' }>[];
+    expect(toolResultsTurns.length).toBeGreaterThan(0);
+
+    const firstResult = toolResultsTurns[0]!.results[0]!;
+    const output = typeof firstResult.output === 'string' ? firstResult.output : '';
+    expect(output).toContain('<vinyan-reminder>');
+    expect(output).toContain('[MEMORY QUEUE]');
+    expect(output).toContain('2 memory proposals');
+  });
+
+  it('does NOT emit a memory-queue reminder when there is no backlog', async () => {
+    // Fresh workspace, no pending directory — the reminder must stay silent.
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }],
+        rationale: 'reading',
+        tokensConsumed: 100,
+      },
+      { type: 'done', turnId: 't2', proposedContent: 'ok', tokensConsumed: 50 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    const deps = makeDeps(session);
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting({ level: 2 }),
+      deps,
+    );
+
+    const toolResultsTurns = session.sent.filter(
+      (t) => t.type === 'tool_results',
+    ) as Extract<OrchestratorTurn, { type: 'tool_results' }>[];
+    const firstResult = toolResultsTurns[0]?.results[0];
+    const output = typeof firstResult?.output === 'string' ? firstResult.output : '';
+    // Should NOT contain a memory-queue line (empty workspace = no backlog).
+    expect(output).not.toContain('[MEMORY QUEUE]');
   });
 });

@@ -106,7 +106,18 @@ describe('SessionProgress', () => {
     expect(hint).toContain('different approach');
   });
 
-  test('getSystemHint returns stall warning on 3+ turns without progress', () => {
+  test('getSystemHint returns stall warning at 2 turns without progress', () => {
+    const sp = new SessionProgress();
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+
+    const hint = sp.getSystemHint(0.3, 8);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('2 turns');
+  });
+
+  test('getSystemHint escalates to forced pivot at 3+ turns without progress', () => {
     const sp = new SessionProgress();
     sp.recordTurn(false);
     sp.recordTurn(false);
@@ -114,8 +125,36 @@ describe('SessionProgress', () => {
 
     const hint = sp.getSystemHint(0.3, 8);
     expect(hint).not.toBeNull();
-    expect(hint).toContain('STALL WARNING');
+    // 3+ stalled turns escalates from warning to forced pivot
+    expect(hint).toContain('FORCED PIVOT');
     expect(hint).toContain('3 turns');
+  });
+
+  test('checkDuplicate detects identical calls regardless of key order', () => {
+    const sp = new SessionProgress();
+    // First call — not a duplicate
+    const first = sp.checkDuplicate('file_read', { file_path: '/a.ts', limit: 100 });
+    expect(first).toBeNull();
+
+    // Same params, different key order — MUST still be detected as duplicate
+    const second = sp.checkDuplicate('file_read', { limit: 100, file_path: '/a.ts' });
+    expect(second).not.toBeNull();
+    expect(second).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate detects identical calls with nested objects in different key order', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { HOME: '/', USER: 'x' } });
+    const dup = sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { USER: 'x', HOME: '/' } });
+    expect(dup).not.toBeNull();
+    expect(dup).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate does NOT flag different params as duplicates', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const different = sp.checkDuplicate('file_read', { file_path: '/b.ts' });
+    expect(different).toBeNull();
   });
 
   test('getSystemHint combines multiple warnings', () => {
@@ -132,11 +171,123 @@ describe('SessionProgress', () => {
     // Budget at 90%, only 1 turn remaining
     const hint = sp.getSystemHint(0.90, 1);
     expect(hint).not.toBeNull();
-    // Should contain all four warnings
+    // Should contain all four warnings — at 3 stalled turns, the stall
+    // warning escalates to a forced pivot.
     expect(hint).toContain('BUDGET WARNING');
     expect(hint).toContain('TURNS WARNING');
     expect(hint).toContain('GUIDANCE');
+    expect(hint).toContain('FORCED PIVOT');
+  });
+
+  test('getSystemHint wraps output in <vinyan-reminder> tags', () => {
+    const sp = new SessionProgress();
+    const hint = sp.getSystemHint(0.90, 1);
+    expect(hint).not.toBeNull();
+    // Reminder protocol: hint output is a tagged block so the worker LLM can
+    // clearly distinguish system guidance from tool output.
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('BUDGET WARNING');
+  });
+
+  test('getSystemHint returns null (no empty tags) when there is nothing to say', () => {
+    const sp = new SessionProgress();
+    // No budget pressure, no stalls, no failures — must return null, not an
+    // empty `<vinyan-reminder></vinyan-reminder>` block.
+    expect(sp.getSystemHint(0.3, 8)).toBeNull();
+  });
+
+  test('checkDuplicate returns a reminder-wrapped warning on re-call', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const dup = sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    expect(dup).not.toBeNull();
+    expect(dup!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(dup!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(dup).toContain('DUPLICATE WARNING');
+    expect(dup).toContain('file_read');
+  });
+
+  // ── Phase 3d: memory-proposal backlog surfacing ────────────────────
+
+  test('buildSessionSnapshot omits [MEMORY QUEUE] when no pending proposals', () => {
+    const sp = new SessionProgress();
+    // pendingMemoryProposals defaults to 0, so no memory line should appear.
+    expect(sp.pendingMemoryProposals).toBe(0);
+    expect(sp.buildSessionSnapshot()).toBeNull();
+  });
+
+  test('buildSessionSnapshot adds [MEMORY QUEUE] line with singular noun for exactly 1', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 1;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).not.toBeNull();
+    expect(snap).toContain('[MEMORY QUEUE]');
+    expect(snap).toContain('1 memory proposal');
+    // Singular form — do not render "1 memory proposals".
+    expect(snap).not.toContain('1 memory proposals');
+  });
+
+  test('buildSessionSnapshot pluralizes noun for 2+ proposals', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).toContain('3 memory proposals');
+  });
+
+  test('buildSessionSnapshot stays silent at low backlog (<= 3)', () => {
+    // At 1-3, the snapshot should NOT nag with duplicate-avoidance advice:
+    // that pressure escalation only kicks in once the backlog is larger.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).not.toContain('review the existing backlog');
+    expect(snap).not.toContain('overloaded');
+  });
+
+  test('buildSessionSnapshot adds duplicate-avoidance nudge at 4+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 5;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('5 memory proposals');
+    expect(snap).toContain('review the existing backlog');
+  });
+
+  test('buildSessionSnapshot escalates to strong backpressure at 10+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 12;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('12 memory proposals');
+    expect(snap).toContain('overloaded');
+    // Must tell the worker to stop proposing entirely (backpressure).
+    expect(snap).toContain('do NOT call memory_propose');
+  });
+
+  test('getSystemHint wraps [MEMORY QUEUE] in a <vinyan-reminder> block', () => {
+    // The memory-queue line must flow through the same reminder pipeline as
+    // every other session-state hint so the worker LLM parses it the same way.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 2;
+    // No budget pressure, no stall — the memory queue is the ONLY hint.
+    const hint = sp.getSystemHint(0.2, 10);
+    expect(hint).not.toBeNull();
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('2 memory proposals');
+  });
+
+  test('getSystemHint combines [MEMORY QUEUE] with other warnings', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 4;
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+    // Budget warning + stall warning + memory queue — all three should coexist.
+    const hint = sp.getSystemHint(0.72, 5);
+    expect(hint).toContain('BUDGET NOTICE');
     expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('4 memory proposals');
   });
 });
 
@@ -169,6 +320,20 @@ describe('buildSystemPrompt', () => {
     expect(reasoningPrompt).toContain('attempt_completion');
   });
 
+  test('system prompt documents the reminder protocol and tag format', () => {
+    // The worker LLM must know how to interpret <vinyan-reminder> tags that
+    // the orchestrator injects into tool results. The protocol section lives
+    // in the common system prompt body, so it should appear for both task types.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Reminder Protocol');
+      expect(prompt).toContain('<vinyan-reminder>');
+      expect(prompt).toContain('Authoritative');
+      expect(prompt).toContain('Non-interactive');
+      expect(prompt).toContain('Refreshable');
+    }
+  });
+
   test('both types mention budget awareness', () => {
     const codePrompt = buildSystemPrompt(1, 'code');
     const reasoningPrompt = buildSystemPrompt(1, 'reasoning');
@@ -176,6 +341,54 @@ describe('buildSystemPrompt', () => {
     expect(reasoningPrompt).toContain('BUDGET WARNING');
     expect(codePrompt).toContain('Budget Awareness');
     expect(reasoningPrompt).toContain('Budget Awareness');
+  });
+
+  test('L2+ prompts include the memory_propose capability section', () => {
+    // The memory_propose tool is L2+ only, so its usage instructions should
+    // only appear when the prompt is built for L2+ workers.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Memory Proposals');
+      expect(prompt).toContain('memory_propose');
+      // The three core categories should be listed so the agent knows the whitelist.
+      expect(prompt).toContain('convention');
+      expect(prompt).toContain('anti-pattern');
+      expect(prompt).toContain('finding');
+      // The confidence floor must be explicit to prevent timid spam proposals.
+      expect(prompt).toContain('0.7');
+      // Must emphasize async review so agents know the proposal does NOT affect this session.
+      expect(prompt.toLowerCase()).toContain('human');
+      expect(prompt).toContain('pending');
+    }
+  });
+
+  test('L2+ prompts instruct the agent NOT to spam or distract from the task', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    // "Do NOT use it for" guidance should be present.
+    expect(prompt).toContain('Do NOT');
+    // Scarcity signal — prompt should say most tasks need zero proposals.
+    expect(prompt.toLowerCase()).toMatch(/sparingly|most tasks need zero|one or two/);
+  });
+
+  test('L1 prompt omits the memory_propose section (tool unavailable)', () => {
+    // At L1 the memory_propose tool is not in the manifest, so describing it
+    // would be wasted context. The section must be gated on routingLevel >= 2.
+    const prompt = buildSystemPrompt(1, 'code');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L0 prompt also omits the memory_propose section', () => {
+    const prompt = buildSystemPrompt(0, 'reasoning');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L3 prompt includes the memory_propose section', () => {
+    // Deep agentic workers also have memory_propose available.
+    const prompt = buildSystemPrompt(3, 'code');
+    expect(prompt).toContain('Memory Proposals');
+    expect(prompt).toContain('memory_propose');
   });
 });
 

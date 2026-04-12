@@ -11,6 +11,7 @@ import { OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
 import type { HistoryMessage, LLMProvider, Message, ToolResultMessage } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
 import { compressPerception } from '../llm/perception-compressor.ts';
+import { REMINDER_PROTOCOL_DESCRIPTION } from '../llm/vinyan-reminder.ts';
 
 // ── Constants ──────────────────────────────────────────────────────
 const MAX_COMPRESSION_ATTEMPTS = 2;
@@ -316,6 +317,37 @@ function logError(msg: string): void {
   process.stderr.write(`[agent-worker] ${msg}\n`);
 }
 
+/**
+ * Memory proposal instructions — only surfaced to L2+ workers because the
+ * `memory_propose` tool itself is L2+ in the manifest. At L1 this section
+ * would be wasted context describing an unavailable capability.
+ */
+const MEMORY_PROPOSAL_SECTION = `
+
+## Memory Proposals (L2+)
+If you notice a durable project convention, anti-pattern, or architectural finding
+worth teaching future sessions, call \`memory_propose\`. The tool writes an
+Oracle-validated proposal to \`.vinyan/memory/pending/\` for asynchronous human
+review — it does NOT affect the current session and will NOT land without
+explicit human approval.
+
+Use it ONLY for:
+- Project-wide conventions backed by multiple examples (e.g. "all tests use bun:test").
+- Real anti-patterns you observed with clear evidence, not hypothetical ones.
+- Architectural findings that explain surprising code organization.
+
+Do NOT use it for:
+- Transient observations, single-file anomalies, or bugs in the code you are editing.
+- The goal of the current task — that belongs in attempt_completion.
+- Anything you are not genuinely confident about. Confidence < 0.7 is auto-rejected.
+- More than one or two proposals per task. Propose sparingly — most tasks need zero.
+
+Required fields: \`slug\` (kebab-case), \`category\` ∈ {convention, anti-pattern, finding},
+\`tier\` ∈ {deterministic, heuristic, probabilistic}, \`confidence\` ≥ 0.7, \`description\`,
+\`body\` (markdown), and at least one \`evidence\` entry with a workspace-relative file path
+and a short note. Never let memory_propose distract from the actual task — the primary
+goal always comes first.`;
+
 export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reasoning' = 'code'): string {
   const common = `You are a Vinyan autonomous agent at routing level L${routingLevel}.
 
@@ -349,6 +381,8 @@ Tool results may include a [SESSION STATE] block showing:
 - Recent tool failures with their error messages
 - Key findings from prior turns
 Use this information to avoid redundant work and to inform your next action.
+
+${REMINDER_PROTOCOL_DESCRIPTION}
 
 ## Behavioral Rules
 - Go straight to the point. Try the simplest approach first without going in circles.
@@ -392,7 +426,7 @@ Use this information to avoid redundant work and to inform your next action.
 - You MUST call attempt_completion to signal task end. Never just stop responding.
 
 ## After Context Compression
-If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.`;
+If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
 
   if (taskType === 'reasoning') {
     return `${common}
@@ -590,12 +624,16 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
     if ('toolCalls' in turn && turn.toolCalls) {
       const params = turn.toolCalls.map(c => {
         const p = c.parameters;
-        // Track file operations for session state
-        if (c.tool === 'file_read' && p.file_path) {
+        // Track file operations for session state. Cover all filesystem tool
+        // names so attribution survives compaction regardless of which
+        // read/write tool the worker used.
+        const READ_TOOLS = new Set(['file_read', 'search_files', 'list_directory', 'grep_search', 'search_grep']);
+        const WRITE_TOOLS = new Set(['file_write', 'file_edit', 'file_patch']);
+        if (READ_TOOLS.has(c.tool) && p.file_path) {
           filesRead.add(String(p.file_path));
-          return `file_read(${p.file_path})`;
+          return `${c.tool}(${p.file_path})`;
         }
-        if ((c.tool === 'file_write' || c.tool === 'file_edit') && p.file_path) {
+        if (WRITE_TOOLS.has(c.tool) && p.file_path) {
           filesWritten.add(String(p.file_path));
           return `${c.tool}(${p.file_path})`;
         }

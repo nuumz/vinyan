@@ -18,6 +18,7 @@ import { searchGrep, searchSemantic } from './search-tools.ts';
 import { shellExec } from './shell-tools.ts';
 import { gitStatus, gitDiff } from './git-tools.ts';
 import { httpGet } from './http-tools.ts';
+import { memoryPropose } from './memory-tools.ts';
 import { attemptCompletion, requestBudgetExtension, delegateTask } from './control-tools.ts';
 
 // ── Shared constants ────────────────────────────────────────────────
@@ -67,6 +68,7 @@ export {
   shellExec,
   gitStatus, gitDiff,
   httpGet,
+  memoryPropose,
   attemptCompletion, requestBudgetExtension, delegateTask,
 };
 
@@ -106,6 +108,7 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['git_diff', gitDiff],
   ['search_semantic', searchSemantic],
   ['http_get', httpGet],
+  ['memory_propose', memoryPropose],
   ['attempt_completion', attemptCompletion],
   ['request_budget_extension', requestBudgetExtension],
   ['delegate_task', delegateTask],

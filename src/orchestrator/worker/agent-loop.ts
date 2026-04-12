@@ -32,6 +32,8 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import { type DelegationDecision, DelegationRouter, buildSubTaskInput } from '../delegation-router.ts';
+import { wrapReminder } from '../llm/vinyan-reminder.ts';
+import { countPendingProposals } from '../memory/memory-proposals.ts';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -79,6 +81,27 @@ export interface AgentLoopDeps {
 
 // ── Session Progress Tracker ────────────────────────────────────────
 
+/**
+ * Stable JSON stringifier for duplicate-detection keys.
+ * Recursively sorts object keys so `{a:1,b:2}` and `{b:2,a:1}` produce identical strings.
+ * This is critical because tool calls reconstructed from JSON may have non-deterministic
+ * key order (e.g., when merged from multiple sources), and duplicate detection must match
+ * semantically identical calls regardless of key ordering.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const entries = keys.map(
+    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
+  );
+  return `{${entries.join(',')}}`;
+}
+
 export class SessionProgress {
   filesRead = new Set<string>();
   filesWritten = new Set<string>();
@@ -97,6 +120,15 @@ export class SessionProgress {
 
   /** Track key findings from tool results for session state */
   keyFindings: string[] = [];
+
+  /**
+   * Phase 3d: Count of pending `memory_propose` proposals awaiting human
+   * review at session start. Surfaced via `buildSessionSnapshot` as a
+   * `[MEMORY QUEUE]` line so L2+ workers know the backlog before calling
+   * `memory_propose` themselves. Set once by the orchestrator in
+   * `runAgentLoop`; 0 means "no backlog" and suppresses the hint entirely.
+   */
+  pendingMemoryProposals = 0;
 
   recordToolResult(toolName: string, isError: boolean, output?: string, callParams?: Record<string, unknown>): void {
     if (isError) {
@@ -131,14 +163,21 @@ export class SessionProgress {
     }
   }
 
-  /** Check if a tool call is a duplicate of a recent one */
+  /**
+   * Check if a tool call is a duplicate of a recent one.
+   * Returns the warning already wrapped in a `<vinyan-reminder>` block so the
+   * caller can append it directly to a tool result's output without having to
+   * remember the tagging convention. Returns null on a first-time call.
+   */
   checkDuplicate(toolName: string, params: Record<string, unknown>): string | null {
-    const paramsKey = JSON.stringify(params);
+    const paramsKey = stableStringify(params);
     const match = this.recentToolCalls.find(
       (c) => c.tool === toolName && c.paramsKey === paramsKey,
     );
     if (match) {
-      return `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`;
+      return wrapReminder(
+        `[DUPLICATE WARNING] You called ${toolName} with the same parameters in turn ${match.turn}. This is the same call — you will get the same result. Try a different approach.`,
+      );
     }
     this.recentToolCalls.push({ tool: toolName, paramsKey, turn: this.currentTurn });
     // Keep last 8 tool calls
@@ -185,10 +224,37 @@ export class SessionProgress {
       }
     }
 
+    // Phase 3d: surface the memory_propose review backlog so L2+ workers can
+    // choose whether to add to it or defer. Three escalation bands keep the
+    // signal proportional to the pressure:
+    //   1   – 3:  soft awareness notice
+    //   4   – 9:  nudge to check existing pending before proposing more
+    //   10+    :  strong backpressure — queue is already overloaded
+    if (this.pendingMemoryProposals > 0) {
+      const n = this.pendingMemoryProposals;
+      const plural = n === 1 ? 'proposal' : 'proposals';
+      let guidance: string;
+      if (n >= 10) {
+        guidance =
+          ' — queue is overloaded; do NOT call memory_propose this session unless your finding is exceptional and non-duplicative.';
+      } else if (n >= 4) {
+        guidance =
+          ' — review the existing backlog before proposing more to avoid duplicates.';
+      } else {
+        guidance = '';
+      }
+      lines.push(`[MEMORY QUEUE] ${n} memory ${plural} awaiting human review${guidance}`);
+    }
+
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
-  /** Generate a system hint based on current progress state. */
+  /**
+   * Generate a system hint based on current progress state.
+   * Returns the hint already wrapped in a `<vinyan-reminder>` block so callers
+   * can append it directly to tool-result output. Returns null when there is
+   * nothing to say (so callers can skip injection entirely).
+   */
   getSystemHint(budgetRatio: number, turnsRemaining: number): string | null {
     const hints: string[] = [];
 
@@ -224,7 +290,7 @@ export class SessionProgress {
       hints.push(snapshot);
     }
 
-    return hints.length > 0 ? hints.join('\n') : null;
+    return wrapReminder(hints.length > 0 ? hints.join('\n') : null);
   }
 }
 
@@ -359,6 +425,18 @@ export async function runAgentLoop(
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
+
+  // Phase 3d: Prime the session with the memory_propose review backlog so
+  // L2+ workers see it in every turn's `<vinyan-reminder>` snapshot. The
+  // helper is best-effort — a missing or unreadable pending directory is a
+  // fresh workspace (count = 0), not an error we should fail the session on.
+  if (routing.level >= 2) {
+    try {
+      progress.pendingMemoryProposals = countPendingProposals(deps.workspace);
+    } catch {
+      // Non-fatal: absent / unreadable directory → no memory queue hint.
+    }
+  }
 
   const toolContext: ToolContext = {
     routingLevel: routing.level,

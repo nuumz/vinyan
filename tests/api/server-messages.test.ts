@@ -692,3 +692,239 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
     expect(data.task.answer).toBe('sync answer');
   });
 });
+
+// ── Long-lived session-scoped SSE (PR #10) ────────────────────────────
+
+/**
+ * Read a bounded prefix of an SSE stream by consuming chunks until
+ * either a timeout elapses or a specific event appears. This lets us
+ * assert on the events emitted during a session's lifetime without
+ * waiting for the 60-minute safety-net cleanup.
+ */
+async function readSSEUntil(
+  res: Response,
+  predicate: (events: SSEEvent[]) => boolean,
+  timeoutMs = 1500,
+): Promise<SSEEvent[]> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const events: SSEEvent[] = [];
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    const { value, done } = await Promise.race([
+      reader.read(),
+      new Promise<{ value: undefined; done: true }>((r) =>
+        setTimeout(() => r({ value: undefined, done: true }), 50),
+      ),
+    ]);
+    if (done || !value) {
+      // Check predicate even on timeout so we can return whatever
+      // we've accumulated so far for diagnostics.
+      if (predicate(events)) break;
+      continue;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    // Parse any complete events from the buffer.
+    const parts = buffer.split('\n\n');
+    // Keep the last (possibly incomplete) part in the buffer.
+    buffer = parts.pop() ?? '';
+    for (const block of parts) {
+      if (block.trim().length === 0) continue;
+      // Skip SSE comment lines (heartbeats) — they start with ':'.
+      if (block.startsWith(':')) continue;
+      const lines = block.split('\n');
+      const eventLine = lines.find((l) => l.startsWith('event: '));
+      const dataLine = lines.find((l) => l.startsWith('data: '));
+      if (!eventLine) continue;
+      events.push({
+        event: eventLine.slice('event: '.length),
+        data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SSEEvent['data']) : {},
+      });
+    }
+    if (predicate(events)) break;
+  }
+
+  try {
+    await reader.cancel();
+  } catch {
+    /* ignore */
+  }
+  return events;
+}
+
+describe('API Server — long-lived session-scoped SSE', () => {
+  test('GET /api/v1/sessions/:id/stream returns SSE content type and emits session:stream_open', async () => {
+    const sessionId = await createSession();
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/event-stream');
+    expect(res.headers.get('Cache-Control')).toBe('no-cache');
+
+    const events = await readSSEUntil(
+      res,
+      (evts) => evts.some((e) => e.event === 'session:stream_open'),
+      500,
+    );
+    const open = events.find((e) => e.event === 'session:stream_open');
+    expect(open).toBeDefined();
+    const payload = open!.data.payload as { sessionId: string; heartbeatIntervalMs: number };
+    expect(payload.sessionId).toBe(sessionId);
+    expect(payload.heartbeatIntervalMs).toBe(30_000);
+  });
+
+  test('GET /stream on unknown session returns JSON 404', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/sessions/does-not-exist/stream', { headers: authHeaders }),
+    );
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+  });
+
+  test('session stream emits task:start and task:complete for tasks in its session', async () => {
+    const sessionId = await createSession();
+
+    const streamRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
+    );
+    expect(streamRes.status).toBe(200);
+
+    // Trigger a task in the session. mockExecuteTask emits task:start
+    // and task:complete on the bus synchronously (from the earlier
+    // test-harness extension in server-messages.test.ts).
+    mockBehavior = (input) => completedResult(input, 'session-stream answer');
+    const messageRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'run task in session' }),
+      }),
+    );
+    expect(messageRes.status).toBe(200);
+
+    const events = await readSSEUntil(
+      streamRes,
+      (evts) => evts.some((e) => e.event === 'task:complete'),
+      1000,
+    );
+    const starts = events.filter((e) => e.event === 'task:start');
+    const completes = events.filter((e) => e.event === 'task:complete');
+    expect(starts.length).toBeGreaterThanOrEqual(1);
+    expect(completes.length).toBeGreaterThanOrEqual(1);
+    const completePayload = completes[0]!.data.payload as { result: TaskResult };
+    expect(completePayload.result.status).toBe('completed');
+    expect(completePayload.result.answer).toBe('session-stream answer');
+  });
+
+  test('session stream does NOT leak events from other sessions', async () => {
+    const sessionA = await createSession();
+    const sessionB = await createSession();
+
+    const streamRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionA}/stream`, { headers: authHeaders }),
+    );
+    expect(streamRes.status).toBe(200);
+
+    // Run a task in session B. The stream (scoped to session A) must
+    // NOT emit any task events for it.
+    mockBehavior = (input) => completedResult(input, 'leaked?');
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionB}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'task in B' }),
+      }),
+    );
+
+    // Wait briefly then collect whatever events fired.
+    const events = await readSSEUntil(streamRes, () => false, 300);
+    const taskEvents = events.filter(
+      (e) => e.event === 'task:start' || e.event === 'task:complete',
+    );
+    expect(taskEvents).toHaveLength(0);
+    // session:stream_open should still appear for session A's stream.
+    const open = events.find((e) => e.event === 'session:stream_open');
+    expect(open).toBeDefined();
+  });
+
+  test('session stream stays open across multiple turns (does NOT auto-close on task:complete)', async () => {
+    const sessionId = await createSession();
+
+    const streamRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
+    );
+
+    // Turn 1
+    mockBehavior = (input) => completedResult(input, 'turn 1');
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'first' }),
+      }),
+    );
+
+    // Turn 2 — a long-lived stream MUST still be receiving events
+    // after the first task:complete fired. If the stream auto-closed
+    // (as the per-task variant does), turn 2 events would not appear.
+    mockBehavior = (input) => completedResult(input, 'turn 2');
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'second' }),
+      }),
+    );
+
+    const events = await readSSEUntil(
+      streamRes,
+      (evts) => evts.filter((e) => e.event === 'task:complete').length >= 2,
+      1500,
+    );
+    const completes = events.filter((e) => e.event === 'task:complete');
+    expect(completes.length).toBeGreaterThanOrEqual(2);
+    const answers = completes.map((c) => {
+      const p = c.data.payload as { result: TaskResult };
+      return p.result.answer;
+    });
+    expect(answers).toContain('turn 1');
+    expect(answers).toContain('turn 2');
+  });
+
+  test('session stream forwards agent:clarification_requested events during an input-required turn', async () => {
+    const sessionId = await createSession();
+
+    const streamRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
+    );
+
+    const questions = ['Which module did you mean?'];
+    mockBehavior = (input) => inputRequiredResult(input, questions);
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'ambiguous goal' }),
+      }),
+    );
+
+    const events = await readSSEUntil(
+      streamRes,
+      (evts) => evts.some((e) => e.event === 'agent:clarification_requested'),
+      1000,
+    );
+    const clarification = events.find((e) => e.event === 'agent:clarification_requested');
+    expect(clarification).toBeDefined();
+    const payload = clarification!.data.payload as {
+      questions: string[];
+      source?: string;
+    };
+    expect(payload.questions).toEqual(questions);
+    expect(payload.source).toBe('agent');
+  });
+});

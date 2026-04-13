@@ -334,6 +334,7 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `TaskInput.constraints: ['COMPREHENSION_CHECK:off']` | CLI tests, API test harness | `isComprehensionCheckDisabled()` in `comprehension-check.ts` | Pipeline metadata that bypasses the Comprehension gate. Filtered from the agent init prompt by `buildInitUserMessage`. |
 | `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
 | `POST /api/v1/sessions/:id/messages` request body `stream: true` | Web / mobile clients | `src/api/server.ts:handleSessionMessage` stream branch | Switches the response to `text/event-stream` (SSE). Same validation + clarification semantics as sync, returns immediately with a live event feed that closes on `task:complete`. |
+| `GET /api/v1/sessions/:id/stream` | Web / mobile clients | `src/api/server.ts:handleSessionStream` → `src/api/sse.ts:createSessionSSEStream` | Long-lived SSE stream scoped to a session. One connection per client covers all tasks in the session across multiple turns. Emits an initial `session:stream_open` event, tracks session-task membership via `task:start` filtering, forwards per-task events, heartbeats every 30s via `:heartbeat\n\n` comment lines, and auto-cleans up after 60 minutes as a safety net. |
 | `consult_peer` tool call `{question, context?, requestedTokens?}` | Worker LLM at L1+ | `agent-loop.ts:handleConsultPeer` → `deps.peerConsultant` (factory-wired) → `LLMProviderRegistry.selectByTier` | Lightweight second-opinion primitive. Response is a `PeerOpinion` JSON in `ToolResult.output` with confidence hardcoded to 0.7 (A5 heuristic tier). Max 3 per session. A1 enforced: peer engine id must differ from worker's. |
 
 ## HTTP API — `POST /api/v1/sessions/:id/messages`
@@ -479,6 +480,44 @@ the bus listeners even if `task:complete` never fires for some
 reason (e.g., an orchestrator bug). Matches the existing
 `GET /api/v1/tasks/:id/events` convention with a looser bound for
 conversational-style budgets.
+
+### Long-lived session-scoped SSE (`GET /sessions/:id/stream`, PR #10)
+
+For clients that want ONE persistent connection covering an entire
+conversation (across multiple turns), `GET /api/v1/sessions/:id/stream`
+returns a long-lived SSE stream scoped to the session. Distinct from
+the per-task `POST /messages` variant:
+
+| Dimension | `POST /messages` (stream=true) | `GET /stream` |
+|---|---|---|
+| Lifetime | One task turn | Entire session |
+| Closes on | `task:complete` (auto) | Client disconnect or 60m safety-net |
+| Heartbeat | No | `:heartbeat <ts>\n\n` every 30s |
+| Initial event | `task:start` | `session:stream_open` |
+| Scope filter | Task id | Session task membership set |
+
+**Membership tracking**: the stream's subscriber listens to `task:start`
+and, when `payload.input.sessionId === sessionId`, adds the new task's
+id to an in-memory `Set<string>`. All subsequent per-task events
+(`task:complete`, `phase:timing`, `agent:clarification_requested`, etc.)
+are filtered by membership in that set, so tasks from OTHER sessions
+are dropped even if they share the same bus.
+
+**Heartbeat**: SSE comment lines starting with `:` are ignored by the
+`EventSource` parser (they do not fire `onmessage`). They serve as a
+keep-alive signal for intermediate proxies and allow clients to detect
+broken connections by absence of data for more than the heartbeat
+interval.
+
+**No replay / reconnection**: V1 does not support `Last-Event-ID`
+reconnection. A disconnected client gets a fresh stream on reconnect
+with no backfill — they can call `GET /messages` separately to
+reconstruct state.
+
+**Axiom posture**: the stream is observational only — it does not
+bypass any axioms. Every event it forwards was already emitted on
+the shared `VinyanBus` for internal consumption. SSE is a viewport,
+not a governance surface.
 
 ## What's excluded (future work)
 

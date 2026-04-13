@@ -25,7 +25,7 @@ import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import { z } from 'zod/v4';
 import type { Session, SessionManager } from './session-manager.ts';
-import { createSSEStream } from './sse.ts';
+import { createSessionSSEStream, createSSEStream } from './sse.ts';
 
 export interface APIServerConfig {
   port: number;
@@ -235,6 +235,14 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
       const sessionId = path.split('/')[4]!;
       return this.handleListSessionMessages(sessionId, req);
+    }
+
+    // Agent Conversation — long-lived session-scoped SSE (PR #10).
+    // One connection per client that observes every task running under
+    // the session, across multiple turns, with periodic heartbeats.
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/stream$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionStream(sessionId);
     }
 
     // ── Read-only queries ─────────────────────────────────
@@ -838,6 +846,51 @@ export class VinyanAPIServer {
     return jsonResponse({
       session: { id: sessionId, pendingClarifications },
       messages,
+    });
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/stream
+   *
+   * Long-lived SSE stream scoped to a single session. Unlike the per-task
+   * stream variant of POST /messages, this stays open across multiple
+   * task turns within the session and emits events for every task that
+   * runs under `sessionId`. Useful for web/mobile clients that want one
+   * persistent connection for all conversation activity.
+   *
+   * Behavior:
+   *   - Returns JSON 404 if the session does not exist (NOT an empty SSE
+   *     stream — clients want a clear error signal before they set up
+   *     EventSource listeners).
+   *   - Emits an initial `session:stream_open` event so clients know
+   *     the subscription is live.
+   *   - Tracks session task membership via `task:start` events
+   *     (filtered by `payload.input.sessionId === sessionId`).
+   *   - Forwards per-task events (task:complete, phase:timing,
+   *     agent:clarification_requested, etc.) for tasks in the
+   *     membership set.
+   *   - Emits SSE comment-line heartbeats (`:heartbeat <ts>\n\n`) every
+   *     30 seconds to keep idle connections alive.
+   *   - Auto-cleanup after 60 minutes safety-net (long-enough for
+   *     extended conversations but bounded to prevent bus leaks).
+   */
+  private handleSessionStream(sessionId: string): Response {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    const { stream, cleanup } = createSessionSSEStream(this.deps.bus, sessionId);
+
+    // 60-minute safety-net cleanup. Real clients should re-subscribe
+    // before hitting this bound; the limit exists so a forgotten
+    // connection doesn't leak bus subscribers indefinitely.
+    setTimeout(cleanup, 3_600_000);
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
     });
   }
 

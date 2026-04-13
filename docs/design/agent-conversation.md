@@ -29,13 +29,38 @@ Agent Conversation adds a **third, first-class outcome** — `status: 'input-req
 
 ### Layer 1 — User ↔ Orchestrator (top level)
 
-The user runs `vinyan chat` (or the API, when added). A turn proceeds as usual through perceive → predict → plan → generate. If the generator (at any routing level) calls `attempt_completion(status='uncertain', needsUserInput=true, uncertainties=[...])`, the core loop **short-circuits before verify**:
+The user runs `vinyan chat` (or the API). A turn proceeds as usual through perceive → predict → plan → generate. There are **two entry points** to `status: 'input-required'` at Layer 1 — both emit the same `TaskResult` shape and the same `agent:clarification_requested` bus event (distinguished by the `source` field on the payload).
 
-- Builds a `TaskResult` with `status: 'input-required'` and `clarificationNeeded: [...]`
-- Emits `agent:clarification_requested` on the bus
-- Returns immediately — no retry, no escalation, no oracle run (`mutations.length === 0` is asserted)
+**Entry point A — Orchestrator-driven (comprehension gate, pre-generation):**
 
-The calling layer (`src/cli/chat.ts`) surfaces the questions as a friendly yellow prompt, then captures the next user message as a **clarification answer**. That answer is injected into the next task's `TaskInput.constraints` as `CLARIFIED:<question>=><answer>`.
+Right after the Perceive phase produces an enriched `TaskUnderstanding`, and before Predict begins, the core loop runs a deterministic **Comprehension Check** (`src/orchestrator/understanding/comprehension-check.ts`). If the understanding is clearly ambiguous, the orchestrator pauses the task with orchestrator-generated clarification questions — no Predict/Plan/Generate budget is committed.
+
+The check runs two conservative rule-based heuristics:
+
+- **H1 (multi-path ambiguous entity)** — a `ResolvedEntity` with `resolvedPaths.length > 1` and `confidence < 0.6`. Entity resolution could not confidently pick one match from many candidates. Fires one question per ambiguous entity listing the candidates.
+- **H4 (contradictory verified claim)** — a `VerifiedClaim` with `type: 'contradictory'`. The STU Phase C verifier found conflicting evidence about the world state. Fires one question per contradictory claim (capped at 3).
+
+Heuristics explicitly deferred from V1:
+
+- **H2 missing targetSymbol** — too noisy; the agent can search for a symbol itself.
+- **H3 verb-mutation mismatch** — the current rule-based action-category classifier is too coarse (e.g., maps verbs like "test" to `actionCategory='qa'` which false-positives on `taskType='code'` inputs). Will revisit when the classifier has calibration data or a dedicated `actionIntent` field with provenance.
+- **LLM `semanticIntent.ambiguities`** — those come from an LLM and would violate A3 (deterministic governance) if they drove a gate decision. They already enrich the agent's prompt via `buildInitUserMessage`.
+
+**Opt-out:** `TaskInput.constraints: ['COMPREHENSION_CHECK:off']` skips the gate. This is pipeline metadata (filtered out of the agent's prompt by `buildInitUserMessage`) and is primarily used by tests that want to force the pipeline through to Generate.
+
+**Entry point B — Agent-driven (attempt_completion, mid-generation):**
+
+If Generate runs and the worker LLM calls `attempt_completion(status='uncertain', needsUserInput=true, uncertainties=[...])`, the core loop short-circuits **before verify** using the same mechanism. The agent self-reported that it cannot resolve the user's intent from context alone.
+
+Both entry points:
+
+- Build a `TaskResult` with `status: 'input-required'` and `clarificationNeeded: [...]`
+- Emit `agent:clarification_requested` on the bus with `source: 'orchestrator'` (A) or `source: 'agent'` (B)
+- Return immediately — no retry, no escalation, no oracle run (`mutations.length === 0` asserted)
+
+The calling layer (`src/cli/chat.ts` or `POST /api/v1/sessions/:id/messages`) surfaces the questions as a friendly prompt, then captures the next user message as a **clarification answer**. That answer is injected into the next task's `TaskInput.constraints` as `CLARIFIED:<question>=><answer>`.
+
+**Why both entry points exist:** A closes the A1 epistemic separation gap at the Understanding layer — the orchestrator (deterministic) decides to pause based on an oracle verdict, not the agent (probabilistic) self-reporting. B is the fallback path for ambiguities that only surface during generation (e.g., when the agent has read the files and discovered that "update config" could apply to two modules). Together they cover both pre-generation and mid-generation ambiguity detection.
 
 ### Layer 2 — Parent agent ↔ Child agent (delegation)
 
@@ -179,7 +204,9 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `CLARIFIED:<question>=><answer>` | `chat.ts` (on the turn following an input-required) | `task-understanding.ts` (copy-through), `agent-worker-entry.ts:buildInitUserMessage` (renders as "## User Clarifications") | User's answer threaded as authoritative grounding for the next turn. |
 | `CONTEXT:<text>` | `delegation-router.ts:buildSubTaskInput` (from parent's `delegate_task` `request.context`) | `agent-worker-entry.ts:buildInitUserMessage` (renders as "## Delegation Context (from parent agent)") | Parent-provided resolution of child clarifications. |
 | `ToolResult.output` JSON with `pausedForUserInput: true` | `handleDelegation` | Parent agent LLM (via L2+ system prompt guidance) | Signal that a delegated child paused rather than failed. |
-| `agent:clarification_requested` bus event | `core-loop.ts` short-circuit branch | TUI listeners, API streaming (future), logging | Observability — per-task-type rates of clarification requests are available for future A7 self-model calibration. |
+| `agent:clarification_requested` bus event with `source: 'agent'` | `core-loop.ts` post-Generate short-circuit branch | TUI listeners, API streaming (future), logging | Agent-driven: worker LLM self-reported uncertainty. Per-task-type rates available for future A7 self-model calibration. |
+| `agent:clarification_requested` bus event with `source: 'orchestrator'` | `core-loop.ts` post-Perceive comprehension gate | Same consumers as above | Orchestrator-driven: deterministic Comprehension Check detected ambiguity before Generate ran. Distinguishable in trace via `approach: 'comprehension-pause'`. |
+| `TaskInput.constraints: ['COMPREHENSION_CHECK:off']` | CLI tests, API test harness | `isComprehensionCheckDisabled()` in `comprehension-check.ts` | Pipeline metadata that bypasses the Comprehension gate. Filtered from the agent init prompt by `buildInitUserMessage`. |
 | `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
 
 ## HTTP API — `POST /api/v1/sessions/:id/messages`
@@ -256,7 +283,14 @@ The feature as-landed deliberately leaves these for future PRs:
    deferred.
 2. **TUI chat view** — `src/tui/` has the status icon and sort priority for `input-required` but no dedicated conversational view. Monitoring dashboard only.
 3. **Suspend/resume of in-flight agent loops across user turns** — today each chat turn is a fresh `executeTask` with a fresh subprocess. A paused L3 agent with a half-finished plan cannot "resume" after the user answers; the new turn starts over with the answer grounded in constraints. Full agent checkpointing is a much larger architectural change.
-4. **Goal Alignment Oracle integration** — concept.md §1.1 envisions the orchestrator itself deciding to request clarification based on an oracle verdict ("comprehension confidence is low → request clarification"). Today the decision is agent-self-reported via `needsUserInput=true`. Wiring the Goal Alignment Oracle into the Understanding phase to proactively inject `input-required` would close this loop but requires design reconciliation with the existing (heuristic, informational-only) oracle.
+4. ~~**Goal Alignment Oracle integration**~~ — **partially shipped** as
+   the Comprehension Check gate (Layer 1 Entry Point A above). V1 implements
+   two conservative heuristics (H1 ambiguous entity, H4 contradictory claim)
+   and runs as a deterministic rule-based gate after Perceive, before
+   Predict. Deferred enhancements: verb-intent classifier calibration for
+   H3, probabilistic signals from LLM `semanticIntent.ambiguities`, and
+   reconciliation with the existing mutation-centric `goal-alignment-verifier.ts`
+   post-generation oracle (the two are complementary — pre- vs post-gen).
 5. **`consult_peer` tool** — a lightweight synchronous "ask another reasoning engine / oracle for a second opinion" primitive that would not spawn a full child pipeline. Useful for LLM-as-Critic patterns at the edges of delegation depth.
 6. **Inter-instance A2A task delegation** — `InstanceCoordinator.delegate()` exists in code but is not wired into the Predict/Plan phase. The A2A bridge maps `input-required` 1:1 to `A2ATaskState.input-required` so the protocol is ready when the routing logic catches up.
 7. **Multi-round batched clarification answering** — parent agent answers some child questions from context and bubbles up the rest. Currently the parent picks exactly one of the two paths for all the child's questions.

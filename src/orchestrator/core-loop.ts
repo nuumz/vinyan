@@ -42,6 +42,10 @@ import { executeGeneratePhase } from './phases/phase-generate.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import type { PhaseContext } from './phases/types.ts';
+import {
+  checkComprehension,
+  isComprehensionCheckDisabled,
+} from './understanding/comprehension-check.ts';
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
@@ -864,6 +868,86 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       understanding = perceiveResult.value.understanding;
 
       // ═══════════════════════════════════════════════════════════════
+      // Agent Conversation: Comprehension Gate (orchestrator-driven)
+      // ═══════════════════════════════════════════════════════════════
+      //
+      // The Perceive phase has produced a fully enriched understanding
+      // (Layer 0 + Layer 1 entity resolution + optional Layer 2 semantic
+      // intent + Phase C claim verification). Before committing any
+      // Predict/Plan/Generate budget, run a deterministic comprehension
+      // check: if the goal is clearly ambiguous, pause and ask the user.
+      //
+      // This is the ORCHESTRATOR-driven path to `input-required`,
+      // complementing the AGENT-driven path at Step 4 (where an agent
+      // calls attempt_completion with needsUserInput=true). Both emit
+      // the same TaskResult.status='input-required' shape and the same
+      // agent:clarification_requested bus event (distinguished by a
+      // `source` field on the payload).
+      //
+      // Closes the A1 gap flagged in concept.md §1.1 and
+      // docs/design/agent-conversation.md: comprehension decisions
+      // must not be made by the agent itself (that's LLM self-evaluation).
+      //
+      // Disabled by default via `COMPREHENSION_CHECK:off` constraint —
+      // useful for tests that want to force the pipeline through to
+      // Generate without the gate interfering.
+      //
+      // Axiom safety:
+      //   - A1: checkComprehension is a pure function distinct from
+      //     the generator; no LLM in the decision path.
+      //   - A3: rule-based heuristics; reproducible from the same
+      //     understanding.
+      //   - A5: conservative — fires only on clearly ambiguous cases,
+      //     never on a mere suspicion.
+      //   - A6: asserts no mutations were committed (they can't be —
+      //     Perceive has no mutation path) before returning.
+      if (!isComprehensionCheckDisabled(input.constraints)) {
+        const verdict = checkComprehension(understanding);
+        if (!verdict.confident && verdict.questions.length > 0) {
+          const comprehensionTrace: ExecutionTrace = {
+            id: `trace-${input.id}-comprehension-pause`,
+            taskId: input.id,
+            sessionId: input.sessionId,
+            workerId: 'orchestrator',
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: 'comprehension-pause',
+            approachDescription: `Orchestrator detected ${verdict.failedChecks.length} comprehension issue(s) before generation: ${verdict.failedChecks.map((c) => c.check).join(', ')}`,
+            oracleVerdicts: { comprehension: false },
+            modelUsed: 'orchestrator',
+            tokensConsumed: 0,
+            durationMs: Date.now() - startTime,
+            // Outcome is 'success' because the gate fired cleanly —
+            // the orchestrator decided to pause, not fail. Mirrors the
+            // existing input-required-pause branch semantics.
+            outcome: 'success',
+            affectedFiles: input.targetFiles ?? [],
+            workerSelectionAudit: lastWorkerSelection,
+          };
+          await deps.traceCollector.record(comprehensionTrace);
+          deps.bus?.emit('trace:record', { trace: comprehensionTrace });
+
+          deps.bus?.emit('agent:clarification_requested', {
+            taskId: input.id,
+            sessionId: input.sessionId,
+            questions: [...verdict.questions],
+            routingLevel: routing.level,
+            source: 'orchestrator',
+          });
+
+          const comprehensionResult: TaskResult = {
+            id: input.id,
+            status: 'input-required',
+            mutations: [],
+            trace: comprehensionTrace,
+            clarificationNeeded: [...verdict.questions],
+          };
+          deps.bus?.emit('task:complete', { result: comprehensionResult });
+          return comprehensionResult;
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
       // Step 2: PREDICT + SELECT WORKER
       // ═══════════════════════════════════════════════════════════════
       const predictStart = Date.now();
@@ -956,11 +1040,14 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         // listeners (TUI, API clients, logging) can surface the questions
         // as a user-friendly prompt instead of waiting for the generic
         // task:complete handler to interpret status='input-required'.
+        // `source: 'agent'` distinguishes this from the orchestrator-driven
+        // comprehension gate emit site earlier in the pipeline.
         deps.bus?.emit('agent:clarification_requested', {
           taskId: input.id,
           sessionId: input.sessionId,
           questions: [...lastAgentResult.uncertainties],
           routingLevel: routing.level,
+          source: 'agent',
         });
 
         const inputRequiredResult: TaskResult = {

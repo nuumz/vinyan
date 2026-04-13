@@ -245,14 +245,24 @@ export interface VinyanBusEvents {
   'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
   'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
   // Agent Conversation: fires when a task returns status='input-required'
-  // because the agent paused to ask the user clarifying questions. Consumers
-  // (TUI, API streaming, logging) should surface the questions as a friendly
-  // prompt, NOT as an error.
+  // because either the agent OR the orchestrator paused to ask the user
+  // clarifying questions. Consumers (TUI, API streaming, logging) should
+  // surface the questions as a friendly prompt, NOT as an error.
+  //
+  // `source` distinguishes the two paths:
+  //   - 'agent':        the worker LLM self-reported uncertainty via
+  //                     attempt_completion(needsUserInput=true).
+  //   - 'orchestrator': the core loop's Comprehension Check gate fired
+  //                     before generation, based on deterministic
+  //                     heuristics over the TaskUnderstanding.
+  // Field is optional for backward compatibility with listeners that
+  // were written before the orchestrator-driven path existed.
   'agent:clarification_requested': {
     taskId: string;
     sessionId?: string;
     questions: string[];
     routingLevel: number;
+    source?: 'agent' | 'orchestrator';
   };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };

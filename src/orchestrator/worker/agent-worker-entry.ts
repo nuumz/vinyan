@@ -557,6 +557,7 @@ export function buildInitUserMessage(
           c.startsWith('MIN_ROUTING_LEVEL:')
           || c === 'THINKING:enabled'
           || c === 'TOOLS:enabled'
+          || c.startsWith('COMPREHENSION_CHECK:')
         ) {
           // Pipeline metadata — not user-facing.
           continue;

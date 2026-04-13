@@ -264,6 +264,36 @@ export class A2ABridge {
       summaryParts.push({ type: 'text', text: `Escalation: ${result.escalationReason}` });
     }
 
+    // Agent Conversation §5.6: attach a structured `task_result` data
+    // part so a peer Vinyan instance can recover the full TaskResult on
+    // the round-trip — `mutations`, oracle verdicts, clarification list,
+    // status, and trace correlation — without having to re-parse the
+    // text summary. Generic A2A clients can ignore this artifact and
+    // still get the human-readable summary.
+    const structuredTaskResult = {
+      name: 'task_result',
+      description: 'Vinyan-native TaskResult (Agent Conversation §5.6)',
+      parts: [
+        {
+          type: 'data' as const,
+          data: {
+            id: result.id,
+            status: result.status,
+            mutations: result.mutations,
+            trace: result.trace,
+            qualityScore: result.qualityScore,
+            escalationReason: result.escalationReason,
+            answer: result.answer,
+            notes: result.notes,
+            contradictions: result.contradictions,
+            ...(result.status === 'input-required' && result.clarificationNeeded
+              ? { clarificationNeeded: result.clarificationNeeded }
+              : {}),
+          },
+        },
+      ],
+    };
+
     return {
       id: taskId,
       status: {
@@ -274,6 +304,7 @@ export class A2ABridge {
         },
       },
       artifacts: [
+        structuredTaskResult,
         {
           name: 'summary',
           description: 'Task execution summary',

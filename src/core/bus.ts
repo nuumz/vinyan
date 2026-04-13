@@ -238,6 +238,11 @@ export interface VinyanBusEvents {
 
   // Phase 6.4: Delegation events
   'delegation:done': { parentTaskId: string; childTaskId: string; status: string; tokensUsed: number };
+  // Agent Conversation §5.6: emitted when handleDelegation dispatches a
+  // child task to a peer Vinyan instance instead of a local subprocess.
+  // Distinct from delegation:done so dashboards can audit the local-vs-
+  // remote split without parsing every delegation:done payload.
+  'delegation:remote': { parentTaskId: string; childTaskId: string; peerId: string; status: string };
 
   // Phase 6.5: Agent session observability
   'agent:session_start': { taskId: string; routingLevel: number; budget: { maxTokens: number; maxTurns: number; contextWindow: number } };

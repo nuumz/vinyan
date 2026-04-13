@@ -105,7 +105,20 @@ export class InstanceCoordinator {
 
   /**
    * Delegate a task to a peer instance.
-   * The peer's result is NOT automatically trusted — caller must re-verify (I12).
+   *
+   * Agent Conversation §5.6: this now uses `A2ATransport.delegateTask()`,
+   * which sends a real `tasks/send` request to the peer's bridge so the
+   * peer runs the FULL task pipeline (perception → predict → plan →
+   * generate → verify) and returns a complete `TaskResult` — including
+   * mutations, oracle verdicts, and any `input-required` clarification
+   * questions. Previously this method abused the oracle `verify()` path
+   * and synthesized a stub result with `mutations: []`, which made
+   * delegated work invisible to the parent.
+   *
+   * The peer's result is NOT automatically trusted — caller must
+   * re-verify (I12). Federation budget is consumed up-front; if all
+   * attempts fail the budget is NOT refunded (pessimistic — peers may
+   * still have done partial work we don't see).
    */
   async delegate(input: TaskInput, _fingerprint?: TaskFingerprint): Promise<DelegationResult> {
     const peers = this.getActivePeers();
@@ -125,55 +138,28 @@ export class InstanceCoordinator {
 
     for (let attempt = 0; attempt < this.config.maxDelegationAttempts && attempt < peers.length; attempt++) {
       const peer = peers[attempt]!;
-      try {
-        const transport = new A2ATransport({
-          peerUrl: peer.url,
-          oracleName: 'task-delegation',
-          instanceId: this.config.instanceId,
-        });
+      const transport = new A2ATransport({
+        peerUrl: peer.url,
+        oracleName: 'task-delegation',
+        instanceId: this.config.instanceId,
+      });
 
-        // Use verify() to send task as an ECP verification request
-        // The peer will execute the full task and return a result
-        const verdict = await transport.verify(
-          {
-            target: input.goal,
-            pattern: 'task-delegation',
-            workspace: input.targetFiles?.[0] ?? '',
-            context: { taskInput: input },
-          },
-          input.budget?.maxDurationMs ?? 60_000,
-        );
-
-        if (verdict.verified || verdict.type !== 'unknown') {
-          return {
-            delegated: true,
-            peerId: peer.url,
-            result: {
-              id: input.id,
-              status: verdict.verified ? 'completed' : 'failed',
-              mutations: [],
-              trace: {
-                id: `delegated-${input.id}`,
-                taskId: input.id,
-                timestamp: Date.now(),
-                routingLevel: 0,
-                approach: `delegated to ${peer.url}`,
-                oracleVerdicts: {},
-                modelUsed: 'remote',
-                tokensConsumed: 0,
-                durationMs: verdict.durationMs,
-                outcome: verdict.verified ? 'success' : 'failure',
-                affectedFiles: [],
-                correlationId: input.id,
-                sourceInstanceId: this.config.instanceId,
-              },
-            },
-            reason: `Delegated to ${peer.url}`,
-          };
+      const result = await transport.delegateTask(input, input.budget?.maxDurationMs ?? 60_000);
+      if (result) {
+        // Stamp provenance so downstream consumers know this came from
+        // a peer (and can re-verify per I12). The peer may already have
+        // set sourceInstanceId; we don't overwrite it.
+        if (!result.trace.sourceInstanceId) {
+          result.trace.sourceInstanceId = this.config.instanceId;
         }
-      } catch {
-        // Try next peer
+        return {
+          delegated: true,
+          peerId: peer.url,
+          result,
+          reason: `Delegated to ${peer.url}`,
+        };
       }
+      // Otherwise: try next peer (transport returned null on failure)
     }
 
     return { delegated: false, reason: 'All delegation attempts failed' };

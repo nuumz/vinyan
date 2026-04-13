@@ -812,6 +812,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // manifest. The map is shared by reference with `toolExecutor`, so
     // tools registered after orchestrator startup appear automatically.
     extraTools: mcpToolMap,
+    // Agent Conversation §5.6: hand the InstanceCoordinator (already
+    // built above for phase-predict's worker-saturation fallback) to
+    // the agent loop too, so subagent-style `delegate_task` calls can
+    // also dispatch to remote peers. When `instanceCoordinator` is
+    // undefined this property simply doesn't exist on deps and the
+    // loop falls back to local-only dispatch.
+    instanceCoordinator,
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

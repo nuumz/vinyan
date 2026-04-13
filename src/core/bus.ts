@@ -306,6 +306,36 @@ export interface VinyanBusEvents {
     oracleCompositeScore: number | null;
   };
 
+  // Phase 7 — Self-Improving Autonomy events.
+  // Per-oracle EMA accuracy update — emitted on warm-threshold crossings
+  // and on accuracy moves of ≥ 0.01. Dashboards / sleep-cycle promotion
+  // logic can subscribe to track engine reliability over time.
+  'phase7:oracle_calibration': {
+    oracleName: string;
+    accuracy: number;
+    observationCount: number;
+    warm: boolean;
+  };
+  // Drift detected between SelfModel prediction and actual trace outcome.
+  // `triggeredDimensions` is the ordered list of dimension names that
+  // crossed their threshold (testResults | blastRadius | duration |
+  // qualityScore). `maxRelDelta` is useful for severity ranking.
+  'phase7:drift_detected': {
+    taskId: string;
+    triggeredDimensions: string[];
+    maxRelDelta: number;
+  };
+  // Silent regression alert: rolling-window success rate dropped below
+  // baseline for one task type. Cool-down enforced inside RegressionMonitor
+  // so dashboards don't get spammed by persistent regressions.
+  'phase7:silent_regression': {
+    taskTypeSignature: string;
+    recentSuccessRate: number;
+    baselineSuccessRate: number;
+    drop: number;
+    observations: number;
+  };
+
   // Economy Operating System events (Layer 1)
   'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };
   'economy:budget_warning': { window: 'hour' | 'day' | 'month'; utilization_pct: number; spent_usd: number; limit_usd: number };

@@ -82,6 +82,8 @@ import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
 import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
+import { OracleEMACalibrator } from './phase7/oracle-ema-calibrator.ts';
+import { RegressionMonitor } from './phase7/regression-monitor.ts';
 import type { AgentLoopDeps } from './worker/agent-loop.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
 
@@ -647,6 +649,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* forward predictor wiring is best-effort */
   }
 
+  // Phase 7 — Self-Improving Autonomy modules. Pure in-memory observers
+  // that watch each trace and emit `phase7:*` events. They never block
+  // the pipeline — Phase Learn calls them in best-effort try/catch.
+  // Drift detection is stateless and does not need a dep — it's invoked
+  // inline in Phase Learn.
+  const oracleEMACalibrator = new OracleEMACalibrator({ bus });
+  const regressionMonitor = new RegressionMonitor({ bus });
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -700,6 +710,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Intent Resolver: LLM registry for pre-routing semantic classification
     llmRegistry: registry,
     remediationEngine,
+    // Phase 7 — Self-Improving Autonomy: per-engine EMA calibration +
+    // silent-regression watchdog. Phase Learn updates both on every
+    // trace; dashboards subscribe to `phase7:*` events. Drift detection
+    // is stateless and is invoked inline in Phase Learn — no dep needed.
+    oracleEMACalibrator,
+    regressionMonitor,
     // K2.2: Engine selector for trust-weighted provider selection
     engineSelector: providerTrustStore
       ? new DefaultEngineSelector({

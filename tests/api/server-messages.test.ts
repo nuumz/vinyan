@@ -18,7 +18,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { VinyanAPIServer } from '../../src/api/server.ts';
 import { SessionManager } from '../../src/api/session-manager.ts';
-import { createBus } from '../../src/core/bus.ts';
+import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
@@ -30,14 +30,54 @@ const TEST_TOKEN = `test-token-${'a'.repeat(52)}`;
 let server: VinyanAPIServer;
 let db: Database;
 let sessionManager: SessionManager;
+let testBus: VinyanBus;
 
 // Per-test mutable state
 let mockBehavior: (input: TaskInput) => TaskResult;
 let capturedInputs: TaskInput[];
 
+/**
+ * Mock executeTask that simulates the bus events real core-loop.executeTask
+ * emits in production. The SSE streaming path of handleSessionMessage
+ * subscribes to `task:start` and `task:complete` (via createSSEStream) and
+ * auto-closes the stream on the latter — so the mock has to emit them for
+ * stream tests to work. For agent-driven clarifications, also emit
+ * `agent:clarification_requested` with source='agent' so streamed clients
+ * see it in the event log.
+ */
 function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
   capturedInputs.push(input);
-  return Promise.resolve(mockBehavior(input));
+  const result = mockBehavior(input);
+
+  // Simulate the start-of-task bus event. Routing is synthetic — only the
+  // taskId filter in createSSEStream matters here.
+  testBus.emit('task:start', {
+    input,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    routing: {
+      level: 1,
+      model: 'mock',
+      budgetTokens: 10_000,
+      latencyBudgetMs: 5_000,
+    } as any,
+  });
+
+  // For input-required results, emit the clarification event so streaming
+  // clients see it in the SSE log.
+  if (result.status === 'input-required' && result.clarificationNeeded) {
+    testBus.emit('agent:clarification_requested', {
+      taskId: input.id,
+      sessionId: input.sessionId,
+      questions: [...result.clarificationNeeded],
+      routingLevel: 1,
+      source: 'agent',
+    });
+  }
+
+  // End-of-task event — the SSE stream auto-closes on this.
+  testBus.emit('task:complete', { result });
+
+  return Promise.resolve(result);
 }
 
 function makeTrace(taskId: string, outcome: 'success' | 'failure' = 'success') {
@@ -98,7 +138,7 @@ beforeAll(() => {
   db.exec('PRAGMA foreign_keys = ON');
   new MigrationRunner().migrate(db, ALL_MIGRATIONS);
 
-  const bus = createBus();
+  testBus = createBus();
   const sessionStore = new SessionStore(db);
   sessionManager = new SessionManager(sessionStore);
 
@@ -111,7 +151,7 @@ beforeAll(() => {
       rateLimitEnabled: false,
     },
     {
-      bus,
+      bus: testBus,
       executeTask: mockExecuteTask,
       sessionManager,
     },
@@ -436,5 +476,219 @@ describe('API Server — Agent Conversation messages', () => {
       session: { pendingClarifications: string[] };
     };
     expect(data.session.pendingClarifications).toEqual(questions);
+  });
+});
+
+// ── SSE streaming variant ─────────────────────────────────────────────
+
+/**
+ * Parse a text/event-stream response body into `{event, data}` pairs.
+ * Handles the SSE wire format:
+ *   event: <name>\n
+ *   data: <json>\n
+ *   \n  (event delimiter)
+ */
+interface SSEEvent {
+  event: string;
+  data: { event?: string; payload?: unknown; ts?: number };
+}
+function parseSSE(text: string): SSEEvent[] {
+  const blocks = text.split('\n\n').filter((b) => b.trim().length > 0);
+  return blocks.map((block) => {
+    const lines = block.split('\n');
+    const eventLine = lines.find((l) => l.startsWith('event: '));
+    const dataLine = lines.find((l) => l.startsWith('data: '));
+    return {
+      event: eventLine ? eventLine.slice('event: '.length) : '',
+      data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SSEEvent['data']) : {},
+    };
+  });
+}
+
+/**
+ * Flush pending microtasks / timers so the .then() handler that records the
+ * assistant turn has a chance to run after we've consumed the stream. The
+ * .then callback is scheduled during the stream-path branch of
+ * handleSessionMessage but runs asynchronously; we give it one event loop
+ * turn before inspecting SessionManager state.
+ */
+async function flushMicrotasks(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 5));
+}
+
+describe('API Server — Agent Conversation streaming (stream: true)', () => {
+  test('POST /messages with stream:true returns text/event-stream with task:start and task:complete', async () => {
+    const sessionId = await createSession();
+    mockBehavior = (input) => completedResult(input, 'streamed answer');
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'stream please', stream: true }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/event-stream');
+    expect(res.headers.get('Cache-Control')).toBe('no-cache');
+
+    const text = await res.text();
+    const events = parseSSE(text);
+
+    // Both the start and the end event must appear in order.
+    const eventNames = events.map((e) => e.event);
+    expect(eventNames).toContain('task:start');
+    expect(eventNames).toContain('task:complete');
+    expect(eventNames.indexOf('task:start')).toBeLessThan(eventNames.indexOf('task:complete'));
+
+    // The task:complete payload carries the TaskResult.
+    const completeEvent = events.find((e) => e.event === 'task:complete')!;
+    const completePayload = completeEvent.data.payload as { result: TaskResult };
+    expect(completePayload.result.status).toBe('completed');
+    expect(completePayload.result.answer).toBe('streamed answer');
+  });
+
+  test('stream records user turn before starting and assistant turn after completing', async () => {
+    const sessionId = await createSession();
+    mockBehavior = (input) => completedResult(input, 'ok');
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'streamed user input', stream: true }),
+      }),
+    );
+    // Consume the stream so the task actually resolves.
+    await res.text();
+    // Flush microtasks so recordAssistantTurn .then handler runs.
+    await flushMicrotasks();
+
+    const history = sessionManager.getConversationHistory(sessionId);
+    expect(history).toHaveLength(2);
+    expect(history[0]!.role).toBe('user');
+    expect(history[0]!.content).toBe('streamed user input');
+    expect(history[1]!.role).toBe('assistant');
+    expect(history[1]!.content).toContain('ok');
+
+    // Input carries sessionId + api source, same as sync path.
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0]!.sessionId).toBe(sessionId);
+    expect(capturedInputs[0]!.source).toBe('api');
+  });
+
+  test('stream emits agent:clarification_requested when the task pauses for user input', async () => {
+    const sessionId = await createSession();
+    const questions = ['Which module?', 'Delete or deprecate?'];
+    mockBehavior = (input) => inputRequiredResult(input, questions);
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'refactor the helper', stream: true }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/event-stream');
+
+    const events = parseSSE(await res.text());
+    const clarificationEvent = events.find((e) => e.event === 'agent:clarification_requested');
+    expect(clarificationEvent).toBeDefined();
+    const payload = clarificationEvent!.data.payload as {
+      taskId: string;
+      questions: string[];
+      source?: string;
+    };
+    expect(payload.questions).toEqual(questions);
+    expect(payload.source).toBe('agent');
+
+    // task:complete still fires (closes the stream) carrying the
+    // input-required result.
+    const completeEvent = events.find((e) => e.event === 'task:complete')!;
+    const completePayload = completeEvent.data.payload as { result: TaskResult };
+    expect(completePayload.result.status).toBe('input-required');
+    expect(completePayload.result.clarificationNeeded).toEqual(questions);
+  });
+
+  test('streamed clarification follow-up carries CLARIFIED: constraint on the next turn', async () => {
+    const sessionId = await createSession();
+    const questions = ['Which file?'];
+
+    // Turn 1 (stream): input-required
+    mockBehavior = (input) => inputRequiredResult(input, questions);
+    const firstRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'do it', stream: true }),
+      }),
+    );
+    await firstRes.text();
+    await flushMicrotasks();
+
+    // Turn 2 (stream): user answers — server auto-wraps as CLARIFIED: constraint
+    mockBehavior = (input) => completedResult(input, 'done');
+    const secondRes = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'src/auth.ts', stream: true }),
+      }),
+    );
+    await secondRes.text();
+    await flushMicrotasks();
+
+    expect(capturedInputs).toHaveLength(2);
+    const secondInput = capturedInputs[1]!;
+    expect(secondInput.constraints).toContain(`CLARIFIED:${questions[0]}=>src/auth.ts`);
+  });
+
+  test('stream:true with unknown session returns JSON 404 (not SSE)', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/sessions/no-such-session/messages', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'hi', stream: true }),
+      }),
+    );
+    expect(res.status).toBe(404);
+    // Content-Type is NOT event-stream because validation fails before
+    // streaming setup.
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+  });
+
+  test('stream:true with empty content returns JSON 400 (not SSE)', async () => {
+    const sessionId = await createSession();
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: '', stream: true }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+  });
+
+  test('stream:false (or omitted) preserves the existing sync response shape', async () => {
+    // Regression guard: setting stream:false explicitly should behave
+    // identically to the sync path — returns JSON, not SSE.
+    const sessionId = await createSession();
+    mockBehavior = (input) => completedResult(input, 'sync answer');
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'hi', stream: false }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+    const data = (await res.json()) as { task: TaskResult };
+    expect(data.task.status).toBe('completed');
+    expect(data.task.answer).toBe('sync answer');
   });
 });

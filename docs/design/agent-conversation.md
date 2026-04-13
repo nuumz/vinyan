@@ -208,6 +208,7 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `agent:clarification_requested` bus event with `source: 'orchestrator'` | `core-loop.ts` post-Perceive comprehension gate | Same consumers as above | Orchestrator-driven: deterministic Comprehension Check detected ambiguity before Generate ran. Distinguishable in trace via `approach: 'comprehension-pause'`. |
 | `TaskInput.constraints: ['COMPREHENSION_CHECK:off']` | CLI tests, API test harness | `isComprehensionCheckDisabled()` in `comprehension-check.ts` | Pipeline metadata that bypasses the Comprehension gate. Filtered from the agent init prompt by `buildInitUserMessage`. |
 | `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
+| `POST /api/v1/sessions/:id/messages` request body `stream: true` | Web / mobile clients | `src/api/server.ts:handleSessionMessage` stream branch | Switches the response to `text/event-stream` (SSE). Same validation + clarification semantics as sync, returns immediately with a live event feed that closes on `task:complete`. |
 
 ## HTTP API — `POST /api/v1/sessions/:id/messages`
 
@@ -229,7 +230,8 @@ mobile, and external clients. Mirrors `vinyan chat`'s state machine.
   "taskType": "code",                         // optional: 'code' | 'reasoning'
   "targetFiles": ["src/auth.ts"],             // optional
   "budget": { "maxTokens": 50000, ... },      // optional
-  "showThinking": false                       // optional
+  "showThinking": false,                      // optional
+  "stream": false                             // optional — see SSE variant below
 }
 ```
 
@@ -272,15 +274,93 @@ mobile, and external clients. Mirrors `vinyan chat`'s state machine.
 
 **Auth:** standard bearer token, same as other POST endpoints.
 
+### SSE streaming variant (`stream: true`)
+
+When the request body includes `"stream": true`, the server returns a
+`text/event-stream` (Server-Sent Events) response instead of waiting
+for the task to complete. This matches the OpenAI chat completions
+streaming convention and is suitable for web / mobile clients that
+want real-time progress feedback.
+
+**Request:** same shape as the sync endpoint, with `stream: true` added.
+
+**Response:**
+
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+event: task:start
+data: {"event":"task:start","payload":{...},"ts":1712345678901}
+
+event: phase:timing
+data: {"event":"phase:timing","payload":{"phase":"perceive",...},"ts":...}
+
+event: agent:tool_executed
+data: {"event":"agent:tool_executed","payload":{...},"ts":...}
+
+event: agent:clarification_requested
+data: {"event":"agent:clarification_requested","payload":{"taskId":"...","questions":[...],"source":"agent"|"orchestrator"},"ts":...}
+
+event: task:complete
+data: {"event":"task:complete","payload":{"result":{"status":"...","clarificationNeeded":[...],...}},"ts":...}
+```
+
+The stream auto-closes on the first `task:complete` event the client
+receives for the initiated task id. Events forwarded via SSE are
+defined in `src/api/sse.ts:SSE_EVENTS` — the full list includes:
+
+- Task lifecycle: `task:start`, `task:complete`, `task:escalate`, `task:timeout`
+- Pipeline observability: `phase:timing`, `trace:record`
+- Worker / oracle: `worker:dispatch`, `worker:complete`, `worker:error`, `oracle:verdict`, `critic:verdict`, `shadow:complete`
+- Agent Conversation: `agent:session_start`, `agent:session_end`, `agent:turn_complete`, `agent:tool_executed`, **`agent:clarification_requested`** (both `source='agent'` and `source='orchestrator'`)
+
+**Critical ordering:** the server creates the SSE stream (subscribing
+the bus listeners synchronously via `ReadableStream.start()`) BEFORE
+calling `executeTask`. This guarantees that any event the orchestrator
+emits during the pipeline is captured by the subscribers.
+
+**Clarification flow over SSE:** identical to the sync path — the
+server queries `getPendingClarifications()` before dispatching the
+task and auto-wraps the user's content as `CLARIFIED:<q>=><answer>`
+constraints when the previous turn paused. Pending clarification
+state is visible via `agent:clarification_requested` events in the
+stream *and* via a subsequent `GET /messages` call.
+
+**Validation errors still return JSON:** `404` (unknown session),
+`400` (empty content, malformed body), and `401` (missing auth) all
+return standard `application/json` error envelopes. Streaming is
+only activated AFTER validation passes.
+
+**Turn recording:** the user turn is recorded before the stream is
+returned (synchronously, same as sync path). The assistant turn is
+recorded in the `.then()` handler attached to the executeTask
+promise — it runs after `task:complete` has already been delivered
+to the client, so the stream is closed by then. Clients that need
+the final `TaskResult` shape (e.g., for `clarificationNeeded`) can
+read it from the `task:complete` event payload (`payload.result`).
+
+**Error recovery:** if `executeTask` rejects unexpectedly (a bypass
+of core-loop's own exception handling), the server synthesizes a
+failed `TaskResult`, records the assistant turn, and manually emits
+`task:complete` on the bus to close the stream cleanly. The client
+sees a `task:complete` event with `result.status: 'failed'` and
+`result.escalationReason` set to the error message.
+
+**Safety net:** a 10-minute `setTimeout(cleanup, ...)` unsubscribes
+the bus listeners even if `task:complete` never fires for some
+reason (e.g., an orchestrator bug). Matches the existing
+`GET /api/v1/tasks/:id/events` convention with a looser bound for
+conversational-style budgets.
+
 ## What's excluded (future work)
 
 The feature as-landed deliberately leaves these for future PRs:
 
 1. ~~**HTTP API `POST /api/v1/sessions/:id/messages`**~~ — **shipped**
-   in the HTTP endpoint PR. SSE streaming variant
-   (`GET /api/v1/sessions/:id/messages/stream` or `POST` with
-   `Accept: text/event-stream`) for real-time progress events is still
-   deferred.
+   in the HTTP endpoint PR (sync) and extended with SSE streaming in
+   the streaming PR (`stream: true` in the request body).
 2. **TUI chat view** — `src/tui/` has the status icon and sort priority for `input-required` but no dedicated conversational view. Monitoring dashboard only.
 3. **Suspend/resume of in-flight agent loops across user turns** — today each chat turn is a fresh `executeTask` with a fresh subprocess. A paused L3 agent with a half-finished plan cannot "resume" after the user answers; the new turn starts over with the answer grounded in constraints. Full agent checkpointing is a much larger architectural change.
 4. ~~**Goal Alignment Oracle integration**~~ — **partially shipped** as

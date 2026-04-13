@@ -320,6 +320,11 @@ export class VinyanAPIServer {
    * turn and dispatches a task through the orchestrator. `taskType`, `budget`,
    * and `targetFiles` are optional overrides; when omitted the server infers
    * sensible defaults (matching chat.ts).
+   *
+   * `stream: true` switches the response to `text/event-stream` (SSE), matching
+   * the OpenAI chat.completions streaming convention. Events forwarded include
+   * task:start, phase:timing, agent:tool_executed, agent:turn_complete,
+   * agent:clarification_requested, and task:complete (which closes the stream).
    */
   private static readonly SessionMessageSchema = z.object({
     content: z.string().min(1, 'content must not be empty'),
@@ -333,6 +338,7 @@ export class VinyanAPIServer {
       })
       .optional(),
     showThinking: z.boolean().optional(),
+    stream: z.boolean().optional(),
   });
 
   private async handleHttpVerify(req: Request): Promise<Response> {
@@ -653,7 +659,7 @@ export class VinyanAPIServer {
     if (!parsed.success) {
       return jsonResponse({ error: `Invalid request: ${parsed.error.message}` }, 400);
     }
-    const { content, taskType, targetFiles, budget, showThinking } = parsed.data;
+    const { content, taskType, targetFiles, budget, showThinking, stream } = parsed.data;
 
     // Auto-detect clarification follow-up: if the last assistant message
     // was an [INPUT-REQUIRED] block and the user has not yet answered, this
@@ -697,6 +703,87 @@ export class VinyanAPIServer {
     // Track in session_tasks for audit / observability (mirrors handleSyncTask).
     this.deps.sessionManager.addTask(sessionId, input);
 
+    // ── Streaming path (OpenAI-style SSE) ─────────────────────
+    //
+    // When `stream: true`, return a text/event-stream response that
+    // forwards per-phase bus events filtered by this task's id. The
+    // client sees real-time progress and the stream auto-closes when
+    // the orchestrator emits `task:complete` at the end of the task
+    // (see createSSEStream in src/api/sse.ts).
+    //
+    // Critical ordering: createSSEStream MUST run BEFORE executeTask
+    // so the ReadableStream.start() callback (which subscribes to the
+    // bus synchronously per WHATWG spec) is called before any events
+    // fire. Once the subscribers are attached, kicking off executeTask
+    // is safe — events emitted during the pipeline will be captured
+    // and delivered to the client.
+    if (stream === true) {
+      const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id);
+      // Safety-net cleanup after 10 minutes in case task:complete never
+      // fires (e.g., hung LLM call without timeout). Matches the existing
+      // handleSSE convention with a looser bound for the longer budget
+      // of chat-style tasks.
+      const cleanupTimer = setTimeout(cleanup, 600_000);
+
+      // Kick off executeTask WITHOUT awaiting so we can return the stream
+      // Response immediately. The .then handler records the assistant
+      // turn and completes the session task; the .catch handler recovers
+      // from unexpected throws by synthesizing a failed result and
+      // manually emitting task:complete to close the stream (real
+      // executeTask would normally emit this itself, but a bare throw
+      // bypasses the normal emit path).
+      this.deps
+        .executeTask(input)
+        .then((result) => {
+          this.deps.sessionManager.completeTask(sessionId, input.id, result);
+          this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
+          clearTimeout(cleanupTimer);
+        })
+        .catch((err) => {
+          const failedResult: TaskResult = {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: {
+              id: `trace-${input.id}-stream-error`,
+              taskId: input.id,
+              timestamp: Date.now(),
+              routingLevel: 0,
+              approach: 'stream-error',
+              oracleVerdicts: {},
+              modelUsed: 'unknown',
+              tokensConsumed: 0,
+              durationMs: 0,
+              outcome: 'failure',
+              affectedFiles: [],
+              failureReason: err instanceof Error ? err.message : String(err),
+            } as TaskResult['trace'],
+            escalationReason: err instanceof Error ? err.message : String(err),
+          };
+          try {
+            this.deps.sessionManager.completeTask(sessionId, input.id, failedResult);
+            this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, failedResult);
+          } catch {
+            // Session recording is best-effort during error recovery
+          }
+          // Emit a manual task:complete so the stream closes cleanly.
+          // createSSEStream's auto-close handler fires on the first
+          // task:complete seen for this task id, so no risk of a double
+          // close if the real pipeline had already emitted one.
+          this.deps.bus.emit('task:complete', { result: failedResult });
+          clearTimeout(cleanupTimer);
+        });
+
+      return new Response(sseStream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    // ── Sync path (default) ──────────────────────────────────
     let result: TaskResult;
     try {
       result = await this.deps.executeTask(input);

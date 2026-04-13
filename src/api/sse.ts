@@ -8,10 +8,15 @@ import type { BusEventName, VinyanBus } from '../core/bus.ts';
 
 /** Events to forward via SSE (non-sensitive, progress-related). */
 const SSE_EVENTS: BusEventName[] = [
+  // Task lifecycle
   'task:start',
   'task:complete',
   'task:escalate',
   'task:timeout',
+  // Pipeline timing
+  'phase:timing',
+  'trace:record',
+  // Worker / oracle
   'worker:dispatch',
   'worker:complete',
   'worker:error',
@@ -21,6 +26,12 @@ const SSE_EVENTS: BusEventName[] = [
   'skill:match',
   'skill:miss',
   'tools:executed',
+  // Agent Conversation: per-turn observability for web/mobile streams
+  'agent:session_start',
+  'agent:session_end',
+  'agent:turn_complete',
+  'agent:tool_executed',
+  'agent:clarification_requested',
 ];
 
 /**

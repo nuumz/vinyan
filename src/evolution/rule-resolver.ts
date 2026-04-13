@@ -40,7 +40,15 @@ export function resolveRuleConflicts(rules: EvolutionaryRule[]): EvolutionaryRul
       if (b.specificity !== a.specificity) return b.specificity - a.specificity;
       if (b.effectiveness !== a.effectiveness) return b.effectiveness - a.effectiveness;
       // Step 3: Safety floor — stricter action wins on tie
-      return stricterAction(b) - stricterAction(a);
+      const strictDelta = stricterAction(b) - stricterAction(a);
+      if (strictDelta !== 0) return strictDelta;
+      // A3 permutation invariance: when every scoring dimension ties, fall
+      // back to lexicographic id ordering so the winner is a function of
+      // content, not input order. Without this tiebreaker JavaScript's
+      // stable sort preserves whichever rule appeared first in the input —
+      // making resolveRuleConflicts([a,b]) and resolveRuleConflicts([b,a])
+      // pick different winners and breaking A3.
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
 
     winners.push(sorted[0]!);

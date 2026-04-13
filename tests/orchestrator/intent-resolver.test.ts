@@ -167,7 +167,7 @@ describe('resolveIntent', () => {
       .rejects.toThrow();
   });
 
-  test('respects timeout', { timeout: 15000 }, async () => {
+  test('respects timeout', async () => {
     const slowProvider: LLMProvider = {
       id: 'slow-provider',
       tier: 'fast',
@@ -185,7 +185,7 @@ describe('resolveIntent', () => {
 
     await expect(resolveIntent(makeInput('hello'), makeDeps(slowProvider)))
       .rejects.toThrow('Intent resolution timeout');
-  });
+  }, 15000);
 });
 
 // ---------------------------------------------------------------------------

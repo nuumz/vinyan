@@ -112,7 +112,7 @@ describe('temporal-decay', () => {
       }
     });
 
-    test("expired fact with decay_model='step' excluded after validUntil", () => {
+    test("expired fact with decay_model='step' retained at 50% confidence (ECP spec §3.6)", () => {
       const wg = new WorldGraph(':memory:');
       try {
         const pastTime = Date.now() - 10_000;
@@ -129,8 +129,13 @@ describe('temporal-decay', () => {
           decayModel: 'step',
         });
 
+        // ECP spec §3.6: step-decay facts drop to 50% of original confidence
+        // at validUntil — they are NOT fully expired and MUST still be
+        // returned by queryFacts. Only `decay_model: 'none'` / `'linear'` /
+        // `'exponential'` facts are excluded once past validUntil.
         const facts = wg.queryFacts('src/b.ts');
-        expect(facts).toHaveLength(0); // step facts now properly expire
+        expect(facts).toHaveLength(1);
+        expect(facts[0]!.confidence).toBeCloseTo(0.45, 5); // 0.9 * 0.5
       } finally {
         wg.close();
       }

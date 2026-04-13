@@ -11,10 +11,19 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
-import type { CacheControl, ConversationEntry, PerceptualHierarchy, TaskDAG, TaskType, TaskUnderstanding, WorkingMemoryState } from '../types.ts';
+import type {
+  CacheControl,
+  ConversationEntry,
+  PerceptualHierarchy,
+  TaskDAG,
+  TaskType,
+  TaskUnderstanding,
+  WorkingMemoryState,
+} from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 import type { SectionContext } from './prompt-section-registry.ts';
 import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
+import type { EnvironmentInfo } from './shared-prompt-sections.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
@@ -63,10 +72,22 @@ export function assemblePrompt(
   routingLevel?: number,
   /** Conversation history from prior turns in the same session. */
   conversationHistory?: ConversationEntry[],
+  /** Phase 7a: OS/cwd/date/git snapshot for the [ENVIRONMENT] block. */
+  environment?: EnvironmentInfo | null,
 ): AssembledPrompt {
   // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
-    const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel, conversationHistory };
+    const ctx: SectionContext = {
+      goal,
+      perception,
+      memory,
+      plan,
+      instructions,
+      understanding,
+      routingLevel,
+      conversationHistory,
+      environment,
+    };
     const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
     const userPrompt = reasoningRegistry.renderTarget('user', ctx);
     const sysTokens = estimateTokens(systemPrompt);
@@ -82,7 +103,17 @@ export function assemblePrompt(
   }
 
   // Code tasks: use section registry for composable assembly
-  const ctx: SectionContext = { goal, perception, memory, plan, instructions, understanding, routingLevel, conversationHistory };
+  const ctx: SectionContext = {
+    goal,
+    perception,
+    memory,
+    plan,
+    instructions,
+    understanding,
+    routingLevel,
+    conversationHistory,
+    environment,
+  };
   const systemPrompt = defaultRegistry.renderTarget('system', ctx);
   const userPrompt = defaultRegistry.renderTarget('user', ctx);
   const sysTokens = estimateTokens(systemPrompt);

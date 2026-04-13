@@ -6,7 +6,7 @@
  * so tests can assert on exit codes without the test runner actually exiting.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runMemoryCommand } from '../../src/cli/memory.ts';
@@ -14,6 +14,7 @@ import {
   LEARNED_FILE_REL,
   PENDING_DIR_REL,
   REJECTED_DIR_REL,
+  serializeProposal,
   writeProposal,
   type MemoryProposal,
 } from '../../src/orchestrator/memory/memory-proposals.ts';
@@ -220,9 +221,22 @@ describe('vinyan memory approve', () => {
   });
 
   test('exits 2 when slug is ambiguous and prints the candidates', async () => {
-    writeProposal(workspace, makeValidProposal({ slug: 'twin' }));
-    await new Promise((r) => setTimeout(r, 5));
-    writeProposal(workspace, makeValidProposal({ slug: 'twin' }));
+    // Phase 6 blocks duplicate slugs at writeProposal time, so we construct
+    // the ambiguity through a side channel (direct disk write) — this is the
+    // realistic scenario the CLI's resolver must still handle (manual edit,
+    // race on concurrent writes, or a stale file left over from a crashed
+    // approval).
+    const pendingDir = join(workspace, PENDING_DIR_REL);
+    mkdirSync(pendingDir, { recursive: true });
+    const proposal = makeValidProposal({ slug: 'twin' });
+    writeFileSync(
+      join(pendingDir, '2026-01-01_00-00-00-000Z__twin.md'),
+      serializeProposal(proposal),
+    );
+    writeFileSync(
+      join(pendingDir, '2026-01-01_00-00-00-001Z__twin.md'),
+      serializeProposal(proposal),
+    );
 
     const r = await capture(() =>
       runMemoryCommand(['approve', 'twin', '--workspace', workspace, '--reviewer', 'alice']),

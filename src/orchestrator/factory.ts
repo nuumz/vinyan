@@ -5,83 +5,85 @@
  * Source of truth: spec/tdd.md §16 (Core Loop)
  */
 
+import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, resolve } from 'path';
-import { existsSync, readdirSync, statSync, rmSync } from 'fs';
 import { attachAuditListener } from '../bus/audit-listener.ts';
 import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
+import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
+import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
+import { PredictionLedger } from '../db/prediction-ledger.ts';
+import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
+import { ProviderTrustStore } from '../db/provider-trust-store.ts';
+import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
-import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
-import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
+import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
-import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
-import { ProviderTrustStore } from '../db/provider-trust-store.ts';
-import { GapHDetector } from '../observability/gap-h-detector.ts';
-import { MetricsCollector } from '../observability/metrics.ts';
-import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
-import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
-import { FileWatcher } from '../world-graph/file-watcher.ts';
-import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
-import { WorldGraph } from '../world-graph/world-graph.ts';
-import { CapabilityModel } from './fleet/capability-model.ts';
-import { executeTask, type OrchestratorDeps } from './core-loop.ts';
-import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
-import type { DataGateThresholds } from './data-gate.ts';
-import { createAnthropicProvider } from './llm/anthropic-provider.ts';
-import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
-import { startLLMProxy } from './llm/llm-proxy.ts';
-import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
-import { LLMProviderRegistry } from './llm/provider-registry.ts';
-import { setOracleAccuracyStore } from '../gate/gate.ts';
-import { OracleGateAdapter } from './oracle-gate-adapter.ts';
-import { PerceptionAssemblerImpl } from './perception.ts';
-import { RiskRouterImpl } from './risk-router-adapter.ts';
-import { CalibratedSelfModel, SelfModelStub } from './prediction/self-model.ts';
-import { ShadowRunner } from './shadow-runner.ts';
-import { SkillManager } from './skill-manager.ts';
-import { TaskDecomposerImpl, TaskDecomposerStub } from './task-decomposer.ts';
-import { LLMTestGeneratorImpl } from './test-gen/llm-test-generator.ts';
-import { ToolExecutor } from './tools/tool-executor.ts';
-import { TraceCollectorImpl } from './trace-collector.ts';
-import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
-import { WorkerPoolImpl } from './worker/worker-pool.ts';
-import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
-import { InstanceCoordinator } from './instance-coordinator.ts';
-import { WorkerSelector } from './fleet/worker-selector.ts';
-import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
-import { RemediationEngine } from './remediation-engine.ts';
-import { CostLedger } from '../economy/cost-ledger.ts';
 import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
+import { CostLedger } from '../economy/cost-ledger.ts';
 import { CostPredictor } from '../economy/cost-predictor.ts';
 import { DynamicBudgetAllocator } from '../economy/dynamic-budget-allocator.ts';
 import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
-import { DelegationRouter } from './delegation-router.ts';
-import { compressPerception } from './llm/perception-compressor.ts';
-import type { AgentLoopDeps } from './worker/agent-loop.ts';
-import { PredictionLedger } from '../db/prediction-ledger.ts';
-import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
-import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
-import { FileStatsCache } from './prediction/file-stats-cache.ts';
-import { PercentileCache } from './prediction/percentile-cache.ts';
-import { UnderstandingEngine } from './understanding/understanding-engine.ts';
-import { DefaultEngineSelector } from './engine-selector.ts';
-import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
-import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
-import { createTaskQueue } from './task-queue.ts';
+import { setOracleAccuracyStore } from '../gate/gate.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
-import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
+import { GapHDetector } from '../observability/gap-h-detector.ts';
+import { MetricsCollector } from '../observability/metrics.ts';
+import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
+import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
+import { FileWatcher } from '../world-graph/file-watcher.ts';
+import { WorldGraph } from '../world-graph/world-graph.ts';
+import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
+import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
+import type { DataGateThresholds } from './data-gate.ts';
+import { DelegationRouter } from './delegation-router.ts';
+import { DefaultEngineSelector } from './engine-selector.ts';
+import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
+import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
+import { CapabilityModel } from './fleet/capability-model.ts';
+import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
+import { WorkerSelector } from './fleet/worker-selector.ts';
+import { InstanceCoordinator } from './instance-coordinator.ts';
+import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { startLLMProxy } from './llm/llm-proxy.ts';
+import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
+import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
+import { compressPerception } from './llm/perception-compressor.ts';
+import { LLMProviderRegistry } from './llm/provider-registry.ts';
+import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
+import { OracleGateAdapter } from './oracle-gate-adapter.ts';
+import { PerceptionAssemblerImpl } from './perception.ts';
+import { FileStatsCache } from './prediction/file-stats-cache.ts';
+import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
+import { PercentileCache } from './prediction/percentile-cache.ts';
+import { CalibratedSelfModel, SelfModelStub } from './prediction/self-model.ts';
+import { RemediationEngine } from './remediation-engine.ts';
+import { RiskRouterImpl } from './risk-router-adapter.ts';
+import { ShadowRunner } from './shadow-runner.ts';
+import { SkillManager } from './skill-manager.ts';
+import { TaskDecomposerImpl, TaskDecomposerStub } from './task-decomposer.ts';
+import { createTaskQueue } from './task-queue.ts';
+import { LLMTestGeneratorImpl } from './test-gen/llm-test-generator.ts';
+import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
+import { ToolExecutor } from './tools/tool-executor.ts';
+import type { Tool } from './tools/tool-interface.ts';
+import { TraceCollectorImpl } from './trace-collector.ts';
+import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
+import { UnderstandingEngine } from './understanding/understanding-engine.ts';
+import type { AgentLoopDeps } from './worker/agent-loop.ts';
+import { WorkerPoolImpl } from './worker/worker-pool.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -160,7 +162,9 @@ export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200
         rmSync(fullPath, { recursive: true, force: true });
         cleaned++;
       }
-    } catch { /* skip if inaccessible */ }
+    } catch {
+      /* skip if inaccessible */
+    }
   }
   return cleaned;
 }
@@ -231,7 +235,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Load config to unify routing thresholds and Phase 4 governance parameters
   let routingThresholds: { l0_max_risk: number; l1_max_risk: number; l2_max_risk: number } | undefined;
   let extensibleThinkingEnabled = true; // default: enabled
-  let extensibleThinkingConfig: { thresholds?: { riskBoundary: number; uncertaintyBoundary: number }; auditSampleRate?: number } | undefined;
+  let extensibleThinkingConfig:
+    | { thresholds?: { riskBoundary: number; uncertaintyBoundary: number }; auditSampleRate?: number }
+    | undefined;
   let fleetConfig:
     | {
         probation_min_tasks: number;
@@ -372,15 +378,21 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         }),
       );
       mcpClientPool = new MCPClientPool(serverConfigs, bus);
-      // Initialize connections in background — don't block startup
-      mcpClientPool.initialize().catch(() => {
-        /* MCP initialization failure is non-fatal */
-      });
       console.log(`[vinyan] MCP Client Pool: ${serverConfigs.length} server(s) configured`);
     }
   } catch {
     /* MCP client wiring is best-effort */
   }
+
+  // Phase 7e: shared map holding MCP-adapted tools. Populated
+  // asynchronously after `mcpClientPool.initialize()` resolves — the
+  // factory does NOT block on remote MCP server readiness. Tasks that
+  // run before init completes simply see an empty MCP surface.
+  //
+  // Both `ToolExecutor` and `agentLoopDeps.extraTools` hold a live
+  // reference to this same map so the mutation is observable
+  // everywhere it matters.
+  const mcpToolMap = new Map<string, Tool>();
 
   // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
   let workerLifecycle: WorkerLifecycle | undefined;
@@ -401,8 +413,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const sleepCycleRunner =
     patternStore && traceStore
       ? new SleepCycleRunner({
-          traceStore, patternStore, skillManager, ruleStore, bus, workerStore, workerLifecycle,
-          costLedger, marketScheduler,
+          traceStore,
+          patternStore,
+          skillManager,
+          ruleStore,
+          bus,
+          workerStore,
+          workerLifecycle,
+          costLedger,
+          marketScheduler,
         })
       : undefined;
 
@@ -441,8 +460,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         return new SelfModelStub();
       })();
   const riskRouter = new RiskRouterImpl(
-    depVerify, workspace, routingThresholds,
-    'getEpistemicSignal' in selfModel ? selfModel as CalibratedSelfModel : undefined,
+    depVerify,
+    workspace,
+    routingThresholds,
+    'getEpistemicSignal' in selfModel ? (selfModel as CalibratedSelfModel) : undefined,
   );
   const decomposer =
     registry.listProviders().length > 0
@@ -471,6 +492,31 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   const toolExecutor = new ToolExecutor(undefined, config.commandApprovalGate);
 
+  // Phase 7e: kick off MCP pool initialization now that `oracleGate`
+  // exists. This is fire-and-forget — `buildMcpToolMap` populates the
+  // shared `mcpToolMap` which both the executor and the agent loop
+  // reference by value. Failures are logged but never fatal.
+  if (mcpClientPool) {
+    const pool = mcpClientPool;
+    pool
+      .initialize()
+      .then(() => buildMcpToolMap(pool, oracleGate, workspace))
+      .then((built) => {
+        for (const [name, tool] of built) {
+          mcpToolMap.set(name, tool);
+          toolExecutor.registerTool(name, tool);
+        }
+        if (built.size > 0) {
+          console.log(
+            `[vinyan] MCP tools registered: ${built.size} tool(s) across ${pool.listServers().length} server(s)`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn(`[vinyan] MCP tool discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }
+
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
   const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
   const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
@@ -484,7 +530,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const understandingEngine = understandingProvider ? new UnderstandingEngine(understandingProvider) : undefined;
 
   // Remediation engine — tool-uses tier for structured output / problem-solving
-  const remediationProvider = registry.selectByTier('tool-uses') ?? registry.selectByTier('fast') ?? registry.selectByTier('balanced');
+  const remediationProvider =
+    registry.selectByTier('tool-uses') ?? registry.selectByTier('fast') ?? registry.selectByTier('balanced');
   const remediationEngine = remediationProvider ? new RemediationEngine(remediationProvider) : undefined;
 
   // Startup logging — confirm active components (P3.0 Gap 7)
@@ -761,6 +808,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     delegationRouter,
     executeTask: executeTaskThunk,
     peerConsultant,
+    // Phase 7e: surface dynamically discovered MCP tools in the agent
+    // manifest. The map is shared by reference with `toolExecutor`, so
+    // tools registered after orchestrator startup appear automatically.
+    extraTools: mcpToolMap,
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 
@@ -769,9 +820,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus);
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
-  const detachAccuracy = oracleAccuracyStore
-    ? attachOracleAccuracyListener(bus, oracleAccuracyStore)
-    : undefined;
+  const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
 
   // GAP-H failure mode detection (G5: was dead code, now live)
   const gapHDetector = new GapHDetector(bus);

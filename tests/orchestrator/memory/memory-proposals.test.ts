@@ -182,6 +182,67 @@ describe('validateProposal', () => {
     expect(result.valid).toBe(false);
     expect(result.failedCheck).toBe('size_limit');
   });
+
+  // ── Phase 6: duplicate-slug guard (opt-in via ProposalContext) ─────
+
+  test('rejects proposal whose slug collides with an approved slug', () => {
+    const result = validateProposal(makeValidProposal({ slug: 'taken' }), {
+      approvedSlugs: new Set(['taken', 'other']),
+      pendingSlugs: new Set(),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.failedCheck).toBe('duplicate');
+    expect(result.reason).toMatch(/approved M4/);
+  });
+
+  test('rejects proposal whose slug collides with a pending slug', () => {
+    const result = validateProposal(makeValidProposal({ slug: 'queued' }), {
+      approvedSlugs: new Set(),
+      pendingSlugs: new Set(['queued']),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.failedCheck).toBe('duplicate');
+    expect(result.reason).toMatch(/pending proposal/);
+  });
+
+  test('approved collision is reported before pending collision when both match', () => {
+    const result = validateProposal(makeValidProposal({ slug: 'double' }), {
+      approvedSlugs: new Set(['double']),
+      pendingSlugs: new Set(['double']),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.failedCheck).toBe('duplicate');
+    // The approved-side reason wins — it's the stronger signal.
+    expect(result.reason).toMatch(/approved M4/);
+  });
+
+  test('duplicate check is skipped when no context supplied (backwards compat)', () => {
+    // Existing grammar-only callers (unit tests, dry-runs) must still get
+    // valid=true for a well-formed proposal even when a duplicate slug
+    // technically exists in the workspace on disk.
+    const result = validateProposal(makeValidProposal({ slug: 'ambient' }));
+    expect(result.valid).toBe(true);
+  });
+
+  test('empty slug sets are a no-op (fresh workspace)', () => {
+    const result = validateProposal(makeValidProposal({ slug: 'novel' }), {
+      approvedSlugs: new Set(),
+      pendingSlugs: new Set(),
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test('duplicate check runs after grammar — malformed proposals fail on grammar first', () => {
+    // Order matters: an ill-formed proposal should surface the grammar error
+    // even if its slug happens to collide, so the worker fixes the real
+    // problem rather than chasing a dedup false lead.
+    const result = validateProposal(makeValidProposal({ slug: 'collides', body: '' }), {
+      approvedSlugs: new Set(['collides']),
+      pendingSlugs: new Set(),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.failedCheck).toBe('grammar');
+  });
 });
 
 // ── serializeProposal ───────────────────────────────────────────────
@@ -294,6 +355,71 @@ describe('writeProposal', () => {
     expect(r1.path).not.toBe(r2.path);
     expect(r1.path).toContain('rule-one');
     expect(r2.path).toContain('rule-two');
+  });
+
+  // ── Phase 6: propose-time duplicate detection ────────────────────
+
+  test('second writeProposal with the same slug is rejected (pending collision)', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'once' }));
+    expect(() => writeProposal(workspace, makeValidProposal({ slug: 'once', description: 'dup' }))).toThrow(
+      /duplicate/,
+    );
+    // Only the first file should exist.
+    const files = listPendingProposals(workspace);
+    expect(files.length).toBe(1);
+    expect(files[0]!.filename).toContain('once');
+  });
+
+  test('writeProposal rejects a slug that already exists in approved learned.md', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'approved-rule' }));
+    approveProposal(workspace, 'approved-rule', 'alice');
+    // pending/ is empty now — but the slug lives in learned.md, so a re-propose
+    // must be blocked at write time by the approved-slug guard.
+    expect(() => writeProposal(workspace, makeValidProposal({ slug: 'approved-rule' }))).toThrow(/approved M4/);
+    expect(listPendingProposals(workspace).length).toBe(0);
+  });
+
+  test('rejected proposals do NOT block re-proposal of the same slug', () => {
+    // Rejection is not a permanent ban — a worker that fixes the issue
+    // raised in the rejection reason should be able to re-propose the same
+    // slug. Phase 6 deliberately does not check the rejected/ archive.
+    writeProposal(workspace, makeValidProposal({ slug: 'retryable' }));
+    rejectProposal(workspace, 'retryable', 'alice', 'needs more evidence');
+    // Pending is empty, learned.md was never touched, rejected/ has one file.
+    // A new proposal with the same slug should succeed.
+    expect(() =>
+      writeProposal(workspace, makeValidProposal({ slug: 'retryable', description: 'now with more evidence' })),
+    ).not.toThrow();
+    const files = listPendingProposals(workspace);
+    expect(files.length).toBe(1);
+    expect(files[0]!.filename).toContain('retryable');
+  });
+
+  test('duplicate-guard error message names the slug and the collision site', () => {
+    writeProposal(workspace, makeValidProposal({ slug: 'verbose' }));
+    try {
+      writeProposal(workspace, makeValidProposal({ slug: 'verbose' }));
+      throw new Error('expected throw');
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toMatch(/duplicate/);
+      expect(msg).toContain('"verbose"');
+      expect(msg).toMatch(/pending/);
+    }
+  });
+
+  test('fresh workspace (no learned.md, no pending/) allows the first proposal through', () => {
+    expect(() => writeProposal(workspace, makeValidProposal({ slug: 'novel' }))).not.toThrow();
+  });
+
+  test('hand-authored learned.md (no markers) does not participate in approved-slug dedup', () => {
+    // Backwards-compat: a hand-authored learned.md has no `vinyan-memory-entry`
+    // markers, so `parseLearnedMdEntries` returns `[]`. A worker proposing a
+    // slug that happens to match text in such a file must still be able to
+    // write — the Phase 6 guard can only dedup structured entries.
+    mkdirSync(join(workspace, '.vinyan', 'memory'), { recursive: true });
+    writeFileSync(join(workspace, LEARNED_FILE_REL), '# Hand-authored conventions\n\nUse bun:test everywhere.\n');
+    expect(() => writeProposal(workspace, makeValidProposal({ slug: 'bun-test' }))).not.toThrow();
   });
 });
 
@@ -465,6 +591,45 @@ describe('memoryPropose tool', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('evidence_floor');
   });
+
+  test('Phase 6: duplicate slug returns error with actionable guidance', async () => {
+    // First proposal succeeds and lands in pending/.
+    const first = await memoryPropose.execute(
+      {
+        callId: 'call-dup-1',
+        slug: 'dup-from-tool',
+        category: 'convention',
+        tier: 'heuristic',
+        confidence: 0.85,
+        description: 'first',
+        body: 'body',
+        evidence: [{ file_path: 'src/a.ts', note: 'evidence' }],
+      },
+      makeCtx(),
+    );
+    expect(first.status).toBe('success');
+
+    // Second proposal with the same slug must return error from the tool,
+    // NOT throw — the worker needs a structured error it can reason about.
+    const second = await memoryPropose.execute(
+      {
+        callId: 'call-dup-2',
+        slug: 'dup-from-tool',
+        category: 'convention',
+        tier: 'heuristic',
+        confidence: 0.9,
+        description: 'second',
+        body: 'body',
+        evidence: [{ file_path: 'src/b.ts', note: 'more evidence' }],
+      },
+      makeCtx(),
+    );
+    expect(second.status).toBe('error');
+    expect(second.error).toContain('duplicate');
+    expect(second.error).toContain('dup-from-tool');
+    // pending/ should still contain only the first proposal.
+    expect(listPendingProposals(workspace).length).toBe(1);
+  });
 });
 
 // ── parseProposalFile ───────────────────────────────────────────────
@@ -551,12 +716,18 @@ describe('resolveProposalBySlug', () => {
     expect(() => resolveProposalBySlug(workspace, 'ghost-rule')).toThrow(/no pending proposal matching/);
   });
 
-  test('throws AmbiguousProposalError when multiple pending files share a slug', async () => {
-    // Need different filenames — same slug, different timestamps.
-    writeProposal(workspace, makeValidProposal({ slug: 'twin-rule' }));
-    // Bump the clock by a millisecond so the second filename differs.
-    await new Promise((r) => setTimeout(r, 5));
-    writeProposal(workspace, makeValidProposal({ slug: 'twin-rule' }));
+  test('throws AmbiguousProposalError when multiple pending files share a slug', () => {
+    // Phase 6 blocks duplicate slugs at writeProposal time, but the resolver
+    // still has to cope with files that landed in pending/ through a side
+    // channel (manual edit, a stale file left over from a failed approval,
+    // or a concurrent write race). We construct the ambiguity scenario by
+    // writing two serialized proposals directly to disk, bypassing the
+    // validator — proving the resolver is defensive when duplicates exist.
+    const pendingDir = join(workspace, PENDING_DIR_REL);
+    mkdirSync(pendingDir, { recursive: true });
+    const proposal = makeValidProposal({ slug: 'twin-rule' });
+    writeFileSync(join(pendingDir, '2026-01-01_00-00-00-000Z__twin-rule.md'), serializeProposal(proposal));
+    writeFileSync(join(pendingDir, '2026-01-01_00-00-00-001Z__twin-rule.md'), serializeProposal(proposal));
 
     let thrown: unknown = null;
     try {
@@ -641,8 +812,16 @@ describe('approveProposal', () => {
     writeProposal(workspace, makeValidProposal({ slug: 'dup-rule' }));
     approveProposal(workspace, 'dup-rule', 'alice');
 
-    // Second proposal uses the same slug — should be blocked at approval time.
-    writeProposal(workspace, makeValidProposal({ slug: 'dup-rule', description: 'second attempt' }));
+    // Phase 6 now blocks this at `writeProposal` time, so we bypass the
+    // validator by writing a duplicate pending file directly to disk. This
+    // preserves Phase 5's intent: the approval-time guard is the backstop
+    // layer when something else (manual edit, stale file, race) lets a
+    // duplicate reach pending/ through a side channel.
+    const pendingDir = join(workspace, PENDING_DIR_REL);
+    writeFileSync(
+      join(pendingDir, '2026-01-01_00-00-00-000Z__dup-rule.md'),
+      serializeProposal(makeValidProposal({ slug: 'dup-rule', description: 'second attempt' })),
+    );
     expect(() => approveProposal(workspace, 'dup-rule', 'alice')).toThrow(/already exists/);
 
     // learned.md must still have exactly one entry — the guard short-circuited
@@ -650,7 +829,7 @@ describe('approveProposal', () => {
     const learned = readFileSync(join(workspace, LEARNED_FILE_REL), 'utf-8');
     const markers = learned.match(/vinyan-memory-entry/g) ?? [];
     expect(markers.length).toBe(1);
-    // The second pending proposal is still on disk so the reviewer can act on it.
+    // The side-channel pending file is still on disk so the reviewer can act on it.
     const pending = listPendingProposals(workspace);
     expect(pending.length).toBe(1);
   });

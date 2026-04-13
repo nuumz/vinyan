@@ -185,17 +185,20 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 15 built-in tools', () => {
+  test('getToolNames returns all 16 built-in tools', () => {
     // Count bumped from 14 → 15 when `consult_peer` shipped in the
     // consult_peer PR (Agent Conversation Layer 2.5 — a lightweight
-    // second-opinion primitive at L1+).
-    expect(executor.getToolNames()).toHaveLength(15);
+    // second-opinion primitive at L1+), then → 16 when Phase 7c-2
+    // added `plan_update` as a control tool at L1+.
+    expect(executor.getToolNames()).toHaveLength(16);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');
     expect(executor.getToolNames()).toContain('http_get');
     expect(executor.getToolNames()).toContain('memory_propose');
     expect(executor.getToolNames()).toContain('consult_peer');
+    // Phase 7c-2: plan_update is a control tool exposed at L1+.
+    expect(executor.getToolNames()).toContain('plan_update');
   });
 });
 
@@ -337,19 +340,13 @@ describe('ToolExecutor — command approval gate', () => {
 
     const ctx = makeContext({ routingLevel: 2 });
     // 'true' is a real command that exits 0 on all Unix systems
-    const results = await approvalExecutor.executeProposedTools(
-      [makeCall('shell_exec', { command: 'true' })],
-      ctx,
-    );
+    const results = await approvalExecutor.executeProposedTools([makeCall('shell_exec', { command: 'true' })], ctx);
     expect(results[0]!.status).toBe('success');
   });
 
   test('without approval gate, unlisted command is denied immediately', async () => {
     const ctx = makeContext({ routingLevel: 2 });
-    const results = await executor.executeProposedTools(
-      [makeCall('shell_exec', { command: 'google-chrome' })],
-      ctx,
-    );
+    const results = await executor.executeProposedTools([makeCall('shell_exec', { command: 'google-chrome' })], ctx);
     expect(results[0]!.status).toBe('denied');
   });
 
@@ -371,5 +368,67 @@ describe('ToolExecutor — command approval gate', () => {
     );
     expect(results[0]!.status).toBe('denied');
     expect(approvalRequested).toBe(false); // No approval prompt for security violations
+  });
+});
+
+// Phase 7e: registerTool — MCP tools are added after orchestrator startup
+// (once the MCP client pool finishes its async initialize()).
+describe('Phase 7e: registerTool', () => {
+  test('registerTool adds a tool discoverable by getToolNames', () => {
+    const fresh = new ToolExecutor();
+    expect(fresh.getToolNames()).not.toContain('mcp__gh__issue');
+    fresh.registerTool('mcp__gh__issue', {
+      name: 'mcp__gh__issue',
+      description: 'fake mcp tool',
+      minIsolationLevel: 2,
+      category: 'delegation',
+      sideEffect: true,
+      descriptor: () => ({
+        name: 'mcp__gh__issue',
+        description: 'fake mcp tool',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        category: 'delegation',
+        sideEffect: true,
+        minRoutingLevel: 2,
+        toolKind: 'executable',
+      }),
+      execute: async () => ({
+        callId: '',
+        tool: 'mcp__gh__issue',
+        status: 'success',
+        output: 'ok',
+        durationMs: 0,
+      }),
+    });
+    expect(fresh.getToolNames()).toContain('mcp__gh__issue');
+  });
+
+  test('registered tool is invocable via executeProposedTools', async () => {
+    const fresh = new ToolExecutor();
+    let called = false;
+    fresh.registerTool('mcp__gh__issue', {
+      name: 'mcp__gh__issue',
+      description: 'fake mcp tool',
+      minIsolationLevel: 2,
+      category: 'delegation',
+      sideEffect: true,
+      descriptor: () => ({
+        name: 'mcp__gh__issue',
+        description: 'fake mcp tool',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        category: 'delegation',
+        sideEffect: true,
+        minRoutingLevel: 2,
+        toolKind: 'executable',
+      }),
+      execute: async () => {
+        called = true;
+        return { callId: '', tool: 'mcp__gh__issue', status: 'success', output: 'ok', durationMs: 0 };
+      },
+    });
+    const ctx: ToolContext = { routingLevel: 2, allowedPaths: [], workspace: tempDir };
+    const results = await fresh.executeProposedTools([{ id: 'c-1', tool: 'mcp__gh__issue', parameters: {} }], ctx);
+    expect(called).toBe(true);
+    expect(results[0]!.status).toBe('success');
   });
 });

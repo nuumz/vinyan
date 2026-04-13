@@ -2,9 +2,9 @@
  * Tests for K1.3 Tool Authorization — capability-based tool access control.
  */
 import { describe, expect, test } from 'bun:test';
-import { authorizeToolCall, classifyTool } from '../../src/security/tool-authorization.ts';
 import { createContract } from '../../src/core/agent-contract.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
+import { authorizeToolCall, classifyTool } from '../../src/security/tool-authorization.ts';
 
 const mockTask: TaskInput = {
   id: 'auth-test-1',
@@ -55,6 +55,18 @@ describe('classifyTool', () => {
     expect(result.type).toBe('shell_exec');
     expect(result.scope).toContain('UNKNOWN_TOOL');
   });
+
+  test('Phase 7e: mcp__server__tool → mcp_call with server scope', () => {
+    const result = classifyTool('mcp__github__create_issue', { title: 'bug' });
+    expect(result.type).toBe('mcp_call');
+    expect(result.scope).toEqual(['github']);
+  });
+
+  test('Phase 7e: multi-segment mcp tool name splits only on first separator', () => {
+    const result = classifyTool('mcp__fs__read__dir', {});
+    expect(result.type).toBe('mcp_call');
+    expect(result.scope).toEqual(['fs']);
+  });
 });
 
 describe('authorizeToolCall', () => {
@@ -99,6 +111,24 @@ describe('authorizeToolCall', () => {
   test('L3 allows llm_call', () => {
     const contract = contractAt(3);
     const result = authorizeToolCall(contract, 'llm_call', { provider: 'anthropic' });
+    expect(result.authorized).toBe(true);
+  });
+
+  test('Phase 7e: L2 allows mcp_call via wildcard server scope', () => {
+    const contract = contractAt(2);
+    const result = authorizeToolCall(contract, 'mcp__github__create_issue', { title: 'bug' });
+    expect(result.authorized).toBe(true);
+  });
+
+  test('Phase 7e: L1 denies mcp_call (no capability granted)', () => {
+    const contract = contractAt(1);
+    const result = authorizeToolCall(contract, 'mcp__github__create_issue', {});
+    expect(result.authorized).toBe(false);
+  });
+
+  test('Phase 7e: L3 allows mcp_call on any server', () => {
+    const contract = contractAt(3);
+    const result = authorizeToolCall(contract, 'mcp__slack__post_message', { text: 'hi' });
     expect(result.authorized).toBe(true);
   });
 });

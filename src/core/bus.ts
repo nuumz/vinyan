@@ -285,6 +285,21 @@ export interface VinyanBusEvents {
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
   'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
+  // Phase 0: Emitted by trace-collector after a task completes, pairing the
+  // thinking mode that was used with the measured outcome. Consumed by the
+  // Phase 0 data gate (`TraceStore.getSuccessRateByThinkingMode`) to decide
+  // when Phase 1a is unblocked — requires ≥100 traces total and a measurable
+  // success-rate delta between thinking modes. Payload is deliberately flat so
+  // offline analysis tooling can tail the bus without loading the full trace.
+  'thinking:policy-evaluated': {
+    taskId: string;
+    thinkingMode: string | null;
+    thinkingTokensUsed: number | null;
+    routingLevel: number;
+    outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+    qualityComposite: number | null;
+    oracleCompositeScore: number | null;
+  };
 
   // Economy Operating System events (Layer 1)
   'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };

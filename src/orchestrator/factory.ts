@@ -486,7 +486,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     bus,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
-  const traceCollector = new TraceCollectorImpl(worldGraph, traceStore);
+  const traceCollector = new TraceCollectorImpl(worldGraph, traceStore, bus);
   if (costLedger) {
     traceCollector.setEconomyDeps(costLedger, economyConfig?.rate_cards, bus);
   }

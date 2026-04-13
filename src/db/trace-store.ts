@@ -175,6 +175,51 @@ export class TraceStore {
     return row.cnt;
   }
 
+  /**
+   * Extensible Thinking Phase 0: success-rate / quality-composite breakdown
+   * keyed by `thinking_mode`. The Phase 0 A/B gate consumes this to decide
+   * when Phase 1a should be unblocked — see `evaluateThinkingPhase0Gate`.
+   *
+   * Rows with NULL `thinking_mode` are bucketed under the sentinel
+   * `'(none)'` rather than silently dropped, so "thinking off" runs can be
+   * compared directly against "thinking on" runs.
+   */
+  getSuccessRateByThinkingMode(): Array<{
+    thinkingMode: string;
+    total: number;
+    successes: number;
+    failures: number;
+    successRate: number;
+    avgQualityComposite: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT
+           COALESCE(thinking_mode, '(none)') AS mode,
+           COUNT(*) AS total,
+           SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS successes,
+           SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END) AS failures,
+           AVG(quality_composite) AS avg_quality
+         FROM execution_traces
+         GROUP BY mode`,
+      )
+      .all() as Array<{
+        mode: string;
+        total: number;
+        successes: number;
+        failures: number;
+        avg_quality: number | null;
+      }>;
+    return rows.map((r) => ({
+      thinkingMode: r.mode,
+      total: r.total,
+      successes: r.successes,
+      failures: r.failures,
+      successRate: r.total === 0 ? 0 : r.successes / r.total,
+      avgQualityComposite: r.avg_quality,
+    }));
+  }
+
   /** Update a trace's shadow validation result (called after async shadow processing). */
   updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
     this.db

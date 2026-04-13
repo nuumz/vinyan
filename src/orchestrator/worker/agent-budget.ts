@@ -31,6 +31,14 @@ export const AGENT_BUDGET_DEFAULTS: AgentBudgetConfig = {
 /** Session-level tool call limits per routing level (§5: 0/0/20/50). */
 const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
 
+/**
+ * Maximum peer consultations allowed per session. Hardcoded (not part
+ * of the IPC-serialized AgentBudget) because consultations are a
+ * fixed-cost flat primitive — no graduated pool, no budget negotiation.
+ * Set conservatively because each consult is a full LLM call.
+ */
+const MAX_CONSULTATIONS_PER_SESSION = 3;
+
 export class AgentBudgetTracker {
   private readonly budget: AgentBudget;
   private extensionRequestCount = 0;
@@ -39,6 +47,13 @@ export class AgentBudgetTracker {
   private delegationConsumed = 0;
   private turnsUsed = 0;
   private toolCallsUsed = 0;
+  /**
+   * Agent Conversation — consult_peer session counter. Unlike delegation,
+   * consultations have NO token pool of their own (each consult's output
+   * is charged against the base pool via recordConsultation). We just
+   * count calls to enforce MAX_CONSULTATIONS_PER_SESSION.
+   */
+  private consultationCount = 0;
   private readonly startTime: number;
 
   constructor(budget: AgentBudget) {
@@ -99,10 +114,45 @@ export class AgentBudgetTracker {
     return this.budget.delegationDepth < this.budget.maxDelegationDepth && this.delegationRemaining > 0;
   }
 
+  /**
+   * Can a peer consultation be attempted?
+   *
+   * Checks the per-session cap (MAX_CONSULTATIONS_PER_SESSION) AND
+   * that the base pool has enough headroom to charge the consultation
+   * tokens. Consultations share the base pool rather than having
+   * their own to keep budget plumbing simple — they are expected to
+   * be rare (at most 3 per session).
+   */
+  canConsult(): boolean {
+    if (this.consultationCount >= MAX_CONSULTATIONS_PER_SESSION) return false;
+    // Require at least 500 tokens of base-pool headroom so a consult
+    // can't starve the primary work that follows.
+    return this.budget.base + this.negotiableGranted - this.baseConsumed >= 500;
+  }
+
   /** Record tokens consumed in a turn */
   recordTurn(tokensConsumed: number): void {
     this.turnsUsed++;
     this.baseConsumed += tokensConsumed;
+  }
+
+  /**
+   * Record a completed peer consultation. Charges the consumed tokens
+   * against the base pool and increments the per-session counter.
+   */
+  recordConsultation(tokensConsumed: number): void {
+    this.consultationCount++;
+    this.baseConsumed += tokensConsumed;
+  }
+
+  /** Current number of peer consultations used in this session. */
+  get consultationsUsed(): number {
+    return this.consultationCount;
+  }
+
+  /** Remaining peer consultations allowed in this session. */
+  get remainingConsultations(): number {
+    return Math.max(0, MAX_CONSULTATIONS_PER_SESSION - this.consultationCount);
   }
 
   /** Record tool calls consumed in a turn (§5 session-level enforcement). */

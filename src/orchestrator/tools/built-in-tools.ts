@@ -19,7 +19,7 @@ import { shellExec } from './shell-tools.ts';
 import { gitStatus, gitDiff } from './git-tools.ts';
 import { httpGet } from './http-tools.ts';
 import { memoryPropose } from './memory-tools.ts';
-import { attemptCompletion, requestBudgetExtension, delegateTask } from './control-tools.ts';
+import { attemptCompletion, requestBudgetExtension, delegateTask, consultPeer } from './control-tools.ts';
 
 // ── Shared constants ────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ export {
   gitStatus, gitDiff,
   httpGet,
   memoryPropose,
-  attemptCompletion, requestBudgetExtension, delegateTask,
+  attemptCompletion, requestBudgetExtension, delegateTask, consultPeer,
 };
 
 // ── Scan utility ────────────────────────────────────────────────────
@@ -112,4 +112,5 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['attempt_completion', attemptCompletion],
   ['request_budget_extension', requestBudgetExtension],
   ['delegate_task', delegateTask],
+  ['consult_peer', consultPeer],
 ]);

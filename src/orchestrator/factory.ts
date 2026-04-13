@@ -671,6 +671,72 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Phase 6.4: Late-bind delegation deps to worker pool
   const delegationRouter = new DelegationRouter();
+
+  // Agent Conversation — consult_peer (PR #7): build a deterministic
+  // peer consultant backed by the LLM provider registry. The consultant
+  // picks the first reasoning engine whose `id` differs from the
+  // worker's current `routing.model`, preferring higher tiers first.
+  // This honors A1 epistemic separation (generator != verifier) at the
+  // cross-model level without introducing a new dependency abstraction.
+  //
+  // Returns `null` when no distinct peer is available (e.g., only one
+  // provider is registered). handleConsultPeer in agent-loop treats
+  // null as a denial rather than consulting the same model.
+  const PEER_SYSTEM_PROMPT = [
+    'You are a structured second-opinion assistant in the Vinyan orchestrator.',
+    'A peer agent has asked you a specific question — answer it directly and concisely.',
+    'Your response will be treated as ADVISORY (heuristic tier) by the asking agent,',
+    'who has their own evidence base and the full task context.',
+    '',
+    'Rules:',
+    '- Give a direct answer first, then brief supporting reasoning (2-4 sentences total).',
+    '- If you disagree with an implied approach, say so and explain why.',
+    '- If you do not have enough context to answer, say "insufficient context" and list what you would need.',
+    '- Do not speculate beyond the scope of the question.',
+    '- Do not ask follow-up questions — you are not in the conversation loop.',
+  ].join('\n');
+  const peerConsultant: NonNullable<AgentLoopDeps['peerConsultant']> = async (request, workerModelId) => {
+    // Preferred tier order: powerful → balanced → fast. Within each
+    // tier we only accept a provider whose id differs from the worker's.
+    const tiers = ['powerful', 'balanced', 'fast'] as const;
+    let peer: ReturnType<typeof registry.selectByTier> | undefined;
+    for (const tier of tiers) {
+      const candidate = registry.selectByTier(tier);
+      if (candidate && candidate.id !== workerModelId) {
+        peer = candidate;
+        break;
+      }
+    }
+    if (!peer) return null;
+
+    const start = performance.now();
+    const userPrompt = request.context
+      ? `Question: ${request.question}\n\nContext: ${request.context}`
+      : `Question: ${request.question}`;
+    // Cap the peer response budget aggressively — consultations are
+    // lightweight by design. Clients can hint via requestedTokens but
+    // the server-side cap is authoritative.
+    const maxTokens = Math.min(Math.max(request.requestedTokens ?? 1500, 256), 2000);
+    const response = await peer.generate({
+      systemPrompt: PEER_SYSTEM_PROMPT,
+      userPrompt,
+      maxTokens,
+    });
+    return {
+      opinion: response.content,
+      // A5: hardcoded heuristic-tier cap. The peer LLM cannot self-promote
+      // to 'known' tier regardless of what it writes in its response.
+      confidence: 0.7,
+      confidenceSource: 'llm-self-report',
+      peerEngineId: peer.id,
+      tokensUsed: {
+        input: response.tokensUsed.input,
+        output: response.tokensUsed.output,
+      },
+      durationMs: Math.round(performance.now() - start),
+    };
+  };
+
   const agentLoopDeps: Partial<AgentLoopDeps> = {
     workspace,
     contextWindow: 128_000,
@@ -686,6 +752,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     bus,
     delegationRouter,
     executeTask: executeTaskThunk,
+    peerConsultant,
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

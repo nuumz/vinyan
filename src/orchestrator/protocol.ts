@@ -367,3 +367,58 @@ export const DelegationRequestSchema = z.object({
   requestedTokens: z.number().optional(),
 });
 export type DelegationRequest = z.infer<typeof DelegationRequestSchema>;
+
+/**
+ * Peer consultation request from worker.
+ *
+ * Agent Conversation — consult_peer tool (PR #7): a lightweight
+ * synchronous request to a DIFFERENT reasoning engine than the one
+ * currently executing the worker. Distinct from `delegate_task`
+ * because it does NOT spawn a full child pipeline — just a single
+ * LLM call to the peer, returning a structured `PeerOpinion` with
+ * A5 heuristic-tier capped confidence.
+ *
+ * A1 (Epistemic Separation): the peer engine MUST have a different
+ * `id` from the worker's current engine; `handleConsultPeer` in
+ * agent-loop.ts enforces this.
+ */
+export const PeerConsultRequestSchema = z.object({
+  /** The question the worker wants a second opinion on. Be specific. */
+  question: z.string().min(1),
+  /**
+   * Optional minimal context the peer needs to answer. The peer does
+   * NOT have access to the worker's full conversation history, tools,
+   * or perception — the worker must include any relevant snippets.
+   */
+  context: z.string().optional(),
+  /**
+   * Hint for how many tokens the peer's response can use. Capped by
+   * the server at ~2000 regardless of the requested value.
+   */
+  requestedTokens: z.number().optional(),
+});
+export type PeerConsultRequest = z.infer<typeof PeerConsultRequestSchema>;
+
+/**
+ * A structured second opinion returned by `consult_peer`. The worker
+ * receives this as JSON inside a `ToolResult.output` string and can
+ * decide whether to act on it — the opinion is ADVISORY, not binding.
+ *
+ * A5: confidence is hardcoded to the heuristic tier cap (0.7) by
+ * `handleConsultPeer` regardless of what the peer LLM self-reports,
+ * because peer output is inherently `llm-self-report` tier.
+ */
+export interface PeerOpinion {
+  /** The peer's advisory answer. */
+  opinion: string;
+  /** Capped at 0.7 (A5 heuristic tier) by handleConsultPeer. */
+  confidence: number;
+  /** Always 'llm-self-report' — peer confidence is self-reported. */
+  confidenceSource: 'llm-self-report';
+  /** Identifies the peer engine that produced the opinion (for audit). */
+  peerEngineId: string;
+  /** Tokens consumed by the peer call (informational). */
+  tokensUsed: { input: number; output: number };
+  /** Wall-clock duration of the peer call in milliseconds. */
+  durationMs: number;
+}

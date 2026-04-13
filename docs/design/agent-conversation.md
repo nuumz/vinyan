@@ -86,6 +86,71 @@ The parent LLM is taught (via a dedicated system-prompt section at L2+) to pick 
 
 Bubble-up composes recursively: an L3 agent whose delegated L2 child asks a question can, in turn, bubble that question up through the L3 → L2 → user chain via the same `attempt_completion(needsUserInput=true)` mechanism.
 
+### Layer 2.5 — Peer consultation (`consult_peer` tool)
+
+Between full delegation (Layer 2) and user clarification (Layer 1) there is a third collaborative primitive: **asking a different reasoning engine for a structured second opinion** without spawning a full child pipeline. This is shipped as the `consult_peer` tool (`src/orchestrator/tools/control-tools.ts:consultPeer`).
+
+**Shape:**
+
+```jsonc
+// Call:
+{
+  "question": "Should I use pattern A or pattern B for retry logic?",
+  "context": "The code currently retries 3x with fixed backoff.",
+  "requestedTokens": 1500
+}
+
+// Response (ToolResult.output, JSON-encoded):
+{
+  "opinion": "Use exponential backoff with jitter — fixed backoff thundering-herds on server restart.",
+  "confidence": 0.7,
+  "confidenceSource": "llm-self-report",
+  "peerEngineId": "mock/powerful",
+  "tokensUsed": { "input": 150, "output": 120 },
+  "durationMs": 25
+}
+```
+
+**How it differs from `delegate_task`:**
+
+| | `delegate_task` | `consult_peer` |
+|---|---|---|
+| Spawns child pipeline | ✅ perceive → plan → generate → verify | ❌ single LLM call |
+| Tools | Child has full tool manifest | No tools |
+| Mutations | Child may commit mutations | Read-only |
+| Budget | Token pool (15% of parent's) | 3 calls/session, charged to base pool |
+| Recursion | Tree-bounded (depth ≤ 2) | Flat (no recursive consults) |
+| Return | `TaskResult` | `PeerOpinion` (advisory) |
+| Routing level | L2+ | **L1+** |
+| Semantics | "Go do this" | "What do you think?" |
+
+**Peer selection (A1 enforcement):**
+
+The factory wires a default `peerConsultant` that picks the first provider whose `id` differs from the worker's current `routing.model`, in tier priority order (`powerful` → `balanced` → `fast`). When no distinct peer is available (e.g., only one provider is registered in the test harness or a single-model deployment), the consultant returns `null` and `handleConsultPeer` denies the consultation with an explicit A1 explanation rather than silently consulting the same model.
+
+**Axiom compliance:**
+
+- **A1 Epistemic Separation**: the peer engine MUST have a different `id` than the worker's — asking the same model for a second opinion is generator self-evaluation, which is exactly what A1 forbids. Enforced at the factory wiring (tier-priority search) and defense-in-depth at `handleConsultPeer` (null check).
+- **A3 Deterministic Governance**: peer selection is rule-based (tier priority → first distinct id). No LLM chooses which engine to consult.
+- **A5 Tiered Trust**: opinion confidence is **hardcoded** to `0.7` (heuristic-tier cap) by the factory wrapper, regardless of what the peer LLM self-reports. The worker is taught via system prompt to treat this as advisory, not authoritative.
+- **A6 Zero-Trust Execution**: the peer has no tools, no overlay access, no mutation authority. The `PeerOpinion` is a bare string wrapped in structured metadata.
+
+**Budget model:**
+
+Consultations share the base pool (via `AgentBudgetTracker.recordConsultation`) rather than having a dedicated pool — they are expected to be rare. `canConsult()` gates on two conditions: (1) per-session counter < 3, (2) base pool has ≥ 500 tokens headroom so a consultation can't starve the primary work that follows.
+
+**Use cases taught to the worker (via `CONSULT_PEER_SECTION` in `buildSystemPrompt`):**
+
+- Cross-check a hard-to-reverse change before committing
+- Tie-break between two plausible interpretations
+- Sanity-check a fix for edge cases
+
+**What NOT to use it for:**
+
+- Simple factual lookups (use `file_read`, `search_grep`)
+- Questions answerable by reading more files
+- Anything requiring context not included in the `context` field — the peer does NOT see the worker's conversation history or tools
+
 ### Layer 3 — Cross-turn grounding (session)
 
 For multi-turn conversations, `SessionManager` stores each assistant `input-required` turn as a structured `[INPUT-REQUIRED]` block in `session_messages.content`:
@@ -209,6 +274,7 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `TaskInput.constraints: ['COMPREHENSION_CHECK:off']` | CLI tests, API test harness | `isComprehensionCheckDisabled()` in `comprehension-check.ts` | Pipeline metadata that bypasses the Comprehension gate. Filtered from the agent init prompt by `buildInitUserMessage`. |
 | `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
 | `POST /api/v1/sessions/:id/messages` request body `stream: true` | Web / mobile clients | `src/api/server.ts:handleSessionMessage` stream branch | Switches the response to `text/event-stream` (SSE). Same validation + clarification semantics as sync, returns immediately with a live event feed that closes on `task:complete`. |
+| `consult_peer` tool call `{question, context?, requestedTokens?}` | Worker LLM at L1+ | `agent-loop.ts:handleConsultPeer` → `deps.peerConsultant` (factory-wired) → `LLMProviderRegistry.selectByTier` | Lightweight second-opinion primitive. Response is a `PeerOpinion` JSON in `ToolResult.output` with confidence hardcoded to 0.7 (A5 heuristic tier). Max 3 per session. A1 enforced: peer engine id must differ from worker's. |
 
 ## HTTP API — `POST /api/v1/sessions/:id/messages`
 
@@ -371,7 +437,14 @@ The feature as-landed deliberately leaves these for future PRs:
    H3, probabilistic signals from LLM `semanticIntent.ambiguities`, and
    reconciliation with the existing mutation-centric `goal-alignment-verifier.ts`
    post-generation oracle (the two are complementary — pre- vs post-gen).
-5. **`consult_peer` tool** — a lightweight synchronous "ask another reasoning engine / oracle for a second opinion" primitive that would not spawn a full child pipeline. Useful for LLM-as-Critic patterns at the edges of delegation depth.
+5. ~~**`consult_peer` tool**~~ — **shipped** as a first-class tool at L1+.
+   Distinct from `delegate_task`: no child pipeline, no tools, no mutations,
+   fixed per-session cap (3 consultations), capped at A5 heuristic-tier
+   confidence (0.7). The factory wires a deterministic peer consultant
+   backed by `LLMProviderRegistry` that picks the first reasoning engine
+   whose `id` differs from the worker's current model — returning `null`
+   when no distinct peer is available (honoring A1). See the dedicated
+   "Peer consultation (consult_peer tool)" section below.
 6. **Inter-instance A2A task delegation** — `InstanceCoordinator.delegate()` exists in code but is not wired into the Predict/Plan phase. The A2A bridge maps `input-required` 1:1 to `A2ATaskState.input-required` so the protocol is ready when the routing logic catches up.
 7. **Multi-round batched clarification answering** — parent agent answers some child questions from context and bubbles up the rest. Currently the parent picks exactly one of the two paths for all the child's questions.
 

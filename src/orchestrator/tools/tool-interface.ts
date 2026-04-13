@@ -37,6 +37,13 @@ export interface ToolContext {
   workspace: string;
   overlayDir?: string;
   onDelegate?: (req: { goal: string; targetFiles: string[]; requiredTools?: string[]; context?: string; requestedTokens?: number }) => Promise<ToolResult>;
+  /**
+   * Agent Conversation — consult_peer (PR #7): lightweight second-opinion
+   * callback wired by agent-loop.ts at L1+ when an LLM provider registry
+   * is available. Distinct from `onDelegate`: does NOT spawn a full child
+   * pipeline, just a single cross-model LLM call with a capped budget.
+   */
+  onConsult?: (req: { question: string; context?: string; requestedTokens?: number }) => Promise<ToolResult>;
 }
 
 export interface ToolValidationResult {

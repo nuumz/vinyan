@@ -185,13 +185,17 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 14 built-in tools', () => {
-    expect(executor.getToolNames()).toHaveLength(14);
+  test('getToolNames returns all 15 built-in tools', () => {
+    // Count bumped from 14 → 15 when `consult_peer` shipped in the
+    // consult_peer PR (Agent Conversation Layer 2.5 — a lightweight
+    // second-opinion primitive at L1+).
+    expect(executor.getToolNames()).toHaveLength(15);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');
     expect(executor.getToolNames()).toContain('http_get');
     expect(executor.getToolNames()).toContain('memory_propose');
+    expect(executor.getToolNames()).toContain('consult_peer');
   });
 });
 

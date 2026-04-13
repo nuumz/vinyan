@@ -353,6 +353,53 @@ Required fields: \`slug\` (kebab-case), \`category\` ∈ {convention, anti-patte
 and a short note. Never let memory_propose distract from the actual task — the primary
 goal always comes first.`;
 
+// Agent Conversation — consult_peer (PR #7): lightweight second-opinion
+// tool available at L1+. Teaches the worker WHEN to call it (sparingly,
+// only for decisions with real trade-offs) and HOW to interpret the
+// advisory opinion (heuristic tier, not binding). Distinct from
+// delegate_task — consult_peer is a single cross-model question, not
+// a sub-task dispatch.
+const CONSULT_PEER_SECTION = `
+
+## Second Opinions (consult_peer tool)
+When you face a decision with real trade-offs — a design choice, a
+subtle semantic question, an irreversible change — you may call
+\`consult_peer\` to get a structured second opinion from a DIFFERENT
+reasoning engine than your own. This is cheaper than \`delegate_task\`
+(no child pipeline, no tools, no mutations) and is meant for sanity
+checks, not for handing off work.
+
+When to use:
+- You are about to apply a change that is hard to reverse and you
+  want to cross-check the approach.
+- You have two plausible interpretations of an ambiguous API or
+  spec and want a structured tie-break.
+- You have completed a fix but are not sure it covers an edge case.
+
+When NOT to use:
+- Simple factual lookups — use file_read, search_grep, or your own
+  tools first.
+- Questions you can answer by reading more files — do the reading.
+- Anything requiring context you have not included in the \`context\`
+  field — the peer does NOT see your conversation history or tools.
+
+How to interpret the response:
+- The peer's opinion is ADVISORY at heuristic tier (confidence 0.7
+  maximum). Do NOT blindly follow it when your own evidence is
+  stronger.
+- If the peer confirms your approach, proceed with slightly more
+  confidence.
+- If the peer disagrees, weigh its reasoning against yours. Neither
+  side has oracle-tier confidence.
+- The peer's opinion is returned as structured JSON with fields:
+  \`opinion\`, \`confidence\`, \`peerEngineId\`, \`tokensUsed\`.
+
+Hard limits:
+- At most 3 consultations per session — use them wisely.
+- The peer has no tools, no mutations, no recursive consults.
+- If the orchestrator has no distinct peer engine (only one provider
+  registered), the call is denied with a clear message.`;
+
 // Agent Conversation: delegate_task becomes an interactive channel at L2+.
 // A delegated child can pause with \`pausedForUserInput: true\` when the
 // child's LLM hits a user-intent ambiguity it cannot resolve alone. This
@@ -467,7 +514,7 @@ ${REMINDER_PROTOCOL_DESCRIPTION}
 - You MUST call attempt_completion to signal task end. Never just stop responding.
 
 ## After Context Compression
-If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 2 ? DELEGATION_CLARIFICATION_SECTION : ''}${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
+If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 1 ? CONSULT_PEER_SECTION : ''}${routingLevel >= 2 ? DELEGATION_CLARIFICATION_SECTION : ''}${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
 
   if (taskType === 'reasoning') {
     return `${common}

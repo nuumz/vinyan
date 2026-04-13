@@ -4,12 +4,19 @@
  * Sends a HypothesisTuple to a remote Vinyan instance as an A2A tasks/send
  * request with ECP data parts. Applies confidence clamping on response.
  *
- * Source of truth: Plan Phase B2
+ * Also exposes `delegateTask()` for full task-level delegation (Agent
+ * Conversation §5.6). That path uses plain text parts so the request is
+ * indistinguishable from a normal A2A `tasks/send` call against the
+ * peer's bridge — the peer's executeTask runs the task end-to-end and
+ * the response is parsed back into a `TaskResult`.
+ *
+ * Source of truth: Plan Phase B2; Agent Conversation §5.6
  */
 
 import { buildVerdict } from '../core/index.ts';
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import { OracleVerdictSchema } from '../oracle/protocol.ts';
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { ECP_MIME_TYPE } from './ecp-data-part.ts';
 import type { ECPTransport } from './transport.ts';
 
@@ -138,6 +145,164 @@ export class A2ATransport implements ECPTransport {
   async close(): Promise<void> {
     this._isConnected = false;
   }
+
+  /**
+   * Agent Conversation §5.6: send a full task to a peer's A2A bridge for
+   * remote execution and parse the result back into a `TaskResult`.
+   *
+   * Distinct from `verify()`:
+   *   - `verify()` sends an ECP data part for an ORACLE call — the peer
+   *     answers with a verdict on a hypothesis.
+   *   - `delegateTask()` sends a TEXT part with the goal — the peer
+   *     runs its full executeTask pipeline and replies with the task
+   *     outcome (mutations, status, clarification questions, …).
+   *
+   * Returns `null` on transport failure or unparseable response so the
+   * caller (`InstanceCoordinator`) can transparently fall back to local
+   * execution. We deliberately do NOT throw — peer failures should never
+   * crash a parent task that has a perfectly good local fallback.
+   */
+  async delegateTask(input: TaskInput, timeoutMs: number): Promise<TaskResult | null> {
+    const { peerUrl } = this.config;
+    const taskId = input.id;
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: taskId,
+      method: 'tasks/send',
+      params: {
+        id: taskId,
+        message: {
+          role: 'user',
+          parts: [{ type: 'text', text: input.goal }],
+        },
+      },
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(`${peerUrl}/a2a`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        this._isConnected = false;
+        return null;
+      }
+      const rpc = (await response.json()) as A2ATasksSendResponse;
+      this._isConnected = true;
+      return extractTaskResultFromResponse(rpc, taskId, this.config.instanceId);
+    } catch {
+      clearTimeout(timer);
+      this._isConnected = false;
+      return null;
+    }
+  }
+}
+
+/**
+ * Subset of an A2A JSON-RPC `tasks/send` response that `delegateTask`
+ * cares about. Anything else is ignored — a future bridge field that
+ * isn't typed here will not break parsing.
+ */
+interface A2ATasksSendResponse {
+  result?: {
+    id?: string;
+    status?: {
+      state?: 'completed' | 'failed' | 'input-required' | string;
+      message?: { parts?: Array<{ type?: string; text?: string }> };
+    };
+    artifacts?: Array<{
+      name?: string;
+      parts?: Array<{ type?: string; text?: string; data?: unknown }>;
+    }>;
+  };
+}
+
+/**
+ * Map an A2A bridge response back into a Vinyan TaskResult. The bridge
+ * itself attaches a structured `task_result` data part (see
+ * `mapResultToA2ATask`) so the round-trip is mostly lossless. We fall
+ * back to a synthesized minimal result if the structured part is absent
+ * — a peer that only ever spoke generic A2A still works, but the parent
+ * loses access to mutations and oracle verdicts.
+ */
+function extractTaskResultFromResponse(
+  rpc: A2ATasksSendResponse,
+  taskId: string,
+  sourceInstanceId?: string,
+): TaskResult | null {
+  const r = rpc.result;
+  if (!r) return null;
+
+  // Look for the structured task_result artifact first — this is the
+  // happy path when the peer is also a Vinyan instance.
+  if (r.artifacts) {
+    for (const artifact of r.artifacts) {
+      if (artifact.name !== 'task_result') continue;
+      for (const part of artifact.parts ?? []) {
+        if (part.type === 'data' && part.data && typeof part.data === 'object') {
+          const candidate = part.data as Partial<TaskResult>;
+          if (candidate.id && candidate.status) {
+            return candidate as TaskResult;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: synthesize a minimal TaskResult from the A2A status. This
+  // path loses mutations and oracle verdicts but at least surfaces
+  // success/failure + clarification questions so the parent can react.
+  const stateRaw = r.status?.state ?? 'failed';
+  const status: TaskResult['status'] =
+    stateRaw === 'completed'
+      ? 'completed'
+      : stateRaw === 'input-required'
+        ? 'input-required'
+        : 'failed';
+
+  const messageText = (r.status?.message?.parts ?? [])
+    .filter((p) => p.type === 'text' && typeof p.text === 'string')
+    .map((p) => p.text as string)
+    .join('\n');
+
+  // Naive clarification extraction — the bridge writes "Clarification needed:"
+  // as a header followed by "- " bullets. Pull them back out so the parent
+  // gets the same `clarificationNeeded` array a local child would produce.
+  const clarificationNeeded: string[] = [];
+  if (status === 'input-required' && messageText.includes('Clarification needed:')) {
+    const after = messageText.split('Clarification needed:')[1] ?? '';
+    for (const line of after.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('- ')) clarificationNeeded.push(trimmed.slice(2).trim());
+    }
+  }
+
+  return {
+    id: r.id ?? taskId,
+    status,
+    mutations: [],
+    trace: {
+      id: `delegated-${taskId}`,
+      taskId,
+      timestamp: Date.now(),
+      routingLevel: 0,
+      approach: 'a2a-remote',
+      oracleVerdicts: {},
+      modelUsed: 'remote',
+      tokensConsumed: 0,
+      durationMs: 0,
+      outcome: status === 'completed' ? 'success' : 'failure',
+      affectedFiles: [],
+      sourceInstanceId,
+    },
+    ...(clarificationNeeded.length > 0 ? { clarificationNeeded } : {}),
+  };
 }
 
 /**

@@ -238,6 +238,11 @@ export interface VinyanBusEvents {
 
   // Phase 6.4: Delegation events
   'delegation:done': { parentTaskId: string; childTaskId: string; status: string; tokensUsed: number };
+  // Agent Conversation §5.6: emitted when handleDelegation dispatches a
+  // child task to a peer Vinyan instance instead of a local subprocess.
+  // Distinct from delegation:done so dashboards can audit the local-vs-
+  // remote split without parsing every delegation:done payload.
+  'delegation:remote': { parentTaskId: string; childTaskId: string; peerId: string; status: string };
 
   // Phase 6.5: Agent session observability
   'agent:session_start': { taskId: string; routingLevel: number; budget: { maxTokens: number; maxTurns: number; contextWindow: number } };
@@ -285,6 +290,51 @@ export interface VinyanBusEvents {
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
   'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
+  // Phase 0: Emitted by trace-collector after a task completes, pairing the
+  // thinking mode that was used with the measured outcome. Consumed by the
+  // Phase 0 data gate (`TraceStore.getSuccessRateByThinkingMode`) to decide
+  // when Phase 1a is unblocked — requires ≥100 traces total and a measurable
+  // success-rate delta between thinking modes. Payload is deliberately flat so
+  // offline analysis tooling can tail the bus without loading the full trace.
+  'thinking:policy-evaluated': {
+    taskId: string;
+    thinkingMode: string | null;
+    thinkingTokensUsed: number | null;
+    routingLevel: number;
+    outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+    qualityComposite: number | null;
+    oracleCompositeScore: number | null;
+  };
+
+  // Phase 7 — Self-Improving Autonomy events.
+  // Per-oracle EMA accuracy update — emitted on warm-threshold crossings
+  // and on accuracy moves of ≥ 0.01. Dashboards / sleep-cycle promotion
+  // logic can subscribe to track engine reliability over time.
+  'phase7:oracle_calibration': {
+    oracleName: string;
+    accuracy: number;
+    observationCount: number;
+    warm: boolean;
+  };
+  // Drift detected between SelfModel prediction and actual trace outcome.
+  // `triggeredDimensions` is the ordered list of dimension names that
+  // crossed their threshold (testResults | blastRadius | duration |
+  // qualityScore). `maxRelDelta` is useful for severity ranking.
+  'phase7:drift_detected': {
+    taskId: string;
+    triggeredDimensions: string[];
+    maxRelDelta: number;
+  };
+  // Silent regression alert: rolling-window success rate dropped below
+  // baseline for one task type. Cool-down enforced inside RegressionMonitor
+  // so dashboards don't get spammed by persistent regressions.
+  'phase7:silent_regression': {
+    taskTypeSignature: string;
+    recentSuccessRate: number;
+    baselineSuccessRate: number;
+    drop: number;
+    observations: number;
+  };
 
   // Economy Operating System events (Layer 1)
   'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };

@@ -26,16 +26,23 @@ export class TraceCollectorImpl implements TraceCollector {
   private rateCards?: Record<string, RateCardEntry>;
   private bus?: VinyanBus;
 
-  constructor(worldGraph?: WorldGraph, traceStore?: TraceStore) {
+  constructor(worldGraph?: WorldGraph, traceStore?: TraceStore, bus?: VinyanBus) {
     this.worldGraph = worldGraph;
     this.traceStore = traceStore;
+    // Phase 0: bus is wired up-front (not lazily via setEconomyDeps) so
+    // `thinking:policy-evaluated` events fire even when the economy ledger
+    // is disabled. Tests and minimal configs rely on this.
+    this.bus = bus;
   }
 
   /** Wire economy dependencies after construction (avoids circular deps). */
   setEconomyDeps(costLedger: CostLedger, rateCards?: Record<string, RateCardEntry>, bus?: VinyanBus): void {
     this.costLedger = costLedger;
     this.rateCards = rateCards;
-    this.bus = bus;
+    // Don't clobber an already-wired bus from the constructor — but if a
+    // later call provides one, prefer that (factory may pass economy bus
+    // after construction).
+    if (bus) this.bus = bus;
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
@@ -48,6 +55,24 @@ export class TraceCollectorImpl implements TraceCollector {
       } catch (err) {
         console.warn('[vinyan] Trace INSERT failed:', err);
       }
+    }
+
+    // Extensible Thinking Phase 0: emit a measurement event pairing the
+    // thinking mode that was used with the actual task outcome. This is
+    // the raw material for the Phase 1a unblock gate — see
+    // TraceStore.getSuccessRateByThinkingMode. We keep the payload flat
+    // (no nested objects) so offline analysis can tail the bus without
+    // needing to understand the full ExecutionTrace shape.
+    if (this.bus) {
+      this.bus.emit('thinking:policy-evaluated', {
+        taskId: trace.taskId,
+        thinkingMode: trace.thinkingMode ?? null,
+        thinkingTokensUsed: trace.thinkingTokensUsed ?? null,
+        routingLevel: trace.routingLevel,
+        outcome: trace.outcome,
+        qualityComposite: trace.qualityScore?.composite ?? null,
+        oracleCompositeScore: computeOracleComposite(trace.oracleVerdicts),
+      });
     }
 
     // Economy: record cost entry from trace
@@ -125,4 +150,29 @@ export class TraceCollectorImpl implements TraceCollector {
     }
     return this.traces.length;
   }
+}
+
+/**
+ * Extensible Thinking Phase 0: compute a scalar composite from an oracle
+ * verdict map. Used as the secondary signal in the Phase 0 A/B gate (the
+ * primary signal is binary outcome=success). Returns null when there are
+ * no verdicts so downstream consumers can tell "no signal" apart from
+ * "signal = 0".
+ *
+ * NB: trace-level verdicts are stored as `Record<string, boolean>` — the
+ * richer `OracleVerdict` (with confidence, etc.) is only kept on the live
+ * mutation result, not the persisted trace. So the composite is just the
+ * fraction of oracles that returned `true`, which is the right level of
+ * granularity for Phase 0 — Phase 2.1 will switch to a Wilson/CI rollup
+ * once we have enough data to need it.
+ */
+function computeOracleComposite(verdicts: Record<string, boolean> | undefined): number | null {
+  if (!verdicts) return null;
+  const entries = Object.values(verdicts);
+  if (entries.length === 0) return null;
+  let passes = 0;
+  for (const v of entries) {
+    if (v === true) passes++;
+  }
+  return passes / entries.length;
 }

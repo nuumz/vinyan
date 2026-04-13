@@ -304,12 +304,12 @@ export async function discoverApp(searchName: string, platform: string = process
 
     // 2. Contains match — e.g., "outlook" matches "Microsoft Outlook"
     const contains = discoveryCache.filter((app) => app.toLowerCase().includes(needle));
-    if (contains.length === 1) return contains[0];
+    if (contains.length === 1) return contains[0] ?? null;
 
     // 3. Multiple matches — prefer shortest name (most specific)
     if (contains.length > 1) {
       contains.sort((a, b) => a.length - b.length);
-      return contains[0];
+      return contains[0] ?? null;
     }
 
     return null;

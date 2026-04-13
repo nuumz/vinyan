@@ -87,6 +87,17 @@ export interface AgentLoopDeps {
   /** Delegation router for Phase 6.4 */
   delegationRouter?: DelegationRouter;
   /**
+   * Agent Conversation §5.6: optional inter-instance coordinator. When
+   * provided AND it has live peers, `handleDelegation` will attempt to
+   * dispatch the child task to a remote Vinyan instance BEFORE spawning
+   * a local subprocess. Any remote failure (no peer, transport error,
+   * unparseable response) silently falls through to local execution so
+   * remote unavailability never blocks a parent that has a perfectly
+   * good local fallback. Absent coordinator → local-only behaviour,
+   * identical to pre-§5.6.
+   */
+  instanceCoordinator?: import('../instance-coordinator.ts').InstanceCoordinator;
+  /**
    * Agent Conversation — consult_peer (PR #7): dispatches a single-shot
    * query to a DIFFERENT reasoning engine than the worker's current
    * model (A1 epistemic separation) and returns a structured opinion.
@@ -480,7 +491,12 @@ function detectNonRetryableError(uncertainties: string[]): string | undefined {
 
 // ── Delegation handler (Phase 6.4) ───────────────────────────────────
 
-async function handleDelegation(
+/**
+ * @internal Exported for unit tests. Tests need to verify the §5.6 remote-
+ * first-then-local seam without spinning up a full agent worker subprocess.
+ * Production callers should use `runAgentLoop` which calls this internally.
+ */
+export async function handleDelegation(
   request: DelegationRequest,
   parent: TaskInput,
   budget: AgentBudgetTracker,
@@ -504,7 +520,34 @@ async function handleDelegation(
 
   const startTime = performance.now();
   try {
-    const childResult = await deps.executeTask!(subInput);
+    // Agent Conversation §5.6: try inter-instance delegation FIRST when
+    // an InstanceCoordinator is wired and reports at least one live
+    // peer. The local executeTask path is the fallback so remote
+    // unavailability is invisible to the parent — exactly the same
+    // semantics as pre-§5.6 when no coordinator is configured. We
+    // deliberately don't propagate remote-specific errors: a remote
+    // failure with a good local fallback should not surface as an
+    // error to the parent LLM (it would look like a delegation we
+    // shouldn't have attempted).
+    let childResult: TaskResult;
+    let executedRemotely = false;
+    if (deps.instanceCoordinator?.canDelegate(subInput)) {
+      const remote = await deps.instanceCoordinator.delegate(subInput);
+      if (remote.delegated && remote.result) {
+        childResult = remote.result;
+        executedRemotely = true;
+        deps.bus?.emit('delegation:remote', {
+          parentTaskId: parent.id,
+          childTaskId: subInput.id,
+          peerId: remote.peerId ?? 'unknown',
+          status: childResult.status,
+        });
+      } else {
+        childResult = await deps.executeTask!(subInput);
+      }
+    } else {
+      childResult = await deps.executeTask!(subInput);
+    }
 
     // Refund unused delegation tokens (fix #7)
     const actualConsumed = (childResult as any).tokensUsed
@@ -536,6 +579,11 @@ async function handleDelegation(
         childTaskId: subInput.id,
         status: childResult.status,
         mutations: childResult.mutations?.length ?? 0,
+        // Agent Conversation §5.6: tell the parent LLM whether the work
+        // ran on a peer Vinyan instance or locally. The parent doesn't
+        // need to do anything different — semantics are identical — but
+        // surfacing it lets the model audit its own delegation choices.
+        ...(executedRemotely ? { executedRemotely: true } : {}),
         // Agent Conversation: only set on input-required so the parent LLM
         // has a single, stable signal to watch for.
         ...(pausedForUserInput

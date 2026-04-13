@@ -9,7 +9,7 @@ const shellExecTool: Tool = {
   minIsolationLevel: 1,
   category: 'shell' as const,
   sideEffect: true,
-  descriptor() { return { name: 'shell_exec', description: 'test', inputSchema: { type: 'object' as const, properties: {}, required: [] }, category: 'shell' as const, sideEffect: true, minRoutingLevel: 1 as const }; },
+  descriptor() { return { name: 'shell_exec', description: 'test', inputSchema: { type: 'object' as const, properties: {}, required: [] }, category: 'shell' as const, sideEffect: true, minRoutingLevel: 1 as const, toolKind: 'executable' as const }; },
   execute: async () => ({ callId: '', tool: '', status: 'success' as const, durationMs: 0 }),
 };
 

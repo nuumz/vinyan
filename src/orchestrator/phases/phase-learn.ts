@@ -55,6 +55,48 @@ export async function executeLearnPhase(
     }
   }
 
+  // ── Phase 7: per-engine EMA calibration + drift detection ──
+  // Both are best-effort. They never block the trace from being recorded
+  // and never throw — Phase 7 is observational by design (see §12).
+  if (deps.oracleEMACalibrator) {
+    try {
+      // ExecutionTrace stores oracle verdicts as `Record<string, boolean>`.
+      // The richer OracleVerdict shape with engineCertainty only lives on
+      // verification.verdicts. We feed both: the boolean drives the
+      // verdict→outcome agreement EMA, the engineCertainty is reserved
+      // for a future "calibration error" loop (Phase 7.2) that needs the
+      // continuous signal — for now we just use the boolean.
+      deps.oracleEMACalibrator.recordTrace(trace.oracleVerdicts, trace.outcome === 'success');
+    } catch {
+      /* Best-effort — never block trace recording. */
+    }
+  }
+  if (prediction) {
+    try {
+      const { detectDrift } = await import('../phase7/drift-detector.ts');
+      const driftReport = detectDrift(prediction, trace);
+      if (driftReport.drift) {
+        deps.bus?.emit('phase7:drift_detected', {
+          taskId: input.id,
+          triggeredDimensions: driftReport.triggeredDimensions,
+          maxRelDelta: driftReport.maxRelDelta,
+        });
+      }
+    } catch {
+      /* Best-effort — never block trace recording. */
+    }
+  }
+  if (deps.regressionMonitor && trace.taskTypeSignature) {
+    try {
+      deps.regressionMonitor.record({
+        taskTypeSignature: trace.taskTypeSignature,
+        succeeded: trace.outcome === 'success',
+      });
+    } catch {
+      /* Best-effort — never block trace recording. */
+    }
+  }
+
   // ── STU Phase D: Understanding calibration (A7) ──
   if (understanding.understandingDepth >= 1) {
     try {

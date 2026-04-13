@@ -226,6 +226,17 @@ export class VinyanAPIServer {
       return this.handleCompactSession(sessionId);
     }
 
+    // Agent Conversation: conversational message endpoints.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionMessage(sessionId, req);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleListSessionMessages(sessionId, req);
+    }
+
     // ── Read-only queries ─────────────────────────────────
     if (method === 'GET' && path === '/api/v1/workers') {
       const workers = this.deps.workerStore?.findActive() ?? [];
@@ -301,6 +312,27 @@ export class VinyanAPIServer {
     oracle_name: z.string().min(1),
     hypothesis: z.unknown(),
     ecp_version: z.string().optional(),
+  });
+
+  /**
+   * Agent Conversation: request body schema for POST /api/v1/sessions/:id/messages.
+   * `content` is the raw user message; the server records it as the next user
+   * turn and dispatches a task through the orchestrator. `taskType`, `budget`,
+   * and `targetFiles` are optional overrides; when omitted the server infers
+   * sensible defaults (matching chat.ts).
+   */
+  private static readonly SessionMessageSchema = z.object({
+    content: z.string().min(1, 'content must not be empty'),
+    taskType: z.enum(['code', 'reasoning']).optional(),
+    targetFiles: z.array(z.string()).optional(),
+    budget: z
+      .object({
+        maxTokens: z.number().positive(),
+        maxDurationMs: z.number().positive(),
+        maxRetries: z.number().nonnegative(),
+      })
+      .optional(),
+    showThinking: z.boolean().optional(),
   });
 
   private async handleHttpVerify(req: Request): Promise<Response> {
@@ -569,6 +601,157 @@ export class VinyanAPIServer {
     // G2: Emit session compacted bus event
     this.deps.bus.emit('session:compacted', { sessionId, taskCount: result.statistics.totalTasks });
     return jsonResponse({ compaction: result });
+  }
+
+  // ── Conversational message endpoints (Agent Conversation) ─────
+  //
+  // POST /api/v1/sessions/:id/messages  — send a user message, run a task,
+  //                                        return the TaskResult + pending
+  //                                        clarifications.
+  // GET  /api/v1/sessions/:id/messages  — list conversation history.
+  //
+  // These extend the Agent Conversation clarification protocol (see
+  // docs/design/agent-conversation.md) from CLI-only to HTTP so web/mobile/
+  // external clients can participate in multi-turn conversations with the
+  // agent, including the input-required clarification round-trip.
+
+  /**
+   * POST /api/v1/sessions/:id/messages
+   *
+   * Mirrors chat.ts's rl.on('line') handler:
+   *   1. Validate body + resolve session (404 if missing).
+   *   2. Query getPendingClarifications(). If non-empty, the current
+   *      message is treated as a clarification answer — each open question
+   *      is wrapped into a `CLARIFIED:<q>=><answer>` constraint so the
+   *      understanding pipeline sees the user's answer as first-class
+   *      grounding (not a fresh intent).
+   *   3. Record the user turn, dispatch executeTask, record the assistant
+   *      turn, and return a structured response with both the TaskResult
+   *      and the updated session state (including any NEW pending
+   *      clarifications raised by this turn).
+   *
+   * Response shape on success (200):
+   *   {
+   *     session: { id, pendingClarifications: string[] },
+   *     task:    TaskResult
+   *   }
+   *
+   * Note: status='input-required' returns HTTP 200, not a 4xx — it's a
+   * valid outcome requesting user input, not an error.
+   */
+  private async handleSessionMessage(sessionId: string, req: Request): Promise<Response> {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    }
+    const parsed = VinyanAPIServer.SessionMessageSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonResponse({ error: `Invalid request: ${parsed.error.message}` }, 400);
+    }
+    const { content, taskType, targetFiles, budget, showThinking } = parsed.data;
+
+    // Auto-detect clarification follow-up: if the last assistant message
+    // was an [INPUT-REQUIRED] block and the user has not yet answered, this
+    // new user message IS the answer. Wrap each open question as a
+    // CLARIFIED:<q>=><answer> constraint so agent-worker-entry's
+    // buildInitUserMessage renders them in the "## User Clarifications"
+    // section of the next task's init prompt.
+    const pendingBefore = this.deps.sessionManager.getPendingClarifications(sessionId);
+    const clarificationConstraints = pendingBefore.map((q) => `CLARIFIED:${q}=>${content}`);
+
+    // Record the user turn BEFORE dispatching the task so the
+    // conversation history (loaded by core-loop.ts via sessionManager)
+    // includes it.
+    this.deps.sessionManager.recordUserTurn(sessionId, content);
+
+    // Infer taskType when the client didn't specify: code if targetFiles
+    // present, otherwise reasoning (matching chat.ts).
+    const inferredType: 'code' | 'reasoning' =
+      taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
+
+    const constraints: string[] = [
+      ...(showThinking ? ['THINKING:enabled'] : []),
+      ...clarificationConstraints,
+    ];
+
+    const input: TaskInput = {
+      id: crypto.randomUUID(),
+      source: 'api',
+      goal: content,
+      taskType: inferredType,
+      sessionId,
+      ...(targetFiles?.length ? { targetFiles } : {}),
+      ...(constraints.length > 0 ? { constraints } : {}),
+      budget: budget ?? {
+        maxTokens: 50_000,
+        maxDurationMs: 120_000,
+        maxRetries: 3,
+      },
+    };
+
+    // Track in session_tasks for audit / observability (mirrors handleSyncTask).
+    this.deps.sessionManager.addTask(sessionId, input);
+
+    let result: TaskResult;
+    try {
+      result = await this.deps.executeTask(input);
+    } catch (err) {
+      return jsonResponse(
+        { error: err instanceof Error ? err.message : 'Task execution failed' },
+        500,
+      );
+    }
+    this.deps.sessionManager.completeTask(sessionId, input.id, result);
+    // Record the assistant turn — for status='input-required' this writes
+    // a structured [INPUT-REQUIRED] block that the NEXT call's
+    // getPendingClarifications will pick up.
+    this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
+
+    // Compute the new pending state AFTER recording. If the task returned
+    // input-required, this will be non-empty and mirror
+    // result.clarificationNeeded — clients can display either.
+    const pendingAfter = this.deps.sessionManager.getPendingClarifications(sessionId);
+
+    return jsonResponse({
+      session: {
+        id: sessionId,
+        pendingClarifications: pendingAfter,
+      },
+      task: result,
+    });
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/messages
+   *
+   * Lists the conversation history for a session as an ordered array of
+   * entries (user + assistant). Supports `?limit=N` to cap the number of
+   * most-recent messages returned (omit for all).
+   */
+  private handleListSessionMessages(sessionId: string, req: Request): Response {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    const url = new URL(req.url);
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 0)) : undefined;
+
+    // Use a generous token budget so we return entries verbatim, not the
+    // compacted summary. Clients that want compaction should call the
+    // separate POST /api/v1/sessions/:id/compact endpoint.
+    const history = this.deps.sessionManager.getConversationHistory(sessionId, 1_000_000);
+    const messages = limit !== undefined ? history.slice(-limit) : history;
+    const pendingClarifications = this.deps.sessionManager.getPendingClarifications(sessionId);
+
+    return jsonResponse({
+      session: { id: sessionId, pendingClarifications },
+      messages,
+    });
   }
 
   // ── Default session helper (G4) ────────────────────────

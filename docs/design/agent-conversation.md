@@ -180,12 +180,80 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `CONTEXT:<text>` | `delegation-router.ts:buildSubTaskInput` (from parent's `delegate_task` `request.context`) | `agent-worker-entry.ts:buildInitUserMessage` (renders as "## Delegation Context (from parent agent)") | Parent-provided resolution of child clarifications. |
 | `ToolResult.output` JSON with `pausedForUserInput: true` | `handleDelegation` | Parent agent LLM (via L2+ system prompt guidance) | Signal that a delegated child paused rather than failed. |
 | `agent:clarification_requested` bus event | `core-loop.ts` short-circuit branch | TUI listeners, API streaming (future), logging | Observability — per-task-type rates of clarification requests are available for future A7 self-model calibration. |
+| `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
+
+## HTTP API — `POST /api/v1/sessions/:id/messages`
+
+The conversational flow described above is exposed over HTTP for web,
+mobile, and external clients. Mirrors `vinyan chat`'s state machine.
+
+**Endpoints:**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/sessions/:id/messages` | Send a user message, run one task turn, return the `TaskResult` + updated session state |
+| `GET` | `/api/v1/sessions/:id/messages` | List conversation history (optional `?limit=N`) |
+
+**`POST /messages` request body:**
+
+```jsonc
+{
+  "content": "refactor the helper",          // required, min 1 char
+  "taskType": "code",                         // optional: 'code' | 'reasoning'
+  "targetFiles": ["src/auth.ts"],             // optional
+  "budget": { "maxTokens": 50000, ... },      // optional
+  "showThinking": false                       // optional
+}
+```
+
+**`POST /messages` response (200):**
+
+```jsonc
+{
+  "session": {
+    "id": "a1b2c3...",
+    "pendingClarifications": ["Which helper?", "Keep as alias?"]
+  },
+  "task": {
+    "id": "...",
+    "status": "completed" | "failed" | "escalated" | "uncertain" | "input-required",
+    "answer": "...",
+    "mutations": [...],
+    "clarificationNeeded": ["Which helper?", "Keep as alias?"],
+    "trace": { ... }
+  }
+}
+```
+
+- **`status: 'input-required'` returns HTTP 200**, not a 4xx — it is a
+  valid outcome requesting user input, not an error.
+- `session.pendingClarifications` mirrors `task.clarificationNeeded` when
+  the turn paused; clients can display either.
+- On the NEXT `POST /messages` call, the server calls
+  `getPendingClarifications(sessionId)`. If the previous assistant turn
+  was an unresolved `[INPUT-REQUIRED]` block, the new user content is
+  auto-wrapped as `CLARIFIED:<q>=><answer>` for each open question and
+  injected into the next `TaskInput.constraints`. This is the exact
+  mechanism `vinyan chat` uses — the HTTP endpoint is a thin wrapper.
+
+**Status codes:**
+- `200` — task executed (any `TaskResult.status`, including `input-required`)
+- `400` — empty / missing / malformed `content`, or JSON parse error
+- `401` — missing or invalid bearer token
+- `404` — session id not found
+- `500` — task execution threw
+
+**Auth:** standard bearer token, same as other POST endpoints.
 
 ## What's excluded (future work)
 
 The feature as-landed deliberately leaves these for future PRs:
 
-1. **HTTP API `POST /api/v1/sessions/:id/messages`** with SSE streaming — `src/api/server.ts` currently has session endpoints but no conversational `/messages` endpoint. The `TaskResult` shape is ready; the HTTP wiring is a separate concern.
+1. ~~**HTTP API `POST /api/v1/sessions/:id/messages`**~~ — **shipped**
+   in the HTTP endpoint PR. SSE streaming variant
+   (`GET /api/v1/sessions/:id/messages/stream` or `POST` with
+   `Accept: text/event-stream`) for real-time progress events is still
+   deferred.
 2. **TUI chat view** — `src/tui/` has the status icon and sort priority for `input-required` but no dedicated conversational view. Monitoring dashboard only.
 3. **Suspend/resume of in-flight agent loops across user turns** — today each chat turn is a fresh `executeTask` with a fresh subprocess. A paused L3 agent with a half-finished plan cannot "resume" after the user answers; the new turn starts over with the answer grounded in constraints. Full agent checkpointing is a much larger architectural change.
 4. **Goal Alignment Oracle integration** — concept.md §1.1 envisions the orchestrator itself deciding to request clarification based on an oracle verdict ("comprehension confidence is low → request clarification"). Today the decision is agent-self-reported via `needsUserInput=true`. Wiring the Goal Alignment Oracle into the Understanding phase to proactively inject `input-required` would close this loop but requires design reconciliation with the existing (heuristic, informational-only) oracle.

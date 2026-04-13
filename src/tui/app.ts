@@ -40,6 +40,7 @@ import {
 } from './state.ts';
 import type { TUIState, ViewTab } from './types.ts';
 import { renderApprovalModal, renderConfirmCancel, renderConfirmQuit } from './views/approval-modal.ts';
+import { CHAT_PANEL_COUNT, renderChat } from './views/chat.ts';
 import { EVENTS_PANEL_COUNT, renderEvents } from './views/events.ts';
 import { renderHelpOverlay } from './views/help.ts';
 import { PEERS_PANEL_COUNT, renderPeers } from './views/peers.ts';
@@ -58,6 +59,7 @@ const TABS: Array<{ key: string; label: string; tab: ViewTab }> = [
   { key: '3', label: 'Peers', tab: 'peers' },
   { key: '4', label: 'Events', tab: 'events' },
   { key: '5', label: 'Economy', tab: 'economy' },
+  { key: '6', label: 'Chat', tab: 'chat' },
 ];
 
 export class App {
@@ -645,6 +647,8 @@ export class App {
         return EVENTS_PANEL_COUNT;
       case 'economy':
         return ECONOMY_PANEL_COUNT;
+      case 'chat':
+        return CHAT_PANEL_COUNT;
       default:
         return 1;
     }
@@ -762,6 +766,9 @@ export class App {
         break;
       case 'economy':
         viewContent = renderEconomy(state);
+        break;
+      case 'chat':
+        viewContent = renderChat(state);
         break;
     }
     lines.push(viewContent);

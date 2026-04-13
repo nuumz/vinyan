@@ -177,11 +177,16 @@ function routeBufferKey(state: TUIState, key: KeypressInfo): TUIAction {
 }
 
 function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
-  // Tab switching: 1-4
+  // Tab switching: 1-6
   if (key.name === '1') return { type: 'switch-tab', tab: 'tasks' };
   if (key.name === '2') return { type: 'switch-tab', tab: 'system' };
   if (key.name === '3') return { type: 'switch-tab', tab: 'peers' };
   if (key.name === '4') return { type: 'switch-tab', tab: 'events' };
+  // Keybinding for tab 5 was previously missing despite the TABS array
+  // declaring `key: '5'` for Economy. Filled in alongside the new
+  // Chat tab (PR #11) so the tab bar matches the actual bindings.
+  if (key.name === '5') return { type: 'switch-tab', tab: 'economy' };
+  if (key.name === '6') return { type: 'switch-tab', tab: 'chat' };
 
   // Navigation
   if (key.name === 'tab') return { type: 'cycle-focus', direction: key.shift ? -1 : 1 };

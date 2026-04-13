@@ -122,6 +122,14 @@ export interface Orchestrator {
   traceCollector: TraceCollectorImpl;
   traceListener: { getMetrics: () => import('../bus/trace-listener.ts').TraceTelemetry; detach: () => void };
   bus: VinyanBus;
+  /**
+   * Optional session manager — set when `OrchestratorConfig.sessionManager`
+   * is provided. Exposed on the public interface (PR #11) so the TUI's
+   * embedded DataSource can query conversation history for the new Chat
+   * tab without going through a side channel. API server already takes
+   * sessionManager directly via `APIServerDeps`.
+   */
+  sessionManager?: import('../api/session-manager.ts').SessionManager;
   shadowRunner?: ShadowRunner;
   skillManager?: SkillManager;
   sleepCycleRunner?: SleepCycleRunner;
@@ -853,6 +861,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     traceCollector,
     traceListener: traceListenerHandle,
     bus,
+    sessionManager: config.sessionManager,
     shadowRunner,
     skillManager,
     sleepCycleRunner,

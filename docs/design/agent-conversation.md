@@ -335,6 +335,7 @@ parent LLM reads tool result, sees pausedForUserInput, picks:
 | `POST /api/v1/sessions/:id/messages` response `session.pendingClarifications` | `src/api/server.ts:handleSessionMessage` | Web / mobile / external clients | Exposes the same pending-clarification state the CLI uses; non-empty on input-required turns, empty after completion. |
 | `POST /api/v1/sessions/:id/messages` request body `stream: true` | Web / mobile clients | `src/api/server.ts:handleSessionMessage` stream branch | Switches the response to `text/event-stream` (SSE). Same validation + clarification semantics as sync, returns immediately with a live event feed that closes on `task:complete`. |
 | `GET /api/v1/sessions/:id/stream` | Web / mobile clients | `src/api/server.ts:handleSessionStream` → `src/api/sse.ts:createSessionSSEStream` | Long-lived SSE stream scoped to a session. One connection per client covers all tasks in the session across multiple turns. Emits an initial `session:stream_open` event, tracks session-task membership via `task:start` filtering, forwards per-task events, heartbeats every 30s via `:heartbeat\n\n` comment lines, and auto-cleans up after 60 minutes as a safety net. |
+| TUI Chat tab (key `6`) | TUI users | `src/tui/views/chat.ts:renderChat` ← `src/tui/data/source.ts:refreshChatState` ← `Orchestrator.sessionManager` | Read-only conversation viewer. Two-pane layout (sessions list + conversation). Pending clarifications surfaced as a yellow banner. Refreshes on `task:start` and `task:complete`. Interactive input deferred. |
 | `consult_peer` tool call `{question, context?, requestedTokens?}` | Worker LLM at L1+ | `agent-loop.ts:handleConsultPeer` → `deps.peerConsultant` (factory-wired) → `LLMProviderRegistry.selectByTier` | Lightweight second-opinion primitive. Response is a `PeerOpinion` JSON in `ToolResult.output` with confidence hardcoded to 0.7 (A5 heuristic tier). Max 3 per session. A1 enforced: peer engine id must differ from worker's. |
 
 ## HTTP API — `POST /api/v1/sessions/:id/messages`
@@ -526,7 +527,23 @@ The feature as-landed deliberately leaves these for future PRs:
 1. ~~**HTTP API `POST /api/v1/sessions/:id/messages`**~~ — **shipped**
    in the HTTP endpoint PR (sync) and extended with SSE streaming in
    the streaming PR (`stream: true` in the request body).
-2. **TUI chat view** — `src/tui/` has the status icon and sort priority for `input-required` but no dedicated conversational view. Monitoring dashboard only.
+2. ~~**TUI chat view**~~ — **shipped (V1, read-only)** as a new Chat tab
+   in the TUI (PR #11). Two-pane layout: left shows the session list
+   (id, status, message count, age) with the active session highlighted;
+   right shows the conversation history (newest at bottom) with a
+   yellow "Waiting for clarification" banner when the active session
+   has unresolved clarification questions. Wired to `SessionManager`
+   via the `sessionManager` field newly exposed on the `Orchestrator`
+   interface. The `EmbeddedDataSource` refreshes chat state on
+   `task:start` (captures the active session id) and `task:complete`
+   (refreshes conversation + pending clarifications).
+
+   Interactive input (typing messages directly in the TUI) is
+   deliberately deferred — it requires keystroke capture, an input
+   action reducer that calls `orchestrator.executeTask`, and async
+   rendering coordination. For interactive chat, users continue to
+   run `vinyan chat` from a separate terminal (or use the HTTP
+   `POST /api/v1/sessions/:id/messages` endpoint).
 3. **Suspend/resume of in-flight agent loops across user turns** — today each chat turn is a fresh `executeTask` with a fresh subprocess. A paused L3 agent with a half-finished plan cannot "resume" after the user answers; the new turn starts over with the answer grounded in constraints. Full agent checkpointing is a much larger architectural change.
 4. ~~**Goal Alignment Oracle integration**~~ — **partially shipped** as
    the Comprehension Check gate (Layer 1 Entry Point A above). V1 implements

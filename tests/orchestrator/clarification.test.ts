@@ -33,8 +33,16 @@ import { parseInputRequiredBlock, SessionManager } from '../../src/api/session-m
 import { SessionStore } from '../../src/db/session-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { runAgentLoop, type AgentLoopDeps } from '../../src/orchestrator/worker/agent-loop.ts';
+import { buildSystemPrompt } from '../../src/orchestrator/worker/agent-worker-entry.ts';
+import { DelegationRouter, buildSubTaskInput } from '../../src/orchestrator/delegation-router.ts';
 import type { IAgentSession, SessionState } from '../../src/orchestrator/worker/agent-session.ts';
-import type { OrchestratorTurn, TerminateReason, WorkerTurn } from '../../src/orchestrator/protocol.ts';
+import type {
+  AgentBudget,
+  DelegationRequest,
+  OrchestratorTurn,
+  TerminateReason,
+  WorkerTurn,
+} from '../../src/orchestrator/protocol.ts';
 import type {
   PerceptualHierarchy,
   RoutingDecision,
@@ -97,6 +105,35 @@ function makeMockToolExecutor() {
       output: 'mock result',
       durationMs: 1,
     }),
+  };
+}
+
+/**
+ * A mock tool executor that routes `delegate_task` through the real
+ * `context.onDelegate` callback (which agent-loop wires to `handleDelegation`).
+ * All other tool calls fall through to the default mock handler. Used by the
+ * delegation bubble-up tests so the real handleDelegation code path runs.
+ */
+function makeDelegatingToolExecutor() {
+  return {
+    execute: async (
+      call: ToolCall,
+      context: import('../../src/orchestrator/tools/tool-interface.ts').ToolContext,
+    ): Promise<ToolResult> => {
+      if (call.tool === 'delegate_task' && context.onDelegate) {
+        const result = await context.onDelegate({ ...call.parameters, callId: call.id } as any);
+        // handleDelegation returns a ToolResult with callId: '' — backfill
+        // from the actual call so the agent loop can correlate it.
+        return { ...result, callId: call.id };
+      }
+      return {
+        callId: call.id,
+        tool: call.tool,
+        status: 'success',
+        output: 'mock result',
+        durationMs: 1,
+      };
+    },
   };
 }
 
@@ -429,5 +466,314 @@ describe('parseInputRequiredBlock', () => {
   it('ignores stray leading whitespace on bullets', () => {
     const content = '[INPUT-REQUIRED]\n  - With spaces';
     expect(parseInputRequiredBlock(content)).toEqual(['With spaces']);
+  });
+});
+
+// ── 4. Interactive delegation: child bubble-up to parent ────────────
+
+/**
+ * These tests exercise the Phase 6.4 delegate_task path when the delegated
+ * child returns `status: 'input-required'`. The parent worker must see the
+ * child's questions as a structured, non-error ToolResult so it can either
+ * answer-and-re-delegate or bubble up via its own attempt_completion.
+ */
+
+/**
+ * Agent-loop appends a `<vinyan-reminder>` block to the LAST tool result's
+ * output when there are budget/turn/failure hints to surface (separator:
+ * `\n\n`). Strip it so JSON.parse sees only the delegate_task structured
+ * output, not the trailing reminder prose.
+ */
+function parseDelegateOutput(result: ToolResult): Record<string, unknown> {
+  const raw = typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+  const jsonPart = raw.split('\n\n')[0] ?? raw;
+  return JSON.parse(jsonPart) as Record<string, unknown>;
+}
+
+function makeChildResult(status: TaskResult['status'], extras: Partial<TaskResult> = {}): TaskResult {
+  return {
+    id: 'child-1',
+    status,
+    mutations: [],
+    trace: {
+      id: 'trace-child',
+      taskId: 'child-1',
+      timestamp: Date.now(),
+      routingLevel: 2,
+      approach: 'delegation-test',
+      oracleVerdicts: {},
+      modelUsed: 'mock/test',
+      tokensConsumed: 100,
+      durationMs: 10,
+      outcome: status === 'completed' || status === 'input-required' ? 'success' : 'failure',
+      affectedFiles: [],
+    } as any,
+    ...extras,
+  };
+}
+
+describe('delegate_task — child input-required bubble-up', () => {
+  /**
+   * Parent worker issues a delegate_task call. The mocked child returns
+   * `status: 'input-required'` with two clarification questions. The parent
+   * then bubbles up via attempt_completion(needsUserInput=true).
+   *
+   * We assert:
+   *   1. The ToolResult sent back to the parent session has status='success'
+   *      (NOT 'error') — so the parent's error-handling path doesn't fire.
+   *   2. The ToolResult output JSON contains `pausedForUserInput: true` and
+   *      the child's `clarificationNeeded` list.
+   *   3. The parent's final WorkerLoopResult carries needsUserInput through
+   *      (because the parent bubbled up with needsUserInput=true).
+   */
+  it('forwards input-required child as success ToolResult with clarificationNeeded', async () => {
+    const childQuestions = [
+      'Which auth file should I edit — src/auth.ts or src/auth-v2.ts?',
+      'Should the old helper remain as a deprecated alias?',
+    ];
+
+    const executeTaskMock = async (_subInput: TaskInput): Promise<TaskResult> =>
+      makeChildResult('input-required', { clarificationNeeded: childQuestions });
+
+    const workerTurns: WorkerTurn[] = [
+      // Turn 1: parent calls delegate_task
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [
+          {
+            id: 'c1',
+            tool: 'delegate_task',
+            parameters: {
+              goal: 'rename the helper',
+              targetFiles: ['src/foo.ts'],
+            },
+          },
+        ],
+        rationale: 'delegating rename work to a child',
+        tokensConsumed: 100,
+      },
+      // Turn 2: parent sees child paused → bubbles up
+      {
+        type: 'uncertain',
+        turnId: 't2',
+        reason: 'Delegated child needs clarification',
+        uncertainties: childQuestions,
+        tokensConsumed: 60,
+        needsUserInput: true,
+      },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    const deps: AgentLoopDeps = {
+      ...makeDeps(session),
+      toolExecutor: makeDelegatingToolExecutor(),
+      delegationRouter: new DelegationRouter(),
+      executeTask: executeTaskMock,
+    };
+
+    const result = await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting(),
+      deps,
+    );
+
+    // Parent bubbled up successfully
+    expect(result.isUncertain).toBe(true);
+    expect(result.needsUserInput).toBe(true);
+
+    // Inspect the tool_results turn sent back to the session
+    const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
+      Extract<OrchestratorTurn, { type: 'tool_results' }>
+    >;
+    expect(toolResultTurns).toHaveLength(1);
+    const delegateResult = toolResultTurns[0]!.results[0]!;
+    expect(delegateResult.tool).toBe('delegate_task');
+    // Critical: NOT 'error' — a paused child is not a failure.
+    expect(delegateResult.status).toBe('success');
+
+    const output = parseDelegateOutput(delegateResult) as {
+      status: string;
+      pausedForUserInput?: boolean;
+      clarificationNeeded?: string[];
+    };
+    expect(output.status).toBe('input-required');
+    expect(output.pausedForUserInput).toBe(true);
+    expect(output.clarificationNeeded).toEqual(childQuestions);
+  });
+
+  it('still classifies a truly failed child as ToolResult.status=error', async () => {
+    const executeTaskMock = async (_subInput: TaskInput): Promise<TaskResult> =>
+      makeChildResult('failed', { escalationReason: 'oracle rejected mutation' });
+
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [
+          {
+            id: 'c1',
+            tool: 'delegate_task',
+            parameters: { goal: 'do it', targetFiles: ['src/foo.ts'] },
+          },
+        ],
+        rationale: 'delegating',
+        tokensConsumed: 50,
+      },
+      { type: 'done', turnId: 't2', proposedContent: 'giving up', tokensConsumed: 20 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    const deps: AgentLoopDeps = {
+      ...makeDeps(session),
+      toolExecutor: makeDelegatingToolExecutor(),
+      delegationRouter: new DelegationRouter(),
+      executeTask: executeTaskMock,
+    };
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting(),
+      deps,
+    );
+
+    const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
+      Extract<OrchestratorTurn, { type: 'tool_results' }>
+    >;
+    const delegateResult = toolResultTurns[0]!.results[0]!;
+    expect(delegateResult.status).toBe('error');
+    // The output JSON should NOT contain pausedForUserInput
+    const output = parseDelegateOutput(delegateResult);
+    expect(output.status).toBe('failed');
+    expect(output.pausedForUserInput).toBeUndefined();
+    expect(output.clarificationNeeded).toBeUndefined();
+  });
+
+  it('treats a completed child as ToolResult.status=success (regression)', async () => {
+    const executeTaskMock = async (_subInput: TaskInput): Promise<TaskResult> =>
+      makeChildResult('completed');
+
+    const workerTurns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        calls: [
+          {
+            id: 'c1',
+            tool: 'delegate_task',
+            parameters: { goal: 'do it', targetFiles: ['src/foo.ts'] },
+          },
+        ],
+        rationale: 'delegating',
+        tokensConsumed: 40,
+      },
+      { type: 'done', turnId: 't2', proposedContent: 'child done', tokensConsumed: 20 },
+    ];
+
+    const session = new MockAgentSession(workerTurns);
+    const deps: AgentLoopDeps = {
+      ...makeDeps(session),
+      toolExecutor: makeDelegatingToolExecutor(),
+      delegationRouter: new DelegationRouter(),
+      executeTask: executeTaskMock,
+    };
+
+    await runAgentLoop(
+      makeTestInput(),
+      makeTestPerception(),
+      makeTestMemory(),
+      undefined,
+      makeTestRouting(),
+      deps,
+    );
+
+    const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
+      Extract<OrchestratorTurn, { type: 'tool_results' }>
+    >;
+    const delegateResult = toolResultTurns[0]!.results[0]!;
+    expect(delegateResult.status).toBe('success');
+    const output = parseDelegateOutput(delegateResult);
+    expect(output.status).toBe('completed');
+    expect(output.pausedForUserInput).toBeUndefined();
+  });
+});
+
+// ── 5. buildSubTaskInput: context propagation ───────────────────────
+
+describe('buildSubTaskInput — context propagation', () => {
+  const parent: TaskInput = {
+    id: 'parent-1',
+    source: 'cli',
+    goal: 'rename the helper',
+    taskType: 'code',
+    targetFiles: ['src/foo.ts'],
+    budget: { maxTokens: 50_000, maxDurationMs: 60_000, maxRetries: 2 },
+  };
+
+  const childBudget: AgentBudget = {
+    maxTokens: 5000,
+    maxTurns: 10,
+    maxDurationMs: 30_000,
+    contextWindow: 128_000,
+    base: 3000,
+    negotiable: 1250,
+    delegation: 750,
+    maxExtensionRequests: 3,
+    maxToolCallsPerTurn: 10,
+    maxToolCalls: 20,
+    delegationDepth: 1,
+    maxDelegationDepth: 3,
+  };
+
+  it('propagates request.context into child constraints as a CONTEXT: prefix', () => {
+    const request: DelegationRequest = {
+      goal: 'rename helper to util',
+      targetFiles: ['src/foo.ts'],
+      context:
+        "Resolved clarifications: 'Which file?' => src/foo.ts; 'Keep old name as alias?' => no, remove it",
+    };
+    const sub = buildSubTaskInput(request, parent, {} as RoutingDecision, childBudget);
+    expect(sub.constraints).toBeDefined();
+    expect(sub.constraints).toHaveLength(1);
+    expect(sub.constraints![0]).toMatch(/^CONTEXT:/);
+    expect(sub.constraints![0]).toContain("Which file?' => src/foo.ts");
+    expect(sub.constraints![0]).toContain('remove it');
+  });
+
+  it('leaves constraints undefined when request.context is absent', () => {
+    const request: DelegationRequest = {
+      goal: 'rename helper',
+      targetFiles: ['src/foo.ts'],
+    };
+    const sub = buildSubTaskInput(request, parent, {} as RoutingDecision, childBudget);
+    expect(sub.constraints).toBeUndefined();
+  });
+});
+
+// ── 6. System prompt: delegation clarification guidance ─────────────
+
+describe('buildSystemPrompt — delegation clarification guidance', () => {
+  it('L2+ prompt includes the delegation clarification section', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    expect(prompt).toContain('Handling Delegated Sub-task Clarifications');
+    expect(prompt).toContain('pausedForUserInput');
+    expect(prompt).toContain('needsUserInput=true');
+  });
+
+  it('L3 prompt also includes the delegation clarification section', () => {
+    const prompt = buildSystemPrompt(3, 'code');
+    expect(prompt).toContain('Handling Delegated Sub-task Clarifications');
+  });
+
+  it('L1 prompt does NOT include the delegation clarification section', () => {
+    // Delegation is L2+ only; the section is irrelevant for L1 workers.
+    const prompt = buildSystemPrompt(1, 'code');
+    expect(prompt).not.toContain('Handling Delegated Sub-task Clarifications');
   });
 });

@@ -353,6 +353,40 @@ Required fields: \`slug\` (kebab-case), \`category\` ∈ {convention, anti-patte
 and a short note. Never let memory_propose distract from the actual task — the primary
 goal always comes first.`;
 
+// Agent Conversation: delegate_task becomes an interactive channel at L2+.
+// A delegated child can pause with \`pausedForUserInput: true\` when the
+// child's LLM hits a user-intent ambiguity it cannot resolve alone. This
+// section teaches the parent how to recognize that signal and react.
+const DELEGATION_CLARIFICATION_SECTION = `
+
+## Handling Delegated Sub-task Clarifications
+When you call \`delegate_task\`, inspect the tool result's JSON \`output\` field.
+If it contains \`"pausedForUserInput": true\` along with a \`"clarificationNeeded"\`
+array, the child worker did NOT fail — it paused because it needs a decision
+about what the user wants. Do NOT treat this as an error, and do NOT retry the
+same delegate_task blindly. You have exactly two options:
+
+1. **Answer from your own context, then re-delegate.** If you already know the
+   answer — from the original user goal, perception, prior tool results, or
+   your own plan — construct a NEW delegate_task call with:
+   - the same goal (or a more precise restatement),
+   - the same targetFiles, and
+   - a \`context\` field that explicitly resolves each question the child asked.
+   Example: \`context: "Resolved clarifications: 'Which file?' => src/auth.ts; 'Keep old name as alias?' => No, remove it."\`
+   The child will see this as a CONTEXT: constraint on its next attempt and
+   ground its plan on the answers.
+
+2. **Bubble up to the user.** If the user's intent really is ambiguous and you
+   do NOT have the information to answer, call attempt_completion with
+   status='uncertain' AND needsUserInput=true. Put the child's questions in
+   your \`uncertainties\` array — you may reframe them to add useful context
+   about what was being delegated. The orchestrator will surface them to the
+   user as clarification questions and wait for an answer.
+
+Prefer option 1 when you reasonably can — each bubble-up costs a user round-trip.
+But do NOT guess: if the child is paused because of genuine intent ambiguity
+you cannot resolve, option 2 is the correct answer.`;
+
 export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reasoning' = 'code'): string {
   const common = `You are a Vinyan autonomous agent at routing level L${routingLevel}.
 
@@ -433,7 +467,7 @@ ${REMINDER_PROTOCOL_DESCRIPTION}
 - You MUST call attempt_completion to signal task end. Never just stop responding.
 
 ## After Context Compression
-If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
+If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 2 ? DELEGATION_CLARIFICATION_SECTION : ''}${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
 
   if (taskType === 'reasoning') {
     return `${common}

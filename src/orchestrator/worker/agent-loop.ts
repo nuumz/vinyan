@@ -380,6 +380,15 @@ async function handleDelegation(
       : 0;
     budget.returnUnusedDelegation(reserved, actualConsumed);
 
+    // Agent Conversation: a child that returns `input-required` is NOT a
+    // failure — it's a collaborative pause. Treat it like 'completed' for
+    // ToolResult.status so the parent's error-handling doesn't fire, and
+    // surface the child's questions in the structured output so the parent
+    // LLM can decide to answer-and-re-delegate OR bubble up via
+    // attempt_completion(needsUserInput=true).
+    const pausedForUserInput = childResult.status === 'input-required';
+    const isSuccessLike = childResult.status === 'completed' || pausedForUserInput;
+
     deps.bus?.emit('delegation:done', {
       parentTaskId: parent.id,
       childTaskId: subInput.id,
@@ -390,11 +399,19 @@ async function handleDelegation(
     return {
       callId: '',
       tool: 'delegate_task',
-      status: childResult.status === 'completed' ? 'success' : 'error',
+      status: isSuccessLike ? 'success' : 'error',
       output: JSON.stringify({
         childTaskId: subInput.id,
         status: childResult.status,
         mutations: childResult.mutations?.length ?? 0,
+        // Agent Conversation: only set on input-required so the parent LLM
+        // has a single, stable signal to watch for.
+        ...(pausedForUserInput
+          ? {
+              pausedForUserInput: true,
+              clarificationNeeded: childResult.clarificationNeeded ?? [],
+            }
+          : {}),
       }),
       durationMs: Math.round(performance.now() - startTime),
     };

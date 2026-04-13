@@ -952,6 +952,17 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         await deps.traceCollector.record(inputRequiredTrace);
         deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
 
+        // Agent Conversation: emit a dedicated observability event so
+        // listeners (TUI, API clients, logging) can surface the questions
+        // as a user-friendly prompt instead of waiting for the generic
+        // task:complete handler to interpret status='input-required'.
+        deps.bus?.emit('agent:clarification_requested', {
+          taskId: input.id,
+          sessionId: input.sessionId,
+          questions: [...lastAgentResult.uncertainties],
+          routingLevel: routing.level,
+        });
+
         const inputRequiredResult: TaskResult = {
           id: input.id,
           status: 'input-required',

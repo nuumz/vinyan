@@ -521,6 +521,71 @@ export function buildInitUserMessage(
   // Goal — clear and prominent
   sections.push(`## Goal\n${goal}`);
 
+  // Agent Conversation: surface TaskInput.constraints so the agent sees
+  // (a) user clarifications the user answered in a prior turn, and
+  // (b) delegation context the parent re-delegated with.
+  //
+  // The rest of the pipeline copies `TaskInput.constraints` into
+  // `understanding.constraints` (task-understanding.ts) but the previous
+  // version of buildInitUserMessage only rendered
+  // `semanticIntent.implicitConstraints` — so raw CLARIFIED:/CONTEXT:
+  // strings were being dropped before the LLM saw them. That meant a
+  // `vinyan chat` clarification at L2+ would have the user's answer
+  // silently disappear. This block fixes that.
+  //
+  // Pipeline metadata constraints (MIN_ROUTING_LEVEL:, THINKING:, TOOLS:)
+  // are for the orchestrator itself, not the worker, so they are filtered.
+  if (understanding && typeof understanding === 'object') {
+    const u0 = understanding as Record<string, unknown>;
+    const rawConstraints = Array.isArray(u0.constraints) ? (u0.constraints as string[]) : [];
+    if (rawConstraints.length > 0) {
+      const clarified: Array<{ q: string; a: string }> = [];
+      const contextBlocks: string[] = [];
+      const otherConstraints: string[] = [];
+      for (const c of rawConstraints) {
+        if (c.startsWith('CLARIFIED:')) {
+          const body = c.slice('CLARIFIED:'.length);
+          const sep = body.indexOf('=>');
+          if (sep > 0) {
+            clarified.push({ q: body.slice(0, sep).trim(), a: body.slice(sep + 2).trim() });
+          } else {
+            otherConstraints.push(c);
+          }
+        } else if (c.startsWith('CONTEXT:')) {
+          contextBlocks.push(c.slice('CONTEXT:'.length).trim());
+        } else if (
+          c.startsWith('MIN_ROUTING_LEVEL:')
+          || c === 'THINKING:enabled'
+          || c === 'TOOLS:enabled'
+        ) {
+          // Pipeline metadata — not user-facing.
+          continue;
+        } else {
+          otherConstraints.push(c);
+        }
+      }
+
+      if (clarified.length > 0) {
+        const lines = clarified.map((c) => `- Q: ${c.q}\n  A: ${c.a}`);
+        sections.push(
+          `## User Clarifications (answered earlier in this conversation)\nThe user has already answered the following questions. Treat these answers as authoritative for this task — do NOT ask them again.\n${lines.join('\n')}`,
+        );
+      }
+
+      if (contextBlocks.length > 0) {
+        const lines = contextBlocks.map((c, i) => `${i + 1}. ${c}`);
+        sections.push(
+          `## Delegation Context (from parent agent)\nYour parent agent resolved these clarifications and is re-delegating with the resolved answers. Treat this as authoritative grounding:\n${lines.join('\n')}`,
+        );
+      }
+
+      if (otherConstraints.length > 0) {
+        const lines = otherConstraints.map((c) => `- ${c}`);
+        sections.push(`## User Constraints\n${lines.join('\n')}`);
+      }
+    }
+  }
+
   // Acceptance criteria from task input (if provided separately from understanding)
   if (acceptanceCriteria && acceptanceCriteria.length > 0) {
     const items = acceptanceCriteria.map(c => `- [ ] ${c}`).join('\n');

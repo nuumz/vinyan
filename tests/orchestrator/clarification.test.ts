@@ -33,7 +33,7 @@ import { parseInputRequiredBlock, SessionManager } from '../../src/api/session-m
 import { SessionStore } from '../../src/db/session-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { runAgentLoop, type AgentLoopDeps } from '../../src/orchestrator/worker/agent-loop.ts';
-import { buildSystemPrompt } from '../../src/orchestrator/worker/agent-worker-entry.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../src/orchestrator/worker/agent-worker-entry.ts';
 import { DelegationRouter, buildSubTaskInput } from '../../src/orchestrator/delegation-router.ts';
 import type { IAgentSession, SessionState } from '../../src/orchestrator/worker/agent-session.ts';
 import type {
@@ -775,5 +775,160 @@ describe('buildSystemPrompt — delegation clarification guidance', () => {
     // Delegation is L2+ only; the section is irrelevant for L1 workers.
     const prompt = buildSystemPrompt(1, 'code');
     expect(prompt).not.toContain('Handling Delegated Sub-task Clarifications');
+  });
+});
+
+// ── 7. buildInitUserMessage: CLARIFIED / CONTEXT constraint rendering ───
+
+/**
+ * Regression guard: before this fix, `buildInitUserMessage` only rendered
+ * `understanding.semanticIntent.implicitConstraints` — so raw
+ * `CLARIFIED:` / `CONTEXT:` strings in `TaskInput.constraints` (the
+ * mechanism that `vinyan chat` and the interactive delegation path use to
+ * pass user answers to the agent) were silently dropped at the L2+
+ * subprocess boundary. These tests lock the fix in place.
+ */
+describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', () => {
+  const emptyPerception = {
+    taskTarget: { file: 'src/foo.ts', description: 'target file' },
+    dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+    diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+    verifiedFacts: [],
+    runtime: { nodeVersion: 'test', os: 'test', availableTools: [] },
+  };
+
+  function makeUnderstanding(constraints: string[]): Record<string, unknown> {
+    return {
+      rawGoal: 'test goal',
+      actionVerb: 'modify',
+      actionCategory: 'mutation',
+      frameworkContext: [],
+      constraints,
+      acceptanceCriteria: [],
+      expectsMutation: true,
+    };
+  }
+
+  it('renders CLARIFIED:<q>=><a> entries as a User Clarifications section', () => {
+    const message = buildInitUserMessage(
+      'rename the helper',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([
+        'CLARIFIED:Which file should I rename?=>src/auth.ts',
+        'CLARIFIED:Keep old name as alias?=>no, remove it',
+      ]),
+    );
+
+    expect(message).toContain('## User Clarifications');
+    expect(message).toContain('Which file should I rename?');
+    expect(message).toContain('src/auth.ts');
+    expect(message).toContain('Keep old name as alias?');
+    expect(message).toContain('no, remove it');
+    // The formatting should preserve Q/A labels so the LLM can pair them.
+    expect(message).toMatch(/Q:.*Which file should I rename\?\s*\n\s*A:.*src\/auth\.ts/);
+  });
+
+  it('renders CONTEXT:<text> entries as a Delegation Context section', () => {
+    const message = buildInitUserMessage(
+      'apply the rename',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([
+        "CONTEXT:Resolved clarifications: 'Which file?' => src/auth.ts; 'Alias?' => no",
+      ]),
+    );
+
+    expect(message).toContain('## Delegation Context (from parent agent)');
+    expect(message).toContain('src/auth.ts');
+    expect(message).toContain('authoritative grounding');
+    // Raw CONTEXT: prefix should not leak into the prompt.
+    expect(message).not.toContain('CONTEXT:Resolved');
+  });
+
+  it('filters pipeline metadata constraints (MIN_ROUTING_LEVEL, THINKING, TOOLS)', () => {
+    const message = buildInitUserMessage(
+      'do work',
+      emptyPerception,
+      undefined,
+      makeUnderstanding(['MIN_ROUTING_LEVEL:1', 'THINKING:enabled', 'TOOLS:enabled']),
+    );
+
+    // None of the metadata strings should surface in the LLM prompt.
+    expect(message).not.toContain('MIN_ROUTING_LEVEL');
+    expect(message).not.toContain('THINKING:enabled');
+    expect(message).not.toContain('TOOLS:enabled');
+    // And since there's nothing else to render, no User Constraints section.
+    expect(message).not.toContain('## User Constraints');
+    expect(message).not.toContain('## User Clarifications');
+    expect(message).not.toContain('## Delegation Context');
+  });
+
+  it('renders plain user constraints (non-CLARIFIED, non-CONTEXT, non-metadata) as User Constraints', () => {
+    const message = buildInitUserMessage(
+      'do work',
+      emptyPerception,
+      undefined,
+      makeUnderstanding(['must use the existing logger helper', 'no new dependencies']),
+    );
+
+    expect(message).toContain('## User Constraints');
+    expect(message).toContain('must use the existing logger helper');
+    expect(message).toContain('no new dependencies');
+  });
+
+  it('handles mixed constraint types by surfacing each in its own section', () => {
+    const message = buildInitUserMessage(
+      'rename and apply',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([
+        'MIN_ROUTING_LEVEL:2',
+        'CLARIFIED:Which module?=>auth',
+        'CONTEXT:parent decided to preserve the public API',
+        'prefer composition over inheritance',
+      ]),
+    );
+
+    expect(message).toContain('## User Clarifications');
+    expect(message).toContain('Which module?');
+    expect(message).toContain('## Delegation Context');
+    expect(message).toContain('parent decided to preserve the public API');
+    expect(message).toContain('## User Constraints');
+    expect(message).toContain('prefer composition over inheritance');
+    // Pipeline metadata is still filtered
+    expect(message).not.toContain('MIN_ROUTING_LEVEL');
+  });
+
+  it('emits no constraint-related section when understanding.constraints is empty', () => {
+    const message = buildInitUserMessage(
+      'simple task',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([]),
+    );
+
+    expect(message).not.toContain('## User Clarifications');
+    expect(message).not.toContain('## Delegation Context');
+    expect(message).not.toContain('## User Constraints');
+    // Goal is still present
+    expect(message).toContain('## Goal\nsimple task');
+  });
+
+  it('treats a malformed CLARIFIED: entry (no separator at all) as a plain constraint', () => {
+    // The parser looks for the first `=>` as the Q/A delimiter. A CLARIFIED:
+    // string with no separator has no valid Q/A split and must degrade to
+    // a plain user constraint rather than being silently dropped.
+    const malformed = 'CLARIFIED:just some prose with no separator';
+    const message = buildInitUserMessage(
+      'test',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([malformed]),
+    );
+
+    expect(message).not.toContain('## User Clarifications');
+    expect(message).toContain('## User Constraints');
+    expect(message).toContain(malformed);
   });
 });

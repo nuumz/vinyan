@@ -1,15 +1,57 @@
 /**
- * Goal Alignment Oracle — verifies that LLM output aligns with TaskUnderstanding intent.
+ * Goal Alignment Oracle (POST-generation) — verifies that Worker OUTPUT
+ * (mutations) aligns with the `TaskUnderstanding` that was produced at
+ * the Perceive phase.
  *
- * Four deterministic checks (all rule-based, A3-safe — no LLM in verification path):
- * 1. Mutation expectation: expectsMutation vs actual mutations
- * 2. Target symbol coverage: targetSymbol set → mutations must touch it
- * 3. Action-verb alignment: verb category → expected mutation pattern
- * 4. File scope: targetFiles specified → mutations must overlap
+ * This oracle runs AFTER the Generate phase, against a HypothesisTuple
+ * that carries the worker's proposed mutations. It is one half of the
+ * two-phase Goal Alignment architecture (see
+ * docs/design/agent-conversation.md → "Two-phase Goal Alignment" section):
  *
- * A1 Understanding layer: Ensures generation (Worker) matches user intent (TaskUnderstanding).
- * Tier: heuristic (0.7 confidence cap) — symbol/verb matching is approximate.
- * Classification: INFORMATIONAL — warns only, never blocks (until calibrated via trace data).
+ *   ┌─ PRE-generation ─────────────────────────────────────────────┐
+ *   │ Comprehension Check                                           │
+ *   │ (src/orchestrator/understanding/comprehension-check.ts)       │
+ *   │                                                               │
+ *   │ Operates on: TaskUnderstanding alone, no mutations            │
+ *   │ Fires BEFORE Predict/Plan/Generate run                        │
+ *   │ Gates: can the orchestrator proceed, or is the goal so        │
+ *   │        ambiguous that we must ask the user first?             │
+ *   │ Heuristics: H1 multi-path entity, H4 contradictory claim      │
+ *   │ Outcome: short-circuit to TaskResult.status='input-required'  │
+ *   └───────────────────────────────────────────────────────────────┘
+ *                               │
+ *                               ▼
+ *   ┌─ Generate phase ───────────────────────────────────────────────┐
+ *   │ Worker produces HypothesisTuple with proposedMutations         │
+ *   └────────────────────────────────────────────────────────────────┘
+ *                               │
+ *                               ▼
+ *   ┌─ POST-generation ──────────────────────────────────────────────┐
+ *   │ Goal Alignment Verifier (THIS FILE)                            │
+ *   │                                                                │
+ *   │ Operates on: HypothesisTuple + TaskUnderstanding + targetFiles │
+ *   │ Fires AFTER Generate, as part of the Verify phase              │
+ *   │ Checks: are the mutations what the user actually wanted?       │
+ *   │ Checks (deterministic, A3-safe):                               │
+ *   │   C1 Mutation expectation: expectsMutation vs actual mutations │
+ *   │   C2 Target symbol coverage: targetSymbol → mutations touch it │
+ *   │   C3 Action-verb alignment: verb category → mutation pattern   │
+ *   │   C4 File scope: targetFiles specified → mutations overlap     │
+ *   │ Outcome: verdict with heuristic-tier confidence (0.7 cap)      │
+ *   │          INFORMATIONAL — warns, does NOT block (until          │
+ *   │          calibrated via trace data)                            │
+ *   └────────────────────────────────────────────────────────────────┘
+ *
+ * The two oracles are **complementary, not redundant**:
+ *   - Comprehension Check: "is the goal clear enough to act on?"
+ *   - Goal Alignment Verifier: "does the action match what was asked?"
+ *
+ * Both are rule-based (A3), both cap at heuristic tier 0.7 (A5), and both
+ * operate with full Epistemic Separation from the generator (A1) — neither
+ * one uses an LLM to make its verdict.
+ *
+ * Shared types live in `src/orchestrator/understanding/goal-alignment-shared.ts`
+ * (introduced in the Goal Alignment Oracle reconciliation PR).
  */
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';

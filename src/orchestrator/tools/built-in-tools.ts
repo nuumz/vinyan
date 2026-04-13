@@ -9,7 +9,13 @@
 
 import { createHash } from 'crypto';
 import type { ToolResult } from '../types.ts';
-import { attemptCompletion, delegateTask, planUpdate, requestBudgetExtension } from './control-tools.ts';
+import {
+  attemptCompletion,
+  consultPeer,
+  delegateTask,
+  planUpdate,
+  requestBudgetExtension,
+} from './control-tools.ts';
 import { directoryList } from './directory-tools.ts';
 // ── Category imports ────────────────────────────────────────────────
 import { fileEdit, fileRead, fileWrite } from './file-tools.ts';
@@ -62,6 +68,7 @@ export function makeResult(callId: string, tool: string, partial: Partial<ToolRe
 
 export {
   attemptCompletion,
+  consultPeer,
   delegateTask,
   directoryList,
   fileEdit,
@@ -118,5 +125,6 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['attempt_completion', attemptCompletion],
   ['request_budget_extension', requestBudgetExtension],
   ['delegate_task', delegateTask],
+  ['consult_peer', consultPeer],
   ['plan_update', planUpdate],
 ]);

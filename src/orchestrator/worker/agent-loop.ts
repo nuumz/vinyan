@@ -58,6 +58,13 @@ export interface WorkerLoopResult {
   proposedToolCalls: ToolCall[];
   /** When set, indicates a permanent error that should not be retried or escalated. */
   nonRetryableError?: string;
+  /**
+   * Agent Conversation: true when the agent called attempt_completion with
+   * needsUserInput=true, i.e., the `uncertainties` are user-facing questions.
+   * The core loop short-circuits this into a TaskResult with
+   * status='input-required' (no retry, no escalation).
+   */
+  needsUserInput?: boolean;
 }
 
 export interface AgentLoopDeps {
@@ -79,6 +86,18 @@ export interface AgentLoopDeps {
   executeTask?: (subInput: TaskInput) => Promise<TaskResult>;
   /** Delegation router for Phase 6.4 */
   delegationRouter?: DelegationRouter;
+  /**
+   * Agent Conversation — consult_peer (PR #7): dispatches a single-shot
+   * query to a DIFFERENT reasoning engine than the worker's current
+   * model (A1 epistemic separation) and returns a structured opinion.
+   * Returns `null` when no distinct peer is available (e.g., only one
+   * provider is registered). Factory wires this using
+   * LLMProviderRegistry.selectByTier in provider-order preference.
+   */
+  peerConsultant?: (
+    request: import('../protocol.ts').PeerConsultRequest,
+    workerModelId?: string,
+  ) => Promise<import('../protocol.ts').PeerOpinion | null>;
   /** Injectable session factory for testing */
   createSession?: (proc: SubprocessHandle) => IAgentSession;
   /** @deprecated P1-6: Replaced by deterministic structure-preserve compaction. Kept for backwards compat. */
@@ -429,6 +448,7 @@ function buildUncertainResult(
   transcript: WorkerTurn[],
   proposedContent?: string,
   nonRetryableError?: string,
+  needsUserInput?: boolean,
 ): WorkerLoopResult {
   return {
     mutations,
@@ -440,6 +460,7 @@ function buildUncertainResult(
     isUncertain: true,
     proposedToolCalls: [],
     nonRetryableError,
+    ...(needsUserInput ? { needsUserInput: true } : {}),
   };
 }
 
@@ -491,6 +512,15 @@ async function handleDelegation(
       : 0;
     budget.returnUnusedDelegation(reserved, actualConsumed);
 
+    // Agent Conversation: a child that returns `input-required` is NOT a
+    // failure — it's a collaborative pause. Treat it like 'completed' for
+    // ToolResult.status so the parent's error-handling doesn't fire, and
+    // surface the child's questions in the structured output so the parent
+    // LLM can decide to answer-and-re-delegate OR bubble up via
+    // attempt_completion(needsUserInput=true).
+    const pausedForUserInput = childResult.status === 'input-required';
+    const isSuccessLike = childResult.status === 'completed' || pausedForUserInput;
+
     deps.bus?.emit('delegation:done', {
       parentTaskId: parent.id,
       childTaskId: subInput.id,
@@ -501,11 +531,19 @@ async function handleDelegation(
     return {
       callId: '',
       tool: 'delegate_task',
-      status: childResult.status === 'completed' ? 'success' : 'error',
+      status: isSuccessLike ? 'success' : 'error',
       output: JSON.stringify({
         childTaskId: subInput.id,
         status: childResult.status,
         mutations: childResult.mutations?.length ?? 0,
+        // Agent Conversation: only set on input-required so the parent LLM
+        // has a single, stable signal to watch for.
+        ...(pausedForUserInput
+          ? {
+              pausedForUserInput: true,
+              clarificationNeeded: childResult.clarificationNeeded ?? [],
+            }
+          : {}),
       }),
       durationMs: Math.round(performance.now() - startTime),
     };
@@ -516,6 +554,94 @@ async function handleDelegation(
       tool: 'delegate_task',
       status: 'error',
       error: `Delegation failed: ${err instanceof Error ? err.message : String(err)}`,
+      durationMs: Math.round(performance.now() - startTime),
+    };
+  }
+}
+
+// ── Consult-peer handler (Agent Conversation PR #7) ─────────────────
+
+/**
+ * Dispatch a lightweight second-opinion request to a different
+ * reasoning engine than the worker's current model. Distinct from
+ * delegation:
+ *   - Single LLM call, no child pipeline, no tools, no mutations.
+ *   - Fixed-count budget (3 per session) rather than a token pool.
+ *   - Advisory confidence capped at 0.7 (A5 heuristic tier) by the
+ *     factory's peerConsultant wrapper, regardless of what the peer
+ *     self-reports.
+ *
+ * Axiom safety:
+ *   - A1 Epistemic Separation: the peerConsultant picks a provider
+ *     whose `id` differs from the worker's `routing.model`. If only
+ *     one provider is available, returns null and this handler
+ *     denies the consultation (rather than consulting the same
+ *     model and silently violating A1).
+ *   - A3: peer selection logic is deterministic (tier priority →
+ *     first distinct id). No LLM in the selection path.
+ *   - A6: the handler never calls the tool executor or touches the
+ *     overlay. The peer's response is a bare string wrapped in a
+ *     structured PeerOpinion, which is treated as advisory by the
+ *     worker's LLM.
+ */
+async function handleConsultPeer(
+  request: import('../protocol.ts').PeerConsultRequest,
+  budget: AgentBudgetTracker,
+  routing: RoutingDecision,
+  deps: AgentLoopDeps,
+): Promise<ToolResult> {
+  if (!deps.peerConsultant) {
+    return {
+      callId: '',
+      tool: 'consult_peer',
+      status: 'denied',
+      output: 'Peer consultation not configured for this orchestrator',
+      durationMs: 0,
+    };
+  }
+  if (!budget.canConsult()) {
+    return {
+      callId: '',
+      tool: 'consult_peer',
+      status: 'denied',
+      output: `Consultation budget exhausted (used ${budget.consultationsUsed}, remaining ${budget.remainingConsultations}, base headroom may also be insufficient)`,
+      durationMs: 0,
+    };
+  }
+
+  const startTime = performance.now();
+  try {
+    const workerModelId = routing.model ?? undefined;
+    const opinion = await deps.peerConsultant(request, workerModelId);
+    if (!opinion) {
+      return {
+        callId: '',
+        tool: 'consult_peer',
+        status: 'denied',
+        output: 'No distinct peer reasoning engine is available (would consult the same model — blocked to honor A1 epistemic separation)',
+        durationMs: Math.round(performance.now() - startTime),
+      };
+    }
+
+    // Charge the consumed tokens against the base pool and increment
+    // the per-session counter. Uses input+output since both are real
+    // orchestrator cost.
+    const tokens = (opinion.tokensUsed.input ?? 0) + (opinion.tokensUsed.output ?? 0);
+    budget.recordConsultation(tokens);
+
+    return {
+      callId: '',
+      tool: 'consult_peer',
+      status: 'success',
+      output: JSON.stringify(opinion),
+      durationMs: opinion.durationMs,
+    };
+  } catch (err) {
+    return {
+      callId: '',
+      tool: 'consult_peer',
+      status: 'error',
+      error: `Peer consultation failed: ${err instanceof Error ? err.message : String(err)}`,
       durationMs: Math.round(performance.now() - startTime),
     };
   }
@@ -566,6 +692,20 @@ export async function runAgentLoop(
     onDelegate:
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)
+        : undefined,
+    // Agent Conversation — consult_peer (PR #7): available at L1+ when a
+    // peer consultant is configured (factory wires one from the LLM
+    // provider registry by default). A1 enforcement and budget limits
+    // are checked inside handleConsultPeer, so we don't gate them here.
+    onConsult:
+      routing.level >= 1 && deps.peerConsultant
+        ? (params) =>
+            handleConsultPeer(
+              params as import('../protocol.ts').PeerConsultRequest,
+              budget,
+              routing,
+              deps,
+            )
         : undefined,
     // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
     // install new plan snapshots. The callback runs synchronously and returns
@@ -983,9 +1123,11 @@ export async function runAgentLoop(
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
 
+        // Agent Conversation: input-required is a distinct outcome from plain uncertain
+        const needsUserInput = turn.needsUserInput === true;
         deps.bus?.emit('agent:session_end', {
           taskId: input.id,
-          outcome: 'uncertain',
+          outcome: needsUserInput ? 'input_required' : 'uncertain',
           tokensConsumed,
           turnsUsed: transcript.length,
           durationMs: Math.round(performance.now() - startTime),
@@ -998,7 +1140,10 @@ export async function runAgentLoop(
           performance.now() - startTime,
           transcript,
           undefined,
-          detectNonRetryableError(turn.uncertainties),
+          // When the agent explicitly requests user input, do NOT classify this
+          // as a non-retryable error — it's a collaborative pause, not a hard failure.
+          needsUserInput ? undefined : detectNonRetryableError(turn.uncertainties),
+          needsUserInput,
         );
       }
     }

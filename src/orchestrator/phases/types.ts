@@ -162,6 +162,12 @@ export interface WorkerResult {
   durationMs: number;
   proposedContent?: string;
   nonRetryableError?: string;
+  /**
+   * Agent Conversation: propagated from WorkerLoopResult when the agent
+   * called attempt_completion with needsUserInput=true. The core loop reads
+   * this flag to short-circuit into a TaskResult with status='input-required'.
+   */
+  needsUserInput?: boolean;
 }
 
 export interface VerificationResult {

@@ -396,7 +396,19 @@ export interface ConversationEntry {
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;
-  status: 'completed' | 'failed' | 'escalated' | 'uncertain';
+  /**
+   * Task outcome status.
+   *
+   * - `completed`: task executed successfully.
+   * - `failed`:    task ran to failure (e.g., tool error, verification rejection).
+   * - `escalated`: higher routing level / human review required.
+   * - `uncertain`: agent reported uncertainty; may retry at higher level.
+   * - `input-required`: agent paused and is asking the user follow-up questions.
+   *   `clarificationNeeded` carries those questions. Distinct from `uncertain`
+   *   because no retry/escalation is attempted — the user must answer in the
+   *   next turn. Lexically aligned with A2A `A2ATaskState` for future bridging.
+   */
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required';
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -409,6 +421,13 @@ export interface TaskResult {
   thinking?: string; // LLM thinking process (when extended thinking is enabled)
   notes?: string[]; // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
   contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
+  /**
+   * Agent Conversation: follow-up questions the agent is asking the user.
+   * Set when `status === 'input-required'`. Each entry is one question.
+   * The next user turn should answer these; chat.ts/api clients should surface
+   * them as user-facing prompts (not errors).
+   */
+  clarificationNeeded?: string[];
 }
 
 // ---------------------------------------------------------------------------

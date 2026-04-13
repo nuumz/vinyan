@@ -185,13 +185,18 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 15 built-in tools', () => {
-    expect(executor.getToolNames()).toHaveLength(15);
+  test('getToolNames returns all 16 built-in tools', () => {
+    // Count bumped from 14 → 15 when `consult_peer` shipped in the
+    // consult_peer PR (Agent Conversation Layer 2.5 — a lightweight
+    // second-opinion primitive at L1+), then → 16 when Phase 7c-2
+    // added `plan_update` as a control tool at L1+.
+    expect(executor.getToolNames()).toHaveLength(16);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');
     expect(executor.getToolNames()).toContain('http_get');
     expect(executor.getToolNames()).toContain('memory_propose');
+    expect(executor.getToolNames()).toContain('consult_peer');
     // Phase 7c-2: plan_update is a control tool exposed at L1+.
     expect(executor.getToolNames()).toContain('plan_update');
   });

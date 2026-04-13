@@ -91,9 +91,11 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
       const status =
         result.status === 'completed'
           ? green('completed')
-          : result.status === 'escalated'
-            ? yellow('escalated')
-            : red('failed');
+          : result.status === 'input-required'
+            ? yellow('input-required')
+            : result.status === 'escalated'
+              ? yellow('escalated')
+              : red('failed');
       write(`${dim('[vinyan]')} Task ${status}: ${result.mutations.length} mutation(s)`);
     }),
   );

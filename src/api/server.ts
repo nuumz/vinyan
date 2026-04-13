@@ -25,7 +25,7 @@ import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import { z } from 'zod/v4';
 import type { Session, SessionManager } from './session-manager.ts';
-import { createSSEStream } from './sse.ts';
+import { createSessionSSEStream, createSSEStream } from './sse.ts';
 
 export interface APIServerConfig {
   port: number;
@@ -226,6 +226,25 @@ export class VinyanAPIServer {
       return this.handleCompactSession(sessionId);
     }
 
+    // Agent Conversation: conversational message endpoints.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionMessage(sessionId, req);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleListSessionMessages(sessionId, req);
+    }
+
+    // Agent Conversation — long-lived session-scoped SSE (PR #10).
+    // One connection per client that observes every task running under
+    // the session, across multiple turns, with periodic heartbeats.
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/stream$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionStream(sessionId);
+    }
+
     // ── Read-only queries ─────────────────────────────────
     if (method === 'GET' && path === '/api/v1/workers') {
       const workers = this.deps.workerStore?.findActive() ?? [];
@@ -301,6 +320,33 @@ export class VinyanAPIServer {
     oracle_name: z.string().min(1),
     hypothesis: z.unknown(),
     ecp_version: z.string().optional(),
+  });
+
+  /**
+   * Agent Conversation: request body schema for POST /api/v1/sessions/:id/messages.
+   * `content` is the raw user message; the server records it as the next user
+   * turn and dispatches a task through the orchestrator. `taskType`, `budget`,
+   * and `targetFiles` are optional overrides; when omitted the server infers
+   * sensible defaults (matching chat.ts).
+   *
+   * `stream: true` switches the response to `text/event-stream` (SSE), matching
+   * the OpenAI chat.completions streaming convention. Events forwarded include
+   * task:start, phase:timing, agent:tool_executed, agent:turn_complete,
+   * agent:clarification_requested, and task:complete (which closes the stream).
+   */
+  private static readonly SessionMessageSchema = z.object({
+    content: z.string().min(1, 'content must not be empty'),
+    taskType: z.enum(['code', 'reasoning']).optional(),
+    targetFiles: z.array(z.string()).optional(),
+    budget: z
+      .object({
+        maxTokens: z.number().positive(),
+        maxDurationMs: z.number().positive(),
+        maxRetries: z.number().nonnegative(),
+      })
+      .optional(),
+    showThinking: z.boolean().optional(),
+    stream: z.boolean().optional(),
   });
 
   private async handleHttpVerify(req: Request): Promise<Response> {
@@ -569,6 +615,283 @@ export class VinyanAPIServer {
     // G2: Emit session compacted bus event
     this.deps.bus.emit('session:compacted', { sessionId, taskCount: result.statistics.totalTasks });
     return jsonResponse({ compaction: result });
+  }
+
+  // ── Conversational message endpoints (Agent Conversation) ─────
+  //
+  // POST /api/v1/sessions/:id/messages  — send a user message, run a task,
+  //                                        return the TaskResult + pending
+  //                                        clarifications.
+  // GET  /api/v1/sessions/:id/messages  — list conversation history.
+  //
+  // These extend the Agent Conversation clarification protocol (see
+  // docs/design/agent-conversation.md) from CLI-only to HTTP so web/mobile/
+  // external clients can participate in multi-turn conversations with the
+  // agent, including the input-required clarification round-trip.
+
+  /**
+   * POST /api/v1/sessions/:id/messages
+   *
+   * Mirrors chat.ts's rl.on('line') handler:
+   *   1. Validate body + resolve session (404 if missing).
+   *   2. Query getPendingClarifications(). If non-empty, the current
+   *      message is treated as a clarification answer — each open question
+   *      is wrapped into a `CLARIFIED:<q>=><answer>` constraint so the
+   *      understanding pipeline sees the user's answer as first-class
+   *      grounding (not a fresh intent).
+   *   3. Record the user turn, dispatch executeTask, record the assistant
+   *      turn, and return a structured response with both the TaskResult
+   *      and the updated session state (including any NEW pending
+   *      clarifications raised by this turn).
+   *
+   * Response shape on success (200):
+   *   {
+   *     session: { id, pendingClarifications: string[] },
+   *     task:    TaskResult
+   *   }
+   *
+   * Note: status='input-required' returns HTTP 200, not a 4xx — it's a
+   * valid outcome requesting user input, not an error.
+   */
+  private async handleSessionMessage(sessionId: string, req: Request): Promise<Response> {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    }
+    const parsed = VinyanAPIServer.SessionMessageSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonResponse({ error: `Invalid request: ${parsed.error.message}` }, 400);
+    }
+    const { content, taskType, targetFiles, budget, showThinking, stream } = parsed.data;
+
+    // Auto-detect clarification follow-up: if the last assistant message
+    // was an [INPUT-REQUIRED] block and the user has not yet answered, this
+    // new user message IS the answer. Wrap each open question as a
+    // CLARIFIED:<q>=><answer> constraint so agent-worker-entry's
+    // buildInitUserMessage renders them in the "## User Clarifications"
+    // section of the next task's init prompt.
+    const pendingBefore = this.deps.sessionManager.getPendingClarifications(sessionId);
+    const clarificationConstraints = pendingBefore.map((q) => `CLARIFIED:${q}=>${content}`);
+
+    // Record the user turn BEFORE dispatching the task so the
+    // conversation history (loaded by core-loop.ts via sessionManager)
+    // includes it.
+    this.deps.sessionManager.recordUserTurn(sessionId, content);
+
+    // Infer taskType when the client didn't specify: code if targetFiles
+    // present, otherwise reasoning (matching chat.ts).
+    const inferredType: 'code' | 'reasoning' =
+      taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
+
+    const constraints: string[] = [
+      ...(showThinking ? ['THINKING:enabled'] : []),
+      ...clarificationConstraints,
+    ];
+
+    const input: TaskInput = {
+      id: crypto.randomUUID(),
+      source: 'api',
+      goal: content,
+      taskType: inferredType,
+      sessionId,
+      ...(targetFiles?.length ? { targetFiles } : {}),
+      ...(constraints.length > 0 ? { constraints } : {}),
+      budget: budget ?? {
+        maxTokens: 50_000,
+        maxDurationMs: 120_000,
+        maxRetries: 3,
+      },
+    };
+
+    // Track in session_tasks for audit / observability (mirrors handleSyncTask).
+    this.deps.sessionManager.addTask(sessionId, input);
+
+    // ── Streaming path (OpenAI-style SSE) ─────────────────────
+    //
+    // When `stream: true`, return a text/event-stream response that
+    // forwards per-phase bus events filtered by this task's id. The
+    // client sees real-time progress and the stream auto-closes when
+    // the orchestrator emits `task:complete` at the end of the task
+    // (see createSSEStream in src/api/sse.ts).
+    //
+    // Critical ordering: createSSEStream MUST run BEFORE executeTask
+    // so the ReadableStream.start() callback (which subscribes to the
+    // bus synchronously per WHATWG spec) is called before any events
+    // fire. Once the subscribers are attached, kicking off executeTask
+    // is safe — events emitted during the pipeline will be captured
+    // and delivered to the client.
+    if (stream === true) {
+      const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id);
+      // Safety-net cleanup after 10 minutes in case task:complete never
+      // fires (e.g., hung LLM call without timeout). Matches the existing
+      // handleSSE convention with a looser bound for the longer budget
+      // of chat-style tasks.
+      const cleanupTimer = setTimeout(cleanup, 600_000);
+
+      // Kick off executeTask WITHOUT awaiting so we can return the stream
+      // Response immediately. The .then handler records the assistant
+      // turn and completes the session task; the .catch handler recovers
+      // from unexpected throws by synthesizing a failed result and
+      // manually emitting task:complete to close the stream (real
+      // executeTask would normally emit this itself, but a bare throw
+      // bypasses the normal emit path).
+      this.deps
+        .executeTask(input)
+        .then((result) => {
+          this.deps.sessionManager.completeTask(sessionId, input.id, result);
+          this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
+          clearTimeout(cleanupTimer);
+        })
+        .catch((err) => {
+          const failedResult: TaskResult = {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: {
+              id: `trace-${input.id}-stream-error`,
+              taskId: input.id,
+              timestamp: Date.now(),
+              routingLevel: 0,
+              approach: 'stream-error',
+              oracleVerdicts: {},
+              modelUsed: 'unknown',
+              tokensConsumed: 0,
+              durationMs: 0,
+              outcome: 'failure',
+              affectedFiles: [],
+              failureReason: err instanceof Error ? err.message : String(err),
+            } as TaskResult['trace'],
+            escalationReason: err instanceof Error ? err.message : String(err),
+          };
+          try {
+            this.deps.sessionManager.completeTask(sessionId, input.id, failedResult);
+            this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, failedResult);
+          } catch {
+            // Session recording is best-effort during error recovery
+          }
+          // Emit a manual task:complete so the stream closes cleanly.
+          // createSSEStream's auto-close handler fires on the first
+          // task:complete seen for this task id, so no risk of a double
+          // close if the real pipeline had already emitted one.
+          this.deps.bus.emit('task:complete', { result: failedResult });
+          clearTimeout(cleanupTimer);
+        });
+
+      return new Response(sseStream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    // ── Sync path (default) ──────────────────────────────────
+    let result: TaskResult;
+    try {
+      result = await this.deps.executeTask(input);
+    } catch (err) {
+      return jsonResponse(
+        { error: err instanceof Error ? err.message : 'Task execution failed' },
+        500,
+      );
+    }
+    this.deps.sessionManager.completeTask(sessionId, input.id, result);
+    // Record the assistant turn — for status='input-required' this writes
+    // a structured [INPUT-REQUIRED] block that the NEXT call's
+    // getPendingClarifications will pick up.
+    this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
+
+    // Compute the new pending state AFTER recording. If the task returned
+    // input-required, this will be non-empty and mirror
+    // result.clarificationNeeded — clients can display either.
+    const pendingAfter = this.deps.sessionManager.getPendingClarifications(sessionId);
+
+    return jsonResponse({
+      session: {
+        id: sessionId,
+        pendingClarifications: pendingAfter,
+      },
+      task: result,
+    });
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/messages
+   *
+   * Lists the conversation history for a session as an ordered array of
+   * entries (user + assistant). Supports `?limit=N` to cap the number of
+   * most-recent messages returned (omit for all).
+   */
+  private handleListSessionMessages(sessionId: string, req: Request): Response {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    const url = new URL(req.url);
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 0)) : undefined;
+
+    // Use a generous token budget so we return entries verbatim, not the
+    // compacted summary. Clients that want compaction should call the
+    // separate POST /api/v1/sessions/:id/compact endpoint.
+    const history = this.deps.sessionManager.getConversationHistory(sessionId, 1_000_000);
+    const messages = limit !== undefined ? history.slice(-limit) : history;
+    const pendingClarifications = this.deps.sessionManager.getPendingClarifications(sessionId);
+
+    return jsonResponse({
+      session: { id: sessionId, pendingClarifications },
+      messages,
+    });
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/stream
+   *
+   * Long-lived SSE stream scoped to a single session. Unlike the per-task
+   * stream variant of POST /messages, this stays open across multiple
+   * task turns within the session and emits events for every task that
+   * runs under `sessionId`. Useful for web/mobile clients that want one
+   * persistent connection for all conversation activity.
+   *
+   * Behavior:
+   *   - Returns JSON 404 if the session does not exist (NOT an empty SSE
+   *     stream — clients want a clear error signal before they set up
+   *     EventSource listeners).
+   *   - Emits an initial `session:stream_open` event so clients know
+   *     the subscription is live.
+   *   - Tracks session task membership via `task:start` events
+   *     (filtered by `payload.input.sessionId === sessionId`).
+   *   - Forwards per-task events (task:complete, phase:timing,
+   *     agent:clarification_requested, etc.) for tasks in the
+   *     membership set.
+   *   - Emits SSE comment-line heartbeats (`:heartbeat <ts>\n\n`) every
+   *     30 seconds to keep idle connections alive.
+   *   - Auto-cleanup after 60 minutes safety-net (long-enough for
+   *     extended conversations but bounded to prevent bus leaks).
+   */
+  private handleSessionStream(sessionId: string): Response {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    const { stream, cleanup } = createSessionSSEStream(this.deps.bus, sessionId);
+
+    // 60-minute safety-net cleanup. Real clients should re-subscribe
+    // before hitting this bound; the limit exists so a forgotten
+    // connection doesn't leak bus subscribers indefinitely.
+    setTimeout(cleanup, 3_600_000);
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    });
   }
 
   // ── Default session helper (G4) ────────────────────────

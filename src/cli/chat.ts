@@ -135,6 +135,16 @@ export async function startChat(argv: string[]): Promise<void> {
 
   let isProcessing = false; // Guard against concurrent executeTask calls
   let turnCount = 0;
+  // Agent Conversation: when the previous turn ended in `input-required`,
+  // the agent is waiting for the user to answer follow-up questions. We
+  // capture those questions here so the NEXT user message can be tagged as
+  // a clarification answer rather than a fresh intent.
+  let pendingClarifications: string[] = sessionManager.getPendingClarifications(session.id);
+  if (pendingClarifications.length > 0) {
+    console.log('\x1b[33m(Vinyan is waiting for you to answer:)\x1b[0m');
+    for (const q of pendingClarifications) console.log(`  • ${q}`);
+    console.log();
+  }
 
   rl.prompt();
 
@@ -200,6 +210,21 @@ export async function startChat(argv: string[]): Promise<void> {
     // faithfully shows `/commit foo` rather than the expanded prompt.
     sessionManager.recordUserTurn(session.id, input);
 
+    // Agent Conversation: if the previous turn was input-required, inject the
+    // open questions + this user message as typed constraints so the
+    // understanding pipeline sees this turn as a clarification answer, not a
+    // fresh intent. Each question becomes a CLARIFIED:<q>=><a> constraint.
+    const clarificationConstraints: string[] =
+      pendingClarifications.length > 0
+        ? pendingClarifications.map((q) => `CLARIFIED:${q}=>${input}`)
+        : [];
+    const constraintsForTurn = [
+      ...(showThinking ? ['THINKING:enabled'] : []),
+      ...clarificationConstraints,
+    ];
+    // Consume — a single answer resolves all queued questions for this turn.
+    pendingClarifications = [];
+
     // Build TaskInput — let understanding pipeline classify per-turn (D1)
     // taskType defaults to 'reasoning' but code-related goals with target files
     // can be classified as code-mutation/code-reasoning by the pipeline.
@@ -211,7 +236,7 @@ export async function startChat(argv: string[]): Promise<void> {
       taskType: hasCodeContext ? 'code' : 'reasoning',
       sessionId: session.id,
       budget: DEFAULT_BUDGET,
-      ...(showThinking ? { constraints: ['THINKING:enabled'] } : {}),
+      ...(constraintsForTurn.length > 0 ? { constraints: constraintsForTurn } : {}),
     };
 
     try {
@@ -232,7 +257,23 @@ export async function startChat(argv: string[]): Promise<void> {
       }
 
       // Display response
-      if (result.answer) {
+      if (result.status === 'input-required') {
+        // Agent Conversation: surface clarification questions as a friendly
+        // prompt, NOT an error. Queue them so the next user line is tagged
+        // as a clarification answer via constraints.
+        if (result.answer) {
+          console.log(`\n${result.answer}\n`);
+        }
+        const questions = result.clarificationNeeded ?? [];
+        if (questions.length > 0) {
+          console.log('\x1b[33mVinyan needs clarification:\x1b[0m');
+          for (const q of questions) console.log(`  • ${q}`);
+          console.log();
+          pendingClarifications = [...questions];
+        } else {
+          console.log('\n\x1b[2m(agent requested clarification but did not specify questions)\x1b[0m\n');
+        }
+      } else if (result.answer) {
         console.log(`\n${result.answer}\n`);
       } else if (result.mutations.length > 0) {
         console.log(`\n\x1b[32mModified ${result.mutations.length} file(s):\x1b[0m`);

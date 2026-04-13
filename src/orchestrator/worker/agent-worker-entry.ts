@@ -263,12 +263,17 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           const params = completionCall.parameters;
           const status = (params.status as string) ?? 'done';
           if (status === 'uncertain') {
+            // Agent Conversation: needsUserInput disambiguates
+            //   * false/absent → code-fact uncertainty (orchestrator may retry/escalate)
+            //   * true         → user-intent uncertainty (orchestrator asks the user)
+            const needsUserInput = params.needsUserInput === true;
             writeTurn(io, {
               type: 'uncertain',
               turnId: `t${turnCount}`,
               reason: (params.summary as string) ?? 'Worker reported uncertainty',
               uncertainties: (params.uncertainties as string[]) ?? [],
               tokensConsumed: totalTokensConsumed,
+              ...(needsUserInput ? { needsUserInput: true } : {}),
             });
           } else {
             writeTurn(io, {
@@ -377,6 +382,114 @@ Required fields: \`slug\` (kebab-case), \`category\` ∈ {convention, anti-patte
 and a short note. Never let memory_propose distract from the actual task — the primary
 goal always comes first.`;
 
+// Agent Conversation — consult_peer (PR #7): lightweight second-opinion
+// tool available at L1+. Teaches the worker WHEN to call it (sparingly,
+// only for decisions with real trade-offs) and HOW to interpret the
+// advisory opinion (heuristic tier, not binding). Distinct from
+// delegate_task — consult_peer is a single cross-model question, not
+// a sub-task dispatch.
+const CONSULT_PEER_SECTION = `
+
+## Second Opinions (consult_peer tool)
+When you face a decision with real trade-offs — a design choice, a
+subtle semantic question, an irreversible change — you may call
+\`consult_peer\` to get a structured second opinion from a DIFFERENT
+reasoning engine than your own. This is cheaper than \`delegate_task\`
+(no child pipeline, no tools, no mutations) and is meant for sanity
+checks, not for handing off work.
+
+When to use:
+- You are about to apply a change that is hard to reverse and you
+  want to cross-check the approach.
+- You have two plausible interpretations of an ambiguous API or
+  spec and want a structured tie-break.
+- You have completed a fix but are not sure it covers an edge case.
+
+When NOT to use:
+- Simple factual lookups — use file_read, search_grep, or your own
+  tools first.
+- Questions you can answer by reading more files — do the reading.
+- Anything requiring context you have not included in the \`context\`
+  field — the peer does NOT see your conversation history or tools.
+
+How to interpret the response:
+- The peer's opinion is ADVISORY at heuristic tier (confidence 0.7
+  maximum). Do NOT blindly follow it when your own evidence is
+  stronger.
+- If the peer confirms your approach, proceed with slightly more
+  confidence.
+- If the peer disagrees, weigh its reasoning against yours. Neither
+  side has oracle-tier confidence.
+- The peer's opinion is returned as structured JSON with fields:
+  \`opinion\`, \`confidence\`, \`peerEngineId\`, \`tokensUsed\`.
+
+Hard limits:
+- At most 3 consultations per session — use them wisely.
+- The peer has no tools, no mutations, no recursive consults.
+- If the orchestrator has no distinct peer engine (only one provider
+  registered), the call is denied with a clear message.`;
+
+// Agent Conversation: delegate_task becomes an interactive channel at L2+.
+// A delegated child can pause with \`pausedForUserInput: true\` when the
+// child's LLM hits a user-intent ambiguity it cannot resolve alone. This
+// section teaches the parent how to recognize that signal and react.
+const DELEGATION_CLARIFICATION_SECTION = `
+
+## Handling Delegated Sub-task Clarifications
+When you call \`delegate_task\`, inspect the tool result's JSON \`output\` field.
+If it contains \`"pausedForUserInput": true\` along with a \`"clarificationNeeded"\`
+array, the child worker did NOT fail — it paused because it needs a decision
+about what the user wants. Do NOT treat this as an error, and do NOT retry the
+same delegate_task blindly. You have three options:
+
+1. **Answer from your own context, then re-delegate.** If you already know the
+   answers to ALL the child's questions — from the original user goal, perception,
+   prior tool results, or your own plan — construct a NEW delegate_task call with:
+   - the same goal (or a more precise restatement),
+   - the same targetFiles, and
+   - a \`context\` field that explicitly resolves each question the child asked.
+   Example: \`context: "Resolved clarifications: 'Which file?' => src/auth.ts; 'Keep old name as alias?' => No, remove it."\`
+   The child will see this as a CONTEXT: constraint on its next attempt and
+   ground its plan on the answers.
+
+2. **Bubble up to the user.** If the user's intent really is ambiguous and you
+   do NOT have the information to answer ANY of the child's questions, call
+   attempt_completion with status='uncertain' AND needsUserInput=true. Put the
+   child's questions in your \`uncertainties\` array — you may reframe them to
+   add useful context about what was being delegated. The orchestrator will
+   surface them to the user as clarification questions and wait for an answer.
+
+3. **Partial resolution — answer some, bubble the rest.** If the child asked
+   MULTIPLE questions and you can answer only SOME of them from your context,
+   do NOT pick "all or nothing". The right flow is:
+
+   a) First, try a **narrow re-delegation**: build a new delegate_task with a
+      \`context\` field that resolves ONLY the questions you can answer. The
+      child re-runs; if it can figure out the remaining questions by reading
+      more files, great — it will return done. If it can't, it will pause
+      again with a SHORTER clarificationNeeded list.
+
+   b) If (a) still leaves unresolved questions, bubble ONLY the remaining
+      subset via attempt_completion. Record the questions you already
+      resolved in \`proposedContent\` so the user sees the context and so
+      the next turn's fresh parent agent (reading conversation history) can
+      recover your resolutions. Example:
+
+      attempt_completion({
+        status: 'uncertain',
+        needsUserInput: true,
+        uncertainties: ["Which auth file should I edit — src/auth.ts or src/auth-v2.ts?"],
+        proposedContent: "I have already resolved from my own context:\\n- Whether to keep the old name as an alias: NO, remove it entirely (user goal said 'clean rewrite').\\nI still need to know which auth file you meant because both exist in the codebase."
+      })
+
+   Prefer option 1 over option 3 when you can cleanly resolve everything, and
+   prefer option 3 over option 2 when you can resolve at least one question —
+   every question you answer yourself saves the user a round-trip.
+
+Prefer options 1 and 3 when you reasonably can — each bubble-up costs a user
+round-trip. But do NOT guess: if a question is genuine intent ambiguity you
+cannot resolve, bubbling it up is the correct answer.`;
+
 export interface BuildSystemPromptOptions {
   /** Phase 7a: M1-M4 instruction hierarchy resolved in orchestrator. */
   instructions?: InstructionMemory | null;
@@ -476,12 +589,14 @@ ${renderAgentPolicies()}
 
 ## Completion Protocol
 - When done: call attempt_completion with status 'done'. Include a concise summary of what was changed and why.
-- When stuck: call attempt_completion with status 'uncertain'. List what you tried, what blocked you, and what you think the next step should be.
+- When stuck on a MISSING CODE FACT (e.g., "I cannot find function X", "the test file does not exist"): call attempt_completion with status 'uncertain' and leave needsUserInput=false. List what you tried and what blocked you — the orchestrator may retry at a higher routing level or escalate.
+- When stuck because the USER'S INTENT is ambiguous (e.g., "which of these two files did you mean?", "should I preserve the old behavior or replace it?", "what name should the new parameter have?"): call attempt_completion with status 'uncertain' AND set needsUserInput=true. Phrase each entry in 'uncertainties' as a direct question to the user. The orchestrator will surface them to the user and wait for an answer in the next turn — do NOT retry or guess.
+- Do NOT set needsUserInput=true for uncertainties that could be resolved by reading more files or running more tools yourself. Only use it for genuine intent ambiguity.
 - CRITICAL: Before reporting done, verify your work actually achieves the goal. Run the test, check the output, read the result. Do NOT report success based on assumptions.
 - You MUST call attempt_completion to signal task end. Never just stop responding.
 
 ## After Context Compression
-If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
+If you see a [COMPRESSED CONTEXT] block, resume directly — no apology, no recap of what you were doing. Pick up where you left off. Break remaining work into smaller pieces if needed.${routingLevel >= 1 ? CONSULT_PEER_SECTION : ''}${routingLevel >= 2 ? DELEGATION_CLARIFICATION_SECTION : ''}${routingLevel >= 2 ? MEMORY_PROPOSAL_SECTION : ''}`;
 
   if (taskType === 'reasoning') {
     return `${common}
@@ -532,6 +647,72 @@ export function buildInitUserMessage(
 
   // Goal — clear and prominent
   sections.push(`## Goal\n${goal}`);
+
+  // Agent Conversation: surface TaskInput.constraints so the agent sees
+  // (a) user clarifications the user answered in a prior turn, and
+  // (b) delegation context the parent re-delegated with.
+  //
+  // The rest of the pipeline copies `TaskInput.constraints` into
+  // `understanding.constraints` (task-understanding.ts) but the previous
+  // version of buildInitUserMessage only rendered
+  // `semanticIntent.implicitConstraints` — so raw CLARIFIED:/CONTEXT:
+  // strings were being dropped before the LLM saw them. That meant a
+  // `vinyan chat` clarification at L2+ would have the user's answer
+  // silently disappear. This block fixes that.
+  //
+  // Pipeline metadata constraints (MIN_ROUTING_LEVEL:, THINKING:, TOOLS:)
+  // are for the orchestrator itself, not the worker, so they are filtered.
+  if (understanding && typeof understanding === 'object') {
+    const u0 = understanding as Record<string, unknown>;
+    const rawConstraints = Array.isArray(u0.constraints) ? (u0.constraints as string[]) : [];
+    if (rawConstraints.length > 0) {
+      const clarified: Array<{ q: string; a: string }> = [];
+      const contextBlocks: string[] = [];
+      const otherConstraints: string[] = [];
+      for (const c of rawConstraints) {
+        if (c.startsWith('CLARIFIED:')) {
+          const body = c.slice('CLARIFIED:'.length);
+          const sep = body.indexOf('=>');
+          if (sep > 0) {
+            clarified.push({ q: body.slice(0, sep).trim(), a: body.slice(sep + 2).trim() });
+          } else {
+            otherConstraints.push(c);
+          }
+        } else if (c.startsWith('CONTEXT:')) {
+          contextBlocks.push(c.slice('CONTEXT:'.length).trim());
+        } else if (
+          c.startsWith('MIN_ROUTING_LEVEL:')
+          || c === 'THINKING:enabled'
+          || c === 'TOOLS:enabled'
+          || c.startsWith('COMPREHENSION_CHECK:')
+        ) {
+          // Pipeline metadata — not user-facing.
+          continue;
+        } else {
+          otherConstraints.push(c);
+        }
+      }
+
+      if (clarified.length > 0) {
+        const lines = clarified.map((c) => `- Q: ${c.q}\n  A: ${c.a}`);
+        sections.push(
+          `## User Clarifications (answered earlier in this conversation)\nThe user has already answered the following questions. Treat these answers as authoritative for this task — do NOT ask them again.\n${lines.join('\n')}`,
+        );
+      }
+
+      if (contextBlocks.length > 0) {
+        const lines = contextBlocks.map((c, i) => `${i + 1}. ${c}`);
+        sections.push(
+          `## Delegation Context (from parent agent)\nYour parent agent resolved these clarifications and is re-delegating with the resolved answers. Treat this as authoritative grounding:\n${lines.join('\n')}`,
+        );
+      }
+
+      if (otherConstraints.length > 0) {
+        const lines = otherConstraints.map((c) => `- ${c}`);
+        sections.push(`## User Constraints\n${lines.join('\n')}`);
+      }
+    }
+  }
 
   // Acceptance criteria from task input (if provided separately from understanding)
   if (acceptanceCriteria && acceptanceCriteria.length > 0) {

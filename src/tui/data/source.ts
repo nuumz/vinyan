@@ -120,6 +120,10 @@ export class EmbeddedDataSource implements DataSource {
     this.startClockTick();
     // Defer initial metrics load so screen can render first frame immediately
     setTimeout(() => this.refreshMetricsAsync(), 50);
+    // Chat tab (PR #11): pre-populate session list so the Chat tab is
+    // not empty before any task fires. Best-effort — no-ops when
+    // sessionManager is not configured.
+    setTimeout(() => this.refreshChatState(), 50);
   }
 
   stop(): void {
@@ -282,6 +286,13 @@ export class EmbeddedDataSource implements DataSource {
     if (!this.state.selectedTaskId) {
       this.state.selectedTaskId = task.id;
     }
+    // Chat tab (PR #11): track the active session id so the Chat
+    // view can show the most-recently-active session by default.
+    const incomingSessionId = input.sessionId as string | undefined;
+    if (incomingSessionId) {
+      this.state.chatActiveSessionId = incomingSessionId;
+      this.refreshChatState();
+    }
     this.state.dirty = true;
   }
 
@@ -308,7 +319,70 @@ export class EmbeddedDataSource implements DataSource {
       this.state.successHistory.shift();
     }
 
+    // Chat tab (PR #11): refresh conversation snapshot whenever a task
+    // completes — the conversation may have new entries (recordUserTurn /
+    // recordAssistantTurn), and pendingClarifications may have changed
+    // if the task ended in input-required.
+    this.refreshChatState();
+
     this.state.dirty = true;
+  }
+
+  /**
+   * Chat tab (PR #11): refresh the in-state conversation snapshot from
+   * SessionManager. Best-effort — silently no-ops when sessionManager
+   * is not exposed on the orchestrator (e.g., when the TUI is run with
+   * a config that did not pass `sessionManager` into createOrchestrator).
+   *
+   * Strategy:
+   *   1. Refresh the session list (newest first).
+   *   2. If chatActiveSessionId is null, default to the most recently
+   *      created session.
+   *   3. Pull the conversation history + pending clarifications for
+   *      the active session.
+   *
+   * Called from onTaskStart (when a new task names a session id) and
+   * onTaskComplete (when conversation entries may have been recorded).
+   */
+  private refreshChatState(): void {
+    const sm = this.orchestrator.sessionManager;
+    if (!sm) return;
+
+    try {
+      const sessions = sm.listSessions();
+      // Sort newest-first so the chat sidebar shows the most recent
+      // session at the top.
+      const sorted = [...sessions].sort((a, b) => b.createdAt - a.createdAt);
+      this.state.chatSessions = sorted.map((s) => ({
+        id: s.id,
+        source: s.source,
+        status: s.status,
+        createdAt: s.createdAt,
+        messageCount: sm.getMessageCount(s.id),
+      }));
+
+      // Default the active session to the most recent one if none set.
+      if (!this.state.chatActiveSessionId && sorted.length > 0) {
+        this.state.chatActiveSessionId = sorted[0]!.id;
+      }
+
+      if (this.state.chatActiveSessionId) {
+        const history = sm.getConversationHistory(this.state.chatActiveSessionId, 1_000_000);
+        this.state.chatConversation = history.map((h) => ({
+          role: h.role,
+          content: h.content,
+          timestamp: h.timestamp,
+          taskId: h.taskId || undefined,
+        }));
+        this.state.chatPendingClarifications = sm.getPendingClarifications(
+          this.state.chatActiveSessionId,
+        );
+      }
+      this.state.dirty = true;
+    } catch {
+      // SessionManager / SQLite errors are best-effort — never crash
+      // the TUI for an observability feature.
+    }
   }
 
   private onTaskEscalate(p: Record<string, unknown>): void {

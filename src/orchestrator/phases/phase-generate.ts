@@ -156,9 +156,14 @@ export async function executeGeneratePhase(
         durationMs: lastAgentResult.durationMs,
         proposedContent: lastAgentResult.proposedContent,
         nonRetryableError: lastAgentResult.nonRetryableError,
+        needsUserInput: lastAgentResult.needsUserInput,
       };
 
-      if (lastAgentResult.isUncertain) {
+      // Agent Conversation: when the agent paused to ask the user, do NOT
+      // record a prior-attempt. A user clarification is not a failed approach —
+      // it's a collaborative request. Recording it would pollute WorkingMemory
+      // and bias future retries against the (not yet answered) approach.
+      if (lastAgentResult.isUncertain && !lastAgentResult.needsUserInput) {
         const { buildAgentSessionSummary } = await import('./generate-helpers.ts');
         const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
         workingMemory.addPriorAttempt(summary);

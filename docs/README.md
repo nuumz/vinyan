@@ -29,6 +29,7 @@
 - [implementation-plan.md](design/implementation-plan.md) — Phase 0-6 implementation roadmap + EO Reconception + DAG Integration
 - [phase6-implementation-plan.md](design/phase6-implementation-plan.md) — Phase 6: Agentic Worker Protocol implementation plan (45/46 steps)
 - [agentic-worker-protocol.md](design/agentic-worker-protocol.md) — Multi-turn tool loop, delegation, session overlay, transcript compaction
+- [agent-conversation.md](design/agent-conversation.md) — Clarification protocol: `input-required` status, interactive delegation, CLARIFIED/CONTEXT constraint conventions (A2 First-Class Uncertainty)
 - [world-model.md](design/world-model.md) — Forward Predictor / World Model design (GAP-A)
 - [forward-predictor-implementation-plan.md](design/forward-predictor-implementation-plan.md) — ForwardPredictor 7-phase implementation plan (FP-A through FP-G)
 - [ehd-confidence-architecture.md](design/ehd-confidence-architecture.md) — Epistemic Humility Deficit confidence architecture (75% → targeting 85%)

@@ -92,10 +92,18 @@ export class SessionManager {
   }
 
   completeTask(sessionId: string, taskId: string, result: TaskResult): void {
+    // Agent Conversation: an `input-required` turn is NOT a failure —
+    // the agent finished its work for this turn and is waiting for the user.
+    // Store it as 'completed' in session_tasks (the full result JSON still
+    // carries status='input-required' in result_json for downstream readers).
+    // The session_tasks CHECK constraint does not allow 'input-required', so
+    // we map at this boundary.
+    const dbStatus =
+      result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
     this.sessionStore.updateTaskStatus(
       sessionId,
       taskId,
-      result.status === 'completed' ? 'completed' : 'failed',
+      dbStatus,
       JSON.stringify(result),
     );
   }
@@ -203,7 +211,21 @@ export class SessionManager {
 
   /** Record an assistant response from a TaskResult. */
   recordAssistantTurn(sessionId: string, taskId: string, result: TaskResult): void {
-    const content = result.answer ?? (result.mutations.map(m => `Modified ${m.file}`).join('\n') || '(no response)');
+    // Agent Conversation: for input-required turns, store clarification
+    // questions in a structured [INPUT-REQUIRED] block so compaction and
+    // next-turn grounding can parse them with pure text matching (A3).
+    let content: string;
+    if (
+      result.status === 'input-required'
+      && result.clarificationNeeded
+      && result.clarificationNeeded.length > 0
+    ) {
+      const questionLines = result.clarificationNeeded.map((q) => `- ${q}`).join('\n');
+      const preamble = result.answer ? `${result.answer}\n\n` : '';
+      content = `${preamble}[INPUT-REQUIRED]\n${questionLines}`;
+    } else {
+      content = result.answer ?? (result.mutations.map(m => `Modified ${m.file}`).join('\n') || '(no response)');
+    }
     const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
 
     this.sessionStore.insertMessage({
@@ -216,6 +238,29 @@ export class SessionManager {
       token_estimate: estimateTokens(content) + estimateTokens(result.thinking ?? ''),
       created_at: Date.now(),
     });
+  }
+
+  /**
+   * Agent Conversation: extract pending clarification questions from the
+   * latest assistant message, if that message is an [INPUT-REQUIRED] block
+   * AND no subsequent user message has been recorded yet.
+   *
+   * Returns an empty array when:
+   *  - No session exists
+   *  - The latest message is not an assistant [INPUT-REQUIRED]
+   *  - The user has already answered (there is a user message after it)
+   *
+   * Pure text matching — A3 compliant, no LLM.
+   */
+  getPendingClarifications(sessionId: string): string[] {
+    const messages = this.sessionStore.getMessages(sessionId);
+    if (messages.length === 0) return [];
+
+    const last = messages[messages.length - 1]!;
+    // If the last message is a user turn, any clarification has already been answered.
+    if (last.role === 'user') return [];
+    if (last.role !== 'assistant') return [];
+    return parseInputRequiredBlock(last.content);
   }
 
   /** Get conversation history within a token budget. */
@@ -290,7 +335,14 @@ export class SessionManager {
     // Build rule-based compact summary from older turns
     const topics = new Map<string, number>();
     const filesDiscussed = new Set<string>();
-    for (const entry of olderEntries) {
+    // Agent Conversation: track open vs resolved clarification questions
+    // across compaction. A question is "resolved" when a user message follows
+    // the [INPUT-REQUIRED] assistant turn that raised it.
+    const openClarifications: string[] = [];
+    const resolvedClarifications: Array<{ question: string; answer: string }> = [];
+
+    for (let i = 0; i < olderEntries.length; i++) {
+      const entry = olderEntries[i]!;
       // Extract file references (common patterns)
       const fileRefs = entry.content.match(/[\w\-./]+\.(ts|js|py|java|tsx|jsx|md|json|yaml|yml)/g);
       if (fileRefs) {
@@ -302,6 +354,21 @@ export class SessionManager {
         const topic = firstLine || '(empty)';
         topics.set(topic, (topics.get(topic) ?? 0) + 1);
       }
+      // Detect [INPUT-REQUIRED] blocks and pair them with any following user turn
+      if (entry.role === 'assistant') {
+        const questions = parseInputRequiredBlock(entry.content);
+        if (questions.length > 0) {
+          const next = olderEntries[i + 1];
+          if (next && next.role === 'user') {
+            const answer = next.content.split('\n')[0]?.slice(0, 120) ?? '';
+            for (const q of questions) {
+              resolvedClarifications.push({ question: q, answer });
+            }
+          } else {
+            for (const q of questions) openClarifications.push(q);
+          }
+        }
+      }
     }
 
     const topicSummary = [...topics.entries()]
@@ -310,10 +377,23 @@ export class SessionManager {
       .map(([topic, count]) => `${count > 1 ? `${count}x ` : ''}${topic}`)
       .join('; ');
 
+    const clarificationLines: string[] = [];
+    if (resolvedClarifications.length > 0) {
+      const sample = resolvedClarifications
+        .slice(0, 5)
+        .map((r) => `Q: ${r.question} → A: ${r.answer}`)
+        .join('; ');
+      clarificationLines.push(`Resolved clarifications: ${sample}`);
+    }
+    if (openClarifications.length > 0) {
+      clarificationLines.push(`Open clarifications (awaiting user): ${openClarifications.slice(0, 5).join('; ')}`);
+    }
+
     const compactContent = [
       `[SESSION CONTEXT: ${olderEntries.length} prior messages, ${turnPairs - keepRecentTurns} turns compacted]`,
       topicSummary ? `Topics: ${topicSummary}` : null,
       filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 10).join(', ')}` : null,
+      ...clarificationLines,
     ].filter(Boolean).join('\n');
 
     const compactEntry: ConversationEntry = {
@@ -342,4 +422,36 @@ export class SessionManager {
 /** Rough token estimation: ~3.5 chars per token for mixed content. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5);
+}
+
+/**
+ * Agent Conversation: parse an assistant message `content` and return the
+ * list of clarification questions if it contains an [INPUT-REQUIRED] block.
+ * Format (written by `recordAssistantTurn`):
+ *
+ *   [optional preamble]
+ *
+ *   [INPUT-REQUIRED]
+ *   - question 1
+ *   - question 2
+ *
+ * Returns [] when the tag is absent. Pure string matching — A3 compliant.
+ */
+export function parseInputRequiredBlock(content: string): string[] {
+  const tagIdx = content.indexOf('[INPUT-REQUIRED]');
+  if (tagIdx === -1) return [];
+  const body = content.slice(tagIdx + '[INPUT-REQUIRED]'.length);
+  const questions: string[] = [];
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('- ')) {
+      const q = trimmed.slice(2).trim();
+      if (q) questions.push(q);
+    } else if (trimmed.length > 0 && questions.length > 0) {
+      // Stop parsing at first non-bullet non-empty line after bullets began.
+      // Keeps this simple and deterministic.
+      break;
+    }
+  }
+  return questions;
 }

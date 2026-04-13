@@ -113,6 +113,22 @@ export function buildSubTaskInput(
   // mutation-oriented perception fields.
   const isReadOnlyRole = subagentType === 'explore' || subagentType === 'plan';
   const taskType = isReadOnlyRole ? 'reasoning' : request.targetFiles?.length ? 'code' : 'reasoning';
+
+  // Agent Conversation: propagate parent-provided context (e.g., resolved
+  // clarifications from a prior delegation round) into the child's
+  // constraints so the understanding pipeline sees them as first-class
+  // grounding rather than free-form prose lost between turns.
+  //
+  // Shape: CONTEXT:<string>
+  //  - When the parent answers a child clarification and re-delegates, it
+  //    sets `request.context` to a summary like
+  //      "Resolved clarifications: 'Which file?' => src/auth.ts; 'Keep alias?' => no"
+  //  - The child's TaskUnderstanding pipeline sees this as a constraint and
+  //    grounds its plan on it via agent-worker-entry's buildInitUserMessage.
+  const contextConstraint: string | undefined = request.context
+    ? `CONTEXT:${request.context}`
+    : undefined;
+
   return {
     id: `${parent.id}-child-${Date.now()}`,
     source: parent.source,
@@ -125,5 +141,6 @@ export function buildSubTaskInput(
       maxDurationMs: childBudget.maxDurationMs,
       maxRetries: 1, // children get 1 retry
     },
+    ...(contextConstraint ? { constraints: [contextConstraint] } : {}),
   };
 }

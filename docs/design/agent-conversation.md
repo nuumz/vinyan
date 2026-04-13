@@ -151,6 +151,66 @@ Consultations share the base pool (via `AgentBudgetTracker.recordConsultation`) 
 - Questions answerable by reading more files
 - Anything requiring context not included in the `context` field — the peer does NOT see the worker's conversation history or tools
 
+### Two-phase Goal Alignment
+
+Vinyan has TWO goal-alignment oracles that fire at different points in the pipeline. They are **complementary, not redundant**, and together form a single two-phase architecture that keeps both "comprehension" (is the goal clear?) and "execution fidelity" (did the worker do what was asked?) under A1 epistemic separation.
+
+```
+┌─ PRE-generation ─────────────────────────────────────────────┐
+│ Comprehension Check                                           │
+│ src/orchestrator/understanding/comprehension-check.ts         │
+│                                                               │
+│ Runs: right after Perceive, before Predict                    │
+│ Input: TaskUnderstanding                                      │
+│ Question: "Is the goal clear enough to act on?"               │
+│ Heuristics: H1 multi-path entity, H4 contradictory claim      │
+│ Output: short-circuit TaskResult.status='input-required'      │
+│         when ambiguous                                        │
+│ Tier: heuristic (0.7 cap via GOAL_ALIGNMENT_HEURISTIC_CAP)    │
+└───────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+                   Predict → Plan → Generate
+                          │
+                          ▼
+┌─ POST-generation ────────────────────────────────────────────┐
+│ Goal Alignment Verifier                                       │
+│ src/oracle/goal-alignment/goal-alignment-verifier.ts          │
+│                                                               │
+│ Runs: during Verify, against HypothesisTuple + mutations      │
+│ Input: HypothesisTuple + TaskUnderstanding + targetFiles      │
+│ Question: "Do the mutations match what the user asked for?"  │
+│ Checks: C1 mutation expectation, C2 target symbol coverage,   │
+│         C3 action-verb alignment, C4 file scope               │
+│ Output: OracleResponse with heuristic confidence              │
+│         Classification: INFORMATIONAL (warns, doesn't block   │
+│         until calibrated via trace data)                      │
+│ Tier: heuristic (0.7 cap)                                     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Both oracles share the same axiomatic posture:**
+
+- **A1 Epistemic Separation** — neither uses an LLM in its verdict path. The Comprehension Check operates on entity resolver + claim verifier output. The Goal Alignment Verifier operates on mutation/symbol/scope matching. Neither is the generator, so both are valid A1 verifiers.
+- **A3 Deterministic Governance** — both are pure rule-based. Given the same input, they produce the same verdict. No randomness.
+- **A5 Tiered Trust** — both cap confidence at `GOAL_ALIGNMENT_HEURISTIC_CAP = 0.7` (heuristic tier). Their output cannot be promoted to "known" tier because both rely on approximate matching (fuzz entity resolution, coarse verb classifier).
+
+**Shared types** live at `src/orchestrator/understanding/goal-alignment-shared.ts`:
+
+- `GoalAlignmentPhase = 'pre-generation' | 'post-generation'`
+- `GOAL_ALIGNMENT_HEURISTIC_CAP = 0.7`
+- `GoalAlignmentPhaseVerdict` — unified shape for shared observability / future cross-phase composition
+
+The shared types are **additive**. The existing oracle registry still uses the legacy `OracleResponse` shape for post-gen verdicts, and the Comprehension Check still returns its native `ComprehensionVerdict`. The shared file documents the contract between the two and gives downstream code (telemetry, cross-phase reasoning, trace metadata) a single place to import common types without refactoring the existing registry.
+
+**Why two phases, not one:**
+
+A single oracle cannot check both comprehension and execution because:
+1. Pre-gen has no mutations — C1-C4 checks cannot run (they require a HypothesisTuple).
+2. Post-gen is too late — by the time mutations exist, budget has been committed; we can't "unask" ambiguity.
+
+Merging the two would either lose pre-gen gating (the whole point of closing the A1 Understanding-layer gap per concept.md §1.1) or force post-gen to abort committed work. Keeping them separate lets each optimize for its phase while sharing the same axiomatic guarantees.
+
 ### Layer 3 — Cross-turn grounding (session)
 
 For multi-turn conversations, `SessionManager` stores each assistant `input-required` turn as a structured `[INPUT-REQUIRED]` block in `session_messages.content`:

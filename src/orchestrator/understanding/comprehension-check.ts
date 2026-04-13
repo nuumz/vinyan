@@ -1,5 +1,23 @@
 /**
- * Comprehension Check — pre-generation orchestrator gate.
+ * Comprehension Check (PRE-generation) — orchestrator gate that runs
+ * right after the Perceive phase, before any Predict/Plan/Generate work
+ * commits budget.
+ *
+ * This file is one half of the two-phase Goal Alignment architecture
+ * (see docs/design/agent-conversation.md → "Two-phase Goal Alignment"
+ * section). The other half is the POST-generation verifier at
+ * `src/oracle/goal-alignment/goal-alignment-verifier.ts`, which checks
+ * the worker's actual mutations against the same `TaskUnderstanding`
+ * this file vets for ambiguity.
+ *
+ *   Two-phase architecture:
+ *     1. PRE-gen  (THIS FILE): "is the goal clear enough to act on?"
+ *     2. Generate phase — worker produces mutations
+ *     3. POST-gen (goal-alignment-verifier): "do the mutations match intent?"
+ *
+ *   Both are rule-based (A3), cap at heuristic tier 0.7 (A5), and operate
+ *   with full epistemic separation from the generator (A1). They are
+ *   complementary, not redundant.
  *
  * Operates on a `TaskUnderstanding` / `SemanticTaskUnderstanding` produced
  * by the Perceive phase. Detects clear goal ambiguities that the agent
@@ -7,11 +25,8 @@
  * clarification questions BEFORE any Predict/Plan/Generate work commits
  * budget.
  *
- * Distinct from `src/oracle/goal-alignment/goal-alignment-verifier.ts`,
- * which is a POST-generation oracle that verifies mutations against
- * intent. The Comprehension Check is pre-generation and operates on
- * pure `TaskUnderstanding` — no mutations, no hypothesis, no worker
- * output.
+ * Shared types with the post-gen verifier live in
+ * `src/orchestrator/understanding/goal-alignment-shared.ts`.
  *
  * Axiom alignment:
  *   - A1 (Epistemic Separation): generation (the worker LLM) is the

@@ -411,11 +411,11 @@ When you call \`delegate_task\`, inspect the tool result's JSON \`output\` field
 If it contains \`"pausedForUserInput": true\` along with a \`"clarificationNeeded"\`
 array, the child worker did NOT fail — it paused because it needs a decision
 about what the user wants. Do NOT treat this as an error, and do NOT retry the
-same delegate_task blindly. You have exactly two options:
+same delegate_task blindly. You have three options:
 
 1. **Answer from your own context, then re-delegate.** If you already know the
-   answer — from the original user goal, perception, prior tool results, or
-   your own plan — construct a NEW delegate_task call with:
+   answers to ALL the child's questions — from the original user goal, perception,
+   prior tool results, or your own plan — construct a NEW delegate_task call with:
    - the same goal (or a more precise restatement),
    - the same targetFiles, and
    - a \`context\` field that explicitly resolves each question the child asked.
@@ -424,15 +424,42 @@ same delegate_task blindly. You have exactly two options:
    ground its plan on the answers.
 
 2. **Bubble up to the user.** If the user's intent really is ambiguous and you
-   do NOT have the information to answer, call attempt_completion with
-   status='uncertain' AND needsUserInput=true. Put the child's questions in
-   your \`uncertainties\` array — you may reframe them to add useful context
-   about what was being delegated. The orchestrator will surface them to the
-   user as clarification questions and wait for an answer.
+   do NOT have the information to answer ANY of the child's questions, call
+   attempt_completion with status='uncertain' AND needsUserInput=true. Put the
+   child's questions in your \`uncertainties\` array — you may reframe them to
+   add useful context about what was being delegated. The orchestrator will
+   surface them to the user as clarification questions and wait for an answer.
 
-Prefer option 1 when you reasonably can — each bubble-up costs a user round-trip.
-But do NOT guess: if the child is paused because of genuine intent ambiguity
-you cannot resolve, option 2 is the correct answer.`;
+3. **Partial resolution — answer some, bubble the rest.** If the child asked
+   MULTIPLE questions and you can answer only SOME of them from your context,
+   do NOT pick "all or nothing". The right flow is:
+
+   a) First, try a **narrow re-delegation**: build a new delegate_task with a
+      \`context\` field that resolves ONLY the questions you can answer. The
+      child re-runs; if it can figure out the remaining questions by reading
+      more files, great — it will return done. If it can't, it will pause
+      again with a SHORTER clarificationNeeded list.
+
+   b) If (a) still leaves unresolved questions, bubble ONLY the remaining
+      subset via attempt_completion. Record the questions you already
+      resolved in \`proposedContent\` so the user sees the context and so
+      the next turn's fresh parent agent (reading conversation history) can
+      recover your resolutions. Example:
+
+      attempt_completion({
+        status: 'uncertain',
+        needsUserInput: true,
+        uncertainties: ["Which auth file should I edit — src/auth.ts or src/auth-v2.ts?"],
+        proposedContent: "I have already resolved from my own context:\\n- Whether to keep the old name as an alias: NO, remove it entirely (user goal said 'clean rewrite').\\nI still need to know which auth file you meant because both exist in the codebase."
+      })
+
+   Prefer option 1 over option 3 when you can cleanly resolve everything, and
+   prefer option 3 over option 2 when you can resolve at least one question —
+   every question you answer yourself saves the user a round-trip.
+
+Prefer options 1 and 3 when you reasonably can — each bubble-up costs a user
+round-trip. But do NOT guess: if a question is genuine intent ambiguity you
+cannot resolve, bubbling it up is the correct answer.`;
 
 export function buildSystemPrompt(routingLevel: number, taskType: 'code' | 'reasoning' = 'code'): string {
   const common = `You are a Vinyan autonomous agent at routing level L${routingLevel}.

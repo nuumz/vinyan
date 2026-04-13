@@ -776,6 +776,35 @@ describe('buildSystemPrompt — delegation clarification guidance', () => {
     const prompt = buildSystemPrompt(1, 'code');
     expect(prompt).not.toContain('Handling Delegated Sub-task Clarifications');
   });
+
+  // ── Multi-round partial answering guidance (PR #8) ─────────────────
+
+  it('L2+ prompt documents the three-way choice (answer-all / bubble-all / partial)', () => {
+    // PR #8: teaches the parent to mix partial resolution with bubble-up
+    // when a delegated child returns multiple questions it can only
+    // answer some of. No new primitives — primitives from PR #2 already
+    // support this. What matters is that the system prompt explicitly
+    // tells the LLM the pattern.
+    const prompt = buildSystemPrompt(2, 'code');
+    expect(prompt).toContain('three options');
+    expect(prompt).toContain('Partial resolution');
+    expect(prompt).toContain('answer some, bubble the rest');
+  });
+
+  it('L2+ prompt includes a concrete partial-resolution example with proposedContent', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    // The example should show how to record pre-resolved questions in
+    // proposedContent so a fresh parent (next turn) can recover them.
+    expect(prompt).toContain('proposedContent');
+    expect(prompt).toContain('already resolved');
+    expect(prompt).toContain('narrow re-delegation');
+  });
+
+  it('L2+ prompt warns against "all or nothing" and favors answering what you can', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    expect(prompt).toContain('all or nothing');
+    expect(prompt).toContain('every question you answer yourself saves the user a round-trip');
+  });
 });
 
 // ── 7. buildInitUserMessage: CLARIFIED / CONTEXT constraint rendering ───

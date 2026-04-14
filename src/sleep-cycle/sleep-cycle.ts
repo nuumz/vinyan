@@ -48,6 +48,22 @@ const DEFAULT_CONFIG: SleepCycleConfig = {
   decayHalfLifeSessions: 50,
 };
 
+/**
+ * Book-integration Wave 2.3: termination sentinel defaults.
+ *
+ * The sentinel is a rule-based "stop pounding on this" guard — if the sleep
+ * cycle runs N times in a row and produces zero measurable change (no new
+ * patterns, no rules generated or promoted, no skills created), it goes
+ * dormant until an underlying data signal moves. This prevents a permanent
+ * no-op loop from burning wall-clock time on every session interval and
+ * replaces the overview's data-gate-only check (which only guards the
+ * INITIAL run) with a continuous progress check.
+ *
+ * Axiom safety:
+ *   A3 — pure rule-based counter + comparison. No LLM in the termination path.
+ */
+const DEFAULT_SENTINEL_MAX_NOOP_CYCLES = 5;
+
 export interface SleepCycleResult {
   cycleId: string;
   patterns: ExtractedPattern[];
@@ -58,6 +74,13 @@ export interface SleepCycleResult {
   rulesPromoted: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
+  /**
+   * Wave 2.3: set when the termination sentinel short-circuits the run.
+   * `'sentinel-dormant'` means the cycle was skipped because the previous
+   * run-chain produced no measurable progress. Dashboards / tests use this
+   * to distinguish "skipped because no work" from "skipped by data gate".
+   */
+  skippedBy?: 'data-gate' | 'sentinel-dormant';
 }
 
 export class SleepCycleRunner {
@@ -76,6 +99,22 @@ export class SleepCycleRunner {
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
   private ineffectiveCycles: Map<string, number> = new Map();
+  /**
+   * Wave 2.3 (book-integration): termination-sentinel state.
+   *
+   * `consecutiveNoopCycles` counts back-to-back runs that produced zero
+   * measurable change. `lastObservedTraceCount` snapshots the trace store
+   * size so the sentinel can wake up whenever new evidence arrives.
+   *
+   * Rationale: before this change, the sleep cycle could run forever on an
+   * empty data set — the data-gate only guards the FIRST run, not the
+   * steady state. A3 (deterministic governance) wants every loop to have
+   * an explicit termination rule; this is it, localized to sleep-cycle
+   * per overview §8 Q4's default scope.
+   */
+  private consecutiveNoopCycles = 0;
+  private lastObservedTraceCount = 0;
+  private readonly sentinelMaxNoopCycles: number = DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
 
   constructor(options: {
     traceStore: TraceStore;
@@ -130,6 +169,39 @@ export class SleepCycleRunner {
         rulesPromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
+        skippedBy: 'data-gate',
+      };
+    }
+
+    // Book-integration Wave 2.3: termination sentinel. If the sentinel is
+    // dormant AND the trace store hasn't grown since the last productive
+    // cycle, there is no reason to re-run analysis — the inputs haven't
+    // changed, so the outputs can't change either. The sentinel wakes on
+    // any trace-count delta, which is a coarse-but-reliable "new evidence
+    // available" signal.
+    const currentTraceCount = stats.traceCount;
+    if (this.consecutiveNoopCycles >= this.sentinelMaxNoopCycles && currentTraceCount === this.lastObservedTraceCount) {
+      this.bus?.emit('observability:alert', {
+        detector: 'sleep-cycle-termination-sentinel',
+        severity: 'warning',
+        message: `sleep cycle dormant: ${this.consecutiveNoopCycles} consecutive no-op cycles, trace count stable at ${currentTraceCount}`,
+        metadata: {
+          cycleId,
+          consecutiveNoopCycles: this.consecutiveNoopCycles,
+          traceCount: currentTraceCount,
+        },
+      });
+      return {
+        cycleId,
+        patterns: [],
+        tracesAnalyzed: 0,
+        antiPatterns: 0,
+        successPatterns: 0,
+        decayedPatterns: 0,
+        rulesPromoted: 0,
+        costPatternsFound: 0,
+        marketPhaseEvaluated: false,
+        skippedBy: 'sentinel-dormant',
       };
     }
 
@@ -143,6 +215,15 @@ export class SleepCycleRunner {
     if (!hasEnoughTraces) {
       const rulesPromoted = await this.backtestProbationRules(new Set());
       this.patternStore.recordCycleComplete(cycleId, traces.length, 0);
+      // Wave 2.3: short-trace path is productive only if it still managed
+      // to promote probation rules — otherwise it's a no-op for the
+      // termination sentinel.
+      if (rulesPromoted > 0) {
+        this.consecutiveNoopCycles = 0;
+      } else {
+        this.consecutiveNoopCycles++;
+      }
+      this.lastObservedTraceCount = stats.traceCount;
       return {
         cycleId,
         patterns: [],
@@ -373,6 +454,25 @@ export class SleepCycleRunner {
     if (this.knowledgeExchange && newPatterns.length > 0) {
       this.knowledgeExchange.exportFromStore();
     }
+
+    // Wave 2.3: update the termination sentinel. A cycle is "productive"
+    // when it generates at least one observable signal for downstream
+    // consumers. Rule definition (matching the productivity signals the
+    // sleep cycle can actually emit):
+    //   - new patterns stored, OR
+    //   - rules generated or promoted, OR
+    //   - skills created, OR
+    //   - cost patterns found
+    // Anything else (decayedCount moves, trace count changes that don't
+    // yield patterns) doesn't count — those are internal housekeeping.
+    const productive =
+      newPatterns.length > 0 || rulesGenerated > 0 || rulesPromoted > 0 || skillsCreated > 0 || costPatternsFound > 0;
+    if (productive) {
+      this.consecutiveNoopCycles = 0;
+    } else {
+      this.consecutiveNoopCycles++;
+    }
+    this.lastObservedTraceCount = stats.traceCount;
 
     return {
       cycleId,

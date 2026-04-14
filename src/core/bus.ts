@@ -116,6 +116,17 @@ export interface VinyanBusEvents {
   'guardrail:injection_detected': { field: string; patterns: string[] };
   'guardrail:bypass_detected': { field: string; patterns: string[] };
   'guardrail:violation': { workerId: string; type: string; details?: string };
+  // Book-integration Wave 1.1: worker-level silence watchdog.
+  // `state` = 'silent' → recoverable warning; 'stalled' → recommend kill.
+  // `silentForMs` is the gap since the last worker turn; `lastEvent`
+  // is the label of the last heartbeat (e.g. "tool_calls", "session_start").
+  'guardrail:silent_agent': {
+    taskId: string;
+    workerId?: string;
+    state: 'silent' | 'stalled';
+    silentForMs: number;
+    lastEvent: string;
+  };
 
   // K1.5: Security violation — input rejected at task entry (block, not strip)
   'security:injection_detected': { taskId: string; detections: string[]; timestamp: number };
@@ -127,7 +138,13 @@ export interface VinyanBusEvents {
   'oracle:contradiction': { taskId: string; passed: string[]; failed: string[] };
 
   // K1.1: Contradiction escalation — auto-escalate routing level on unresolved oracle conflict
-  'verification:contradiction_escalated': { taskId: string; fromLevel: number; toLevel: number; passed: string[]; failed: string[] };
+  'verification:contradiction_escalated': {
+    taskId: string;
+    fromLevel: number;
+    toLevel: number;
+    passed: string[];
+    failed: string[];
+  };
   'verification:contradiction_unresolved': { taskId: string; passed: string[]; failed: string[] };
 
   // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
@@ -245,8 +262,18 @@ export interface VinyanBusEvents {
   'delegation:remote': { parentTaskId: string; childTaskId: string; peerId: string; status: string };
 
   // Phase 6.5: Agent session observability
-  'agent:session_start': { taskId: string; routingLevel: number; budget: { maxTokens: number; maxTurns: number; contextWindow: number } };
-  'agent:session_end': { taskId: string; outcome: string; tokensConsumed: number; turnsUsed: number; durationMs: number };
+  'agent:session_start': {
+    taskId: string;
+    routingLevel: number;
+    budget: { maxTokens: number; maxTurns: number; contextWindow: number };
+  };
+  'agent:session_end': {
+    taskId: string;
+    outcome: string;
+    tokensConsumed: number;
+    turnsUsed: number;
+    durationMs: number;
+  };
   'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
   'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
   // Agent Conversation: fires when a task returns status='input-required'
@@ -279,17 +306,37 @@ export interface VinyanBusEvents {
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };
-  'understanding:layer1_complete': { taskId: string; durationMs: number; entitiesResolved: number; isRecurring: boolean };
+  'understanding:layer1_complete': {
+    taskId: string;
+    durationMs: number;
+    entitiesResolved: number;
+    isRecurring: boolean;
+  };
   'understanding:layer2_complete': { taskId: string; durationMs: number; hasIntent: boolean; depth: number };
-  'understanding:claims_verified': { taskId: string; durationMs: number; totalClaims: number; knownClaims: number; contradictoryClaims: number };
+  'understanding:claims_verified': {
+    taskId: string;
+    durationMs: number;
+    totalClaims: number;
+    knownClaims: number;
+    contradictoryClaims: number;
+  };
   'understanding:calibration': { taskId: string; entityAccuracy: number; categoryMatch: boolean };
 
   // Extensible Thinking events
-  'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
+  'thinking:policy-compiled': {
+    taskId: string;
+    policy: import('../orchestrator/thinking/thinking-policy.ts').ThinkingPolicy;
+    routingLevel: number;
+  };
   // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
-  'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
+  'thinking:escalation-path-chosen': {
+    taskId: string;
+    path: 'lateral' | 'vertical' | 'refuse';
+    fromLevel?: number;
+    toLevel?: number;
+  };
   // Phase 0: Emitted by trace-collector after a task completes, pairing the
   // thinking mode that was used with the measured outcome. Consumed by the
   // Phase 0 data gate (`TraceStore.getSuccessRateByThinkingMode`) to decide
@@ -337,9 +384,24 @@ export interface VinyanBusEvents {
   };
 
   // Economy Operating System events (Layer 1)
-  'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };
-  'economy:budget_warning': { window: 'hour' | 'day' | 'month'; utilization_pct: number; spent_usd: number; limit_usd: number };
-  'economy:budget_exceeded': { window: 'hour' | 'day' | 'month'; spent_usd: number; limit_usd: number; enforcement: string };
+  'economy:cost_recorded': {
+    taskId: string;
+    engineId: string;
+    computed_usd: number;
+    cost_tier: 'billing' | 'estimated';
+  };
+  'economy:budget_warning': {
+    window: 'hour' | 'day' | 'month';
+    utilization_pct: number;
+    spent_usd: number;
+    limit_usd: number;
+  };
+  'economy:budget_exceeded': {
+    window: 'hour' | 'day' | 'month';
+    spent_usd: number;
+    limit_usd: number;
+    enforcement: string;
+  };
   'economy:budget_degraded': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'economy:rate_card_miss': { engineId: string; fallback: string };
 

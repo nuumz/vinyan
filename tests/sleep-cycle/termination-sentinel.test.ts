@@ -68,13 +68,6 @@ describe('SleepCycleRunner — termination sentinel (Wave 2.3)', () => {
     expect(result.skippedBy).toBeUndefined();
   });
 
-  // The SleepCycleRunner generates cycleIds from Date.now() at millisecond
-  // resolution — back-to-back runs within the same ms will hit a PK
-  // collision in the pattern store. Space runs apart with a short wait.
-  const spaced = async (): Promise<void> => {
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  };
-
   test('dormant after N consecutive no-op cycles with stable trace count', async () => {
     const { traceStore, patternStore } = makeStores();
     seedGateClearingTraces(traceStore, 110);
@@ -89,7 +82,6 @@ describe('SleepCycleRunner — termination sentinel (Wave 2.3)', () => {
     for (let i = 0; i < 5; i++) {
       const r = await runner.run();
       expect(r.skippedBy).toBeUndefined();
-      await spaced();
     }
 
     // Sixth run should be short-circuited by the sentinel
@@ -108,10 +100,7 @@ describe('SleepCycleRunner — termination sentinel (Wave 2.3)', () => {
     });
 
     // Trip the sentinel
-    for (let i = 0; i < 5; i++) {
-      await runner.run();
-      await spaced();
-    }
+    for (let i = 0; i < 5; i++) await runner.run();
     const dormant = await runner.run();
     expect(dormant.skippedBy).toBe('sentinel-dormant');
 
@@ -120,7 +109,6 @@ describe('SleepCycleRunner — termination sentinel (Wave 2.3)', () => {
     for (let i = 0; i < 20; i++) {
       traceStore.insert(makeTrace({ sessionId: `s-new-${i}`, taskTypeSignature: `sig-${i % 5}::file.ts` }));
     }
-    await spaced();
     const awake = await runner.run();
     expect(awake.skippedBy).toBeUndefined();
   });

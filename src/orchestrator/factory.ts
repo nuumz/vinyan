@@ -106,6 +106,12 @@ export interface OrchestratorConfig {
   oracleGate?: import('./core-loop.ts').OracleGate;
   /** Override critic engine (for testing fail-closed behavior). */
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
+  /**
+   * Book-integration Wave 1.1: worker-level silence watchdog config.
+   * Omit (default) → conservative 15 s warn / 45 s stall thresholds.
+   * Pass a custom SilentAgentConfig to tune for long-running tasks.
+   */
+  silentAgentConfig?: import('../guardrails/silent-agent.ts').SilentAgentConfig;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
@@ -864,6 +870,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // undefined this property simply doesn't exist on deps and the
     // loop falls back to local-only dispatch.
     instanceCoordinator,
+    // Book-integration Wave 1.1: worker-level silence watchdog. Enabled
+    // by default with conservative thresholds — 15 s to warn, 45 s to
+    // flag stalled. A worker legitimately thinking through a hard
+    // problem typically emits progress events (`agent:tool_executed`,
+    // `agent:turn_complete`) within the warn window; crossing 45 s
+    // without any turn at all is a strong indicator the subprocess is
+    // stuck (infinite loop, blocking read, dead LLM call). Operators
+    // can override via config.silentAgentConfig or disable entirely
+    // by passing `{ warnAfterMs: Number.MAX_SAFE_INTEGER - 1, ... }`.
+    silentAgentConfig: config.silentAgentConfig ?? {
+      warnAfterMs: 15_000,
+      stallAfterMs: 45_000,
+    },
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

@@ -153,7 +153,12 @@ export class SleepCycleRunner {
    * Checks data gate before proceeding.
    */
   async run(): Promise<SleepCycleResult> {
-    const cycleId = `cycle-${Date.now().toString(36)}`;
+    // Book-integration follow-up: add a 4-char random suffix so back-to-
+    // back runs within the same millisecond cannot collide on the
+    // pattern store's PRIMARY KEY. The old `cycle-${Date.now()}` shape
+    // was a latent bug that surfaced in the termination-sentinel test
+    // where six cycles may run inside one event-loop turn.
+    const cycleId = `cycle-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
     // Check data gate
     const stats = this.gatherStats();
@@ -314,7 +319,7 @@ export class SleepCycleRunner {
     // Phase 2.6 + PH3.3: Backtest probation rules — promote or retire
     // Skip rules generated in this cycle — they need fresh data to validate
     const rulesPromoted = await this.backtestProbationRules(newRuleIds);
-    let _rulesRetired = 0;
+    let rulesRetired = 0;
 
     // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
@@ -330,7 +335,7 @@ export class SleepCycleRunner {
           const count = this.trackIneffectiveCycle(rule.id);
           if (count >= 3) {
             this.ruleStore.retire(rule.id);
-            _rulesRetired++;
+            rulesRetired++;
             this.bus?.emit('evolution:ruleRetired', {
               ruleId: rule.id,
               reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
@@ -460,13 +465,20 @@ export class SleepCycleRunner {
     // consumers. Rule definition (matching the productivity signals the
     // sleep cycle can actually emit):
     //   - new patterns stored, OR
-    //   - rules generated or promoted, OR
+    //   - rules generated / promoted / retired, OR
     //   - skills created, OR
     //   - cost patterns found
-    // Anything else (decayedCount moves, trace count changes that don't
-    // yield patterns) doesn't count — those are internal housekeeping.
+    // Retirement counts because pruning a chronically-ineffective rule
+    // materially changes the rule-store state and routing behavior
+    // downstream — same "measurable change" criterion as promotion.
+    // Decay moves alone don't count — decay is internal housekeeping.
     const productive =
-      newPatterns.length > 0 || rulesGenerated > 0 || rulesPromoted > 0 || skillsCreated > 0 || costPatternsFound > 0;
+      newPatterns.length > 0 ||
+      rulesGenerated > 0 ||
+      rulesPromoted > 0 ||
+      rulesRetired > 0 ||
+      skillsCreated > 0 ||
+      costPatternsFound > 0;
     if (productive) {
       this.consecutiveNoopCycles = 0;
     } else {

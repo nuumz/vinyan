@@ -101,7 +101,7 @@ describe('mapTraceToFPOutcome', () => {
   test('success → actualQuality from qualityScore.composite', () => {
     const result = mapTraceToFPOutcome('pred-1', makeTrace({
       outcome: 'success',
-      qualityScore: { composite: 0.85, architecturalCompliance: 0.9, efficiency: 0.8, dimensionsAvailable: 2, phase: 'phase1' as const },
+      qualityScore: { composite: 0.85, architecturalCompliance: 0.9, efficiency: 0.8, dimensionsAvailable: 2, phase: 'extended' as const },
     }));
     expect(result!.actualQuality).toBe(0.85);
   });

@@ -125,6 +125,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
 
   let compressionAttempts = 0;
   let totalTokensConsumed = 0;
+  let totalCacheRead = 0;
+  let totalCacheCreation = 0;
   let turnCount = 0;
 
   try {
@@ -168,11 +170,15 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           reason: `LLM generation error: ${msg}`,
           uncertainties: [`LLM call failed: ${msg}`],
           tokensConsumed: totalTokensConsumed,
+          ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+          ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
         });
         return;
       }
 
       totalTokensConsumed += response.tokensUsed.input + response.tokensUsed.output;
+      totalCacheRead += response.tokensUsed.cacheRead ?? 0;
+      totalCacheCreation += response.tokensUsed.cacheCreation ?? 0;
       turnCount++;
 
       // 4c. Append assistant response to history
@@ -198,6 +204,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           reason: 'max_tokens after compression attempts exhausted',
           uncertainties: ['Context window exhausted'],
           tokensConsumed: totalTokensConsumed,
+          ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+          ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
         });
         return;
       }
@@ -273,6 +281,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
               reason: (params.summary as string) ?? 'Worker reported uncertainty',
               uncertainties: (params.uncertainties as string[]) ?? [],
               tokensConsumed: totalTokensConsumed,
+              ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+              ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
               ...(needsUserInput ? { needsUserInput: true } : {}),
             });
           } else {
@@ -281,6 +291,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
               turnId: `t${turnCount}`,
               proposedContent: (params.proposedContent as string) ?? (params.summary as string),
               tokensConsumed: totalTokensConsumed,
+              ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+              ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
             });
           }
           return;
@@ -294,6 +306,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         turnId: `t${turnCount}`,
         proposedContent: response.content,
         tokensConsumed: totalTokensConsumed,
+        ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+        ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
       });
       return;
     }
@@ -305,6 +319,8 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
       reason: 'Max turns exhausted',
       uncertainties: ['Reached maximum turn limit without completing task'],
       tokensConsumed: totalTokensConsumed,
+      ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
+      ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
     });
   } finally {
     if (watchdog) clearInterval(watchdog);

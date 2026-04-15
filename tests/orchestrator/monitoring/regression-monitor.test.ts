@@ -6,7 +6,7 @@ import {
   REGRESSION_MIN_OBSERVATIONS,
   REGRESSION_RECENT_WINDOW,
   RegressionMonitor,
-} from '../../../src/orchestrator/phase7/regression-monitor.ts';
+} from '../../../src/orchestrator/monitoring/regression-monitor.ts';
 
 function fillBaseline(monitor: RegressionMonitor, sig: string, successRate: number): void {
   // Push baseline observations first — these become the "old" half of
@@ -30,7 +30,7 @@ describe('RegressionMonitor', () => {
   test('alerts when recent window drops by more than threshold', () => {
     const bus = createBus();
     const events: Array<{ drop: number }> = [];
-    bus.on('phase7:silent_regression', (e) => events.push({ drop: e.drop }));
+    bus.on('monitoring:silent_regression', (e) => events.push({ drop: e.drop }));
 
     const monitor = new RegressionMonitor({ bus });
     // Baseline: 90% success.
@@ -62,7 +62,7 @@ describe('RegressionMonitor', () => {
   test('cool-down suppresses repeated alerts within the window', () => {
     const bus = createBus();
     let count = 0;
-    bus.on('phase7:silent_regression', () => count++);
+    bus.on('monitoring:silent_regression', () => count++);
     const monitor = new RegressionMonitor({ bus });
     fillBaseline(monitor, 'sig', 0.95);
     for (let i = 0; i < REGRESSION_RECENT_WINDOW; i++) {

@@ -1,8 +1,8 @@
 /**
- * Phase 0 gate + measurement-event regression tests.
+ * Thinking readiness gate + measurement-event regression tests.
  *
  * Covers three layers:
- *   1. `evaluateThinkingPhase0Gate` — pure function over a stats snapshot.
+ *   1. `evaluateThinkingReadiness` — pure function over a stats snapshot.
  *   2. `TraceStore.getSuccessRateByThinkingMode` — SQL aggregation contract.
  *   3. `TraceCollectorImpl` → `thinking:policy-evaluated` event emission.
  *
@@ -20,11 +20,11 @@ import { TRACE_SCHEMA_SQL } from '../../../src/db/trace-schema.ts';
 import { TraceStore } from '../../../src/db/trace-store.ts';
 import { TraceCollectorImpl } from '../../../src/orchestrator/trace-collector.ts';
 import {
-  evaluateThinkingPhase0Gate,
-  PHASE0_MIN_TRACES,
-  PHASE0_NONE_BUCKET,
+  evaluateThinkingReadiness,
+  THINKING_READINESS_MIN_TRACES,
+  THINKING_READINESS_NONE_BUCKET,
   type ThinkingModeStats,
-} from '../../../src/orchestrator/thinking/phase0-gate.ts';
+} from '../../../src/orchestrator/thinking/thinking-readiness-gate.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
@@ -57,22 +57,22 @@ function statsRow(overrides: Partial<ThinkingModeStats> & { thinkingMode: string
 
 // ── Layer 1: pure gate ──────────────────────────────────────────────
 
-describe('evaluateThinkingPhase0Gate (pure)', () => {
+describe('evaluateThinkingReadiness (pure)', () => {
   test('blocks below volume threshold', () => {
-    const verdict = evaluateThinkingPhase0Gate([
-      statsRow({ thinkingMode: PHASE0_NONE_BUCKET, total: 30, successes: 15, failures: 15, successRate: 0.5 }),
+    const verdict = evaluateThinkingReadiness([
+      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 30, successes: 15, failures: 15, successRate: 0.5 }),
       statsRow({ thinkingMode: 'adaptive:medium', total: 30, successes: 22, failures: 8, successRate: 22 / 30 }),
     ]);
     expect(verdict.status).toBe('blocked');
     if (verdict.status === 'blocked') {
       expect(verdict.reason).toBe('insufficient-volume');
-      expect(verdict.detail).toContain(`${PHASE0_MIN_TRACES}`);
+      expect(verdict.detail).toContain(`${THINKING_READINESS_MIN_TRACES}`);
     }
   });
 
   test('blocks when no thinking modes have been measured', () => {
-    const verdict = evaluateThinkingPhase0Gate([
-      statsRow({ thinkingMode: PHASE0_NONE_BUCKET, total: 150, successes: 100, failures: 50, successRate: 100 / 150 }),
+    const verdict = evaluateThinkingReadiness([
+      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 150, successes: 100, failures: 50, successRate: 100 / 150 }),
     ]);
     expect(verdict.status).toBe('blocked');
     if (verdict.status === 'blocked') {
@@ -81,7 +81,7 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
   });
 
   test('blocks when no baseline (none) exists', () => {
-    const verdict = evaluateThinkingPhase0Gate([
+    const verdict = evaluateThinkingReadiness([
       statsRow({ thinkingMode: 'adaptive:medium', total: 150, successes: 120, failures: 30, successRate: 0.8 }),
     ]);
     expect(verdict.status).toBe('blocked');
@@ -91,8 +91,8 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
   });
 
   test('blocks when delta is below the 5% threshold', () => {
-    const verdict = evaluateThinkingPhase0Gate([
-      statsRow({ thinkingMode: PHASE0_NONE_BUCKET, total: 60, successes: 36, failures: 24, successRate: 0.6 }),
+    const verdict = evaluateThinkingReadiness([
+      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 60, successes: 36, failures: 24, successRate: 0.6 }),
       statsRow({ thinkingMode: 'adaptive:medium', total: 60, successes: 38, failures: 22, successRate: 38 / 60 }),
     ]);
     expect(verdict.status).toBe('blocked');
@@ -102,9 +102,9 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
   });
 
   test('blocks when quality regresses past the cap even if success delta is fine', () => {
-    const verdict = evaluateThinkingPhase0Gate([
+    const verdict = evaluateThinkingReadiness([
       statsRow({
-        thinkingMode: PHASE0_NONE_BUCKET,
+        thinkingMode: THINKING_READINESS_NONE_BUCKET,
         total: 60,
         successes: 30,
         failures: 30,
@@ -127,9 +127,9 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
   });
 
   test('ready when delta is above threshold and quality holds', () => {
-    const verdict = evaluateThinkingPhase0Gate([
+    const verdict = evaluateThinkingReadiness([
       statsRow({
-        thinkingMode: PHASE0_NONE_BUCKET,
+        thinkingMode: THINKING_READINESS_NONE_BUCKET,
         total: 60,
         successes: 30,
         failures: 30,
@@ -148,7 +148,7 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
     expect(verdict.status).toBe('ready');
     if (verdict.status === 'ready') {
       expect(verdict.bestMode).toBe('adaptive:medium');
-      expect(verdict.baselineMode).toBe(PHASE0_NONE_BUCKET);
+      expect(verdict.baselineMode).toBe(THINKING_READINESS_NONE_BUCKET);
       expect(verdict.successRateDelta).toBeCloseTo(0.2, 5);
       expect(verdict.qualityCompositeDelta).toBeCloseTo(0.02, 5);
     }
@@ -174,15 +174,15 @@ describe('evaluateThinkingPhase0Gate (pure)', () => {
       avgQualityComposite: 0.7,
     });
     const baseline = statsRow({
-      thinkingMode: PHASE0_NONE_BUCKET,
+      thinkingMode: THINKING_READINESS_NONE_BUCKET,
       total: 60,
       successes: 30,
       failures: 30,
       successRate: 0.5,
       avgQualityComposite: 0.7,
     });
-    const v1 = evaluateThinkingPhase0Gate([baseline, a, b]);
-    const v2 = evaluateThinkingPhase0Gate([baseline, b, a]);
+    const v1 = evaluateThinkingReadiness([baseline, a, b]);
+    const v2 = evaluateThinkingReadiness([baseline, b, a]);
     expect(v1.status).toBe('ready');
     expect(v2.status).toBe('ready');
     if (v1.status === 'ready' && v2.status === 'ready') {
@@ -215,7 +215,7 @@ describe('TraceStore.getSuccessRateByThinkingMode', () => {
     store.insert(makeTrace({ outcome: 'failure' }));
     const rows = store.getSuccessRateByThinkingMode();
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.thinkingMode).toBe(PHASE0_NONE_BUCKET);
+    expect(rows[0]!.thinkingMode).toBe(THINKING_READINESS_NONE_BUCKET);
     expect(rows[0]!.total).toBe(2);
     expect(rows[0]!.successes).toBe(1);
     expect(rows[0]!.failures).toBe(1);
@@ -229,7 +229,7 @@ describe('TraceStore.getSuccessRateByThinkingMode', () => {
     store.insert(makeTrace({ outcome: 'failure' }));
     const rows = store.getSuccessRateByThinkingMode();
     const byMode = Object.fromEntries(rows.map((r) => [r.thinkingMode, r]));
-    expect(byMode[PHASE0_NONE_BUCKET]!.successRate).toBeCloseTo(0.5, 5);
+    expect(byMode[THINKING_READINESS_NONE_BUCKET]!.successRate).toBeCloseTo(0.5, 5);
     expect(byMode['adaptive:medium']!.successRate).toBeCloseTo(0.8, 5);
   });
 
@@ -240,7 +240,7 @@ describe('TraceStore.getSuccessRateByThinkingMode', () => {
     for (let i = 0; i < 42; i++) store.insert(makeTrace({ thinkingMode: 'adaptive:medium', outcome: 'success' }));
     for (let i = 0; i < 18; i++) store.insert(makeTrace({ thinkingMode: 'adaptive:medium', outcome: 'failure' }));
 
-    const verdict = evaluateThinkingPhase0Gate(store.getSuccessRateByThinkingMode());
+    const verdict = evaluateThinkingReadiness(store.getSuccessRateByThinkingMode());
     expect(verdict.status).toBe('ready');
     if (verdict.status === 'ready') {
       expect(verdict.bestMode).toBe('adaptive:medium');

@@ -1,5 +1,5 @@
 /**
- * Phase 7 — Drift detector.
+ * Monitoring — Drift detector.
  *
  * Pure function over (SelfModel prediction, ExecutionTrace) that reports
  * whether the actual outcome diverges materially from what was predicted.

@@ -180,11 +180,11 @@ export interface OrchestratorDeps {
   llmRegistry?: import('./llm/provider-registry.ts').LLMProviderRegistry;
   /** Remediation engine for automatic tool failure recovery (fast-tier LLM). */
   remediationEngine?: import('./remediation-engine.ts').RemediationEngine;
-  // Phase 7 — Self-Improving Autonomy.
+  // Monitoring — Self-Improving Autonomy.
   /** Per-engine EMA accuracy calibrator. Optional; phase-learn updates it on every trace. */
-  oracleEMACalibrator?: import('./phase7/oracle-ema-calibrator.ts').OracleEMACalibrator;
+  oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
   /** Silent-regression watchdog. Optional; phase-learn feeds task outcomes into it per trace. */
-  regressionMonitor?: import('./phase7/regression-monitor.ts').RegressionMonitor;
+  regressionMonitor?: import('./monitoring/regression-monitor.ts').RegressionMonitor;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;

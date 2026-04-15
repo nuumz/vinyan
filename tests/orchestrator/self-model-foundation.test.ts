@@ -56,7 +56,7 @@ function makeTrace(_prediction: SelfModelPrediction, outcome: 'success' | 'failu
       efficiency: 0.8,
       composite: 0.85,
       dimensionsAvailable: 2,
-      phase: 'phase0' as const,
+      phase: 'basic' as const,
     },
   };
 }

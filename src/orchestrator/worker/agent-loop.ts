@@ -51,6 +51,10 @@ export interface WorkerLoopResult {
   proposedContent?: string;
   uncertainties: string[];
   tokensConsumed: number;
+  /** Prompt caching: total cache-read tokens across all turns in this session. */
+  cacheReadTokens?: number;
+  /** Prompt caching: total cache-creation tokens across all turns in this session. */
+  cacheCreationTokens?: number;
   durationMs: number;
   transcript: WorkerTurn[];
   sessionSummary?: AgentSessionSummary;
@@ -483,12 +487,16 @@ function buildUncertainResult(
   proposedContent?: string,
   nonRetryableError?: string,
   needsUserInput?: boolean,
+  cacheReadTokens?: number,
+  cacheCreationTokens?: number,
 ): WorkerLoopResult {
   return {
     mutations,
     proposedContent,
     uncertainties,
     tokensConsumed,
+    ...(cacheReadTokens ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens ? { cacheCreationTokens } : {}),
     durationMs: Math.round(durationMs),
     transcript,
     isUncertain: true,
@@ -740,6 +748,8 @@ export async function runAgentLoop(
   const overlay = SessionOverlay.create(deps.workspace, input.id);
   let transcript: WorkerTurn[] = [];
   let tokensConsumed = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
@@ -1223,6 +1233,8 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+        cacheReadTokens += turn.cacheReadTokens ?? 0;
+        cacheCreationTokens += turn.cacheCreationTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose, not close('completed')
@@ -1241,6 +1253,8 @@ export async function runAgentLoop(
           proposedContent: turn.proposedContent,
           uncertainties: [],
           tokensConsumed,
+          ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+          ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
           durationMs,
           transcript,
           isUncertain: false,
@@ -1250,6 +1264,8 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+        cacheReadTokens += turn.cacheReadTokens ?? 0;
+        cacheCreationTokens += turn.cacheCreationTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
@@ -1275,6 +1291,8 @@ export async function runAgentLoop(
           // as a non-retryable error — it's a collaborative pause, not a hard failure.
           needsUserInput ? undefined : detectNonRetryableError(turn.uncertainties),
           needsUserInput,
+          cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
         );
       }
     }

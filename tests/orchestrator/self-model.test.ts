@@ -121,7 +121,7 @@ describe('CalibratedSelfModel', () => {
         efficiency: 0.8,
         composite: 0.85,
         dimensionsAvailable: 2,
-        phase: 'phase0',
+        phase: 'basic',
       },
     });
 
@@ -162,7 +162,7 @@ describe('CalibratedSelfModel', () => {
             efficiency: 0.9,
             composite: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       );
@@ -242,7 +242,7 @@ describe('CalibratedSelfModel', () => {
             efficiency: 0.9,
             composite: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       );
@@ -291,7 +291,7 @@ describe('CalibratedSelfModel', () => {
             efficiency: 0.9,
             composite: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       );
@@ -332,7 +332,7 @@ describe('CalibratedSelfModel', () => {
               efficiency: 0.9,
               composite: 0.9,
               dimensionsAvailable: 2,
-              phase: 'phase0',
+              phase: 'basic',
             },
           }),
         );
@@ -354,7 +354,7 @@ describe('CalibratedSelfModel', () => {
               efficiency: 0.9,
               composite: 0.9,
               dimensionsAvailable: 2,
-              phase: 'phase0',
+              phase: 'basic',
             },
           }),
         );
@@ -400,7 +400,7 @@ describe('CalibratedSelfModel', () => {
         model.calibrate(pred, makeTrace({
           id: `trace-rp-${i}`,
           taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.7, efficiency: 0.7, composite: 0.7, dimensionsAvailable: 2, phase: 'phase0' },
+          qualityScore: { architecturalCompliance: 0.7, efficiency: 0.7, composite: 0.7, dimensionsAvailable: 2, phase: 'basic' },
         }));
       }
 
@@ -430,7 +430,7 @@ describe('CalibratedSelfModel', () => {
         model.calibrate(pred, makeTrace({
           id: `trace-rp-${i}`,
           taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.8, efficiency: 0.8, composite: 0.8, dimensionsAvailable: 2, phase: 'phase0' },
+          qualityScore: { architecturalCompliance: 0.8, efficiency: 0.8, composite: 0.8, dimensionsAvailable: 2, phase: 'basic' },
         }));
       }
 
@@ -463,7 +463,7 @@ describe('CalibratedSelfModel', () => {
         model.calibrate(pred, makeTrace({
           id: `trace-lo-${i}`,
           taskTypeSignature: taskSigLow,
-          qualityScore: { architecturalCompliance: 0.0, efficiency: 0.0, composite: 0.0, dimensionsAvailable: 2, phase: 'phase0' },
+          qualityScore: { architecturalCompliance: 0.0, efficiency: 0.0, composite: 0.0, dimensionsAvailable: 2, phase: 'basic' },
         }));
       }
 
@@ -485,7 +485,7 @@ describe('CalibratedSelfModel', () => {
         model.calibrate(pred, makeTrace({
           id: `trace-hi-${i}`,
           taskTypeSignature: taskSigHigh,
-          qualityScore: { architecturalCompliance: 1.0, efficiency: 1.0, composite: 1.0, dimensionsAvailable: 2, phase: 'phase0' },
+          qualityScore: { architecturalCompliance: 1.0, efficiency: 1.0, composite: 1.0, dimensionsAvailable: 2, phase: 'basic' },
         }));
       }
 
@@ -524,7 +524,7 @@ describe('CalibratedSelfModel', () => {
         model.calibrate(pred, makeTrace({
           id: `trace-sum-${i}`,
           taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.6, efficiency: 0.6, composite: 0.6, dimensionsAvailable: 2, phase: 'phase0' },
+          qualityScore: { architecturalCompliance: 0.6, efficiency: 0.6, composite: 0.6, dimensionsAvailable: 2, phase: 'basic' },
         }));
       }
 

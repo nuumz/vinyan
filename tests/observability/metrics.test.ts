@@ -45,7 +45,7 @@ function insertTrace(store: TraceStore, overrides?: Partial<ExecutionTrace>) {
       efficiency: 0.8,
       composite: 0.85,
       dimensionsAvailable: 2,
-      phase: 'phase0',
+      phase: 'basic',
     },
     ...overrides,
   } as ExecutionTrace);

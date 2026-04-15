@@ -58,7 +58,7 @@ function makeTrace(
       efficiency: 0.8,
       composite: 0.85,
       dimensionsAvailable: 2,
-      phase: 'phase0' as const,
+      phase: 'basic' as const,
     },
   };
 }
@@ -84,7 +84,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
             efficiency: 0.9,
             composite: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0' as const,
+            phase: 'basic' as const,
           },
         });
       }
@@ -109,7 +109,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
             efficiency: 0.8,
             composite: 0.8,
             dimensionsAvailable: 2,
-            phase: 'phase0' as const,
+            phase: 'basic' as const,
           },
         });
       }
@@ -126,7 +126,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
           efficiency: 0,
           composite: 0,
           dimensionsAvailable: 2,
-          phase: 'phase0' as const,
+          phase: 'basic' as const,
         },
       });
 
@@ -155,7 +155,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
             efficiency: 0.9,
             composite: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0' as const,
+            phase: 'basic' as const,
           },
         });
       }
@@ -171,7 +171,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
             efficiency: 0.3,
             composite: 0.3,
             dimensionsAvailable: 2,
-            phase: 'phase0' as const,
+            phase: 'basic' as const,
           },
         });
       }
@@ -201,7 +201,7 @@ describe('PH3.2: Adaptive EMA + Per-Task-Type Storage', () => {
             efficiency: 0.85,
             composite: 0.85,
             dimensionsAvailable: 2,
-            phase: 'phase0' as const,
+            phase: 'basic' as const,
           },
         });
       }

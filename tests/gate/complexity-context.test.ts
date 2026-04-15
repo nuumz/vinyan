@@ -65,7 +65,7 @@ describe('buildComplexityContext (P3.3 — QualityScore enrichment)', () => {
     );
     expect(qs.simplificationGain).toBeDefined();
     expect(qs.simplificationGain!).toBeGreaterThan(0);
-    expect(qs.phase).toBe('phase1');
+    expect(qs.phase).toBe('extended');
     expect(qs.dimensionsAvailable).toBe(3);
   });
 

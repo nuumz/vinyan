@@ -67,8 +67,8 @@ import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleGateAdapter } from './oracle-gate-adapter.ts';
 import { PerceptionAssemblerImpl } from './perception.ts';
-import { OracleEMACalibrator } from './phase7/oracle-ema-calibrator.ts';
-import { RegressionMonitor } from './phase7/regression-monitor.ts';
+import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
+import { RegressionMonitor } from './monitoring/regression-monitor.ts';
 import { FileStatsCache } from './prediction/file-stats-cache.ts';
 import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
 import { PercentileCache } from './prediction/percentile-cache.ts';
@@ -718,8 +718,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* forward predictor wiring is best-effort */
   }
 
-  // Phase 7 — Self-Improving Autonomy modules. Pure in-memory observers
-  // that watch each trace and emit `phase7:*` events. They never block
+  // Monitoring — Self-Improving Autonomy modules. Pure in-memory observers
+  // that watch each trace and emit `monitoring:*` events. They never block
   // the pipeline — Phase Learn calls them in best-effort try/catch.
   // Drift detection is stateless and does not need a dep — it's invoked
   // inline in Phase Learn.
@@ -779,9 +779,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Intent Resolver: LLM registry for pre-routing semantic classification
     llmRegistry: registry,
     remediationEngine,
-    // Phase 7 — Self-Improving Autonomy: per-engine EMA calibration +
+    // Monitoring — Self-Improving Autonomy: per-engine EMA calibration +
     // silent-regression watchdog. Phase Learn updates both on every
-    // trace; dashboards subscribe to `phase7:*` events. Drift detection
+    // trace; dashboards subscribe to `monitoring:*` events. Drift detection
     // is stateless and is invoked inline in Phase Learn — no dep needed.
     oracleEMACalibrator,
     regressionMonitor,

@@ -425,6 +425,8 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     turnId: z.string(),
     proposedContent: z.string().optional(),
     tokensConsumed: z.number().optional(),
+    cacheReadTokens: z.number().optional(),
+    cacheCreationTokens: z.number().optional(),
   }),
   z.object({
     type: z.literal('uncertain'),
@@ -433,6 +435,8 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     uncertainties: z.array(z.string()),
     suggestedNextStep: z.string().optional(),
     tokensConsumed: z.number().optional(),
+    cacheReadTokens: z.number().optional(),
+    cacheCreationTokens: z.number().optional(),
     /**
      * Agent Conversation: when true, the `uncertainties` are questions to the
      * user (not code-fact uncertainties). Orchestrator surfaces them as a

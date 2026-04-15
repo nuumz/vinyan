@@ -112,7 +112,7 @@ describe('PH3.7: Phase 3 Report', () => {
               architecturalCompliance: 0.7,
               efficiency: 0.6,
               dimensionsAvailable: 2,
-              phase: 'phase0',
+              phase: 'basic',
             },
           }),
         );

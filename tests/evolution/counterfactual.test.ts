@@ -21,7 +21,7 @@ function makeTrace(overrides?: Partial<ExecutionTrace>): ExecutionTrace {
       architecturalCompliance: 0.7,
       efficiency: 0.7,
       dimensionsAvailable: 2,
-      phase: 'phase0' as const,
+      phase: 'basic' as const,
     },
     ...overrides,
   };
@@ -39,7 +39,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
             architecturalCompliance: 0.6,
             efficiency: 0.6,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
         makeTrace({
@@ -50,7 +50,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
             architecturalCompliance: 0.8,
             efficiency: 0.8,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
         makeTrace({
@@ -61,7 +61,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
             architecturalCompliance: 0.9,
             efficiency: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       ];
@@ -83,7 +83,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
             architecturalCompliance: 0.8,
             efficiency: 0.8,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       ];
@@ -108,7 +108,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
               architecturalCompliance: 0.5,
               efficiency: 0.5,
               dimensionsAvailable: 2,
-              phase: 'phase0',
+              phase: 'basic',
             },
           }),
         );
@@ -124,7 +124,7 @@ describe('PH3.6: Counterfactual Analysis', () => {
               architecturalCompliance: 0.9,
               efficiency: 0.9,
               dimensionsAvailable: 2,
-              phase: 'phase0',
+              phase: 'basic',
             },
           }),
         );

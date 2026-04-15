@@ -97,7 +97,7 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const trace = orchestrator.traceCollector.getTraces()[0]!;
     expect(trace.qualityScore).toBeDefined();
     // Without complexity context, should be phase0 (2 dims) or phase1 (3 dims if test oracle present)
-    expect(['phase0', 'phase1']).toContain(trace.qualityScore!.phase);
+    expect(['basic', 'extended']).toContain(trace.qualityScore!.phase);
   });
 
   test('successful task result includes qualityScore', async () => {

@@ -46,6 +46,7 @@ import { WorldGraph } from '../world-graph/world-graph.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
@@ -112,6 +113,14 @@ export interface OrchestratorConfig {
    * Pass a custom SilentAgentConfig to tune for long-running tasks.
    */
   silentAgentConfig?: import('../guardrails/silent-agent.ts').SilentAgentConfig;
+  /**
+   * Book-integration Wave 5.7a: per-task Architecture Debate cap.
+   * Default: 1 — a task can fire the debate at most once across its
+   * entire inner retry loop. Set to 0 to disable debate entirely, or
+   * to a larger number to allow re-runs after failed retries. The
+   * per-day cap at the Economy OS layer is separate future work.
+   */
+  debateMaxPerTask?: number;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
@@ -557,7 +566,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // Wave 5 observability: pass the bus so the router can emit
       // `critic:debate_fired` when the debate path is chosen. Dashboards
       // and Economy OS use this to track debate spending separately.
-      criticEngine = new DebateRouterCritic(baselineCritic, debateCritic, { bus });
+      //
+      // Wave 5.7a: also wire a per-task DebateBudgetGuard (default
+      // maxPerTask: 1). If a task's inner retry loop would fire the
+      // debate more than once, the guard denies the second+ attempts
+      // and falls through to the baseline critic. The cap is a
+      // conservative default that prevents runaway Opus×3 spend on a
+      // single task. Operators that want a different cap can override
+      // via config.debateMaxPerTask.
+      const budgetGuard = new DebateBudgetGuard({
+        maxPerTask: config.debateMaxPerTask ?? 1,
+        ...(bus ? { bus } : {}),
+      });
+      criticEngine = new DebateRouterCritic(baselineCritic, debateCritic, {
+        bus,
+        budgetGuard,
+      });
     }
   }
 

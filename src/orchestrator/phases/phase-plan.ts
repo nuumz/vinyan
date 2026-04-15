@@ -5,15 +5,16 @@
  * causal risk, predicts cost, and checks the approval gate.
  */
 
+import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type {
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
   SemanticTaskUnderstanding,
+  TaskInput,
   TaskResult,
 } from '../types.ts';
-import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { PhaseContext, PlanResult, PhaseContinue, PhaseReturn } from './types.ts';
+import type { PhaseContext, PhaseContinue, PhaseReturn, PlanResult } from './types.ts';
 import { Phase } from './types.ts';
 
 export async function executePlanPhase(
@@ -32,6 +33,20 @@ export async function executePlanPhase(
     if (plan.isFallback) {
       deps.bus?.emit('decomposer:fallback', { taskId: input.id });
     }
+  }
+
+  // Wave 5.2 (Phase A §7 seam #2 closure): if the decomposer emitted a
+  // preamble on the DAG, merge it into a CLONED TaskInput and return
+  // that clone on `enhancedInput`. The core-loop swaps `ctx.input` for
+  // the enhanced version on subsequent phases so downstream worker
+  // dispatch and prompt assembly see the merged constraints. The
+  // caller's original input is never mutated.
+  let enhancedInput: TaskInput | undefined;
+  if (plan?.preamble && plan.preamble.length > 0) {
+    enhancedInput = {
+      ...input,
+      constraints: [...(input.constraints ?? []), ...plan.preamble],
+    };
   }
 
   // C2: Score plan nodes by causal risk → reorder for fail-fast
@@ -83,14 +98,14 @@ export async function executePlanPhase(
     }
   }
 
-  return Phase.continue({ plan });
+  return Phase.continue({
+    plan,
+    ...(enhancedInput ? { enhancedInput } : {}),
+  });
 }
 
 /** Score plan nodes by ForwardPredictor causal risk → reorder for fail-fast. */
-export function scorePlanByPrediction(
-  plan: import('../types.ts').TaskDAG,
-  forwardPrediction: OutcomePrediction,
-): void {
+export function scorePlanByPrediction(plan: import('../types.ts').TaskDAG, forwardPrediction: OutcomePrediction): void {
   if (!forwardPrediction.causalRiskFiles.length) return;
   for (const node of plan.nodes) {
     const matchingRisks = forwardPrediction.causalRiskFiles.filter((r) => node.targetFiles.includes(r.filePath));

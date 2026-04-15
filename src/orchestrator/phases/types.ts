@@ -8,12 +8,11 @@
 import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { OracleVerdict, QualityScore } from '../../core/types.ts';
-import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { EpistemicGateDecision } from '../../gate/epistemic-decision.ts';
+import type { OrchestratorDeps } from '../core-loop.ts';
+import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { ConfidenceDecision } from '../pipeline-confidence.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
-import type { WorkingMemory } from '../working-memory.ts';
 import type {
   CachedSkill,
   ConversationEntry,
@@ -31,7 +30,8 @@ import type {
   WorkerSelectionResult,
   WorkingMemoryState,
 } from '../types.ts';
-import type { OrchestratorDeps } from '../core-loop.ts';
+import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkingMemory } from '../working-memory.ts';
 
 // ---------------------------------------------------------------------------
 // Shared phase context
@@ -112,6 +112,14 @@ export interface PredictResult {
 
 export interface PlanResult {
   plan?: TaskDAG;
+  /**
+   * Wave 5.2: optional input with the DAG's preamble merged into
+   * `constraints`. Present only when `plan.preamble` was non-empty.
+   * The core-loop swaps `ctx.input` for this enhanced clone so the
+   * caller's original TaskInput is never mutated. When absent, the
+   * existing `ctx.input` is used unchanged.
+   */
+  enhancedInput?: TaskInput;
 }
 
 export interface GenerateResult {

@@ -838,7 +838,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   let totalTokensConsumed = 0;
   const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
 
-  const ctx: PhaseContext = {
+  // Wave 5.2: `ctx` is declared with `let` so the plan phase can hand
+  // back an `enhancedInput` (with the DAG's preamble merged into
+  // `constraints`) and the core-loop swaps `ctx.input` for subsequent
+  // phases. The caller's original `input` is never mutated because the
+  // enhanced variant is a shallow clone produced by phase-plan.
+  let ctx: PhaseContext = {
     input,
     deps,
     startTime,
@@ -1024,7 +1029,16 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         routingLevel: routing.level,
       });
       if (planOutcome.action === 'return') return planOutcome.result;
-      const { plan } = planOutcome.value;
+      const { plan, enhancedInput } = planOutcome.value;
+
+      // Wave 5.2: if the plan phase produced an enhanced input (e.g.
+      // research-swarm preset attached a report-contract preamble),
+      // rebuild the phase context so subsequent phases see the merged
+      // constraints. This replaces the earlier in-place mutation of
+      // `input.constraints` inside the decomposer (Phase A §7 seam #2).
+      if (enhancedInput) {
+        ctx = { ...ctx, input: enhancedInput };
+      }
 
       // ═══════════════════════════════════════════════════════════════
       // Step 4: GENERATE

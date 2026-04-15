@@ -322,19 +322,17 @@ maintainers don't think they're accidents.
    typed `riskScore` and `routingLevel` fields. `core-loop.ts` passes
    it explicitly; `DebateRouterCritic` reads it from the context. Both
    `as unknown as { riskScore? }` casts have been removed. See Phase B §7.
-2. **`input.constraints` mutation in the research-swarm preset**. The
-   preset appends the report contract directly to the caller's
-   `TaskInput.constraints` array. Passing a cloned TaskInput downstream
-   would be cleaner; the mutation is safe today because the only consumer
-   that sees it is the orchestration pipeline that owns the task.
-   **Deferred analysis (Wave 5, 2026-04-15):** removing the mutation
-   without a broader refactor breaks constraint propagation because
-   the downstream worker's prompt assembler reads constraints from the
-   same TaskInput that the caller holds. Cleaning this up requires
-   either (a) a new `TaskDAG.preamble` field that the worker-spawn
-   path reads at dispatch time, or (b) returning an "enhanced" input
-   from `decompose()` that the core-loop then uses. Both are scope
-   changes; the current mutation is intentionally flagged and stays.
+2. ~~`input.constraints` mutation in the research-swarm preset~~ —
+   ✅ **CLOSED (Wave 5.2, 2026-04-15 phase 2).** Option (a) shipped:
+   added `TaskDAG.preamble` field, preset emits it, `phase-plan`
+   builds an `enhancedInput` clone with merged constraints, core-loop
+   swaps `ctx.input` to the enhanced version for subsequent phases,
+   and `agent-loop` merges `plan.preamble` into
+   `understanding.constraints` when building the worker init turn.
+   **Bonus:** this is the first time the research-swarm REPORT_CONTRACT
+   actually reaches the worker's LLM system prompt — the old mutation
+   was a decorative no-op because understanding was pre-computed
+   before the decomposer ran.
 3. **Peek event whitelist drift**. Adding a new bus event that carries a
    `taskId` requires editing `TASK_EVENTS` in `src/tui/views/peek.ts`. A
    type-level registry tagged at the bus event declaration would close

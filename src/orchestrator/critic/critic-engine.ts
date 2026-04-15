@@ -38,6 +38,28 @@ export interface CriticResult {
   tokensUsed: { input: number; output: number };
 }
 
+/**
+ * Book-integration Wave 5.1: optional context passed alongside the proposal.
+ *
+ * Replaces the earlier `(task as unknown as { riskScore?: number }).riskScore`
+ * cast in both `core-loop.ts` and `DebateRouterCritic`. Implementations that
+ * don't care about routing signal can simply ignore this argument — it is
+ * optional at every level of the call chain.
+ *
+ * Fields:
+ *   - `riskScore`: the risk-router's output (0..1), used by the debate
+ *     router to decide whether to fire the 3-seat debate mode.
+ *   - `routingLevel`: the current routing level, for critics that want to
+ *     scale their review depth with the routing tier.
+ *
+ * A3-safe: the context is metadata threaded by the orchestrator, not
+ * computed by any LLM in the critic path.
+ */
+export interface CriticContext {
+  riskScore?: number;
+  routingLevel?: number;
+}
+
 /** CriticEngine interface — implemented by LLMCriticImpl */
 export interface CriticEngine {
   review(
@@ -45,5 +67,6 @@ export interface CriticEngine {
     task: TaskInput,
     perception: PerceptualHierarchy,
     acceptanceCriteria?: string[],
+    context?: CriticContext,
   ): Promise<CriticResult>;
 }

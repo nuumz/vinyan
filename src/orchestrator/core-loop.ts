@@ -14,10 +14,15 @@
 
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
-import { validateInput } from '../guardrails/index.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
-import { commitArtifacts } from './worker/artifact-commit.ts';
-import { WorkingMemory } from './working-memory.ts';
+import { validateInput } from '../guardrails/index.ts';
+import { executeGeneratePhase } from './phases/phase-generate.ts';
+import { executeLearnPhase } from './phases/phase-learn.ts';
+import { executePerceivePhase } from './phases/phase-perceive.ts';
+import { executePlanPhase } from './phases/phase-plan.ts';
+import { executePredictPhase } from './phases/phase-predict.ts';
+import { executeVerifyPhase } from './phases/phase-verify.ts';
+import type { PhaseContext } from './phases/types.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
@@ -34,25 +39,20 @@ import type {
   TaskResult,
   WorkingMemoryState,
 } from './types.ts';
-
-import { executePerceivePhase } from './phases/phase-perceive.ts';
-import { executePredictPhase } from './phases/phase-predict.ts';
-import { executePlanPhase } from './phases/phase-plan.ts';
-import { executeGeneratePhase } from './phases/phase-generate.ts';
-import { executeVerifyPhase } from './phases/phase-verify.ts';
-import { executeLearnPhase } from './phases/phase-learn.ts';
-import type { PhaseContext } from './phases/types.ts';
-import {
-  checkComprehension,
-  isComprehensionCheckDisabled,
-} from './understanding/comprehension-check.ts';
+import { checkComprehension, isComprehensionCheckDisabled } from './understanding/comprehension-check.ts';
+import { commitArtifacts } from './worker/artifact-commit.ts';
+import { WorkingMemory } from './working-memory.ts';
 
 // ---------------------------------------------------------------------------
 // Dependency interfaces (injected — each implemented in its own module)
 // ---------------------------------------------------------------------------
 
 export interface PerceptionAssembler {
-  assemble(input: TaskInput, level: RoutingLevel, understanding?: import('./types.ts').TaskUnderstanding): Promise<PerceptualHierarchy>;
+  assemble(
+    input: TaskInput,
+    level: RoutingLevel,
+    understanding?: import('./types.ts').TaskUnderstanding,
+  ): Promise<PerceptualHierarchy>;
 }
 
 export interface RiskRouter {
@@ -61,7 +61,11 @@ export interface RiskRouter {
 
 export interface SelfModel {
   predict(input: TaskInput, perception: PerceptualHierarchy): Promise<SelfModelPrediction>;
-  calibrate?(prediction: SelfModelPrediction, trace: ExecutionTrace, engineCertaintyMap?: Record<string, number>): PredictionError | undefined;
+  calibrate?(
+    prediction: SelfModelPrediction,
+    trace: ExecutionTrace,
+    engineCertaintyMap?: Record<string, number>,
+  ): PredictionError | undefined;
   /** EO #6: Get Self-Model calibrated reasoning budget policy for a task type. */
   getReasoningPolicy?(taskTypeSignature: string): ReasoningPolicy;
   /** STU Phase D: Access per-task-type params for enriched signature computation. */
@@ -206,13 +210,19 @@ export { scorePlanByPrediction } from './phases/phase-plan.ts';
 // Pre-routing setup
 // ---------------------------------------------------------------------------
 
-async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promise<{
-  understanding: SemanticTaskUnderstanding;
-  routing: RoutingDecision;
-  workingMemory: WorkingMemory;
-  explorationFlag: boolean;
-  intentResolution?: IntentResolution;
-} | TaskResult> {
+async function prepareExecution(
+  input: TaskInput,
+  deps: OrchestratorDeps,
+): Promise<
+  | {
+      understanding: SemanticTaskUnderstanding;
+      routing: RoutingDecision;
+      workingMemory: WorkingMemory;
+      explorationFlag: boolean;
+      intentResolution?: IntentResolution;
+    }
+  | TaskResult
+> {
   // ── K1.5: Input validation gate ──
   const inputCheck = validateInput(input.goal);
   if (inputCheck.status === 'rejected') {
@@ -264,9 +274,8 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
 
   // ── LLM Intent Resolution — semantic classification before pipeline ──
   // Skip for code-mutation tasks (already well-classified by regex) and tasks with explicit target files.
-  const needsIntentResolution = deps.llmRegistry
-    && understanding.taskDomain !== 'code-mutation'
-    && !(input.targetFiles?.length);
+  const needsIntentResolution =
+    deps.llmRegistry && understanding.taskDomain !== 'code-mutation' && !input.targetFiles?.length;
   let intentResolution: IntentResolution | undefined;
   if (needsIntentResolution && deps.llmRegistry) {
     try {
@@ -409,7 +418,13 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
     const fromLevel = routing.level;
     const newLevel = (routing.level + 1) as RoutingLevel;
     const cfg = LEVEL_CONFIG[newLevel];
-    routing = { ...routing, level: newLevel, model: cfg.model, budgetTokens: cfg.budgetTokens, latencyBudgetMs: cfg.latencyBudgetMs };
+    routing = {
+      ...routing,
+      level: newLevel,
+      model: cfg.model,
+      budgetTokens: cfg.budgetTokens,
+      latencyBudgetMs: cfg.latencyBudgetMs,
+    };
     explorationFlag = true;
     deps.bus?.emit('task:explore', { taskId: input.id, fromLevel, toLevel: routing.level });
   }
@@ -431,7 +446,13 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
   // Capability floor: tool-needed tasks require L2+
   if (understanding.toolRequirement === 'tool-needed' && routing.level < (2 as RoutingLevel)) {
     const l2Cfg = LEVEL_CONFIG[2];
-    routing = { ...routing, level: 2 as RoutingLevel, model: l2Cfg.model, budgetTokens: l2Cfg.budgetTokens, latencyBudgetMs: l2Cfg.latencyBudgetMs };
+    routing = {
+      ...routing,
+      level: 2 as RoutingLevel,
+      model: l2Cfg.model,
+      budgetTokens: l2Cfg.budgetTokens,
+      latencyBudgetMs: l2Cfg.latencyBudgetMs,
+    };
   }
 
   // CLI --thinking flag
@@ -445,7 +466,11 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
     const allocation = deps.dynamicBudgetAllocator.allocate(taskSig, routing.level, routing.budgetTokens);
     if (allocation.source !== 'default') {
       routing = { ...routing, budgetTokens: allocation.maxTokens };
-      deps.bus?.emit('economy:budget_allocated', { taskId: input.id, maxTokens: allocation.maxTokens, source: allocation.source });
+      deps.bus?.emit('economy:budget_allocated', {
+        taskId: input.id,
+        maxTokens: allocation.maxTokens,
+        source: allocation.source,
+      });
     }
   }
 
@@ -458,7 +483,7 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
         taskId: input.id,
         timestamp: Date.now(),
         routingLevel: routing.level,
-        taskTypeSignature: (understanding.taskTypeSignature as string | undefined),
+        taskTypeSignature: understanding.taskTypeSignature as string | undefined,
         approach: 'budget-blocked',
         oracleVerdicts: {},
         modelUsed: routing.model ?? 'none',
@@ -476,8 +501,19 @@ async function prepareExecution(input: TaskInput, deps: OrchestratorDeps): Promi
       const fromLevel = routing.level;
       const degradeLevel = budgetCheck.degradeToLevel as RoutingLevel;
       const cfg = LEVEL_CONFIG[degradeLevel];
-      routing = { ...routing, level: degradeLevel, model: cfg.model, budgetTokens: cfg.budgetTokens, latencyBudgetMs: cfg.latencyBudgetMs };
-      deps.bus?.emit('economy:budget_degraded', { taskId: input.id, fromLevel, toLevel: degradeLevel, reason: 'Global budget pressure' });
+      routing = {
+        ...routing,
+        level: degradeLevel,
+        model: cfg.model,
+        budgetTokens: cfg.budgetTokens,
+        latencyBudgetMs: cfg.latencyBudgetMs,
+      };
+      deps.bus?.emit('economy:budget_degraded', {
+        taskId: input.id,
+        fromLevel,
+        toLevel: degradeLevel,
+        reason: 'Global budget pressure',
+      });
     }
   }
 
@@ -604,14 +640,12 @@ async function executeDirectTool(
       // Step 2: LLM remediation (if discovery didn't work)
       if (toolResult?.status !== 'success' && analysis.recoverable && deps.remediationEngine) {
         const command = (toolCall.parameters.command as string) ?? '';
-        const suggestion = await deps.remediationEngine.suggest(
-          input.goal, command, analysis, process.platform,
-        );
+        const suggestion = await deps.remediationEngine.suggest(input.goal, command, analysis, process.platform);
 
         if (
-          suggestion.action === 'retry_corrected'
-          && suggestion.correctedCommand
-          && suggestion.confidence >= deps.remediationEngine.confidenceThreshold
+          suggestion.action === 'retry_corrected' &&
+          suggestion.correctedCommand &&
+          suggestion.confidence >= deps.remediationEngine.confidenceThreshold
         ) {
           deps.bus?.emit('tool:remediation_attempted', {
             taskId: input.id,
@@ -666,9 +700,12 @@ async function executeDirectTool(
     };
     await deps.traceCollector.record(trace);
     deps.bus?.emit('trace:record', { trace });
-    const answer = toolResult?.status === 'success'
-      ? (typeof toolResult.output === 'string' ? toolResult.output : JSON.stringify(toolResult.output))
-      : toolResult?.error ?? 'Tool execution failed';
+    const answer =
+      toolResult?.status === 'success'
+        ? typeof toolResult.output === 'string'
+          ? toolResult.output
+          : JSON.stringify(toolResult.output)
+        : (toolResult?.error ?? 'Tool execution failed');
 
     // Guard: if tool "succeeded" but produced no meaningful output, fall through
     // to the pipeline — the direct-tool shortcircuit didn't actually answer the user.
@@ -780,20 +817,21 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   // Agent Conversation: input-required is treated as completed from the
   // checkpoint's perspective — this turn's work is done; the agent just
   // asked the user for clarification before the next turn.
-  const detachCheckpoint = deps.taskCheckpoint && deps.bus
-    ? deps.bus.on('task:complete', ({ result }) => {
-        if (result.id !== input.id) return;
-        try {
-          if (result.status === 'completed' || result.status === 'input-required') {
-            deps.taskCheckpoint!.complete(result.id);
-          } else {
-            deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
+  const detachCheckpoint =
+    deps.taskCheckpoint && deps.bus
+      ? deps.bus.on('task:complete', ({ result }) => {
+          if (result.id !== input.id) return;
+          try {
+            if (result.status === 'completed' || result.status === 'input-required') {
+              deps.taskCheckpoint!.complete(result.id);
+            } else {
+              deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
+            }
+          } catch {
+            // Checkpoint update failure is non-fatal
           }
-        } catch {
-          // Checkpoint update failure is non-fatal
-        }
-      })
-    : undefined;
+        })
+      : undefined;
 
   let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
   const BUDGET_CAP_MULTIPLIER = 6;
@@ -812,7 +850,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   // Outer loop: routing level escalation
   routingLoop: while (routing.level <= MAX_ROUTING_LEVEL) {
     let matchedSkill: CachedSkill | null = null;
-    let deliberationBonusRetries = 0;
+    const deliberationBonusRetries = 0;
 
     // Inner loop: retry within current routing level
     for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
@@ -868,7 +906,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ═══════════════════════════════════════════════════════════════
       const perceiveStart = Date.now();
       const perceiveResult = await executePerceivePhase(ctx, routing, understanding, totalTokensConsumed);
-      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'perceive', durationMs: Date.now() - perceiveStart, routingLevel: routing.level });
+      deps.bus?.emit('phase:timing', {
+        taskId: input.id,
+        phase: 'perceive',
+        durationMs: Date.now() - perceiveStart,
+        routingLevel: routing.level,
+      });
       const { perception } = perceiveResult.value;
       understanding = perceiveResult.value.understanding;
 
@@ -957,9 +1000,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ═══════════════════════════════════════════════════════════════
       const predictStart = Date.now();
       const predictOutcome = await executePredictPhase(ctx, routing, perception, understanding);
-      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'predict', durationMs: Date.now() - predictStart, routingLevel: routing.level });
+      deps.bus?.emit('phase:timing', {
+        taskId: input.id,
+        phase: 'predict',
+        durationMs: Date.now() - predictStart,
+        routingLevel: routing.level,
+      });
       if (predictOutcome.action === 'return') return predictOutcome.result;
-      const { prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction, workerSelection } = predictOutcome.value;
+      const { prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction, workerSelection } =
+        predictOutcome.value;
       routing = predictOutcome.value.routing;
       if (workerSelection) lastWorkerSelection = workerSelection;
 
@@ -968,7 +1017,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // ═══════════════════════════════════════════════════════════════
       const planStart = Date.now();
       const planOutcome = await executePlanPhase(ctx, routing, perception, understanding, forwardPrediction);
-      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'plan', durationMs: Date.now() - planStart, routingLevel: routing.level });
+      deps.bus?.emit('phase:timing', {
+        taskId: input.id,
+        phase: 'plan',
+        durationMs: Date.now() - planStart,
+        routingLevel: routing.level,
+      });
       if (planOutcome.action === 'return') return planOutcome.result;
       const { plan } = planOutcome.value;
 
@@ -990,7 +1044,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       if (generateOutcome.action === 'return') return generateOutcome.result;
       if (generateOutcome.action === 'retry') continue;
       if (generateOutcome.action === 'throw') throw generateOutcome.error;
-      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'generate', durationMs: Date.now() - generateStart, routingLevel: routing.level });
+      deps.bus?.emit('phase:timing', {
+        taskId: input.id,
+        phase: 'generate',
+        durationMs: Date.now() - generateStart,
+        routingLevel: routing.level,
+      });
       const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
       totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
 
@@ -1012,11 +1071,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       //    being accepted — we're just passing the agent's questions up.
       //  - A6 (Zero-Trust Execution): defense-in-depth — if mutations are
       //    somehow present, fall through to the normal verify path.
-      if (
-        isAgenticResult
-        && lastAgentResult?.needsUserInput === true
-        && workerResult.mutations.length === 0
-      ) {
+      if (isAgenticResult && lastAgentResult?.needsUserInput === true && workerResult.mutations.length === 0) {
         const inputRequiredTrace: ExecutionTrace = {
           id: `trace-${input.id}-input-required`,
           taskId: input.id,
@@ -1096,11 +1151,14 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         routing = verifyOutcome.routing;
         continue routingLoop;
       }
-      deps.bus?.emit('phase:timing', { taskId: input.id, phase: 'verify', durationMs: Date.now() - verifyStart, routingLevel: routing.level });
-      const {
-        verification, passedOracles, failedOracles, verificationConfidence,
-        qualityScore, shouldCommit, trace,
-      } = verifyOutcome.value;
+      deps.bus?.emit('phase:timing', {
+        taskId: input.id,
+        phase: 'verify',
+        durationMs: Date.now() - verifyStart,
+        routingLevel: routing.level,
+      });
+      const { verification, passedOracles, failedOracles, verificationConfidence, qualityScore, shouldCommit, trace } =
+        verifyOutcome.value;
 
       // ═══════════════════════════════════════════════════════════════
       // Step 6: LEARN
@@ -1128,16 +1186,22 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         if (deps.criticEngine && routing.level >= 2 && workerResult.mutations.length > 0) {
           try {
             const proposal = { mutations: workerResult.mutations, approach: finalTrace.approach };
-            // Book-integration Wave 2.1: annotate the task with the
-            // current risk score so DebateRouterCritic can decide
-            // whether to fire the 3-agent debate mode. Ad-hoc cast
-            // avoids widening the public CriticEngine interface; a
-            // future revision should thread routing through a context
-            // object so this hack can be removed. The annotation is
-            // best-effort — if routing.riskScore is undefined (L0 or
-            // older code paths) the router falls through to baseline.
-            (input as unknown as { riskScore?: number }).riskScore = routing.riskScore;
-            const criticResult = await deps.criticEngine.review(proposal, input, perception, input.acceptanceCriteria);
+            // Book-integration Wave 5.1: routing signal is now threaded
+            // through a typed `CriticContext` argument rather than the
+            // earlier `(task as unknown as { riskScore? }).riskScore` cast.
+            // DebateRouterCritic reads `context.riskScore` directly; the
+            // baseline critic and the 3-seat debate both accept-and-ignore.
+            const criticContext = {
+              riskScore: routing.riskScore,
+              routingLevel: routing.level,
+            };
+            const criticResult = await deps.criticEngine.review(
+              proposal,
+              input,
+              perception,
+              input.acceptanceCriteria,
+              criticContext,
+            );
             deps.bus?.emit('critic:verdict', {
               taskId: input.id,
               accepted: criticResult.approved,
@@ -1262,11 +1326,20 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
                   )
                   .then((result) => {
                     deps.bus?.emit('shadow:complete', {
-                      job: { id: '', taskId: input.id, status: 'done' as const, enqueuedAt: 0, retryCount: 0, maxRetries: 1 },
+                      job: {
+                        id: '',
+                        taskId: input.id,
+                        status: 'done' as const,
+                        enqueuedAt: 0,
+                        retryCount: 0,
+                        maxRetries: 1,
+                      },
                       result,
                     });
                   })
-                  .catch(() => { /* fire-and-forget */ });
+                  .catch(() => {
+                    /* fire-and-forget */
+                  });
               }
             }
             const probationResult: TaskResult = {
@@ -1378,8 +1451,12 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
           deps.bus?.emit('shadow:enqueue', { job });
           deps.shadowRunner
             .processNext()
-            .then((result) => { if (result) deps.bus?.emit('shadow:complete', { job, result }); })
-            .catch((err) => { deps.bus?.emit('shadow:failed', { job, error: String(err) }); });
+            .then((result) => {
+              if (result) deps.bus?.emit('shadow:complete', { job, result });
+            })
+            .catch((err) => {
+              deps.bus?.emit('shadow:failed', { job, error: String(err) });
+            });
         }
 
         // ── Skill outcome: success ──
@@ -1439,7 +1516,8 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
 
     // ── RETRY EXHAUSTED → escalate routing level ─────────────────
     const nextLevel = (routing.level + 1) as RoutingLevel;
-    const effectiveMaxLevel = understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+    const effectiveMaxLevel =
+      understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
     if (nextLevel > effectiveMaxLevel) break;
 
     deps.bus?.emit('task:escalate', {

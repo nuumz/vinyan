@@ -114,7 +114,14 @@ export class SleepCycleRunner {
    */
   private consecutiveNoopCycles = 0;
   private lastObservedTraceCount = 0;
-  private readonly sentinelMaxNoopCycles: number = DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+  /**
+   * Wave 5.4: sentinel max-noop-cycles is now a constructor option,
+   * not a class constant. Default is DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+   * tests can pass a smaller number (e.g. 2) to exercise the dormant
+   * path without running 5 full cycles. Read-only after construction
+   * so the sentinel contract stays predictable.
+   */
+  private readonly sentinelMaxNoopCycles: number;
 
   constructor(options: {
     traceStore: TraceStore;
@@ -128,6 +135,14 @@ export class SleepCycleRunner {
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
     costLedger?: CostLedger;
     marketScheduler?: MarketScheduler;
+    /**
+     * Wave 5.4: override the default max no-op cycles before the
+     * termination sentinel goes dormant. Default: 5. Smaller values
+     * surface "dormant" faster in tests; larger values are more
+     * forgiving on real workloads where a single empty-data window
+     * shouldn't suppress the next run.
+     */
+    sentinelMaxNoopCycles?: number;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -141,6 +156,7 @@ export class SleepCycleRunner {
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
     this.decayExperiment = createExperimentState();
+    this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */

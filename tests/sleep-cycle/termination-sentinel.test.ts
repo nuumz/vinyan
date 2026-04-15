@@ -120,4 +120,47 @@ describe('SleepCycleRunner — termination sentinel (Wave 2.3)', () => {
     const result = await runner.run();
     expect(result.skippedBy).toBe('data-gate');
   });
+
+  // ── Wave 5.4: sentinel constructor option ────────────────────────
+  test('Wave 5.4: custom sentinelMaxNoopCycles trips sentinel faster', async () => {
+    const { traceStore, patternStore } = makeStores();
+    seedGateClearingTraces(traceStore, 110);
+
+    const runner = new SleepCycleRunner({
+      traceStore,
+      patternStore,
+      config: { minTracesForAnalysis: 100, patternMinFrequency: 500, patternMinConfidence: 0.9 },
+      sentinelMaxNoopCycles: 2,
+    });
+
+    // With max=2, two consecutive no-op cycles is enough to trip the sentinel
+    for (let i = 0; i < 2; i++) {
+      const r = await runner.run();
+      expect(r.skippedBy).toBeUndefined();
+    }
+
+    // Third run should be dormant
+    const dormant = await runner.run();
+    expect(dormant.skippedBy).toBe('sentinel-dormant');
+  });
+
+  test('Wave 5.4: default sentinelMaxNoopCycles still honors the 5-cycle contract', async () => {
+    const { traceStore, patternStore } = makeStores();
+    seedGateClearingTraces(traceStore, 110);
+
+    // No sentinelMaxNoopCycles passed → default (5)
+    const runner = new SleepCycleRunner({
+      traceStore,
+      patternStore,
+      config: { minTracesForAnalysis: 100, patternMinFrequency: 500, patternMinConfidence: 0.9 },
+    });
+
+    // Two no-op cycles should NOT trip the default sentinel
+    for (let i = 0; i < 2; i++) {
+      const r = await runner.run();
+      expect(r.skippedBy).toBeUndefined();
+    }
+    const third = await runner.run();
+    expect(third.skippedBy).toBeUndefined();
+  });
 });

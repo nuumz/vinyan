@@ -1,5 +1,5 @@
 import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../types.ts';
-import type { CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
+import type { CriticContext, CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -13,6 +13,10 @@ export class LLMCriticImpl implements CriticEngine {
     task: TaskInput,
     perception: PerceptualHierarchy,
     acceptanceCriteria?: string[],
+    // Wave 5.1: accepted but ignored — the baseline LLMCriticImpl runs
+    // the same review regardless of routing context. The debate mode
+    // wrapper (DebateRouterCritic) is the consumer that reads this.
+    _context?: CriticContext,
   ): Promise<CriticResult> {
     const systemPrompt = buildCriticSystemPrompt();
     const userPrompt = buildCriticUserPrompt(proposal, task, perception, acceptanceCriteria);
@@ -24,7 +28,10 @@ export class LLMCriticImpl implements CriticEngine {
       temperature: 0.1,
     };
 
-    let response;
+    // Wave 5.1 lint hygiene: explicit type annotation so biome's
+    // `noImplicitAnyLet` doesn't flag this pre-existing pattern now
+    // that the file is being touched.
+    let response: import('../types.ts').LLMResponse;
     try {
       response = await this.provider.generate(request);
     } catch {

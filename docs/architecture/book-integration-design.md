@@ -317,19 +317,30 @@ hunt for diffs that don't exist:
 These are deliberate design debt, not bugs. Log them here so future
 maintainers don't think they're accidents.
 
-1. **`task.riskScore` ad-hoc cast** (`core-loop.ts` and `debate-mode.ts`).
-   The `CriticEngine.review` signature should be extended to take an
-   optional `context` object carrying routing information. Done right,
-   this removes both casts.
+1. ~~`task.riskScore` ad-hoc cast~~ — ✅ **CLOSED (Wave 5.1, 2026-04-15).**
+   `CriticEngine.review()` now accepts an optional `CriticContext` with
+   typed `riskScore` and `routingLevel` fields. `core-loop.ts` passes
+   it explicitly; `DebateRouterCritic` reads it from the context. Both
+   `as unknown as { riskScore? }` casts have been removed. See Phase B §7.
 2. **`input.constraints` mutation in the research-swarm preset**. The
    preset appends the report contract directly to the caller's
    `TaskInput.constraints` array. Passing a cloned TaskInput downstream
    would be cleaner; the mutation is safe today because the only consumer
    that sees it is the orchestration pipeline that owns the task.
+   **Deferred analysis (Wave 5, 2026-04-15):** removing the mutation
+   without a broader refactor breaks constraint propagation because
+   the downstream worker's prompt assembler reads constraints from the
+   same TaskInput that the caller holds. Cleaning this up requires
+   either (a) a new `TaskDAG.preamble` field that the worker-spawn
+   path reads at dispatch time, or (b) returning an "enhanced" input
+   from `decompose()` that the core-loop then uses. Both are scope
+   changes; the current mutation is intentionally flagged and stays.
 3. **Peek event whitelist drift**. Adding a new bus event that carries a
    `taskId` requires editing `TASK_EVENTS` in `src/tui/views/peek.ts`. A
    type-level registry tagged at the bus event declaration would close
-   this gap.
+   this gap. **Deferred (Wave 5, 2026-04-15):** this is a bus-type
+   refactor with wide reach, not a feature — deferred until a second
+   consumer of "task-bearing events" appears and justifies the cost.
 
 ---
 

@@ -220,6 +220,15 @@ const SkillHintsConfigSchema = z.object({
 
 export type SkillHintsConfig = z.infer<typeof SkillHintsConfigSchema>;
 
+// ─── Wave 6: Workflow Registry ───────────────────────────────────────
+
+const WorkflowRegistryConfigSchema = z.object({
+  /** Default ON — the registry is metadata-only; active dispatch refactor is deferred. */
+  enabled: z.boolean().default(true),
+});
+
+export type WorkflowRegistryConfig = z.infer<typeof WorkflowRegistryConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -240,6 +249,8 @@ const OrchestratorConfigSchema = z.object({
   reactiveLearning: ReactiveLearningConfigSchema.default(() => defaults(ReactiveLearningConfigSchema)),
   /** Wave 5: Skill hints — inject findSimilar results into agent prompts. Default ON. */
   skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
+  /** Wave 6: Workflow registry (metadata surface). Default ON. */
+  workflowRegistry: WorkflowRegistryConfigSchema.default(() => defaults(WorkflowRegistryConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

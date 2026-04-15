@@ -511,6 +511,9 @@ export interface VinyanBusEvents {
   // Wave 2: Replan Engine observability
   'replan:accepted': { taskId: string; iteration: number; planSignature: string };
   'replan:rejected': { taskId: string; iteration: number; reason: string };
+
+  // Wave 5: Reactive micro-learning — failure cluster signal
+  'failure:cluster-detected': { taskSignature: string; failureCount: number; taskIds: string[] };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

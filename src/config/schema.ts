@@ -198,6 +198,28 @@ const AgentLoopGoalTerminationConfigSchema = z.object({
 
 export type AgentLoopGoalTerminationConfig = z.infer<typeof AgentLoopGoalTerminationConfigSchema>;
 
+// ─── Wave 5: Reactive Learning + Skill Hints ─────────────────────────
+
+const ReactiveLearningConfigSchema = z.object({
+  /** Gated OFF by default — writes probational rules to RuleStore. */
+  enabled: z.boolean().default(false),
+  /** Rolling window for failure cluster detection. */
+  windowMs: z.number().int().min(60_000).default(60 * 60 * 1000),
+  /** Minimum same-signature failures in window to form a cluster. */
+  minFailures: z.number().int().min(2).max(10).default(2),
+});
+
+export type ReactiveLearningConfig = z.infer<typeof ReactiveLearningConfigSchema>;
+
+const SkillHintsConfigSchema = z.object({
+  /** Default ON — additive, surfaces findSimilar skills in agent system prompts. */
+  enabled: z.boolean().default(true),
+  /** Top-k similar skills to inject per task. */
+  topK: z.number().int().min(1).max(10).default(3),
+});
+
+export type SkillHintsConfig = z.infer<typeof SkillHintsConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -214,6 +236,10 @@ const OrchestratorConfigSchema = z.object({
   replan: ReplanConfigSchema.default(() => defaults(ReplanConfigSchema)),
   /** Wave 4: Goal-driven agent-loop termination (gated OFF by default). */
   agentLoopGoalTermination: AgentLoopGoalTerminationConfigSchema.default(() => defaults(AgentLoopGoalTerminationConfigSchema)),
+  /** Wave 5: Reactive micro-learning — bypass data gate when failure cluster forms. */
+  reactiveLearning: ReactiveLearningConfigSchema.default(() => defaults(ReactiveLearningConfigSchema)),
+  /** Wave 5: Skill hints — inject findSimilar results into agent prompts. Default ON. */
+  skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

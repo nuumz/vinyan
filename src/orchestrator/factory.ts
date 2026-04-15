@@ -24,6 +24,7 @@ import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
+import { UserPreferenceStore } from '../db/user-preference-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
 import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
@@ -47,8 +48,19 @@ import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import {
+  FailureClusterDetector,
+  type FailureCluster,
+  type FailureClusterConfig,
+} from './goal-satisfaction/failure-cluster-detector.ts';
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
+import {
+  reactiveRuleToEvolutionary,
+  synthesizeReactiveRule,
+  traceToReactiveSummary,
+  type ReactiveTraceSummary,
+} from '../sleep-cycle/reactive-cycle.ts';
 import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
@@ -234,6 +246,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
+  let userPreferenceStore: UserPreferenceStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
@@ -242,6 +255,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
+    userPreferenceStore = new UserPreferenceStore(db.getDb());
   }
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
@@ -285,6 +299,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let agentMemoryEnabled = true;
   // Wave 2: Replan Engine config (gated OFF by default, requires goalLoop).
   let replanConfig: ReplanEngineConfig | undefined;
+  // Wave 5a: Reactive micro-learning config (gated OFF by default).
+  let reactiveLearningConfig: FailureClusterConfig | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -316,6 +332,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           maxReplans: rp.maxReplans,
           tokenSpendCapFraction: rp.tokenSpendCapFraction,
           trigramSimilarityMax: rp.trigramSimilarityMax,
+        };
+      }
+      const rl = vinyanConfig.orchestrator.reactiveLearning;
+      if (rl) {
+        reactiveLearningConfig = {
+          enabled: rl.enabled,
+          windowMs: rl.windowMs,
+          minFailures: rl.minFailures,
         };
       }
     }
@@ -812,6 +836,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Intent Resolver: LLM registry for pre-routing semantic classification
     llmRegistry: registry,
     remediationEngine,
+    // User preference learning for app/tool resolution (A7)
+    userPreferenceStore,
     // Monitoring — Self-Improving Autonomy: per-engine EMA calibration +
     // silent-regression watchdog. Phase Learn updates both on every
     // trace; dashboards subscribe to `monitoring:*` events. Drift detection
@@ -875,6 +901,71 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     executeTask: executeTaskThunk,
     bus,
   });
+
+  // Wave 5a: Reactive micro-learning — close the failure-cluster → rule loop.
+  // Subscribes to `task:complete` (feeds detector) and `failure:cluster-detected`
+  // (synthesizes + persists probational rule). Gated OFF by default; when
+  // disabled, NO listeners are attached so there's zero runtime cost.
+  if (reactiveLearningConfig?.enabled && ruleStore && traceStore) {
+    const detector = new FailureClusterDetector(reactiveLearningConfig, bus);
+
+    bus.on('task:complete', ({ result }) => {
+      // `input-required` is a pause for clarification, not a terminal failure.
+      if (result.status === 'input-required') return;
+      const sig = result.trace?.taskTypeSignature;
+      if (!sig) return;
+      detector.observe({
+        taskSignature: sig,
+        outcome: result.status === 'completed' ? 'success' : 'failure',
+        timestamp: Date.now(),
+        taskId: result.id,
+      });
+    });
+
+    bus.on('failure:cluster-detected', (payload) => {
+      try {
+        const traces = traceStore!.findByTaskType(payload.taskSignature, 20);
+        const summaries = traces
+          .map(traceToReactiveSummary)
+          .filter((s): s is ReactiveTraceSummary => s !== null);
+        if (summaries.length < 2) {
+          bus.emit('reactive:rule-skipped', {
+            taskSignature: payload.taskSignature,
+            reason: 'insufficient-failure-summaries',
+          });
+          return;
+        }
+        const cluster: FailureCluster = {
+          taskSignature: payload.taskSignature,
+          failureCount: payload.failureCount,
+          taskIds: payload.taskIds,
+          windowStart: 0,
+          windowEnd: Date.now(),
+        };
+        const proposed = synthesizeReactiveRule(cluster, summaries);
+        if (!proposed) {
+          bus.emit('reactive:rule-skipped', {
+            taskSignature: payload.taskSignature,
+            reason: 'no-actionable-pattern',
+          });
+          return;
+        }
+        const evolutionary = reactiveRuleToEvolutionary(proposed);
+        ruleStore!.insert(evolutionary);
+        bus.emit('reactive:rule-generated', {
+          ruleId: evolutionary.id,
+          taskSignature: payload.taskSignature,
+          action: evolutionary.action,
+          specificity: evolutionary.specificity,
+        });
+      } catch (err) {
+        bus.emit('reactive:rule-skipped', {
+          taskSignature: payload.taskSignature,
+          reason: `error:${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    });
+  }
 
   // Phase 6.4: Late-bind delegation deps to worker pool
   const delegationRouter = new DelegationRouter();

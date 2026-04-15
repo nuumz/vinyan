@@ -7,9 +7,12 @@ import {
   FailureClusterDetector,
 } from '../../../src/orchestrator/goal-satisfaction/failure-cluster-detector.ts';
 import {
+  reactiveRuleToEvolutionary,
   synthesizeReactiveRule,
+  traceToReactiveSummary,
   type ReactiveTraceSummary,
 } from '../../../src/sleep-cycle/reactive-cycle.ts';
+import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 describe('FailureClusterDetector', () => {
   test('disabled by default → observe returns null', () => {
@@ -165,5 +168,96 @@ describe('synthesizeReactiveRule', () => {
     ];
     const rule = synthesizeReactiveRule(cluster, traces);
     expect(rule).toBeNull();
+  });
+});
+
+// ── W5a helpers (wiring) ──────────────────────────────────────────────
+
+describe('traceToReactiveSummary', () => {
+  const baseTrace: ExecutionTrace = {
+    id: 'tr-1',
+    taskId: 't1',
+    timestamp: Date.now(),
+    routingLevel: 1,
+    approach: 'direct-edit',
+    oracleVerdicts: {},
+    modelUsed: 'fake',
+    tokensConsumed: 0,
+    durationMs: 0,
+    outcome: 'success',
+    affectedFiles: ['src/foo.ts'],
+    taskTypeSignature: 'fix::ts::small',
+  };
+
+  test('success trace → null', () => {
+    expect(traceToReactiveSummary({ ...baseTrace, outcome: 'success' })).toBeNull();
+  });
+
+  test('failure trace → summary with failed oracles', () => {
+    const trace = {
+      ...baseTrace,
+      outcome: 'failure' as const,
+      oracleVerdicts: { type: true, test: false, lint: false },
+    };
+    const summary = traceToReactiveSummary(trace);
+    expect(summary).not.toBeNull();
+    expect(summary!.taskId).toBe('t1');
+    expect(summary!.taskSignature).toBe('fix::ts::small');
+    expect(summary!.failureOracles.sort()).toEqual(['lint', 'test']);
+    expect(summary!.affectedFiles).toEqual(['src/foo.ts']);
+  });
+
+  test('missing taskTypeSignature falls back to "unknown"', () => {
+    const trace = { ...baseTrace, outcome: 'failure' as const, taskTypeSignature: undefined };
+    const summary = traceToReactiveSummary(trace);
+    expect(summary!.taskSignature).toBe('unknown');
+  });
+
+  test('escalated outcome → null (only "failure" triggers)', () => {
+    expect(traceToReactiveSummary({ ...baseTrace, outcome: 'escalated' })).toBeNull();
+  });
+});
+
+describe('reactiveRuleToEvolutionary', () => {
+  test('maps dominant-oracle proposed rule to EvolutionaryRule', () => {
+    const proposed = {
+      condition: { oracleName: 'test', taskTypeSignature: 'fix::ts::small' as const },
+      action: 'escalate' as const,
+      parameters: { toLevel: 2 },
+      status: 'probation' as const,
+      sourceTraceIds: ['t1', 't2', 't3'],
+      rationale: '3/3 failures on oracle "test"',
+    };
+    const evo = reactiveRuleToEvolutionary(proposed);
+
+    expect(evo.source).toBe('sleep-cycle');
+    expect(evo.status).toBe('probation');
+    expect(evo.action).toBe('escalate');
+    expect(evo.condition.oracleName).toBe('test');
+    expect(evo.condition.filePattern).toBeUndefined();
+    expect(evo.specificity).toBe(1);
+    expect(evo.effectiveness).toBe(0);
+    expect(evo.parameters.toLevel).toBe(2);
+    // taskTypeSignature folded into parameters (EvolutionaryRule.condition has no slot for it)
+    expect(evo.parameters.taskTypeSignature).toBe('fix::ts::small');
+    expect(evo.parameters.sourceTraceIds).toEqual(['t1', 't2', 't3']);
+    expect(evo.id).toMatch(/^reactive-\d+-[a-z0-9]+$/);
+  });
+
+  test('maps file-pattern proposed rule to EvolutionaryRule', () => {
+    const proposed = {
+      condition: { filePattern: 'src/auth/*', taskTypeSignature: 'fix::ts::small' as const },
+      action: 'require-oracle' as const,
+      parameters: { oracleName: 'test' },
+      status: 'probation' as const,
+      sourceTraceIds: ['t1', 't2'],
+      rationale: 'Failure cluster on src/auth/*',
+    };
+    const evo = reactiveRuleToEvolutionary(proposed);
+
+    expect(evo.condition.filePattern).toBe('src/auth/*');
+    expect(evo.condition.oracleName).toBeUndefined();
+    expect(evo.action).toBe('require-oracle');
+    expect(evo.specificity).toBe(1);
   });
 });

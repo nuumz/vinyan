@@ -128,6 +128,9 @@ export interface VinyanBusEvents {
   'tool:remediation_succeeded': { taskId: string; correctedCommand: string };
   'tool:remediation_failed': { taskId: string; reason: string };
 
+  // User preference learning — behavioral app/tool preference applied
+  'preference:applied': { taskId: string; category: string; preferredApp: string; usageCount: number };
+
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
@@ -514,6 +517,13 @@ export interface VinyanBusEvents {
 
   // Wave 5: Reactive micro-learning — failure cluster signal
   'failure:cluster-detected': { taskSignature: string; failureCount: number; taskIds: string[] };
+  'reactive:rule-generated': {
+    ruleId: string;
+    taskSignature: string;
+    action: string;
+    specificity: number;
+  };
+  'reactive:rule-skipped': { taskSignature: string; reason: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

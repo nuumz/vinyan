@@ -16,6 +16,7 @@
  * Integration into the sleep-cycle runner is DEFERRED — callers can invoke
  * synthesizeReactiveRule directly when FailureClusterDetector fires.
  */
+import type { EvolutionaryRule, ExecutionTrace } from '../orchestrator/types.ts';
 import type { FailureCluster } from '../orchestrator/goal-satisfaction/failure-cluster-detector.ts';
 
 export interface ReactiveTraceSummary {
@@ -113,6 +114,58 @@ export function synthesizeReactiveRule(
   }
 
   return null;
+}
+
+/**
+ * Convert a raw ExecutionTrace from TraceStore into a lightweight
+ * ReactiveTraceSummary. Returns null for non-failure outcomes so callers
+ * can filter in a single `.filter(Boolean)` pass.
+ */
+export function traceToReactiveSummary(trace: ExecutionTrace): ReactiveTraceSummary | null {
+  if (trace.outcome !== 'failure') return null;
+  const failureOracles: string[] = [];
+  for (const [oracle, passed] of Object.entries(trace.oracleVerdicts)) {
+    if (!passed) failureOracles.push(oracle);
+  }
+  return {
+    taskId: trace.taskId,
+    taskSignature: trace.taskTypeSignature ?? 'unknown',
+    failureOracles,
+    affectedFiles: trace.affectedFiles,
+    approach: trace.approach,
+  };
+}
+
+/**
+ * Convert a ProposedReactiveRule into the persistence-ready EvolutionaryRule
+ * shape expected by RuleStore.insert. taskTypeSignature (which isn't a
+ * first-class condition field in EvolutionaryRule) is folded into parameters
+ * for audit — the rule-matcher ignores it, which is intentional: reactive
+ * rules are scoped by oracleName + filePattern, not by signature.
+ */
+export function reactiveRuleToEvolutionary(rule: ProposedReactiveRule): EvolutionaryRule {
+  const condition: EvolutionaryRule['condition'] = {};
+  if (rule.condition.oracleName) condition.oracleName = rule.condition.oracleName;
+  if (rule.condition.filePattern) condition.filePattern = rule.condition.filePattern;
+
+  const specificity = Object.values(condition).filter((v) => v !== undefined).length;
+
+  return {
+    id: `reactive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    source: 'sleep-cycle',
+    condition,
+    action: rule.action,
+    parameters: {
+      ...rule.parameters,
+      taskTypeSignature: rule.condition.taskTypeSignature,
+      sourceTraceIds: rule.sourceTraceIds,
+      rationale: rule.rationale,
+    },
+    status: 'probation',
+    createdAt: Date.now(),
+    effectiveness: 0,
+    specificity,
+  };
 }
 
 function extractCommonFilePattern(traces: ReactiveTraceSummary[]): string | null {

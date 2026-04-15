@@ -393,6 +393,6 @@ surface from Ch13 / Appendix A of the book.
 | ⏸ deferred | #4 | Research Swarm Wave-2 follow-up |
 | ⏸ deferred | #6 | Bus event typed registry |
 | ⏸ deferred | #9 | `TerminationSentinel` reusable class |
-| ⏸ deferred | Phase A seam #3 | Peek event whitelist drift |
+| ✅ post-merge | Phase A seam #3 | Peek event whitelist drift (closed via static regression test) |
 
 **Remaining blockers:** every deferred item has a documented reason in Phase B §6. Short summary: W4.4 needs worktrees (rejected), ScheduleWakeup needs session persistence design, Fleet-live overview needs orchestrator plumbing into the CLI, Research Swarm Wave-2 needs LLM in governance (A3 violation), Bus event typed registry is a ~50-event refactor, TerminationSentinel is YAGNI, peek whitelist is same as bus registry.

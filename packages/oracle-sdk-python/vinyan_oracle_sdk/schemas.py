@@ -65,7 +65,14 @@ class Evidence(_CamelModel):
 
 
 class QualityScore(_CamelModel):
-    """Multi-dimensional quality signal."""
+    """Multi-dimensional quality signal.
+
+    Cross-language drift fix (2026-04-15): `phase` was renamed from
+    'phase0'/'phase1'/'phase2' to 'basic'/'extended'/'full' in the TS
+    source + TS SDK. The Python SDK was left behind. Without this fix,
+    messages produced by the Python SDK would fail the TS orchestrator's
+    Zod validation because the phase values are in the wrong vocabulary.
+    """
 
     architectural_compliance: float
     efficiency: float
@@ -73,7 +80,7 @@ class QualityScore(_CamelModel):
     test_mutation_score: float | None = None
     composite: float
     dimensions_available: int = 2
-    phase: Literal["phase0", "phase1", "phase2"] = "phase0"
+    phase: Literal["basic", "extended", "full"] = "basic"
 
 
 # ── Error Code ────────────────────────────────────────────────────────

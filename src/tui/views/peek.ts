@@ -54,6 +54,7 @@ const TASK_EVENTS: BusEventName[] = [
   'task:approval_required',
   'task:recovered',
   'task:budget-exceeded',
+  'phase:timing',
   'worker:dispatch',
   'worker:complete',
   'worker:error',
@@ -62,6 +63,12 @@ const TASK_EVENTS: BusEventName[] = [
   'oracle:contradiction',
   'oracle:deliberation_request',
   'critic:verdict',
+  // Wave 5 observability: `critic:debate_fired` and
+  // `critic:debate_denied` fire when DebateRouterCritic decides between
+  // the baseline and the 3-seat debate path. Surfacing both lets
+  // operators correlate debate cost with task outcome in `peek`.
+  'critic:debate_fired',
+  'critic:debate_denied',
   'agent:session_start',
   'agent:session_end',
   'agent:turn_complete',
@@ -80,6 +87,35 @@ const TASK_EVENTS: BusEventName[] = [
   'prediction:tier_upgraded',
   'verification:contradiction_escalated',
   'verification:contradiction_unresolved',
+  // Post-merge gap close (Phase A §7 seam #3, 2026-04-15):
+  // `monitoring:drift_detected` landed in the feature/main merge as
+  // the first new task-bearing event introduced after peek's whitelist
+  // was written. Adding it here plus the regression test in
+  // `tests/tui/peek-whitelist-coverage.test.ts` closes the drift:
+  // future task-bearing events will fail the regression test in CI
+  // until the whitelist is updated.
+  'monitoring:drift_detected',
+  // Task-level operator signals that predate peek but were missed in
+  // the initial whitelist. `commit:rejected` is critical for
+  // understanding per-task commit-gate denies; `decomposer:fallback`
+  // surfaces when the LLM decomposer failed its 3 retries and fell
+  // back to a single-node DAG.
+  'commit:rejected',
+  'decomposer:fallback',
+  // `oracle:self_report_excluded` — K1.0 A5 enforcement. Shows when
+  // a verdict was filtered from the gate decision because the oracle
+  // self-reported confidence instead of producing deterministic
+  // evidence. High value for debugging "why did my task pass/fail".
+  'oracle:self_report_excluded',
+  // Sandbox lifecycle events — per-task container state. Useful when
+  // debugging A6 sandbox issues (creation failure, timeout, exit).
+  'sandbox:created',
+  'sandbox:completed',
+  'sandbox:timeout',
+  'sandbox:error',
+  // `agent:thinking` — per-turn thinking stream. High volume but
+  // high signal when following a single agent's reasoning live.
+  'agent:thinking',
   // Wave 1.1 — worker-level silence watchdog. The payload carries
   // taskId so `peek` can surface it inline with turn events.
   'guardrail:silent_agent',
@@ -210,6 +246,32 @@ function summarizeForPeek(event: string, payload: unknown): string {
         `SILENT state=${p.state ?? '?'} for=${p.silentForMs ?? 0}ms lastEvent=${p.lastEvent ?? '?'}`,
         ANSI.yellow,
       );
+    case 'phase:timing':
+      return `${p.phase ?? '?'} ${p.durationMs ?? 0}ms L${p.routingLevel ?? '?'}`;
+    case 'critic:debate_fired':
+      return color(
+        `DEBATE risk=${(p.riskScore as number | undefined)?.toFixed(2) ?? '?'} trigger=${p.trigger ?? '?'}`,
+        ANSI.magenta,
+      );
+    case 'critic:debate_denied':
+      return color(`DEBATE denied type=${p.denyType ?? '?'} ${p.reason ?? ''}`.slice(0, 80), ANSI.yellow);
+    case 'monitoring:drift_detected':
+      return color(
+        `DRIFT dims=${Array.isArray(p.triggeredDimensions) ? (p.triggeredDimensions as string[]).join(',') : '?'} delta=${(p.maxRelDelta as number | undefined)?.toFixed(3) ?? '?'}`,
+        ANSI.yellow,
+      );
+    case 'commit:rejected': {
+      const rejected = Array.isArray(p.rejected) ? (p.rejected as { path: string; reason: string }[]) : [];
+      return color(
+        `COMMIT REJECTED ${rejected.length} file(s): ${rejected
+          .map((r) => r.path)
+          .join(', ')
+          .slice(0, 60)}`,
+        ANSI.red,
+      );
+    }
+    case 'decomposer:fallback':
+      return color('decomposer fell back to single-node DAG', ANSI.yellow);
     default:
       return JSON.stringify(payload).slice(0, 120);
   }

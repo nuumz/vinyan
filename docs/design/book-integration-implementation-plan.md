@@ -470,7 +470,11 @@ the pre-Wave-4 state.
 | 4 | Sentinel config constructor option — expose `sentinelMaxNoopCycles` | #8 | ✅ **Shipped** in phase 1 (W5.4) |
 | 5 | TerminationSentinel reusable class extraction | #9 | ⏸ Deferred (YAGNI — no second consumer) |
 
-> **Tally:** 3 of 5 legacy items shipped; 2 remain on the
-> deferred-with-documented-rationale list. Phase A §7 tracks the
-> related "known short-term seams" — 2 of 3 closed, 1 remaining
-> (peek event whitelist drift, which shares a blocker with legacy #2).
+> **Tally (post-merge 2026-04-15):** 3 of 5 legacy items shipped; 2
+> remain on the deferred-with-documented-rationale list. Phase A §7
+> "known short-term seams" — **all 3 closed** (seam #3 "peek event
+> whitelist drift" closed via a static regression test at
+> `tests/tui/peek-whitelist-coverage.test.ts` that scans bus.ts for
+> task-bearing events and asserts each is either in peek's
+> `TASK_EVENTS` or in a documented `KNOWN_EXCLUSIONS` set, forcing an
+> explicit decision at CI time).

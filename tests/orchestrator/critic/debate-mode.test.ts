@@ -501,4 +501,46 @@ describe('DebateRouterCritic — Wave 5.7a budget guard integration', () => {
     expect(events[1]!.reason).toContain('per-day');
     expect(events[1]!.taskId).toBe('tC');
   });
+
+  // ── Deep-audit #4: router.clearTask delegates to budgetGuard ────
+  test('Deep-audit #4: router.clearTask releases per-task counter but preserves day count', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const guard = new DebateBudgetGuard({ maxPerTask: 1, maxPerDay: 10 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard: guard });
+
+    // Fire the debate once, then clearTask via the router's hook
+    await router.review(proposal, { ...task, id: 'lifetime-test' }, perception, undefined, { riskScore: 0.9 });
+    expect(guard.getCount('lifetime-test')).toBe(1);
+    expect(guard.getDayCount()).toBe(1);
+
+    router.clearTask('lifetime-test');
+    expect(guard.getCount('lifetime-test')).toBe(0);
+    // Day counter unaffected — spending persists across the task boundary
+    expect(guard.getDayCount()).toBe(1);
+
+    // After clearTask, the same task id can fire again without hitting
+    // the per-task cap
+    const again = await router.review(
+      proposal,
+      { ...task, id: 'lifetime-test' },
+      perception,
+      undefined,
+      { riskScore: 0.9 },
+    );
+    expect(again.reason).toBe('debate');
+  });
+
+  test('Deep-audit #4: router.clearTask is a no-op when no budget guard is configured', async () => {
+    const router = new DebateRouterCritic(baseline, debate);
+    // Just verifying no throw when there's no guard
+    expect(() => router.clearTask('nonexistent')).not.toThrow();
+  });
+
+  test('Deep-audit #4: router.clearTask is safe for an id that never invoked review', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const guard = new DebateBudgetGuard({ maxPerTask: 1 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard: guard });
+    expect(() => router.clearTask('id-never-seen')).not.toThrow();
+    expect(guard.getCount('id-never-seen')).toBe(0);
+  });
 });

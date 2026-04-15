@@ -181,4 +181,28 @@ describe('W4.1 canary-first batch dispatch', () => {
     await dispatcher.dispatch(tasks, { canaryFirst: true });
     expect(executionOrder[0]).toBe('t3');
   });
+
+  // ── Deep-audit #3: synthetic aborted trace metadata ────────────
+  test("Deep-audit #3: aborted result traces carry taskTypeSignature='canary-aborted'", async () => {
+    const dispatcher = new DefaultConcurrentDispatcher({
+      taskQueue: createTaskQueue({ maxConcurrent: 5 }),
+      executeTask: async (input) => {
+        if (input.id === 't1') return makeFailedResult('t1');
+        return makeCompletedResult(input.id);
+      },
+    });
+
+    const tasks = [makeTask('t1', ['a.ts']), makeTask('t2', ['b.ts']), makeTask('t3', ['c.ts'])];
+    const results = await dispatcher.dispatch(tasks, { canaryFirst: true });
+
+    // t2 and t3 are synthetic aborts
+    expect(results[1]!.trace.taskTypeSignature).toBe('canary-aborted');
+    expect(results[2]!.trace.taskTypeSignature).toBe('canary-aborted');
+    expect(results[1]!.trace.approach).toBe('canary-aborted');
+    expect(results[2]!.trace.approach).toBe('canary-aborted');
+    // And the synthetic traces are distinguishable from real ones
+    // via their unique id shape
+    expect(results[1]!.trace.id).toMatch(/^canary-aborted-/);
+    expect(results[2]!.trace.id).toMatch(/^canary-aborted-/);
+  });
 });

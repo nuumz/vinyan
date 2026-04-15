@@ -88,4 +88,30 @@ describe('computeConflictPlan', () => {
       }
     }
   });
+
+  // ── Deep-audit #2: duplicate targetFiles within one task ──────────
+  test('Deep-audit #2: duplicate files within one task do not create self-edges', () => {
+    const plan = computeConflictPlan([task('t1', ['a.ts', 'a.ts', 'a.ts'])]);
+    // adjacency for t1 must not contain t1 itself
+    expect(plan.adjacency.get('t1')?.has('t1')).toBe(false);
+    // The task should still be in a proper singleton group
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0]!.taskIds).toEqual(['t1']);
+    // The group's files should be deduped to a single entry
+    expect(plan.groups[0]!.files).toEqual(['a.ts']);
+  });
+
+  test('Deep-audit #2: dedupe does not break the shared-file conflict detection', () => {
+    // t1 has 'a.ts' listed twice; t2 has 'a.ts' once. They should
+    // still collapse into the same group.
+    const plan = computeConflictPlan([task('t1', ['a.ts', 'a.ts']), task('t2', ['a.ts'])]);
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0]!.taskIds.sort()).toEqual(['t1', 't2']);
+    // And neither task has a self-edge
+    expect(plan.adjacency.get('t1')?.has('t1')).toBe(false);
+    expect(plan.adjacency.get('t2')?.has('t2')).toBe(false);
+    // They DO have cross-edges
+    expect(plan.adjacency.get('t1')?.has('t2')).toBe(true);
+    expect(plan.adjacency.get('t2')?.has('t1')).toBe(true);
+  });
 });

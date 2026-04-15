@@ -187,4 +187,61 @@ describe('executePlanPhase — Wave 5.2 preamble → enhancedInput', () => {
     if (outcome.action !== 'continue') throw new Error('expected continue');
     expect(outcome.value.enhancedInput?.constraints).toEqual(['USER:first', 'USER:second', 'PREAMBLE:a', 'PREAMBLE:b']);
   });
+
+  // ── Deep-audit #1: retry-path preamble dedupe ────────────────────
+  test('Deep-audit #1: preamble is NOT double-appended when input already contains it', async () => {
+    // Simulate the retry case: the input already carries the preamble
+    // from a previous iteration. The decomposer still emits preamble on
+    // this iteration. phase-plan must not duplicate it.
+    const preambleItem = 'REPORT_CONTRACT: return findings / sources / open questions';
+    const alreadyEnhanced = makeInput(['USER:be thorough', preambleItem]);
+    const dag: TaskDAG = {
+      nodes: [
+        {
+          id: 'n1',
+          description: 'explore',
+          targetFiles: [],
+          dependencies: [],
+          assignedOracles: ['none-readonly'],
+        },
+      ],
+      preamble: [preambleItem],
+    };
+    const ctx = makeContext(alreadyEnhanced, dag);
+
+    const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
+    if (outcome.action !== 'continue') throw new Error('expected continue');
+    // enhancedInput should NOT be emitted — the preamble is already
+    // fully present and a ctx swap would be a pointless allocation.
+    expect(outcome.value.enhancedInput).toBeUndefined();
+  });
+
+  test('Deep-audit #1: partial overlap — only the missing preamble entries are appended', async () => {
+    // Input has some but not all of the preamble items. Expected:
+    // the missing ones are appended in order; the already-present
+    // one is not duplicated.
+    const alreadyEnhanced = makeInput(['USER:first', 'PREAMBLE:a']);
+    const dag: TaskDAG = {
+      nodes: [
+        {
+          id: 'n1',
+          description: 'explore',
+          targetFiles: [],
+          dependencies: [],
+          assignedOracles: ['none-readonly'],
+        },
+      ],
+      preamble: ['PREAMBLE:a', 'PREAMBLE:b', 'PREAMBLE:c'],
+    };
+    const ctx = makeContext(alreadyEnhanced, dag);
+
+    const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
+    if (outcome.action !== 'continue') throw new Error('expected continue');
+    expect(outcome.value.enhancedInput?.constraints).toEqual([
+      'USER:first',
+      'PREAMBLE:a',
+      'PREAMBLE:b',
+      'PREAMBLE:c',
+    ]);
+  });
 });

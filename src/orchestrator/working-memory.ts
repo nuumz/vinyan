@@ -112,6 +112,12 @@ export class WorkingMemory {
     this.priorAttempts.push(summary);
   }
 
+  /** Wave 1: attach an archiver if not already set. Used by goal-loop hand-off where
+   *  WorkingMemory is created outside prepareExecution but still needs archiving. */
+  attachArchiver(archiver: FailedApproachArchiver): void {
+    if (!this.archiver) this.archiver = archiver;
+  }
+
   /** G2: Archive all remaining failed approaches to persistent storage at task end.
    *  Called before WorkingMemory instance is discarded. */
   archiveRemainingApproaches(): void {

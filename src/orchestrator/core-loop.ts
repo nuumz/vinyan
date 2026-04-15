@@ -16,6 +16,9 @@ import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
+import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
+import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
+import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
@@ -185,6 +188,13 @@ export interface OrchestratorDeps {
   oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
   /** Silent-regression watchdog. Optional; phase-learn feeds task outcomes into it per trace. */
   regressionMonitor?: import('./monitoring/regression-monitor.ts').RegressionMonitor;
+  // Wave 1: Goal-Satisfaction Outer Loop (gated OFF by default).
+  /** Deterministic goal evaluator reused across outer iterations (A1/A3). */
+  goalEvaluator?: GoalEvaluator;
+  /** Goal-loop runtime config. When `enabled`, executeTask wraps attempts in executeWithGoalLoop. */
+  goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
+  // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
+  agentMemory?: AgentMemoryAPI;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -213,6 +223,7 @@ export { scorePlanByPrediction } from './phases/phase-plan.ts';
 async function prepareExecution(
   input: TaskInput,
   deps: OrchestratorDeps,
+  presetWorkingMemory?: WorkingMemory,
 ): Promise<
   | {
       understanding: SemanticTaskUnderstanding;
@@ -331,10 +342,17 @@ async function prepareExecution(
         });
       }
     : undefined;
-  const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id, archiver });
+  let workingMemory: WorkingMemory;
+  if (presetWorkingMemory) {
+    workingMemory = presetWorkingMemory;
+    if (archiver) workingMemory.attachArchiver(archiver);
+  } else {
+    workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id, archiver });
+  }
 
   // Session memory: hydrate from prior turns (A7: cross-turn learning)
-  if (input.sessionId && deps.sessionManager) {
+  // Skip when re-entering with preset WM — the first iteration already hydrated it.
+  if (!presetWorkingMemory && input.sessionId && deps.sessionManager) {
     try {
       const memoryJson = deps.sessionManager.getSessionWorkingMemory(input.sessionId);
       if (memoryJson) {
@@ -354,7 +372,8 @@ async function prepareExecution(
   }
 
   // Cross-task learning: load prior failed approaches
-  if (deps.rejectedApproachStore && input.targetFiles?.length) {
+  // Skip when re-entering with preset WM — prior approaches are already in memory.
+  if (!presetWorkingMemory && deps.rejectedApproachStore && input.targetFiles?.length) {
     try {
       const { loadPriorFailedApproaches } = await import('./cross-task-loader.ts');
       const priorApproaches = loadPriorFailedApproaches(
@@ -755,10 +774,48 @@ function quoteArgForDiscovery(s: string): string {
 /**
  * Execute a task through the full Orchestrator lifecycle.
  *
- * Outer loop: escalate routing level on repeated failure (L0 → L1 → L2 → L3 → human)
- * Inner loop: retry within routing level (up to budget.maxRetries)
+ * Outer wrapper (Wave 1+3):
+ *   - Wave 3: begin/end per-task AgentMemoryAPI cache scope around the entire task
+ *   - Wave 1: when goalLoop.enabled, delegate to executeWithGoalLoop so a task can
+ *     re-run until the goal evaluator reports satisfaction (budget-gated, A3/A7)
+ *   - Default: delegate to executeTaskCore for byte-identical legacy behavior
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
+  deps.agentMemory?.beginTask(input.id);
+  try {
+    const goalLoop = deps.goalLoop;
+    if (goalLoop?.enabled && deps.goalEvaluator) {
+      return await executeWithGoalLoop(
+        input,
+        deps,
+        (i, wm) => executeTaskCore(i, deps, wm),
+        {
+          maxOuterIterations: goalLoop.maxOuterIterations,
+          goalSatisfactionThreshold: goalLoop.goalSatisfactionThreshold,
+        },
+      );
+    }
+    return await executeTaskCore(input, deps);
+  } finally {
+    deps.agentMemory?.endTask(input.id);
+  }
+}
+
+/**
+ * Core single-attempt task execution — the original executeTask body.
+ *
+ * Outer loop: escalate routing level on repeated failure (L0 → L1 → L2 → L3 → human)
+ * Inner loop: retry within routing level (up to budget.maxRetries)
+ *
+ * `presetWorkingMemory` is non-undefined only when the goal-satisfaction outer loop
+ * passes a carried-over instance so failed approaches + scoped facts accumulate
+ * across outer iterations.
+ */
+async function executeTaskCore(
+  input: TaskInput,
+  deps: OrchestratorDeps,
+  presetWorkingMemory?: WorkingMemory,
+): Promise<TaskResult> {
   // Deep-audit #4 (2026-04-15): capture the incoming task id BEFORE
   // any reassignment (Wave 5.2 may reassign `input` to an enhanced
   // clone after plan phase — the clone has the same `id` by spread,
@@ -768,7 +825,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   // releases its per-task budget counter when the task exits.
   const finalizedTaskId = input.id;
   try {
-    const prep = await prepareExecution(input, deps);
+    const prep = await prepareExecution(input, deps, presetWorkingMemory);
     if ('status' in prep) return prep; // Early return (security rejection or budget block)
 
     // ── Strategy routing — short-circuit non-pipeline strategies ──

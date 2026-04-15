@@ -110,6 +110,19 @@ export class SkillStore {
     return row.cnt;
   }
 
+  /** Wave 3: bigram Jaccard similarity over signatures; returns top-k active skills. */
+  findSimilar(taskSig: string, k: number = 5): CachedSkill[] {
+    const active = this.findActive();
+    if (active.length === 0) return [];
+    const query = bigrams(taskSig);
+    const scored = active.map((skill) => ({
+      skill,
+      score: jaccard(query, bigrams(skill.taskSignature)),
+    }));
+    scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : b.skill.successRate - a.skill.successRate));
+    return scored.slice(0, k).map((s) => s.skill);
+  }
+
   // ── Skill Composition (Phase 5 — Stream D2) ─────────────────────────
 
   /** Find a composed skill matching a task fingerprint (exact match on task_signature). */
@@ -171,6 +184,25 @@ export class SkillStore {
 }
 
 // ── Row deserialization ───────────────────────────────────────────────────
+
+function bigrams(s: string): Set<string> {
+  const out = new Set<string>();
+  const normalized = s.toLowerCase();
+  for (let i = 0; i < normalized.length - 1; i++) {
+    out.add(normalized.slice(i, i + 2));
+  }
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const bg of a) {
+    if (b.has(bg)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
 
 function rowToSkill(row: any): CachedSkill {
   return {

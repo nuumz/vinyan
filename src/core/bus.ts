@@ -491,6 +491,21 @@ export interface VinyanBusEvents {
   'market:settlement_accurate': { provider: string; capability?: string; taskId: string };
   'market:settlement_inaccurate': { provider: string; capability?: string; taskId: string };
   'economy:cost_pattern_detected': { patternId: string; type: string; engineId: string; taskType: string };
+
+  // Wave 1: Goal-Satisfaction Outer Loop
+  'goal-loop:iteration-start': { taskId: string; iteration: number };
+  'goal-loop:terminal': { taskId: string; iteration: number; status: TaskResult['status'] };
+  'goal-loop:evaluation': {
+    taskId: string;
+    iteration: number;
+    score: number;
+    basis: string;
+    passedChecks: string[];
+    failedChecks: string[];
+  };
+  'goal-loop:exhausted': { taskId: string; iteration: number };
+  'goal-loop:no-replan': { taskId: string; iteration: number };
+  'goal-loop:budget-exhausted': { taskId: string; iteration: number };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

@@ -148,6 +148,28 @@ const ExtensibleThinkingConfigSchema = z.object({
 
 export type ExtensibleThinkingConfig = z.infer<typeof ExtensibleThinkingConfigSchema>;
 
+// ─── Wave 1: Goal-Satisfaction Outer Loop ────────────────────────────
+
+const GoalLoopConfigSchema = z.object({
+  /** When enabled, executeTask re-runs until goal evaluator is satisfied or budget exhausted. */
+  enabled: z.boolean().default(false),
+  /** Max outer-loop iterations before honest escalation. */
+  maxOuterIterations: z.number().int().min(1).max(10).default(3),
+  /** Score threshold (0..1) for accepting a completed result as "goal met". */
+  goalSatisfactionThreshold: z.number().min(0).max(1).default(0.75),
+});
+
+export type GoalLoopConfig = z.infer<typeof GoalLoopConfigSchema>;
+
+// ─── Wave 3: Agent-Facing Memory API ─────────────────────────────────
+
+const AgentMemoryConfigSchema = z.object({
+  /** Default on — this is additive and has no behavioral risk. */
+  enabled: z.boolean().default(true),
+});
+
+export type AgentMemoryConfig = z.infer<typeof AgentMemoryConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -156,6 +178,10 @@ const OrchestratorConfigSchema = z.object({
   forward_predictor: ForwardPredictorConfigSchema.default(() => defaults(ForwardPredictorConfigSchema)),
   /** Extensible Thinking — 2D routing grid (risk × uncertainty). */
   extensible_thinking: ExtensibleThinkingConfigSchema.default(() => defaults(ExtensibleThinkingConfigSchema)),
+  /** Wave 1: Goal-Satisfaction Outer Loop (gated OFF by default). */
+  goalLoop: GoalLoopConfigSchema.default(() => defaults(GoalLoopConfigSchema)),
+  /** Wave 3: Agent-Facing Memory API (default ON, additive). */
+  agent_memory: AgentMemoryConfigSchema.default(() => defaults(AgentMemoryConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

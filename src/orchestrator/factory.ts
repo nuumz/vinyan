@@ -43,9 +43,11 @@ import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
 import { FileWatcher } from '../world-graph/file-watcher.ts';
 import { WorldGraph } from '../world-graph/world-graph.ts';
+import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
@@ -272,6 +274,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         diversity_cap_pct: number;
       }
     | undefined;
+  // Wave 1: Goal-Satisfaction Outer Loop config (gated OFF by default).
+  let goalLoopConfig: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number } | undefined;
+  // Wave 3: Agent-Facing Memory API — default ON (additive).
+  let agentMemoryEnabled = true;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -284,6 +290,17 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           thresholds: et.thresholds,
           auditSampleRate: et.audit_sample_rate,
         };
+      }
+      const gl = vinyanConfig.orchestrator.goalLoop;
+      if (gl) {
+        goalLoopConfig = {
+          enabled: gl.enabled,
+          maxOuterIterations: gl.maxOuterIterations,
+          goalSatisfactionThreshold: gl.goalSatisfactionThreshold,
+        };
+      }
+      if (vinyanConfig.orchestrator.agent_memory) {
+        agentMemoryEnabled = vinyanConfig.orchestrator.agent_memory.enabled !== false;
       }
     }
     if (vinyanConfig.fleet) {
@@ -807,6 +824,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
     thinkingPolicyCompiler: extensibleThinkingEnabled
       ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
+      : undefined,
+    // Wave 1: Goal-Satisfaction Outer Loop — evaluator is instantiated only
+    // when goalLoop is enabled in config; the wrapper in executeTask uses
+    // this as the on/off signal (presence implies active).
+    goalEvaluator: goalLoopConfig?.enabled ? new DefaultGoalEvaluator() : undefined,
+    goalLoop: goalLoopConfig,
+    // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries
+    // over WorldGraph / Trace / Skill / Rule / RejectedApproach stores with
+    // per-task LRU caching. Additive; on by default.
+    agentMemory: agentMemoryEnabled
+      ? new AgentMemoryAPIImpl({
+          worldGraph,
+          skillStore,
+          traceStore,
+          ruleStore,
+          rejectedApproachStore,
+          selfModel,
+        })
       : undefined,
   };
 

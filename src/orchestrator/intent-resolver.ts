@@ -65,6 +65,13 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - If the user wants an ANSWER, SUMMARY, LIST, or REPORT → NEVER "direct-tool"
    - Words like "summarize", "list", "find all", "analyze", "report", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool"
    - Asking about a file's content → NOT "direct-tool" (reading is not opening)
+   - If strategy="direct-tool", you MUST include directToolCall with an executable tool invocation
+   - Emit exactly ONE platform-appropriate command. Never chain alternatives with ||, &&, ;, |, or multi-line shell scripts
+   - The current platform is provided in the user prompt. Choose the command for THAT platform only
+   - For web services / SaaS products that are normally opened in a browser, prefer opening the canonical URL instead of inventing a local app name
+   - Even if the user says "app" / "แอพ", if the target is primarily a web service, open its canonical URL instead of trying to launch a nonexistent desktop app
+   - Example: "open Gmail" → shell_exec with a browser/open command for Gmail's web URL, NOT "open -a gmail" and NOT cross-platform fallback chains
+   - Only use a native app launch when the target is clearly a desktop app
 
 3. FULL-PIPELINE test — Is this a focused code change?
    - Has explicit file targets AND involves code modification → "full-pipeline"
@@ -97,6 +104,67 @@ Available tools (use ONLY these exact names — do NOT invent tool names):
 IMPORTANT: For opening apps, running system commands, or any OS interaction, use shell_exec with the appropriate command.
 
 Respond ONLY with valid JSON, no markdown fences.`;
+
+function stripJsonFences(content: string): string {
+  return content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+}
+
+function parseIntentResponse(content: string): z.infer<typeof IntentResponseSchema> {
+  const parsed = IntentResponseSchema.parse(JSON.parse(stripJsonFences(content)));
+  if (parsed.strategy === 'direct-tool' && !parsed.directToolCall) {
+    throw new Error('Direct-tool strategy missing directToolCall');
+  }
+  return parsed;
+}
+
+function containsShellFallbackChain(command: string): boolean {
+  return /\|\||&&|;|\r|\n|(?<!\|)\|(?!\|)/.test(command);
+}
+
+function normalizeDirectToolCall(
+  strategy: z.infer<typeof IntentResponseSchema>['strategy'],
+  directToolCall: z.infer<typeof IntentResponseSchema>['directToolCall'],
+): z.infer<typeof IntentResponseSchema>['directToolCall'] {
+  if (!directToolCall || strategy !== 'direct-tool') {
+    return directToolCall;
+  }
+
+  const KNOWN_TOOLS = new Set([
+    'shell_exec', 'file_read', 'file_write', 'file_edit',
+    'directory_list', 'search_grep', 'git_status', 'git_diff',
+    'search_semantic', 'http_get',
+  ]);
+
+  let normalizedCall = directToolCall;
+  if (!KNOWN_TOOLS.has(normalizedCall.tool)) {
+    const command = (normalizedCall.parameters.command as string)
+      ?? normalizedCall.tool.replace(/_/g, ' ');
+    normalizedCall = {
+      tool: 'shell_exec',
+      parameters: { ...normalizedCall.parameters, command },
+    };
+  }
+
+  if (normalizedCall.tool !== 'shell_exec') {
+    return normalizedCall;
+  }
+
+  const command = normalizedCall.parameters.command;
+  if (typeof command !== 'string' || !command.trim()) {
+    throw new Error('Direct-tool shell_exec command missing');
+  }
+  if (containsShellFallbackChain(command)) {
+    throw new Error('Direct-tool shell_exec command must be a single platform-specific command');
+  }
+
+  return {
+    ...normalizedCall,
+    parameters: {
+      ...normalizedCall.parameters,
+      command: command.trim(),
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Timeout helper
@@ -154,6 +222,7 @@ export async function resolveIntent(
 Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
 Constraints: ${input.constraints?.join(', ') || 'none'}
+Current platform: ${process.platform}
 Available tools: ${toolList}`;
 
   const response = await withTimeout(
@@ -168,14 +237,13 @@ Available tools: ${toolList}`;
 
   let content = response.content.trim();
 
-  // Strip markdown fences if present (defensive)
-  let jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-
   let parsed: z.infer<typeof IntentResponseSchema>;
   try {
-    parsed = IntentResponseSchema.parse(JSON.parse(jsonStr));
+    parsed = parseIntentResponse(content);
+    parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
   } catch (firstError) {
-    // Fast-tier model returned non-JSON — retry with balanced tier before giving up
+    // Fast-tier model returned malformed or semantically invalid structured output.
+    // Retry once with balanced tier before giving up.
     const balancedProvider = deps.registry.selectByTier('balanced');
     if (balancedProvider && balancedProvider.id !== provider.id) {
       const retryResponse = await withTimeout(
@@ -188,36 +256,17 @@ Available tools: ${toolList}`;
         INTENT_TIMEOUT_MS,
       );
       content = retryResponse.content.trim();
-      jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-      parsed = IntentResponseSchema.parse(JSON.parse(jsonStr));
+      parsed = parseIntentResponse(content);
+      parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
     } else {
       throw firstError;
-    }
-  }
-
-  // Defensive: normalize hallucinated tool names to shell_exec
-  let directToolCall = parsed.directToolCall;
-  if (directToolCall && parsed.strategy === 'direct-tool') {
-    const KNOWN_TOOLS = new Set([
-      'shell_exec', 'file_read', 'file_write', 'file_edit',
-      'directory_list', 'search_grep', 'git_status', 'git_diff',
-      'search_semantic', 'http_get',
-    ]);
-    if (!KNOWN_TOOLS.has(directToolCall.tool)) {
-      // LLM hallucinated a tool name — rewrite as shell_exec
-      const command = (directToolCall.parameters.command as string)
-        ?? directToolCall.tool.replace(/_/g, ' ');
-      directToolCall = {
-        tool: 'shell_exec',
-        parameters: { ...directToolCall.parameters, command },
-      };
     }
   }
 
   return {
     strategy: parsed.strategy,
     refinedGoal: parsed.refinedGoal,
-    directToolCall,
+    directToolCall: parsed.directToolCall,
     workflowPrompt: parsed.workflowPrompt,
     confidence: parsed.confidence ?? 0.8,
     reasoning: parsed.reasoning,

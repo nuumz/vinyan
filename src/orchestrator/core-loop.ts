@@ -631,6 +631,8 @@ async function executeDirectTool(
     if (toolResult?.status !== 'success' && toolResult?.error) {
       const { classifyToolFailure } = await import('./tool-failure-classifier.ts');
       const exitCode = extractExitCode(toolResult.error);
+      const command = (toolCall.parameters.command as string) ?? '';
+      const isMacAppLaunch = /^open\s+-a\s+/i.test(command);
       const analysis = classifyToolFailure(exitCode, toolResult.error);
 
       deps.bus?.emit('tool:failure_classified', {
@@ -641,9 +643,8 @@ async function executeDirectTool(
       });
 
       // Step 1: Deterministic app discovery (no LLM, fast)
-      if (analysis.type === 'not_found' && intent.directToolCall?.tool === 'shell_exec') {
+      if ((analysis.type === 'not_found' || (isMacAppLaunch && exitCode === 1)) && intent.directToolCall?.tool === 'shell_exec') {
         const { discoverApp } = await import('./tools/direct-tool-resolver.ts');
-        const command = (toolCall.parameters.command as string) ?? '';
         // Extract the app name from "open -a <name>" pattern
         const appNameMatch = command.match(/open\s+-a\s+(?:"([^"]+)"|(\S+))/);
         const failedAppName = appNameMatch?.[1] ?? appNameMatch?.[2];
@@ -677,7 +678,6 @@ async function executeDirectTool(
 
       // Step 2: LLM remediation (if discovery didn't work)
       if (toolResult?.status !== 'success' && analysis.recoverable && deps.remediationEngine) {
-        const command = (toolCall.parameters.command as string) ?? '';
         const suggestion = await deps.remediationEngine.suggest(input.goal, command, analysis, process.platform);
 
         if (
@@ -740,16 +740,8 @@ async function executeDirectTool(
     deps.bus?.emit('trace:record', { trace });
     const answer =
       toolResult?.status === 'success'
-        ? typeof toolResult.output === 'string'
-          ? toolResult.output
-          : JSON.stringify(toolResult.output)
+        ? normalizeDirectToolAnswer(toolResult.output)
         : (toolResult?.error ?? 'Tool execution failed');
-
-    // Guard: if tool "succeeded" but produced no meaningful output, fall through
-    // to the pipeline — the direct-tool shortcircuit didn't actually answer the user.
-    if (toolResult?.status === 'success' && (!answer || !answer.trim())) {
-      return null;
-    }
 
     const result: TaskResult = {
       id: input.id,
@@ -763,6 +755,41 @@ async function executeDirectTool(
   } catch {
     return null; // Fall through to pipeline
   }
+}
+
+function normalizeDirectToolAnswer(output: unknown): string | undefined {
+  if (typeof output === 'string') {
+    return output.trim() ? output : undefined;
+  }
+  if (output === undefined || output === null) {
+    return undefined;
+  }
+  return JSON.stringify(output);
+}
+
+function shouldFireAndForgetDirectCommand(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return /^(open(\s+-a)?\s|xdg-open\s|start\s+""\s)/.test(normalized);
+}
+
+function enrichDirectToolCall(call: { tool: string; parameters: Record<string, unknown> }): {
+  tool: string;
+  parameters: Record<string, unknown>;
+} {
+  if (call.tool !== 'shell_exec' || call.parameters.fireAndForget !== undefined) {
+    return call;
+  }
+  const command = typeof call.parameters.command === 'string' ? call.parameters.command : undefined;
+  if (!command || !shouldFireAndForgetDirectCommand(command)) {
+    return call;
+  }
+  return {
+    ...call,
+    parameters: {
+      ...call.parameters,
+      fireAndForget: true,
+    },
+  };
 }
 
 /** Extract exit code from error string like "Exit code 127: ..." */
@@ -844,14 +871,23 @@ async function executeTaskCore(
       if (intentResolution.strategy === 'conversational') {
         return buildConversationalResult(input, intentResolution, deps);
       }
-      // Direct-tool: use deterministic resolver to generate platform-correct command (A3)
+      // Direct-tool: preserve the LLM-produced tool call when present.
+      // Deterministic resolution is fallback-only when classification exists but
+      // the model omitted an executable call.
       if (intentResolution.strategy === 'direct-tool') {
-        const { classifyDirectTool, resolveCommand } = await import('./tools/direct-tool-resolver.ts');
-        const classification = classifyDirectTool(input.goal);
-        if (classification && classification.confidence >= 0.7) {
-          const command = resolveCommand(classification, process.platform);
-          if (command) {
-            intentResolution.directToolCall = { tool: 'shell_exec', parameters: { command } };
+        if (intentResolution.directToolCall) {
+          intentResolution.directToolCall = enrichDirectToolCall(intentResolution.directToolCall);
+        } else {
+          const { classifyDirectTool, resolveCommand } = await import('./tools/direct-tool-resolver.ts');
+          const classification = classifyDirectTool(input.goal);
+          if (classification && classification.confidence >= 0.7) {
+            const command = resolveCommand(classification, process.platform);
+            if (command) {
+              intentResolution.directToolCall = enrichDirectToolCall({
+                tool: 'shell_exec',
+                parameters: { command },
+              });
+            }
           }
         }
       }

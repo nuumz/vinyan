@@ -142,6 +142,8 @@ export interface OrchestratorConfig {
   workerModelAllowlist?: string[];
   /** Command approval gate — enables interactive approval for unlisted shell commands. */
   commandApprovalGate?: import('./tools/command-approval-gate.ts').CommandApprovalGate;
+  /** Enable background workspace watching for WorldGraph invalidation (default: true). */
+  watchWorkspace?: boolean;
 }
 
 export interface Orchestrator {
@@ -253,8 +255,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   try {
     worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
     // A4: Watch workspace for external file changes — auto-invalidate stale facts
-    fileWatcher = new FileWatcher(worldGraph, workspace);
-    fileWatcher.start();
+    if (config.watchWorkspace !== false) {
+      fileWatcher = new FileWatcher(worldGraph, workspace);
+      fileWatcher.start();
+    }
   } catch {
     // WorldGraph unavailable — fact invalidation disabled
   }

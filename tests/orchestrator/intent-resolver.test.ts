@@ -87,6 +87,79 @@ describe('resolveIntent', () => {
     expect(result.directToolCall!.parameters.command).toBe('open -a "Google Chrome"');
   });
 
+  test('retries with balanced provider when fast provider emits a chained cross-platform command', async () => {
+    const expectedCommand = process.platform === 'darwin'
+      ? 'open https://mail.google.com/'
+      : process.platform === 'win32'
+        ? 'start "" https://mail.google.com/'
+        : 'xdg-open https://mail.google.com/';
+    let fastCalls = 0;
+    let balancedCalls = 0;
+    const fastProvider: LLMProvider = {
+      id: 'test-tool-uses',
+      tier: 'tool-uses',
+      async generate(_req: LLMRequest): Promise<LLMResponse> {
+        fastCalls++;
+        return {
+          content: JSON.stringify({
+            strategy: 'direct-tool',
+            refinedGoal: 'เปิดแอพพลิเคชัน Gmail',
+            reasoning: 'User wants to open Gmail app — a single fire-and-forget action with no textual output expected; the side-effect (app opening) is the entire goal.',
+            directToolCall: {
+              tool: 'shell_exec',
+              parameters: {
+                command: 'open -a Gmail || gmail || xdg-open https://mail.google.com/',
+              },
+            },
+            confidence: 0.8,
+          }),
+          toolCalls: [],
+          tokensUsed: { input: 50, output: 50 },
+          model: 'test-tool-uses',
+          stopReason: 'end_turn',
+        };
+      },
+    };
+    const balancedProvider: LLMProvider = {
+      id: 'test-balanced',
+      tier: 'balanced',
+      async generate(_req: LLMRequest): Promise<LLMResponse> {
+        balancedCalls++;
+        return {
+          content: JSON.stringify({
+            strategy: 'direct-tool',
+            refinedGoal: 'เปิด Gmail ในเบราว์เซอร์',
+            reasoning: 'Gmail is primarily a web service, so the canonical URL is the correct direct action.',
+            directToolCall: {
+              tool: 'shell_exec',
+              parameters: {
+                command: expectedCommand,
+              },
+            },
+            confidence: 0.95,
+          }),
+          toolCalls: [],
+          tokensUsed: { input: 50, output: 50 },
+          model: 'test-balanced',
+          stopReason: 'end_turn',
+        };
+      },
+    };
+
+    const registry = new LLMProviderRegistry();
+    registry.register(fastProvider);
+    registry.register(balancedProvider);
+
+    const result = await resolveIntent(makeInput('เปิดแอพ gmail'), { registry, availableTools: ['shell_exec'] });
+
+    expect(result.strategy).toBe('direct-tool');
+    expect(result.directToolCall).toBeDefined();
+    expect(result.directToolCall!.tool).toBe('shell_exec');
+    expect(result.directToolCall!.parameters.command).toBe(expectedCommand);
+    expect(fastCalls).toBe(1);
+    expect(balancedCalls).toBe(1);
+  });
+
   test('classifies agentic-workflow with workflow prompt', async () => {
     const provider = makeProvider(JSON.stringify({
       strategy: 'agentic-workflow',

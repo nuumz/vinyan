@@ -1,10 +1,15 @@
 import { Database } from 'bun:sqlite';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createBus } from '../../src/core/bus.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
+import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { LLMProvider, LLMRequest, WorkerProfile } from '../../src/orchestrator/types.ts';
+import { FileWatcher } from '../../src/world-graph/file-watcher.ts';
 
 // Re-implement autoRegisterWorkers test harness — the function is module-private,
 // so we test the behavior by mimicking its logic against real stores.
@@ -153,5 +158,46 @@ describe('autoRegisterWorkers logic', () => {
     expect(workerStore.findById('worker-claude-opus')).toBeDefined();
     expect(workerStore.findById('worker-gpt-4-turbo')).toBeDefined();
     expect(workerStore.findById('worker-unknown-model')).toBeNull();
+  });
+});
+
+describe('createOrchestrator workspace watching', () => {
+  test('skips file watcher startup when watchWorkspace=false', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-watch-off-'));
+    const startSpy = spyOn(FileWatcher.prototype, 'start').mockImplementation(() => {});
+
+    try {
+      const orchestrator = createOrchestrator({
+        workspace,
+        registry: new LLMProviderRegistry(),
+        useSubprocess: false,
+        watchWorkspace: false,
+      });
+
+      orchestrator.close();
+      expect(startSpy).not.toHaveBeenCalled();
+    } finally {
+      startSpy.mockRestore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('starts file watcher by default', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-watch-on-'));
+    const startSpy = spyOn(FileWatcher.prototype, 'start').mockImplementation(() => {});
+
+    try {
+      const orchestrator = createOrchestrator({
+        workspace,
+        registry: new LLMProviderRegistry(),
+        useSubprocess: false,
+      });
+
+      orchestrator.close();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      startSpy.mockRestore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

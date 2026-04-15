@@ -84,7 +84,15 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   }
 
   const traceListenerHandle = attachTraceListener(bus);
-  const orchestrator = createOrchestrator({ workspace, bus, llmProxy: true, commandApprovalGate });
+  const orchestrator = createOrchestrator({
+    workspace,
+    bus,
+    llmProxy: true,
+    commandApprovalGate,
+    // One-shot CLI tasks without target files do not benefit from background
+    // workspace crawling, and chokidar startup can delay direct-tool launch commands.
+    watchWorkspace: files.length > 0,
+  });
 
   // Graceful shutdown on signals
   const shutdown = () => {

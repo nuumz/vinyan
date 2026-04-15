@@ -185,6 +185,19 @@ const ReplanConfigSchema = z.object({
 
 export type ReplanConfig = z.infer<typeof ReplanConfigSchema>;
 
+// ─── Wave 4: Agent-Loop Goal-Driven Termination ─────────────────────
+
+const AgentLoopGoalTerminationConfigSchema = z.object({
+  /** Gated OFF by default. When on, orchestrator runs goal-check before accepting attempt_completion. */
+  enabled: z.boolean().default(false),
+  /** Max continuation turns per session before honest reject. */
+  maxContinuations: z.number().int().min(1).max(5).default(2),
+  /** Fraction of agent's negotiable budget pool reserved for continuations. */
+  continuationBudgetFraction: z.number().min(0).max(1).default(0.25),
+});
+
+export type AgentLoopGoalTerminationConfig = z.infer<typeof AgentLoopGoalTerminationConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -199,6 +212,8 @@ const OrchestratorConfigSchema = z.object({
   agent_memory: AgentMemoryConfigSchema.default(() => defaults(AgentMemoryConfigSchema)),
   /** Wave 2: Replan Engine (gated OFF by default, requires goalLoop). */
   replan: ReplanConfigSchema.default(() => defaults(ReplanConfigSchema)),
+  /** Wave 4: Goal-driven agent-loop termination (gated OFF by default). */
+  agentLoopGoalTermination: AgentLoopGoalTerminationConfigSchema.default(() => defaults(AgentLoopGoalTerminationConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

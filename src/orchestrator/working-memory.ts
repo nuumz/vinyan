@@ -31,6 +31,10 @@ export class WorkingMemory {
   private scopedFacts: WorkingMemoryState['scopedFacts'] = [];
   private priorAttempts: AgentSessionSummary[] = [];
   private planSignatures: string[] = [];
+  /** Wave 1 gap fix: track idempotent hydration so prepareExecution can
+   *  safely run on every outer-loop iteration without duplicating entries. */
+  private sessionHydrated = false;
+  private crossTaskLoaded = false;
   private bus?: VinyanBus;
   private taskId?: string;
   private archiver?: FailedApproachArchiver;
@@ -123,6 +127,22 @@ export class WorkingMemory {
   /** Wave 2: return a copy of prior plan signatures for the outer loop replan gate. */
   getPriorPlanSignatures(): string[] {
     return [...this.planSignatures];
+  }
+
+  /** Wave 1 gap fix: idempotent hydration flags. prepareExecution sets
+   *  these once per task to prevent double-hydration across outer-loop
+   *  iterations (which would otherwise duplicate prior approaches + facts). */
+  isSessionHydrated(): boolean {
+    return this.sessionHydrated;
+  }
+  markSessionHydrated(): void {
+    this.sessionHydrated = true;
+  }
+  isCrossTaskLoaded(): boolean {
+    return this.crossTaskLoaded;
+  }
+  markCrossTaskLoaded(): void {
+    this.crossTaskLoaded = true;
   }
 
   /** Wave 1: attach an archiver if not already set. Used by goal-loop hand-off where

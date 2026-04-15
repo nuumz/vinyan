@@ -370,8 +370,10 @@ async function prepareExecution(
   }
 
   // Session memory: hydrate from prior turns (A7: cross-turn learning)
-  // Skip when re-entering with preset WM — the first iteration already hydrated it.
-  if (!presetWorkingMemory && input.sessionId && deps.sessionManager) {
+  // Wave 1 gap fix: use idempotent flag on WM so outer-loop iterations
+  // don't duplicate hydrated entries. First call hydrates + marks;
+  // subsequent calls skip via the flag check.
+  if (!workingMemory.isSessionHydrated() && input.sessionId && deps.sessionManager) {
     try {
       const memoryJson = deps.sessionManager.getSessionWorkingMemory(input.sessionId);
       if (memoryJson) {
@@ -385,14 +387,17 @@ async function prepareExecution(
           workingMemory.addScopedFact(fact.target, fact.pattern, fact.verified, fact.hash);
         }
       }
+      workingMemory.markSessionHydrated();
     } catch {
       // Session memory hydration is best-effort
+      workingMemory.markSessionHydrated(); // mark to avoid retry storms
     }
   }
 
   // Cross-task learning: load prior failed approaches
-  // Skip when re-entering with preset WM — prior approaches are already in memory.
-  if (!presetWorkingMemory && deps.rejectedApproachStore && input.targetFiles?.length) {
+  // Wave 1 gap fix: idempotent flag — load once per task regardless of
+  // outer-loop iteration count.
+  if (!workingMemory.isCrossTaskLoaded() && deps.rejectedApproachStore && input.targetFiles?.length) {
     try {
       const { loadPriorFailedApproaches } = await import('./cross-task-loader.ts');
       const priorApproaches = loadPriorFailedApproaches(
@@ -410,8 +415,10 @@ async function prepareExecution(
           approach.failureOracle,
         );
       }
+      workingMemory.markCrossTaskLoaded();
     } catch {
       // Cross-task loading is best-effort
+      workingMemory.markCrossTaskLoaded(); // mark to avoid retry storms
     }
   }
 

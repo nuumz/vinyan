@@ -232,4 +232,34 @@ describe('WorkingMemory', () => {
     expect(names).toContain('newcomer');
     expect(snap.failedApproaches).toHaveLength(MAX_FAILED_APPROACHES);
   });
+
+  // ── Wave 1 gap fix: idempotent hydration flags ──────────────────────
+  test('session hydration flag defaults to false', () => {
+    const wm = new WorkingMemory();
+    expect(wm.isSessionHydrated()).toBe(false);
+  });
+
+  test('markSessionHydrated flips the flag', () => {
+    const wm = new WorkingMemory();
+    wm.markSessionHydrated();
+    expect(wm.isSessionHydrated()).toBe(true);
+  });
+
+  test('cross-task loaded flag defaults to false', () => {
+    const wm = new WorkingMemory();
+    expect(wm.isCrossTaskLoaded()).toBe(false);
+  });
+
+  test('markCrossTaskLoaded flips the flag', () => {
+    const wm = new WorkingMemory();
+    wm.markCrossTaskLoaded();
+    expect(wm.isCrossTaskLoaded()).toBe(true);
+  });
+
+  test('flags are independent', () => {
+    const wm = new WorkingMemory();
+    wm.markSessionHydrated();
+    expect(wm.isSessionHydrated()).toBe(true);
+    expect(wm.isCrossTaskLoaded()).toBe(false);
+  });
 });

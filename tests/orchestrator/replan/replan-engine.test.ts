@@ -277,6 +277,33 @@ describe('DefaultReplanEngine', () => {
     expect(result!.input.budget).toEqual(ctx.previousInput.budget);
   });
 
+  test('repeated replan strips prior REPLAN directive (no accumulation)', async () => {
+    const novelDag = fakeDag([{ id: 'n1', description: 'new attempt', targetFiles: ['src/foo.ts'] }]);
+    const engine = new DefaultReplanEngine(
+      { decomposer: makeDecomposer(async () => novelDag), perception: makePerceptionFake() },
+      CFG,
+    );
+    // Pre-populate the goal as if a prior replan had already run
+    const previouslyReplannedGoal =
+      'fix the thing\n\n[REPLAN attempt 2] Previous attempts did not satisfy the goal. Use a STRUCTURALLY DIFFERENT approach from the prior plan. Suggested alternative plan shape:\nprior replan text';
+    const ctx = makeContext({
+      iteration: 1, // second replan
+      previousInput: { ...mockInput(), goal: previouslyReplannedGoal },
+    });
+    const result = await engine.generateAlternative(ctx);
+
+    expect(result).not.toBeNull();
+    // Goal should contain exactly ONE REPLAN directive, not two
+    const replanMatches = result!.input.goal.match(/\[REPLAN attempt/g);
+    expect(replanMatches).toHaveLength(1);
+    // The original goal text is still preserved
+    expect(result!.input.goal).toMatch(/^fix the thing/);
+    // The prior replan's body ("prior replan text") should be gone
+    expect(result!.input.goal).not.toContain('prior replan text');
+    // The new replan's body should be present
+    expect(result!.input.goal).toContain('new attempt');
+  });
+
   test('budget-cap gate actually fires after tokens accumulate (gap fix)', async () => {
     // With tokensSpentOnReplanning + ESTIMATED_REPLAN_TOKENS > 20% budget.
     const engine = new DefaultReplanEngine(

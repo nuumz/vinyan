@@ -163,8 +163,13 @@ export class DefaultReplanEngine implements ReplanEngine {
     // generated DAG itself is consumed as an approach hint rather than
     // being reused as a plan object, because the inner core loop always
     // calls decomposer.decompose fresh per iteration via phase-plan.
+    //
+    // Strip any prior REPLAN directive from the previous goal before adding
+    // a new one, so the goal prefix stays bounded across repeated replans
+    // (otherwise iteration N's goal would carry N-1 appended directives).
+    const originalGoal = ctx.previousInput.goal.split('\n\n[REPLAN ')[0] ?? ctx.previousInput.goal;
     const rewrittenGoal =
-      `${ctx.previousInput.goal}\n\n` +
+      `${originalGoal}\n\n` +
       `[REPLAN attempt ${ctx.iteration + 1}] Previous attempts did not satisfy the goal. ` +
       `Use a STRUCTURALLY DIFFERENT approach from the prior plan. ` +
       `Suggested alternative plan shape:\n${newApproachText}`;

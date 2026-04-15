@@ -11,6 +11,7 @@ import type { SkillStore } from '../db/skill-store.ts';
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
+import { buildReplanPrompt, type FailureContext } from './replan/replan-prompt.ts';
 import { buildResearchSwarmDAG, matchDecomposerPreset } from './task-decomposer-presets.ts';
 import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
@@ -109,6 +110,47 @@ export class TaskDecomposerImpl implements TaskDecomposer {
     }
 
     // All retries exhausted → fallback
+    return this.fallbackDAG(input);
+  }
+
+  /** Wave 2: generate an alternative plan after a failed outer-loop attempt.
+   *  Reuses the same parse/validate/retry pipeline as decompose() — only the
+   *  prompt differs (see replan-prompt.ts). */
+  async replan(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+    failure: FailureContext,
+  ): Promise<TaskDAG> {
+    const provider = this.registry.selectByTier('balanced');
+    if (!provider) return this.fallbackDAG(input);
+
+    const blastRadius = [...(input.targetFiles ?? []), ...perception.dependencyCone.directImportees];
+    let validationFeedback: string | undefined;
+
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        const { systemPrompt, userPrompt } = buildReplanPrompt(input, perception, memory, failure);
+        const finalUserPrompt = validationFeedback
+          ? `${userPrompt}\n\n⚠️ Your previous replan output failed validation:\n${validationFeedback}\n\nPlease fix these issues.`
+          : userPrompt;
+        const response = await provider.generate({
+          systemPrompt,
+          userPrompt: finalUserPrompt,
+          maxTokens: 4000,
+        });
+        const dag = this.parseDAG(response.content);
+        if (!dag) {
+          validationFeedback = "Response was not valid JSON matching TaskDAG schema.";
+          continue;
+        }
+        const criteria = validateDAG(dag, blastRadius);
+        if (allCriteriaMet(criteria)) return dag;
+        validationFeedback = formatFailures(criteria).join('\n');
+      } catch {
+        validationFeedback = 'LLM call failed. Please produce valid JSON.';
+      }
+    }
     return this.fallbackDAG(input);
   }
 

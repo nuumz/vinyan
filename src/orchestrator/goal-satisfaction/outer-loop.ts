@@ -43,6 +43,9 @@ export async function executeWithGoalLoop(
 
   let lastResult: TaskResult | undefined;
   let lastSatisfaction: GoalSatisfaction | undefined;
+  // Wave 2: replan budget counter. Shared across iterations, bounded by
+  // ReplanEngineConfig.tokenSpendCapFraction to prevent unbounded spend.
+  let tokensSpentOnReplanning = 0;
 
   for (let iteration = 1; iteration <= cfg.maxOuterIterations; iteration++) {
     // ── Budget guard (before every iteration) ──────────────────────
@@ -100,8 +103,7 @@ export async function executeWithGoalLoop(
       return result;
     }
 
-    // ── Goal not met — check if replan is wired (Wave 2) ───────────
-    // Wave 2 will provide deps.replanEngine; until then we escalate.
+    // ── Goal not met ───────────────────────────────────────────────
     if (iteration >= cfg.maxOuterIterations) {
       deps.bus?.emit('goal-loop:exhausted', { taskId: input.id, iteration });
       return annotate(result, {
@@ -112,14 +114,44 @@ export async function executeWithGoalLoop(
       });
     }
 
-    // No replan engine → honest escalation (A7).
-    deps.bus?.emit('goal-loop:no-replan', { taskId: input.id, iteration });
-    return annotate(result, {
-      status: 'escalated',
-      reason: 'goal not met, replan not available',
+    // ── Wave 2: Replan Engine (optional) ──────────────────────────
+    if (!deps.replanEngine || !deps.replanConfig?.enabled) {
+      // No replan engine → honest escalation (A7). Load-bearing test string.
+      deps.bus?.emit('goal-loop:no-replan', { taskId: input.id, iteration });
+      return annotate(result, {
+        status: 'escalated',
+        reason: 'goal not met, replan not available',
+        iteration,
+        satisfaction,
+      });
+    }
+
+    const priorPlanSignatures = workingMemory.getPriorPlanSignatures();
+    const outcome = await deps.replanEngine.generateAlternative({
+      previousInput: input,
+      previousResult: result,
+      failedApproaches: workingMemory.getSnapshot().failedApproaches,
+      goalSatisfaction: satisfaction,
       iteration,
-      satisfaction,
+      priorPlanSignatures,
+      tokensSpentOnReplanning,
+      remainingTaskBudgetTokens: Math.max(1, input.budget.maxTokens - tokensSpentOnReplanning),
     });
+
+    if (!outcome) {
+      deps.bus?.emit('goal-loop:replan-exhausted', { taskId: input.id, iteration });
+      return annotate(result, {
+        status: 'escalated',
+        reason: 'replan exhausted (no novel plan)',
+        iteration,
+        satisfaction,
+      });
+    }
+
+    workingMemory.recordPlanSignature(outcome.planSignature);
+    tokensSpentOnReplanning += outcome.tokensUsed;
+    input = outcome.input;
+    // fall through to next iteration with updated input + preserved workingMemory
   }
 
   // Unreachable under normal logic — defensive fallback.

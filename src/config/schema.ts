@@ -170,6 +170,21 @@ const AgentMemoryConfigSchema = z.object({
 
 export type AgentMemoryConfig = z.infer<typeof AgentMemoryConfigSchema>;
 
+// ─── Wave 2: Replan Engine ───────────────────────────────────────────
+
+const ReplanConfigSchema = z.object({
+  /** Gated OFF by default. Requires goalLoop.enabled. */
+  enabled: z.boolean().default(false),
+  /** Max replan attempts before honest escalation. */
+  maxReplans: z.number().int().min(1).max(5).default(2),
+  /** Replan token spend cap as fraction of remaining task budget. */
+  tokenSpendCapFraction: z.number().min(0).max(1).default(0.20),
+  /** Trigram similarity upper bound vs prior failed approaches. */
+  trigramSimilarityMax: z.number().min(0).max(1).default(0.85),
+});
+
+export type ReplanConfig = z.infer<typeof ReplanConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -182,6 +197,8 @@ const OrchestratorConfigSchema = z.object({
   goalLoop: GoalLoopConfigSchema.default(() => defaults(GoalLoopConfigSchema)),
   /** Wave 3: Agent-Facing Memory API (default ON, additive). */
   agent_memory: AgentMemoryConfigSchema.default(() => defaults(AgentMemoryConfigSchema)),
+  /** Wave 2: Replan Engine (gated OFF by default, requires goalLoop). */
+  replan: ReplanConfigSchema.default(() => defaults(ReplanConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────

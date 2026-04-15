@@ -483,6 +483,7 @@ export interface PerceptualHierarchy {
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */
+/** Wave 2: Working memory state — now includes plan-signature history for replan novelty. */
 export interface WorkingMemoryState {
   failedApproaches: Array<{
     approach: string;
@@ -521,6 +522,8 @@ export interface WorkingMemoryState {
     hash: string;
   }>;
   priorAttempts?: AgentSessionSummary[];
+  /** Wave 2: SHA-256 signatures of plans attempted in this task. Used by ReplanEngine for novelty. */
+  planSignatures?: string[];
 }
 
 // ---------------------------------------------------------------------------

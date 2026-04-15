@@ -48,6 +48,7 @@ import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
+import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
 import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
@@ -278,6 +279,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let goalLoopConfig: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number } | undefined;
   // Wave 3: Agent-Facing Memory API — default ON (additive).
   let agentMemoryEnabled = true;
+  // Wave 2: Replan Engine config (gated OFF by default, requires goalLoop).
+  let replanConfig: ReplanEngineConfig | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -301,6 +304,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       if (vinyanConfig.orchestrator.agent_memory) {
         agentMemoryEnabled = vinyanConfig.orchestrator.agent_memory.enabled !== false;
+      }
+      const rp = vinyanConfig.orchestrator.replan;
+      if (rp) {
+        replanConfig = {
+          enabled: rp.enabled,
+          maxReplans: rp.maxReplans,
+          tokenSpendCapFraction: rp.tokenSpendCapFraction,
+          trigramSimilarityMax: rp.trigramSimilarityMax,
+        };
       }
     }
     if (vinyanConfig.fleet) {
@@ -843,6 +855,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    // Wave 2: Replan Engine — only active when both goalLoop and replan are
+    // enabled. Self-assembles L1 perception so outer-loop doesn't need routing.
+    replanEngine: goalLoopConfig?.enabled && replanConfig?.enabled
+      ? new DefaultReplanEngine({ decomposer, perception, bus }, replanConfig)
+      : undefined,
+    replanConfig,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)

@@ -77,6 +77,13 @@ export interface SelfModel {
 
 export interface TaskDecomposer {
   decompose(input: TaskInput, perception: PerceptualHierarchy, memory: WorkingMemoryState): Promise<TaskDAG>;
+  /** Wave 2: alternative plan after a failed outer-loop attempt. Optional — stubs don't implement it. */
+  replan?(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+    failure: import('./replan/replan-prompt.ts').FailureContext,
+  ): Promise<TaskDAG>;
 }
 
 export interface WorkerPool {
@@ -195,6 +202,9 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  // Wave 2: Replan Engine (gated OFF by default). Requires Wave 1 (goalLoop).
+  replanEngine?: import('./replan/replan-engine.ts').ReplanEngine;
+  replanConfig?: import('./replan/replan-engine.ts').ReplanEngineConfig;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;

@@ -506,6 +506,11 @@ export interface VinyanBusEvents {
   'goal-loop:exhausted': { taskId: string; iteration: number };
   'goal-loop:no-replan': { taskId: string; iteration: number };
   'goal-loop:budget-exhausted': { taskId: string; iteration: number };
+  'goal-loop:replan-exhausted': { taskId: string; iteration: number };
+
+  // Wave 2: Replan Engine observability
+  'replan:accepted': { taskId: string; iteration: number; planSignature: string };
+  'replan:rejected': { taskId: string; iteration: number; reason: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

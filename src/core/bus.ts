@@ -524,6 +524,14 @@ export interface VinyanBusEvents {
     specificity: number;
   };
   'reactive:rule-skipped': { taskSignature: string; reason: string };
+
+  // Wave 4: Agent-loop goal-check observability
+  'agent-loop:goal-check': {
+    taskId: string;
+    score: number;
+    decision: 'accept' | 'continue' | 'reject';
+    reason: string;
+  };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

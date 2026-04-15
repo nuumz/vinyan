@@ -173,6 +173,26 @@ export interface AgentLoopDeps {
   agentMemory?: import('../agent-memory/agent-memory-api.ts').AgentMemoryAPI;
   /** Wave 5b: skill-hint config. Default off when undefined. */
   skillHintsConfig?: { enabled: boolean; topK: number };
+  /**
+   * Wave 4: goal-driven agent-loop termination. When enabled, the agent
+   * loop runs a deterministic goal-check after the subprocess reports
+   * `done` and (if the score falls below threshold) flips the result's
+   * `isUncertain` flag so Wave 1's outer goal-loop can pick it up for
+   * replanning via Wave 2. This is an observability-forward integration:
+   * when disabled (default), no goal check runs and behavior is unchanged.
+   *
+   * A1: evaluator is a separate component from the agent generator.
+   * A3: the decision to flip uncertain is rule-based via completion-gate.
+   * A7: no continuation IPC yet — the loop cannot force another subprocess
+   *     turn at MVP, so 'continue' collapses to 'reject' (flip to uncertain).
+   */
+  goalEvaluator?: import('../goal-satisfaction/goal-evaluator.ts').GoalEvaluator;
+  goalTerminationConfig?: {
+    enabled: boolean;
+    maxContinuations: number;
+    continuationBudgetFraction: number;
+    goalSatisfactionThreshold: number;
+  };
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -542,6 +562,102 @@ function detectNonRetryableError(uncertainties: string[]): string | undefined {
  * first-then-local seam without spinning up a full agent worker subprocess.
  * Production callers should use `runAgentLoop` which calls this internally.
  */
+/**
+ * Wave 4: run the deterministic goal check hook after the subprocess reports
+ * `done`. Returns whether the result should flip to `isUncertain` and the
+ * blocker messages to include in `uncertainties`.
+ *
+ * Pure helper — all inputs are passed explicitly. A3/A7 compliant: the
+ * decision flows through rule-based completion-gate, not through the LLM.
+ */
+export async function runWave4GoalCheck(
+  input: TaskInput,
+  mutations: ReadonlyArray<{ file: string; diff: string }>,
+  proposedContent: string | undefined,
+  understanding: import('../types.ts').TaskUnderstanding | undefined,
+  deps: AgentLoopDeps,
+): Promise<{ flipToUncertain: boolean; uncertainties: string[]; score?: number; decision?: string }> {
+  const cfg = deps.goalTerminationConfig;
+  if (!cfg?.enabled || !deps.goalEvaluator) {
+    return { flipToUncertain: false, uncertainties: [] };
+  }
+
+  try {
+    // Build a synthetic TaskResult the Wave 1 evaluator can consume.
+    // oracleVerdicts[] is intentionally empty at this stage — oracle gate
+    // runs in phase-verify after the agent-loop returns. The evaluator's
+    // C1-C4 alignment checks work on mutations + understanding, which we
+    // have; contradiction detection passes (no verdicts, no contradiction);
+    // C5 acceptance-criteria coverage works on mutations + proposedContent.
+    const { WorkingMemory } = await import('../working-memory.ts');
+    const workingMemory = new WorkingMemory({ taskId: input.id });
+    const syntheticResult: TaskResult = {
+      id: input.id,
+      status: 'completed',
+      mutations: mutations.map((m) => ({
+        file: m.file,
+        diff: m.diff,
+        oracleVerdicts: {},
+      })),
+      trace: {
+        id: `trace-${input.id}-agent-loop-goal-check`,
+        taskId: input.id,
+        timestamp: Date.now(),
+        routingLevel: 2,
+        approach: 'agent-loop-goal-check',
+        oracleVerdicts: {},
+        modelUsed: 'n/a',
+        tokensConsumed: 0,
+        durationMs: 0,
+        outcome: 'success',
+        affectedFiles: mutations.map((m) => m.file),
+      },
+      ...(proposedContent !== undefined ? { answer: proposedContent } : {}),
+    };
+
+    const satisfaction = await deps.goalEvaluator.evaluate({
+      input,
+      result: syntheticResult,
+      oracleVerdicts: [],
+      workingMemory,
+      understanding,
+    });
+
+    const { decideCompletion } = await import('./completion-gate.ts');
+    const gate = decideCompletion({
+      goalScore: satisfaction.score,
+      threshold: cfg.goalSatisfactionThreshold,
+      continuationsUsed: cfg.maxContinuations, // MVP: no live continuation → exhausted
+      maxContinuations: cfg.maxContinuations,
+      budgetRemaining: 0,
+      continuationCost: 1,
+      blockers: satisfaction.blockers,
+    });
+
+    deps.bus?.emit('agent-loop:goal-check', {
+      taskId: input.id,
+      score: satisfaction.score,
+      decision: gate.decision,
+      reason: gate.reason,
+    });
+
+    if (gate.decision === 'accept') {
+      return { flipToUncertain: false, uncertainties: [], score: satisfaction.score, decision: gate.decision };
+    }
+
+    // 'continue' or 'reject' → flip to uncertain so Wave 1 outer loop can replan.
+    const uncertainties = [
+      `Wave 4 goal-check: ${gate.decision} (score ${satisfaction.score.toFixed(2)} < ${cfg.goalSatisfactionThreshold})`,
+      ...satisfaction.blockers.map((b) => `[${b.category}] ${b.detail}`),
+    ];
+    return { flipToUncertain: true, uncertainties, score: satisfaction.score, decision: gate.decision };
+  } catch {
+    // Any evaluation error → fail-open (don't flip) so a buggy evaluator
+    // never blocks a completed task.
+    return { flipToUncertain: false, uncertainties: [] };
+  }
+}
+
 /**
  * Wave 5b: format top-k CachedSkills as a constraint block the worker
  * prompt assembler will render under "Constraints". Each entry shows the
@@ -1298,6 +1414,33 @@ export async function runAgentLoop(
           turnsUsed: transcript.length,
           durationMs,
         });
+
+        // Wave 4: optional deterministic goal check before accepting `done`.
+        // Gated OFF by default; when enabled, a shortfall flips `isUncertain`
+        // so Wave 1's outer goal-loop sees the signal via transcript metadata
+        // and can decide whether to replan (Wave 2). No control flow change
+        // when disabled — the loop falls through to the existing return.
+        const goalCheck = await runWave4GoalCheck(
+          input,
+          mutations,
+          turn.proposedContent,
+          understanding,
+          deps,
+        );
+        if (goalCheck.flipToUncertain) {
+          return {
+            mutations,
+            proposedContent: turn.proposedContent,
+            uncertainties: goalCheck.uncertainties,
+            tokensConsumed,
+            ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+            ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
+            durationMs,
+            transcript,
+            isUncertain: true,
+            proposedToolCalls: [],
+          };
+        }
 
         return {
           mutations,

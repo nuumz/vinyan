@@ -55,6 +55,7 @@ import {
 } from './goal-satisfaction/failure-cluster-detector.ts';
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
+import { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import {
   reactiveRuleToEvolutionary,
   synthesizeReactiveRule,
@@ -303,6 +304,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let reactiveLearningConfig: FailureClusterConfig | undefined;
   // Wave 5b: Skill hints config (default ON when config absent).
   let skillHintsConfig: { enabled: boolean; topK: number } = { enabled: true, topK: 3 };
+  // Wave 4: Agent-loop goal-driven termination (gated OFF by default).
+  let agentLoopGoalTerminationConfig:
+    | {
+        enabled: boolean;
+        maxContinuations: number;
+        continuationBudgetFraction: number;
+        goalSatisfactionThreshold: number;
+      }
+    | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -347,6 +357,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       const sh = vinyanConfig.orchestrator.skillHints;
       if (sh) {
         skillHintsConfig = { enabled: sh.enabled, topK: sh.topK };
+      }
+      const agt = vinyanConfig.orchestrator.agentLoopGoalTermination;
+      if (agt) {
+        agentLoopGoalTerminationConfig = {
+          enabled: agt.enabled,
+          maxContinuations: agt.maxContinuations,
+          continuationBudgetFraction: agt.continuationBudgetFraction,
+          // Inherit threshold from goalLoop so both layers agree.
+          goalSatisfactionThreshold: goalLoopConfig?.goalSatisfactionThreshold ?? 0.75,
+        };
       }
     }
     if (vinyanConfig.fleet) {
@@ -897,6 +917,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       ? new DefaultReplanEngine({ decomposer, perception, bus }, replanConfig)
       : undefined,
     replanConfig,
+    // Wave 6: Workflow registry — always instantiated with the 4 built-in
+    // strategies. Additive and metadata-only; the core-loop uses it as a
+    // strategy validator (unknown → fallback) without changing dispatch.
+    workflowRegistry: new WorkflowRegistry(),
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -1086,6 +1110,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // (config opt-out), the agent loop's guard short-circuits the query.
     agentMemory: deps.agentMemory,
     skillHintsConfig,
+    // Wave 4: goal-check hook in agent-loop done path. Reuses Wave 1's
+    // evaluator so both levels agree on scoring semantics. Gated off by
+    // default via agentLoopGoalTermination config.
+    goalEvaluator: deps.goalEvaluator,
+    goalTerminationConfig: agentLoopGoalTerminationConfig,
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

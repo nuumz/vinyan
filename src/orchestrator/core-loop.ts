@@ -20,6 +20,7 @@ import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
+import type { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
 import { executePlanPhase } from './phases/phase-plan.ts';
@@ -190,6 +191,8 @@ export interface OrchestratorDeps {
   llmRegistry?: import('./llm/provider-registry.ts').LLMProviderRegistry;
   /** Remediation engine for automatic tool failure recovery (fast-tier LLM). */
   remediationEngine?: import('./remediation-engine.ts').RemediationEngine;
+  /** User preference store for learned app/tool preferences. */
+  userPreferenceStore?: import('../db/user-preference-store.ts').UserPreferenceStore;
   // Monitoring — Self-Improving Autonomy.
   /** Per-engine EMA accuracy calibrator. Optional; phase-learn updates it on every trace. */
   oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
@@ -205,6 +208,11 @@ export interface OrchestratorDeps {
   // Wave 2: Replan Engine (gated OFF by default). Requires Wave 1 (goalLoop).
   replanEngine?: import('./replan/replan-engine.ts').ReplanEngine;
   replanConfig?: import('./replan/replan-engine.ts').ReplanEngineConfig;
+  // Wave 6: Workflow registry — metadata surface for strategy validation.
+  // When present, the dispatch path uses it as a fallback gate: unknown
+  // strategies (e.g. LLM-fabricated labels) are routed to registry.fallback()
+  // instead of falling through to the bare `full-pipeline` path silently.
+  workflowRegistry?: WorkflowRegistry;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -305,6 +313,7 @@ async function prepareExecution(
         registry: deps.llmRegistry,
         availableTools: deps.toolExecutor?.getToolNames(),
         bus: deps.bus,
+        userPreferences: deps.userPreferenceStore?.formatForPrompt(),
       });
       deps.bus?.emit('intent:resolved', {
         taskId: input.id,
@@ -738,6 +747,25 @@ async function executeDirectTool(
     };
     await deps.traceCollector.record(trace);
     deps.bus?.emit('trace:record', { trace });
+
+    // ── Learn user preference from successful direct-tool execution ──
+    if (toolResult?.status === 'success' && deps.userPreferenceStore && intent.directToolCall?.tool === 'shell_exec') {
+      try {
+        const { detectAppCategory, extractSpecificApp } = await import('../db/user-preference-store.ts');
+        const command = String(intent.directToolCall.parameters.command ?? '');
+        const specificApp = extractSpecificApp(input.goal);
+        const category = detectAppCategory(input.goal);
+        // Only record when user explicitly named a specific app.
+        // Category-level requests ("แอพ mail") must NOT overwrite
+        // learned preferences with the platform default.
+        if (category && specificApp && command) {
+          deps.userPreferenceStore.recordUsage(category, specificApp, command);
+        }
+      } catch {
+        // Preference recording failure is non-fatal
+      }
+    }
+
     const answer =
       toolResult?.status === 'success'
         ? normalizeDirectToolAnswer(toolResult.output)
@@ -868,6 +896,22 @@ async function executeTaskCore(
     // ── Strategy routing — short-circuit non-pipeline strategies ──
     const intentResolution = prep.intentResolution;
     if (intentResolution) {
+      // Wave 6: validate strategy against registry. Unknown strategies
+      // (e.g. LLM-fabricated labels that don't match any registered
+      // handler metadata) fall back to registry.fallback() which by
+      // default is 'full-pipeline'. When no registry is wired, behavior
+      // is unchanged — the if-chain below handles known strategies
+      // and an unknown label implicitly falls through to 'full-pipeline'.
+      if (deps.workflowRegistry && !deps.workflowRegistry.has(intentResolution.strategy)) {
+        const fallback = deps.workflowRegistry.fallback();
+        deps.bus?.emit('intent:resolved', {
+          taskId: input.id,
+          strategy: fallback as typeof intentResolution.strategy,
+          confidence: intentResolution.confidence,
+          reasoning: `${intentResolution.reasoning ?? ''} [workflow-registry: unknown '${intentResolution.strategy}' → fallback '${fallback}']`,
+        });
+        intentResolution.strategy = fallback as typeof intentResolution.strategy;
+      }
       if (intentResolution.strategy === 'conversational') {
         return buildConversationalResult(input, intentResolution, deps);
       }
@@ -875,6 +919,58 @@ async function executeTaskCore(
       // Deterministic resolution is fallback-only when classification exists but
       // the model omitted an executable call.
       if (intentResolution.strategy === 'direct-tool') {
+        // ── Preference / disambiguation for category-level requests (A7) ──
+        // "แอพ mail" is ambiguous — could mean Gmail, Outlook, Apple Mail, etc.
+        // Decision: learned preference → use it; no preference → ask user.
+        if (deps.userPreferenceStore) {
+          const { extractSpecificApp, detectAppCategory, getAppsInCategory } = await import('../db/user-preference-store.ts');
+          if (!extractSpecificApp(input.goal)) {
+            const category = detectAppCategory(input.goal);
+            if (category) {
+              const pref = deps.userPreferenceStore.getPreference(category);
+              if (pref) {
+                // Has learned preference (any status) → use it.
+                // Even probation (1 use) is a stronger signal than the platform default.
+                intentResolution.directToolCall = enrichDirectToolCall({
+                  tool: 'shell_exec',
+                  parameters: { command: pref.resolvedCommand },
+                });
+                deps.bus?.emit('preference:applied', {
+                  taskId: input.id,
+                  category,
+                  preferredApp: pref.preferredApp,
+                  usageCount: pref.usageCount,
+                });
+              } else {
+                // No preference at all → disambiguate instead of guessing.
+                const apps = getAppsInCategory(category);
+                if (apps.length > 1) {
+                  const examples = apps.slice(0, 5).map((a) => `  - ${a}`).join('\n');
+                  const answer = `ไม่แน่ใจว่าคุณต้องการเปิดแอพ ${category} ตัวไหน:\n${examples}\n\nลองระบุชื่อแอพที่ต้องการ เช่น "เปิด ${apps[0]}" — ระบบจะจดจำตัวเลือกของคุณสำหรับครั้งถัดไป`;
+                  const trace: ExecutionTrace = {
+                    id: `trace-${input.id}-disambiguate`,
+                    taskId: input.id,
+                    workerId: 'intent-resolver',
+                    timestamp: Date.now(),
+                    routingLevel: 0,
+                    approach: 'preference-disambiguation',
+                    oracleVerdicts: {},
+                    modelUsed: 'none',
+                    tokensConsumed: 0,
+                    durationMs: 0,
+                    outcome: 'success',
+                    affectedFiles: [],
+                  };
+                  await deps.traceCollector.record(trace);
+                  deps.bus?.emit('trace:record', { trace });
+                  const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
+                  deps.bus?.emit('task:complete', { result });
+                  return result;
+                }
+              }
+            }
+          }
+        }
         if (intentResolution.directToolCall) {
           intentResolution.directToolCall = enrichDirectToolCall(intentResolution.directToolCall);
         } else {

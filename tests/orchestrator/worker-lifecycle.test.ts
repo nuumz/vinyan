@@ -4,8 +4,8 @@ import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
-import type { WorkerProfile } from '../../src/orchestrator/types.ts';
 import { WorkerLifecycle } from '../../src/orchestrator/fleet/worker-lifecycle.ts';
+import type { WorkerProfile } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');
@@ -366,6 +366,120 @@ describe('WorkerLifecycle', () => {
       // Should be roughly 20% (±5%)
       expect(trueCount / 1000).toBeGreaterThan(0.1);
       expect(trueCount / 1000).toBeLessThan(0.35);
+    });
+  });
+
+  // ── Wave 4.3: cleanup hook registry ───────────────────────────────
+  describe('W4.3 onCleanup hooks', () => {
+    test('registered hook fires on demotion', async () => {
+      const calls: Array<{ workerId: string; reason: string }> = [];
+      lifecycle.onCleanup((workerId, reason) => {
+        calls.push({ workerId, reason });
+      });
+
+      // Set up a demotion scenario (identical to existing demote test)
+      store.insert(makeProfile('w1', 'active'));
+      store.insert(makeProfile('w2', 'active'));
+      insertTraces(db, 'w1', 50, { successRate: 0.95, avgQuality: 0.9 });
+      insertTraces(db, 'w2', 50, { successRate: 0.3, avgQuality: 0.3 });
+      store.invalidateCache();
+
+      lifecycle.checkDemotions();
+
+      // Wait for the fire-and-forget async hook
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.workerId).toBe('w2');
+      expect(calls[0]!.reason).toBe('demoted');
+    });
+
+    test('registered hook fires with reason=retired on permanent retirement', async () => {
+      const calls: Array<{ workerId: string; reason: string }> = [];
+      lifecycle.onCleanup((workerId, reason) => {
+        calls.push({ workerId, reason });
+      });
+
+      // Set up a retirement scenario
+      const profile = makeProfile('w1', 'active');
+      profile.demotionCount = 2; // 3rd demotion triggers retirement
+      store.insert(profile);
+      store.insert(makeProfile('w2', 'active'));
+      insertTraces(db, 'w1', 50, { successRate: 0.2, avgQuality: 0.2 });
+      insertTraces(db, 'w2', 50, { successRate: 0.95, avgQuality: 0.9 });
+      store.invalidateCache();
+
+      lifecycle.checkDemotions();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      expect(calls[0]!.reason).toBe('retired');
+    });
+
+    test('unsubscribe function removes the hook', async () => {
+      const calls: string[] = [];
+      const unsubscribe = lifecycle.onCleanup((workerId) => {
+        calls.push(workerId);
+      });
+      unsubscribe();
+
+      store.insert(makeProfile('w1', 'active'));
+      store.insert(makeProfile('w2', 'active'));
+      insertTraces(db, 'w1', 50, { successRate: 0.95, avgQuality: 0.9 });
+      insertTraces(db, 'w2', 50, { successRate: 0.3, avgQuality: 0.3 });
+      store.invalidateCache();
+
+      lifecycle.checkDemotions();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(calls).toHaveLength(0);
+    });
+
+    test('throwing hook does not block the transition', async () => {
+      const calls: string[] = [];
+      lifecycle.onCleanup(() => {
+        throw new Error('hook boom');
+      });
+      lifecycle.onCleanup((workerId) => {
+        calls.push(workerId);
+      });
+
+      store.insert(makeProfile('w1', 'active'));
+      store.insert(makeProfile('w2', 'active'));
+      insertTraces(db, 'w1', 50, { successRate: 0.95, avgQuality: 0.9 });
+      insertTraces(db, 'w2', 50, { successRate: 0.3, avgQuality: 0.3 });
+      store.invalidateCache();
+
+      lifecycle.checkDemotions();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Transition still happened — store shows demoted
+      expect(store.findById('w2')!.status).toBe('demoted');
+      // Second hook still ran
+      expect(calls).toContain('w2');
+    });
+
+    test('multiple hooks all fire', async () => {
+      const callsA: string[] = [];
+      const callsB: string[] = [];
+      lifecycle.onCleanup((workerId) => {
+        callsA.push(workerId);
+      });
+      lifecycle.onCleanup((workerId) => {
+        callsB.push(workerId);
+      });
+
+      store.insert(makeProfile('w1', 'active'));
+      store.insert(makeProfile('w2', 'active'));
+      insertTraces(db, 'w1', 50, { successRate: 0.95, avgQuality: 0.9 });
+      insertTraces(db, 'w2', 50, { successRate: 0.3, avgQuality: 0.3 });
+      store.invalidateCache();
+
+      lifecycle.checkDemotions();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(callsA).toEqual(['w2']);
+      expect(callsB).toEqual(['w2']);
     });
   });
 });

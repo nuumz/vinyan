@@ -758,6 +758,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           bus,
           marketScheduler,
           costPredictor,
+          // Book-integration Wave 4.2: role-hint → tier preference.
+          // The registry already stores each provider's declared tier,
+          // so the selector's roleHint logic can pick Haiku/Sonnet/Opus
+          // through this lookup without duplicating tier metadata.
+          getProviderTier: (id: string) => {
+            for (const p of registry.listProviders()) {
+              if (p.id === id) return p.tier;
+            }
+            return undefined;
+          },
         })
       : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)

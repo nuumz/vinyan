@@ -330,3 +330,234 @@ maintainers don't think they're accidents.
    `taskId` requires editing `TASK_EVENTS` in `src/tui/views/peek.ts`. A
    type-level registry tagged at the bus event declaration would close
    this gap.
+
+---
+
+## 8. Wave 4 — Full-book Gap Closure (deep-read pass, 2026-04-15)
+
+> **Motivation:** the first overview was written before the complete book
+> read. A second pass covering Ch01–15 + App A–D surfaced three implementable
+> gaps and one larger deferred item. See overview §10 for the delta log and
+> §11 for the complete chapter map.
+
+### 8.1 W4.1 — Canary-first Batch Dispatch
+
+**Source:** Ch12 §"error() bug" + Ch14 Failure 3. The book's Elysia migration
+case study shows one agent batch-migrating 19 files to a broken pattern
+before a single handler was tested end-to-end; the fix was "test one file
+fully before batch-migrating others." Chapter 14 elevates this to a
+failure-mode pattern.
+
+**Code:**
+- `src/orchestrator/concurrent-dispatcher.ts` — new `DispatchOptions` type,
+  extended `dispatch(tasks, options?)` signature, canary selection rule
+
+**Design notes:**
+
+1. **Opt-in per call.** The option is `dispatch(tasks, { canaryFirst: true })`.
+   Not a default because:
+   - homogeneous-batch detection is heuristic (we can't reliably tell when
+     N tasks are "from the same mutation pattern"), and
+   - canary adds latency to the first task — operators should choose when
+     the safety is worth the wait.
+
+2. **Canary selection rule** (pure, deterministic — A3-safe):
+   ```
+   canary = first task in submission order whose execution is either
+            file-free OR in a singleton conflict group
+   ```
+   Rationale: the canary must be able to run WITHOUT holding any lock
+   that blocks the rest of the batch. Picking a task from a multi-member
+   conflict group would serialize the whole chain behind the canary.
+
+3. **Abort semantics.** A canary "passes" iff `result.status === 'completed'`.
+   Any other status (`uncertain`, `input-required`, `unknown`) fails the
+   canary. On failure:
+   - Return the canary's actual result
+   - For every remaining task, synthesize a `TaskResult` with
+     `status: 'canary-aborted'` and a `cancelReason` string pointing at
+     the canary task id.
+   - Emit `dag:executed` with `parallel: false` and a new flag
+     `canaryAborted: true` so dashboards can distinguish "real failure"
+     from "cancelled by canary".
+
+4. **Test surface:** canary pass → full batch runs; canary fail → remaining
+   tasks get synthetic aborted results; canary is picked deterministically;
+   opt-in (default dispatch behavior unchanged).
+
+**Axiom compliance:**
+- A3: the canary-selection rule is a pure function on the `TaskInput[]`
+  array. No LLM. No side effects.
+- A6: canary-aborted tasks never enter the agent loop; no worker runs
+  without its normal contract gate.
+
+### 8.2 W4.2 — Role Hint → Engine Tier
+
+**Source:** Appendix C Cost Analysis + Ch07 Implementation Team. The book's
+explicit recommendation: "Haiku unless you need Opus" for reads, Sonnet for
+implementation, Opus for debate/trade-off. Vinyan's engine selector today
+picks purely by routing level and trust — it has no way for a caller to
+signal "this is a read, prefer the cheapest tier."
+
+**Code:**
+- `src/orchestrator/engine-selector.ts` — extend `EngineSelector.select()`
+  with an optional `roleHint?: RoleHint` parameter and a tier-preference
+  override
+
+**Design notes:**
+
+1. **Role taxonomy** (four values, matching book roles):
+   ```ts
+   export type RoleHint =
+     | 'read'       // ⇒ prefer 'fast' tier  (Haiku for reads/research)
+     | 'implement'  // ⇒ prefer 'balanced'   (Sonnet for codegen)
+     | 'debate'     // ⇒ prefer 'powerful'   (Opus for debates)
+     | 'verify';    // ⇒ prefer 'balanced' then 'tool-uses'
+   ```
+
+2. **Preference, not constraint.** If the preferred tier isn't in the
+   registry, fall through to the existing Wilson-LB trust selection.
+   The hint never prevents selection, it only biases it. This keeps
+   the existing tier-trust ladder intact and preserves A5 semantics.
+
+3. **Where it gets set.** Callers in the orchestrator and the critic
+   already know the role they need (decomposer is 'read', critic is
+   'debate', worker is 'implement'). The factory wires the hint for the
+   debate seats via its existing role-to-provider mapping. No broad
+   refactor of existing call sites — the hint is additive and optional.
+
+4. **Test surface:** roleHint picks the preferred tier when available;
+   falls through to default when not; existing selection behavior is
+   unchanged when no hint is passed.
+
+**Axiom compliance:**
+- A3: tier selection is a rule-based lookup. No LLM.
+- A5: `roleHint` biases the default model but the existing trust-threshold
+  and capability filters still run — a role-hinted provider that fails the
+  trust check is rejected just as before.
+
+### 8.3 W4.3 — WorkerLifecycle Cleanup Hook Registry
+
+**Source:** Ch14 Failure 4 (orphan worktrees). Even though Vinyan rejected
+full worktree adoption (W3.2), the **pattern** — "every ephemeral
+isolation mechanism needs a cleanup stage on retire" — is worth
+generalizing. Adding the hook registry now keeps the seam open for any
+future isolation layer (worktree, tmp-dir sandbox, scratch DB) and closes
+the Ch14 failure mode as "seam exists, wire what you need".
+
+**Code:**
+- `src/orchestrator/fleet/worker-lifecycle.ts` — new `onCleanup(hook)` +
+  internal `runCleanupHooks(workerId, reason)` method called on demote and
+  retire transitions
+
+**Design notes:**
+
+1. **Hook signature:**
+   ```ts
+   export type WorkerCleanupHook = (
+     workerId: string,
+     reason: 'demoted' | 'retired',
+   ) => Promise<void> | void;
+   ```
+   Hooks are best-effort; exceptions are caught and logged but never
+   block the lifecycle transition.
+
+2. **Trigger points.** Hooks fire on:
+   - every transition into `demoted` status (not on re-enrollment back to
+     probation, because re-enrolled workers need to keep their state)
+   - every transition into `retired` status
+
+3. **Why best-effort.** Cleanup is a hygiene task, not a correctness
+   requirement — a leaked worktree or tmp file degrades disk usage but
+   never corrupts state. Failing the lifecycle transition on a cleanup
+   exception would be strictly worse.
+
+4. **Test surface:** hook registration returns an unsubscribe function;
+   hooks fire on demotion; hooks fire on retirement; exceptions in a
+   hook don't block the transition.
+
+**Axiom compliance:**
+- A6: hooks are called during existing state transitions that are already
+  governed by `WorkerStore` + `WorkerLifecycle` — no new authority is
+  introduced.
+
+### 8.4 W4.4 — Implementation Team Preset (DEFERRED to Wave 5)
+
+**Source:** Ch07 + Ch12. The book's mutation-side companion to Research
+Swarm: 3 named roles (safety / tester / verifier) with worktree isolation
+and lead-only merges.
+
+**Why deferred:** Vinyan's architecture already gives us the mechanical
+substrate (DAG executor, file locks, session overlay, orchestrator-owned
+commit). What's missing is:
+
+1. A **deterministic disjoint-seam heuristic** that partitions a
+   multi-file mutation goal into N non-overlapping file groups. Options:
+   - split by top-level directory (crude but deterministic)
+   - split by git-history co-change clusters (needs trace analysis)
+   - split by perception's `dependencyCone` components (probably best,
+     but requires careful graph partitioning)
+
+2. **Role assignment per partition** that plays with W4.2's role hint.
+   The first partition gets 'implement' role; a verification partition
+   gets 'verify'; an audit partition gets 'read'.
+
+3. **An integration node** that waits for all partitions and runs a
+   joint verification step. This is similar to the research-swarm's
+   aggregator but writes to the commit store instead of producing a
+   report.
+
+Each of those is a non-trivial design question on its own. Shipping
+W4.1–3 now gets the most obvious book-to-Vinyan gains on the table; W4.4
+stays in Phase B's Wave 5 backlog with these unresolved questions called
+out so the next person to pick it up doesn't have to reread the book.
+
+---
+
+## 9. Complete Chapter-to-Vinyan Map (as-built matrix)
+
+> Every chapter in the book mapped to the Vinyan file or design decision
+> that closes it. Cross-reference for the overview §11.
+
+| Ch | Book concept | Vinyan artifact | Status |
+|----|-------------|-----------------|--------|
+| 1 | Context compaction / single-agent ceiling | subprocess per agent + `AgentBudgetTracker` + `TranscriptCompactor` | Aligned by design |
+| 2 | Three tiers decision tree (< 5 min / 5–30 min / > 30 min) | §3.1 of `vinyan-os-architecture.md` (W1.3) + Appendix B (W3.3) | **W1.3 ✅** |
+| 3 | Three-transport message bus (SendMessage / `maw hey` / inbox) | `src/core/bus.ts` (in-process) + `src/a2a/*-transport.ts` (4 transports) + ECP | Aligned, richer |
+| 4 | TaskCreate/TaskList/TaskUpdate/TaskGet + `blockedBy` + `owner` | `plan_update` (per-session, Phase 7c-2) + DAG edges for `blockedBy` | Rejected — Vinyan's orchestrator-owned dispatch makes cross-agent claim unnecessary |
+| 5 | Research Swarm (3–5 Haiku, read-only, report contract) | `task-decomposer-presets.ts::buildResearchSwarmDAG` | **W1.2 ✅** |
+| 6 | Architecture Debate (3-seat advocate/counter/architect, Opus) | `critic/debate-mode.ts::ArchitectureDebateCritic` + `DebateRouterCritic` | **W2.1 ✅** |
+| 7 | Implementation Team (3 roles, worktree, lead-only merge) | partially — mechanical substrate (DAG + lock + overlay) exists; preset deferred | **W4.4 (Wave 5)** |
+| 8 | Federation Agent (tmux + `claude -p` + WireGuard) | `src/a2a/` full stack + `InstanceCoordinator` + `PeerHealthMonitor` + trust attestation | Aligned, richer |
+| 9 | Cron Loop (prompt-is-whole, state-on-disk, sentinel) | `src/sleep-cycle/sleep-cycle.ts` + W2.3 termination sentinel + `TraceStore`/`PatternStore` | **W2.3 ✅** |
+| 10 | Plugin Architecture (SDK façade, typed schemas) | `src/mcp/`, `src/orchestrator/mcp/` + Zod schemas across ECP/A2A | Aligned |
+| 11 | WASM plugin runtime (16 MB / 5 s / capability bridge) | Docker sandbox (`src/orchestrator/worker/sandbox.ts`) | Rejected — Docker is richer |
+| 12 | Framework migration playbook (schema → DI → swap) | No specific preset; `Canary-first batch` is the generalizable safety rule | **W4.1** |
+| 13 | What the Human Sees (peek/overview/watch/inbox/feed) | `vinyan tui peek` (W3.1) + `watch` + `interactive` + event renderer (W1.1 silent event) | **W3.1 ✅** (+ overview-live Wave 5) |
+| 14 | Five failure modes (silent / merge / error() / orphan / cross-repo) | F1 = W1.1, F2 = W2.2, F3 = **W4.1**, F4 = **W4.3**, F5 = n/a | Waves 1/2/4 |
+| 15 | Tier 4 (`maw wake --issue --team`) | A2A + InstanceCoordinator + DelegationRouter deliver every Tier 4 property | Rejected — already covered |
+| A | Command reference (maw * CLI) | `vinyan tui {interactive,watch,peek,replay,overview}` subset | Aligned |
+| B | Spawn pattern cheatsheet | DAG executor + ConcurrentDispatcher + decomposer presets | Aligned |
+| C | Cost analysis (3–7× token multiplier, Haiku/Sonnet/Opus guidance) | `CostLedger` + `CostPredictor` + **W4.2 role hint** | **W4.2** |
+| D | Plugin catalog (41 lines median, 17 plugins) | MCP tool map in `factory.ts` | Aligned |
+
+---
+
+## 10. Review checklist — Wave 4 addendum
+
+Add these alongside the Wave 1–3 checklist in §5:
+
+- [ ] `bun test tests/orchestrator/conflict-plan.test.ts` still passes (existing)
+- [ ] `bun test tests/orchestrator/canary-dispatch.test.ts` passes (new)
+- [ ] `bun test tests/orchestrator/engine-selector.test.ts` passes (existing + new role-hint cases)
+- [ ] `bun test tests/orchestrator/worker-lifecycle.test.ts` passes (existing + new cleanup-hook cases)
+- [ ] **A3 check (Wave 4)**: canary selection is a pure function of the
+      TaskInput[] — no bus emits, no async calls, no LLM. Grep the
+      function body for `.generate(`, `.emit(`, `await` and assert
+      matches are only in the dispatcher loop, not the selection rule.
+- [ ] **A5 check (Wave 4)**: role hint is preference-only; the existing
+      Wilson-LB trust filter and capability filter still run to
+      completion when a hint is passed.
+- [ ] **A6 check (Wave 4)**: cleanup hooks run AFTER the state
+      transition completes; a failing hook must not roll back the
+      lifecycle transition.

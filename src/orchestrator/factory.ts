@@ -554,7 +554,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         counter: counterProvider,
         architect: architectProvider,
       });
-      criticEngine = new DebateRouterCritic(baselineCritic, debateCritic);
+      // Wave 5 observability: pass the bus so the router can emit
+      // `critic:debate_fired` when the debate path is chosen. Dashboards
+      // and Economy OS use this to track debate spending separately.
+      criticEngine = new DebateRouterCritic(baselineCritic, debateCritic, { bus });
     }
   }
 

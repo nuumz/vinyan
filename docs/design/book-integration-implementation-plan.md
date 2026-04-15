@@ -290,34 +290,77 @@ documentation rather than code.
 > These items either need more design work, come from chapters that
 > specifically called out "unsolved" problems, or require primitives
 > Vinyan doesn't have today.
+>
+> **Status update (2026-04-15):** 3 of 9 items shipped in the Wave 5
+> partial commit; the remaining 6 are either blocked on larger design
+> questions or require infrastructure Vinyan doesn't have yet.
 
-1. **W4.4 Implementation Team preset** — Ch07 + Ch12. Needs a
-   deterministic disjoint-seam heuristic (directory-based? dependency-cone-
-   cluster-based?), role-to-subagent mapping, and an integration node
-   design that plays with the existing DAG executor.
-2. **`ScheduleWakeup` primitive** — Ch09. Lets an agent self-pace a
-   wakeup inside a long-running external operation (build, deploy,
-   test run) without burning turns polling. Requires session-persistence
-   / resumption work; low priority.
-3. **Fleet-live overview view** — Ch13. A single-pane TUI command
-   showing active workers, peers, tasks, silent-agent state, and
-   heartbeat timestamps. Extends the existing `vinyan tui overview`.
-4. **Research Swarm Wave-2 follow-up** — Ch05. Aggregator identifies
-   gaps from Wave-1 findings and spawns a narrow follow-up swarm. The
-   current preset is Wave-1 only.
-5. **CriticEngine context object** — remove the `task.riskScore`
-   ad-hoc cast in `core-loop.ts` and `debate-mode.ts`. Extend
-   `CriticEngine.review()` with an optional context arg.
-6. **Bus event typed registry** — replace peek's `TASK_EVENTS`
-   literal list with a type-level registry generated from bus event
-   declarations that carry a `taskId`.
-7. **Debate cost cap at Economy OS layer** — per-day budget guard for
-   architecture debates. Partial resolution in overview §8 Q2.
-8. **Sentinel config on `SleepCycleRunner` constructor** — expose
-   `sentinelMaxNoopCycles` as a constructor option rather than a class
-   constant, so tests can exercise shorter windows.
-9. **`TerminationSentinel` reusable class** — once a second subsystem
-   needs the same "dormant after N no-ops" pattern.
+1. **W4.4 Implementation Team preset** — Ch07 + Ch12. **Still deferred.**
+   Needs a deterministic disjoint-seam heuristic (directory-based?
+   dependency-cone-cluster-based?), role-to-subagent mapping, and an
+   integration node design that plays with the existing DAG executor.
+   Per analysis in the Wave 5 partial commit: the book's faithful pattern
+   requires worktree isolation (which Vinyan rejected per W3.2), and the
+   simpler "disjoint partition by directory" version is already covered
+   by `ConcurrentDispatcher + DagExecutor`.
+2. **`ScheduleWakeup` primitive** — Ch09. **Still deferred.** Requires
+   session persistence / resumption work that doesn't currently exist
+   in Vinyan's turn-based agent-loop model. Would be a net-new
+   subsystem.
+3. **Fleet-live overview view** — Ch13. **Still deferred.** Needs
+   orchestrator state threaded into the CLI `showOverview` path —
+   achievable but non-trivial because `showOverview` currently runs
+   without an orchestrator instance.
+4. **Research Swarm Wave-2 follow-up** — Ch05. **Still deferred.**
+   Gap identification requires an LLM call in the coordination path,
+   which conflicts with A3 (deterministic governance). A rule-based
+   alternative would require a gap-detection heuristic we don't have.
+5. **CriticEngine context object** — ✅ **SHIPPED as W5.1** in the
+   Wave 5 partial commit. `CriticEngine.review()` now accepts an
+   optional `context?: CriticContext` argument carrying `riskScore`
+   and `routingLevel`. `core-loop.ts` passes the context instead of
+   mutating the task; `DebateRouterCritic` reads `context.riskScore`
+   directly. Both `as unknown as { riskScore? }` casts removed.
+6. **Bus event typed registry** — **Still deferred.** Touches every
+   `VinyanBusEvents` declaration and risks breaking a large surface
+   of consumers for a refactor, not a feature.
+7. **Debate cost cap at Economy OS layer** — **Partially resolved.**
+   The full per-day cap still needs CostLedger integration, but the
+   Wave 5 partial commit ships a `critic:debate_fired` bus event
+   that dashboards and the Economy OS can subscribe to for tracking
+   debate spending. The cap itself is still future work.
+8. **Sentinel config on `SleepCycleRunner` constructor** — ✅ **SHIPPED
+   as W5.4** in the Wave 5 partial commit. `SleepCycleRunner`
+   constructor now accepts an optional `sentinelMaxNoopCycles`
+   parameter (default 5), letting tests exercise shorter windows.
+9. **`TerminationSentinel` reusable class** — **Still deferred.** YAGNI
+   until a second subsystem needs the same "dormant after N no-ops"
+   pattern.
+
+---
+
+## 7. Wave 5 partial — file tables
+
+### W5.1 — CriticEngine context object
+
+| File | Change |
+|------|--------|
+| `src/orchestrator/critic/critic-engine.ts` | `CriticContext` type + extended `review()` signature |
+| `src/orchestrator/critic/llm-critic-impl.ts` | Accept-and-ignore `context` (baseline doesn't need it) |
+| `src/orchestrator/critic/debate-mode.ts` | `ArchitectureDebateCritic.review()` extended; `DebateRouterCritic.review()` reads `context.riskScore` (cast removed) |
+| `src/orchestrator/core-loop.ts` | Pass `{ riskScore, routingLevel }` explicitly; mutation removed |
+| `src/core/bus.ts` | `critic:debate_fired` event declaration |
+| `src/orchestrator/factory.ts` | Thread `bus` to `DebateRouterCritic` constructor |
+
+Tests: `tests/orchestrator/critic/debate-mode.test.ts` — updated risk-triggered test to use `CriticContext`; 4 new `critic:debate_fired` observability cases.
+
+### W5.4 — Sentinel constructor option
+
+| File | Change |
+|------|--------|
+| `src/sleep-cycle/sleep-cycle.ts` | `sentinelMaxNoopCycles` as optional constructor parameter |
+
+Tests: `tests/sleep-cycle/termination-sentinel.test.ts` — 2 new cases (custom value trips faster; default is preserved).
 
 ---
 

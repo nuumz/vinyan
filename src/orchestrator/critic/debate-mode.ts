@@ -37,8 +37,9 @@
  *     the factory make that trade-off explicitly per role.
  *   - Budget guard lives in the orchestrator, not here — this module is pure.
  */
+import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../types.ts';
-import type { CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
+import type { CriticContext, CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -167,6 +168,11 @@ export class ArchitectureDebateCritic implements CriticEngine {
     task: TaskInput,
     perception: PerceptualHierarchy,
     acceptanceCriteria?: string[],
+    // Wave 5.1: the 3-seat debate itself doesn't consume the routing
+    // context today — the trigger decision happens in DebateRouterCritic
+    // below. Accept-and-ignore so the CriticEngine interface stays
+    // uniform across all implementations.
+    _context?: CriticContext,
   ): Promise<DebateCriticResult> {
     const maxTokens = this.config.maxTokensPerSeat ?? DEFAULT_MAX_TOKENS_PER_SEAT;
     const argumentTemperature = this.config.argumentTemperature ?? DEFAULT_ARGUMENT_TEMPERATURE;
@@ -387,11 +393,11 @@ export function parseDebateOverride(constraints?: string[]): 'force' | 'skip' | 
  *   - if `DEBATE:force` is in constraints → debate always
  *   - otherwise → baseline unless risk score ≥ threshold
  *
- * The router resolves the TaskInput's constraints and (if available) a
- * `riskScore` field stashed on the task by the risk router. Core-loop
- * threads the task object through unchanged, so the router can read
- * everything it needs off `task` alone without touching the core-loop
- * interface.
+ * Wave 5.1: `riskScore` is now read from the `CriticContext` argument
+ * threaded by the core loop, replacing the previous
+ * `(task as unknown as { riskScore? }).riskScore` cast. The router
+ * also accepts an optional bus so dashboards can observe when the
+ * debate path actually fires (see `critic:debate_fired`).
  *
  * A3-safe: no LLM in the selection path.
  */
@@ -399,7 +405,15 @@ export class DebateRouterCritic implements CriticEngine {
   constructor(
     private readonly baseline: CriticEngine,
     private readonly debate: CriticEngine,
-    private readonly options: { threshold?: number } = {},
+    private readonly options: {
+      threshold?: number;
+      /**
+       * Wave 5 observability: optional bus for emitting
+       * `critic:debate_fired` when the router picks the debate path.
+       * Absent ⇒ silent routing (unchanged from the pre-Wave-5 version).
+       */
+      bus?: VinyanBus;
+    } = {},
   ) {}
 
   async review(
@@ -407,20 +421,29 @@ export class DebateRouterCritic implements CriticEngine {
     task: TaskInput,
     perception: PerceptualHierarchy,
     acceptanceCriteria?: string[],
+    context?: CriticContext,
   ): Promise<CriticResult> {
     const manual = parseDebateOverride(task.constraints);
-    // `riskScore` is not part of the declared TaskInput shape today, but
-    // the risk-router-adapter stashes it onto decision objects and core
-    // callers frequently attach it to the task payload as an ad-hoc
-    // annotation. Read it best-effort so the router falls back safely
-    // when the risk score is unavailable.
-    const riskScore = (task as unknown as { riskScore?: number }).riskScore;
+    // Wave 5.1: routing signal arrives via the typed `context`
+    // argument. If the caller didn't pass one, fall through to
+    // baseline — the router must never elevate a fuzzy task input
+    // to debate mode silently.
+    const riskScore = context?.riskScore;
     const fire = shouldDebate({
       manualOverride: manual,
       riskScore,
       ...(this.options.threshold !== undefined ? { threshold: this.options.threshold } : {}),
     });
-    const picked = fire ? this.debate : this.baseline;
-    return picked.review(proposal, task, perception, acceptanceCriteria);
+
+    if (fire) {
+      this.options.bus?.emit('critic:debate_fired', {
+        taskId: task.id,
+        riskScore,
+        routingLevel: context?.routingLevel,
+        trigger: manual ?? 'risk-threshold',
+      });
+      return this.debate.review(proposal, task, perception, acceptanceCriteria, context);
+    }
+    return this.baseline.review(proposal, task, perception, acceptanceCriteria, context);
   }
 }

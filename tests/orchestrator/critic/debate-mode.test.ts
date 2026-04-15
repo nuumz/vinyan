@@ -242,7 +242,9 @@ describe('DebateRouterCritic — selection rule', () => {
     expect(result.reason).toBe('debate');
   });
 
-  test('routes to debate when riskScore ≥ threshold', async () => {
+  test('routes to debate when riskScore ≥ threshold (via CriticContext)', async () => {
+    // Wave 5.1: riskScore is now passed via the typed CriticContext
+    // argument, not via an ad-hoc cast on the task object.
     const baselineCritic: CriticEngine = {
       review: async () => ({
         approved: true,
@@ -264,8 +266,91 @@ describe('DebateRouterCritic — selection rule', () => {
       }),
     };
     const router = new DebateRouterCritic(baselineCritic, debateCritic);
-    const taskWithRisk = { ...task, riskScore: 0.85 } as TaskInput & { riskScore: number };
-    const result = await router.review(proposal, taskWithRisk, perception);
+    const result = await router.review(proposal, task, perception, undefined, {
+      riskScore: 0.85,
+      routingLevel: 3,
+    });
+    expect(result.reason).toBe('debate');
+  });
+});
+
+// ── Wave 5: critic:debate_fired observability event ─────────────────
+
+describe('DebateRouterCritic — Wave 5 observability', () => {
+  const baseline: CriticEngine = {
+    review: async () => ({
+      approved: true,
+      confidence: 1,
+      aspects: [],
+      verdicts: {},
+      tokensUsed: { input: 0, output: 0 },
+      reason: 'baseline',
+    }),
+  };
+  const debate: CriticEngine = {
+    review: async () => ({
+      approved: true,
+      confidence: 1,
+      aspects: [],
+      verdicts: {},
+      tokensUsed: { input: 0, output: 0 },
+      reason: 'debate',
+    }),
+  };
+
+  test('emits critic:debate_fired when risk threshold triggers debate', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: Array<{ taskId: string; trigger: string; riskScore?: number; routingLevel?: number }> = [];
+    bus.on('critic:debate_fired', (e) => events.push(e));
+
+    const router = new DebateRouterCritic(baseline, debate, { bus });
+    await router.review(proposal, task, perception, undefined, {
+      riskScore: 0.9,
+      routingLevel: 3,
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.taskId).toBe(task.id);
+    expect(events[0]!.trigger).toBe('risk-threshold');
+    expect(events[0]!.riskScore).toBe(0.9);
+    expect(events[0]!.routingLevel).toBe(3);
+  });
+
+  test('emits critic:debate_fired with trigger=force on DEBATE:force constraint', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: Array<{ trigger: string }> = [];
+    bus.on('critic:debate_fired', (e) => events.push(e));
+
+    const router = new DebateRouterCritic(baseline, debate, { bus });
+    const forced = { ...task, constraints: ['DEBATE:force'] };
+    await router.review(proposal, forced, perception);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.trigger).toBe('force');
+  });
+
+  test('does NOT emit critic:debate_fired when baseline is picked', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: unknown[] = [];
+    bus.on('critic:debate_fired', (e) => events.push(e));
+
+    const router = new DebateRouterCritic(baseline, debate, { bus });
+    // No risk context and no manual override → baseline wins, no event
+    await router.review(proposal, task, perception);
+
+    expect(events).toHaveLength(0);
+  });
+
+  test('router works silently when no bus is provided', async () => {
+    // Regression guard: the bus is optional; the router must not throw
+    // when it's absent.
+    const router = new DebateRouterCritic(baseline, debate);
+    const result = await router.review(proposal, task, perception, undefined, {
+      riskScore: 0.9,
+    });
     expect(result.reason).toBe('debate');
   });
 });

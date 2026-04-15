@@ -34,6 +34,20 @@ export interface VinyanBusEvents {
   'worker:dispatch': { taskId: string; routing: RoutingDecision };
   'oracle:verdict': { taskId: string; oracleName: string; verdict: OracleVerdict };
   'critic:verdict': { taskId: string; accepted: boolean; confidence: number; reason?: string };
+  // Book-integration Wave 5: emitted by DebateRouterCritic when the
+  // debate path (3-seat advocate/counter/architect) fires, either
+  // because risk score ≥ threshold or because `DEBATE:force` was in
+  // the task constraints. Consumers (Economy OS, dashboards) use this
+  // to track debate spending separately from baseline critic spending.
+  //
+  // `trigger` is either a manual override ('force'/'skip') or
+  // 'risk-threshold' when the router fired based on the risk rule.
+  'critic:debate_fired': {
+    taskId: string;
+    riskScore?: number;
+    routingLevel?: number;
+    trigger: 'force' | 'skip' | 'risk-threshold';
+  };
   'trace:record': { trace: ExecutionTrace };
 
   // Worker lifecycle

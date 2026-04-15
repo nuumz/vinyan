@@ -233,6 +233,68 @@ describe('DefaultReplanEngine', () => {
     expect(result!.plan.nodes).toHaveLength(2);
     expect(result!.input.id).toBe('task-1');
   });
+
+  test('successful replan returns non-zero tokensUsed estimate (gap fix)', async () => {
+    const engine = new DefaultReplanEngine(
+      {
+        decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'novel approach', targetFiles: ['a.ts'] }])),
+        perception: makePerceptionFake(),
+      },
+      CFG,
+    );
+    const result = await engine.generateAlternative(makeContext());
+    expect(result).not.toBeNull();
+    expect(result!.tokensUsed).toBeGreaterThan(0);
+    // Cap check: tokensUsed should bound the budget cap gate on next iteration.
+  });
+
+  test('successful replan rewrites goal with REPLAN directive (gap fix)', async () => {
+    const engine = new DefaultReplanEngine(
+      {
+        decomposer: makeDecomposer(async () =>
+          fakeDag([
+            { id: 'n1', description: 'test-first refactor', targetFiles: ['tests/foo.test.ts'] },
+            { id: 'n2', description: 'impl after test', targetFiles: ['src/foo.ts'] },
+          ]),
+        ),
+        perception: makePerceptionFake(),
+      },
+      CFG,
+    );
+    const originalGoal = 'fix the thing';
+    const ctx = makeContext({ iteration: 1, previousInput: { ...mockInput(), goal: originalGoal } });
+    const result = await engine.generateAlternative(ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.input.goal).not.toBe(originalGoal);
+    expect(result!.input.goal).toContain(originalGoal);
+    expect(result!.input.goal).toContain('REPLAN attempt 2');
+    expect(result!.input.goal).toContain('STRUCTURALLY DIFFERENT');
+    expect(result!.input.goal).toContain('test-first refactor');
+    expect(result!.input.goal).toContain('impl after test');
+    // TaskInput is spread so id + budget + targetFiles are preserved
+    expect(result!.input.id).toBe(ctx.previousInput.id);
+    expect(result!.input.budget).toEqual(ctx.previousInput.budget);
+  });
+
+  test('budget-cap gate actually fires after tokens accumulate (gap fix)', async () => {
+    // With tokensSpentOnReplanning + ESTIMATED_REPLAN_TOKENS > 20% budget.
+    const engine = new DefaultReplanEngine(
+      {
+        decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'x', targetFiles: ['a.ts'] }])),
+        perception: makePerceptionFake(),
+      },
+      CFG,
+    );
+    // First call: 0 spent / 10000 remaining = 0% — passes gate
+    const first = await engine.generateAlternative(makeContext({ remainingTaskBudgetTokens: 10_000 }));
+    expect(first).not.toBeNull();
+    // Second call: simulate prior replan's 2000 tokens already spent vs 5000 remaining = 40% > 20% cap
+    const second = await engine.generateAlternative(
+      makeContext({ tokensSpentOnReplanning: first!.tokensUsed, remainingTaskBudgetTokens: 5_000 }),
+    );
+    expect(second).toBeNull();
+  });
 });
 
 describe('computePlanSignature', () => {

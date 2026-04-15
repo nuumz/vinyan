@@ -168,4 +168,72 @@ describe('executeWithGoalLoop', () => {
     expect(calls).toBe(1);
     expect(result.status).toBe('completed');
   });
+
+  // ── Wave 2 gap fix tests ────────────────────────────────────────────
+
+  test('initial approach recorded as failed approach before first replan (gap fix)', async () => {
+    // Capture the ReplanContext passed to the engine so we can assert
+    // failedApproaches is populated with the first attempt's approach.
+    const seen: Array<{ failedApproaches: unknown[] }> = [];
+    const replanEngine = {
+      async generateAlternative(ctx: { failedApproaches: unknown[] }) {
+        seen.push({ failedApproaches: [...ctx.failedApproaches] });
+        return null; // stop after first replan call for test simplicity
+      },
+    } as unknown as NonNullable<OrchestratorDeps['replanEngine']>;
+    const replanConfig = {
+      enabled: true,
+      maxReplans: 2,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
+    };
+    const deps = baseDeps({
+      goalEvaluator: makeEvaluator([0.3]),
+      replanEngine,
+      replanConfig,
+    });
+    const attempt = async (_: TaskInput, __: WorkingMemory): Promise<TaskResult> => {
+      return makeResult({
+        mutations: [
+          { file: 'src/foo.ts', diff: '+x', oracleVerdicts: {} },
+          { file: 'src/bar.ts', diff: '+y', oracleVerdicts: {} },
+        ],
+        trace: { ...makeTrace(), approach: 'direct-edit' },
+      });
+    };
+
+    await executeWithGoalLoop(makeInput(), deps, attempt, {
+      maxOuterIterations: 3,
+      goalSatisfactionThreshold: 0.75,
+    });
+
+    // The engine saw a non-empty failedApproaches list populated by the
+    // outer loop's synthesis step (Wave 2 gap fix).
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.failedApproaches.length).toBeGreaterThan(0);
+    const approachText = (seen[0]!.failedApproaches[0] as { approach: string }).approach;
+    expect(approachText).toContain('edit src/foo.ts');
+    expect(approachText).toContain('edit src/bar.ts');
+    expect(approachText).toContain('direct-edit');
+  });
+
+  test('replan-exhausted escalation when engine returns null (gap fix)', async () => {
+    const replanEngine = {
+      async generateAlternative() {
+        return null;
+      },
+    } as unknown as NonNullable<OrchestratorDeps['replanEngine']>;
+    const deps = baseDeps({
+      goalEvaluator: makeEvaluator([0.3]),
+      replanEngine,
+      replanConfig: { enabled: true, maxReplans: 2, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85 },
+    });
+    const attempt = async (): Promise<TaskResult> => makeResult();
+    const result = await executeWithGoalLoop(makeInput(), deps, attempt, {
+      maxOuterIterations: 3,
+      goalSatisfactionThreshold: 0.75,
+    });
+    expect(result.status).toBe('escalated');
+    expect(result.escalationReason).toContain('replan exhausted');
+  });
 });

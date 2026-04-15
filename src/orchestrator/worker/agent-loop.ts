@@ -564,11 +564,16 @@ function detectNonRetryableError(uncertainties: string[]): string | undefined {
  */
 /**
  * Wave 4: run the deterministic goal check hook after the subprocess reports
- * `done`. Returns whether the result should flip to `isUncertain` and the
- * blocker messages to include in `uncertainties`.
+ * `done`. **Pure observability at MVP** — emits the goal-check score via the
+ * bus and returns the decision for inspection, but does NOT flip control
+ * flow. Wave 1's outer goal-loop is the authoritative decision maker.
  *
- * Pure helper — all inputs are passed explicitly. A3/A7 compliant: the
- * decision flows through rule-based completion-gate, not through the LLM.
+ * Returns null when the gate is disabled, evaluator is missing, or any
+ * error occurs (fail-open so a buggy evaluator never disrupts the loop).
+ *
+ * A1/A3 compliant: the decision flows through rule-based completion-gate,
+ * not through the LLM. A future PR can use the return value to drive a
+ * subprocess IPC continuation turn when the gate wires in.
  */
 export async function runWave4GoalCheck(
   input: TaskInput,
@@ -576,19 +581,19 @@ export async function runWave4GoalCheck(
   proposedContent: string | undefined,
   understanding: import('../types.ts').TaskUnderstanding | undefined,
   deps: AgentLoopDeps,
-): Promise<{ flipToUncertain: boolean; uncertainties: string[]; score?: number; decision?: string }> {
+): Promise<{ score: number; decision: 'accept' | 'continue' | 'reject'; reason: string } | null> {
   const cfg = deps.goalTerminationConfig;
   if (!cfg?.enabled || !deps.goalEvaluator) {
-    return { flipToUncertain: false, uncertainties: [] };
+    return null;
   }
 
   try {
     // Build a synthetic TaskResult the Wave 1 evaluator can consume.
     // oracleVerdicts[] is intentionally empty at this stage — oracle gate
     // runs in phase-verify after the agent-loop returns. The evaluator's
-    // C1-C4 alignment checks work on mutations + understanding, which we
-    // have; contradiction detection passes (no verdicts, no contradiction);
-    // C5 acceptance-criteria coverage works on mutations + proposedContent.
+    // C1-C4 alignment checks work on mutations + understanding; contradiction
+    // detection passes (empty verdicts, no contradiction); C5 acceptance-
+    // criteria coverage works on mutations + proposedContent.
     const { WorkingMemory } = await import('../working-memory.ts');
     const workingMemory = new WorkingMemory({ taskId: input.id });
     const syntheticResult: TaskResult = {
@@ -627,7 +632,7 @@ export async function runWave4GoalCheck(
     const gate = decideCompletion({
       goalScore: satisfaction.score,
       threshold: cfg.goalSatisfactionThreshold,
-      continuationsUsed: cfg.maxContinuations, // MVP: no live continuation → exhausted
+      continuationsUsed: cfg.maxContinuations, // MVP: no live continuation → always exhausted
       maxContinuations: cfg.maxContinuations,
       budgetRemaining: 0,
       continuationCost: 1,
@@ -641,20 +646,9 @@ export async function runWave4GoalCheck(
       reason: gate.reason,
     });
 
-    if (gate.decision === 'accept') {
-      return { flipToUncertain: false, uncertainties: [], score: satisfaction.score, decision: gate.decision };
-    }
-
-    // 'continue' or 'reject' → flip to uncertain so Wave 1 outer loop can replan.
-    const uncertainties = [
-      `Wave 4 goal-check: ${gate.decision} (score ${satisfaction.score.toFixed(2)} < ${cfg.goalSatisfactionThreshold})`,
-      ...satisfaction.blockers.map((b) => `[${b.category}] ${b.detail}`),
-    ];
-    return { flipToUncertain: true, uncertainties, score: satisfaction.score, decision: gate.decision };
+    return { score: satisfaction.score, decision: gate.decision, reason: gate.reason };
   } catch {
-    // Any evaluation error → fail-open (don't flip) so a buggy evaluator
-    // never blocks a completed task.
-    return { flipToUncertain: false, uncertainties: [] };
+    return null;
   }
 }
 
@@ -1416,31 +1410,16 @@ export async function runAgentLoop(
         });
 
         // Wave 4: optional deterministic goal check before accepting `done`.
-        // Gated OFF by default; when enabled, a shortfall flips `isUncertain`
-        // so Wave 1's outer goal-loop sees the signal via transcript metadata
-        // and can decide whether to replan (Wave 2). No control flow change
-        // when disabled — the loop falls through to the existing return.
-        const goalCheck = await runWave4GoalCheck(
-          input,
-          mutations,
-          turn.proposedContent,
-          understanding,
-          deps,
-        );
-        if (goalCheck.flipToUncertain) {
-          return {
-            mutations,
-            proposedContent: turn.proposedContent,
-            uncertainties: goalCheck.uncertainties,
-            tokensConsumed,
-            ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
-            ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
-            durationMs,
-            transcript,
-            isUncertain: true,
-            proposedToolCalls: [],
-          };
-        }
+        // PURE OBSERVABILITY at MVP — emits `agent-loop:goal-check` with the
+        // per-turn score so dashboards see the signal early. Does NOT flip
+        // the result to uncertain, because Wave 1's outer goal-loop already
+        // runs its own goal check against the same mutations and is the
+        // authoritative decision maker (it can trigger Wave 2 replan). If
+        // Wave 4 flipped here, the outer loop would see `status !== completed`
+        // and short-circuit without running replan — robbing Wave 1 of its
+        // retry opportunity. A future PR adding subprocess IPC continuation
+        // can then use the 'continue' decision to drive another turn in-session.
+        await runWave4GoalCheck(input, mutations, turn.proposedContent, understanding, deps);
 
         return {
           mutations,

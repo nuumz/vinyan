@@ -31,6 +31,12 @@ export const DEFAULT_REPLAN_CONFIG: ReplanEngineConfig = {
   trigramSimilarityMax: 0.85,
 };
 
+/** Rough per-attempt token estimate. TaskDecomposer doesn't surface actual
+ *  LLM token usage at its current interface, so the budget-cap gate uses
+ *  this constant to bound cumulative replan spend. A balanced-tier replan
+ *  prompt + completion round-trips at roughly this magnitude. */
+const ESTIMATED_REPLAN_TOKENS = 2000;
+
 export interface ReplanContext {
   previousInput: TaskInput;
   previousPlan?: TaskDAG;
@@ -151,11 +157,23 @@ export class DefaultReplanEngine implements ReplanEngine {
       planSignature: newSig,
     });
 
+    // Rewrite the goal with a REPLAN directive so phase-plan's decomposer
+    // sees the directive on the next outer-loop iteration. This is how the
+    // replan engine's output actually influences future execution — the
+    // generated DAG itself is consumed as an approach hint rather than
+    // being reused as a plan object, because the inner core loop always
+    // calls decomposer.decompose fresh per iteration via phase-plan.
+    const rewrittenGoal =
+      `${ctx.previousInput.goal}\n\n` +
+      `[REPLAN attempt ${ctx.iteration + 1}] Previous attempts did not satisfy the goal. ` +
+      `Use a STRUCTURALLY DIFFERENT approach from the prior plan. ` +
+      `Suggested alternative plan shape:\n${newApproachText}`;
+
     return {
-      input: ctx.previousInput,
+      input: { ...ctx.previousInput, goal: rewrittenGoal },
       plan: newDag,
       planSignature: newSig,
-      tokensUsed: 0,
+      tokensUsed: ESTIMATED_REPLAN_TOKENS,
     };
   }
 

@@ -126,6 +126,22 @@ export async function executeWithGoalLoop(
       });
     }
 
+    // Wave 2 fix: on the first iteration, synthesize a failed-approach
+    // entry from the initial attempt's trace so the replan engine's
+    // trigram similarity gate has something to compare against. Without
+    // this, the first replan's "novelty" check would have no signal
+    // (workingMemory.failedApproaches is empty until something is
+    // explicitly recorded — goal-eval shortfall alone doesn't add entries).
+    if (iteration === 1) {
+      const initialApproach = synthesizeInitialApproachText(result);
+      workingMemory.recordFailedApproach(
+        initialApproach,
+        satisfaction.failedChecks.length > 0
+          ? `goal-eval failed: ${satisfaction.failedChecks.join(', ')}`
+          : `goal-eval below threshold (${satisfaction.score.toFixed(2)})`,
+      );
+    }
+
     const priorPlanSignatures = workingMemory.getPriorPlanSignatures();
     const outcome = await deps.replanEngine.generateAlternative({
       previousInput: input,
@@ -179,6 +195,26 @@ function annotate(
     `goal-loop: ${info.reason} @ iteration ${info.iteration}`,
   ];
   return { ...result, status: info.status, escalationReason, notes };
+}
+
+/**
+ * Wave 2 fix: synthesize a short approach description from a completed
+ * (but goal-failing) TaskResult so the replan engine's trigram gate has
+ * something to compare against on the first replan iteration.
+ */
+function synthesizeInitialApproachText(result: TaskResult): string {
+  const parts: string[] = [];
+  if (result.trace?.approach && result.trace.approach !== 'initial-attempt') {
+    parts.push(result.trace.approach);
+  }
+  for (const m of result.mutations) {
+    parts.push(`edit ${m.file}`);
+  }
+  if (result.answer) {
+    const snippet = result.answer.length > 100 ? `${result.answer.slice(0, 100)}...` : result.answer;
+    parts.push(`answer: ${snippet}`);
+  }
+  return parts.join(' | ') || 'initial-attempt';
 }
 
 function buildEscalationResult(input: TaskInput, reason: string, iteration: number): TaskResult {

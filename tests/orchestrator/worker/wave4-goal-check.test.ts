@@ -60,7 +60,7 @@ function makeDeps(overrides: Partial<AgentLoopDeps> = {}): AgentLoopDeps {
 }
 
 describe('runWave4GoalCheck', () => {
-  test('disabled config → pass-through (no flip, no evaluator call)', async () => {
+  test('disabled config → returns null, evaluator not called', async () => {
     let called = false;
     const deps = makeDeps({
       goalEvaluator: {
@@ -78,12 +78,11 @@ describe('runWave4GoalCheck', () => {
     });
 
     const result = await runWave4GoalCheck(makeInput(), [], undefined, undefined, deps);
-    expect(result.flipToUncertain).toBe(false);
-    expect(result.uncertainties).toEqual([]);
+    expect(result).toBeNull();
     expect(called).toBe(false);
   });
 
-  test('missing evaluator → pass-through', async () => {
+  test('missing evaluator → returns null', async () => {
     const deps = makeDeps({
       goalTerminationConfig: {
         enabled: true,
@@ -94,10 +93,10 @@ describe('runWave4GoalCheck', () => {
     });
 
     const result = await runWave4GoalCheck(makeInput(), [], undefined, undefined, deps);
-    expect(result.flipToUncertain).toBe(false);
+    expect(result).toBeNull();
   });
 
-  test('passing score → accept (no flip)', async () => {
+  test('passing score → returns accept decision', async () => {
     const deps = makeDeps({
       goalEvaluator: makeEvaluator(0.9),
       goalTerminationConfig: {
@@ -115,12 +114,12 @@ describe('runWave4GoalCheck', () => {
       makeUnderstanding(),
       deps,
     );
-    expect(result.flipToUncertain).toBe(false);
-    expect(result.decision).toBe('accept');
-    expect(result.score).toBe(0.9);
+    expect(result).not.toBeNull();
+    expect(result!.decision).toBe('accept');
+    expect(result!.score).toBe(0.9);
   });
 
-  test('low score → flip to uncertain with blocker messages', async () => {
+  test('low score → returns reject decision (observability only, no control flow change)', async () => {
     const deps = makeDeps({
       goalEvaluator: makeEvaluator(0.3, ['acceptance:tests'], [
         { category: 'acceptance-criteria', detail: 'no test file created', resolvable: true },
@@ -140,14 +139,13 @@ describe('runWave4GoalCheck', () => {
       makeUnderstanding(),
       deps,
     );
-    expect(result.flipToUncertain).toBe(true);
-    expect(result.uncertainties.length).toBeGreaterThan(0);
-    expect(result.uncertainties[0]).toContain('goal-check');
-    expect(result.uncertainties[0]).toContain('0.30');
-    expect(result.uncertainties.some((u) => u.includes('acceptance-criteria'))).toBe(true);
+    expect(result).not.toBeNull();
+    expect(result!.decision).toBe('reject'); // maxContinuations-exhausted collapses continue → reject
+    expect(result!.score).toBe(0.3);
+    expect(result!.reason).toContain('max continuations');
   });
 
-  test('evaluator throws → fail-open (no flip)', async () => {
+  test('evaluator throws → fail-open returns null', async () => {
     const deps = makeDeps({
       goalEvaluator: {
         async evaluate() {
@@ -163,7 +161,35 @@ describe('runWave4GoalCheck', () => {
     });
 
     const result = await runWave4GoalCheck(makeInput(), [], undefined, undefined, deps);
-    expect(result.flipToUncertain).toBe(false);
-    expect(result.uncertainties).toEqual([]);
+    expect(result).toBeNull();
+  });
+
+  test('emits agent-loop:goal-check bus event on every run', async () => {
+    const events: Array<{ score: number; decision: string }> = [];
+    const bus = {
+      emit: (name: string, payload: unknown) => {
+        if (name === 'agent-loop:goal-check') {
+          events.push(payload as { score: number; decision: string });
+        }
+      },
+      on: () => () => {},
+      off: () => {},
+    } as unknown as AgentLoopDeps['bus'];
+
+    const deps = makeDeps({
+      bus,
+      goalEvaluator: makeEvaluator(0.9),
+      goalTerminationConfig: {
+        enabled: true,
+        maxContinuations: 2,
+        continuationBudgetFraction: 0.25,
+        goalSatisfactionThreshold: 0.75,
+      },
+    });
+
+    await runWave4GoalCheck(makeInput(), [], undefined, undefined, deps);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.decision).toBe('accept');
+    expect(events[0]!.score).toBe(0.9);
   });
 });

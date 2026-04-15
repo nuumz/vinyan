@@ -532,6 +532,39 @@ export interface VinyanBusEvents {
     decision: 'accept' | 'continue' | 'reject';
     reason: string;
   };
+
+  // Room dispatcher observability — emitted by src/orchestrator/room/room-dispatcher.ts.
+  // Declared here (rather than the parallel room-dispatcher PR) because cross-file
+  // bus event declarations must live in a single shared schema for type safety.
+  'room:opened': {
+    roomId: string;
+    parentTaskId: string;
+    roles: string[];
+    maxRounds: number;
+  };
+  'room:failed': {
+    roomId: string;
+    reason: string;
+    rounds: number;
+  };
+  'room:converged': {
+    roomId: string;
+    rounds: number;
+    mutations: number;
+    confidence: number;
+  };
+  'room:message_committed': {
+    roomId: string;
+    seq: number;
+    author: string;
+    entryType: string;
+  };
+  'room:participant_admitted': {
+    roomId: string;
+    participantId: string;
+    roleName: string;
+    workerModelId: string;
+  };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

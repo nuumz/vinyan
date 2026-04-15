@@ -203,23 +203,131 @@ not blocking.
 **W2.2** and **W2.3** are behavior-preserving refactors with additional
 guards. No flag.
 
+**W4.1 Canary-first batch** is opt-in per `dispatch()` call — default
+behavior unchanged. Operators or core-loop callers that want the safety
+pass `{ canaryFirst: true }` explicitly.
+
+**W4.2 Role hint → engine tier** is additive — the new `roleHint`
+argument is optional and existing call sites don't need to pass it.
+When absent, selection falls through to the pre-W4.2 tier-trust ladder.
+
+**W4.3 Cleanup hook registry** is additive — no hooks ship wired to
+anything by default; the registry just exists so future isolation
+layers can plug in without touching `WorkerLifecycle`.
+
 ---
 
-## 5. Known follow-ups
+## 5. Wave 4 — Full-book Gap Closure
 
-These are not part of the book-integration scope but are worth tracking.
+> **Context:** added after a complete Ch01–15 + App A–D deep-read.
+> See overview §10 for the delta log.
+
+### W4.1 — Canary-first batch dispatch
+
+**Exit criteria:**
+- `dispatch([t1, t2, t3], { canaryFirst: true })` runs t1 alone first,
+  waits for verdict, then runs t2+t3 in parallel if t1 completes
+- `dispatch(tasks, { canaryFirst: true })` with a failing canary returns
+  the canary's actual result plus synthetic `canary-aborted` results
+  for every remaining task
+- Default dispatch behavior (no options) is byte-for-byte unchanged
+- Canary selection is deterministic (first file-free or first singleton
+  group in submission order)
+- Existing `tests/orchestrator/concurrent-dispatcher.test.ts` still passes
+
+**Changed files:**
+| File | Change |
+|------|--------|
+| `src/orchestrator/concurrent-dispatcher.ts` | `DispatchOptions` + canary selection + abort semantics |
+| `src/orchestrator/types.ts` | extend `TaskResult` status union with `'canary-aborted'` |
+
+**Test files:** `tests/orchestrator/canary-dispatch.test.ts` (5 cases).
+
+### W4.2 — Role hint → engine tier
+
+**Exit criteria:**
+- `EngineSelector.select(level, taskType, caps, roleHint)` accepts optional
+  `roleHint` and biases the default model toward the preferred tier when
+  available
+- Missing preferred tier falls through to existing selection — not an error
+- Existing callers (no roleHint) see unchanged behavior
+- Factory passes `'debate'` hint for the debate critic seats
+
+**Changed files:**
+| File | Change |
+|------|--------|
+| `src/orchestrator/engine-selector.ts` | `RoleHint` type + `select()` param + preference logic |
+
+**Test files:** `tests/orchestrator/engine-selector.test.ts` (new cases
+alongside existing).
+
+### W4.3 — WorkerLifecycle cleanup hook registry
+
+**Exit criteria:**
+- `onCleanup(hook)` registers a hook and returns an unsubscribe function
+- Hooks fire on demote and retire transitions, not on re-enrollment
+- A thrown hook does not block the transition (fail-safe hygiene)
+- Zero hooks by default — registry is a seam, not a concrete wiring
+
+**Changed files:**
+| File | Change |
+|------|--------|
+| `src/orchestrator/fleet/worker-lifecycle.ts` | `cleanupHooks` array + `onCleanup()` + `runCleanupHooks()` + calls in demote/retire paths |
+
+**Test files:** `tests/orchestrator/worker-lifecycle.test.ts` (new cases).
+
+### W4.4 — Implementation Team preset (DEFERRED to Wave 5)
+
+Phase A §8.4 captures the three unresolved sub-questions
+(disjoint-seam heuristic, role assignment, integration node). Until
+one of those is answered with a concrete rule, W4.4 stays as
+documentation rather than code.
+
+---
+
+## 6. Wave 5 Backlog — unresolved book items
+
+> These items either need more design work, come from chapters that
+> specifically called out "unsolved" problems, or require primitives
+> Vinyan doesn't have today.
+
+1. **W4.4 Implementation Team preset** — Ch07 + Ch12. Needs a
+   deterministic disjoint-seam heuristic (directory-based? dependency-cone-
+   cluster-based?), role-to-subagent mapping, and an integration node
+   design that plays with the existing DAG executor.
+2. **`ScheduleWakeup` primitive** — Ch09. Lets an agent self-pace a
+   wakeup inside a long-running external operation (build, deploy,
+   test run) without burning turns polling. Requires session-persistence
+   / resumption work; low priority.
+3. **Fleet-live overview view** — Ch13. A single-pane TUI command
+   showing active workers, peers, tasks, silent-agent state, and
+   heartbeat timestamps. Extends the existing `vinyan tui overview`.
+4. **Research Swarm Wave-2 follow-up** — Ch05. Aggregator identifies
+   gaps from Wave-1 findings and spawns a narrow follow-up swarm. The
+   current preset is Wave-1 only.
+5. **CriticEngine context object** — remove the `task.riskScore`
+   ad-hoc cast in `core-loop.ts` and `debate-mode.ts`. Extend
+   `CriticEngine.review()` with an optional context arg.
+6. **Bus event typed registry** — replace peek's `TASK_EVENTS`
+   literal list with a type-level registry generated from bus event
+   declarations that carry a `taskId`.
+7. **Debate cost cap at Economy OS layer** — per-day budget guard for
+   architecture debates. Partial resolution in overview §8 Q2.
+8. **Sentinel config on `SleepCycleRunner` constructor** — expose
+   `sentinelMaxNoopCycles` as a constructor option rather than a class
+   constant, so tests can exercise shorter windows.
+9. **`TerminationSentinel` reusable class** — once a second subsystem
+   needs the same "dormant after N no-ops" pattern.
+
+---
+
+## 7. Known follow-ups (legacy — pre-Wave-4)
+
+These predate the Wave 4 deep-read; kept here for traceability.
 
 1. **CriticEngine interface extension** — replace the `task.riskScore`
-   ad-hoc cast with a proper context object. Also makes debate-mode
-   testable without `as unknown as` gymnastics.
-2. **Bus event typed registry** — make peek's `TASK_EVENTS` whitelist
-   generate itself from bus event declarations that include a `taskId`.
-3. **Debate cost cap** — per-day budget guard for architecture debates
-   at the Economy OS layer. Overview §8 Q2.
-4. **Sentinel config on `SleepCycleRunner` constructor** — currently the
-   max-noop-cycles threshold is a class constant. Making it a
-   constructor option would let tests exercise shorter windows directly
-   instead of running five full cycles.
-5. **TerminationSentinel extraction** — once a second subsystem needs
-   the same "dormant after N no-ops" pattern, extract the counter +
-   reset logic into a reusable `TerminationSentinel` class.
+   ad-hoc cast with a proper context object. (Promoted to Wave 5 item 5.)
+2. **Bus event typed registry** — (Promoted to Wave 5 item 6.)
+3. **Debate cost cap** — (Promoted to Wave 5 item 7.)
+4. **Sentinel config constructor option** — (Promoted to Wave 5 item 8.)
+5. **TerminationSentinel extraction** — (Promoted to Wave 5 item 9.)

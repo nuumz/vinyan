@@ -1,8 +1,9 @@
 /**
  * Tests for K2.2 Engine Selector — trust-weighted engine selection.
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
 import { ProviderTrustStore } from '../../src/db/provider-trust-store.ts';
 import { DefaultEngineSelector } from '../../src/orchestrator/engine-selector.ts';
 import type { RoutingLevel } from '../../src/orchestrator/types.ts';
@@ -100,5 +101,129 @@ describe('DefaultEngineSelector', () => {
 
     const result = selector.select(1 as RoutingLevel, 'test');
     expect(result.provider).toBe('adequate');
+  });
+});
+
+// ── Wave 4.2: role-hint tier biasing ─────────────────────────────────
+
+describe('DefaultEngineSelector — Wave 4.2 role-hint biasing', () => {
+  function makeSelectorWithTiers(
+    tiers: Record<string, 'fast' | 'balanced' | 'powerful' | 'tool-uses'>,
+    seedFn?: (store: ProviderTrustStore) => void,
+  ) {
+    const db = new Database(':memory:');
+    const trustStore = new ProviderTrustStore(db);
+    if (seedFn) seedFn(trustStore);
+    const selector = new DefaultEngineSelector({
+      trustStore,
+      getProviderTier: (id) => tiers[id],
+    });
+    return { selector };
+  }
+
+  test("roleHint='read' picks a fast-tier provider when available", () => {
+    const { selector } = makeSelectorWithTiers(
+      {
+        'claude-haiku': 'fast',
+        'claude-sonnet': 'balanced',
+        'claude-opus': 'powerful',
+      },
+      (store) => {
+        for (const p of ['claude-haiku', 'claude-sonnet', 'claude-opus']) {
+          for (let i = 0; i < 10; i++) store.recordOutcome(p, true);
+        }
+      },
+    );
+
+    const result = selector.select(2 as RoutingLevel, 'task', undefined, 'read');
+    expect(result.provider).toBe('claude-haiku');
+    expect(result.selectionReason).toContain('role-hint:read→fast');
+  });
+
+  test("roleHint='implement' picks a balanced-tier provider when available", () => {
+    const { selector } = makeSelectorWithTiers(
+      {
+        'claude-haiku': 'fast',
+        'claude-sonnet': 'balanced',
+      },
+      (store) => {
+        for (const p of ['claude-haiku', 'claude-sonnet']) {
+          for (let i = 0; i < 10; i++) store.recordOutcome(p, true);
+        }
+      },
+    );
+
+    const result = selector.select(2 as RoutingLevel, 'task', undefined, 'implement');
+    expect(result.provider).toBe('claude-sonnet');
+    expect(result.selectionReason).toContain('role-hint:implement→balanced');
+  });
+
+  test("roleHint='debate' picks a powerful-tier provider", () => {
+    const { selector } = makeSelectorWithTiers(
+      {
+        'claude-haiku': 'fast',
+        'claude-opus': 'powerful',
+      },
+      (store) => {
+        for (const p of ['claude-haiku', 'claude-opus']) {
+          for (let i = 0; i < 10; i++) store.recordOutcome(p, true);
+        }
+      },
+    );
+
+    const result = selector.select(3 as RoutingLevel, 'task', undefined, 'debate');
+    expect(result.provider).toBe('claude-opus');
+    expect(result.selectionReason).toContain('role-hint:debate→powerful');
+  });
+
+  test('roleHint falls through when preferred tier is unavailable', () => {
+    // Only a balanced provider is registered, but caller asks for 'read' (fast).
+    // Selection must fall through to normal Wilson-LB selection, not fail.
+    const { selector } = makeSelectorWithTiers(
+      {
+        'claude-sonnet': 'balanced',
+      },
+      (store) => {
+        for (let i = 0; i < 10; i++) store.recordOutcome('claude-sonnet', true);
+      },
+    );
+
+    const result = selector.select(2 as RoutingLevel, 'task', undefined, 'read');
+    // Not a role-hint match reason
+    expect(result.selectionReason).not.toContain('role-hint');
+    // But a valid provider was still returned
+    expect(result.provider).toBeDefined();
+  });
+
+  test('no roleHint preserves existing selection behavior', () => {
+    const { selector } = makeSelectorWithTiers(
+      {
+        'claude-haiku': 'fast',
+        'claude-sonnet': 'balanced',
+      },
+      (store) => {
+        // haiku has much better trust
+        for (let i = 0; i < 20; i++) store.recordOutcome('claude-haiku', true);
+        for (let i = 0; i < 2; i++) store.recordOutcome('claude-sonnet', true);
+        for (let i = 0; i < 8; i++) store.recordOutcome('claude-sonnet', false);
+      },
+    );
+
+    const result = selector.select(1 as RoutingLevel, 'task');
+    // Without a hint, highest-Wilson-LB provider wins
+    expect(result.provider).toBe('claude-haiku');
+    expect(result.selectionReason).toContain('wilson-lb');
+  });
+
+  test('roleHint without getProviderTier callback is a no-op', () => {
+    const db = new Database(':memory:');
+    const trustStore = new ProviderTrustStore(db);
+    for (let i = 0; i < 10; i++) trustStore.recordOutcome('claude-sonnet', true);
+    const selector = new DefaultEngineSelector({ trustStore });
+
+    // Passing a hint without the tier lookup should fall through silently.
+    const result = selector.select(2 as RoutingLevel, 'task', undefined, 'debate');
+    expect(result.provider).toBeDefined();
+    expect(result.selectionReason).not.toContain('role-hint');
   });
 });

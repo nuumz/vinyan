@@ -35,15 +35,78 @@ export interface DemotionResult {
   reason: string;
 }
 
+/**
+ * Book-integration Wave 4.3: worker cleanup hook.
+ *
+ * Source: Ch14 Failure 4 (orphaned worktrees). The generalized rule is
+ * "every ephemeral isolation mechanism needs a cleanup stage on retire".
+ * Vinyan doesn't currently use worktrees, but having a hook registry in
+ * the lifecycle makes it trivial to wire one (or any other cleanup —
+ * tmp-dir sandbox, scratch DB, cached credentials) without touching
+ * WorkerLifecycle's core state machine.
+ *
+ * Hooks are best-effort — an exception in a hook never blocks the
+ * lifecycle transition because cleanup is a hygiene concern, not a
+ * correctness requirement.
+ *
+ * The `reason` argument distinguishes the two trigger cases:
+ *   - 'demoted':  temporary removal, worker may re-enroll later
+ *   - 'retired':  permanent removal, worker will not return
+ */
+export type WorkerCleanupHook = (workerId: string, reason: 'demoted' | 'retired') => Promise<void> | void;
+
 export class WorkerLifecycle {
   private store: WorkerStore;
   private bus?: VinyanBus;
   private config: WorkerLifecycleConfig;
+  /**
+   * Wave 4.3: cleanup hook registry. Populated via `onCleanup()`.
+   * Fired on every transition into `demoted` or `retired`. Empty
+   * by default — the registry is a seam, not a concrete wiring.
+   */
+  private cleanupHooks: WorkerCleanupHook[] = [];
 
   constructor(config: WorkerLifecycleConfig) {
     this.store = config.workerStore;
     this.bus = config.bus;
     this.config = config;
+  }
+
+  /**
+   * Wave 4.3: register a cleanup hook. Returns an unsubscribe function
+   * so callers can dispose their hook during teardown.
+   *
+   * Use this to plug in workspace cleanup (worktree removal, tmp-dir
+   * sweep, etc.) without touching the lifecycle state machine. Hooks
+   * fire on demote and retire — never on re-enrollment, because
+   * re-enrolled workers need to keep their state.
+   */
+  onCleanup(hook: WorkerCleanupHook): () => void {
+    this.cleanupHooks.push(hook);
+    return () => {
+      const idx = this.cleanupHooks.indexOf(hook);
+      if (idx >= 0) this.cleanupHooks.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Wave 4.3: internal — run all cleanup hooks in order.
+   * Exceptions are caught and logged but never thrown; cleanup is a
+   * hygiene task and must not unwind the transition.
+   */
+  private async runCleanupHooks(workerId: string, reason: 'demoted' | 'retired'): Promise<void> {
+    for (const hook of this.cleanupHooks) {
+      try {
+        await hook(workerId, reason);
+      } catch (err) {
+        // Best-effort: log and continue. A failing cleanup hook must
+        // not block the lifecycle transition.
+        console.warn(
+          `[worker-lifecycle] cleanup hook threw for worker=${workerId} reason=${reason}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
   }
 
   /**
@@ -162,6 +225,12 @@ export class WorkerLifecycle {
         permanent,
       });
 
+      // Wave 4.3: fire cleanup hooks after the state transition is
+      // recorded so a hook exception cannot corrupt the store. We
+      // deliberately fire-and-forget the async Promise so the hook
+      // list cannot extend `checkDemotions()` wall-clock time.
+      void this.runCleanupHooks(worker.id, permanent ? 'retired' : 'demoted');
+
       results.push({ demoted: true, permanent, reason });
     }
 
@@ -182,6 +251,11 @@ export class WorkerLifecycle {
       if (worker.demotionCount >= this.config.demotionMaxReentries) {
         // Should be RETIRED, fix state
         this.store.updateStatus(worker.id, 'retired', 'max re-entries reached');
+        // Wave 4.3: retirement here is a state-repair case — the
+        // worker was previously demoted but the reentry path found
+        // it's actually out of budget. Fire cleanup hooks so any
+        // ephemeral state attached to it also gets reaped.
+        void this.runCleanupHooks(worker.id, 'retired');
         continue;
       }
 

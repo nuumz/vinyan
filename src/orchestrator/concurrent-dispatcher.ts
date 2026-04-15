@@ -155,10 +155,35 @@ export interface ConcurrentDispatcherConfig {
   bus?: VinyanBus;
 }
 
+/**
+ * Book-integration Wave 4.1: per-call dispatch options.
+ *
+ * `canaryFirst` asks the dispatcher to run the first eligible task
+ * alone, wait for its verdict, and only fan out the remaining tasks
+ * if the canary `status === 'completed'`. This mitigates the
+ * "error() bug" failure pattern from Ch12/Ch14 where a systematic
+ * mistake is applied to N files in parallel before anyone runs the
+ * output. See docs/architecture/book-integration-design.md §8.1.
+ *
+ * Opt-in per call — the default behavior (empty options) is
+ * byte-for-byte identical to the pre-W4.1 path.
+ */
+export interface DispatchOptions {
+  canaryFirst?: boolean;
+}
+
 export interface ConcurrentDispatcher {
-  dispatch(tasks: TaskInput[]): Promise<TaskResult[]>;
+  dispatch(tasks: TaskInput[], options?: DispatchOptions): Promise<TaskResult[]>;
   getActiveCount(): number;
 }
+
+/**
+ * Wave 4.1: marker string inserted into the synthetic `notes` of a
+ * TaskResult that was cancelled by a failing canary. Consumers that
+ * want to distinguish "real failure" from "skipped because canary
+ * failed" should grep this prefix. Exported for test assertions.
+ */
+export const CANARY_ABORTED_NOTE_PREFIX = 'canary-aborted:';
 
 export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
   private taskQueue: TaskQueue;
@@ -186,7 +211,7 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
    * before anything runs (via `computeConflictPlan(tasks)` called
    * directly) and dashboards can render a static graph view.
    */
-  async dispatch(tasks: TaskInput[]): Promise<TaskResult[]> {
+  async dispatch(tasks: TaskInput[], options: DispatchOptions = {}): Promise<TaskResult[]> {
     if (tasks.length === 0) return [];
     if (tasks.length === 1) return [await this.executeSingle(tasks[0]!)];
 
@@ -203,8 +228,47 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
     const results = new Map<string, TaskResult>();
     const byId = new Map(tasks.map((t) => [t.id, t] as const));
 
+    // ── Wave 4.1: canary-first mode ────────────────────────────────
+    // Pick a canary (first file-free OR first singleton group in
+    // submission order) and run it alone before the rest. If the
+    // canary doesn't cleanly complete, synthesize aborted results for
+    // every remaining task and return without running them. This is a
+    // pure A3 rule — the canary pick is deterministic and there is no
+    // LLM in the selection path.
+    if (options.canaryFirst) {
+      const canaryTaskId = this.pickCanary(tasks, plan);
+      if (canaryTaskId) {
+        const canaryTask = byId.get(canaryTaskId)!;
+        const canaryResult = await this.executeSingle(canaryTask);
+        results.set(canaryTaskId, canaryResult);
+
+        if (canaryResult.status !== 'completed') {
+          // Canary failed → abort the batch. Every remaining task gets
+          // a synthetic `failed` result with a `canary-aborted:` note
+          // pointing back at the canary that failed. Consumers that
+          // want to distinguish "real failure" from "skipped" can grep
+          // the CANARY_ABORTED_NOTE_PREFIX constant.
+          for (const task of tasks) {
+            if (results.has(task.id)) continue;
+            results.set(task.id, this.makeCanaryAbortedResult(task, canaryResult));
+          }
+          this.bus?.emit('dag:executed', {
+            taskId: `batch-${tasks.length}-aborted`,
+            nodes: tasks.length,
+            parallel: false,
+            fileConflicts: 0,
+          });
+          return tasks.map((t) => results.get(t.id)!);
+        }
+        // Canary passed — fall through to the normal batch path. The
+        // canary is already in `results` so the helpers below will
+        // skip it via the `results.has` guard.
+      }
+    }
+
     const runSerialChain = async (group: ConflictGroup): Promise<void> => {
       for (const taskId of group.taskIds) {
+        if (results.has(taskId)) continue; // skip the canary if it was in this group
         const task = byId.get(taskId)!;
         await this.taskQueue.enqueue(async () => {
           // Acquire the lock inside the serial chain so any other
@@ -223,6 +287,7 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
     };
 
     const runFileFreeTask = async (taskId: string): Promise<void> => {
+      if (results.has(taskId)) return; // skip the canary if it was file-free
       const task = byId.get(taskId)!;
       await this.taskQueue.enqueue(async () => {
         try {
@@ -245,6 +310,66 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
 
     // Return results in original task order
     return tasks.map((t) => results.get(t.id)!);
+  }
+
+  /**
+   * Wave 4.1: canary picker. Picks the first task in submission order
+   * that can run without blocking other members of a conflict group.
+   * Preference order:
+   *   1. first file-free task (least disruptive — no lock)
+   *   2. first task from a singleton group (one member, one set of files)
+   *   3. none (return null — no canary, dispatch falls through)
+   *
+   * Multi-member groups are intentionally skipped because picking the
+   * first member would serialize the rest of the group behind it
+   * without any benefit (the rest of the batch still can't run until
+   * the canary releases the lock).
+   *
+   * Exposed as a method so subclasses can override the picker rule.
+   */
+  protected pickCanary(tasks: TaskInput[], plan: ConflictPlan): string | null {
+    // file-free first, in submission order
+    for (const task of tasks) {
+      if (plan.fileFree.includes(task.id)) return task.id;
+    }
+    // singleton groups next, in submission order
+    const singletonIds = new Set<string>();
+    for (const g of plan.groups) {
+      if (g.taskIds.length === 1) singletonIds.add(g.taskIds[0]!);
+    }
+    for (const task of tasks) {
+      if (singletonIds.has(task.id)) return task.id;
+    }
+    return null;
+  }
+
+  /**
+   * Wave 4.1: build a synthetic `TaskResult` for a task that was
+   * cancelled because the canary failed. Uses `status: 'failed'` (so
+   * existing consumers that switch on status keep working) plus a
+   * `notes` entry that callers can grep for `CANARY_ABORTED_NOTE_PREFIX`.
+   */
+  private makeCanaryAbortedResult(task: TaskInput, canaryResult: TaskResult): TaskResult {
+    return {
+      id: task.id,
+      status: 'failed',
+      mutations: [],
+      trace: {
+        id: `canary-aborted-${task.id}`,
+        taskId: task.id,
+        timestamp: Date.now(),
+        routingLevel: 0,
+        taskTypeSignature: task.taskType ?? 'unknown',
+        approach: 'canary-aborted',
+        oracleVerdicts: {},
+        modelUsed: 'none',
+        tokensConsumed: 0,
+        durationMs: 0,
+        outcome: 'failure',
+        affectedFiles: [],
+      } as TaskResult['trace'],
+      notes: [`${CANARY_ABORTED_NOTE_PREFIX} ${canaryResult.id} returned status=${canaryResult.status}`],
+    };
   }
 
   getActiveCount(): number {

@@ -301,6 +301,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let replanConfig: ReplanEngineConfig | undefined;
   // Wave 5a: Reactive micro-learning config (gated OFF by default).
   let reactiveLearningConfig: FailureClusterConfig | undefined;
+  // Wave 5b: Skill hints config (default ON when config absent).
+  let skillHintsConfig: { enabled: boolean; topK: number } = { enabled: true, topK: 3 };
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -341,6 +343,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           windowMs: rl.windowMs,
           minFailures: rl.minFailures,
         };
+      }
+      const sh = vinyanConfig.orchestrator.skillHints;
+      if (sh) {
+        skillHintsConfig = { enabled: sh.enabled, topK: sh.topK };
       }
     }
     if (vinyanConfig.fleet) {
@@ -1075,6 +1081,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       warnAfterMs: 15_000,
       stallAfterMs: 45_000,
     },
+    // Wave 5b: surface skill hints in the worker's init turn constraints.
+    // Best-effort read of `deps.agentMemory` — when agentMemory is undefined
+    // (config opt-out), the agent loop's guard short-circuits the query.
+    agentMemory: deps.agentMemory,
+    skillHintsConfig,
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

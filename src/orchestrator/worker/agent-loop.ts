@@ -16,6 +16,8 @@ import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } fro
 import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
 import type { HookConfig } from '../hooks/hook-schema.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
+import { computeTaskSignature } from '../prediction/self-model.ts';
+import type { CachedSkill } from '../types.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
 import { countPendingProposals } from '../memory/memory-proposals.ts';
@@ -158,6 +160,19 @@ export interface AgentLoopDeps {
    * reasoning (A1).
    */
   silentAgentConfig?: SilentAgentConfig;
+  /**
+   * Wave 5b: optional read-only memory API. When present alongside
+   * `skillHintsConfig.enabled`, runAgentLoop queries `queryRelatedSkills`
+   * for the task signature and injects the top-k successful approaches
+   * into the init turn's constraints block so the worker's prompt
+   * assembler surfaces them as "Known successful approaches" hints.
+   *
+   * A1: read-only — the loop never writes back to memory.
+   * A3: the hint is informational; the worker's LLM is free to ignore it.
+   */
+  agentMemory?: import('../agent-memory/agent-memory-api.ts').AgentMemoryAPI;
+  /** Wave 5b: skill-hint config. Default off when undefined. */
+  skillHintsConfig?: { enabled: boolean; topK: number };
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -527,6 +542,26 @@ function detectNonRetryableError(uncertainties: string[]): string | undefined {
  * first-then-local seam without spinning up a full agent worker subprocess.
  * Production callers should use `runAgentLoop` which calls this internally.
  */
+/**
+ * Wave 5b: format top-k CachedSkills as a constraint block the worker
+ * prompt assembler will render under "Constraints". Each entry shows the
+ * proven approach + success rate. Bounded to avoid token bloat.
+ */
+export function formatSkillHintConstraints(skills: CachedSkill[]): string[] {
+  if (skills.length === 0) return [];
+  const out: string[] = [
+    `[SKILL HINTS] ${skills.length} proven approach(es) for similar prior tasks (reference only, not mandates):`,
+  ];
+  for (let i = 0; i < skills.length; i++) {
+    const s = skills[i]!;
+    const pct = Math.round((s.successRate ?? 0) * 100);
+    // Bound per-hint length so a single verbose approach can't dominate the block.
+    const approach = s.approach.length > 200 ? `${s.approach.slice(0, 200)}…` : s.approach;
+    out.push(`  ${i + 1}. ${approach} (success: ${pct}%, uses: ${s.usageCount ?? 0})`);
+  }
+  return out;
+}
+
 export async function handleDelegation(
   request: DelegationRequest,
   parent: TaskInput,
@@ -876,18 +911,34 @@ export async function runAgentLoop(
     // its own [ENVIRONMENT] block without re-probing the filesystem.
     const environment = computeEnvironmentInfo(deps.workspace);
 
-    // Book-integration Wave 5.2: merge plan.preamble into the
-    // understanding.constraints sent to the worker. The worker entry's
-    // prompt assembler reads `understanding.constraints` to render the
-    // Constraints block of the system prompt, so this is where the
-    // research-swarm REPORT_CONTRACT actually reaches the LLM. The
-    // merge is local to the init turn — it doesn't mutate the
-    // caller's `understanding` object or leak back to the orchestrator.
+    // Wave 5b: query related skills and format as constraint hints.
+    // Best-effort — a failing query must not break the session. Empty
+    // array when disabled, no memory API, or query errors.
+    let skillHintConstraints: string[] = [];
+    if (deps.skillHintsConfig?.enabled && deps.agentMemory) {
+      try {
+        const sig = computeTaskSignature(input);
+        const skills = await deps.agentMemory.queryRelatedSkills(sig, { k: deps.skillHintsConfig.topK });
+        skillHintConstraints = formatSkillHintConstraints(skills);
+      } catch {
+        // Read-only memory failure → no hints, session proceeds normally.
+      }
+    }
+
+    // Book-integration Wave 5.2 + Wave 5b: merge plan.preamble AND skill
+    // hints into the understanding.constraints sent to the worker. The
+    // worker entry's prompt assembler reads `understanding.constraints`
+    // to render the Constraints block of the system prompt, so this is
+    // where the research-swarm REPORT_CONTRACT and skill hints actually
+    // reach the LLM. The merge is local to the init turn — it doesn't
+    // mutate the caller's `understanding` object or leak back to the
+    // orchestrator.
+    const extraConstraints = [...(plan?.preamble ?? []), ...skillHintConstraints];
     const initUnderstanding =
-      understanding && plan?.preamble && plan.preamble.length > 0
+      understanding && extraConstraints.length > 0
         ? {
             ...understanding,
-            constraints: [...(understanding.constraints ?? []), ...plan.preamble],
+            constraints: [...(understanding.constraints ?? []), ...extraConstraints],
           }
         : understanding;
 

@@ -69,4 +69,19 @@ export interface CriticEngine {
     acceptanceCriteria?: string[],
     context?: CriticContext,
   ): Promise<CriticResult>;
+  /**
+   * Deep-audit #4 (2026-04-15): optional task-completion hook.
+   *
+   * Critics that maintain per-task state (notably `DebateRouterCritic`
+   * via `DebateBudgetGuard`) should release that state when the core
+   * loop finishes with a task to prevent unbounded Map growth across
+   * a long-running orchestrator process. Critics without per-task
+   * state may omit this method.
+   *
+   * Core-loop calls `criticEngine.clearTask?.(input.id)` in the
+   * try/finally wrapper around `executeTask` so the hook fires on
+   * every exit path (success, escalation, uncaught error). Safe to
+   * call for a task that never invoked `review`.
+   */
+  clearTask?(taskId: string): void;
 }

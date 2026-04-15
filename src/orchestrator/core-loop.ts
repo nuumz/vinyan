@@ -759,857 +759,899 @@ function quoteArgForDiscovery(s: string): string {
  * Inner loop: retry within routing level (up to budget.maxRetries)
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
-  const prep = await prepareExecution(input, deps);
-  if ('status' in prep) return prep; // Early return (security rejection or budget block)
+  // Deep-audit #4 (2026-04-15): capture the incoming task id BEFORE
+  // any reassignment (Wave 5.2 may reassign `input` to an enhanced
+  // clone after plan phase — the clone has the same `id` by spread,
+  // but grabbing the id up-front avoids any future maintenance risk
+  // if the clone semantics change). The finally block uses this to
+  // call `criticEngine.clearTask(taskId)` so DebateRouterCritic
+  // releases its per-task budget counter when the task exits.
+  const finalizedTaskId = input.id;
+  try {
+    const prep = await prepareExecution(input, deps);
+    if ('status' in prep) return prep; // Early return (security rejection or budget block)
 
-  // ── Strategy routing — short-circuit non-pipeline strategies ──
-  const intentResolution = prep.intentResolution;
-  if (intentResolution) {
-    if (intentResolution.strategy === 'conversational') {
-      return buildConversationalResult(input, intentResolution, deps);
-    }
-    // Direct-tool: use deterministic resolver to generate platform-correct command (A3)
-    if (intentResolution.strategy === 'direct-tool') {
-      const { classifyDirectTool, resolveCommand } = await import('./tools/direct-tool-resolver.ts');
-      const classification = classifyDirectTool(input.goal);
-      if (classification && classification.confidence >= 0.7) {
-        const command = resolveCommand(classification, process.platform);
-        if (command) {
-          intentResolution.directToolCall = { tool: 'shell_exec', parameters: { command } };
+    // ── Strategy routing — short-circuit non-pipeline strategies ──
+    const intentResolution = prep.intentResolution;
+    if (intentResolution) {
+      if (intentResolution.strategy === 'conversational') {
+        return buildConversationalResult(input, intentResolution, deps);
+      }
+      // Direct-tool: use deterministic resolver to generate platform-correct command (A3)
+      if (intentResolution.strategy === 'direct-tool') {
+        const { classifyDirectTool, resolveCommand } = await import('./tools/direct-tool-resolver.ts');
+        const classification = classifyDirectTool(input.goal);
+        if (classification && classification.confidence >= 0.7) {
+          const command = resolveCommand(classification, process.platform);
+          if (command) {
+            intentResolution.directToolCall = { tool: 'shell_exec', parameters: { command } };
+          }
         }
       }
+      if (intentResolution.strategy === 'direct-tool' && intentResolution.directToolCall) {
+        const directResult = await executeDirectTool(input, intentResolution, deps);
+        if (directResult) return directResult;
+        // Fall through to pipeline if direct tool execution failed
+      }
+      if (intentResolution.strategy === 'agentic-workflow' && intentResolution.workflowPrompt) {
+        // Rewrite goal with the LLM-generated workflow prompt for maximum downstream quality
+        input = { ...input, goal: intentResolution.workflowPrompt };
+      }
     }
-    if (intentResolution.strategy === 'direct-tool' && intentResolution.directToolCall) {
-      const directResult = await executeDirectTool(input, intentResolution, deps);
-      if (directResult) return directResult;
-      // Fall through to pipeline if direct tool execution failed
-    }
-    if (intentResolution.strategy === 'agentic-workflow' && intentResolution.workflowPrompt) {
-      // Rewrite goal with the LLM-generated workflow prompt for maximum downstream quality
-      input = { ...input, goal: intentResolution.workflowPrompt };
-    }
-  }
-  // 'full-pipeline' or failed resolution → existing 6-phase loop
+    // 'full-pipeline' or failed resolution → existing 6-phase loop
 
-  let { understanding, routing } = prep;
-  const { workingMemory, explorationFlag } = prep;
+    let { understanding, routing } = prep;
+    const { workingMemory, explorationFlag } = prep;
 
-  // Agentic-workflow requires tool access (minimum L2) and generous latency for multi-step execution
-  if (intentResolution?.strategy === 'agentic-workflow') {
-    const AGENTIC_LATENCY_FLOOR = 120_000;
-    if (routing.level < 2) {
-      const { LEVEL_CONFIG } = await import('../gate/risk-router.ts');
-      const l2 = LEVEL_CONFIG[2];
-      routing = {
-        ...routing,
-        level: 2,
-        model: routing.model ?? l2.model,
-        budgetTokens: Math.max(routing.budgetTokens, l2.budgetTokens),
-        latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
-      };
-    } else {
-      routing = {
-        ...routing,
-        latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
-      };
-    }
-    // Ensure wall-clock timeout fits at least one full agentic attempt
-    if (input.budget.maxDurationMs < routing.latencyBudgetMs * 1.5) {
-      input = {
-        ...input,
-        budget: { ...input.budget, maxDurationMs: Math.ceil(routing.latencyBudgetMs * 1.5) },
-      };
-    }
-  }
-  const startTime = Date.now();
-
-  // Conversation Agent Mode: load conversation history if session context present
-  // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
-  let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
-  if (input.sessionId && deps.sessionManager) {
-    try {
-      const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-      conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
-    } catch {
-      // Non-fatal: proceed without conversation history
-    }
-  }
-
-  deps.bus?.emit('task:start', { input, routing });
-
-  // Crash Recovery: mark checkpoint complete/failed on task completion.
-  // Agent Conversation: input-required is treated as completed from the
-  // checkpoint's perspective — this turn's work is done; the agent just
-  // asked the user for clarification before the next turn.
-  const detachCheckpoint =
-    deps.taskCheckpoint && deps.bus
-      ? deps.bus.on('task:complete', ({ result }) => {
-          if (result.id !== input.id) return;
-          try {
-            if (result.status === 'completed' || result.status === 'input-required') {
-              deps.taskCheckpoint!.complete(result.id);
-            } else {
-              deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
-            }
-          } catch {
-            // Checkpoint update failure is non-fatal
-          }
-        })
-      : undefined;
-
-  let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
-  const BUDGET_CAP_MULTIPLIER = 6;
-  let totalTokensConsumed = 0;
-  const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
-
-  // Wave 5.2: `ctx` is declared with `let` so the plan phase can hand
-  // back an `enhancedInput` (with the DAG's preamble merged into
-  // `constraints`) and the core-loop swaps `ctx.input` for subsequent
-  // phases. The caller's original `input` is never mutated because the
-  // enhanced variant is a shallow clone produced by phase-plan.
-  let ctx: PhaseContext = {
-    input,
-    deps,
-    startTime,
-    workingMemory,
-    explorationFlag,
-    conversationHistory,
-  };
-
-  // Outer loop: routing level escalation
-  routingLoop: while (routing.level <= MAX_ROUTING_LEVEL) {
-    let matchedSkill: CachedSkill | null = null;
-    const deliberationBonusRetries = 0;
-
-    // Inner loop: retry within current routing level
-    for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
-      // ── Wall-clock timeout check ──────────────────────────────────
-      if (Date.now() - startTime > input.budget.maxDurationMs) {
-        const timeoutTrace: ExecutionTrace = {
-          id: `trace-${input.id}-timeout`,
-          taskId: input.id,
-          workerId: routing.workerId ?? routing.model ?? 'unknown',
-          timestamp: Date.now(),
-          routingLevel: routing.level,
-          approach: 'wall-clock-timeout',
-          oracleVerdicts: {},
-          modelUsed: routing.model ?? 'none',
-          tokensConsumed: 0,
-          durationMs: Date.now() - startTime,
-          outcome: 'timeout',
-          failureReason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
-          affectedFiles: input.targetFiles ?? [],
-          workerSelectionAudit: lastWorkerSelection,
+    // Agentic-workflow requires tool access (minimum L2) and generous latency for multi-step execution
+    if (intentResolution?.strategy === 'agentic-workflow') {
+      const AGENTIC_LATENCY_FLOOR = 120_000;
+      if (routing.level < 2) {
+        const { LEVEL_CONFIG } = await import('../gate/risk-router.ts');
+        const l2 = LEVEL_CONFIG[2];
+        routing = {
+          ...routing,
+          level: 2,
+          model: routing.model ?? l2.model,
+          budgetTokens: Math.max(routing.budgetTokens, l2.budgetTokens),
+          latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
         };
-        await deps.traceCollector.record(timeoutTrace);
-        deps.bus?.emit('trace:record', { trace: timeoutTrace });
-        deps.bus?.emit('task:timeout', {
-          taskId: input.id,
-          elapsedMs: Date.now() - startTime,
-          budgetMs: input.budget.maxDurationMs,
-        });
-        const timeoutResult: TaskResult = { id: input.id, status: 'failed', mutations: [], trace: timeoutTrace };
-        deps.bus?.emit('task:complete', { result: timeoutResult });
-        return timeoutResult;
+      } else {
+        routing = {
+          ...routing,
+          latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
+        };
       }
-
-      // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
-      if (deps.skillManager && routing.level <= 1) {
-        const fp = (input.targetFiles ?? []).sort().join(',') || '*';
-        const taskSig = `${input.goal.slice(0, 50)}::${fp}`;
-        const skill = deps.skillManager.match(taskSig);
-        if (skill) {
-          const check = deps.skillManager.verify(skill);
-          if (check.valid) {
-            matchedSkill = skill;
-            workingMemory.addHypothesis(`Proven approach: ${skill.approach}`, skill.successRate, 'cached-skill');
-            deps.bus?.emit('skill:match', { taskId: input.id, skill });
-          } else {
-            deps.bus?.emit('skill:miss', { taskId: input.id, taskSignature: taskSig });
-          }
-        }
+      // Ensure wall-clock timeout fits at least one full agentic attempt
+      if (input.budget.maxDurationMs < routing.latencyBudgetMs * 1.5) {
+        input = {
+          ...input,
+          budget: { ...input.budget, maxDurationMs: Math.ceil(routing.latencyBudgetMs * 1.5) },
+        };
       }
+    }
+    const startTime = Date.now();
 
-      // ═══════════════════════════════════════════════════════════════
-      // Step 1: PERCEIVE
-      // ═══════════════════════════════════════════════════════════════
-      const perceiveStart = Date.now();
-      const perceiveResult = await executePerceivePhase(ctx, routing, understanding, totalTokensConsumed);
-      deps.bus?.emit('phase:timing', {
-        taskId: input.id,
-        phase: 'perceive',
-        durationMs: Date.now() - perceiveStart,
-        routingLevel: routing.level,
-      });
-      const { perception } = perceiveResult.value;
-      understanding = perceiveResult.value.understanding;
+    // Conversation Agent Mode: load conversation history if session context present
+    // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
+    let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
+    if (input.sessionId && deps.sessionManager) {
+      try {
+        const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
+        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
+      } catch {
+        // Non-fatal: proceed without conversation history
+      }
+    }
 
-      // ═══════════════════════════════════════════════════════════════
-      // Agent Conversation: Comprehension Gate (orchestrator-driven)
-      // ═══════════════════════════════════════════════════════════════
-      //
-      // The Perceive phase has produced a fully enriched understanding
-      // (Layer 0 + Layer 1 entity resolution + optional Layer 2 semantic
-      // intent + Phase C claim verification). Before committing any
-      // Predict/Plan/Generate budget, run a deterministic comprehension
-      // check: if the goal is clearly ambiguous, pause and ask the user.
-      //
-      // This is the ORCHESTRATOR-driven path to `input-required`,
-      // complementing the AGENT-driven path at Step 4 (where an agent
-      // calls attempt_completion with needsUserInput=true). Both emit
-      // the same TaskResult.status='input-required' shape and the same
-      // agent:clarification_requested bus event (distinguished by a
-      // `source` field on the payload).
-      //
-      // Closes the A1 gap flagged in concept.md §1.1 and
-      // docs/design/agent-conversation.md: comprehension decisions
-      // must not be made by the agent itself (that's LLM self-evaluation).
-      //
-      // Disabled by default via `COMPREHENSION_CHECK:off` constraint —
-      // useful for tests that want to force the pipeline through to
-      // Generate without the gate interfering.
-      //
-      // Axiom safety:
-      //   - A1: checkComprehension is a pure function distinct from
-      //     the generator; no LLM in the decision path.
-      //   - A3: rule-based heuristics; reproducible from the same
-      //     understanding.
-      //   - A5: conservative — fires only on clearly ambiguous cases,
-      //     never on a mere suspicion.
-      //   - A6: asserts no mutations were committed (they can't be —
-      //     Perceive has no mutation path) before returning.
-      if (!isComprehensionCheckDisabled(input.constraints)) {
-        const verdict = checkComprehension(understanding);
-        if (!verdict.confident && verdict.questions.length > 0) {
-          const comprehensionTrace: ExecutionTrace = {
-            id: `trace-${input.id}-comprehension-pause`,
+    deps.bus?.emit('task:start', { input, routing });
+
+    // Crash Recovery: mark checkpoint complete/failed on task completion.
+    // Agent Conversation: input-required is treated as completed from the
+    // checkpoint's perspective — this turn's work is done; the agent just
+    // asked the user for clarification before the next turn.
+    const detachCheckpoint =
+      deps.taskCheckpoint && deps.bus
+        ? deps.bus.on('task:complete', ({ result }) => {
+            if (result.id !== input.id) return;
+            try {
+              if (result.status === 'completed' || result.status === 'input-required') {
+                deps.taskCheckpoint!.complete(result.id);
+              } else {
+                deps.taskCheckpoint!.fail(result.id, result.trace?.failureReason ?? result.status);
+              }
+            } catch {
+              // Checkpoint update failure is non-fatal
+            }
+          })
+        : undefined;
+
+    let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
+    const BUDGET_CAP_MULTIPLIER = 6;
+    let totalTokensConsumed = 0;
+    const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
+
+    // Wave 5.2: `ctx` is declared with `let` so the plan phase can hand
+    // back an `enhancedInput` (with the DAG's preamble merged into
+    // `constraints`) and the core-loop swaps `ctx.input` for subsequent
+    // phases. The caller's original `input` is never mutated because the
+    // enhanced variant is a shallow clone produced by phase-plan.
+    let ctx: PhaseContext = {
+      input,
+      deps,
+      startTime,
+      workingMemory,
+      explorationFlag,
+      conversationHistory,
+    };
+
+    // Outer loop: routing level escalation
+    routingLoop: while (routing.level <= MAX_ROUTING_LEVEL) {
+      let matchedSkill: CachedSkill | null = null;
+      const deliberationBonusRetries = 0;
+
+      // Inner loop: retry within current routing level
+      for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
+        // ── Wall-clock timeout check ──────────────────────────────────
+        if (Date.now() - startTime > input.budget.maxDurationMs) {
+          const timeoutTrace: ExecutionTrace = {
+            id: `trace-${input.id}-timeout`,
             taskId: input.id,
-            sessionId: input.sessionId,
-            workerId: 'orchestrator',
+            workerId: routing.workerId ?? routing.model ?? 'unknown',
             timestamp: Date.now(),
             routingLevel: routing.level,
-            approach: 'comprehension-pause',
-            approachDescription: `Orchestrator detected ${verdict.failedChecks.length} comprehension issue(s) before generation: ${verdict.failedChecks.map((c) => c.check).join(', ')}`,
-            oracleVerdicts: { comprehension: false },
-            modelUsed: 'orchestrator',
+            approach: 'wall-clock-timeout',
+            oracleVerdicts: {},
+            modelUsed: routing.model ?? 'none',
             tokensConsumed: 0,
             durationMs: Date.now() - startTime,
-            // Outcome is 'success' because the gate fired cleanly —
-            // the orchestrator decided to pause, not fail. Mirrors the
-            // existing input-required-pause branch semantics.
+            outcome: 'timeout',
+            failureReason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
+            affectedFiles: input.targetFiles ?? [],
+            workerSelectionAudit: lastWorkerSelection,
+          };
+          await deps.traceCollector.record(timeoutTrace);
+          deps.bus?.emit('trace:record', { trace: timeoutTrace });
+          deps.bus?.emit('task:timeout', {
+            taskId: input.id,
+            elapsedMs: Date.now() - startTime,
+            budgetMs: input.budget.maxDurationMs,
+          });
+          const timeoutResult: TaskResult = { id: input.id, status: 'failed', mutations: [], trace: timeoutTrace };
+          deps.bus?.emit('task:complete', { result: timeoutResult });
+          return timeoutResult;
+        }
+
+        // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
+        if (deps.skillManager && routing.level <= 1) {
+          const fp = (input.targetFiles ?? []).sort().join(',') || '*';
+          const taskSig = `${input.goal.slice(0, 50)}::${fp}`;
+          const skill = deps.skillManager.match(taskSig);
+          if (skill) {
+            const check = deps.skillManager.verify(skill);
+            if (check.valid) {
+              matchedSkill = skill;
+              workingMemory.addHypothesis(`Proven approach: ${skill.approach}`, skill.successRate, 'cached-skill');
+              deps.bus?.emit('skill:match', { taskId: input.id, skill });
+            } else {
+              deps.bus?.emit('skill:miss', { taskId: input.id, taskSignature: taskSig });
+            }
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 1: PERCEIVE
+        // ═══════════════════════════════════════════════════════════════
+        const perceiveStart = Date.now();
+        const perceiveResult = await executePerceivePhase(ctx, routing, understanding, totalTokensConsumed);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'perceive',
+          durationMs: Date.now() - perceiveStart,
+          routingLevel: routing.level,
+        });
+        const { perception } = perceiveResult.value;
+        understanding = perceiveResult.value.understanding;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Agent Conversation: Comprehension Gate (orchestrator-driven)
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // The Perceive phase has produced a fully enriched understanding
+        // (Layer 0 + Layer 1 entity resolution + optional Layer 2 semantic
+        // intent + Phase C claim verification). Before committing any
+        // Predict/Plan/Generate budget, run a deterministic comprehension
+        // check: if the goal is clearly ambiguous, pause and ask the user.
+        //
+        // This is the ORCHESTRATOR-driven path to `input-required`,
+        // complementing the AGENT-driven path at Step 4 (where an agent
+        // calls attempt_completion with needsUserInput=true). Both emit
+        // the same TaskResult.status='input-required' shape and the same
+        // agent:clarification_requested bus event (distinguished by a
+        // `source` field on the payload).
+        //
+        // Closes the A1 gap flagged in concept.md §1.1 and
+        // docs/design/agent-conversation.md: comprehension decisions
+        // must not be made by the agent itself (that's LLM self-evaluation).
+        //
+        // Disabled by default via `COMPREHENSION_CHECK:off` constraint —
+        // useful for tests that want to force the pipeline through to
+        // Generate without the gate interfering.
+        //
+        // Axiom safety:
+        //   - A1: checkComprehension is a pure function distinct from
+        //     the generator; no LLM in the decision path.
+        //   - A3: rule-based heuristics; reproducible from the same
+        //     understanding.
+        //   - A5: conservative — fires only on clearly ambiguous cases,
+        //     never on a mere suspicion.
+        //   - A6: asserts no mutations were committed (they can't be —
+        //     Perceive has no mutation path) before returning.
+        if (!isComprehensionCheckDisabled(input.constraints)) {
+          const verdict = checkComprehension(understanding);
+          if (!verdict.confident && verdict.questions.length > 0) {
+            const comprehensionTrace: ExecutionTrace = {
+              id: `trace-${input.id}-comprehension-pause`,
+              taskId: input.id,
+              sessionId: input.sessionId,
+              workerId: 'orchestrator',
+              timestamp: Date.now(),
+              routingLevel: routing.level,
+              approach: 'comprehension-pause',
+              approachDescription: `Orchestrator detected ${verdict.failedChecks.length} comprehension issue(s) before generation: ${verdict.failedChecks.map((c) => c.check).join(', ')}`,
+              oracleVerdicts: { comprehension: false },
+              modelUsed: 'orchestrator',
+              tokensConsumed: 0,
+              durationMs: Date.now() - startTime,
+              // Outcome is 'success' because the gate fired cleanly —
+              // the orchestrator decided to pause, not fail. Mirrors the
+              // existing input-required-pause branch semantics.
+              outcome: 'success',
+              affectedFiles: input.targetFiles ?? [],
+              workerSelectionAudit: lastWorkerSelection,
+            };
+            await deps.traceCollector.record(comprehensionTrace);
+            deps.bus?.emit('trace:record', { trace: comprehensionTrace });
+
+            deps.bus?.emit('agent:clarification_requested', {
+              taskId: input.id,
+              sessionId: input.sessionId,
+              questions: [...verdict.questions],
+              routingLevel: routing.level,
+              source: 'orchestrator',
+            });
+
+            const comprehensionResult: TaskResult = {
+              id: input.id,
+              status: 'input-required',
+              mutations: [],
+              trace: comprehensionTrace,
+              clarificationNeeded: [...verdict.questions],
+            };
+            deps.bus?.emit('task:complete', { result: comprehensionResult });
+            return comprehensionResult;
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 2: PREDICT + SELECT WORKER
+        // ═══════════════════════════════════════════════════════════════
+        const predictStart = Date.now();
+        const predictOutcome = await executePredictPhase(ctx, routing, perception, understanding);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'predict',
+          durationMs: Date.now() - predictStart,
+          routingLevel: routing.level,
+        });
+        if (predictOutcome.action === 'return') return predictOutcome.result;
+        const { prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction, workerSelection } =
+          predictOutcome.value;
+        routing = predictOutcome.value.routing;
+        if (workerSelection) lastWorkerSelection = workerSelection;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 3: PLAN
+        // ═══════════════════════════════════════════════════════════════
+        const planStart = Date.now();
+        const planOutcome = await executePlanPhase(ctx, routing, perception, understanding, forwardPrediction);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'plan',
+          durationMs: Date.now() - planStart,
+          routingLevel: routing.level,
+        });
+        if (planOutcome.action === 'return') return planOutcome.result;
+        const { plan, enhancedInput } = planOutcome.value;
+
+        // Wave 5.2: if the plan phase produced an enhanced input (e.g.
+        // research-swarm preset attached a report-contract preamble),
+        // rebuild the phase context so subsequent phases see the merged
+        // constraints. This replaces the earlier in-place mutation of
+        // `input.constraints` inside the decomposer (Phase A §7 seam #2).
+        //
+        // We ALSO reassign the outer `input` binding so any downstream
+        // code inside this function that still references `input` directly
+        // (instead of `ctx.input`) sees the enhanced view. This prevents
+        // a future "silently reads stale constraints" footgun where a
+        // new check added after plan phase might accidentally bypass
+        // the preamble merge. Reassignment is local — the caller's
+        // original TaskInput is not affected because JS function
+        // parameters bind a local reference that can be reassigned
+        // without mutating the caller's variable.
+        if (enhancedInput) {
+          ctx = { ...ctx, input: enhancedInput };
+          input = enhancedInput;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 4: GENERATE
+        // ═══════════════════════════════════════════════════════════════
+        const generateStart = Date.now();
+        const generateOutcome = await executeGeneratePhase(ctx, {
+          routing,
+          perception,
+          understanding,
+          plan,
+          totalTokensConsumed,
+          budgetCapMultiplier: BUDGET_CAP_MULTIPLIER,
+          workerSelection,
+          lastWorkerSelection,
+          retry,
+        });
+        if (generateOutcome.action === 'return') return generateOutcome.result;
+        if (generateOutcome.action === 'retry') continue;
+        if (generateOutcome.action === 'throw') throw generateOutcome.error;
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'generate',
+          durationMs: Date.now() - generateStart,
+          routingLevel: routing.level,
+        });
+        const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
+        totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
+
+        // ═══════════════════════════════════════════════════════════════
+        // Agent Conversation: input-required short-circuit
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // When the agent calls attempt_completion with needsUserInput=true,
+        // its `uncertainties` are phrased as questions to the user. This is
+        // a collaborative pause, not a failure — do NOT run verify, do NOT
+        // retry, do NOT escalate. Build an input-required TaskResult and
+        // return immediately. The calling layer (CLI chat, API client) is
+        // responsible for surfacing the questions and submitting the next
+        // user turn.
+        //
+        // Axiom safety:
+        //  - A1 (Epistemic Separation): no verification is needed because
+        //    no mutations were committed (asserted below) and no claims are
+        //    being accepted — we're just passing the agent's questions up.
+        //  - A6 (Zero-Trust Execution): defense-in-depth — if mutations are
+        //    somehow present, fall through to the normal verify path.
+        if (isAgenticResult && lastAgentResult?.needsUserInput === true && workerResult.mutations.length === 0) {
+          const inputRequiredTrace: ExecutionTrace = {
+            id: `trace-${input.id}-input-required`,
+            taskId: input.id,
+            sessionId: input.sessionId,
+            workerId: routing.workerId ?? routing.model ?? 'unknown',
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: 'input-required-pause',
+            approachDescription: 'Agent requested clarification from the user',
+            oracleVerdicts: {},
+            modelUsed: routing.model ?? 'none',
+            tokensConsumed: workerResult.tokensConsumed,
+            durationMs: Date.now() - startTime,
+            // Outcome is 'success' because the current turn completed cleanly —
+            // the agent explicitly decided to pause and ask rather than fail.
+            // ExecutionTrace.outcome does not yet have a dedicated 'input-required'
+            // value; when it is extended, this mapping should change.
             outcome: 'success',
             affectedFiles: input.targetFiles ?? [],
             workerSelectionAudit: lastWorkerSelection,
           };
-          await deps.traceCollector.record(comprehensionTrace);
-          deps.bus?.emit('trace:record', { trace: comprehensionTrace });
+          await deps.traceCollector.record(inputRequiredTrace);
+          deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
 
+          // Agent Conversation: emit a dedicated observability event so
+          // listeners (TUI, API clients, logging) can surface the questions
+          // as a user-friendly prompt instead of waiting for the generic
+          // task:complete handler to interpret status='input-required'.
+          // `source: 'agent'` distinguishes this from the orchestrator-driven
+          // comprehension gate emit site earlier in the pipeline.
           deps.bus?.emit('agent:clarification_requested', {
             taskId: input.id,
             sessionId: input.sessionId,
-            questions: [...verdict.questions],
+            questions: [...lastAgentResult.uncertainties],
             routingLevel: routing.level,
-            source: 'orchestrator',
+            source: 'agent',
           });
 
-          const comprehensionResult: TaskResult = {
+          const inputRequiredResult: TaskResult = {
             id: input.id,
             status: 'input-required',
             mutations: [],
-            trace: comprehensionTrace,
-            clarificationNeeded: [...verdict.questions],
+            trace: inputRequiredTrace,
+            clarificationNeeded: [...lastAgentResult.uncertainties],
+            // Preserve any proposedContent (e.g., partial summary) so the
+            // user sees context alongside the questions.
+            ...(lastAgentResult.proposedContent ? { answer: lastAgentResult.proposedContent } : {}),
           };
-          deps.bus?.emit('task:complete', { result: comprehensionResult });
-          return comprehensionResult;
+          deps.bus?.emit('task:complete', { result: inputRequiredResult });
+          return inputRequiredResult;
         }
-      }
 
-      // ═══════════════════════════════════════════════════════════════
-      // Step 2: PREDICT + SELECT WORKER
-      // ═══════════════════════════════════════════════════════════════
-      const predictStart = Date.now();
-      const predictOutcome = await executePredictPhase(ctx, routing, perception, understanding);
-      deps.bus?.emit('phase:timing', {
-        taskId: input.id,
-        phase: 'predict',
-        durationMs: Date.now() - predictStart,
-        routingLevel: routing.level,
-      });
-      if (predictOutcome.action === 'return') return predictOutcome.result;
-      const { prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction, workerSelection } =
-        predictOutcome.value;
-      routing = predictOutcome.value.routing;
-      if (workerSelection) lastWorkerSelection = workerSelection;
-
-      // ═══════════════════════════════════════════════════════════════
-      // Step 3: PLAN
-      // ═══════════════════════════════════════════════════════════════
-      const planStart = Date.now();
-      const planOutcome = await executePlanPhase(ctx, routing, perception, understanding, forwardPrediction);
-      deps.bus?.emit('phase:timing', {
-        taskId: input.id,
-        phase: 'plan',
-        durationMs: Date.now() - planStart,
-        routingLevel: routing.level,
-      });
-      if (planOutcome.action === 'return') return planOutcome.result;
-      const { plan, enhancedInput } = planOutcome.value;
-
-      // Wave 5.2: if the plan phase produced an enhanced input (e.g.
-      // research-swarm preset attached a report-contract preamble),
-      // rebuild the phase context so subsequent phases see the merged
-      // constraints. This replaces the earlier in-place mutation of
-      // `input.constraints` inside the decomposer (Phase A §7 seam #2).
-      if (enhancedInput) {
-        ctx = { ...ctx, input: enhancedInput };
-      }
-
-      // ═══════════════════════════════════════════════════════════════
-      // Step 4: GENERATE
-      // ═══════════════════════════════════════════════════════════════
-      const generateStart = Date.now();
-      const generateOutcome = await executeGeneratePhase(ctx, {
-        routing,
-        perception,
-        understanding,
-        plan,
-        totalTokensConsumed,
-        budgetCapMultiplier: BUDGET_CAP_MULTIPLIER,
-        workerSelection,
-        lastWorkerSelection,
-        retry,
-      });
-      if (generateOutcome.action === 'return') return generateOutcome.result;
-      if (generateOutcome.action === 'retry') continue;
-      if (generateOutcome.action === 'throw') throw generateOutcome.error;
-      deps.bus?.emit('phase:timing', {
-        taskId: input.id,
-        phase: 'generate',
-        durationMs: Date.now() - generateStart,
-        routingLevel: routing.level,
-      });
-      const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
-      totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
-
-      // ═══════════════════════════════════════════════════════════════
-      // Agent Conversation: input-required short-circuit
-      // ═══════════════════════════════════════════════════════════════
-      //
-      // When the agent calls attempt_completion with needsUserInput=true,
-      // its `uncertainties` are phrased as questions to the user. This is
-      // a collaborative pause, not a failure — do NOT run verify, do NOT
-      // retry, do NOT escalate. Build an input-required TaskResult and
-      // return immediately. The calling layer (CLI chat, API client) is
-      // responsible for surfacing the questions and submitting the next
-      // user turn.
-      //
-      // Axiom safety:
-      //  - A1 (Epistemic Separation): no verification is needed because
-      //    no mutations were committed (asserted below) and no claims are
-      //    being accepted — we're just passing the agent's questions up.
-      //  - A6 (Zero-Trust Execution): defense-in-depth — if mutations are
-      //    somehow present, fall through to the normal verify path.
-      if (isAgenticResult && lastAgentResult?.needsUserInput === true && workerResult.mutations.length === 0) {
-        const inputRequiredTrace: ExecutionTrace = {
-          id: `trace-${input.id}-input-required`,
-          taskId: input.id,
-          sessionId: input.sessionId,
-          workerId: routing.workerId ?? routing.model ?? 'unknown',
-          timestamp: Date.now(),
-          routingLevel: routing.level,
-          approach: 'input-required-pause',
-          approachDescription: 'Agent requested clarification from the user',
-          oracleVerdicts: {},
-          modelUsed: routing.model ?? 'none',
-          tokensConsumed: workerResult.tokensConsumed,
-          durationMs: Date.now() - startTime,
-          // Outcome is 'success' because the current turn completed cleanly —
-          // the agent explicitly decided to pause and ask rather than fail.
-          // ExecutionTrace.outcome does not yet have a dedicated 'input-required'
-          // value; when it is extended, this mapping should change.
-          outcome: 'success',
-          affectedFiles: input.targetFiles ?? [],
-          workerSelectionAudit: lastWorkerSelection,
-        };
-        await deps.traceCollector.record(inputRequiredTrace);
-        deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
-
-        // Agent Conversation: emit a dedicated observability event so
-        // listeners (TUI, API clients, logging) can surface the questions
-        // as a user-friendly prompt instead of waiting for the generic
-        // task:complete handler to interpret status='input-required'.
-        // `source: 'agent'` distinguishes this from the orchestrator-driven
-        // comprehension gate emit site earlier in the pipeline.
-        deps.bus?.emit('agent:clarification_requested', {
-          taskId: input.id,
-          sessionId: input.sessionId,
-          questions: [...lastAgentResult.uncertainties],
-          routingLevel: routing.level,
-          source: 'agent',
+        // ═══════════════════════════════════════════════════════════════
+        // Step 5: VERIFY
+        // ═══════════════════════════════════════════════════════════════
+        const verifyStart = Date.now();
+        const verifyOutcome = await executeVerifyPhase(ctx, {
+          routing,
+          perception,
+          understanding,
+          plan,
+          workerResult,
+          isAgenticResult,
+          lastAgentResult,
+          dagResult,
+          prediction,
+          predictionConfidence,
+          metaPredictionConfidence,
+          forwardPrediction,
+          workerSelection,
+          lastWorkerSelection,
+          matchedSkill,
+          retry,
         });
+        if (verifyOutcome.action === 'return') return verifyOutcome.result;
+        if (verifyOutcome.action === 'escalate') {
+          routing = verifyOutcome.routing;
+          continue routingLoop;
+        }
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'verify',
+          durationMs: Date.now() - verifyStart,
+          routingLevel: routing.level,
+        });
+        const {
+          verification,
+          passedOracles,
+          failedOracles,
+          verificationConfidence,
+          qualityScore,
+          shouldCommit,
+          trace,
+        } = verifyOutcome.value;
 
-        const inputRequiredResult: TaskResult = {
-          id: input.id,
-          status: 'input-required',
-          mutations: [],
-          trace: inputRequiredTrace,
-          clarificationNeeded: [...lastAgentResult.uncertainties],
-          // Preserve any proposedContent (e.g., partial summary) so the
-          // user sees context alongside the questions.
-          ...(lastAgentResult.proposedContent ? { answer: lastAgentResult.proposedContent } : {}),
-        };
-        deps.bus?.emit('task:complete', { result: inputRequiredResult });
-        return inputRequiredResult;
-      }
+        // ═══════════════════════════════════════════════════════════════
+        // Step 6: LEARN
+        // ═══════════════════════════════════════════════════════════════
+        const learnResult = await executeLearnPhase(ctx, {
+          routing,
+          understanding,
+          prediction,
+          forwardPrediction,
+          verification,
+          trace,
+          isAgenticResult,
+          lastAgentResult,
+        });
+        const finalTrace = learnResult.trace;
 
-      // ═══════════════════════════════════════════════════════════════
-      // Step 5: VERIFY
-      // ═══════════════════════════════════════════════════════════════
-      const verifyStart = Date.now();
-      const verifyOutcome = await executeVerifyPhase(ctx, {
-        routing,
-        perception,
-        understanding,
-        plan,
-        workerResult,
-        isAgenticResult,
-        lastAgentResult,
-        dagResult,
-        prediction,
-        predictionConfidence,
-        metaPredictionConfidence,
-        forwardPrediction,
-        workerSelection,
-        lastWorkerSelection,
-        matchedSkill,
-        retry,
-      });
-      if (verifyOutcome.action === 'return') return verifyOutcome.result;
-      if (verifyOutcome.action === 'escalate') {
-        routing = { ...verifyOutcome.routing, isEscalated: true };
-        continue routingLoop;
-      }
-      deps.bus?.emit('phase:timing', {
-        taskId: input.id,
-        phase: 'verify',
-        durationMs: Date.now() - verifyStart,
-        routingLevel: routing.level,
-      });
-      const { verification, passedOracles, failedOracles, verificationConfidence, qualityScore, shouldCommit, trace } =
-        verifyOutcome.value;
+        // shouldCommit=false from verify means confidence decision wants retry
+        if (!shouldCommit) continue;
 
-      // ═══════════════════════════════════════════════════════════════
-      // Step 6: LEARN
-      // ═══════════════════════════════════════════════════════════════
-      const learnResult = await executeLearnPhase(ctx, {
-        routing,
-        understanding,
-        prediction,
-        forwardPrediction,
-        verification,
-        trace,
-        isAgenticResult,
-        lastAgentResult,
-      });
-      const finalTrace = learnResult.trace;
+        // ═══════════════════════════════════════════════════════════════
+        // SUCCESS PATH — critic, test gen, commit, shadow
+        // ═══════════════════════════════════════════════════════════════
+        if (shouldCommit || finalTrace.outcome === 'success') {
+          // ── WP-2: LLM-as-Critic (semantic verification at L2+) ──
+          if (deps.criticEngine && routing.level >= 2 && workerResult.mutations.length > 0) {
+            try {
+              const proposal = { mutations: workerResult.mutations, approach: finalTrace.approach };
+              // Book-integration Wave 5.1: routing signal is now threaded
+              // through a typed `CriticContext` argument rather than the
+              // earlier `(task as unknown as { riskScore? }).riskScore` cast.
+              // DebateRouterCritic reads `context.riskScore` directly; the
+              // baseline critic and the 3-seat debate both accept-and-ignore.
+              const criticContext = {
+                riskScore: routing.riskScore,
+                routingLevel: routing.level,
+              };
+              const criticResult = await deps.criticEngine.review(
+                proposal,
+                input,
+                perception,
+                input.acceptanceCriteria,
+                criticContext,
+              );
+              deps.bus?.emit('critic:verdict', {
+                taskId: input.id,
+                accepted: criticResult.approved,
+                confidence: criticResult.confidence,
+                reason: criticResult.reason,
+              });
+              if (!criticResult.approved) {
+                workingMemory.recordFailedApproach(
+                  finalTrace.approach,
+                  `critic: ${criticResult.reason ?? 'Critic rejected proposal'}`,
+                  criticResult.confidence,
+                  'critic',
+                );
+                continue;
+              }
 
-      // shouldCommit=false from verify means confidence decision wants retry
-      if (!shouldCommit) continue;
-
-      // ═══════════════════════════════════════════════════════════════
-      // SUCCESS PATH — critic, test gen, commit, shadow
-      // ═══════════════════════════════════════════════════════════════
-      if (shouldCommit || finalTrace.outcome === 'success') {
-        // ── WP-2: LLM-as-Critic (semantic verification at L2+) ──
-        if (deps.criticEngine && routing.level >= 2 && workerResult.mutations.length > 0) {
-          try {
-            const proposal = { mutations: workerResult.mutations, approach: finalTrace.approach };
-            // Book-integration Wave 5.1: routing signal is now threaded
-            // through a typed `CriticContext` argument rather than the
-            // earlier `(task as unknown as { riskScore? }).riskScore` cast.
-            // DebateRouterCritic reads `context.riskScore` directly; the
-            // baseline critic and the 3-seat debate both accept-and-ignore.
-            const criticContext = {
-              riskScore: routing.riskScore,
-              routingLevel: routing.level,
-            };
-            const criticResult = await deps.criticEngine.review(
-              proposal,
-              input,
-              perception,
-              input.acceptanceCriteria,
-              criticContext,
-            );
-            deps.bus?.emit('critic:verdict', {
-              taskId: input.id,
-              accepted: criticResult.approved,
-              confidence: criticResult.confidence,
-              reason: criticResult.reason,
-            });
-            if (!criticResult.approved) {
+              // EHD Phase 2: Recompute pipeline confidence WITH critic dimension
+              if (criticResult.confidence !== undefined && routing.level > 0) {
+                const { computePipelineConfidence, deriveConfidenceDecision } = await import(
+                  './pipeline-confidence.ts'
+                );
+                const updatedPipeline = computePipelineConfidence({
+                  prediction: predictionConfidence,
+                  metaPrediction: metaPredictionConfidence,
+                  verification: verificationConfidence,
+                  critic: criticResult.confidence,
+                });
+                const updatedDecision = deriveConfidenceDecision(updatedPipeline.composite);
+                finalTrace.confidenceDecision = {
+                  action: updatedDecision,
+                  confidence: updatedPipeline.composite,
+                  reason: updatedPipeline.formula,
+                };
+                finalTrace.pipelineConfidence = {
+                  composite: updatedPipeline.composite,
+                  formula: updatedPipeline.formula,
+                };
+              }
+            } catch (criticError) {
+              deps.bus?.emit('critic:verdict', {
+                taskId: input.id,
+                accepted: false,
+                confidence: 0,
+                reason: `Critic engine error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+              });
               workingMemory.recordFailedApproach(
                 finalTrace.approach,
-                `critic: ${criticResult.reason ?? 'Critic rejected proposal'}`,
-                criticResult.confidence,
+                `critic-error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+                0,
                 'critic',
               );
               continue;
             }
-
-            // EHD Phase 2: Recompute pipeline confidence WITH critic dimension
-            if (criticResult.confidence !== undefined && routing.level > 0) {
-              const { computePipelineConfidence, deriveConfidenceDecision } = await import('./pipeline-confidence.ts');
-              const updatedPipeline = computePipelineConfidence({
-                prediction: predictionConfidence,
-                metaPrediction: metaPredictionConfidence,
-                verification: verificationConfidence,
-                critic: criticResult.confidence,
-              });
-              const updatedDecision = deriveConfidenceDecision(updatedPipeline.composite);
-              finalTrace.confidenceDecision = {
-                action: updatedDecision,
-                confidence: updatedPipeline.composite,
-                reason: updatedPipeline.formula,
-              };
-              finalTrace.pipelineConfidence = {
-                composite: updatedPipeline.composite,
-                formula: updatedPipeline.formula,
-              };
-            }
-          } catch (criticError) {
-            deps.bus?.emit('critic:verdict', {
-              taskId: input.id,
-              accepted: false,
-              confidence: 0,
-              reason: `Critic engine error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
-            });
-            workingMemory.recordFailedApproach(
-              finalTrace.approach,
-              `critic-error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
-              0,
-              'critic',
-            );
-            continue;
           }
-        }
 
-        // ── WP-3: TestGenerator (L2+) ──
-        if (deps.testGenerator && routing.level >= 2 && workerResult.mutations.length > 0) {
-          try {
-            const testGenResult = await deps.testGenerator.generateAndRun(
-              { mutations: workerResult.mutations, approach: finalTrace.approach },
-              perception,
-            );
-            if (testGenResult.failures.length > 0) {
-              const failNames = testGenResult.failures.map((f) => f.name).join(', ');
-              workingMemory.recordFailedApproach(
-                finalTrace.approach,
-                `test-gen: ${testGenResult.failures.length} generated test(s) failed: ${failNames}`,
-                undefined,
-                'test-gen',
+          // ── WP-3: TestGenerator (L2+) ──
+          if (deps.testGenerator && routing.level >= 2 && workerResult.mutations.length > 0) {
+            try {
+              const testGenResult = await deps.testGenerator.generateAndRun(
+                { mutations: workerResult.mutations, approach: finalTrace.approach },
+                perception,
               );
-              continue;
+              if (testGenResult.failures.length > 0) {
+                const failNames = testGenResult.failures.map((f) => f.name).join(', ');
+                workingMemory.recordFailedApproach(
+                  finalTrace.approach,
+                  `test-gen: ${testGenResult.failures.length} generated test(s) failed: ${failNames}`,
+                  undefined,
+                  'test-gen',
+                );
+                continue;
+              }
+            } catch (testGenError) {
+              deps.bus?.emit('testgen:error', {
+                taskId: input.id,
+                error: testGenError instanceof Error ? testGenError.message : String(testGenError),
+              });
             }
-          } catch (testGenError) {
-            deps.bus?.emit('testgen:error', {
-              taskId: input.id,
-              error: testGenError instanceof Error ? testGenError.message : String(testGenError),
-            });
           }
-        }
 
-        // ── Execute mutating tools ONLY after verification ──
-        if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
-          const toolContext = {
-            workspace: deps.workspace ?? process.cwd(),
-            allowedPaths: input.targetFiles ?? [],
-            routingLevel: routing.level,
-          } as import('./tools/tool-interface.ts').ToolContext;
-          const mutatingResults = await deps.toolExecutor.executeProposedTools(mutatingToolCalls, toolContext);
-          deps.bus?.emit('tools:executed', { taskId: input.id, results: mutatingResults });
-          for (const tr of mutatingResults) {
-            if (tr.status === 'success' && tr.output && typeof tr.output === 'object') {
-              const out = tr.output as { file?: string; content?: string };
-              if (out.file && out.content) {
-                const existing = workerResult.mutations.find((m) => m.file === out.file);
-                if (!existing) {
-                  workerResult.mutations.push({
-                    file: out.file,
-                    content: out.content,
-                    diff: '',
-                    explanation: `Tool ${tr.tool} output`,
-                  });
+          // ── Execute mutating tools ONLY after verification ──
+          if (verification.passed && deps.toolExecutor && mutatingToolCalls.length > 0) {
+            const toolContext = {
+              workspace: deps.workspace ?? process.cwd(),
+              allowedPaths: input.targetFiles ?? [],
+              routingLevel: routing.level,
+            } as import('./tools/tool-interface.ts').ToolContext;
+            const mutatingResults = await deps.toolExecutor.executeProposedTools(mutatingToolCalls, toolContext);
+            deps.bus?.emit('tools:executed', { taskId: input.id, results: mutatingResults });
+            for (const tr of mutatingResults) {
+              if (tr.status === 'success' && tr.output && typeof tr.output === 'object') {
+                const out = tr.output as { file?: string; content?: string };
+                if (out.file && out.content) {
+                  const existing = workerResult.mutations.find((m) => m.file === out.file);
+                  if (!existing) {
+                    workerResult.mutations.push({
+                      file: out.file,
+                      content: out.content,
+                      diff: '',
+                      explanation: `Tool ${tr.tool} output`,
+                    });
+                  }
                 }
               }
             }
           }
-        }
 
-        // ── I10: Probation workers — shadow only ──
-        if (deps.workerStore && routing.workerId) {
-          const workerProfile = deps.workerStore.findById(routing.workerId);
-          if (workerProfile?.status === 'probation') {
-            if (deps.shadowRunner) {
-              const job = deps.shadowRunner.enqueue(
-                input.id,
-                workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
-              );
-              deps.bus?.emit('shadow:enqueue', { job });
-              if (deps.workerLifecycle?.shouldShadowForProbation(input.id, routing.workerId!)) {
-                deps.shadowRunner
-                  .runAlternativeWorker(
-                    input.id,
-                    workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
-                    routing.workerId!,
-                  )
-                  .then((result) => {
-                    deps.bus?.emit('shadow:complete', {
-                      job: {
-                        id: '',
-                        taskId: input.id,
-                        status: 'done' as const,
-                        enqueuedAt: 0,
-                        retryCount: 0,
-                        maxRetries: 1,
-                      },
-                      result,
+          // ── I10: Probation workers — shadow only ──
+          if (deps.workerStore && routing.workerId) {
+            const workerProfile = deps.workerStore.findById(routing.workerId);
+            if (workerProfile?.status === 'probation') {
+              if (deps.shadowRunner) {
+                const job = deps.shadowRunner.enqueue(
+                  input.id,
+                  workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
+                );
+                deps.bus?.emit('shadow:enqueue', { job });
+                if (deps.workerLifecycle?.shouldShadowForProbation(input.id, routing.workerId!)) {
+                  deps.shadowRunner
+                    .runAlternativeWorker(
+                      input.id,
+                      workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
+                      routing.workerId!,
+                    )
+                    .then((result) => {
+                      deps.bus?.emit('shadow:complete', {
+                        job: {
+                          id: '',
+                          taskId: input.id,
+                          status: 'done' as const,
+                          enqueuedAt: 0,
+                          retryCount: 0,
+                          maxRetries: 1,
+                        },
+                        result,
+                      });
+                    })
+                    .catch(() => {
+                      /* fire-and-forget */
                     });
-                  })
-                  .catch(() => {
-                    /* fire-and-forget */
-                  });
+                }
               }
+              const probationResult: TaskResult = {
+                id: input.id,
+                status: 'completed',
+                mutations: [],
+                trace: { ...finalTrace, outcome: 'success' as const },
+                notes: ['probation-shadow-only: I10 — probation worker result not committed'],
+              };
+              deps.bus?.emit('task:complete', { result: probationResult });
+              return probationResult;
             }
-            const probationResult: TaskResult = {
-              id: input.id,
-              status: 'completed',
-              mutations: [],
-              trace: { ...finalTrace, outcome: 'success' as const },
-              notes: ['probation-shadow-only: I10 — probation worker result not committed'],
-            };
-            deps.bus?.emit('task:complete', { result: probationResult });
-            return probationResult;
           }
-        }
 
-        // ── Commit verified mutations to workspace ──
-        let commitResult: { applied: string[]; rejected: Array<{ path: string; reason: string }> } | undefined;
-        if (deps.workspace && workerResult.mutations.length > 0) {
-          commitResult = commitArtifacts(
-            deps.workspace,
-            workerResult.mutations.map((m) => ({ path: m.file, content: m.content })),
-          );
-          if (commitResult.rejected.length > 0) {
-            deps.bus?.emit('commit:rejected', { taskId: input.id, rejected: commitResult.rejected });
+          // ── Commit verified mutations to workspace ──
+          let commitResult: { applied: string[]; rejected: Array<{ path: string; reason: string }> } | undefined;
+          if (deps.workspace && workerResult.mutations.length > 0) {
+            commitResult = commitArtifacts(
+              deps.workspace,
+              workerResult.mutations.map((m) => ({ path: m.file, content: m.content })),
+            );
+            if (commitResult.rejected.length > 0) {
+              deps.bus?.emit('commit:rejected', { taskId: input.id, rejected: commitResult.rejected });
+            }
           }
-        }
 
-        // ── A4: Commit verified oracle verdicts as World Graph facts ──
-        if (deps.worldGraph && deps.workspace && commitResult && commitResult.applied.length > 0) {
-          const validUntils = Object.values(verification.verdicts)
-            .filter((v) => v.temporalContext?.validUntil)
-            .map((v) => v.temporalContext!.validUntil);
-          const factValidUntil = validUntils.length > 0 ? Math.min(...validUntils) : undefined;
-          const decayModels = Object.values(verification.verdicts)
-            .map((v) => v.temporalContext?.decayModel)
-            .filter(Boolean) as string[];
-          const factDecayModel =
-            decayModels.length > 0
-              ? decayModels.includes('exponential')
-                ? ('exponential' as const)
-                : (decayModels[0] as 'linear' | 'step' | 'none' | 'exponential')
+          // ── A4: Commit verified oracle verdicts as World Graph facts ──
+          if (deps.worldGraph && deps.workspace && commitResult && commitResult.applied.length > 0) {
+            const validUntils = Object.values(verification.verdicts)
+              .filter((v) => v.temporalContext?.validUntil)
+              .map((v) => v.temporalContext!.validUntil);
+            const factValidUntil = validUntils.length > 0 ? Math.min(...validUntils) : undefined;
+            const decayModels = Object.values(verification.verdicts)
+              .map((v) => v.temporalContext?.decayModel)
+              .filter(Boolean) as string[];
+            const factDecayModel =
+              decayModels.length > 0
+                ? decayModels.includes('exponential')
+                  ? ('exponential' as const)
+                  : (decayModels[0] as 'linear' | 'step' | 'none' | 'exponential')
+                : undefined;
+            try {
+              for (const file of commitResult.applied) {
+                const absPath = resolvePath(deps.workspace, file);
+                const hash = deps.worldGraph.computeFileHash(absPath);
+                deps.worldGraph.storeFact({
+                  target: file,
+                  pattern: 'oracle-verified',
+                  evidence: Object.entries(verification.verdicts).map(([oracle, v]) => ({
+                    file,
+                    line: 0,
+                    snippet: `${oracle}: ${v.verified ? 'pass' : 'fail'}`,
+                  })),
+                  oracleName: 'orchestrator',
+                  sourceFile: file,
+                  fileHash: hash,
+                  verifiedAt: Date.now(),
+                  sessionId: input.id,
+                  confidence: computeFactConfidence(verification.verdicts),
+                  validUntil: factValidUntil,
+                  decayModel: factDecayModel,
+                  tierReliability: (() => {
+                    const conf = computeFactConfidence(verification.verdicts);
+                    return conf >= 0.95 ? 1.0 : conf >= 0.7 ? 0.8 : 0.5;
+                  })(),
+                });
+              }
+            } catch {
+              // WorldGraph fact commitment is best-effort
+            }
+          }
+
+          const appliedSet = commitResult
+            ? new Set(commitResult.applied)
+            : new Set(workerResult.mutations.map((m) => m.file));
+          const appliedMutations = workerResult.mutations.filter((m) => appliedSet.has(m.file));
+          const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
+
+          const contradictions =
+            passedOracles.length > 0 && failedOracles.length > 0
+              ? [`Oracle contradiction: passed=[${passedOracles.join(',')}] failed=[${failedOracles.join(',')}]`]
               : undefined;
+
+          const successResult: TaskResult = {
+            id: input.id,
+            status: allRejected ? 'failed' : 'completed',
+            mutations: appliedMutations.map((m) => ({
+              file: m.file,
+              diff: m.diff,
+              oracleVerdicts: verification.verdicts,
+            })),
+            trace: finalTrace,
+            qualityScore,
+            answer: workerResult.proposedContent,
+            thinking: workerResult.thinking,
+            notes: commitResult?.rejected.length
+              ? [`Rejected files: ${commitResult.rejected.map((r) => `${r.path} (${r.reason})`).join(', ')}`]
+              : undefined,
+            contradictions,
+          };
+
+          // ── Shadow Enqueue (Phase 2.2) ──
+          if (deps.shadowRunner && routing.level >= 2) {
+            const job = deps.shadowRunner.enqueue(
+              input.id,
+              workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
+            );
+            finalTrace.validationDepth = 'structural';
+            deps.bus?.emit('shadow:enqueue', { job });
+            deps.shadowRunner
+              .processNext()
+              .then((result) => {
+                if (result) deps.bus?.emit('shadow:complete', { job, result });
+              })
+              .catch((err) => {
+                deps.bus?.emit('shadow:failed', { job, error: String(err) });
+              });
+          }
+
+          // ── Skill outcome: success ──
+          if (matchedSkill && deps.skillManager) {
+            deps.skillManager.recordOutcome(matchedSkill, true);
+            deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: true });
+          }
+
+          serializeApproachesToStore(workingMemory, input, deps);
+          persistSessionMemory(workingMemory, input, deps);
+          deps.bus?.emit('task:complete', { result: successResult });
+          detachCheckpoint?.();
+          return successResult;
+        }
+
+        // ── FAILURE → record in working memory, retry ────────────────
+        workingMemory.recordFailedApproach(
+          finalTrace.approach,
+          verification.reason ?? 'unknown',
+          verificationConfidence,
+          failedOracles[0],
+        );
+
+        // G5: Archive failed verdicts to World Graph
+        if (deps.worldGraph && failedOracles.length > 0) {
           try {
-            for (const file of commitResult.applied) {
-              const absPath = resolvePath(deps.workspace, file);
-              const hash = deps.worldGraph.computeFileHash(absPath);
-              deps.worldGraph.storeFact({
-                target: file,
-                pattern: 'oracle-verified',
-                evidence: Object.entries(verification.verdicts).map(([oracle, v]) => ({
-                  file,
-                  line: 0,
-                  snippet: `${oracle}: ${v.verified ? 'pass' : 'fail'}`,
-                })),
-                oracleName: 'orchestrator',
-                sourceFile: file,
-                fileHash: hash,
-                verifiedAt: Date.now(),
-                sessionId: input.id,
-                confidence: computeFactConfidence(verification.verdicts),
-                validUntil: factValidUntil,
-                decayModel: factDecayModel,
-                tierReliability: (() => {
-                  const conf = computeFactConfidence(verification.verdicts);
-                  return conf >= 0.95 ? 1.0 : conf >= 0.7 ? 0.8 : 0.5;
-                })(),
+            for (const oracleName of failedOracles) {
+              deps.worldGraph.storeFailedVerdict({
+                target: input.targetFiles?.[0] ?? input.id,
+                pattern: finalTrace.approach,
+                oracleName,
+                verdict: verification.reason ?? 'unknown',
+                confidence: verificationConfidence,
+                fileHash: undefined,
+                sessionId: undefined,
               });
             }
           } catch {
-            // WorldGraph fact commitment is best-effort
+            // Best-effort
           }
         }
 
-        const appliedSet = commitResult
-          ? new Set(commitResult.applied)
-          : new Set(workerResult.mutations.map((m) => m.file));
-        const appliedMutations = workerResult.mutations.filter((m) => appliedSet.has(m.file));
-        const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
-
-        const contradictions =
-          passedOracles.length > 0 && failedOracles.length > 0
-            ? [`Oracle contradiction: passed=[${passedOracles.join(',')}] failed=[${failedOracles.join(',')}]`]
-            : undefined;
-
-        const successResult: TaskResult = {
-          id: input.id,
-          status: allRejected ? 'failed' : 'completed',
-          mutations: appliedMutations.map((m) => ({
-            file: m.file,
-            diff: m.diff,
-            oracleVerdicts: verification.verdicts,
-          })),
-          trace: finalTrace,
-          qualityScore,
-          answer: workerResult.proposedContent,
-          thinking: workerResult.thinking,
-          notes: commitResult?.rejected.length
-            ? [`Rejected files: ${commitResult.rejected.map((r) => `${r.path} (${r.reason})`).join(', ')}`]
-            : undefined,
-          contradictions,
-        };
-
-        // ── Shadow Enqueue (Phase 2.2) ──
-        if (deps.shadowRunner && routing.level >= 2) {
-          const job = deps.shadowRunner.enqueue(
-            input.id,
-            workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
-          );
-          finalTrace.validationDepth = 'structural';
-          deps.bus?.emit('shadow:enqueue', { job });
-          deps.shadowRunner
-            .processNext()
-            .then((result) => {
-              if (result) deps.bus?.emit('shadow:complete', { job, result });
-            })
-            .catch((err) => {
-              deps.bus?.emit('shadow:failed', { job, error: String(err) });
-            });
+        for (const oracleName of failedOracles) {
+          deps.bus?.emit('context:verdict_omitted', {
+            taskId: input.id,
+            oracleName,
+            reason: 'Oracle verdict available but not propagated to worker context on retry',
+          });
         }
 
-        // ── Skill outcome: success ──
         if (matchedSkill && deps.skillManager) {
-          deps.skillManager.recordOutcome(matchedSkill, true);
-          deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: true });
-        }
-
-        serializeApproachesToStore(workingMemory, input, deps);
-        persistSessionMemory(workingMemory, input, deps);
-        deps.bus?.emit('task:complete', { result: successResult });
-        detachCheckpoint?.();
-        return successResult;
-      }
-
-      // ── FAILURE → record in working memory, retry ────────────────
-      workingMemory.recordFailedApproach(
-        finalTrace.approach,
-        verification.reason ?? 'unknown',
-        verificationConfidence,
-        failedOracles[0],
-      );
-
-      // G5: Archive failed verdicts to World Graph
-      if (deps.worldGraph && failedOracles.length > 0) {
-        try {
-          for (const oracleName of failedOracles) {
-            deps.worldGraph.storeFailedVerdict({
-              target: input.targetFiles?.[0] ?? input.id,
-              pattern: finalTrace.approach,
-              oracleName,
-              verdict: verification.reason ?? 'unknown',
-              confidence: verificationConfidence,
-              fileHash: undefined,
-              sessionId: undefined,
-            });
-          }
-        } catch {
-          // Best-effort
+          deps.skillManager.recordOutcome(matchedSkill, false);
+          deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
+          matchedSkill = null;
         }
       }
 
-      for (const oracleName of failedOracles) {
-        deps.bus?.emit('context:verdict_omitted', {
-          taskId: input.id,
-          oracleName,
-          reason: 'Oracle verdict available but not propagated to worker context on retry',
-        });
-      }
+      // ── RETRY EXHAUSTED → escalate routing level ─────────────────
+      const nextLevel = (routing.level + 1) as RoutingLevel;
+      const effectiveMaxLevel =
+        understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+      if (nextLevel > effectiveMaxLevel) break;
 
-      if (matchedSkill && deps.skillManager) {
-        deps.skillManager.recordOutcome(matchedSkill, false);
-        deps.bus?.emit('skill:outcome', { taskId: input.id, skill: matchedSkill, success: false });
-        matchedSkill = null;
-      }
+      deps.bus?.emit('task:escalate', {
+        taskId: input.id,
+        fromLevel: routing.level,
+        toLevel: nextLevel,
+        reason: `Exhausted ${input.budget.maxRetries} retries at L${routing.level}`,
+      });
+      routing = await deps.riskRouter.assessInitialLevel({
+        ...input,
+        constraints: [...(input.constraints ?? []), `MIN_ROUTING_LEVEL:${nextLevel}`],
+      });
+      routing = { ...routing, isEscalated: true };
     }
 
-    // ── RETRY EXHAUSTED → escalate routing level ─────────────────
-    const nextLevel = (routing.level + 1) as RoutingLevel;
-    const effectiveMaxLevel =
-      understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
-    if (nextLevel > effectiveMaxLevel) break;
-
-    deps.bus?.emit('task:escalate', {
+    // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
+    const escalationTrace: ExecutionTrace = {
+      id: `trace-${input.id}-escalation`,
       taskId: input.id,
-      fromLevel: routing.level,
-      toLevel: nextLevel,
-      reason: `Exhausted ${input.budget.maxRetries} retries at L${routing.level}`,
-    });
-    routing = await deps.riskRouter.assessInitialLevel({
-      ...input,
-      constraints: [...(input.constraints ?? []), `MIN_ROUTING_LEVEL:${nextLevel}`],
-    });
-    routing = { ...routing, isEscalated: true };
+      workerId: routing.workerId ?? routing.model ?? 'unknown',
+      timestamp: Date.now(),
+      routingLevel: MAX_ROUTING_LEVEL,
+      approach: 'all-levels-exhausted',
+      oracleVerdicts: {},
+      modelUsed: routing.model ?? 'none',
+      tokensConsumed: 0,
+      durationMs: Date.now() - startTime,
+      outcome: 'escalated',
+      failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
+      affectedFiles: input.targetFiles ?? [],
+      workerSelectionAudit: lastWorkerSelection,
+      failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
+        approach: fa.approach,
+        oracleVerdict: fa.oracleVerdict,
+        verdictConfidence: fa.verdictConfidence,
+        failureOracle: fa.failureOracle,
+      })),
+    };
+
+    serializeApproachesToStore(workingMemory, input, deps);
+    await deps.traceCollector.record(escalationTrace);
+    deps.bus?.emit('trace:record', { trace: escalationTrace });
+
+    const escalationResult: TaskResult = {
+      id: input.id,
+      status: 'escalated',
+      mutations: [],
+      trace: escalationTrace,
+      escalationReason: `Task could not be completed after exhausting all routing levels (L0-L3). ${workingMemory.getSnapshot().failedApproaches.length} failed approaches recorded.`,
+    };
+    deps.bus?.emit('task:complete', { result: escalationResult });
+    persistSessionMemory(workingMemory, input, deps);
+    detachCheckpoint?.();
+    return escalationResult;
+  } finally {
+    // Deep-audit #4 (2026-04-15): fire the criticEngine.clearTask hook
+    // on every exit path so DebateRouterCritic releases its per-task
+    // budget counter. Best-effort — a throwing clearTask must not
+    // overwrite the task's actual return value or mask a thrown
+    // error from the main path. Optional-chain lets critics without
+    // per-task state opt out.
+    try {
+      deps.criticEngine?.clearTask?.(finalizedTaskId);
+    } catch {
+      /* hook errors are swallowed — cleanup must not fail the task */
+    }
   }
-
-  // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
-  const escalationTrace: ExecutionTrace = {
-    id: `trace-${input.id}-escalation`,
-    taskId: input.id,
-    workerId: routing.workerId ?? routing.model ?? 'unknown',
-    timestamp: Date.now(),
-    routingLevel: MAX_ROUTING_LEVEL,
-    approach: 'all-levels-exhausted',
-    oracleVerdicts: {},
-    modelUsed: routing.model ?? 'none',
-    tokensConsumed: 0,
-    durationMs: Date.now() - startTime,
-    outcome: 'escalated',
-    failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
-    affectedFiles: input.targetFiles ?? [],
-    workerSelectionAudit: lastWorkerSelection,
-    failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
-      approach: fa.approach,
-      oracleVerdict: fa.oracleVerdict,
-      verdictConfidence: fa.verdictConfidence,
-      failureOracle: fa.failureOracle,
-    })),
-  };
-
-  serializeApproachesToStore(workingMemory, input, deps);
-  await deps.traceCollector.record(escalationTrace);
-  deps.bus?.emit('trace:record', { trace: escalationTrace });
-
-  const escalationResult: TaskResult = {
-    id: input.id,
-    status: 'escalated',
-    mutations: [],
-    trace: escalationTrace,
-    escalationReason: `Task could not be completed after exhausting all routing levels (L0-L3). ${workingMemory.getSnapshot().failedApproaches.length} failed approaches recorded.`,
-  };
-  deps.bus?.emit('task:complete', { result: escalationResult });
-  persistSessionMemory(workingMemory, input, deps);
-  detachCheckpoint?.();
-  return escalationResult;
 }
 
 // ---------------------------------------------------------------------------

@@ -477,4 +477,18 @@ export class DebateRouterCritic implements CriticEngine {
     }
     return this.baseline.review(proposal, task, perception, acceptanceCriteria, context);
   }
+
+  /**
+   * Deep-audit #4: release per-task debate state when core-loop
+   * finishes with a task. Delegates to the budget guard's `clearTask`
+   * so the per-task counter entry is deleted from the guard's Map.
+   *
+   * No-op when no budget guard is configured. Safe to call for a task
+   * that never invoked `review` (the guard tolerates missing keys).
+   * The per-day counter is NOT affected — day spend persists across
+   * the task boundary, which is the correct semantic for a daily cap.
+   */
+  clearTask(taskId: string): void {
+    this.options.budgetGuard?.clearTask(taskId);
+  }
 }

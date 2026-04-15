@@ -333,12 +333,25 @@ maintainers don't think they're accidents.
    actually reaches the worker's LLM system prompt — the old mutation
    was a decorative no-op because understanding was pre-computed
    before the decomposer ran.
-3. **Peek event whitelist drift**. Adding a new bus event that carries a
-   `taskId` requires editing `TASK_EVENTS` in `src/tui/views/peek.ts`. A
-   type-level registry tagged at the bus event declaration would close
-   this gap. **Deferred (Wave 5, 2026-04-15):** this is a bus-type
-   refactor with wide reach, not a feature — deferred until a second
-   consumer of "task-bearing events" appears and justifies the cost.
+3. ~~Peek event whitelist drift~~ — ✅ **CLOSED (post-merge audit,
+   2026-04-15).** Rather than refactoring every bus event declaration
+   to a type-level registry (too wide a blast radius), the fix is a
+   static regression test that scans `src/core/bus.ts` for events whose
+   payload declaration contains `taskId:` and asserts each one is
+   either in `peek.ts::TASK_EVENTS` or in a documented
+   `KNOWN_EXCLUSIONS` set. The test lives at
+   `tests/tui/peek-whitelist-coverage.test.ts` and fails at CI time
+   when a new task-bearing event is added without updating peek —
+   forcing an explicit choice ("include" or "exclude with reason")
+   instead of silent drift.
+
+   The immediate motivation was the `feature/main` merge introducing
+   `monitoring:drift_detected` as a new task-bearing event that peek's
+   handwritten whitelist missed. The regression test found that plus 7
+   OTHER pre-existing drift cases (`critic:debate_fired`,
+   `critic:debate_denied`, `commit:rejected`, `decomposer:fallback`,
+   `oracle:self_report_excluded`, 4× `sandbox:*`, `agent:thinking`).
+   All of those are now correctly classified.
 
 ---
 

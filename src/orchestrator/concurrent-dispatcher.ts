@@ -68,15 +68,23 @@ export function computeConflictPlan(tasks: ReadonlyArray<TaskInput>): ConflictPl
 
   // Build the adjacency list. We index tasks by every file they touch so
   // we only compare tasks that share at least one file.
+  //
+  // Deep-audit #2 (2026-04-15): dedupe per-task files before indexing.
+  // Without this, a caller accidentally passing `targetFiles: ['a.ts',
+  // 'a.ts']` would create a self-edge in adjacency (t1 → t1) because
+  // the second occurrence of 'a.ts' finds t1 already in the bucket.
+  // Self-edges are benign for union-find but leak a surprising state
+  // to any consumer reading `plan.adjacency`. Set-based dedupe is
+  // cheap and eliminates the class of bugs.
   const fileIndex = new Map<string, string[]>();
   const fileFree: string[] = [];
   for (const t of tasks) {
-    const files = t.targetFiles ?? [];
-    if (files.length === 0) {
+    const uniqueFiles = Array.from(new Set(t.targetFiles ?? []));
+    if (uniqueFiles.length === 0) {
       fileFree.push(t.id);
       continue;
     }
-    for (const f of files) {
+    for (const f of uniqueFiles) {
       let bucket = fileIndex.get(f);
       if (!bucket) {
         bucket = [];
@@ -350,6 +358,13 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
    * `notes` entry that callers can grep for `CANARY_ABORTED_NOTE_PREFIX`.
    */
   private makeCanaryAbortedResult(task: TaskInput, canaryResult: TaskResult): TaskResult {
+    // Deep-audit #3 (2026-04-15): the synthetic trace's
+    // `taskTypeSignature` previously held `task.taskType` (one of
+    // 'code' | 'reasoning'), which is the wrong semantic field —
+    // downstream pattern analysis expects a task-shape signature like
+    // 'migrate::auth.ts'. We emit a dedicated 'canary-aborted' marker
+    // so trace analysis can cluster these synthetic records without
+    // polluting real task-type buckets.
     return {
       id: task.id,
       status: 'failed',
@@ -359,7 +374,7 @@ export class DefaultConcurrentDispatcher implements ConcurrentDispatcher {
         taskId: task.id,
         timestamp: Date.now(),
         routingLevel: 0,
-        taskTypeSignature: task.taskType ?? 'unknown',
+        taskTypeSignature: 'canary-aborted',
         approach: 'canary-aborted',
         oracleVerdicts: {},
         modelUsed: 'none',

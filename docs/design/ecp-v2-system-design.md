@@ -238,7 +238,7 @@ return {
   efficiency,
   composite: efficiency * 0.4 + 1.0 * 0.6,
   dimensionsAvailable: 1,
-  phase: 'phase0',
+  phase: 'basic',
   unverified: true,
 };
 ```
@@ -250,7 +250,7 @@ return {
   efficiency,
   composite: efficiency * 0.4 + 0.5 * 0.6,
   dimensionsAvailable: 1,
-  phase: 'phase0',
+  phase: 'basic',
   unverified: true,
 };
 ```

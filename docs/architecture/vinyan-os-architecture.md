@@ -153,7 +153,7 @@ process). The three tiers are:
    task-group.
 3. *"Is the population regressing?"* — individual tasks succeed but overall success rate
    is drifting. That's a **Tier 3** event. Look at `WorkerLifecycle` stats, sleep-cycle
-   anti-pattern output, and `phase7:silent_regression` alerts.
+   anti-pattern output, and `monitoring:silent_regression` alerts.
 
 **What Vinyan rejects from the book's Tier 1 model:** in-process subagents — functions
 called *inside* the orchestrator's own runtime. Vinyan requires the generator to live

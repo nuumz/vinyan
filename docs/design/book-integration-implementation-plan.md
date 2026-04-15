@@ -456,13 +456,25 @@ Tests:
 
 ---
 
-## 7. Known follow-ups (legacy — pre-Wave-4)
+## 8. Legacy follow-ups (pre-Wave-4 → all promoted to Wave 5)
 
-These predate the Wave 4 deep-read; kept here for traceability.
+These predate the Wave 4 deep-read. Each was promoted to the Wave 5
+backlog in §6 and the status below reflects the *current* state, not
+the pre-Wave-4 state.
 
-1. **CriticEngine interface extension** — replace the `task.riskScore`
-   ad-hoc cast with a proper context object. (Promoted to Wave 5 item 5.)
-2. **Bus event typed registry** — (Promoted to Wave 5 item 6.)
-3. **Debate cost cap** — (Promoted to Wave 5 item 7.)
-4. **Sentinel config constructor option** — (Promoted to Wave 5 item 8.)
-5. **TerminationSentinel extraction** — (Promoted to Wave 5 item 9.)
+| Legacy # | Item | Wave 5 backlog # | Status |
+|---|---|---|---|
+| 1 | CriticEngine interface extension — replace `task.riskScore` cast with a context object | #5 | ✅ **Shipped** in phase 1 (W5.1) |
+| 2 | Bus event typed registry — generate peek's `TASK_EVENTS` from the bus declarations | #6 | ⏸ Deferred (wide refactor; no second consumer) |
+| 3 | Debate cost cap | #7 | ✅ **Shipped** — per-task (W5.7a phase 2) + per-day (W5.7b phase 3) |
+| 4 | Sentinel config constructor option — expose `sentinelMaxNoopCycles` | #8 | ✅ **Shipped** in phase 1 (W5.4) |
+| 5 | TerminationSentinel reusable class extraction | #9 | ⏸ Deferred (YAGNI — no second consumer) |
+
+> **Tally (post-merge 2026-04-15):** 3 of 5 legacy items shipped; 2
+> remain on the deferred-with-documented-rationale list. Phase A §7
+> "known short-term seams" — **all 3 closed** (seam #3 "peek event
+> whitelist drift" closed via a static regression test at
+> `tests/tui/peek-whitelist-coverage.test.ts` that scans bus.ts for
+> task-bearing events and asserts each is either in peek's
+> `TASK_EVENTS` or in a documented `KNOWN_EXCLUSIONS` set, forcing an
+> explicit decision at CI time).

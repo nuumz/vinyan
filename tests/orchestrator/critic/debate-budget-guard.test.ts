@@ -73,13 +73,16 @@ describe('DebateBudgetGuard — core semantics', () => {
 });
 
 describe('DebateBudgetGuard — bus observability', () => {
-  test('recordDenied emits critic:debate_denied with the right payload', () => {
+  test('recordDenied emits critic:debate_denied with full payload (per-task case)', () => {
     const bus = createBus();
     const events: Array<{
       taskId: string;
       reason: string;
+      denyType: 'max-per-task' | 'max-per-day';
       maxPerTask: number;
-      count: number;
+      maxPerDay: number | null;
+      taskCount: number;
+      dayCount: number;
     }> = [];
     bus.on('critic:debate_denied', (e) => events.push(e));
 
@@ -92,14 +95,44 @@ describe('DebateBudgetGuard — bus observability', () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.taskId).toBe('task-a');
     expect(events[0]!.reason).toBe('per-task debate cap reached');
+    expect(events[0]!.denyType).toBe('max-per-task');
     expect(events[0]!.maxPerTask).toBe(2);
-    expect(events[0]!.count).toBe(2);
+    expect(events[0]!.maxPerDay).toBeNull();
+    expect(events[0]!.taskCount).toBe(2);
+  });
+
+  test('recordDenied carries denyType=max-per-day and dayCount when per-day cap fires', () => {
+    const bus = createBus();
+    const events: Array<{ denyType: string; maxPerDay: number | null; dayCount: number }> = [];
+    bus.on('critic:debate_denied', (e) => events.push(e));
+
+    const guard = new DebateBudgetGuard({ maxPerTask: 100, maxPerDay: 2, bus });
+    guard.recordFired('t1');
+    guard.recordFired('t2');
+    guard.recordDenied('fresh-task', 'per-day debate cap reached');
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.denyType).toBe('max-per-day');
+    expect(events[0]!.maxPerDay).toBe(2);
+    expect(events[0]!.dayCount).toBe(2);
   });
 
   test('recordDenied is silent when no bus is configured', () => {
     const guard = new DebateBudgetGuard({ maxPerTask: 0 });
     // Just verifying no throw
     expect(() => guard.recordDenied('task-a', 'capped')).not.toThrow();
+  });
+
+  test('recordDenied called without an actual deny → event suppressed (misuse guard)', () => {
+    const bus = createBus();
+    const events: unknown[] = [];
+    bus.on('critic:debate_denied', (e) => events.push(e));
+
+    // Guard has plenty of headroom; whyDenied returns null
+    const guard = new DebateBudgetGuard({ maxPerTask: 10, maxPerDay: 10, bus });
+    guard.recordDenied('task-a', 'this should be suppressed');
+
+    expect(events).toHaveLength(0);
   });
 });
 

@@ -291,9 +291,11 @@ documentation rather than code.
 > specifically called out "unsolved" problems, or require primitives
 > Vinyan doesn't have today.
 >
-> **Status update (2026-04-15):** 3 of 9 items shipped in the Wave 5
-> partial commit; the remaining 6 are either blocked on larger design
-> questions or require infrastructure Vinyan doesn't have yet.
+> **Status update (2026-04-15, phase 2):** 5 of 9 items shipped + 1 more
+> partial (debate cost cap gets per-task implementation; per-day still
+> future). **2 of 3 Phase A §7 seams closed** (seam #1 in phase 1,
+> seam #2 in phase 2). The remaining 3 backlog items + 1 seam are
+> blocked on larger design questions.
 
 1. **W4.4 Implementation Team preset** — Ch07 + Ch12. **Still deferred.**
    Needs a deterministic disjoint-seam heuristic (directory-based?
@@ -324,11 +326,19 @@ documentation rather than code.
 6. **Bus event typed registry** — **Still deferred.** Touches every
    `VinyanBusEvents` declaration and risks breaking a large surface
    of consumers for a refactor, not a feature.
-7. **Debate cost cap at Economy OS layer** — **Partially resolved.**
-   The full per-day cap still needs CostLedger integration, but the
-   Wave 5 partial commit ships a `critic:debate_fired` bus event
-   that dashboards and the Economy OS can subscribe to for tracking
-   debate spending. The cap itself is still future work.
+7. **Debate cost cap at Economy OS layer** — ✅ **FULLY SHIPPED**
+   across phase 2 (W5.7a per-task) and phase 3 (W5.7b per-day).
+   `DebateBudgetGuard` now enforces **both** caps: per-task-id counter
+   (default `maxPerTask: 1`) and a rolling per-day counter
+   (`maxPerDay`, default undefined = unbounded). Denied debates emit
+   `critic:debate_denied` with a reason string that distinguishes
+   per-task from per-day denial. The `whyDenied()` helper is exposed
+   on the guard for callers that want to discriminate without
+   duplicating the rule. Day counter resets at midnight UTC via
+   `pruneStaleFires`. Note: this is a guard-local implementation,
+   not a CostLedger-based daily USD cap — operators that want
+   USD-denominated limits should subscribe to `critic:debate_fired`
+   from the Economy OS layer and wire the cap there.
 8. **Sentinel config on `SleepCycleRunner` constructor** — ✅ **SHIPPED
    as W5.4** in the Wave 5 partial commit. `SleepCycleRunner`
    constructor now accepts an optional `sentinelMaxNoopCycles`
@@ -361,6 +371,88 @@ Tests: `tests/orchestrator/critic/debate-mode.test.ts` — updated risk-triggere
 | `src/sleep-cycle/sleep-cycle.ts` | `sentinelMaxNoopCycles` as optional constructor parameter |
 
 Tests: `tests/sleep-cycle/termination-sentinel.test.ts` — 2 new cases (custom value trips faster; default is preserved).
+
+## 7a. Wave 5 phase 2 — file tables
+
+### W5.7a — Per-task Debate Budget Guard
+
+| File | Change |
+|------|--------|
+| `src/orchestrator/critic/debate-budget-guard.ts` | **NEW** — `DebateBudgetGuard` class with `shouldAllow` / `recordFired` / `recordDenied` / `clearTask` |
+| `src/orchestrator/critic/debate-mode.ts` | `DebateRouterCritic` accepts `budgetGuard` in options; consults `shouldAllow` before firing; records fire + denied paths |
+| `src/core/bus.ts` | New `critic:debate_denied` event (payload: taskId, reason, maxPerTask, count) |
+| `src/orchestrator/factory.ts` | Wires a default `DebateBudgetGuard({ maxPerTask: 1 })` into the debate critic; `OrchestratorConfig.debateMaxPerTask` overrides |
+
+Tests:
+- `tests/orchestrator/critic/debate-budget-guard.test.ts` — **NEW** (9 cases covering core semantics + bus observability)
+- `tests/orchestrator/critic/debate-mode.test.ts` — 5 new integration cases (guard consult, denied event, baseline-path untouched, maxPerTask=0, task-id isolation)
+
+### W5.2 — TaskDAG.preamble + centralized merge (seam #2 closure)
+
+| File | Change |
+|------|--------|
+| `src/orchestrator/types.ts` | `TaskDAG.preamble?: string[]` field |
+| `src/orchestrator/task-decomposer-presets.ts` | `buildResearchSwarmDAG` emits `preamble: [RESEARCH_SWARM_REPORT_CONTRACT]` on the DAG |
+| `src/orchestrator/task-decomposer.ts` | Preset path NO LONGER mutates `input.constraints` (seam #2) |
+| `src/orchestrator/phases/types.ts` | `PlanResult.enhancedInput?: TaskInput` field |
+| `src/orchestrator/phases/phase-plan.ts` | Builds `enhancedInput` as a shallow clone with merged constraints when `plan.preamble?.length > 0` |
+| `src/orchestrator/core-loop.ts` | `const ctx` → `let ctx`; swaps `ctx.input` to `enhancedInput` after plan phase so subsequent phases see the merged constraints. The caller's original input is never mutated. |
+| `src/orchestrator/worker/agent-loop.ts` | Before sending the init turn, merges `plan.preamble` into `understanding.constraints` locally so the worker's prompt assembler renders the Constraints block with the report contract included. |
+
+Tests:
+- `tests/orchestrator/phases/phase-plan.test.ts` — **NEW** (4 cases: preamble → enhancedInput; no preamble → no enhancedInput; empty preamble → no enhancedInput; append order preserved)
+- `tests/orchestrator/task-decomposer.test.ts` — 1 new case: caller input is NOT mutated after preset fires
+- `tests/orchestrator/task-decomposer-presets.test.ts` — 1 new case: DAG carries preamble with the report contract
+
+**Why this matters more than the previous cleanup:**
+The previous research-swarm preset mutated `input.constraints` inside the decomposer. The mutation was (a) surprising to callers, (b) failed the "no caller mutation" convention, AND (c) did NOT actually reach the worker's prompt because `understanding.constraints` was pre-computed in `prepareExecution()` BEFORE the decomposer ran. So the old mutation was a decorative no-op with respect to the worker.
+
+Wave 5.2 fixes **both** the mutation AND the decorative no-op:
+1. The decomposer no longer mutates — caller's input is clean
+2. The preamble is threaded onto the DAG (`plan.preamble`)
+3. Phase-plan materializes an `enhancedInput` that subsequent phases see via ctx swap
+4. Agent-loop merges `plan.preamble` into the init turn's `understanding.constraints` just before sending to the worker, so the worker's prompt assembler actually renders the report contract
+
+This is the first time the research-swarm preset's REPORT_CONTRACT genuinely reaches the LLM's system prompt.
+
+## 7b. Wave 5 phase 3 — file tables
+
+### W5.7b — Per-day `DebateBudgetGuard` cap
+
+| File | Change |
+|------|--------|
+| `src/orchestrator/critic/debate-budget-guard.ts` | Extended with `maxPerDay`, injectable `now`, rolling `fires` timestamp array, `pruneStaleFires`, `whyDenied(taskId)` helper, `getDayCount()` test helper |
+| `src/orchestrator/critic/debate-mode.ts` | `DebateRouterCritic` uses `guard.whyDenied()` to build a precise deny reason string (`per-task debate cap reached` vs `per-day debate cap reached`) |
+| `src/orchestrator/factory.ts` | `OrchestratorConfig.debateMaxPerDay` plumbed into `DebateBudgetGuard` options |
+
+Tests:
+- `tests/orchestrator/critic/debate-budget-guard.test.ts` — 8 new cases: `maxPerDay` undefined behavior, cap caps total fires across tasks, `maxPerDay=0` denies always, day rollover via injected clock, `getDayCount` prunes stale, `whyDenied` discriminator (per-task vs per-day vs null), negative clamp.
+- `tests/orchestrator/critic/debate-mode.test.ts` — 2 new router integration cases: denies once per-day cap saturates; `critic:debate_denied` reason string discriminates per-task vs per-day.
+
+### W5.11 — `vinyan tui costs` command
+
+| File | Change |
+|------|--------|
+| `src/tui/views/costs.ts` | **NEW** — `showCosts(config)` reads the workspace `.vinyan/vinyan.db` read-only, hydrates a `CostLedger`, prints hour/day/month aggregates + top 5 engines by all-time USD spend. Graceful fallback when DB or table is missing. |
+| `src/tui/commands.ts` | New `costs` subcommand in `processTUICommand` + help text |
+
+Tests:
+- `tests/tui/costs.test.ts` — **NEW** 4 cases: empty ledger → "no data" notice; multi-engine render shows counts + totals; top-engines list is sorted by USD descending; missing DB prints friendly "no ledger" notice.
+
+**Design notes for W5.11:**
+
+- **No orchestrator instantiation.** The view opens the DB directly in
+  read-only mode and constructs a transient `CostLedger` from the
+  warm cache. This is several seconds faster than going through
+  `createOrchestratorAsync` for a one-shot status view.
+- **Graceful degradation.** If the DB file doesn't exist (fresh
+  workspace), the view prints a friendly notice and exits 0. If the
+  DB exists but the `cost_ledger` table is missing (older migration),
+  `CostLedger.warmCache` swallows the exception and the view renders
+  the "no data recorded yet" path.
+- **Injectable `ledger` option.** The view accepts an optional
+  pre-built `CostLedger` for tests and future integration with a
+  live orchestrator handle. Prod CLI path uses the DB-open variant.
 
 ---
 

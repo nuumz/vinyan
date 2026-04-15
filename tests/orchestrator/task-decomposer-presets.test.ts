@@ -115,4 +115,12 @@ describe('buildResearchSwarmDAG — structural contract', () => {
     expect(RESEARCH_SWARM_REPORT_CONTRACT).toContain('## Sources');
     expect(RESEARCH_SWARM_REPORT_CONTRACT).toContain('## Open Questions');
   });
+
+  // ── Wave 5.2: preamble is returned on the DAG, not mutated onto input ──
+  test('Wave 5.2: DAG carries preamble with the report contract', () => {
+    const dag = buildResearchSwarmDAG(input('investigate X'), perception());
+    expect(dag.preamble).toBeDefined();
+    expect(dag.preamble).toHaveLength(1);
+    expect(dag.preamble![0]).toBe(RESEARCH_SWARM_REPORT_CONTRACT);
+  });
 });

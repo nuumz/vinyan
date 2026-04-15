@@ -866,6 +866,21 @@ export async function runAgentLoop(
     // its own [ENVIRONMENT] block without re-probing the filesystem.
     const environment = computeEnvironmentInfo(deps.workspace);
 
+    // Book-integration Wave 5.2: merge plan.preamble into the
+    // understanding.constraints sent to the worker. The worker entry's
+    // prompt assembler reads `understanding.constraints` to render the
+    // Constraints block of the system prompt, so this is where the
+    // research-swarm REPORT_CONTRACT actually reaches the LLM. The
+    // merge is local to the init turn — it doesn't mutate the
+    // caller's `understanding` object or leak back to the orchestrator.
+    const initUnderstanding =
+      understanding && plan?.preamble && plan.preamble.length > 0
+        ? {
+            ...understanding,
+            constraints: [...(understanding.constraints ?? []), ...plan.preamble],
+          }
+        : understanding;
+
     // Build and send init turn
     const initTurn: OrchestratorTurn = {
       type: 'init',
@@ -882,7 +897,7 @@ export async function runAgentLoop(
       ...(memory.priorAttempts?.length ? { priorAttempts: memory.priorAttempts } : {}),
       ...(memory.failedApproaches?.length ? { failedApproaches: memory.failedApproaches } : {}),
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
-      ...(understanding ? { understanding } : {}),
+      ...(initUnderstanding ? { understanding: initUnderstanding } : {}),
       ...(conversationHistory?.length ? { conversationHistory } : {}),
       ...(instructions ? { instructions } : {}),
       environment,

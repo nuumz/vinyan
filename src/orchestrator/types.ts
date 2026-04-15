@@ -935,6 +935,27 @@ export interface TaskDAG {
   isFallback?: boolean;
   /** True when the DAG was produced by expanding a composed skill (PH5 D2). */
   isFromComposedSkill?: boolean;
+  /**
+   * Book-integration Wave 5.2: constraint strings the decomposer
+   * wants merged into the parent task's prompt context before the
+   * worker runs. Used by deterministic presets (e.g. research-swarm
+   * report contract) that want to inject a prompt preamble without
+   * mutating the caller's TaskInput.
+   *
+   * Contract:
+   *   - The decomposer sets this field when it needs the worker's
+   *     prompt assembler to see additional constraints.
+   *   - The core-loop's plan phase merges the preamble into a
+   *     *cloned* TaskInput and swaps `ctx.input` for subsequent
+   *     phases so the caller's original input is never mutated.
+   *   - Downstream phases see the merged constraints on
+   *     `ctx.input.constraints`.
+   *
+   * This replaces the earlier pattern where the research-swarm
+   * preset directly mutated `input.constraints` inside the
+   * decomposer (Phase A §7 seam #2, closed in Wave 5 phase 2).
+   */
+  preamble?: string[];
 }
 
 /** 5 machine-checkable criteria for DAG validation */

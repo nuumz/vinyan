@@ -48,6 +48,20 @@ export interface VinyanBusEvents {
     routingLevel?: number;
     trigger: 'force' | 'skip' | 'risk-threshold';
   };
+  // Book-integration Wave 5.7a: emitted when DebateBudgetGuard denies
+  // a would-be debate fire because the per-task cap was reached. Paired
+  // with `critic:debate_fired` for dashboards — the difference between
+  // the two counts tells operators how often debate was BLOCKED by the
+  // cap vs how often it successfully fired.
+  //
+  // `reason` is a short human-readable string; `maxPerTask` and
+  // `count` are the raw numbers the guard compared.
+  'critic:debate_denied': {
+    taskId: string;
+    reason: string;
+    maxPerTask: number;
+    count: number;
+  };
   'trace:record': { trace: ExecutionTrace };
 
   // Worker lifecycle

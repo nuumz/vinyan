@@ -15,6 +15,7 @@ import { ANSI, bold, box, color, dim } from './renderer.ts';
 import { parseAuditLog, replayAuditLog, summarizeAuditLog } from './replay.ts';
 import { restoreSession } from './session.ts';
 import { createInitialState } from './state.ts';
+import { showCosts } from './views/costs.ts';
 import { startPeek } from './views/peek.ts';
 
 export interface TUIConfig {
@@ -201,6 +202,12 @@ export async function processTUICommand(args: string[], config: TUIConfig): Prom
       showOverview(config);
       break;
 
+    case 'costs':
+      // Wave 5.11: one-shot cost summary from CostLedger. Reads the
+      // workspace DB read-only; no orchestrator instantiation.
+      showCosts({ workspace: config.workspace });
+      break;
+
     default:
       console.log(bold('Vinyan TUI'));
       console.log('');
@@ -210,6 +217,7 @@ export async function processTUICommand(args: string[], config: TUIConfig): Prom
       console.log('  peek <task-id>     Follow events for one task (glob-supported)');
       console.log('  replay <file>      Replay audit log file');
       console.log('  overview           Show system overview');
+      console.log('  costs              Show cost summary from CostLedger (hour/day/month)');
       console.log('');
       console.log('Options:');
       console.log('  --realtime         Replay with timing (for replay)');

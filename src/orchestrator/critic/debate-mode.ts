@@ -40,6 +40,7 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, PerceptualHierarchy, TaskInput } from '../types.ts';
 import type { CriticContext, CriticEngine, CriticResult, WorkerProposal } from './critic-engine.ts';
+import type { DebateBudgetGuard } from './debate-budget-guard.ts';
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -413,6 +414,17 @@ export class DebateRouterCritic implements CriticEngine {
        * Absent ⇒ silent routing (unchanged from the pre-Wave-5 version).
        */
       bus?: VinyanBus;
+      /**
+       * Wave 5.7a: optional per-task debate budget guard. When set,
+       * the router consults it before firing the debate path. If the
+       * guard denies (per-task cap reached), the router emits
+       * `critic:debate_denied` and falls through to the baseline
+       * critic. When absent, the router behaves as before — no cap.
+       *
+       * This is the per-task cap; the per-day cap at the Economy OS
+       * layer (Phase B §6 backlog #7) is still future work.
+       */
+      budgetGuard?: DebateBudgetGuard;
     } = {},
   ) {}
 
@@ -436,6 +448,25 @@ export class DebateRouterCritic implements CriticEngine {
     });
 
     if (fire) {
+      // Wave 5.7a/b: consult the per-task + per-day budget guard. If
+      // either cap has been reached, deny the debate and fall through
+      // to baseline. Rule-based (A3) deny — no LLM involved. The
+      // `whyDenied` helper discriminates the deny reason so the
+      // observability event tells operators which cap fired.
+      const guard = this.options.budgetGuard;
+      if (guard) {
+        const denyReason = guard.whyDenied(task.id);
+        if (denyReason) {
+          const reasonText =
+            denyReason === 'max-per-task' ? 'per-task debate cap reached' : 'per-day debate cap reached';
+          guard.recordDenied(task.id, reasonText);
+          return this.baseline.review(proposal, task, perception, acceptanceCriteria, context);
+        }
+      }
+
+      // Record the fire BEFORE the LLM calls so any overlapping
+      // invocation in the same task would see the updated count.
+      guard?.recordFired(task.id);
       this.options.bus?.emit('critic:debate_fired', {
         taskId: task.id,
         riskScore,

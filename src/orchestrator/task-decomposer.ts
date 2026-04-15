@@ -11,11 +11,7 @@ import type { SkillStore } from '../db/skill-store.ts';
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
-import {
-  buildResearchSwarmDAG,
-  matchDecomposerPreset,
-  RESEARCH_SWARM_REPORT_CONTRACT,
-} from './task-decomposer-presets.ts';
+import { buildResearchSwarmDAG, matchDecomposerPreset } from './task-decomposer-presets.ts';
 import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
 const MAX_RETRIES = 3;
@@ -57,13 +53,14 @@ export class TaskDecomposerImpl implements TaskDecomposer {
     // A3-safe: preset selection is pure keyword matching, no LLM involved.
     // The preset still produces a DAG that goes through the normal validator
     // below, so a broken preset cannot ship an invalid decomposition.
+    //
+    // Wave 5.2 (Phase A §7 seam #2 closure): the preset no longer
+    // mutates `input.constraints`. Instead, the returned DAG carries
+    // its prompt preamble on the `preamble` field, which the core-loop's
+    // plan phase merges into a cloned TaskInput before dispatch. The
+    // caller's original input is never mutated.
     const preset = matchDecomposerPreset(input);
     if (preset?.kind === 'research-swarm') {
-      // Inject the report contract as a task constraint so every spawned
-      // explorer sees it in its TaskUnderstanding pipeline. The aggregator
-      // also sees it, which is intentional — the same schema keeps the
-      // fan-in deterministic.
-      input.constraints = [...(input.constraints ?? []), RESEARCH_SWARM_REPORT_CONTRACT];
       const presetDag = buildResearchSwarmDAG(input, perception);
       const presetBlastRadius = [...(input.targetFiles ?? []), ...perception.dependencyCone.directImportees];
       const criteria = validateDAG(presetDag, presetBlastRadius);

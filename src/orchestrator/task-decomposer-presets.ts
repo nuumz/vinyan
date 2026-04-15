@@ -168,8 +168,14 @@ export function buildResearchSwarmDAG(
     assignedOracles: READONLY_ORACLES,
   };
 
+  // Wave 5.2: carry the report contract on the DAG's `preamble` field
+  // instead of asking the caller to mutate `input.constraints`. The
+  // plan phase merges the preamble into a cloned input so the
+  // caller's original TaskInput is never mutated. See Phase A §7
+  // seam #2 closure.
   return {
     nodes: [...explorerNodes, aggregatorNode],
+    preamble: [RESEARCH_SWARM_REPORT_CONTRACT],
   };
 }
 

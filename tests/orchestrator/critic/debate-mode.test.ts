@@ -354,3 +354,151 @@ describe('DebateRouterCritic — Wave 5 observability', () => {
     expect(result.reason).toBe('debate');
   });
 });
+
+// ── Wave 5.7a: DebateBudgetGuard integration ────────────────────────
+
+describe('DebateRouterCritic — Wave 5.7a budget guard integration', () => {
+  const baseline: CriticEngine = {
+    review: async () => ({
+      approved: true,
+      confidence: 1,
+      aspects: [],
+      verdicts: {},
+      tokensUsed: { input: 0, output: 0 },
+      reason: 'baseline',
+    }),
+  };
+  const debate: CriticEngine = {
+    review: async () => ({
+      approved: true,
+      confidence: 1,
+      aspects: [],
+      verdicts: {},
+      tokensUsed: { input: 0, output: 0 },
+      reason: 'debate',
+    }),
+  };
+
+  test('router consults guard before firing; first call passes, second blocks', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 1 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    // First call: debate allowed by guard, risk triggers
+    const r1 = await router.review(proposal, task, perception, undefined, {
+      riskScore: 0.9,
+    });
+    expect(r1.reason).toBe('debate');
+    expect(budgetGuard.getCount(task.id)).toBe(1);
+
+    // Second call on the same task: cap reached → baseline
+    const r2 = await router.review(proposal, task, perception, undefined, {
+      riskScore: 0.9,
+    });
+    expect(r2.reason).toBe('baseline');
+  });
+
+  test('guard emits critic:debate_denied when capped', async () => {
+    const { createBus: makeBus } = await import('../../../src/core/bus.ts');
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const bus = makeBus();
+    const deniedEvents: Array<{ taskId: string; reason: string }> = [];
+    bus.on('critic:debate_denied', (e) => deniedEvents.push(e));
+
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 1, bus });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    // Fire once (allowed), fire again (denied)
+    await router.review(proposal, task, perception, undefined, { riskScore: 0.9 });
+    await router.review(proposal, task, perception, undefined, { riskScore: 0.9 });
+
+    expect(deniedEvents).toHaveLength(1);
+    expect(deniedEvents[0]!.taskId).toBe(task.id);
+    expect(deniedEvents[0]!.reason).toContain('per-task debate cap');
+  });
+
+  test('guard does NOT fire recordFired when baseline path is chosen', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 1 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    // Baseline path (no risk context) — guard should be untouched
+    await router.review(proposal, task, perception);
+    expect(budgetGuard.getCount(task.id)).toBe(0);
+  });
+
+  test('maxPerTask=0 disables debate entirely; DEBATE:force still denied', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 0 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    // Even with DEBATE:force, the guard denies and router falls back
+    const forced = { ...task, constraints: ['DEBATE:force'] };
+    const result = await router.review(proposal, forced, perception);
+    expect(result.reason).toBe('baseline');
+    expect(budgetGuard.getCount(task.id)).toBe(0);
+  });
+
+  test('separate task ids have independent budgets', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 1 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    const taskA = { ...task, id: 'task-a' };
+    const taskB = { ...task, id: 'task-b' };
+
+    const rA = await router.review(proposal, taskA, perception, undefined, { riskScore: 0.9 });
+    const rB = await router.review(proposal, taskB, perception, undefined, { riskScore: 0.9 });
+
+    expect(rA.reason).toBe('debate');
+    expect(rB.reason).toBe('debate');
+    expect(budgetGuard.getCount('task-a')).toBe(1);
+    expect(budgetGuard.getCount('task-b')).toBe(1);
+  });
+
+  // ── Wave 5.7b: per-day cap integration ──────────────────────────
+  test('router denies once per-day cap is reached across separate tasks', async () => {
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const budgetGuard = new DebateBudgetGuard({ maxPerTask: 100, maxPerDay: 2 });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard });
+
+    const tA = { ...task, id: 'day-task-a' };
+    const tB = { ...task, id: 'day-task-b' };
+    const tC = { ...task, id: 'day-task-c' };
+
+    const ra = await router.review(proposal, tA, perception, undefined, { riskScore: 0.9 });
+    const rb = await router.review(proposal, tB, perception, undefined, { riskScore: 0.9 });
+    const rc = await router.review(proposal, tC, perception, undefined, { riskScore: 0.9 });
+
+    expect(ra.reason).toBe('debate');
+    expect(rb.reason).toBe('debate');
+    // Third task fell to baseline because day cap saturated
+    expect(rc.reason).toBe('baseline');
+  });
+
+  test('critic:debate_denied reason distinguishes per-task vs per-day', async () => {
+    const { createBus: makeBus2 } = await import('../../../src/core/bus.ts');
+    const { DebateBudgetGuard } = await import('../../../src/orchestrator/critic/debate-budget-guard.ts');
+    const bus = makeBus2();
+    const events: Array<{ reason: string; taskId: string }> = [];
+    bus.on('critic:debate_denied', (e) => events.push(e));
+
+    const guard = new DebateBudgetGuard({ maxPerTask: 1, maxPerDay: 2, bus });
+    const router = new DebateRouterCritic(baseline, debate, { budgetGuard: guard });
+
+    // 1st fire: allowed (no events yet)
+    await router.review(proposal, { ...task, id: 'tA' }, perception, undefined, { riskScore: 0.9 });
+    // 2nd call on same task id → per-task cap deny
+    await router.review(proposal, { ...task, id: 'tA' }, perception, undefined, { riskScore: 0.9 });
+    // 3rd fire on fresh id: allowed (day cap still has room)
+    await router.review(proposal, { ...task, id: 'tB' }, perception, undefined, { riskScore: 0.9 });
+    // 4th fire on fresh id: denied by day cap
+    await router.review(proposal, { ...task, id: 'tC' }, perception, undefined, { riskScore: 0.9 });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]!.reason).toContain('per-task');
+    expect(events[0]!.taskId).toBe('tA');
+    expect(events[1]!.reason).toContain('per-day');
+    expect(events[1]!.taskId).toBe('tC');
+  });
+});

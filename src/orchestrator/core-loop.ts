@@ -1036,8 +1036,19 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       // rebuild the phase context so subsequent phases see the merged
       // constraints. This replaces the earlier in-place mutation of
       // `input.constraints` inside the decomposer (Phase A §7 seam #2).
+      //
+      // We ALSO reassign the outer `input` binding so any downstream
+      // code inside this function that still references `input` directly
+      // (instead of `ctx.input`) sees the enhanced view. This prevents
+      // a future "silently reads stale constraints" footgun where a
+      // new check added after plan phase might accidentally bypass
+      // the preamble merge. Reassignment is local — the caller's
+      // original TaskInput is not affected because JS function
+      // parameters bind a local reference that can be reassigned
+      // without mutating the caller's variable.
       if (enhancedInput) {
         ctx = { ...ctx, input: enhancedInput };
+        input = enhancedInput;
       }
 
       // ═══════════════════════════════════════════════════════════════

@@ -54,13 +54,20 @@ export interface VinyanBusEvents {
   // the two counts tells operators how often debate was BLOCKED by the
   // cap vs how often it successfully fired.
   //
-  // `reason` is a short human-readable string; `maxPerTask` and
-  // `count` are the raw numbers the guard compared.
+  // `denyType` is the programmatic discriminator for dashboard filtering:
+  //   - 'max-per-task': per-task cap reached for this task id
+  //   - 'max-per-day':  per-day cap reached across all tasks
+  // `reason` is a short human-readable string; `maxPerTask` /
+  // `maxPerDay` are the configured caps; `taskCount` and `dayCount`
+  // are the current counters at the moment of the deny.
   'critic:debate_denied': {
     taskId: string;
     reason: string;
+    denyType: 'max-per-task' | 'max-per-day';
     maxPerTask: number;
-    count: number;
+    maxPerDay: number | null;
+    taskCount: number;
+    dayCount: number;
   };
   'trace:record': { trace: ExecutionTrace };
 

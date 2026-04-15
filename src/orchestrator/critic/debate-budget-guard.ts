@@ -134,15 +134,32 @@ export class DebateBudgetGuard {
   /**
    * Record that a debate was denied because some cap was reached.
    * Emits a `critic:debate_denied` bus event if a bus was configured.
-   * The caller passes a human-readable reason string that distinguishes
-   * per-task vs per-day denial (the router does this).
+   *
+   * Wave 5.7b audit: the event payload now carries:
+   *   - `denyType`: programmatic discriminator ('max-per-task' | 'max-per-day')
+   *   - `reason`:   human-readable string
+   *   - `maxPerTask` + `maxPerDay`: the configured caps
+   *   - `taskCount` + `dayCount`: the current counters
+   *
+   * The discriminator is computed by `whyDenied()` at emit time, so
+   * callers don't need to pass it separately. If `whyDenied()` returns
+   * null (caller invoked `recordDenied` without an actual deny, which
+   * is a misuse), the event is NOT emitted — silently skipping keeps
+   * the observability channel clean rather than surfacing bogus
+   * "denied" events.
    */
   recordDenied(taskId: string, reason: string): void {
-    this.bus?.emit('critic:debate_denied', {
+    if (!this.bus) return;
+    const denyType = this.whyDenied(taskId);
+    if (!denyType) return; // misuse — silently skip
+    this.bus.emit('critic:debate_denied', {
       taskId,
       reason,
+      denyType,
       maxPerTask: this.maxPerTask,
-      count: this.counts.get(taskId) ?? 0,
+      maxPerDay: this.maxPerDay ?? null,
+      taskCount: this.counts.get(taskId) ?? 0,
+      dayCount: this.fires.length,
     });
   }
 

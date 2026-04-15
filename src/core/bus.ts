@@ -331,6 +331,8 @@ export interface VinyanBusEvents {
     routingLevel: number;
     source?: 'agent' | 'orchestrator';
   };
+  /** Agent thinking/rationale — what the LLM is reasoning about this turn. */
+  'agent:thinking': { taskId: string; turnId: string; rationale: string };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
@@ -372,12 +374,13 @@ export interface VinyanBusEvents {
     fromLevel?: number;
     toLevel?: number;
   };
-  // Phase 0: Emitted by trace-collector after a task completes, pairing the
+  // Emitted by trace-collector after a task completes, pairing the
   // thinking mode that was used with the measured outcome. Consumed by the
-  // Phase 0 data gate (`TraceStore.getSuccessRateByThinkingMode`) to decide
-  // when Phase 1a is unblocked — requires ≥100 traces total and a measurable
-  // success-rate delta between thinking modes. Payload is deliberately flat so
-  // offline analysis tooling can tail the bus without loading the full trace.
+  // thinking readiness gate (`TraceStore.getSuccessRateByThinkingMode`) to
+  // decide when adaptive thinking is unblocked — requires ≥100 traces total
+  // and a measurable success-rate delta between thinking modes. Payload is
+  // deliberately flat so offline analysis tooling can tail the bus without
+  // loading the full trace.
   'thinking:policy-evaluated': {
     taskId: string;
     thinkingMode: string | null;
@@ -388,11 +391,21 @@ export interface VinyanBusEvents {
     oracleCompositeScore: number | null;
   };
 
-  // Phase 7 — Self-Improving Autonomy events.
+  // Thinking readiness verdict — emitted by sleep-cycle after evaluating
+  // thinking mode A/B readiness. Consumed by dashboards and adaptive thinking opt-in.
+  'thinking:readiness-evaluated': {
+    status: 'blocked' | 'ready';
+    reason?: string;
+    bestMode?: string;
+    successRateDelta?: number;
+    totalTraces: number;
+  };
+
+  // Monitoring — Self-Improving Autonomy events.
   // Per-oracle EMA accuracy update — emitted on warm-threshold crossings
   // and on accuracy moves of ≥ 0.01. Dashboards / sleep-cycle promotion
   // logic can subscribe to track engine reliability over time.
-  'phase7:oracle_calibration': {
+  'monitoring:oracle_calibration': {
     oracleName: string;
     accuracy: number;
     observationCount: number;
@@ -402,7 +415,7 @@ export interface VinyanBusEvents {
   // `triggeredDimensions` is the ordered list of dimension names that
   // crossed their threshold (testResults | blastRadius | duration |
   // qualityScore). `maxRelDelta` is useful for severity ranking.
-  'phase7:drift_detected': {
+  'monitoring:drift_detected': {
     taskId: string;
     triggeredDimensions: string[];
     maxRelDelta: number;
@@ -410,7 +423,7 @@ export interface VinyanBusEvents {
   // Silent regression alert: rolling-window success rate dropped below
   // baseline for one task type. Cool-down enforced inside RegressionMonitor
   // so dashboards don't get spammed by persistent regressions.
-  'phase7:silent_regression': {
+  'monitoring:silent_regression': {
     taskTypeSignature: string;
     recentSuccessRate: number;
     baselineSuccessRate: number;

@@ -36,7 +36,7 @@ const PHASE1_QUALITY: QualityScore = {
   testPresenceHeuristic: 0.45,
   composite: 0.66,
   dimensionsAvailable: 4,
-  phase: 'phase1',
+  phase: 'extended',
 };
 
 describe('TraceStore', () => {
@@ -91,7 +91,7 @@ describe('TraceStore', () => {
     expect(result.qualityScore!.testPresenceHeuristic).toBe(0.45);
     expect(result.qualityScore!.composite).toBe(0.66);
     expect(result.qualityScore!.dimensionsAvailable).toBe(4);
-    expect(result.qualityScore!.phase).toBe('phase1');
+    expect(result.qualityScore!.phase).toBe('extended');
   });
 
   test('trace without QualityScore returns undefined', () => {
@@ -101,18 +101,18 @@ describe('TraceStore', () => {
     expect(result.qualityScore).toBeUndefined();
   });
 
-  test('phase0 QualityScore (2 dims) roundtrip', () => {
-    const phase0: QualityScore = {
+  test('basic QualityScore (2 dims) roundtrip', () => {
+    const basic: QualityScore = {
       architecturalCompliance: 0.9,
       efficiency: 0.8,
       composite: 0.86,
       dimensionsAvailable: 2,
-      phase: 'phase0',
+      phase: 'basic',
     };
-    store.insert(makeTrace({ qualityScore: phase0 }));
+    store.insert(makeTrace({ qualityScore: basic }));
 
     const result = store.findRecent(1)[0]!;
-    expect(result.qualityScore!.phase).toBe('phase0');
+    expect(result.qualityScore!.phase).toBe('basic');
     expect(result.qualityScore!.dimensionsAvailable).toBe(2);
     expect(result.qualityScore!.simplificationGain).toBeUndefined();
   });

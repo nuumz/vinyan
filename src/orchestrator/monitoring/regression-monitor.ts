@@ -1,8 +1,8 @@
 /**
- * Phase 7 — Silent regression monitor.
+ * Monitoring — Silent regression monitor.
  *
  * Watches success rates per task type over a rolling window. Fires
- * `phase7:silent_regression` when the most recent window's success rate
+ * `monitoring:silent_regression` when the most recent window's success rate
  * drops by more than a configurable threshold relative to the
  * established baseline. "Silent" because the orchestrator pipeline is
  * still returning successful-looking traces (no crashes, no oracle
@@ -90,7 +90,7 @@ export class RegressionMonitor {
     const verdict = this.evaluate(observation.taskTypeSignature, w, observation.observedAt ?? Date.now());
 
     if (verdict.alerted && this.bus) {
-      this.bus.emit('phase7:silent_regression', {
+      this.bus.emit('monitoring:silent_regression', {
         taskTypeSignature: observation.taskTypeSignature,
         recentSuccessRate: verdict.recentRate,
         baselineSuccessRate: verdict.baselineRate,

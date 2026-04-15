@@ -22,7 +22,7 @@ describe('computeQualityScore', () => {
     };
     const qs = computeQualityScore(results, 100);
     expect(qs.architecturalCompliance).toBe(1.0);
-    expect(qs.phase).toBe('phase0');
+    expect(qs.phase).toBe('basic');
     expect(qs.dimensionsAvailable).toBe(2);
   });
 
@@ -51,7 +51,7 @@ describe('computeQualityScore', () => {
     expect(Number.isFinite(qs.composite)).toBe(true);
     expect(qs.unverified).toBe(true);
     expect(qs.dimensionsAvailable).toBe(1);
-    expect(qs.phase).toBe('phase0');
+    expect(qs.phase).toBe('basic');
   });
 
   test('fast gate → high efficiency', () => {
@@ -69,7 +69,7 @@ describe('computeQualityScore', () => {
     expect(qs.efficiency).toBe(0);
   });
 
-  test('composite = compliance * 0.6 + efficiency * 0.4 (phase0)', () => {
+  test('composite = compliance * 0.6 + efficiency * 0.4 (basic)', () => {
     // Use non-trivial inputs to verify actual weight formula (not 1.0 * any_weight = 1.0)
     const results = {
       ast: makeVerdict(true),
@@ -96,7 +96,7 @@ describe('computeQualityScore', () => {
     expect(qs.simplificationGain!).toBeGreaterThan(0);
     expect(qs.simplificationGain!).toBeLessThanOrEqual(1);
     expect(qs.dimensionsAvailable).toBe(3);
-    expect(qs.phase).toBe('phase1');
+    expect(qs.phase).toBe('extended');
   });
 
   test('no complexity change → simplificationGain = 0', () => {
@@ -133,7 +133,7 @@ describe('computeQualityScore', () => {
     });
     expect(qs.testPresenceHeuristic).toBe(0.7);
     expect(qs.dimensionsAvailable).toBe(3);
-    expect(qs.phase).toBe('phase1');
+    expect(qs.phase).toBe('extended');
   });
 
   test('testPresenceHeuristic heuristic: tests exist + fail → 0.3', () => {
@@ -149,7 +149,7 @@ describe('computeQualityScore', () => {
     expect(qs.testPresenceHeuristic).toBe(0.4);
   });
 
-  test('4 dimensions: composite uses phase1 weights', () => {
+  test('4 dimensions: composite uses extended weights', () => {
     const original = `function f(x: number) { if (x > 0) { if (x > 10) { return "big"; } return "small"; } return "zero"; }`;
     const mutated = `function f(x: number) { return x > 0 ? "positive" : "zero"; }`;
     const qs = computeQualityScore(
@@ -160,7 +160,7 @@ describe('computeQualityScore', () => {
       { testsExist: true, testsPassed: true },
     );
     expect(qs.dimensionsAvailable).toBe(4);
-    expect(qs.phase).toBe('phase1');
+    expect(qs.phase).toBe('extended');
     // Verify composite = arch*0.30 + eff*0.20 + simp*0.25 + test*0.25
     const expected =
       qs.architecturalCompliance * 0.3 +
@@ -170,10 +170,10 @@ describe('computeQualityScore', () => {
     expect(qs.composite).toBeCloseTo(expected, 5);
   });
 
-  test('no extra context → backward compatible phase0', () => {
+  test('no extra context → backward compatible basic', () => {
     const qs = computeQualityScore({ ast: makeVerdict(true) }, 100, 2000);
     expect(qs.dimensionsAvailable).toBe(2);
-    expect(qs.phase).toBe('phase0');
+    expect(qs.phase).toBe('basic');
     expect(qs.simplificationGain).toBeUndefined();
     expect(qs.testPresenceHeuristic).toBeUndefined();
   });

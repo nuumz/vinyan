@@ -49,7 +49,7 @@ export const QualityScoreSchema = z.object({
   testMutationScore: z.number().optional(),
   composite: z.number(),
   dimensionsAvailable: z.number().default(2),
-  phase: z.enum(['phase0', 'phase1', 'phase2']).default('phase0'),
+  phase: z.enum(['basic', 'extended', 'full']).default('basic'),
 });
 
 export type QualityScore = z.infer<typeof QualityScoreSchema>;

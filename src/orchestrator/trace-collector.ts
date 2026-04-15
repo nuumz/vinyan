@@ -57,9 +57,9 @@ export class TraceCollectorImpl implements TraceCollector {
       }
     }
 
-    // Extensible Thinking Phase 0: emit a measurement event pairing the
+    // Extensible Thinking: emit a measurement event pairing the
     // thinking mode that was used with the actual task outcome. This is
-    // the raw material for the Phase 1a unblock gate — see
+    // the raw material for the thinking readiness gate — see
     // TraceStore.getSuccessRateByThinkingMode. We keep the payload flat
     // (no nested objects) so offline analysis can tail the bus without
     // needing to understand the full ExecutionTrace shape.
@@ -153,9 +153,9 @@ export class TraceCollectorImpl implements TraceCollector {
 }
 
 /**
- * Extensible Thinking Phase 0: compute a scalar composite from an oracle
- * verdict map. Used as the secondary signal in the Phase 0 A/B gate (the
- * primary signal is binary outcome=success). Returns null when there are
+ * Extensible Thinking: compute a scalar composite from an oracle
+ * verdict map. Used as the secondary signal in the thinking readiness gate
+ * (the primary signal is binary outcome=success). Returns null when there are
  * no verdicts so downstream consumers can tell "no signal" apart from
  * "signal = 0".
  *
@@ -163,8 +163,8 @@ export class TraceCollectorImpl implements TraceCollector {
  * richer `OracleVerdict` (with confidence, etc.) is only kept on the live
  * mutation result, not the persisted trace. So the composite is just the
  * fraction of oracles that returned `true`, which is the right level of
- * granularity for Phase 0 — Phase 2.1 will switch to a Wilson/CI rollup
- * once we have enough data to need it.
+ * granularity for the A/B measurement gate — future evolution will switch
+ * to a Wilson/CI rollup once we have enough data to need it.
  */
 function computeOracleComposite(verdicts: Record<string, boolean> | undefined): number | null {
   if (!verdicts) return null;

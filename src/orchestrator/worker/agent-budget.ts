@@ -28,8 +28,8 @@ export const AGENT_BUDGET_DEFAULTS: AgentBudgetConfig = {
   maxTurnsByLevel: { 1: 15, 2: 30, 3: 50 },
 };
 
-/** Session-level tool call limits per routing level (§5: 0/0/20/50). */
-const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
+/** Session-level tool call limits per routing level. L1 gets 5 read-only calls. */
+const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 5, 2: 20, 3: 50 };
 
 /**
  * Maximum peer consultations allowed per session. Hardcoded (not part

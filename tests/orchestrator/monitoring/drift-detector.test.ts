@@ -3,7 +3,7 @@ import {
   DEFAULT_DRIFT_QUALITY_ABSOLUTE_THRESHOLD,
   DEFAULT_DRIFT_RELATIVE_THRESHOLD,
   detectDrift,
-} from '../../../src/orchestrator/phase7/drift-detector.ts';
+} from '../../../src/orchestrator/monitoring/drift-detector.ts';
 import type { ExecutionTrace, SelfModelPrediction } from '../../../src/orchestrator/types.ts';
 
 function makePrediction(overrides: Partial<SelfModelPrediction> = {}): SelfModelPrediction {
@@ -41,7 +41,7 @@ function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
       efficiency: 0.7,
       composite: 0.7,
       dimensionsAvailable: 2,
-      phase: 'phase0',
+      phase: 'basic',
     },
     ...overrides,
   };
@@ -84,7 +84,7 @@ describe('detectDrift', () => {
           efficiency: 0.65,
           composite: 0.65,
           dimensionsAvailable: 2,
-          phase: 'phase0',
+          phase: 'basic',
         },
       }),
     );
@@ -114,7 +114,7 @@ describe('detectDrift', () => {
           efficiency: 0.5,
           composite: NaN,
           dimensionsAvailable: 2,
-          phase: 'phase0',
+          phase: 'basic',
         },
       }),
     );

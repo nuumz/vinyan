@@ -50,7 +50,7 @@ describe('attachTraceListener', () => {
           efficiency: 1,
           composite: 0.8,
           dimensionsAvailable: 2,
-          phase: 'phase0',
+          phase: 'basic',
         },
       }),
     });
@@ -61,7 +61,7 @@ describe('attachTraceListener', () => {
           efficiency: 0.5,
           composite: 0.4,
           dimensionsAvailable: 2,
-          phase: 'phase0',
+          phase: 'basic',
         },
       }),
     });

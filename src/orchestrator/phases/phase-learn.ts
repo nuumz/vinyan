@@ -73,10 +73,10 @@ export async function executeLearnPhase(
   }
   if (prediction) {
     try {
-      const { detectDrift } = await import('../phase7/drift-detector.ts');
+      const { detectDrift } = await import('../monitoring/drift-detector.ts');
       const driftReport = detectDrift(prediction, trace);
       if (driftReport.drift) {
-        deps.bus?.emit('phase7:drift_detected', {
+        deps.bus?.emit('monitoring:drift_detected', {
           taskId: input.id,
           triggeredDimensions: driftReport.triggeredDimensions,
           maxRelDelta: driftReport.maxRelDelta,

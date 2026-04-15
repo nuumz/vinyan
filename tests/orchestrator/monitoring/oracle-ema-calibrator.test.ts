@@ -6,7 +6,7 @@ import {
   ORACLE_EMA_MIN,
   ORACLE_EMA_WARM_THRESHOLD,
   OracleEMACalibrator,
-} from '../../../src/orchestrator/phase7/oracle-ema-calibrator.ts';
+} from '../../../src/orchestrator/monitoring/oracle-ema-calibrator.ts';
 
 describe('OracleEMACalibrator', () => {
   test('cold-start oracle reports the vacuous 0.5 baseline', () => {
@@ -49,10 +49,10 @@ describe('OracleEMACalibrator', () => {
     expect(snap.accuracy).toBeCloseTo(0.35, 5);
   });
 
-  test('warm flag flips at the warm threshold and emits phase7:oracle_calibration', () => {
+  test('warm flag flips at the warm threshold and emits monitoring:oracle_calibration', () => {
     const bus = createBus();
     const events: Array<{ oracleName: string; warm: boolean }> = [];
-    bus.on('phase7:oracle_calibration', (e) => events.push({ oracleName: e.oracleName, warm: e.warm }));
+    bus.on('monitoring:oracle_calibration', (e) => events.push({ oracleName: e.oracleName, warm: e.warm }));
 
     const cal = new OracleEMACalibrator({ bus });
     for (let i = 0; i < ORACLE_EMA_WARM_THRESHOLD - 1; i++) {

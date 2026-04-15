@@ -1,8 +1,8 @@
 /**
- * Phase 7 — A1-A4 axiom compliance property-based tests.
+ * Monitoring — A1-A4 axiom compliance property-based tests.
  *
- * Generative checks of the four ECP axioms across the operations Phase 7
- * relies on for calibration:
+ * Generative checks of the four ECP axioms across the operations the monitoring
+ * modules rely on for calibration:
  *
  *   A1 (Epistemic Coherence):    b + d + u ≈ 1, all components in [0, 1].
  *   A2 (First-Class Uncertainty): u ≥ 0 — `fromScalar` never fabricates
@@ -27,8 +27,8 @@ import {
   SL_EPSILON,
   type SubjectiveOpinion,
 } from '../../src/core/subjective-opinion.ts';
-import { detectDrift } from '../../src/orchestrator/phase7/drift-detector.ts';
-import { OracleEMACalibrator } from '../../src/orchestrator/phase7/oracle-ema-calibrator.ts';
+import { detectDrift } from '../../src/orchestrator/monitoring/drift-detector.ts';
+import { OracleEMACalibrator } from '../../src/orchestrator/monitoring/oracle-ema-calibrator.ts';
 import type { ExecutionTrace, SelfModelPrediction } from '../../src/orchestrator/types.ts';
 
 // ── Generators ──────────────────────────────────────────────────────

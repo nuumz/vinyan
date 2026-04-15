@@ -64,13 +64,17 @@ export async function executeGeneratePhase(
 
   deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
   const dispatchStart = Date.now();
-  let workerResult: WorkerResult;
+  let workerResult!: WorkerResult;
   let isAgenticResult = false;
   let lastAgentResult: WorkerLoopResult | null = null;
   let dagResult: DAGExecutionResult | null = null;
 
   try {
-    if (routing.level <= 1 || !deps.workerPool.getAgentLoopDeps?.()) {
+    const hasAgentDeps = !!deps.workerPool.getAgentLoopDeps?.();
+    if (routing.level >= 2 && !hasAgentDeps) {
+      console.warn('[vinyan] L2+ task but agentLoopDeps unavailable — degraded to single-shot dispatch');
+    }
+    if (routing.level <= 1 || !hasAgentDeps) {
       // L0-L1 or no agent deps: single-shot or DAG dispatch
       if (plan && !plan.isFallback && plan.nodes.length > 1) {
         // EO #1+#4: Multi-node plan → DAG executor with parallel dispatch
@@ -127,46 +131,59 @@ export async function executeGeneratePhase(
       // L2+: agentic loop (multi-turn with tools)
       const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
       const { runAgentLoop } = await import('../worker/agent-loop.ts');
-      lastAgentResult = await runAgentLoop(
-        input,
-        perception,
-        workingMemory.getSnapshot(),
-        plan,
-        routing,
-        agentLoopDeps,
-        understanding,
-        contract,
-        conversationHistory,
-      );
-      isAgenticResult = true;
-      workerResult = {
-        mutations: lastAgentResult.mutations
-          .filter((m) => m.content !== null)
-          .map((m) => ({
-            file: m.file,
-            content: m.content ?? '',
-            diff: m.diff,
-            explanation: m.explanation,
-          })),
-        proposedToolCalls: lastAgentResult.proposedToolCalls,
-        uncertainties: lastAgentResult.uncertainties,
-        tokensConsumed: lastAgentResult.tokensConsumed,
-        cacheReadTokens: (lastAgentResult as any).cacheReadTokens,
-        cacheCreationTokens: (lastAgentResult as any).cacheCreationTokens,
-        durationMs: lastAgentResult.durationMs,
-        proposedContent: lastAgentResult.proposedContent,
-        nonRetryableError: lastAgentResult.nonRetryableError,
-        needsUserInput: lastAgentResult.needsUserInput,
-      };
+      try {
+        lastAgentResult = await runAgentLoop(
+          input,
+          perception,
+          workingMemory.getSnapshot(),
+          plan,
+          routing,
+          agentLoopDeps,
+          understanding,
+          contract,
+          conversationHistory,
+        );
+      } catch (agentLoopErr) {
+        // Fallback: subprocess agent loop failed — degrade to single-shot in-process dispatch
+        console.warn(`[vinyan] Agent loop failed, falling back to single-shot dispatch: ${String(agentLoopErr)}`);
+        workerResult = await deps.workerPool.dispatch(
+          input, perception, workingMemory.getSnapshot(), plan, routing, understanding, contract, conversationHistory,
+        );
+        // Skip agentic result mapping — use single-shot result directly
+        lastAgentResult = null;
+      }
 
-      // Agent Conversation: when the agent paused to ask the user, do NOT
-      // record a prior-attempt. A user clarification is not a failed approach —
-      // it's a collaborative request. Recording it would pollute WorkingMemory
-      // and bias future retries against the (not yet answered) approach.
-      if (lastAgentResult.isUncertain && !lastAgentResult.needsUserInput) {
-        const { buildAgentSessionSummary } = await import('./generate-helpers.ts');
-        const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
-        workingMemory.addPriorAttempt(summary);
+      if (lastAgentResult) {
+        isAgenticResult = true;
+        workerResult = {
+          mutations: lastAgentResult.mutations
+            .filter((m) => m.content !== null)
+            .map((m) => ({
+              file: m.file,
+              content: m.content ?? '',
+              diff: m.diff,
+              explanation: m.explanation,
+            })),
+          proposedToolCalls: lastAgentResult.proposedToolCalls,
+          uncertainties: lastAgentResult.uncertainties,
+          tokensConsumed: lastAgentResult.tokensConsumed,
+          cacheReadTokens: lastAgentResult.cacheReadTokens,
+          cacheCreationTokens: lastAgentResult.cacheCreationTokens,
+          durationMs: lastAgentResult.durationMs,
+          proposedContent: lastAgentResult.proposedContent,
+          nonRetryableError: lastAgentResult.nonRetryableError,
+          needsUserInput: lastAgentResult.needsUserInput,
+        };
+
+        // Agent Conversation: when the agent paused to ask the user, do NOT
+        // record a prior-attempt. A user clarification is not a failed approach —
+        // it's a collaborative request. Recording it would pollute WorkingMemory
+        // and bias future retries against the (not yet answered) approach.
+        if (lastAgentResult.isUncertain && !lastAgentResult.needsUserInput) {
+          const { buildAgentSessionSummary } = await import('./generate-helpers.ts');
+          const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
+          workingMemory.addPriorAttempt(summary);
+        }
       }
     }
     deps.bus?.emit('worker:complete', {

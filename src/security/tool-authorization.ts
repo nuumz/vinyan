@@ -74,7 +74,7 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): R
     return { type: 'file_write', scope: [String(args.path ?? args.filePath ?? '')] };
   }
   // Shell tools — use centralized shell policy for read-only classification
-  if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal') {
+  if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal' || toolName === 'shell_exec') {
     const cmd = String(args.command ?? '');
     const firstWord = cmd.trim().split(/\s+/)[0] ?? '';
     return {

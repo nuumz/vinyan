@@ -36,10 +36,10 @@ export interface QualityScore {
   testPresenceHeuristic?: number;
   /** Weighted combination — single scalar for ranking. */
   composite: number;
-  /** How many dimensions were actually computed (2 in Phase 0, 4 in Phase 1+). */
+  /** How many dimensions were actually computed (2 in basic, 4 in extended+). */
   dimensionsAvailable: number;
-  /** Which phase's dimensions are trustworthy. */
-  phase: 'phase0' | 'phase1' | 'phase2';
+  /** Which quality tier's dimensions are trustworthy. */
+  phase: 'basic' | 'extended' | 'full';
   /** C3 fix: true when zero oracles ran — score is INDETERMINATE, not trusted. */
   unverified?: boolean;
 }

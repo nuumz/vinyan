@@ -74,6 +74,8 @@ export interface SleepCycleResult {
   rulesPromoted: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
+  /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
+  thinkingReadinessVerdict?: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict;
   /**
    * Wave 2.3: set when the termination sentinel short-circuits the run.
    * `'sentinel-dormant'` means the cycle was skipped because the previous
@@ -471,6 +473,30 @@ export class SleepCycleRunner {
       rulesPromoted,
     });
 
+    // Thinking readiness gate — evaluate A/B measurement readiness.
+    // Pure observational gate: queries thinking-mode stats from TraceStore
+    // and reports whether adaptive thinking selection should be unblocked.
+    // Design: docs/design/extensible-thinking-system-design.md §9.
+    let thinkingReadinessVerdict: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict | undefined;
+    try {
+      const thinkingStats = this.traceStore.getSuccessRateByThinkingMode();
+      if (thinkingStats.length > 0) {
+        const { evaluateThinkingReadiness } = await import('../orchestrator/thinking/thinking-readiness-gate.ts');
+        thinkingReadinessVerdict = evaluateThinkingReadiness(thinkingStats);
+        const totalTraces = thinkingStats.reduce((acc, s) => acc + s.total, 0);
+        this.bus?.emit('thinking:readiness-evaluated', {
+          status: thinkingReadinessVerdict.status,
+          ...(thinkingReadinessVerdict.status === 'blocked' ? { reason: thinkingReadinessVerdict.reason } : {}),
+          ...(thinkingReadinessVerdict.status === 'ready'
+            ? { bestMode: thinkingReadinessVerdict.bestMode, successRateDelta: thinkingReadinessVerdict.successRateDelta }
+            : {}),
+          totalTraces,
+        });
+      }
+    } catch {
+      // Thinking readiness gate is non-critical — swallow errors to avoid disrupting sleep cycle
+    }
+
     // PH5.9: Export high-quality patterns for cross-instance sharing
     if (this.knowledgeExchange && newPatterns.length > 0) {
       this.knowledgeExchange.exportFromStore();
@@ -512,6 +538,7 @@ export class SleepCycleRunner {
       rulesPromoted,
       costPatternsFound,
       marketPhaseEvaluated,
+      thinkingReadinessVerdict,
     };
   }
 

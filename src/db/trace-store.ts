@@ -176,9 +176,10 @@ export class TraceStore {
   }
 
   /**
-   * Extensible Thinking Phase 0: success-rate / quality-composite breakdown
-   * keyed by `thinking_mode`. The Phase 0 A/B gate consumes this to decide
-   * when Phase 1a should be unblocked — see `evaluateThinkingPhase0Gate`.
+   * Extensible Thinking: success-rate / quality-composite breakdown
+   * keyed by `thinking_mode`. The thinking readiness gate consumes this
+   * to decide when adaptive thinking should be unblocked — see
+   * `evaluateThinkingReadiness`.
    *
    * Rows with NULL `thinking_mode` are bucketed under the sentinel
    * `'(none)'` rather than silently dropped, so "thinking off" runs can be
@@ -261,7 +262,7 @@ function rowToTrace(row: any): ExecutionTrace {
             composite: row.quality_composite,
             dimensionsAvailable:
               2 + (row.quality_simplification != null ? 1 : 0) + (row.quality_testmutation != null ? 1 : 0),
-            phase: (row.quality_simplification != null ? 'phase1' : 'phase0') as 'phase0' | 'phase1' | 'phase2',
+            phase: (row.quality_simplification != null ? 'extended' : 'basic') as 'basic' | 'extended' | 'full',
           }
         : undefined,
     modelUsed: row.model_used,

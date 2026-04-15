@@ -180,11 +180,11 @@ export interface OrchestratorDeps {
   llmRegistry?: import('./llm/provider-registry.ts').LLMProviderRegistry;
   /** Remediation engine for automatic tool failure recovery (fast-tier LLM). */
   remediationEngine?: import('./remediation-engine.ts').RemediationEngine;
-  // Phase 7 — Self-Improving Autonomy.
+  // Monitoring — Self-Improving Autonomy.
   /** Per-engine EMA accuracy calibrator. Optional; phase-learn updates it on every trace. */
-  oracleEMACalibrator?: import('./phase7/oracle-ema-calibrator.ts').OracleEMACalibrator;
+  oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
   /** Silent-regression watchdog. Optional; phase-learn feeds task outcomes into it per trace. */
-  regressionMonitor?: import('./phase7/regression-monitor.ts').RegressionMonitor;
+  regressionMonitor?: import('./monitoring/regression-monitor.ts').RegressionMonitor;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -253,7 +253,7 @@ async function prepareExecution(
   // STU: Build SemanticTaskUnderstanding (Layer 0+1)
   const { enrichUnderstanding } = await import('./understanding/task-understanding.ts');
   const understandingStart = Date.now();
-  const understanding = enrichUnderstanding(input, {
+  let understanding = enrichUnderstanding(input, {
     workspace: deps.workspace ?? '.',
     worldGraph: deps.worldGraph,
     traceStore: deps.traceStore,
@@ -453,6 +453,15 @@ async function prepareExecution(
       budgetTokens: l2Cfg.budgetTokens,
       latencyBudgetMs: l2Cfg.latencyBudgetMs,
     };
+  }
+
+  // CLI --tool flag: force tool-needed regardless of classification
+  if (input.constraints?.includes('TOOLS:enabled') && understanding.toolRequirement === 'none') {
+    understanding = { ...understanding, toolRequirement: 'tool-needed' };
+    if (routing.level < (2 as RoutingLevel)) {
+      const l2Cfg = LEVEL_CONFIG[2];
+      routing = { ...routing, level: 2 as RoutingLevel, model: l2Cfg.model, budgetTokens: l2Cfg.budgetTokens, latencyBudgetMs: l2Cfg.latencyBudgetMs };
+    }
   }
 
   // CLI --thinking flag
@@ -794,17 +803,32 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     let { understanding, routing } = prep;
     const { workingMemory, explorationFlag } = prep;
 
-    // Agentic-workflow requires tool access → minimum L2 (L0-L1 have 0 tool calls)
-    if (intentResolution?.strategy === 'agentic-workflow' && routing.level < 2) {
-      const { LEVEL_CONFIG } = await import('../gate/risk-router.ts');
-      const l2 = LEVEL_CONFIG[2];
-      routing = {
-        ...routing,
-        level: 2,
-        model: routing.model ?? l2.model,
-        budgetTokens: Math.max(routing.budgetTokens, l2.budgetTokens),
-        latencyBudgetMs: Math.max(routing.latencyBudgetMs, l2.latencyBudgetMs),
-      };
+    // Agentic-workflow requires tool access (minimum L2) and generous latency for multi-step execution
+    if (intentResolution?.strategy === 'agentic-workflow') {
+      const AGENTIC_LATENCY_FLOOR = 120_000;
+      if (routing.level < 2) {
+        const { LEVEL_CONFIG } = await import('../gate/risk-router.ts');
+        const l2 = LEVEL_CONFIG[2];
+        routing = {
+          ...routing,
+          level: 2,
+          model: routing.model ?? l2.model,
+          budgetTokens: Math.max(routing.budgetTokens, l2.budgetTokens),
+          latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
+        };
+      } else {
+        routing = {
+          ...routing,
+          latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
+        };
+      }
+      // Ensure wall-clock timeout fits at least one full agentic attempt
+      if (input.budget.maxDurationMs < routing.latencyBudgetMs * 1.5) {
+        input = {
+          ...input,
+          budget: { ...input.budget, maxDurationMs: Math.ceil(routing.latencyBudgetMs * 1.5) },
+        };
+      }
     }
     const startTime = Date.now();
 
@@ -1573,6 +1597,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         ...input,
         constraints: [...(input.constraints ?? []), `MIN_ROUTING_LEVEL:${nextLevel}`],
       });
+      routing = { ...routing, isEscalated: true };
     }
 
     // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────

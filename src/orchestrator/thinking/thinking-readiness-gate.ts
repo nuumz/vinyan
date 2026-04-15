@@ -16,7 +16,7 @@
  *   - Decision is reversible — re-running the gate on fresh data will
  *     swing it back to "blocked" if signal degrades.
  *
- * The function returns `Phase0GateVerdict` rather than a boolean so callers
+ * The function returns `ThinkingReadinessVerdict` rather than a boolean so callers
  * can show an exact reason in dashboards and tests.
  */
 
@@ -29,7 +29,7 @@ export interface ThinkingModeStats {
   avgQualityComposite: number | null;
 }
 
-export type Phase0GateVerdict =
+export type ThinkingReadinessVerdict =
   | {
       status: 'blocked';
       reason:
@@ -55,25 +55,25 @@ export type Phase0GateVerdict =
  * thresholds the gate was evaluated against. They intentionally match
  * the doc — change here when the doc changes, not before.
  */
-export const PHASE0_MIN_TRACES = 100;
-export const PHASE0_MIN_SUCCESS_DELTA = 0.05;
-export const PHASE0_MAX_QUALITY_REGRESSION = 0.05;
+export const THINKING_READINESS_MIN_TRACES = 100;
+export const THINKING_READINESS_MIN_SUCCESS_DELTA = 0.05;
+export const THINKING_READINESS_MAX_QUALITY_REGRESSION = 0.05;
 /** Sentinel used by `getSuccessRateByThinkingMode` for NULL `thinking_mode`. */
-export const PHASE0_NONE_BUCKET = '(none)';
+export const THINKING_READINESS_NONE_BUCKET = '(none)';
 
-export function evaluateThinkingPhase0Gate(stats: ThinkingModeStats[]): Phase0GateVerdict {
+export function evaluateThinkingReadiness(stats: ThinkingModeStats[]): ThinkingReadinessVerdict {
   const total = stats.reduce((acc, s) => acc + s.total, 0);
-  if (total < PHASE0_MIN_TRACES) {
+  if (total < THINKING_READINESS_MIN_TRACES) {
     return {
       status: 'blocked',
       reason: 'insufficient-volume',
-      detail: `Have ${total} traces, need ${PHASE0_MIN_TRACES} before Phase 1a is unblocked.`,
+      detail: `Have ${total} traces, need ${THINKING_READINESS_MIN_TRACES} before Phase 1a is unblocked.`,
       stats,
     };
   }
 
-  const baseline = stats.find((s) => s.thinkingMode === PHASE0_NONE_BUCKET);
-  const others = stats.filter((s) => s.thinkingMode !== PHASE0_NONE_BUCKET && s.total > 0);
+  const baseline = stats.find((s) => s.thinkingMode === THINKING_READINESS_NONE_BUCKET);
+  const others = stats.filter((s) => s.thinkingMode !== THINKING_READINESS_NONE_BUCKET && s.total > 0);
 
   if (others.length === 0) {
     return {
@@ -106,14 +106,14 @@ export function evaluateThinkingPhase0Gate(stats: ThinkingModeStats[]): Phase0Ga
   const best = sorted[0]!;
 
   const successDelta = best.successRate - baseline.successRate;
-  if (successDelta < PHASE0_MIN_SUCCESS_DELTA) {
+  if (successDelta < THINKING_READINESS_MIN_SUCCESS_DELTA) {
     return {
       status: 'blocked',
       reason: 'success-rate-delta-too-small',
       detail:
         `Best mode "${best.thinkingMode}" beats baseline by only ` +
         `${(successDelta * 100).toFixed(1)}% — need at least ` +
-        `${(PHASE0_MIN_SUCCESS_DELTA * 100).toFixed(1)}%.`,
+        `${(THINKING_READINESS_MIN_SUCCESS_DELTA * 100).toFixed(1)}%.`,
       stats,
     };
   }
@@ -121,14 +121,14 @@ export function evaluateThinkingPhase0Gate(stats: ThinkingModeStats[]): Phase0Ga
   let qualityDelta: number | null = null;
   if (baseline.avgQualityComposite != null && best.avgQualityComposite != null) {
     qualityDelta = best.avgQualityComposite - baseline.avgQualityComposite;
-    if (qualityDelta < -PHASE0_MAX_QUALITY_REGRESSION) {
+    if (qualityDelta < -THINKING_READINESS_MAX_QUALITY_REGRESSION) {
       return {
         status: 'blocked',
         reason: 'quality-regression-detected',
         detail:
           `Best mode "${best.thinkingMode}" gains success rate but its average ` +
           `quality composite is ${qualityDelta.toFixed(3)} below baseline — ` +
-          `regression cap is ${PHASE0_MAX_QUALITY_REGRESSION}.`,
+          `regression cap is ${THINKING_READINESS_MAX_QUALITY_REGRESSION}.`,
         stats,
       };
     }

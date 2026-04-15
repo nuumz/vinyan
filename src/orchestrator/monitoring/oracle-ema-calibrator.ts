@@ -1,5 +1,5 @@
 /**
- * Phase 7 — Per-oracle EMA accuracy calibration.
+ * Monitoring — Per-oracle EMA accuracy calibration.
  *
  * For each oracle that runs in the gate, we want to know: when this oracle
  * says `verified=true`, how often is the task actually successful? When it
@@ -81,7 +81,7 @@ export class OracleEMACalibrator {
 
   /**
    * Record one (oracle verdict, task outcome) pair. Updates the per-oracle
-   * EMA in place and emits `phase7:oracle_calibration` if a state change
+   * EMA in place and emits `monitoring:oracle_calibration` if a state change
    * crosses the warm threshold or accuracy moves by ≥ 0.01.
    */
   record(observation: OracleObservation): OracleCalibration {
@@ -115,7 +115,7 @@ export class OracleEMACalibrator {
     const isWarm = next.observationCount >= ORACLE_EMA_WARM_THRESHOLD;
     const accuracyMoved = Math.abs(next.accuracy - existing.accuracy) >= 0.01;
     if (this.bus && (wasWarm !== isWarm || accuracyMoved)) {
-      this.bus.emit('phase7:oracle_calibration', {
+      this.bus.emit('monitoring:oracle_calibration', {
         oracleName: observation.oracleName,
         accuracy: next.accuracy,
         observationCount: next.observationCount,

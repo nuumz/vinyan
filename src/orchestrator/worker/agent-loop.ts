@@ -51,6 +51,10 @@ export interface WorkerLoopResult {
   proposedContent?: string;
   uncertainties: string[];
   tokensConsumed: number;
+  /** Prompt caching: total cache-read tokens across all turns in this session. */
+  cacheReadTokens?: number;
+  /** Prompt caching: total cache-creation tokens across all turns in this session. */
+  cacheCreationTokens?: number;
   durationMs: number;
   transcript: WorkerTurn[];
   sessionSummary?: AgentSessionSummary;
@@ -459,6 +463,16 @@ export class SessionProgress {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+/** Extract provider tier from workerId pattern like "worker-openrouter/tool-uses/..." */
+function extractTierFromWorkerId(workerId?: string): string | undefined {
+  if (!workerId) return undefined;
+  // Pattern: worker-<registry>/<tier>/... or worker-<registry>/<provider>
+  const parts = workerId.replace(/^worker-[^/]+\//, '').split('/');
+  const knownTiers = ['fast', 'balanced', 'powerful', 'tool-uses'];
+  if (parts[0] && knownTiers.includes(parts[0])) return parts[0];
+  return undefined;
+}
+
 /** Fallback token estimation when worker doesn't report tokensConsumed */
 function estimateTokens(turn: WorkerTurn): number {
   return Math.ceil(JSON.stringify(turn).length / 3.5);
@@ -473,12 +487,16 @@ function buildUncertainResult(
   proposedContent?: string,
   nonRetryableError?: string,
   needsUserInput?: boolean,
+  cacheReadTokens?: number,
+  cacheCreationTokens?: number,
 ): WorkerLoopResult {
   return {
     mutations,
     proposedContent,
     uncertainties,
     tokensConsumed,
+    ...(cacheReadTokens ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens ? { cacheCreationTokens } : {}),
     durationMs: Math.round(durationMs),
     transcript,
     isUncertain: true,
@@ -730,6 +748,8 @@ export async function runAgentLoop(
   const overlay = SessionOverlay.create(deps.workspace, input.id);
   let transcript: WorkerTurn[] = [];
   let tokensConsumed = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
@@ -807,6 +827,8 @@ export async function runAgentLoop(
         VINYAN_ROUTING_LEVEL: String(routing.level),
         VINYAN_MODEL: routing.model ?? '',
         VINYAN_ORCHESTRATOR_PID: String(process.pid),
+        // Forward the selected worker's tier so subprocess uses the correct provider
+        VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
         ...(deps.proxySocketPath ? { VINYAN_PROXY_SOCKET: deps.proxySocketPath } : {}),
       },
     }) as unknown as SubprocessHandle;
@@ -944,6 +966,15 @@ export async function runAgentLoop(
       silentAgent?.heartbeat(input.id, turn.type);
 
       if (turn.type === 'tool_calls') {
+        // Surface agent thinking/rationale for CLI observability
+        if (turn.rationale && turn.rationale !== 'Tool execution') {
+          deps.bus?.emit('agent:thinking', {
+            taskId: input.id,
+            turnId: turn.turnId,
+            rationale: turn.rationale,
+          });
+        }
+
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
@@ -1202,6 +1233,8 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+        cacheReadTokens += turn.cacheReadTokens ?? 0;
+        cacheCreationTokens += turn.cacheCreationTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose, not close('completed')
@@ -1220,6 +1253,8 @@ export async function runAgentLoop(
           proposedContent: turn.proposedContent,
           uncertainties: [],
           tokensConsumed,
+          ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+          ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
           durationMs,
           transcript,
           isUncertain: false,
@@ -1229,6 +1264,8 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+        cacheReadTokens += turn.cacheReadTokens ?? 0;
+        cacheCreationTokens += turn.cacheCreationTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
@@ -1254,6 +1291,8 @@ export async function runAgentLoop(
           // as a non-retryable error — it's a collaborative pause, not a hard failure.
           needsUserInput ? undefined : detectNonRetryableError(turn.uncertainties),
           needsUserInput,
+          cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
         );
       }
     }

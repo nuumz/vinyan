@@ -64,13 +64,13 @@ describe('Suite 1: Contract creation from routing', () => {
     expect(contract.immutable).toBe(true);
   });
 
-  test('L1 contract: 2 capabilities (file_read + shell_read), zero tool calls, kill policy, immutable', () => {
+  test('L1 contract: 2 capabilities (file_read + shell_read), 5 tool calls, kill policy, immutable', () => {
     const contract = contractAt(1);
     expect(contract.capabilities).toHaveLength(2);
     const types = contract.capabilities.map((c) => c.type);
     expect(types).toContain('file_read');
     expect(types).toContain('shell_read');
-    expect(contract.maxToolCalls).toBe(0);
+    expect(contract.maxToolCalls).toBe(5);
     expect(contract.onViolation).toBe('kill');
     expect(contract.violationTolerance).toBe(0);
     expect(contract.routingLevel).toBe(1);

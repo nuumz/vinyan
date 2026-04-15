@@ -59,7 +59,7 @@ export type AgentContract = z.infer<typeof AgentContractSchema>;
 
 // ── Default Capabilities per Routing Level (A6: least privilege) ────
 
-const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 0, 2: 20, 3: 50 };
+const MAX_TOOL_CALLS_BY_LEVEL: Record<number, number> = { 0: 0, 1: 5, 2: 20, 3: 50 };
 
 const DEFAULT_CAPABILITIES: Record<number, Capability[]> = {
   0: [], // L0 reflex — no tool access

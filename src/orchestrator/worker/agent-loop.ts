@@ -10,6 +10,7 @@
 
 import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
+import { type SilentAgentConfig, SilentAgentDetector } from '../../guardrails/silent-agent.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
 import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
 import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
@@ -141,6 +142,18 @@ export interface AgentLoopDeps {
    * the agent loop only uses it for descriptor discovery.
    */
   extraTools?: ReadonlyMap<string, Tool>;
+  /**
+   * Book-integration Wave 1.1: worker-level silence watchdog. When set,
+   * runAgentLoop instantiates a `SilentAgentDetector` per session and
+   * emits `guardrail:silent_agent` events on state transitions (silent
+   * after `warnAfterMs`, stalled after `stallAfterMs`). Leave undefined
+   * to disable — the loop then behaves exactly as it did before.
+   *
+   * Axiom-safe: the detector is a rule-based timer (A3), observes the
+   * subprocess without relaxing zero-trust (A6), and never inspects
+   * reasoning (A1).
+   */
+  silentAgentConfig?: SilentAgentConfig;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -666,7 +679,8 @@ async function handleConsultPeer(
         callId: '',
         tool: 'consult_peer',
         status: 'denied',
-        output: 'No distinct peer reasoning engine is available (would consult the same model — blocked to honor A1 epistemic separation)',
+        output:
+          'No distinct peer reasoning engine is available (would consult the same model — blocked to honor A1 epistemic separation)',
         durationMs: Math.round(performance.now() - startTime),
       };
     }
@@ -720,6 +734,30 @@ export async function runAgentLoop(
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
 
+  // Book-integration Wave 1.1: worker-level silence watchdog. Instantiate
+  // per-session so state is naturally bounded by the agent loop's lifetime.
+  // The detector is inert when `silentAgentConfig` is absent — the
+  // interval is never armed and no events fire.
+  const silentAgent = deps.silentAgentConfig ? new SilentAgentDetector(deps.silentAgentConfig) : null;
+  let silentAgentTimer: ReturnType<typeof setInterval> | null = null;
+  const silentAgentTickIntervalMs = Math.max(1_000, Math.floor((deps.silentAgentConfig?.warnAfterMs ?? 15_000) / 3));
+  const emitSilentTransitions = () => {
+    if (!silentAgent || !deps.bus) return;
+    const transitions = silentAgent.tick();
+    for (const t of transitions) {
+      // Only escalate visibility — 'healthy' transitions are noise.
+      if (t.to === 'silent' || t.to === 'stalled') {
+        deps.bus.emit('guardrail:silent_agent', {
+          taskId: t.taskId,
+          ...(t.workerId !== undefined ? { workerId: t.workerId } : {}),
+          state: t.to,
+          silentForMs: t.silentForMs,
+          lastEvent: t.lastEventLabel,
+        });
+      }
+    }
+  };
+
   // Phase 3d: Prime the session with the memory_propose review backlog so
   // L2+ workers see it in every turn's `<vinyan-reminder>` snapshot. The
   // helper is best-effort — a missing or unreadable pending directory is a
@@ -747,13 +785,7 @@ export async function runAgentLoop(
     // are checked inside handleConsultPeer, so we don't gate them here.
     onConsult:
       routing.level >= 1 && deps.peerConsultant
-        ? (params) =>
-            handleConsultPeer(
-              params as import('../protocol.ts').PeerConsultRequest,
-              budget,
-              routing,
-              deps,
-            )
+        ? (params) => handleConsultPeer(params as import('../protocol.ts').PeerConsultRequest, budget, routing, deps)
         : undefined,
     // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
     // install new plan snapshots. The callback runs synchronously and returns
@@ -855,6 +887,16 @@ export async function runAgentLoop(
       budget: budget.toSnapshot(),
     });
 
+    // Wave 1.1: arm the silence watchdog. Priming it with `session_start`
+    // means an unresponsive init is detected even before the first turn.
+    if (silentAgent) {
+      silentAgent.register(input.id);
+      silentAgentTimer = setInterval(emitSilentTransitions, silentAgentTickIntervalMs);
+      // Bun's setInterval supports unref() on the returned object; unref so
+      // an idle watchdog never keeps the orchestrator alive on its own.
+      (silentAgentTimer as unknown as { unref?: () => void }).unref?.();
+    }
+
     // Agent loop: process worker turns until done, uncertain, or budget exhausted
     const maxToolCallsPerTurn = budget.toSnapshot().maxToolCallsPerTurn;
 
@@ -880,6 +922,11 @@ export async function runAgentLoop(
       }
 
       transcript.push(turn);
+
+      // Wave 1.1: reset the silence timer on every worker turn. The label
+      // is stored for operator diagnostics ("last heard from you during a
+      // tool_calls turn 32s ago") — pure visibility, no governance effect.
+      silentAgent?.heartbeat(input.id, turn.type);
 
       if (turn.type === 'tool_calls') {
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
@@ -1218,5 +1265,11 @@ export async function runAgentLoop(
   } finally {
     // fix #4: always cleanup overlay
     overlay.cleanup();
+    // Wave 1.1: tear down the silence watchdog. Detector is per-session
+    // so unregistering is mostly defensive — the GC will collect it
+    // along with the runAgentLoop frame — but clearing the interval is
+    // mandatory or a late tick would fire after the session is gone.
+    if (silentAgentTimer) clearInterval(silentAgentTimer);
+    silentAgent?.unregister(input.id);
   }
 }

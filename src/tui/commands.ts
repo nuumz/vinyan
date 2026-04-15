@@ -15,6 +15,7 @@ import { ANSI, bold, box, color, dim } from './renderer.ts';
 import { parseAuditLog, replayAuditLog, summarizeAuditLog } from './replay.ts';
 import { restoreSession } from './session.ts';
 import { createInitialState } from './state.ts';
+import { startPeek } from './views/peek.ts';
 
 export interface TUIConfig {
   bus?: VinyanBus;
@@ -76,6 +77,35 @@ export async function replayFile(filePath: string, options?: { realtime?: boolea
 }
 
 /**
+ * Book-integration Wave 3.1: per-agent live stream.
+ *
+ * `vinyan tui peek <task-id>` attaches to the bus and prints only events
+ * tagged with a matching task id (or glob pattern). This is the operator
+ * equivalent of `tail -F one_worker.log` and intentionally zero-cost from
+ * a governance standpoint — it subscribes to events that are already on
+ * the bus, no new events are created.
+ */
+export function startPeekStream(config: TUIConfig, taskIdPattern: string): { stop: () => void } {
+  console.log(box('Vinyan TUI — peek', `Following tasks matching "${taskIdPattern}" (Ctrl+C to exit)`));
+  console.log('');
+
+  if (!config.bus) {
+    console.log(dim('No bus available — start the orchestrator to see events.'));
+    return { stop() {} };
+  }
+
+  const handle = startPeek(config.bus, { taskIdPattern, showTimestamps: true });
+
+  return {
+    stop() {
+      handle.stop();
+      console.log('');
+      console.log(dim(`peek stopped — ${handle.matchedCount()} event(s) matched.`));
+    },
+  };
+}
+
+/**
  * Show a system overview (status summary).
  */
 export function showOverview(config: TUIConfig): void {
@@ -102,13 +132,10 @@ export async function startInteractive(config: TUIConfig): Promise<void> {
   let orchestrator: Awaited<ReturnType<typeof createOrchestratorAsync>> | null = null;
   const initOrchestrator = async () => {
     try {
-      orchestrator = await createOrchestratorAsync(
-        { workspace: config.workspace, bus: config.bus },
-        (message) => {
-          state.loadingMessage = message;
-          state.dirty = true;
-        },
-      );
+      orchestrator = await createOrchestratorAsync({ workspace: config.workspace, bus: config.bus }, (message) => {
+        state.loadingMessage = message;
+        state.dirty = true;
+      });
 
       const dataSource = new EmbeddedDataSource(state, orchestrator);
       app.wireDataSource(dataSource);
@@ -119,7 +146,9 @@ export async function startInteractive(config: TUIConfig): Promise<void> {
   };
 
   // Start init after first frame renders
-  setTimeout(() => { initOrchestrator(); }, 0);
+  setTimeout(() => {
+    initOrchestrator();
+  }, 0);
 
   app.onShutdown(() => orchestrator?.close());
   await app.run();
@@ -142,6 +171,18 @@ export async function processTUICommand(args: string[], config: TUIConfig): Prom
       // Keep process alive
       await new Promise(() => {}); // Block indefinitely; Ctrl+C exits
       break;
+
+    case 'peek': {
+      const taskIdPattern = args[1];
+      if (!taskIdPattern) {
+        console.error('Usage: vinyan tui peek <task-id | glob>');
+        process.exit(1);
+      }
+      startPeekStream(config, taskIdPattern);
+      // Block indefinitely; Ctrl+C exits, just like `watch`
+      await new Promise(() => {});
+      break;
+    }
 
     case 'replay': {
       const filePath = args[1];
@@ -166,6 +207,7 @@ export async function processTUICommand(args: string[], config: TUIConfig): Prom
       console.log('Subcommands:');
       console.log('  interactive (i)    Full interactive terminal UI (default)');
       console.log('  watch              Watch live bus events (simple mode)');
+      console.log('  peek <task-id>     Follow events for one task (glob-supported)');
       console.log('  replay <file>      Replay audit log file');
       console.log('  overview           Show system overview');
       console.log('');

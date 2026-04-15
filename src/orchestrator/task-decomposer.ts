@@ -6,10 +6,16 @@
  *
  * Source of truth: spec/tdd.md §10, arch D7
  */
+
+import type { SkillStore } from '../db/skill-store.ts';
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
-import type { SkillStore } from '../db/skill-store.ts';
+import {
+  buildResearchSwarmDAG,
+  matchDecomposerPreset,
+  RESEARCH_SWARM_REPORT_CONTRACT,
+} from './task-decomposer-presets.ts';
 import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
 const MAX_RETRIES = 3;
@@ -30,9 +36,7 @@ export class TaskDecomposerImpl implements TaskDecomposer {
     if (this.skillStore) {
       const composed = this.skillStore.findComposedSkill(input.goal);
       if (composed?.composedOf?.length) {
-        const subSkills = composed.composedOf
-          .map((sig) => this.skillStore!.findBySignature(sig))
-          .filter(Boolean);
+        const subSkills = composed.composedOf.map((sig) => this.skillStore!.findBySignature(sig)).filter(Boolean);
         if (subSkills.length > 0) {
           return {
             nodes: subSkills.map((skill, i) => ({
@@ -46,6 +50,30 @@ export class TaskDecomposerImpl implements TaskDecomposer {
           };
         }
       }
+    }
+
+    // Book-integration Wave 1.2: deterministic presets (e.g. research-swarm)
+    // short-circuit the LLM path when the goal matches a well-known shape.
+    // A3-safe: preset selection is pure keyword matching, no LLM involved.
+    // The preset still produces a DAG that goes through the normal validator
+    // below, so a broken preset cannot ship an invalid decomposition.
+    const preset = matchDecomposerPreset(input);
+    if (preset?.kind === 'research-swarm') {
+      // Inject the report contract as a task constraint so every spawned
+      // explorer sees it in its TaskUnderstanding pipeline. The aggregator
+      // also sees it, which is intentional — the same schema keeps the
+      // fan-in deterministic.
+      input.constraints = [...(input.constraints ?? []), RESEARCH_SWARM_REPORT_CONTRACT];
+      const presetDag = buildResearchSwarmDAG(input, perception);
+      const presetBlastRadius = [...(input.targetFiles ?? []), ...perception.dependencyCone.directImportees];
+      const criteria = validateDAG(presetDag, presetBlastRadius);
+      if (allCriteriaMet(criteria)) {
+        return presetDag;
+      }
+      // If the preset somehow produced an invalid DAG (e.g. blast radius
+      // disagreement), log and fall through to the LLM path rather than
+      // shipping a broken preset. The fall-through path is the same one
+      // used when the LLM decomposer fails its retries.
     }
 
     const provider = this.registry.selectByTier('balanced');

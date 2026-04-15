@@ -46,6 +46,7 @@ import { WorldGraph } from '../world-graph/world-graph.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
 import { DelegationRouter } from './delegation-router.ts';
@@ -65,6 +66,8 @@ import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleGateAdapter } from './oracle-gate-adapter.ts';
 import { PerceptionAssemblerImpl } from './perception.ts';
+import { OracleEMACalibrator } from './phase7/oracle-ema-calibrator.ts';
+import { RegressionMonitor } from './phase7/regression-monitor.ts';
 import { FileStatsCache } from './prediction/file-stats-cache.ts';
 import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
 import { PercentileCache } from './prediction/percentile-cache.ts';
@@ -82,8 +85,6 @@ import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
 import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
-import { OracleEMACalibrator } from './phase7/oracle-ema-calibrator.ts';
-import { RegressionMonitor } from './phase7/regression-monitor.ts';
 import type { AgentLoopDeps } from './worker/agent-loop.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
 
@@ -105,6 +106,12 @@ export interface OrchestratorConfig {
   oracleGate?: import('./core-loop.ts').OracleGate;
   /** Override critic engine (for testing fail-closed behavior). */
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
+  /**
+   * Book-integration Wave 1.1: worker-level silence watchdog config.
+   * Omit (default) → conservative 15 s warn / 45 s stall thresholds.
+   * Pass a custom SilentAgentConfig to tune for long-running tasks.
+   */
+  silentAgentConfig?: import('../guardrails/silent-agent.ts').SilentAgentConfig;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
@@ -521,7 +528,35 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // WP-2: LLM-as-Critic — instantiate when a provider is available (A1: separate from generator)
   const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
-  const criticEngine = config.criticEngine ?? (criticProvider ? new LLMCriticImpl(criticProvider) : undefined);
+  const baselineCritic = criticProvider ? new LLMCriticImpl(criticProvider) : undefined;
+
+  // Book-integration Wave 2.1: Architecture Debate Mode — 3-agent critic
+  // hardening. Wired as a DebateRouterCritic that delegates to the baseline
+  // critic by default and fires the 3-agent debate only when the risk-based
+  // trigger rule in shouldDebate() says so (A3: deterministic selection).
+  //
+  // Seat allocation: advocate + architect get the 'powerful' tier because
+  // they need to reason over the full proposal; counter gets 'balanced'
+  // because its job is to *generate* attack candidates and quality there
+  // is mostly about breadth, not precision. If only one tier is available
+  // the debate collapses to three calls on the same provider — still
+  // A1-compliant because each call runs with its own prompt and context,
+  // but the epistemic diversity is weaker and observability should flag it.
+  let criticEngine = config.criticEngine ?? baselineCritic;
+  if (!config.criticEngine && baselineCritic) {
+    const advocateProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced') ?? criticProvider;
+    const counterProvider = registry.selectByTier('balanced') ?? registry.selectByTier('fast') ?? advocateProvider;
+    const architectProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced') ?? criticProvider;
+
+    if (advocateProvider && counterProvider && architectProvider) {
+      const debateCritic = new ArchitectureDebateCritic({
+        advocate: advocateProvider,
+        counter: counterProvider,
+        architect: architectProvider,
+      });
+      criticEngine = new DebateRouterCritic(baselineCritic, debateCritic);
+    }
+  }
 
   // WP-3: TestGenerator — generative verification at L2+ (A1: separate LLM call from generator)
   const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
@@ -835,6 +870,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // undefined this property simply doesn't exist on deps and the
     // loop falls back to local-only dispatch.
     instanceCoordinator,
+    // Book-integration Wave 1.1: worker-level silence watchdog. Enabled
+    // by default with conservative thresholds — 15 s to warn, 45 s to
+    // flag stalled. A worker legitimately thinking through a hard
+    // problem typically emits progress events (`agent:tool_executed`,
+    // `agent:turn_complete`) within the warn window; crossing 45 s
+    // without any turn at all is a strong indicator the subprocess is
+    // stuck (infinite loop, blocking read, dead LLM call). Operators
+    // can override via config.silentAgentConfig or disable entirely
+    // by passing `{ warnAfterMs: Number.MAX_SAFE_INTEGER - 1, ... }`.
+    silentAgentConfig: config.silentAgentConfig ?? {
+      warnAfterMs: 15_000,
+      stallAfterMs: 45_000,
+    },
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

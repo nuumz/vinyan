@@ -1128,6 +1128,15 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
         if (deps.criticEngine && routing.level >= 2 && workerResult.mutations.length > 0) {
           try {
             const proposal = { mutations: workerResult.mutations, approach: finalTrace.approach };
+            // Book-integration Wave 2.1: annotate the task with the
+            // current risk score so DebateRouterCritic can decide
+            // whether to fire the 3-agent debate mode. Ad-hoc cast
+            // avoids widening the public CriticEngine interface; a
+            // future revision should thread routing through a context
+            // object so this hack can be removed. The annotation is
+            // best-effort — if routing.riskScore is undefined (L0 or
+            // older code paths) the router falls through to baseline.
+            (input as unknown as { riskScore?: number }).riskScore = routing.riskScore;
             const criticResult = await deps.criticEngine.review(proposal, input, perception, input.acceptanceCriteria);
             deps.bus?.emit('critic:verdict', {
               taskId: input.id,

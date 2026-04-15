@@ -448,13 +448,20 @@ export class DebateRouterCritic implements CriticEngine {
     });
 
     if (fire) {
-      // Wave 5.7a: consult the per-task budget guard. If the cap has
-      // been reached, deny the debate and fall through to baseline.
-      // This is a rule-based (A3) deny — no LLM involved.
+      // Wave 5.7a/b: consult the per-task + per-day budget guard. If
+      // either cap has been reached, deny the debate and fall through
+      // to baseline. Rule-based (A3) deny — no LLM involved. The
+      // `whyDenied` helper discriminates the deny reason so the
+      // observability event tells operators which cap fired.
       const guard = this.options.budgetGuard;
-      if (guard && !guard.shouldAllow(task.id)) {
-        guard.recordDenied(task.id, 'per-task debate cap reached');
-        return this.baseline.review(proposal, task, perception, acceptanceCriteria, context);
+      if (guard) {
+        const denyReason = guard.whyDenied(task.id);
+        if (denyReason) {
+          const reasonText =
+            denyReason === 'max-per-task' ? 'per-task debate cap reached' : 'per-day debate cap reached';
+          guard.recordDenied(task.id, reasonText);
+          return this.baseline.review(proposal, task, perception, acceptanceCriteria, context);
+        }
       }
 
       // Record the fire BEFORE the LLM calls so any overlapping

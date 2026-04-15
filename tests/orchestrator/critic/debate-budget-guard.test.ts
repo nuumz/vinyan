@@ -102,3 +102,130 @@ describe('DebateBudgetGuard — bus observability', () => {
     expect(() => guard.recordDenied('task-a', 'capped')).not.toThrow();
   });
 });
+
+// ── Wave 5.7b: per-day cap ────────────────────────────────────────
+
+describe('DebateBudgetGuard — Wave 5.7b per-day cap', () => {
+  // Day 1: 2026-04-15 00:00:00 UTC = 1776470400000
+  // Day 2: 2026-04-16 00:00:00 UTC = 1776556800000
+  const Day1Noon = Date.UTC(2026, 3, 15, 12, 0, 0);
+  const Day2Noon = Date.UTC(2026, 3, 16, 12, 0, 0);
+
+  test('maxPerDay undefined → no per-day cap enforced', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      now: () => clock.t,
+    });
+    for (let i = 0; i < 50; i++) {
+      expect(guard.shouldAllow(`task-${i}`)).toBe(true);
+      guard.recordFired(`task-${i}`);
+    }
+    expect(guard.getDayCount()).toBe(50);
+  });
+
+  test('maxPerDay caps total fires across tasks', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      maxPerDay: 3,
+      now: () => clock.t,
+    });
+
+    expect(guard.shouldAllow('t1')).toBe(true);
+    guard.recordFired('t1');
+    expect(guard.shouldAllow('t2')).toBe(true);
+    guard.recordFired('t2');
+    expect(guard.shouldAllow('t3')).toBe(true);
+    guard.recordFired('t3');
+
+    // Day cap reached — even brand-new task is denied
+    expect(guard.shouldAllow('t4')).toBe(false);
+    expect(guard.whyDenied('t4')).toBe('max-per-day');
+  });
+
+  test('maxPerDay=0 denies every debate regardless of per-task state', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      maxPerDay: 0,
+      now: () => clock.t,
+    });
+    expect(guard.shouldAllow('t1')).toBe(false);
+    expect(guard.whyDenied('t1')).toBe('max-per-day');
+  });
+
+  test('day rollover resets the per-day counter', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      maxPerDay: 2,
+      now: () => clock.t,
+    });
+
+    guard.recordFired('t1');
+    guard.recordFired('t2');
+    expect(guard.shouldAllow('t3')).toBe(false); // day cap reached
+
+    // Roll clock to next day at noon
+    clock.t = Day2Noon;
+    expect(guard.shouldAllow('t3')).toBe(true); // day counter reset
+    expect(guard.getDayCount()).toBe(0);
+  });
+
+  test('getDayCount prunes stale entries', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      maxPerDay: 10,
+      now: () => clock.t,
+    });
+    guard.recordFired('t1');
+    guard.recordFired('t2');
+    expect(guard.getDayCount()).toBe(2);
+
+    clock.t = Day2Noon;
+    expect(guard.getDayCount()).toBe(0);
+  });
+
+  test('whyDenied reports per-task when per-task cap reached first', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 1,
+      maxPerDay: 100,
+      now: () => clock.t,
+    });
+    guard.recordFired('t1');
+    expect(guard.whyDenied('t1')).toBe('max-per-task');
+  });
+
+  test('whyDenied reports per-day when day cap reached while task cap has room', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 100,
+      maxPerDay: 2,
+      now: () => clock.t,
+    });
+    guard.recordFired('existing-1');
+    guard.recordFired('existing-2');
+    // New task has room per-task, but day cap is saturated
+    expect(guard.whyDenied('new-task')).toBe('max-per-day');
+  });
+
+  test('whyDenied returns null when both caps have room', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({
+      maxPerTask: 5,
+      maxPerDay: 10,
+      now: () => clock.t,
+    });
+    expect(guard.whyDenied('t1')).toBeNull();
+  });
+
+  test('negative maxPerDay clamps to 0', () => {
+    const clock = { t: Day1Noon };
+    const guard = new DebateBudgetGuard({ maxPerDay: -7, now: () => clock.t });
+    expect(guard.shouldAllow('t1')).toBe(false);
+    expect(guard.whyDenied('t1')).toBe('max-per-day');
+  });
+});

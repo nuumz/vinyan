@@ -117,10 +117,16 @@ export interface OrchestratorConfig {
    * Book-integration Wave 5.7a: per-task Architecture Debate cap.
    * Default: 1 — a task can fire the debate at most once across its
    * entire inner retry loop. Set to 0 to disable debate entirely, or
-   * to a larger number to allow re-runs after failed retries. The
-   * per-day cap at the Economy OS layer is separate future work.
+   * to a larger number to allow re-runs after failed retries.
    */
   debateMaxPerTask?: number;
+  /**
+   * Book-integration Wave 5.7b: per-day Architecture Debate cap.
+   * Rolling counter of debate fires between midnight UTC and the
+   * next midnight. Default: undefined (no day cap; only per-task
+   * cap enforced). Set to 0 to disable debate for the whole day.
+   */
+  debateMaxPerDay?: number;
   /** Enable LLM proxy for credential isolation (A6). Default: false. */
   llmProxy?: boolean;
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
@@ -576,6 +582,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // via config.debateMaxPerTask.
       const budgetGuard = new DebateBudgetGuard({
         maxPerTask: config.debateMaxPerTask ?? 1,
+        ...(config.debateMaxPerDay !== undefined ? { maxPerDay: config.debateMaxPerDay } : {}),
         ...(bus ? { bus } : {}),
       });
       criticEngine = new DebateRouterCritic(baselineCritic, debateCritic, {

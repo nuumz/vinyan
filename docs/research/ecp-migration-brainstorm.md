@@ -1,7 +1,7 @@
 # ECP v2 Migration: Deep Research & Architectural Analysis
 
 > **Date:** 2026-04-04 | **Status:** Research Brainstorm | **Author:** Agentic Research
-> **Prerequisite reading:** [ecp-v2-research.md](./ecp-v2-research.md), [ecp-spec.md](../spec/ecp-spec.md), [design-subjective-logic.md](./design-subjective-logic.md)
+> **Prerequisite reading:** [ecp-research.md](./ecp-research.md), [ecp-spec.md](../spec/ecp-spec.md), [design-subjective-logic.md](./design-subjective-logic.md)
 > **Related:** [formal-uncertainty-frameworks.md](./formal-uncertainty-frameworks.md), [ehd-synthesis.md](./ehd-synthesis.md), [design-pipeline-confidence.md](./design-pipeline-confidence.md)
 
 ---
@@ -37,7 +37,7 @@ ECP v1 is a fully functional epistemic protocol for local oracle coordination, w
 
 ### 1.2 What v1 Gets Wrong (Known Deficits)
 
-**Source:** `ehd-synthesis.md` §2 "Four Critical Deficits" + `ecp-v2-research.md` §1-5 + `formal-uncertainty-frameworks.md` §2.
+**Source:** `ehd-synthesis.md` §2 "Four Critical Deficits" + `ecp-research.md` §1-5 + `formal-uncertainty-frameworks.md` §2.
 
 | # | Deficit | Root Cause | Impact | Severity |
 |---|---------|-----------|--------|----------|
@@ -486,7 +486,7 @@ interface MerkleEvidence extends Evidence {
 | `docs/research/design-subjective-logic.md` (Vinyan internal) | 2026-04-01 | Internal design | High (implemented in Phase 4.8) |
 | `docs/research/ehd-synthesis.md` (Vinyan internal) | 2026-04-01 | Internal audit | High (verified against codebase) |
 | `docs/research/design-pipeline-confidence.md` (Vinyan internal) | 2026-04-01 | Internal design | High (spec-level, not yet implemented) |
-| `docs/research/ecp-v2-research.md` (Vinyan internal) | Current | Internal research | High (source document for this analysis) |
+| `docs/research/ecp-research.md` (Vinyan internal) | Current | Internal research | High (source document for this analysis) |
 | Smets & Kennes. "The Transferable Belief Model." *AI* 66(2), 1994 | 1994 | Peer-reviewed | Medium |
 | Ben-Haim, Y. *Info-Gap Decision Theory*. Academic Press, 2006 | 2006 | Book | Medium |
 | deVadoss. "BFT for AI Safety." 2025 | 2025 | **Experimental** — inference from EHD research | Low |

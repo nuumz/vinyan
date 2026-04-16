@@ -17,7 +17,7 @@
  * weighting) can query the EMA and act on it. The calibrator itself never
  * mutates pipeline state.
  *
- * Source of truth: docs/design/ecp-v2-system-design.md §12 (Phase 7
+ * Source of truth: docs/design/ecp-system-design.md §12 (Phase 7
  * Self-Improving Autonomy).
  */
 import type { VinyanBus } from '../../core/bus.ts';

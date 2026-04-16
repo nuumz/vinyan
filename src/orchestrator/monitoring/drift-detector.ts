@@ -13,7 +13,7 @@
  * windowed mean, etc.) without having to coordinate state with this
  * module.
  *
- * Source of truth: docs/design/ecp-v2-system-design.md §12 (drift
+ * Source of truth: docs/design/ecp-system-design.md §12 (drift
  * recovery algorithm — predicted vs actual outcome delta).
  */
 import type { ExecutionTrace, SelfModelPrediction } from '../types.ts';

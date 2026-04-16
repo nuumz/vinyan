@@ -14,7 +14,7 @@
 | A2A wire protocol (JSON-RPC envelope, ECP Data Part format) | ECP wire format & epistemic semantics → [ecp-spec.md](ecp-spec.md) |
 | 22 ECP message types (core, negotiation, knowledge, coordination, meta, streaming) | Full trust degradation matrix (all layers) → [protocol-architecture.md §6](../architecture/protocol-architecture.md) |
 | Trust lifecycle (Wilson LB progression, demotion, authorization scoping) | MCP/A2A bridge **implementation plans** → [protocol-architecture.md §4-5](../architecture/protocol-architecture.md) |
-| Knowledge sharing (Tier 0 file invalidation, Tier 2 sleep cycle batch) | ECP v2 research → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| Knowledge sharing (Tier 0 file invalidation, Tier 2 sleep cycle batch) | ECP v2 research → [ecp-research.md](../research/ecp-research.md) |
 | Streaming, peer health, partition tolerance, configuration | |
 
 ---

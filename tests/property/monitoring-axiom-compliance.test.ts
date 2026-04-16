@@ -14,7 +14,7 @@
  *                                  operation is commutative.
  *   A4 (Risk-Aware Routing):     projected probabilities stay in [0, 1].
  *
- * Source of truth: docs/design/ecp-v2-system-design.md §12 (Compliance
+ * Source of truth: docs/design/ecp-system-design.md §12 (Compliance
  * test suite for A1-A4 evidential soundness).
  */
 import { describe, expect, test } from 'bun:test';

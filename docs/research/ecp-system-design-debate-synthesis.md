@@ -1,8 +1,8 @@
 # ECP v2 System Design Debate — Synthesis
 
 > **Document boundary**: This document owns the system design review verdict for ECP v1→v2 transformation.
-> For strategic debate (should we? what's missing?), see [ecp-v2-debate-synthesis.md](ecp-v2-debate-synthesis.md).
-> For the design doc itself, see [../design/ecp-v2-system-design.md](../design/ecp-v2-system-design.md).
+> For strategic debate (should we? what's missing?), see [ecp-debate-synthesis.md](ecp-debate-synthesis.md).
+> For the design doc itself, see [../design/ecp-system-design.md](../design/ecp-system-design.md).
 
 ---
 
@@ -128,7 +128,7 @@ Quality score returns 1.0 (dogmatic confidence) when zero oracles run. Should re
 | C2 | Standardize floating-point tolerance constant | 0.25h |
 | C3 | Update ~5 existing tests for quality-score changes | 3h |
 | C4 | Add A2A peer version negotiation tests | 2h |
-| C5 | Implement `ENABLE_ECP_V2_BEHAVIORS` feature flag | 1h |
+| C5 | Implement `ENABLE_ECP_BEHAVIORS` feature flag | 1h |
 
 **Critical path**: 6-7 days (A → B sequential; C parallel with B)
 
@@ -136,7 +136,7 @@ Quality score returns 1.0 (dogmatic confidence) when zero oracles run. Should re
 
 ## 5. Design Doc Amendments Required
 
-### New Sections for `ecp-v2-system-design.md`
+### New Sections for `ecp-system-design.md`
 
 1. **§3.2a Data Pipeline Execution Order** — Specify `computeFromVerdicts()` → `[IF fusion]` → `recalibrateWithFusion()` sequence with diagram
 2. **§3.3a Tier Reliability Population Path** — Runner enrichment pipeline pseudocode showing explicit `enrichVerdictWithRegistryData()` call site
@@ -248,7 +248,7 @@ PHASE C — PARALLEL WITH B (5-7 days):
   [ ] C2: Standardize floating-point tolerance
   [ ] C3: Update existing tests
   [ ] C4: A2A version negotiation tests
-  [ ] C5: Implement ENABLE_ECP_V2_BEHAVIORS feature flag
+  [ ] C5: Implement ENABLE_ECP_BEHAVIORS feature flag
 
 DEPLOY:
   [ ] Schema migration (day 1)

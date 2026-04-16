@@ -12,7 +12,7 @@
  * Stateful: holds a per-task-type rolling window of outcomes plus a
  * baseline that is computed once enough observations exist.
  *
- * Source of truth: docs/design/ecp-v2-system-design.md §12 (anomaly
+ * Source of truth: docs/design/ecp-system-design.md §12 (anomaly
  * detection for silent regressions).
  */
 import type { VinyanBus } from '../../core/bus.ts';

@@ -1,8 +1,8 @@
 # ECP v2: System Design & Implementation Plan
 
 > **Date:** 2026-04-04 | **Status:** Design Draft | **Produced by:** Expert Agent Team (4 domain specialists + Orchestrator)
-> **Input:** [ecp-v2-migration-brainstorm.md](../research/ecp-v2-migration-brainstorm.md) — corrected and refined by codebase verification
-> **Review:** [ecp-v2-system-design-debate-synthesis.md](../research/ecp-v2-system-design-debate-synthesis.md) — 6-expert review, 5 dead ends identified, CONDITIONAL GO
+> **Input:** [ecp-migration-brainstorm.md](../research/ecp-migration-brainstorm.md) — corrected and refined by codebase verification
+> **Review:** [ecp-system-design-debate-synthesis.md](../research/ecp-system-design-debate-synthesis.md) — 6-expert review, 5 dead ends identified, CONDITIONAL GO
 > **Prerequisite:** [ecp-spec.md](../spec/ecp-spec.md), [design-subjective-logic.md](../research/design-subjective-logic.md)
 
 ---
@@ -42,7 +42,7 @@ Transform ECP v1 into v2 by resolving 4 verified deficits (D1, D3, D4, D5) in th
 
 ## 2. Delta Analysis — Brainstorm vs. Codebase Reality
 
-The brainstorm document ([ecp-v2-migration-brainstorm.md](../research/ecp-v2-migration-brainstorm.md)) was produced from codebase analysis but contained inaccuracies discovered by the Expert Team's verification pass.
+The brainstorm document ([ecp-migration-brainstorm.md](../research/ecp-migration-brainstorm.md)) was produced from codebase analysis but contained inaccuracies discovered by the Expert Team's verification pass.
 
 ### 2.1 Corrected Findings
 
@@ -849,7 +849,7 @@ Verdicts ───► computeFromVerdicts() ──► baseQuality
 | C2 | `packages/ecp-conformance/src/level3.ts` | Add `tierReliability`/`engineCertainty` validation + `beliefInterval` bounds (on `ResolvedGateResult` only) | A1 |
 | C3 | `src/a2a/agent-card.ts` | Change `ecp_version: 1` → `ecp_version: 2`, add `supported_versions: [1, 2]` | None |
 | C4 | `packages/ecp-conformance/src/schemas.ts` | Add `SubjectiveOpinionSchema` and `BeliefIntervalSchema` to conformance schemas | A3 |
-| C5 | `src/config/schema.ts` | Add `ECP_V2_SCHEMA_DEFAULTS` + `ECP_V2_ENRICHMENT` feature flags (both default `false`); gate B1-B2 and B5-B10 respectively | None |
+| C5 | `src/config/schema.ts` | Add `ECP_SCHEMA_DEFAULTS` + `ECP_ENRICHMENT` feature flags (both default `false`); gate B1-B2 and B5-B10 respectively | None |
 
 **Test strategy:**
 - C1-C2: `tests/ecp-conformance/` — add test cases for v2 validation rules
@@ -923,8 +923,8 @@ B2 (quality-score) ────────────────────�
 | `recalibrateWithFusion overrides compliance` | `tests/gate/quality-score.test.ts` | `recalibrateWithFusion(base, fused).architecturalCompliance === projectedProbability(fused)` |
 | `recalibrateWithFusion no-op without opinion` | same | `recalibrateWithFusion(base, undefined)` returns base unchanged |
 | `SL_EPSILON consistent across codebase` | `tests/core/subjective-opinion.test.ts` | Opinion with b+d+u off by 1e-7 passes `isValid()` |
-| `ECP_V2_SCHEMA_DEFAULTS flag gates defaults` | `tests/config/vinyan-config.test.ts` | When `ECP_V2_SCHEMA_DEFAULTS=false`, Zod default remains 1.0 and quality returns 1.0 |
-| `ECP_V2_ENRICHMENT flag gates enrichment` | same | When `ECP_V2_ENRICHMENT=false`, verdict enrichment + fromScalar fix disabled |
+| `ECP_SCHEMA_DEFAULTS flag gates defaults` | `tests/config/vinyan-config.test.ts` | When `ECP_SCHEMA_DEFAULTS=false`, Zod default remains 1.0 and quality returns 1.0 |
+| `ECP_ENRICHMENT flag gates enrichment` | same | When `ECP_ENRICHMENT=false`, verdict enrichment + fromScalar fix disabled |
 
 ### 6.3 Regression Risk Matrix
 
@@ -972,21 +972,21 @@ These are **not v2 blockers** but should be tracked:
 | Phase | Scope | Duration | Risk | Rollback |
 |-------|-------|----------|------|----------|
 | **1. Schema Migration** | Phase A: types + Zod + SDK types. Both flags `false`. | Day 1 | Zero — additive optional fields only | Remove fields (backward compatible) |
-| **2. Behavioral Canary** | Phase B+C: enable `ECP_V2_ENRICHMENT` for 10% of tasks; `ECP_V2_SCHEMA_DEFAULTS` still false. Monitor enrichment field population. | Days 2-3 | Low — flag = instant rollback | Set `ECP_V2_ENRICHMENT=false` |
-| **2b. Defaults Canary** | Enable `ECP_V2_SCHEMA_DEFAULTS` for 10% of tasks. Monitor confidence distributions and zero-oracle paths. | Days 4-5 | Medium — changes defaults | Set `ECP_V2_SCHEMA_DEFAULTS=false` |
+| **2. Behavioral Canary** | Phase B+C: enable `ECP_ENRICHMENT` for 10% of tasks; `ECP_SCHEMA_DEFAULTS` still false. Monitor enrichment field population. | Days 2-3 | Low — flag = instant rollback | Set `ECP_ENRICHMENT=false` |
+| **2b. Defaults Canary** | Enable `ECP_SCHEMA_DEFAULTS` for 10% of tasks. Monitor confidence distributions and zero-oracle paths. | Days 4-5 | Medium — changes defaults | Set `ECP_SCHEMA_DEFAULTS=false` |
 | **3. Full Rollout** | 100% after 5-day stability window. Remove flag guards (flag becomes dead code). | Day 7+ | Mitigated by canary data | Revert to canary (10%) and investigate |
 
 **Feature flag mechanics:**
 ```typescript
 // In src/config/schema.ts:
-export const ECP_V2_SCHEMA_DEFAULTS = config.ecp?.v2SchemaDefaults ?? false;  // HIGH risk
-export const ECP_V2_ENRICHMENT = config.ecp?.v2Enrichment ?? false;            // MEDIUM risk
+export const ECP_SCHEMA_DEFAULTS = config.ecp?.v2SchemaDefaults ?? false;  // HIGH risk
+export const ECP_ENRICHMENT = config.ecp?.v2Enrichment ?? false;            // MEDIUM risk
 
-// ECP_V2_SCHEMA_DEFAULTS gates (HIGH risk — changes default behavior):
+// ECP_SCHEMA_DEFAULTS gates (HIGH risk — changes default behavior):
 // - B1: Zod confidence default remains 1.0 when false
 // - B2: Zero-oracle quality returns 1.0 when false
 
-// ECP_V2_ENRICHMENT gates (MEDIUM risk — adds new computation):
+// ECP_ENRICHMENT gates (MEDIUM risk — adds new computation):
 // - B5: No verdict enrichment (tierReliability/engineCertainty) when false
 // - B8: fromScalar() uses u=0 (dogmatic) when false
 // - B9: No quality recalibration with fusedOpinion when false
@@ -998,10 +998,10 @@ export const ECP_V2_ENRICHMENT = config.ecp?.v2Enrichment ?? false;            /
 **Canary trace field:** Each task trace persists `ecpBehaviorVersion: 1 | 2` reflecting which flag state was active. This enables forensic analysis during canary — without it, debugging confidence-related issues requires guessing which behavior path a specific task used.
 
 **Monitoring during canary:**
-- Confidence distribution shift (expect lower mean when `ECP_V2_SCHEMA_DEFAULTS` ON)
+- Confidence distribution shift (expect lower mean when `ECP_SCHEMA_DEFAULTS` ON)
 - Oracle verdict parse failures (expect 0 — Zod still accepts v1 shape)
-- Quality score distribution (expect lower composite for zero-oracle tasks when `ECP_V2_SCHEMA_DEFAULTS` ON)
-- Enrichment field population rate (expect >0 when `ECP_V2_ENRICHMENT` ON)
+- Quality score distribution (expect lower composite for zero-oracle tasks when `ECP_SCHEMA_DEFAULTS` ON)
+- Enrichment field population rate (expect >0 when `ECP_ENRICHMENT` ON)
 - Test oracle compatibility (run conformance suite against canary)
 
 ---
@@ -1012,7 +1012,7 @@ export const ECP_V2_ENRICHMENT = config.ecp?.v2Enrichment ?? false;            /
 |-------|-------------------|---------------|-------------------|
 | A | `src/core/types.ts`, `src/oracle/protocol.ts`, `src/a2a/ecp-data-part.ts`, `packages/oracle-sdk-ts/src/index.ts`, `src/core/subjective-opinion.ts` | `SubjectiveOpinionSchema`, `SL_EPSILON` | None (additive only) |
 | B | `src/oracle/protocol.ts`, `packages/oracle-sdk-ts/src/schemas.ts`, `src/gate/quality-score.ts`, `src/oracle/tier-clamp.ts`, `src/gate/conflict-resolver.ts`, `src/oracle/runner.ts`, `src/mcp/ecp-translation.ts`, `src/a2a/ecp-a2a-translation.ts`, `src/core/subjective-opinion.ts`, `src/orchestrator/core-loop.ts` | `clampOpinionFull()`, `enrichVerdictWithRegistryData()`, `isGovernanceEligible()`, `computeFromVerdicts()`, `recalibrateWithFusion()` | `fromScalar()`, `computeQualityScore()`, `resolveConflicts()`, `mcpToEcp()`, `verdictToECPDataPart()`, `ecpDataPartToVerdict()` |
-| C | `packages/ecp-conformance/src/level1.ts`, `packages/ecp-conformance/src/level3.ts`, `packages/ecp-conformance/src/schemas.ts`, `src/a2a/agent-card.ts`, `src/config/schema.ts` | L1/L3 validation checks, `ECP_V2_SCHEMA_DEFAULTS`, `ECP_V2_ENRICHMENT` | `generateAgentCard()` |
+| C | `packages/ecp-conformance/src/level1.ts`, `packages/ecp-conformance/src/level3.ts`, `packages/ecp-conformance/src/schemas.ts`, `src/a2a/agent-card.ts`, `src/config/schema.ts` | L1/L3 validation checks, `ECP_SCHEMA_DEFAULTS`, `ECP_ENRICHMENT` | `generateAgentCard()` |
 
 **Total: 19 files changed, 6 new functions/constants, ~11 modified functions.**
 
@@ -1057,7 +1057,7 @@ Every v2 change traces to a Vinyan axiom:
 
 ## 11. Deferred Debate Items
 
-The following items were identified during the [ECP v2 debate synthesis](../research/ecp-v2-debate-synthesis.md) as Tier 0 (critical) but are **not in v2 scope**. They are behavioral/operational capabilities, not protocol-layer changes.
+The following items were identified during the [ECP v2 debate synthesis](../research/ecp-debate-synthesis.md) as Tier 0 (critical) but are **not in v2 scope**. They are behavioral/operational capabilities, not protocol-layer changes.
 
 | Item | Source | Deferral Rationale |
 |------|--------|--------------------|

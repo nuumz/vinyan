@@ -10,6 +10,7 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
 import { clearConfigCache } from '../../src/config/loader.ts';
+import { clearOracleAccuracyStore } from '../../src/gate/gate.ts';
 import { clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 
 // ── Workspace setup ─────────────────────────────────────────────
@@ -34,6 +35,7 @@ afterAll(() => {
 // use-case — same pattern as tests/oracle/type/type-oracle.test.ts.
 beforeEach(() => {
   clearTscCache();
+  clearOracleAccuracyStore();
 });
 
 // ── Helpers ─────────────────────────────────────────────────────

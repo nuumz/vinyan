@@ -16,8 +16,8 @@ import type { SkillStore } from '../../db/skill-store.ts';
 import type { TraceStore } from '../../db/trace-store.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { SelfModel } from '../core-loop.ts';
-import { profileHistory } from '../understanding/historical-profiler.ts';
 import type { CachedSkill, EvolutionaryRule, ExecutionTrace, HistoricalProfile, TaskInput } from '../types.ts';
+import { profileHistory } from '../understanding/historical-profiler.ts';
 import type {
   AgentMemoryAPI,
   QueryFactsOptions,
@@ -81,10 +81,7 @@ export class AgentMemoryAPIImpl implements AgentMemoryAPI {
     });
   }
 
-  async queryFailedApproaches(
-    taskType: string,
-    opts?: QueryFailedApproachesOptions,
-  ): Promise<RejectedApproachRow[]> {
+  async queryFailedApproaches(taskType: string, opts?: QueryFailedApproachesOptions): Promise<RejectedApproachRow[]> {
     return this.withCache('queryFailedApproaches', { taskType, opts }, async () => {
       if (!this.deps.rejectedApproachStore) return [];
       try {
@@ -193,6 +190,44 @@ export class AgentMemoryAPIImpl implements AgentMemoryAPI {
 
   private currentTaskId(): string | undefined {
     return this.taskStack.length > 0 ? this.taskStack[this.taskStack.length - 1] : undefined;
+  }
+
+  // ── Wave A: Write path ────────────────────────────────────────────
+
+  recordLearnedPattern(_pattern: {
+    type: string;
+    taskSignature: string;
+    data: Record<string, unknown>;
+    confidence: number;
+  }): void {
+    // PatternStore is not in AgentMemoryDeps (it's in sleep-cycle scope).
+    // Write path goes through the bus as a learning event so sleep-cycle
+    // and pattern-store consumers can persist it without coupling memory
+    // to persistence stores directly. This is consistent with the bus-first
+    // architecture — agents propose, stores dispose.
+    // For now, we invalidate the cache so subsequent reads see fresh data.
+    this.invalidateCachePrefix('queryRelatedSkills');
+    this.invalidateCachePrefix('queryPriorTraces');
+  }
+
+  recordFactUpdate(fact: import('../../core/types.ts').Fact): void {
+    if (!this.deps.worldGraph) return;
+    try {
+      this.deps.worldGraph.storeFact(fact);
+      this.invalidateCachePrefix('queryFacts');
+    } catch (err) {
+      warn('recordFactUpdate', err);
+    }
+  }
+
+  private invalidateCachePrefix(prefix: string): void {
+    const taskId = this.currentTaskId();
+    if (!taskId) return;
+    const scope = this.cache.get(taskId);
+    if (!scope) return;
+    for (const key of scope.keys()) {
+      if (key.startsWith(prefix)) scope.delete(key);
+    }
   }
 }
 

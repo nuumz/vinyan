@@ -36,6 +36,14 @@ export const HMSConfigSchema = z.object({
       cross_validation: z.number().min(0).max(1).default(0.1),
     })
     .default({ grounding: 0.35, overconfidence: 0.15, structural: 0.25, critic: 0.15, cross_validation: 0.1 }),
+  /** Wave A: when enabled AND risk.score >= threshold, HMS blocks verification
+   *  instead of just attenuating confidence. Off by default for backward compat. */
+  blocking: z
+    .object({
+      enabled: z.boolean().default(false),
+      threshold: z.number().min(0).max(1).default(0.75),
+    })
+    .default({ enabled: false, threshold: 0.75 }),
 });
 
 export type HMSConfig = z.infer<typeof HMSConfigSchema>;

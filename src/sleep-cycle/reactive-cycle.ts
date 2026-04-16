@@ -16,8 +16,9 @@
  * Integration into the sleep-cycle runner is DEFERRED — callers can invoke
  * synthesizeReactiveRule directly when FailureClusterDetector fires.
  */
-import type { EvolutionaryRule, ExecutionTrace } from '../orchestrator/types.ts';
+
 import type { FailureCluster } from '../orchestrator/goal-satisfaction/failure-cluster-detector.ts';
+import type { EvolutionaryRule, ExecutionTrace } from '../orchestrator/types.ts';
 
 export interface ReactiveTraceSummary {
   taskId: string;
@@ -166,6 +167,126 @@ export function reactiveRuleToEvolutionary(rule: ProposedReactiveRule): Evolutio
     effectiveness: 0,
     specificity,
   };
+}
+
+// ── Success Attribution (Wave A) ─────────────────────────────────────
+
+export interface SuccessTraceSummary {
+  taskId: string;
+  taskSignature: string;
+  passingOracles: string[];
+  affectedFiles: string[];
+  approach?: string;
+  modelUsed?: string;
+}
+
+/**
+ * Convert a raw ExecutionTrace into a SuccessTraceSummary. Returns null for
+ * non-success outcomes so callers can `.filter(Boolean)`.
+ */
+export function traceToSuccessSummary(trace: ExecutionTrace): SuccessTraceSummary | null {
+  if (trace.outcome !== 'success') return null;
+  const passingOracles: string[] = [];
+  for (const [oracle, passed] of Object.entries(trace.oracleVerdicts)) {
+    if (passed) passingOracles.push(oracle);
+  }
+  return {
+    taskId: trace.taskId,
+    taskSignature: trace.taskTypeSignature ?? 'unknown',
+    passingOracles,
+    affectedFiles: trace.affectedFiles,
+    approach: trace.approach,
+    modelUsed: trace.modelUsed,
+  };
+}
+
+/**
+ * Synthesize a probational `prefer-model` rule from a cohort of successful
+ * traces that share the same task signature. Returns null when no actionable
+ * pattern exists (fewer than 3 successes, or no common oracle/model signal).
+ *
+ * A3: pure function over trace metadata. No LLM.
+ * A5: all rules are `status: 'probation'`.
+ */
+export function synthesizeSuccessRule(
+  taskSignature: string,
+  traces: SuccessTraceSummary[],
+): ProposedReactiveRule | null {
+  if (traces.length < 3) return null;
+
+  // Find the most common model used across successful traces
+  const modelCounts = new Map<string, number>();
+  for (const t of traces) {
+    if (t.modelUsed) {
+      modelCounts.set(t.modelUsed, (modelCounts.get(t.modelUsed) ?? 0) + 1);
+    }
+  }
+  let bestModel: string | undefined;
+  let bestCount = 0;
+  for (const [model, count] of modelCounts) {
+    if (count > bestCount) {
+      bestModel = model;
+      bestCount = count;
+    }
+  }
+  const modelDominance = traces.length > 0 ? bestCount / traces.length : 0;
+
+  // Find common oracle pass pattern
+  const oracleCounts = new Map<string, number>();
+  for (const t of traces) {
+    for (const o of t.passingOracles) {
+      oracleCounts.set(o, (oracleCounts.get(o) ?? 0) + 1);
+    }
+  }
+  const commonOracles = Array.from(oracleCounts.entries())
+    .filter(([, count]) => count >= traces.length * 0.8)
+    .map(([oracle]) => oracle);
+
+  if (bestModel && modelDominance >= 0.6) {
+    return {
+      condition: { taskTypeSignature: taskSignature },
+      action: 'prefer-model',
+      parameters: {
+        preferredModel: bestModel,
+        successRate: modelDominance,
+        commonOracles,
+        sampleSize: traces.length,
+      },
+      status: 'probation',
+      sourceTraceIds: traces.map((t) => t.taskId),
+      rationale: `${bestCount}/${traces.length} successes used model "${bestModel}" for "${taskSignature}" (oracles: ${commonOracles.join(', ') || 'none dominant'})`,
+    };
+  }
+
+  // Fallback: if a specific file pattern consistently succeeds with a specific oracle
+  const filePattern = extractCommonFilePattern(
+    traces.map((t) => ({
+      taskId: t.taskId,
+      taskSignature: t.taskSignature,
+      failureOracles: [],
+      affectedFiles: t.affectedFiles,
+    })),
+  );
+  if (filePattern && commonOracles.length > 0) {
+    return {
+      condition: {
+        filePattern,
+        taskTypeSignature: taskSignature,
+      },
+      action: 'adjust-threshold',
+      parameters: {
+        adjustDirection: 'lower',
+        adjustDelta: -0.05,
+        commonOracles,
+        sampleSize: traces.length,
+      },
+      status: 'probation',
+      sourceTraceIds: traces.map((t) => t.taskId),
+      rationale: `${traces.length} successes on "${filePattern}" — lower risk threshold (consistent oracles: ${commonOracles.join(', ')})`,
+    };
+  }
+
+  return null;
 }
 
 function extractCommonFilePattern(traces: ReactiveTraceSummary[]): string | null {

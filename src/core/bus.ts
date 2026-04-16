@@ -579,6 +579,20 @@ export interface VinyanBusEvents {
     convergence: 'converged' | 'partial' | 'open';
   };
 
+  // Wave A: Error attribution — A7 learning loop closure
+  'learning:error_attributed': {
+    taskId: string;
+    correctionType: string;
+    detail: string;
+    applied: boolean;
+  };
+  'learning:success_pattern': {
+    taskSignature: string;
+    approach: string;
+    commonOracles: string[];
+    occurrences: number;
+  };
+
   // A2A cross-instance rooms (R3) — scoped communication channels between peers.
   'a2a:roomCreated': { roomId: string; name: string; roomType: string; creatorInstanceId: string };
   'a2a:roomJoined': { roomId: string; instanceId: string; peerUrl: string };

@@ -219,6 +219,23 @@ export async function executeVerifyPhase(
         risk: hmsResult.risk.score,
         primary_signal: hmsResult.risk.primary_signal,
       });
+
+      // Wave A: HMS blocking gate — when risk exceeds the configurable threshold,
+      // BLOCK verification entirely (not just attenuate). Feeds classified failures
+      // into working memory so the retry sees exactly which claims were hallucinated.
+      const blocking = deps.hmsConfig.blocking;
+      if (blocking?.enabled && hmsResult.risk.score >= blocking.threshold) {
+        verification.passed = false;
+        verification.reason = `HMS blocked: hallucination risk ${hmsResult.risk.score.toFixed(2)} >= ${blocking.threshold} (signal: ${hmsResult.risk.primary_signal})`;
+        if (hmsResult.classifiedFailures?.length) {
+          for (const failure of hmsResult.classifiedFailures) {
+            workingMemory.recordFailedApproach(
+              `[HMS] ${failure.category}: ${failure.message}${failure.file ? ` (${failure.file}:${failure.line ?? 0})` : ''}`,
+              `hms-${failure.category}`,
+            );
+          }
+        }
+      }
     }
   }
 

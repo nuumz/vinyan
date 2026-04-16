@@ -57,4 +57,17 @@ export interface AgentMemoryAPI {
 
   /** Drop the per-task cache scope. Queries without a scope still work (fresh fetch). */
   endTask(taskId: string): void;
+
+  // ── Wave A: Write path (optional, backward compat) ─────────────────
+
+  /** Persist a learned pattern into PatternStore. Invalidates affected cache. */
+  recordLearnedPattern?(pattern: {
+    type: string;
+    taskSignature: string;
+    data: Record<string, unknown>;
+    confidence: number;
+  }): void;
+
+  /** Write a fact update through to WorldGraph. Invalidates affected cache. */
+  recordFactUpdate?(fact: Fact): void;
 }

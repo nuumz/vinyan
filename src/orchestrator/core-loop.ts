@@ -224,6 +224,8 @@ export interface OrchestratorDeps {
   // strategies (e.g. LLM-fabricated labels) are routed to registry.fallback()
   // instead of falling through to the bare `full-pipeline` path silently.
   workflowRegistry?: WorkflowRegistry;
+  // Wave A: Error attribution bus — routes orphaned learning signals into corrective actions (A7).
+  errorAttributionBus?: import('./prediction/error-attribution-bus.ts').ErrorAttributionBus;
   // ACR (Agent Conversation Room): dispatcher wired by factory when a
   // workerSelector + workerStore are available. When absent, phase-generate
   // falls through to the existing L2+ agentic-loop branch even if the

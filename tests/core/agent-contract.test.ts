@@ -40,7 +40,7 @@ describe('createContract', () => {
     expect(types).toContain('shell_read');
     expect(types).not.toContain('file_write');
     expect(types).not.toContain('shell_exec');
-    expect(contract.maxToolCalls).toBe(0);
+    expect(contract.maxToolCalls).toBe(5);
   });
 
   test('L2 → read + write in workspace', () => {

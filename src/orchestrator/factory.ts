@@ -50,6 +50,7 @@ import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { RoomStore } from '../db/room-store.ts';
+import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
 import { RoomDispatcher } from './room/room-dispatcher.ts';
 import { runAgentLoop } from './worker/agent-loop.ts';
 import {
@@ -956,6 +957,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     goalVerifier: goalAlignmentVerify,
     roomStore,
   });
+
+  // Wave A: Error Attribution Bus — consumes orphaned learning signals and
+  // routes them into corrective actions. Subscribes to selfmodel:systematic_miscalibration,
+  // prediction:miscalibrated, and hms:risk_scored bus events. A3: all logic is
+  // threshold comparisons + method dispatch.
+  {
+    const errorAttribution = new ErrorAttributionBus({
+      bus,
+      onSelfModelReset: (taskSig, forceMinLevel) => {
+        console.log(`[vinyan] ErrorAttribution: SelfModel reset for '${taskSig}', forceMinLevel=${forceMinLevel}`);
+      },
+      onPredictionRecalibrate: (taskId, brierScore) => {
+        console.log(`[vinyan] ErrorAttribution: prediction recalibrate for ${taskId}, brier=${brierScore.toFixed(3)}`);
+      },
+      onHMSFailureInject: (taskId, riskScore, signal) => {
+        console.log(`[vinyan] ErrorAttribution: HMS failure inject for ${taskId}, risk=${riskScore.toFixed(2)}, signal=${signal}`);
+      },
+    });
+    errorAttribution.start();
+    deps.errorAttributionBus = errorAttribution;
+  }
 
   // Wave 5a: Reactive micro-learning — close the failure-cluster → rule loop.
   // Subscribes to `task:complete` (feeds detector) and `failure:cluster-detected`

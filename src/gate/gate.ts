@@ -53,6 +53,11 @@ export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
   oracleAccuracyStore = store;
 }
 
+/** Reset module-level accuracy store — for test isolation. */
+export function clearOracleAccuracyStore(): void {
+  oracleAccuracyStore = undefined;
+}
+
 /**
  * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
  * from trace-based calibration in SelfModel (Phase 3). Kept as no-op for backward compat.

@@ -46,6 +46,12 @@ export async function executeLearnPhase(
       );
       if (predictionError) {
         trace.predictionError = predictionError;
+        // Wave A: route significant prediction errors through the error attribution bus
+        if (deps.errorAttributionBus && Math.abs(predictionError.error.composite) > 0.3) {
+          try {
+            deps.errorAttributionBus.attributeError(predictionError, trace);
+          } catch { /* attribution is best-effort */ }
+        }
       }
     } catch (calibErr) {
       deps.bus?.emit('selfmodel:calibration_error', {

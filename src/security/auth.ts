@@ -118,7 +118,10 @@ export function requiresAuth(method: string, path: string): boolean {
   if (path === '/api/v1/health' || path === '/api/v1/metrics') return false;
 
   // Read-only query endpoints
-  if (method === 'GET' && (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules'))
+  if (
+    method === 'GET' &&
+    (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules' || path === '/api/v1/economy')
+  )
     return false;
 
   // SSE event streams require auth

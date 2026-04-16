@@ -195,6 +195,9 @@ export interface Orchestrator {
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   approvalGate?: ApprovalGateImpl;
+  // Economy stores (exposed for API/TUI)
+  costLedger?: import('../economy/cost-ledger.ts').CostLedger;
+  budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
   getSessionCount(): number;
   close(): void;
 }
@@ -395,9 +398,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     economyConfig = vinyanConfig.economy;
     if (economyConfig?.enabled && db) {
       costLedger = new CostLedger(db.getDb());
-      if (economyConfig.budgets) {
-        budgetEnforcer = new BudgetEnforcer(economyConfig.budgets, costLedger, bus);
-      }
+      const budgetConfig = economyConfig.budgets ?? { enforcement: 'warn' as const };
+      budgetEnforcer = new BudgetEnforcer(budgetConfig, costLedger, bus);
       // Economy L2: cost prediction + dynamic budgets
       costPredictor = new CostPredictor(costLedger);
       dynamicBudgetAllocator = new DynamicBudgetAllocator(costLedger);
@@ -1287,6 +1289,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     worldGraph,
     metricsCollector,
     approvalGate,
+    costLedger,
+    budgetEnforcer,
     getSessionCount: () => sessionCount,
     close: () => {
       if (shadowInterval) clearInterval(shadowInterval);

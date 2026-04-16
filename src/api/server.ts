@@ -47,6 +47,9 @@ export interface APIServerDeps {
   a2aManager?: A2AManagerImpl;
   /** Oracle runner for WebSocket ECP endpoint (PH5.18). */
   runOracle?: (oracleName: string, hypothesis: unknown, options?: RunOracleOptions) => Promise<unknown>;
+  /** Economy stores for /api/v1/economy endpoint. */
+  costLedger?: { getAggregatedCost(window: string): { total_usd: number; count: number }; count(): number };
+  budgetEnforcer?: { checkBudget(): Array<{ window: string; spent_usd: number; limit_usd: number; utilization_pct: number; enforcement: string; exceeded: boolean }> };
 }
 
 export class VinyanAPIServer {
@@ -159,9 +162,9 @@ export class VinyanAPIServer {
   }
 
   private async route(method: string, path: string, req: Request): Promise<Response> {
-    // ── Dashboard static files ───────────────────────────
+    // Dashboard moved to vinyan-ui (separate project). Redirect for backward compat.
     if (method === 'GET' && (path === '/dashboard' || path.startsWith('/dashboard/'))) {
-      return this.serveDashboardFile(path);
+      return jsonResponse({ message: 'Dashboard moved to vinyan-ui. Run: cd vinyan-ui && bun run dev' }, 301);
     }
 
     // ── Health & Metrics ──────────────────────────────────
@@ -257,7 +260,41 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path === '/api/v1/facts') {
-      return jsonResponse({ facts: [] }); // WorldGraph query — simplified for now
+      if (this.deps.worldGraph) {
+        const factsUrl = new URL(req.url);
+        const target = factsUrl.searchParams.get('target');
+        const limit = parseInt(factsUrl.searchParams.get('limit') ?? '200', 10);
+        const facts = target
+          ? this.deps.worldGraph.queryFacts(target)
+          : this.deps.worldGraph.listFacts(Math.min(limit, 1000));
+        return jsonResponse({
+          facts: facts.map((f) => ({
+            id: f.id,
+            target: f.target,
+            pattern: f.pattern,
+            oracleName: f.oracleName,
+            confidence: f.confidence,
+            verifiedAt: f.verifiedAt,
+            sourceFile: f.sourceFile,
+          })),
+        });
+      }
+      return jsonResponse({ facts: [] });
+    }
+
+    // ── Economy ──────────────────────────────────────────────
+    if (method === 'GET' && path === '/api/v1/economy') {
+      const budgetStatuses = this.deps.budgetEnforcer?.checkBudget() ?? [];
+      const costHour = this.deps.costLedger?.getAggregatedCost('hour') ?? { total_usd: 0, count: 0 };
+      const costDay = this.deps.costLedger?.getAggregatedCost('day') ?? { total_usd: 0, count: 0 };
+      const costMonth = this.deps.costLedger?.getAggregatedCost('month') ?? { total_usd: 0, count: 0 };
+      const totalEntries = this.deps.costLedger?.count() ?? 0;
+      return jsonResponse({
+        enabled: !!(this.deps.costLedger || this.deps.budgetEnforcer),
+        budget: budgetStatuses,
+        cost: { hour: costHour, day: costDay, month: costMonth },
+        totalEntries,
+      });
     }
 
     // ── ECP HTTP Verify (PH5.18) ─────────────────────────────
@@ -473,8 +510,15 @@ export class VinyanAPIServer {
     const session = this.getOrCreateDefaultSession();
     this.deps.sessionManager.addTask(session.id, input);
 
+    const controller = new AbortController();
     const promise = this.deps.executeTask(input);
-    this.inFlightTasks.set(input.id, { promise });
+    this.inFlightTasks.set(input.id, {
+      promise,
+      cancel: () => {
+        controller.abort();
+        this.deps.bus.emit('task:timeout', { taskId: input.id, elapsedMs: 0, budgetMs: 0 });
+      },
+    });
 
     promise
       .then((result) => {
@@ -520,36 +564,7 @@ export class VinyanAPIServer {
     });
   }
 
-  private serveDashboardFile(path: string): Response {
-    // Default to index.html
-    let filePath = path === '/dashboard' || path === '/dashboard/' ? '/dashboard/index.html' : path;
-
-    // Extract relative path within dashboard
-    const relative = filePath.replace(/^\/dashboard\//, '');
-
-    // Path traversal protection
-    if (relative.includes('..') || relative.startsWith('/')) {
-      return jsonResponse({ error: 'Forbidden' }, 403);
-    }
-
-    const resolved = `${import.meta.dir}/../dashboard/${relative}`;
-    const file = Bun.file(resolved);
-
-    // Content-Type mapping
-    const ext = relative.split('.').pop() ?? '';
-    const contentTypes: Record<string, string> = {
-      html: 'text/html; charset=utf-8',
-      js: 'application/javascript; charset=utf-8',
-      css: 'text/css; charset=utf-8',
-      json: 'application/json',
-      svg: 'image/svg+xml',
-      png: 'image/png',
-    };
-
-    return new Response(file, {
-      headers: { 'Content-Type': contentTypes[ext] ?? 'application/octet-stream' },
-    });
-  }
+  // Dashboard removed — migrated to vinyan-ui (separate React project).
 
   private handleGetTask(taskId: string): Response {
     // Check completed results

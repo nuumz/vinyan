@@ -188,6 +188,45 @@ export class WorldGraph {
     }));
   }
 
+  /**
+   * List all non-stale facts, most recent first.
+   * Used by the API `/api/v1/facts` endpoint.
+   */
+  listFacts(limit = 200): Fact[] {
+    const now = Date.now();
+    const rows = this.db
+      .query(`
+      SELECT f.* FROM facts f
+      LEFT JOIN file_hashes fh ON f.source_file = fh.path
+      WHERE (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
+        AND (f.valid_until IS NULL OR f.valid_until > ? OR f.decay_model = 'step')
+      ORDER BY f.verified_at DESC
+      LIMIT ?
+    `)
+      .all(now, limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: row.id as string,
+      target: row.target as string,
+      pattern: row.pattern as string,
+      evidence: JSON.parse(row.evidence as string) as Evidence[],
+      oracleName: row.oracle_name as string,
+      fileHash: row.file_hash as string,
+      sourceFile: row.source_file as string,
+      verifiedAt: row.verified_at as number,
+      sessionId: row.session_id as string | undefined,
+      confidence: computeDecayedConfidence(
+        row.confidence as number,
+        row.verified_at as number,
+        (row.valid_until as number) || undefined,
+        (row.decay_model as string as Fact['decayModel']) || undefined,
+        now,
+      ),
+      validUntil: (row.valid_until as number) || undefined,
+      decayModel: (row.decay_model as string as Fact['decayModel']) || undefined,
+      tierReliability: (row.tier_reliability as number) ?? undefined,
+    }));
+  }
+
   /** Update the stored hash for a file path. Triggers cascade invalidation via SQLite trigger. */
   updateFileHash(filePath: string, hash: string): void {
     const now = Date.now();

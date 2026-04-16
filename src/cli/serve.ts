@@ -60,6 +60,8 @@ export async function serve(workspace: string): Promise<void> {
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
       a2aManager,
+      costLedger: orchestrator.costLedger,
+      budgetEnforcer: orchestrator.budgetEnforcer,
     },
   );
 

@@ -41,6 +41,12 @@
   },
   "economy": {
     "enabled": true,
+    "budgets": {
+      "hourly_usd": 1.00,
+      "daily_usd": 10.00,
+      "monthly_usd": 100.00,
+      "enforcement": "warn"
+    },
     "market": {
       "enabled": true
     }

@@ -680,6 +680,36 @@ export class EmbeddedDataSource implements DataSource {
         } catch {
           // Best-effort
         }
+
+        // ── Step 3: economy data ──────────────────────────────────
+        try {
+          const { costLedger, budgetEnforcer } = this.orchestrator;
+          if (costLedger || budgetEnforcer) {
+            const budgetWindows = (budgetEnforcer?.checkBudget() ?? []).map((b) => ({
+              label: b.window,
+              spent: b.spent_usd,
+              limit: b.limit_usd,
+              pct: b.utilization_pct,
+            }));
+            const costHour = costLedger?.getAggregatedCost('hour');
+            const costDay = costLedger?.getAggregatedCost('day');
+            (this.state as TUIState & { economy?: import('../views/economy.ts').EconomyDisplayState }).economy = {
+              budgetWindows,
+              costHistory: [],
+              totalCostUsd: costDay?.total_usd ?? 0,
+              totalEntries: costLedger?.count() ?? 0,
+              marketPhase: 'idle',
+              marketEnabled: false,
+              auctionCount: 0,
+              engineTrust: [],
+              federationEnabled: false,
+            };
+            this.state.dirty = true;
+          }
+        } catch {
+          // Best-effort
+        }
+
         this.metricsRunning = false;
       }, 0);
     }, 0);

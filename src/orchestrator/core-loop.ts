@@ -77,7 +77,18 @@ export interface SelfModel {
 }
 
 export interface TaskDecomposer {
-  decompose(input: TaskInput, perception: PerceptualHierarchy, memory: WorkingMemoryState): Promise<TaskDAG>;
+  /**
+   * Decompose a task into a DAG. The optional `routing` argument lets the
+   * decomposer post-analyze the validated DAG for ACR room eligibility
+   * without requiring every caller to provide it — older callers that pass
+   * fewer arguments still work and simply opt out of room selection.
+   */
+  decompose(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+    routing?: RoutingDecision,
+  ): Promise<TaskDAG>;
   /** Wave 2: alternative plan after a failed outer-loop attempt. Optional — stubs don't implement it. */
   replan?(
     input: TaskInput,
@@ -213,6 +224,11 @@ export interface OrchestratorDeps {
   // strategies (e.g. LLM-fabricated labels) are routed to registry.fallback()
   // instead of falling through to the bare `full-pipeline` path silently.
   workflowRegistry?: WorkflowRegistry;
+  // ACR (Agent Conversation Room): dispatcher wired by factory when a
+  // workerSelector + workerStore are available. When absent, phase-generate
+  // falls through to the existing L2+ agentic-loop branch even if the
+  // decomposer emits `collaborationMode: 'room'`.
+  roomDispatcher?: import('./room/room-dispatcher.ts').RoomDispatcher;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;

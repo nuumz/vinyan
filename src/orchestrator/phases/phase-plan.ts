@@ -29,7 +29,7 @@ export async function executePlanPhase(
   // ── Step 3: PLAN (L2+ only) ──────────────────────────────────
   let plan: PlanResult['plan'];
   if (routing.level >= 2) {
-    plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot());
+    plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot(), routing);
     if (plan.isFallback) {
       deps.bus?.emit('decomposer:fallback', { taskId: input.id });
     }

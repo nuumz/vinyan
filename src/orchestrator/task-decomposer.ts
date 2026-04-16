@@ -12,8 +12,9 @@ import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildReplanPrompt, type FailureContext } from './replan/replan-prompt.ts';
+import { selectRoomContract } from './room/room-selector.ts';
 import { buildResearchSwarmDAG, matchDecomposerPreset } from './task-decomposer-presets.ts';
-import type { PerceptualHierarchy, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
+import type { PerceptualHierarchy, RoutingDecision, TaskDAG, TaskInput, WorkingMemoryState } from './types.ts';
 
 const MAX_RETRIES = 3;
 
@@ -28,13 +29,20 @@ export class TaskDecomposerImpl implements TaskDecomposer {
     this.skillStore = options.skillStore;
   }
 
-  async decompose(input: TaskInput, perception: PerceptualHierarchy, memory: WorkingMemoryState): Promise<TaskDAG> {
+  async decompose(
+    input: TaskInput,
+    perception: PerceptualHierarchy,
+    memory: WorkingMemoryState,
+    routing?: RoutingDecision,
+  ): Promise<TaskDAG> {
     // PH5 D2: Check if a composed skill matches the task fingerprint
     if (this.skillStore) {
       const composed = this.skillStore.findComposedSkill(input.goal);
       if (composed?.composedOf?.length) {
         const subSkills = composed.composedOf.map((sig) => this.skillStore!.findBySignature(sig)).filter(Boolean);
         if (subSkills.length > 0) {
+          // Composed-skill DAGs are mutually exclusive with rooms (room-selector
+          // rejects isFromComposedSkill) — return as-is.
           return {
             nodes: subSkills.map((skill, i) => ({
               id: `s${i + 1}`,
@@ -66,6 +74,8 @@ export class TaskDecomposerImpl implements TaskDecomposer {
       const presetBlastRadius = [...(input.targetFiles ?? []), ...perception.dependencyCone.directImportees];
       const criteria = validateDAG(presetDag, presetBlastRadius);
       if (allCriteriaMet(criteria)) {
+        // Presets and rooms are mutually exclusive by design: research-swarm
+        // already has its own role contract via preamble injection.
         return presetDag;
       }
       // If the preset somehow produced an invalid DAG (e.g. blast radius
@@ -100,6 +110,15 @@ export class TaskDecomposerImpl implements TaskDecomposer {
 
         const criteria = validateDAG(dag, blastRadius);
         if (allCriteriaMet(criteria)) {
+          // ACR: after validation, check if this DAG qualifies for a Room
+          // (fan-out → fan-in topology, high risk, L2+). Pure function —
+          // no LLM in the room-selection decision (A3).
+          if (routing) {
+            const roomContract = selectRoomContract(dag, routing, input);
+            if (roomContract) {
+              return { ...dag, collaborationMode: 'room', roomContract };
+            }
+          }
           return dag;
         }
 

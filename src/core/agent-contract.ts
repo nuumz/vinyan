@@ -53,6 +53,20 @@ export const AgentContractSchema = z.object({
   // Metadata
   issuedAt: z.number(),
   immutable: z.literal(true).default(true),
+
+  // ACR (Agent Conversation Room) — optional metadata set by RoomDispatcher when
+  // the contract is cloned for a room participant. Carries no budget or
+  // authorization semantics (those live on `capabilities` / token fields);
+  // this is purely for observability and future room-aware tool gating. A6
+  // scope is still enforced externally by RoomBlackboard, not by this field.
+  roomContext: z
+    .object({
+      roomId: z.string(),
+      participantId: z.string(),
+      roleName: z.string(),
+      writableBlackboardKeys: z.array(z.string()),
+    })
+    .optional(),
 });
 
 export type AgentContract = z.infer<typeof AgentContractSchema>;

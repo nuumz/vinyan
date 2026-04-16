@@ -48,6 +48,10 @@ import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
+import { RoomStore } from '../db/room-store.ts';
+import { RoomDispatcher } from './room/room-dispatcher.ts';
+import { runAgentLoop } from './worker/agent-loop.ts';
 import {
   FailureClusterDetector,
   type FailureCluster,
@@ -930,6 +934,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskQueue: k2TaskQueue,
     executeTask: executeTaskThunk,
     bus,
+  });
+
+  // ACR: Wire RoomDispatcher. The `resolveParticipant` callback queries the
+  // local workerStore for distinct-model candidates; when the fleet has fewer
+  // than 2 distinct modelIds active, it returns null, phase-generate catches
+  // RoomAdmissionFailure, and the dispatch falls through to the existing
+  // agentic-loop branch — a safe, additive degrade path.
+  const roomStore = db ? new RoomStore(db.getDb()) : undefined;
+  deps.roomDispatcher = new RoomDispatcher({
+    runAgentLoop,
+    resolveParticipant: async ({ usedModelIds }) => {
+      if (!workerStore) return null;
+      const candidates = workerStore.findActive();
+      const available = candidates.find((w) => !usedModelIds.has(w.config.modelId));
+      if (!available) return null;
+      return { workerId: available.id, workerModelId: available.config.modelId };
+    },
+    workspace,
+    bus,
+    goalVerifier: goalAlignmentVerify,
+    roomStore,
   });
 
   // Wave 5a: Reactive micro-learning — close the failure-cluster → rule loop.

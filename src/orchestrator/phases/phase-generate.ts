@@ -128,32 +128,88 @@ export async function executeGeneratePhase(
         );
       }
     } else {
-      // L2+: agentic loop (multi-turn with tools)
+      // L2+: agentic loop (multi-turn with tools) OR Agent Conversation Room
       const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
       const { runAgentLoop } = await import('../worker/agent-loop.ts');
-      try {
-        lastAgentResult = await runAgentLoop(
-          input,
-          perception,
-          workingMemory.getSnapshot(),
-          plan,
-          routing,
-          agentLoopDeps,
-          understanding,
-          contract,
-          conversationHistory,
-        );
-      } catch (agentLoopErr) {
-        // Fallback: subprocess agent loop failed — degrade to single-shot in-process dispatch
-        console.warn(`[vinyan] Agent loop failed, falling back to single-shot dispatch: ${String(agentLoopErr)}`);
-        workerResult = await deps.workerPool.dispatch(
-          input, perception, workingMemory.getSnapshot(), plan, routing, understanding, contract, conversationHistory,
-        );
-        // Skip agentic result mapping — use single-shot result directly
-        lastAgentResult = null;
+
+      // ── ACR (Agent Conversation Room) branch ───────────────────────
+      // When the decomposer emitted `collaborationMode: 'room'` AND a
+      // RoomDispatcher is wired, route the task through a role-scoped
+      // supervisor FSM (drafter → critic → integrator with shared ledger
+      // + blackboard). On admission failure or any other room error, we
+      // fall through to the existing agentic-loop branch as a safe
+      // degrade — the room is strictly additive.
+      let roomHandled = false;
+      if (plan?.collaborationMode === 'room' && plan.roomContract && deps.roomDispatcher) {
+        try {
+          const dispatchOutcome = await deps.roomDispatcher.execute({
+            parentInput: input,
+            perception,
+            memory: workingMemory.getSnapshot(),
+            plan,
+            routing,
+            parentContract: contract,
+            agentLoopDeps,
+            understanding,
+            conversationHistory,
+            contract: plan.roomContract,
+          });
+          workerResult = {
+            mutations: dispatchOutcome.mutations
+              .filter((m) => m.content !== null)
+              .map((m) => ({
+                file: m.file,
+                content: m.content ?? '',
+                diff: m.diff,
+                explanation: m.explanation,
+              })),
+            proposedToolCalls: [],
+            uncertainties: dispatchOutcome.uncertainties,
+            tokensConsumed: dispatchOutcome.tokensConsumed,
+            cacheReadTokens: dispatchOutcome.cacheReadTokens,
+            cacheCreationTokens: dispatchOutcome.cacheCreationTokens,
+            durationMs: dispatchOutcome.durationMs,
+            needsUserInput: dispatchOutcome.needsUserInput,
+          };
+          isAgenticResult = true;
+          roomHandled = true;
+        } catch (roomErr) {
+          console.warn(`[vinyan] Room dispatch failed, falling back to agentic-loop: ${String(roomErr)}`);
+        }
       }
 
-      if (lastAgentResult) {
+      if (!roomHandled) {
+        try {
+          lastAgentResult = await runAgentLoop(
+            input,
+            perception,
+            workingMemory.getSnapshot(),
+            plan,
+            routing,
+            agentLoopDeps,
+            understanding,
+            contract,
+            conversationHistory,
+          );
+        } catch (agentLoopErr) {
+          // Fallback: subprocess agent loop failed — degrade to single-shot in-process dispatch
+          console.warn(`[vinyan] Agent loop failed, falling back to single-shot dispatch: ${String(agentLoopErr)}`);
+          workerResult = await deps.workerPool.dispatch(
+            input,
+            perception,
+            workingMemory.getSnapshot(),
+            plan,
+            routing,
+            understanding,
+            contract,
+            conversationHistory,
+          );
+          // Skip agentic result mapping — use single-shot result directly
+          lastAgentResult = null;
+        }
+      }
+
+      if (!roomHandled && lastAgentResult) {
         isAgenticResult = true;
         workerResult = {
           mutations: lastAgentResult.mutations

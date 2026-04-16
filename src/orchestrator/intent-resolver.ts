@@ -83,6 +83,12 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - Tasks requiring exploration before action
    - Tasks spanning multiple files without clear targets
 
+5. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
+   - If user asks for a CATEGORY (e.g., "แอพ mail", "email app", "browser") and a preference exists → ALWAYS use the preferred app
+   - Generate the directToolCall command for the PREFERRED app, not the platform default
+   - Example: if user prefers "gmail" for "mail", then "เปิดแอพ mail" → open Gmail's URL, NOT "open -a Mail"
+   - If user names a SPECIFIC app ("เปิด Outlook"), respect that even if preference says something else
+
 workflowPrompt guidelines (for "agentic-workflow" ONLY):
 - Write it as if briefing a smart colleague who just walked into the room
 - Include: what to accomplish, what approach to take, what success looks like
@@ -203,6 +209,8 @@ export interface IntentResolverDeps {
   registry: LLMProviderRegistry;
   availableTools?: string[];
   bus?: VinyanBus;
+  /** Formatted user preferences string for prompt injection (from UserPreferenceStore). */
+  userPreferences?: string;
 }
 
 const INTENT_TIMEOUT_MS = 8000;
@@ -218,12 +226,13 @@ export async function resolveIntent(
 
   const toolList = deps.availableTools?.join(', ') ?? 'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
 
+  const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
   const userPrompt = `User goal: "${input.goal}"
 Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
 Constraints: ${input.constraints?.join(', ') || 'none'}
 Current platform: ${process.platform}
-Available tools: ${toolList}`;
+Available tools: ${toolList}${preferencesBlock}`;
 
   const response = await withTimeout(
     provider.generate({

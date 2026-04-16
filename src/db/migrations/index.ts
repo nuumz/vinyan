@@ -22,7 +22,25 @@ import { migration012 } from './012_add_economy_tables.ts';
 import { migration013 } from './013_add_market_tables.ts';
 import { migration014 } from './014_add_federation_economy.ts';
 import { migration015 } from './015_add_session_messages.ts';
+import { migration016 } from './016_add_room_tables.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015];
+export const ALL_MIGRATIONS: Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+  migration004,
+  migration005,
+  migration006,
+  migration007,
+  migration008,
+  migration009,
+  migration010,
+  migration011,
+  migration012,
+  migration013,
+  migration014,
+  migration015,
+  migration016,
+];

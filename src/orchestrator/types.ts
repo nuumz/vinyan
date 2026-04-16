@@ -959,6 +959,22 @@ export interface TaskDAG {
    * decomposer (Phase A §7 seam #2, closed in Wave 5 phase 2).
    */
   preamble?: string[];
+  /**
+   * ACR (Agent Conversation Room): when set to 'room', the Generate
+   * phase dispatches this DAG through `RoomDispatcher` instead of the
+   * default agentic-loop path. The decomposer only sets this after
+   * validation when `selectRoomContract()` determines the topology
+   * and routing meet the trigger rules. Absent / 'solo' / 'dag'
+   * leaves existing dispatch paths unchanged.
+   */
+  collaborationMode?: 'solo' | 'dag' | 'room';
+  /**
+   * ACR: room contract for the Supervisor FSM. Required when
+   * `collaborationMode === 'room'`. Carries roles, round caps,
+   * convergence threshold, and shared token budget. See
+   * `src/orchestrator/room/types.ts:RoomContract` for the schema.
+   */
+  roomContract?: import('./room/types.ts').RoomContract;
 }
 
 /** 5 machine-checkable criteria for DAG validation */

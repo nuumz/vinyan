@@ -1,7 +1,7 @@
 # Formal Frameworks for Epistemic Humility in Distributed Verification Systems
 
 > **Date:** 2026-04-01 | **Status:** Research | **Audience:** Protocol designers, architects
-> **Relevance:** Informs ECP v2 epistemic semantics (ecp-spec.md ss4), confidence model evolution, and multi-engine verdict composition.
+> **Relevance:** Informs ECP epistemic semantics (ecp-spec.md ss4), confidence model evolution, and multi-engine verdict composition.
 
 ---
 
@@ -108,7 +108,7 @@ Extends DST with an explicit opinion representation: a tuple omega = (b, d, u, a
 - *Binary frame limitation* for the basic model. Multinomial extensions (Dirichlet opinions) exist but add complexity.
 - *Less widely adopted* than Bayesian methods; fewer implementations and tools.
 
-**ECP relevance:** Subjective Logic is the strongest candidate for ECP v2's confidence model. An oracle verdict could carry omega = (b, d, u, a) instead of -- or in addition to -- a scalar confidence. The projected probability P = b + a*u maintains backward compatibility with the current confidence field. The uncertainty mass u directly answers "how much evidence was actually examined?" and the fusion operators provide principled verdict aggregation.
+**ECP relevance:** Subjective Logic is the strongest candidate for ECP's confidence model. An oracle verdict could carry omega = (b, d, u, a) instead of -- or in addition to -- a scalar confidence. The projected probability P = b + a*u maintains backward compatibility with the current confidence field. The uncertainty mass u directly answers "how much evidence was actually examined?" and the fusion operators provide principled verdict aggregation.
 
 **Assessment matrix:**
 

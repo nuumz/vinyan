@@ -413,17 +413,6 @@ function defaults<T extends z.ZodType>(schema: T): z.output<T> {
   return schema.parse({});
 }
 
-// ─── ECP v2 Feature Flags ────────────────────────────────────────────
-
-export const ECPFlagsSchema = z.object({
-  /** Gates B1 (Zod confidence default 0.5) + B2 (zero-oracle quality 0.5). HIGH risk. */
-  ECP_SCHEMA_DEFAULTS: z.boolean().default(false),
-  /** Gates B5-B10 (enrichment, wiring, pipeline split, calibration). MEDIUM risk. */
-  ECP_ENRICHMENT: z.boolean().default(false),
-});
-
-export type ECPFlags = z.infer<typeof ECPFlagsSchema>;
-
 // ─── Engine Configuration (non-LLM reasoning engines) ──────────────
 
 const EnginesConfigSchema = z.object({
@@ -462,8 +451,6 @@ export const VinyanConfigSchema = z.object({
   fleet: FleetConfigSchema.optional(),
   /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
   network: NetworkConfigSchema.optional(),
-  /** ECP v2 feature flags — progressive rollout of epistemic improvements. */
-  ecp: ECPFlagsSchema.optional(),
   /** Economy Operating System — cost tracking, budgets, market, federation. */
   economy: EconomyConfigSchema.optional(),
   /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */

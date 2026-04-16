@@ -164,7 +164,7 @@ export function buildComplexityContext(
   };
 }
 
-// ── ECP v2: Pipeline-split helpers (DE4) ────────────────────────────
+// ── Pipeline-split helpers (DE4) ────────────────────────────────────
 
 /**
  * Compute architecturalCompliance directly from oracle verdicts.
@@ -175,7 +175,7 @@ export function computeFromVerdicts(
   oracleTiers?: Record<string, string>,
 ): number {
   const entries = Object.entries(oracleResults);
-  if (entries.length === 0) return 0.5; // ECP v2: unknown = maximum uncertainty
+  if (entries.length === 0) return 0.5; // unknown = maximum uncertainty (A2)
 
   if (oracleTiers) {
     let weightedSum = 0;

@@ -97,7 +97,7 @@ export function validateLevel1Verdict(verdictJson: string): Level1Check[] {
       : undefined,
   });
 
-  // C6 (ECP v2): SL opinion consistency — if present, b+d+u must equal 1.0 (±0.001)
+  // C6: SL opinion consistency — if present, b+d+u must equal 1.0 (±0.001)
   const opinion = verdict.opinion as { belief: number; disbelief: number; uncertainty: number; baseRate: number } | undefined;
   if (opinion) {
     const sum = opinion.belief + opinion.disbelief + opinion.uncertainty;

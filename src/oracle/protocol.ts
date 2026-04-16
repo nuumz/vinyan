@@ -72,7 +72,7 @@ export const OracleVerdictSchema = z.object({
   deliberationRequest: DeliberationRequestSchema.optional(),
   temporalContext: TemporalContextSchema.optional(),
 
-  // ── ECP v2 additions (all optional for backward compat) ──
+  // ── SL + tier metadata (all optional for backward compat) ──
   opinion: _SOS.optional(),
   tierReliability: z.number().min(0).max(1).optional(),
   engineCertainty: z.number().min(0).max(1).optional(),

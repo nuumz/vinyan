@@ -54,7 +54,7 @@ export function verdictToECPDataPart(
       errorCode: verdict.errorCode,
     },
     signer: options.instanceId ? { instance_id: options.instanceId, public_key: options.publicKey ?? '' } : undefined,
-    // ECP v2 wire fields (snake_case)
+    // ECP wire fields (snake_case)
     tier_reliability: verdict.tierReliability,
     engine_certainty: verdict.engineCertainty,
     confidence_source: verdict.confidenceSource,
@@ -100,7 +100,7 @@ export function ecpDataPartToVerdict(dataPart: ECPDataPart, peerTrust: PeerTrust
           decayModel: 'none' as const,
         }
       : undefined,
-    // ECP v2: translate snake_case wire fields to camelCase
+    // Translate snake_case wire fields to camelCase
     tierReliability: (dataPart as Record<string, unknown>).tier_reliability as number | undefined,
     engineCertainty: (dataPart as Record<string, unknown>).engine_certainty as number | undefined,
     // A6 trust override: untrusted peers' confidenceSource is downgraded to 'llm-self-report'

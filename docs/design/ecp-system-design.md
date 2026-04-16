@@ -1,4 +1,4 @@
-# ECP v2: System Design & Implementation Plan
+# ECP: System Design & Implementation Plan
 
 > **Date:** 2026-04-04 | **Status:** Design Draft | **Produced by:** Expert Agent Team (4 domain specialists + Orchestrator)
 > **Input:** [ecp-migration-brainstorm.md](../research/ecp-migration-brainstorm.md) — corrected and refined by codebase verification
@@ -74,7 +74,7 @@ The brainstorm document ([ecp-migration-brainstorm.md](../research/ecp-migration
 ### 3.1 Architecture Overview
 
 ```
-┌──────────────────────── ECP v2 Change Surface ─────────────────────────┐
+┌──────────────────────── ECP Change Surface ──────────────────────────┐
 │                                                                         │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ┌────────────┐ │
 │  │ Schema Layer │  │ Behavioral   │  │ Verification  │  │ Integration│ │
@@ -1057,7 +1057,7 @@ Every v2 change traces to a Vinyan axiom:
 
 ## 11. Deferred Debate Items
 
-The following items were identified during the [ECP v2 debate synthesis](../research/ecp-debate-synthesis.md) as Tier 0 (critical) but are **not in v2 scope**. They are behavioral/operational capabilities, not protocol-layer changes.
+The following items were identified during the [ECP debate synthesis](../research/ecp-debate-synthesis.md) as Tier 0 (critical) but are **not in current scope**. They are behavioral/operational capabilities, not protocol-layer changes.
 
 | Item | Source | Deferral Rationale |
 |------|--------|--------------------|

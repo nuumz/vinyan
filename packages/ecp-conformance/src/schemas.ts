@@ -110,7 +110,7 @@ export const Level3VerdictSchema = Level2VerdictSchema.extend({
   signerInstanceId: z.string().optional(),
 });
 
-// ── ECP v2: Subjective Logic opinion + belief interval ──────────────
+// ── Subjective Logic opinion + belief interval ──────────────────────
 
 export const SubjectiveOpinionSchema = z.object({
   belief: z.number().min(0).max(1),

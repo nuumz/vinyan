@@ -1,6 +1,6 @@
-# ECP v2 System Design Debate — Synthesis
+# ECP System Design Debate — Synthesis
 
-> **Document boundary**: This document owns the system design review verdict for ECP v1→v2 transformation.
+> **Document boundary**: This document owns the system design review verdict for ECP evolution.
 > For strategic debate (should we? what's missing?), see [ecp-debate-synthesis.md](ecp-debate-synthesis.md).
 > For the design doc itself, see [../design/ecp-system-design.md](../design/ecp-system-design.md).
 

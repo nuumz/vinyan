@@ -125,7 +125,7 @@ export const ECPDataPartSchema = z.object({
   signer: SignerSchema.optional(),
   signature: z.string().optional(),
 
-  // ── ECP v2 wire-format additions (all optional for backward compat) ──
+  // ── ECP wire-format additions (all optional for backward compat) ──
   tier_reliability: z.number().min(0).max(1).optional(),
   engine_certainty: z.number().min(0).max(1).optional(),
   confidence_source: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),

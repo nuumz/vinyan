@@ -50,7 +50,7 @@ Vinyan's epistemic confidence system is **75% implemented**. The 4 critical defi
 | G6 | Oracle accuracy store not wired into conflict resolver; Steps 3/4 (evidence weight, historical accuracy) in resolver are unreachable dead code — Step 2 (SL fusion) always returns before them; `oracleAccuracy` config field accepted but never read | Gate layer | High | B |
 | G7 | Source independence not declared in oracle registry | Gate → SL fusion | Low | B |
 | G8 | `temporalDecay()` implemented in `subjective-opinion.ts` L394-425 but never called — not yet wired into gate or pipeline | Core SL library | Low | C |
-| G9 | ECP v2: SL opinions not in wire protocol | A2A layer | Low | C |
+| G9 | SL opinions not in wire protocol | A2A layer | Low | C |
 | G10 | Base rate not calibrated from prediction errors | Core SL library | Low | C |
 | G12 | Sleep Cycle confidence thresholds undefined | Evolution layer | Low | C |
 
@@ -265,7 +265,7 @@ Temporal decay makes the system time-aware — stale evidence weakens automatica
 |-----------|---------|-------|
 | Native SL opinions per oracle | When `fromScalar()` bridge causes measurable information loss | Per-oracle refactor |
 | Data-driven temporal defaults | When World Graph has ≥1000 facts with validity tracking | Replace hardcoded TTLs |
-| ECP v2 wire protocol with opinions | When multi-instance coordination needs inter-agent uncertainty | `src/a2a/` protocol layer |
+| ECP wire protocol with opinions | When multi-instance coordination needs inter-agent uncertainty | `src/a2a/` protocol layer |
 | Conformal prediction calibration | When oracle accuracy data shows systematic miscalibration | Add calibration layer between oracle and gate |
 | Open-world mass (unknown unknowns) | Research breakthrough in quantifiable ignorance | Extend SL opinion tuple |
 
@@ -295,7 +295,7 @@ Every phase change maps to at least one axiom:
 | G6: Accuracy store | A7 (Prediction Error as Learning) | Historical accuracy calibrates future conflict resolution |
 | G7: Independence | A5 (Tiered Trust) | Correlated sources fused differently than independent ones |
 | G8: Temporal decay | A4 + A2 | Evidence weakens over time; uncertainty is first-class |
-| G9: ECP v2 opinions | A2 (First-Class Uncertainty) | Wire protocol carries uncertainty, not just confidence |
+| G9: ECP opinions | A2 (First-Class Uncertainty) | Wire protocol carries uncertainty, not just confidence |
 | G10: Base rate calibration | A7 (Prediction Error) | Prediction errors calibrate SL priors |
 | G11: Persist to trace *(done)* | A3 (Deterministic Governance) | Decisions auditable and reproducible |
 | G12: Sleep Cycle thresholds | A7 (Prediction Error) | Pattern promotion gated by evidence quality |

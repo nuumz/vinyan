@@ -1,4 +1,4 @@
-# ECP v2 Migration: Deep Research & Architectural Analysis
+# ECP Evolution: Deep Research & Architectural Analysis
 
 > **Date:** 2026-04-04 | **Status:** Research Brainstorm | **Author:** Agentic Research
 > **Prerequisite reading:** [ecp-research.md](./ecp-research.md), [ecp-spec.md](../spec/ecp-spec.md), [design-subjective-logic.md](./design-subjective-logic.md)
@@ -8,15 +8,15 @@
 
 ## Executive Summary
 
-ECP v1 is a fully functional epistemic protocol for local oracle coordination, with a strong foundation: 4 epistemic types, tiered trust clamping, temporal decay, falsifiability conditions, and a Subjective Logic (SL) fusion engine already integrated into the conflict resolver (Phase 4.8). The migration to v2 is not about replacing a broken system — it's about resolving 5 known theoretical limitations that become critical when ECP crosses network boundaries (PH5.18) or coordinates fleet-scale verification (Phase 4+). The codebase is **70-80% ready** for v2: `SubjectiveOpinion` is implemented, `fuseAll()` runs in production, and the conflict resolver already uses Jøsang's K constant. The remaining work is primarily **schema evolution** (wire format), **pipeline confidence propagation**, and **confidence source separation** — not fundamental architectural changes.
+ECP v1 is a fully functional epistemic protocol for local oracle coordination, with a strong foundation: 4 epistemic types, tiered trust clamping, temporal decay, falsifiability conditions, and a Subjective Logic (SL) fusion engine already integrated into the conflict resolver (Phase 4.8). The evolution is not about replacing a broken system — it's about resolving 5 known theoretical limitations that become critical when ECP crosses network boundaries (PH5.18) or coordinates fleet-scale verification (Phase 4+). The codebase is **70-80% ready**: `SubjectiveOpinion` is implemented, `fuseAll()` runs in production, and the conflict resolver already uses Jøsang's K constant. The remaining work is primarily **schema evolution** (wire format), **pipeline confidence propagation**, and **confidence source separation** — not fundamental architectural changes.
 
 **Confidence: High** (grounded in existing codebase analysis + formal frameworks already surveyed in `formal-uncertainty-frameworks.md`, `ehd-synthesis.md`, and `design-subjective-logic.md`).
 
 ---
 
-## 1. Current State Assessment (ECP v1)
+## 1. Current State Assessment
 
-### 1.1 What v1 Gets Right
+### 1.1 What ECP Gets Right
 
 | Feature | Implementation | Axiom |
 |---------|---------------|-------|
@@ -35,7 +35,7 @@ ECP v1 is a fully functional epistemic protocol for local oracle coordination, w
 
 **Source:** Comprehensive codebase analysis of `src/core/types.ts`, `src/core/subjective-opinion.ts`, `src/gate/conflict-resolver.ts`, `src/oracle/tier-clamp.ts`, `src/mcp/ecp-translation.ts`, `src/a2a/ecp-data-part.ts`, `packages/ecp-conformance/`.
 
-### 1.2 What v1 Gets Wrong (Known Deficits)
+### 1.2 Known Deficits
 
 **Source:** `ehd-synthesis.md` §2 "Four Critical Deficits" + `ecp-research.md` §1-5 + `formal-uncertainty-frameworks.md` §2.
 
@@ -53,7 +53,7 @@ ECP v1 is a fully functional epistemic protocol for local oracle coordination, w
 
 **Sources:** Dempster (1967); Shafer (1976); Jøsang (2016); Pearl (1988); Caprio et al. (2024); Sale et al. (2023); Ben-Haim (2006); Smets & Kennes (1994). Wikipedia DS Theory (edited Mar 2026). Wikipedia Subjective Logic (edited Mar 2026).
 
-| Aspect | Bayesian Probability | Dempster-Shafer (DST) | Subjective Logic (SL) | Imprecise Probabilities | ECP v1 (Current) |
+| Aspect | Bayesian Probability | Dempster-Shafer (DST) | Subjective Logic (SL) | Imprecise Probabilities | ECP (Current) |
 |--------|---------------------|----------------------|----------------------|------------------------|------------------|
 | **"I don't know"** | No — must assign P | Yes — m(Θ) = full uncertainty | Yes — (0,0,1,a) vacuous | Yes — full simplex | Partial — `type: 'unknown'` but confidence still scalar |
 | **Evidence granularity** | Single P(H\|E) | Mass functions on power set | (b,d,u,a) tuple | Credal set [P_lower, P_upper] | Single scalar |
@@ -68,7 +68,7 @@ ECP v1 is a fully functional epistemic protocol for local oracle coordination, w
 
 ### Assessment
 
-**Subjective Logic is the clear winner for ECP v2.** This is not a new finding — `design-subjective-logic.md` and `formal-uncertainty-frameworks.md` already reached this conclusion. The codebase has validated it through Phase 4.8 integration. Key advantages over raw DST:
+**Subjective Logic is the clear winner for ECP.** This is not a new finding — `design-subjective-logic.md` and `formal-uncertainty-frameworks.md` already reached this conclusion. The codebase has validated it through Phase 4.8 integration. Key advantages over raw DST:
 
 1. **No Zadeh's Paradox.** SL's cumulative fusion handles high-conflict pairs gracefully (K > 0.5 → reject, don't normalize). Dempster's rule normalizes conflict away, producing counter-intuitive results (Zadeh, 1979; Jøsang, 2012 proved Dempster's rule is only correct for belief *constraints*, not cumulative evidence).
 2. **Multiple fusion operators.** `fuseAll()` already selects cumulative/averaging/weighted by Jaccard overlap — directly addressing the dependent-source problem that simple DS combination ignores.
@@ -82,12 +82,12 @@ ECP v1 is a fully functional epistemic protocol for local oracle coordination, w
 
 ### 3.1 Protocol Bridge Gaps
 
-| Protocol | ECP v1 Bridge | v2 Impact |
+| Protocol | Current Bridge | Evolution Impact |
 |----------|--------------|-----------|
-| **MCP** (Anthropic, 2024) | `ecp-translation.ts`: `mcpToEcp()` caps at trust level; `ecpToMcp()` flattens to JSON | v2: Add `opinion` to JSON payload for Vinyan-aware MCP consumers; ignored by others |
-| **A2A** (Google, 2025) | `ecp-a2a-translation.ts`: full ECP data part with `sl_opinion` field | v2: Already carries SL opinion; add `belief_interval` and `tier_reliability`/`engine_certainty` split |
-| **LSP** (Microsoft) | Not bridged | v2: Diagnostic severity maps to tier (error=deterministic, warning=heuristic, info=speculative) |
-| **JSON-RPC 2.0** | Base transport | v2: No change — ECP v2 fields are additive extensions to params/result |
+| **MCP** (Anthropic, 2024) | `ecp-translation.ts`: `mcpToEcp()` caps at trust level; `ecpToMcp()` flattens to JSON | Add `opinion` to JSON payload for Vinyan-aware MCP consumers; ignored by others |
+| **A2A** (Google, 2025) | `ecp-a2a-translation.ts`: full ECP data part with `sl_opinion` field | Already carries SL opinion; add `belief_interval` and `tier_reliability`/`engine_certainty` split |
+| **LSP** (Microsoft) | Not bridged | Diagnostic severity maps to tier (error=deterministic, warning=heuristic, info=speculative) |
+| **JSON-RPC 2.0** | Base transport | No change — new ECP fields are additive extensions to params/result |
 
 ### 3.2 Cross-Protocol Challenge: Confidence Semantics
 
@@ -97,21 +97,21 @@ The fundamental interoperability problem: **no other protocol speaks uncertainty
 - A2A tasks report `completed`/`failed` with no partial success semantics
 - LSP diagnostics are severity-classified but have no probabilistic dimension
 
-**v2 mitigation:** ECP v2 verdicts always include both `confidence` (scalar, universally consumable) AND `opinion` (SL tuple, for epistemically-aware consumers). Bridge layers translate downward (SL → scalar) but never upward (external claims never become SL opinions without evidence).
+**Mitigation:** ECP verdicts always include both `confidence` (scalar, universally consumable) AND `opinion` (SL tuple, for epistemically-aware consumers). Bridge layers translate downward (SL → scalar) but never upward (external claims never become SL opinions without evidence).
 
 **Confidence: High** — directly observable from bridge implementations already in codebase.
 
 ---
 
-## 4. Design Principles for v2 Migration
+## 4. Design Principles for ECP Evolution
 
 ### 4.1 Additive Evolution, Not Breaking Change
 
-**Principle:** Every v2 extension is an optional field. v1 consumers MUST work unchanged. The scalar `confidence` field is NEVER removed.
+**Principle:** Every new extension is an optional field. Existing consumers MUST work unchanged. The scalar `confidence` field is NEVER removed.
 
 ```
-v1 consumer sees: { confidence: 0.85, type: "known", ... }
-v2 consumer sees: { confidence: 0.85, type: "known", opinion: {b:0.85, d:0.15, u:0, a:0.5},
+basic consumer sees: { confidence: 0.85, type: "known", ... }
+full consumer sees:  { confidence: 0.85, type: "known", opinion: {b:0.85, d:0.15, u:0, a:0.5},
                      tier_reliability: 1.0, engine_certainty: 0.85, ... }
 ```
 
@@ -128,7 +128,7 @@ if (!verdict.opinion) {
 ### 4.2 Confidence Source Separation (D4 Resolution)
 
 **Current:** Single `confidence` encodes tier methodology + verdict certainty.
-**v2:** Split into two fields:
+**Target:** Split into two fields:
 
 ```typescript
 // Set by Orchestrator from registry (NOT by engine itself)
@@ -145,22 +145,22 @@ engine_certainty: number;   // The engine's specific assessment of this verdict
 ### 4.3 Vacuous Default (D3 Resolution)
 
 **Current:** `buildVerdict()` defaults to `confidence: 1.0`.
-**v2:** Default to vacuous opinion when no confidence explicitly set:
+**Target:** Default to vacuous opinion when no confidence explicitly set:
 
 ```typescript
-// v1 default (dangerous): confidence: 1.0, type: "known"
-// v2 default (epistemically honest):
+// current default (dangerous): confidence: 1.0, type: "known"
+// target default (epistemically honest):
 //   confidence: 0.5 (projected probability of vacuous opinion with a=0.5)
 //   opinion: vacuous(0.5) → {b:0, d:0, u:1, a:0.5}
 //   confidenceReported: false
 ```
 
-**Impact:** This is the **highest-risk change** in v2. Every oracle that doesn't explicitly set confidence will now report uncertainty instead of false certainty. Requires audit of all 5 built-in oracles + any external oracles via conformance suite.
+**Impact:** This is the **highest-risk change**. Every oracle that doesn't explicitly set confidence will now report uncertainty instead of false certainty. Requires audit of all 5 built-in oracles + any external oracles via conformance suite.
 
 ### 4.4 Pipeline Confidence Propagation (D2 Resolution)
 
 **Current:** 6-step loop (Perceive → Predict → Plan → Generate → Verify → Learn) with no compound tracking.
-**v2:** `PipelineConfidence` type (already designed in `design-pipeline-confidence.md`) tracks per-step contribution and compound score.
+**Target:** `PipelineConfidence` type (already designed in `design-pipeline-confidence.md`) tracks per-step contribution and compound score.
 
 **Key formula (deterministic, A3):**
 ```
@@ -178,10 +178,10 @@ Decision mapping:
 
 **Source:** Xiong et al. (2024, ICLR) confirmed LLM self-reported confidence has high ECE (Expected Calibration Error). LLMs are overconfident, potentially imitating human patterns.
 
-**v2 enforcement:** No change in policy (already A3-compliant), but add **structural enforcement**:
+**Enforcement:** No change in policy (already A3-compliant), but add **structural enforcement**:
 
 ```typescript
-// v2: confidence_source field prevents LLM confidence from entering governance
+// confidence_source field prevents LLM confidence from entering governance
 confidence_source: 'evidence-derived' | 'self-model-calibrated' | 'llm-self-report';
 // Only 'evidence-derived' and 'self-model-calibrated' feed into routing/gating
 // 'llm-self-report' logged for A7 calibration analysis only
@@ -191,7 +191,7 @@ confidence_source: 'evidence-derived' | 'self-model-calibrated' | 'llm-self-repo
 
 ## 5. Architecture (Migration Blueprint)
 
-### 5.1 Component Interaction (v1 → v2 Delta)
+### 5.1 Component Interaction (Current → Target Delta)
 
 ```mermaid
 sequenceDiagram
@@ -202,7 +202,7 @@ sequenceDiagram
     participant CR as ConflictResolver
     participant WG as WorldGraph
 
-    Note over O,WG: ── v2 additions shown in [brackets] ──
+    Note over O,WG: ── new additions shown in [brackets] ──
 
     O->>R: getOracleEntry(name)
     R-->>O: {tier, transport, patterns, [tier_reliability]}
@@ -230,7 +230,7 @@ sequenceDiagram
 
 ### 5.2 Schema Evolution Map
 
-| Component | v1 Schema | v2 Addition | File |
+| Component | Current Schema | New Addition | File |
 |-----------|----------|-------------|------|
 | `OracleVerdict` | `confidence`, `opinion?` | `tier_reliability?`, `engine_certainty?`, `confidence_source?`, `belief_interval?` | `src/core/types.ts` |
 | `OracleVerdictSchema` (Zod) | `confidence`, no SL | `opinion?`, `tier_reliability?`, `engine_certainty?`, `confidence_source?` | `src/oracle/protocol.ts` |
@@ -245,10 +245,10 @@ sequenceDiagram
 | Conformance L1 | `confidence` range by type | Validate `opinion` consistency when present | `packages/ecp-conformance/` |
 | Conformance L2 | `temporalContext` | `belief_interval` validation, `confidence_source` enum | `packages/ecp-conformance/` |
 
-### 5.3 Data Contracts (v2 Wire Format)
+### 5.3 Data Contracts (Target Wire Format)
 
 ```typescript
-// ── OracleVerdict v2 (superset of v1) ──────────────────────
+// ── OracleVerdict (extended, superset of current) ──────────
 
 interface OracleVerdictV2 {
   // v1 fields (ALL mandatory, unchanged)
@@ -268,7 +268,7 @@ interface OracleVerdictV2 {
   deliberationRequest?: DeliberationRequest;
   qualityScore?: QualityScore;
 
-  // ── v2 additions (all optional for backward compat) ──
+  // ── new additions (all optional for backward compat) ──
 
   /** SL opinion tuple — enriches scalar confidence with uncertainty dimension */
   opinion?: {
@@ -293,7 +293,7 @@ interface OracleVerdictV2 {
   /** How confidence was derived — governs governance eligibility */
   confidence_source?: 'evidence-derived' | 'self-model-calibrated' | 'llm-self-report';
 
-  /** v2 provenance: true if engine explicitly set confidence/opinion */
+  /** Provenance: true if engine explicitly set confidence/opinion */
   confidenceReported?: boolean;
 }
 
@@ -304,7 +304,7 @@ interface OracleVerdictV2 {
 //   belief_interval.plausibility = 1 - opinion.disbelief  (equivalently: belief + uncertainty)
 //   uncertainty_gap              = plausibility - belief = opinion.uncertainty
 
-// ── PipelineConfidence (new in v2) ──────────────────────────
+// ── PipelineConfidence (new) ────────────────────────────────
 
 interface PipelineConfidence {
   prediction: number;
@@ -330,7 +330,7 @@ interface MerkleEvidence extends Evidence {
   prev_hash: string | null;  // SHA-256 of previous evidence. Null for first.
   self_hash: string;         // SHA-256 of (file + line + snippet + contentHash + prev_hash)
 }
-// Deferred to v2.1 — local-only deployment doesn't need tamper-proofing.
+// Deferred — local-only deployment doesn't need tamper-proofing.
 // Threat model note: Merkle addresses integrity, not correctness.
 ```
 
@@ -338,7 +338,7 @@ interface MerkleEvidence extends Evidence {
 
 ## 6. Execution Environment & Sandboxing
 
-### 6.1 Transport Security per v2
+### 6.1 Transport Security
 
 | Transport | Sandbox | Auth | Confidence Impact |
 |-----------|---------|------|-------------------|
@@ -348,9 +348,9 @@ interface MerkleEvidence extends Evidence {
 | A2A (L3) | HTTPS + peer trust | Mutual TLS + Wilson LB | Peer cap 0.25-0.60 |
 | Container (L3) | Docker + cgroup | OCI + seccomp | Additional cap TBD |
 
-### 6.2 v2 Conformance Levels
+### 6.2 Conformance Levels
 
-| Level | v1 Requirements | v2 Additions |
+| Level | Current Requirements | New Additions |
 |-------|----------------|--------------|
 | L0 | `verified`, `evidence`, `fileHashes`, `durationMs` | No change |
 | L1 | + `type`, `confidence`, `contentHash`, `falsifiableBy` grammar | + If `opinion` present: validate b+d+u=1, validate P(opinion) ≈ confidence |
@@ -363,7 +363,7 @@ interface MerkleEvidence extends Evidence {
 
 ### 7.1 Scalability Limitations
 
-| Bottleneck | Current Impact | v2 Impact | Mitigation |
+| Bottleneck | Current Impact | Post-Evolution Impact | Mitigation |
 |-----------|---------------|-----------|------------|
 | SL fusion is O(k²) pairwise in conflict resolver | k=5 oracles → 25 pairs max | Same — oracle count is the limit, not SL cost | SL operations are O(1) each; no scaling concern below k=50 |
 | Jaccard dep-overlap in `fuseAll()` | O(k × d) where d = dep set size | Same | Pre-compute dep fingerprints; cache across verifications |
@@ -371,24 +371,24 @@ interface MerkleEvidence extends Evidence {
 | `belief_interval` derivation | N/A | O(1) per verdict | Zero concern |
 | Conformance validation (Zod parse) | ~0.1ms per verdict | +0.05ms for new fields | Still sub-millisecond |
 
-**Assessment:** v2 adds zero measurable performance cost. The computational overhead is entirely in schema validation (Zod), not in the epistemic math. **Confidence: High.**
+**Assessment:** These extensions add zero measurable performance cost. The computational overhead is entirely in schema validation (Zod), not in the epistemic math. **Confidence: High.**
 
 ### 7.2 Security Risks
 
-| Risk | Severity | v2 Mitigation |
+| Risk | Severity | Mitigation |
 |------|----------|---------------|
-| **LLM confidence injection** — Generator claims high confidence to bypass gating | High | `confidence_source: 'llm-self-report'` structurally excluded from governance path (A3). Already policy in v1; v2 makes it machine-enforceable. |
+| **LLM confidence injection** — Generator claims high confidence to bypass gating | High | `confidence_source: 'llm-self-report'` structurally excluded from governance path (A3). Already policy; the `confidence_source` field makes it machine-enforceable. |
 | **Opinion manipulation** — External oracle sends crafted SL opinion to inflate belief | Medium | `clampOpinionByTier()` enforces uncertainty floor (det≥0.01, heur≥0.10, prob≥0.25). A5 tier caps apply AFTER opinion intake. |
-| **Evidence chain forgery** (v2.1 Merkle) | Low (local) / High (network) | Merkle evidence + signature verification. Deferred to PH5.18. |
+| **Evidence chain forgery** (Merkle, deferred) | Low (local) / High (network) | Merkle evidence + signature verification. Deferred to PH5.18. |
 | **Trust escalation** — A2A peer gradually gains trust to bypass caps | Low | Wilson LB progression: untrusted(0.25) → provisional(0.40) → established(0.50) → trusted(0.60). Hard ceiling at 0.60 — no peer ever reaches local trust level. |
 | **Pipeline confidence gaming** — Manipulate one step to inflate composite | Low | Weighted formula is deterministic (A3); verification step has 40% weight — the hardest to game since it runs independent oracles. |
 
 ### 7.3 Agentic Failure Modes
 
-| Mode | v1 Handling | v2 Improvement |
+| Mode | Current Handling | Improvement |
 |------|-------------|----------------|
 | **Infinite delegation** | Budget caps (maxTokens, maxRetries, maxDurationMs) | Pipeline confidence drops below escalation threshold → forced `refuse` action |
-| **Hallucination-driven execution** | Oracle gate catches structural errors | v2 vacuous default → Generator output with no oracle verification stays at `confidence: vacuous` instead of `1.0` |
+| **Hallucination-driven execution** | Oracle gate catches structural errors | Vacuous default → Generator output with no oracle verification stays at `confidence: vacuous` instead of `1.0` |
 | **Cost runaway** | Per-task budget | Pipeline confidence enables early termination when compound uncertainty makes continuation wasteful |
 | **Overconfident consensus** | 5-step conflict resolver | SL fusion with Jaccard overlap prevents dependent oracles from artificially boosting confidence |
 
@@ -398,7 +398,7 @@ interface MerkleEvidence extends Evidence {
 |---------|-----------|
 | **"SL is academic, not production-proven"** | Partially valid. However, Vinyan's Phase 4.8 integration has been running SL fusion in the conflict resolver — this is empirical validation, not theory. The codebase has 400+ lines of SL implementation with full test coverage. |
 | **"Belief intervals add wire format bloat"** | ~80 bytes per verdict. Negligible vs. evidence arrays and file hashes already in the payload (typically 500-2000 bytes). |
-| **"Vacuous default will break existing oracles"** | **This is the real risk.** All 5 built-in oracles explicitly set confidence, so they're safe. But any external oracle that relies on `buildVerdict()` defaults will suddenly report low confidence. Migration guide + conformance suite v2 validation is essential. |
+| **"Vacuous default will break existing oracles"** | **This is the real risk.** All 5 built-in oracles explicitly set confidence, so they're safe. But any external oracle that relies on `buildVerdict()` defaults will suddenly report low confidence. Migration guide + conformance suite validation is essential. |
 | **"Pipeline confidence is over-engineering"** | The `ehd-synthesis.md` grading (B-) and the "0.8^6 = 0.26 reported as pass" finding both justify this. It's a direct fix for Deficit D2, not speculative improvement. |
 | **"Dempster's rule is better than SL fusion"** | Refuted by Zadeh (1979) and Jøsang (2012). DS combination normalizes conflict away; SL detects and rejects high-K pairs. Vinyan's oracle set has clear same-domain conflicts (AST vs Type) where DS would produce Zadeh's paradox. |
 
@@ -408,12 +408,12 @@ interface MerkleEvidence extends Evidence {
 
 ### Phase A: Schema Evolution (Low Risk, High Value)
 
-**Scope:** Add optional v2 fields to types and Zod schemas. No behavior change.
+**Scope:** Add optional new fields to types and Zod schemas. No behavior change.
 
 | Step | File | Change |
 |------|------|--------|
 | A1 | `src/core/types.ts` | Add `tier_reliability?`, `engine_certainty?`, `confidence_source?`, `belief_interval?` to `OracleVerdict` |
-| A2 | `src/oracle/protocol.ts` | Add v2 fields to `OracleVerdictSchema` (all `.optional()`) |
+| A2 | `src/oracle/protocol.ts` | Add new fields to `OracleVerdictSchema` (all `.optional()`) |
 | A3 | `src/a2a/ecp-data-part.ts` | Add `tier_reliability?`, `engine_certainty?`, `belief_interval?` to `ECPDataPartSchema` |
 | A4 | `src/core/types.ts` | Add `opinion?`, `tier_reliability?` to `Fact` |
 | A5 | `packages/ecp-conformance/src/schemas.ts` | Add L2 validation for new fields |
@@ -447,8 +447,8 @@ interface MerkleEvidence extends Evidence {
 |------|-----------|--------|
 | D1 | `packages/ecp-conformance/src/level2.ts` | Validate `belief_interval` consistency with `opinion` |
 | D2 | `packages/ecp-conformance/src/level3.ts` | Validate `tier_reliability`/`engine_certainty` split |
-| D3 | `packages/oracle-sdk-ts/` | Update SDK types to include v2 fields |
-| D4 | `src/a2a/agent-card.ts` | Advertise `ecp_version: 2` when v2 fields are populated |
+| D3 | `packages/oracle-sdk-ts/` | Update SDK types to include new fields |
+| D4 | `src/a2a/agent-card.ts` | Advertise extended ECP capabilities when new fields are populated |
 | D5 | Evidence Merkle chain | Implement when PH5.18 ships |
 
 ---

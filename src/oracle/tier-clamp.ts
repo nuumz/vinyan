@@ -80,7 +80,7 @@ export function clampFull(confidence: number, tier?: string, transport?: string,
   return clampByPeerTrust(clampByTransport(clampByTier(confidence, tier), transport), peerTrust);
 }
 
-// ── SL Opinion Clamping (ECP v2) ────────────────────────────────────────
+// ── SL Opinion Clamping ─────────────────────────────────────────────────
 
 /**
  * Scale down belief so that projectedProbability ≤ ceiling,

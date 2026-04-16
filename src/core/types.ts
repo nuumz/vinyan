@@ -146,8 +146,6 @@ export interface OracleVerdict {
   /** Phase B+: Unclamped opinion before tier adjustment (for audit). */
   rawOpinion?: import('./subjective-opinion.ts').SubjectiveOpinion;
 
-  // ── ECP v2 additions (all optional for backward compat) ──
-
   /** Tier methodology reliability — set by Orchestrator from oracle registry, NOT by engine.
    *  Deterministic oracles get 1.0; heuristic 0.7-0.9; probabilistic 0.3-0.7.
    *  Axiom A5: tier determines the ceiling. */
@@ -182,8 +180,6 @@ export interface Fact {
   validUntil?: number;
   /** How confidence decays over time (from oracle temporalContext). ECP spec §3.6. */
   decayModel?: 'linear' | 'step' | 'none' | 'exponential';
-
-  // ── ECP v2 additions ──
 
   /** SL opinion tuple — propagated from verdict at fact creation time. */
   opinion?: import('./subjective-opinion.ts').SubjectiveOpinion;

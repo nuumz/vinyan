@@ -577,7 +577,7 @@ Cross-referencing ECP design against academic literature and production systems:
 
 **Key insight:** ECP occupies an *unclaimed semantic layer* validated by both theory and practice. No existing protocol or production system provides epistemic semantics — this is Vinyan's strategic moat.
 
-**Identified ECP v2 extensions from research:**
+**Identified ECP extensions from research:**
 1. **Belief intervals** — `[Bel, Pl]` tuple for richer uncertainty representation (Dempster-Shafer)
 2. **Merkle-chained evidence** — tamper-proof evidence chains (Certificate Transparency pattern)
 3. **Hypothesis constraints** — declarative verification requirements (SHACL/RAIL pattern)

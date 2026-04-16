@@ -5,7 +5,7 @@
 > For academic foundations and LLM deadlocks → [theory.md](../foundation/theory.md).
 > For concrete implementation decisions D1-D19 → [decisions.md](decisions.md).
 > For K1/K2 implementable design → [k1-implementable-system-design.md](../design/k1-implementable-system-design.md).
-> For ECP v2 wire protocol → [ecp-system-design.md](../design/ecp-system-design.md).
+> For ECP wire protocol → [ecp-system-design.md](../design/ecp-system-design.md).
 > For worker IPC and tool authorization → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md).
 > For A2A protocol → [a2a-protocol.md](../spec/a2a-protocol.md).
 > For task classification and routing invariants → [task-routing-spec.md](../foundation/task-routing-spec.md).

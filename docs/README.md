@@ -44,7 +44,7 @@
 - [ehd-technical-landscape.md](research/ehd-technical-landscape.md) — EHD technical landscape
 - [ehd-implementation-design.md](research/ehd-implementation-design.md) — EHD implementation design
 - [formal-uncertainty-frameworks.md](research/formal-uncertainty-frameworks.md) — Formal uncertainty frameworks survey
-- [ecp-research.md](research/ecp-research.md) — ECP v2 protocol research
+- [ecp-research.md](research/ecp-research.md) — ECP protocol research
 - [a2a-landscape-2026.md](research/a2a-landscape-2026.md) — Agent-to-Agent landscape (2026)
 - [design-decision-engine.md](research/design-decision-engine.md) — Decision engine design research
 - [design-oracle-integrity.md](research/design-oracle-integrity.md) — Oracle integrity design research

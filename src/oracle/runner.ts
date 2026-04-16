@@ -118,7 +118,7 @@ export async function runOracle(
   );
 }
 
-// ── ECP v2: Enrich verdict with registry metadata ──────────────────
+// ── Enrich verdict with registry metadata ───────────────────────────
 
 /** Tier → reliability mapping. Deterministic oracles are most reliable. */
 const TIER_RELIABILITY: Record<string, number> = {
@@ -129,7 +129,7 @@ const TIER_RELIABILITY: Record<string, number> = {
 };
 
 /**
- * ECP v2: Enrich an OracleVerdict with metadata from the oracle registry entry.
+ * Enrich an OracleVerdict with metadata from the oracle registry entry.
  * Sets tierReliability, confidenceSource, confidenceReported.
  */
 export function enrichVerdictWithRegistryData(

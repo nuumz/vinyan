@@ -12,7 +12,7 @@
 | Transport bindings (stdio, WebSocket, HTTP) | MCP/A2A bridge **implementation plans** (tool schemas, wiring) → [protocol-architecture.md §4-5](../architecture/protocol-architecture.md) |
 | Reasoning Engine lifecycle, registration, circuit breaker | A2A wire protocol & message types → [a2a-protocol.md](a2a-protocol.md) |
 | Orchestrator protocol (routing, aggregation, deliberation) | AWP worker IPC & delegation → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md) |
-| Security model (identity, signing, auth, scopes) | ECP v2 research (belief intervals, DS combination, Merkle) → [ecp-research.md](../research/ecp-research.md) |
+| Security model (identity, signing, auth, scopes) | ECP research (belief intervals, DS combination, Merkle) → [ecp-research.md](../research/ecp-research.md) |
 | Conformance levels (L0-L3) | |
 
 ---
@@ -282,9 +282,9 @@ Confidence is a number in [0, 1] representing the engine's certainty in its verd
 
 **Confidence is constrained by trust tier** (§4.4). An engine declared as `tier: "heuristic"` cannot claim `confidence: 1.0`.
 
-#### Belief Intervals (ECP v2 Extension — Preview)
+#### Belief Intervals (Extension — Preview)
 
-Scalar confidence conflates "strong evidence for both sides" and "no information" — both map to 0.5. ECP v2 will introduce optional `belief_interval: { belief, plausibility }` to distinguish these states. When absent, consumers assume `belief = confidence, plausibility = confidence` (zero uncertainty gap). The scalar `confidence` field is ALWAYS present for backward compatibility.
+Scalar confidence conflates "strong evidence for both sides" and "no information" — both map to 0.5. ECP will introduce optional `belief_interval: { belief, plausibility }` to distinguish these states. When absent, consumers assume `belief = confidence, plausibility = confidence` (zero uncertainty gap). The scalar `confidence` field is ALWAYS present for backward compatibility.
 
 > **Full design:** [ecp-research.md §1](../research/ecp-research.md#1-confidence-model-evolution-scalar--belief-intervals) — includes migration path, Orchestrator behavior matrix, and axiom alignment.
 
@@ -621,7 +621,7 @@ Group verdicts by trust tier. The current implementation in `src/gate/conflict-r
 - Oracles sharing the same underlying data source (e.g., two linters reading the same file) are **not independent** — only the higher-tier result is used.
 - If resolution fails after 5 steps, `hasContradiction: true` → conservative default (failure wins).
 
-> **ECP v2 direction:** Dempster-Shafer formal combination for same-tier verdicts. See [ecp-research.md §2](../research/ecp-research.md#2-multi-oracle-aggregation-ds-combination) for the full design, caveats, and open questions.
+> **Future direction:** Dempster-Shafer formal combination for same-tier verdicts. See [ecp-research.md §2](../research/ecp-research.md#2-multi-oracle-aggregation-ds-combination) for the full design, caveats, and open questions.
 
 Reference: `src/gate/conflict-resolver.ts`
 

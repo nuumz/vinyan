@@ -1,7 +1,7 @@
 # Vinyan Implementation Plan
 
 > Generated: 2026-03-29 | Updated: 2026-04-03 | Branch: `feature/main`
-> **Current state:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next: EHD Phase 5 (ECP v2 wire format) or new capability.
+> **Current state:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next: EHD Phase 5 (ECP wire format) or new capability.
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
 
 ---
@@ -2107,7 +2107,7 @@ A systematic review of the implementation against this design document identifie
 ### EHD — Epistemic Humility Architecture ✅ Phases 0-4 Complete
 
 > **Source of truth:** `docs/research/ehd-implementation-design.md`
-> **Status:** Phases 0-4 fully wired. Phase 5 (ECP wire format) is design-only — implement when ECP v2 is prioritized.
+> **Status:** Phases 0-4 fully wired. Phase 5 (ECP wire format) is design-only — implement when prioritized.
 > **Test count:** 1293 pass, 0 fail | **Type errors:** 0
 
 EHD is a cross-cutting architectural improvement (not a standalone phase). It addresses four confidence laundering failure modes identified in the research doc: scalar confidence compounding, absence-as-certainty, circular accuracy, and compositional uncertainty collapse.

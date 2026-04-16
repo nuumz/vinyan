@@ -1,6 +1,6 @@
-# ECP v2 Debate Synthesis: Transform Vinyan into a Truly Autonomous Orchestrator
+# ECP Debate Synthesis: Transform Vinyan into a Truly Autonomous Orchestrator
 
-> **Document boundary**: This document owns the strategic analysis and consensus roadmap for ECP v1→v2 transformation.
+> **Document boundary**: This document owns the strategic analysis and consensus roadmap for ECP evolution.
 > For v2 schema/behavioral design, see [ecp-system-design.md](../design/ecp-system-design.md).
 > For original brainstorm, see [ecp-migration-brainstorm.md](ecp-migration-brainstorm.md).
 

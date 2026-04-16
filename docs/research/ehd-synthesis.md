@@ -128,7 +128,7 @@ The audit is not all deficits. Vinyan's architecture embodies epistemic humility
 
 ## 5. Recommended Framework Evolution: Subjective Logic
 
-All four perspectives converge on the same recommendation for ECP v2's confidence model:
+All four perspectives converge on the same recommendation for ECP's confidence model:
 
 **Subjective Logic (Josang)** is the optimal framework because:
 
@@ -171,7 +171,7 @@ All four perspectives converge on the same recommendation for ECP v2's confidenc
 | **B5** | Rename `testMutationScore` → `testPresenceHeuristic` | `src/gate/quality-score.ts` | Honest naming | Low |
 | **B6** | Populate `temporal_context` on local oracle verdicts | All oracle verifiers | Enables decay for local verdicts | Medium |
 
-### Tier 3: Framework Enhancement (Research — ECP v2)
+### Tier 3: Framework Enhancement (Research)
 
 | # | Action | Source | Priority |
 |---|--------|--------|----------|
@@ -182,7 +182,7 @@ All four perspectives converge on the same recommendation for ECP v2's confidenc
 | **C5** | Temporal-epistemic coupling (decay rate by evidence tier) | Formal: P7 | Low |
 | **C6** | Vacuity detection flag | Formal: P2 | Low |
 | **C7** | Open-world mass for unknown unknowns | Formal: P6 | Phase 5+ |
-| **C8** | Full Subjective Logic opinion tuples | All perspectives | ECP v2 |
+| **C8** | Full Subjective Logic opinion tuples | All perspectives | Future |
 
 ---
 

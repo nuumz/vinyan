@@ -1,6 +1,6 @@
-# ECP v2 Research Directions
+# ECP Research Directions
 
-> **Status:** Research — none committed. v1 is complete for local oracle coordination.
+> **Status:** Research — none committed. Current ECP is complete for local oracle coordination.
 > **Becomes relevant when:** ECP Network Transport (PH5.18) is implemented.
 > **Extracted from:** [protocol-architecture.md](../architecture/protocol-architecture.md) §9.
 > **Related spec sections:** [ecp-spec.md](../spec/ecp-spec.md) §4.2 (Belief Intervals brief), §7.2 (Aggregation current impl), Appendix D.2 (Confidence Conflation finding).
@@ -17,7 +17,7 @@
 
 Both map to `confidence: 0.5`, but they should produce different Orchestrator behavior.
 
-**Solution (ECP v2):** Dempster-Shafer belief/plausibility intervals.
+**Solution:** Dempster-Shafer belief/plausibility intervals.
 
 ```typescript
 // v1: scalar (current — maintained for backward compatibility)

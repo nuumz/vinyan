@@ -371,7 +371,7 @@ Current Vinyan conflates them into a single routing level. The Extensible Thinki
 
 1. **How to compute ambiguity?** Plan complexity × uncertainty markers in goal description? Prior trace count for task type? Needs concrete formula.
 
-2. **What happens when thinking modes interact with ECP v2 confidence architecture?** ThinkingPolicy must align with subjective logic / EHD confidence framework if adopted.
+2. **What happens when thinking modes interact with ECP confidence architecture?** ThinkingPolicy must align with subjective logic / EHD confidence framework if adopted.
 
 3. **Multi-hypothesis with non-LLM engines:** If symbolic solvers produce structurally different solutions from LLMs, multi-hypothesis becomes more valuable (diverse generators). When is the engine ecosystem ready?
 

@@ -239,7 +239,7 @@ export class CalibratedSelfModel implements SelfModel {
 
     // Track gate-level composite quality for epistemic routing feedback.
     // Uses qualityScore.composite (the aggregate gate verdict) as a proxy for oracle confidence.
-    // When ECP v2 provides per-oracle belief intervals, this can switch to direct oracle signals.
+    // When ECP provides per-oracle belief intervals, this can switch to direct oracle signals.
     const oracleConfidence =
       trace.qualityScore != null && !isNaN(trace.qualityScore.composite) ? trace.qualityScore.composite : 0.5;
     params.avgOracleConfidence = ema(params.avgOracleConfidence, oracleConfidence, alpha);

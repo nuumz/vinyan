@@ -50,8 +50,6 @@ export interface ResolvedGateResult {
   /** True if any conflict escalated to step 5 (unresolvable). */
   hasContradiction: boolean;
 
-  // ── ECP v2 additions ──
-
   /** Fused SL opinion from all non-conflicting verdicts. Undefined if L0-L1 or no fusion. */
   fusedOpinion?: SubjectiveOpinion;
   /** Derived from fusedOpinion: [belief, 1-disbelief]. Shows 'how much we don't know' after fusion.
@@ -124,7 +122,7 @@ export function resolveConflicts(
   oracleResults: Record<string, OracleVerdict>,
   config: ResolverConfig,
   abstentions?: Record<string, OracleAbstention>,
-  /** ECP v2: routing level determines fusion depth. L0-L1 skip SL fusion. */
+  /** Routing level determines fusion depth. L0-L1 skip SL fusion. */
   routingLevel?: number,
 ): ResolvedGateResult {
   // Abstaining oracles are NOT in oracleResults — they're passed separately.
@@ -222,7 +220,7 @@ export function resolveConflicts(
     reasons.push('Unresolved oracle contradiction — escalated to contradictory state');
   }
 
-  // ECP v2: Fuse all verdict opinions into a single aggregate opinion.
+  // Fuse all verdict opinions into a single aggregate opinion.
   // L0 skips SL fusion (hash-only tier — no oracle verdicts to fuse).
   // L1+ get full fusion for epistemically richer uncertainty representation.
   let fusedOpinion: SubjectiveOpinion | undefined;

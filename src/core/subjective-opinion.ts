@@ -47,7 +47,7 @@ export const SubjectiveOpinionSchema: z.ZodType<SubjectiveOpinion> = z
  * When defaultUncertainty > 0, produces a non-dogmatic opinion that honestly
  * represents the epistemic gap from scalar→opinion conversion (A2).
  * When defaultUncertainty = 0 (default), produces a dogmatic opinion (u=0) for
- * backward compatibility. Use the ECP_ENRICHMENT flag to enable non-dogmatic
+ * backward compatibility. Pass defaultUncertainty > 0 to enable non-dogmatic
  * conversion at the call site.
  */
 export function fromScalar(confidence: number, baseRate = 0.5, defaultUncertainty = 0): SubjectiveOpinion {

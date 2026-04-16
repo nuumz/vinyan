@@ -44,6 +44,8 @@ interface VerifyInput {
   lastWorkerSelection?: WorkerSelectionResult;
   matchedSkill: import('../types.ts').CachedSkill | null;
   retry: number;
+  /** R2: when generate dispatched via Room, carries the roomId for trace tagging. */
+  roomId?: string;
 }
 
 export async function executeVerifyPhase(
@@ -55,7 +57,7 @@ export async function executeVerifyPhase(
     routing, perception, understanding, plan, workerResult,
     isAgenticResult, lastAgentResult, dagResult,
     prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction,
-    workerSelection, lastWorkerSelection, retry,
+    workerSelection, lastWorkerSelection, retry, roomId,
   } = vi;
   let { matchedSkill } = vi;
 
@@ -237,6 +239,10 @@ export async function executeVerifyPhase(
   const taskTypeSignature = computeSig(input);
   const { detectFrameworkMarkers } = await import('../task-fingerprint.ts');
   const frameworkMarkers = detectFrameworkMarkers(perception);
+  // R2: when the Generate phase used a Room, tag the trace for correlation.
+  if (roomId) {
+    frameworkMarkers.push(`room:${roomId}`);
+  }
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
   const effectiveOutcome: ExecutionTrace['outcome'] =

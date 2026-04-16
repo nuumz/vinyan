@@ -102,13 +102,7 @@ export class RoomStore {
     `);
   }
 
-  insertSession(
-    roomId: string,
-    parentTaskId: string,
-    contractJson: string,
-    status: string,
-    createdAt: number,
-  ): void {
+  insertSession(roomId: string, parentTaskId: string, contractJson: string, status: string, createdAt: number): void {
     this.insertSessionStmt.run(roomId, parentTaskId, contractJson, status, 0, 0, createdAt, null);
   }
 
@@ -170,11 +164,13 @@ export class RoomStore {
   // ── Queries ───────────────────────────────────────────────────────
 
   findSessionByParentTask(parentTaskId: string): RoomSessionRow | null {
-    return (this.db.query('SELECT * FROM room_sessions WHERE parent_task_id = ? ORDER BY created_at DESC LIMIT 1').get(parentTaskId) as RoomSessionRow | null);
+    return this.db
+      .query('SELECT * FROM room_sessions WHERE parent_task_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(parentTaskId) as RoomSessionRow | null;
   }
 
   findSessionById(roomId: string): RoomSessionRow | null {
-    return (this.db.query('SELECT * FROM room_sessions WHERE id = ?').get(roomId) as RoomSessionRow | null);
+    return this.db.query('SELECT * FROM room_sessions WHERE id = ?').get(roomId) as RoomSessionRow | null;
   }
 
   findLedgerByRoom(roomId: string): RoomLedgerRow[] {
@@ -182,10 +178,14 @@ export class RoomStore {
   }
 
   findParticipantsByRoom(roomId: string): RoomParticipantRow[] {
-    return this.db.query('SELECT * FROM room_participants WHERE room_id = ? ORDER BY admitted_at').all(roomId) as RoomParticipantRow[];
+    return this.db
+      .query('SELECT * FROM room_participants WHERE room_id = ? ORDER BY admitted_at')
+      .all(roomId) as RoomParticipantRow[];
   }
 
   findBlackboardByRoom(roomId: string): RoomBlackboardRow[] {
-    return this.db.query('SELECT * FROM room_blackboard WHERE room_id = ? ORDER BY key, version').all(roomId) as RoomBlackboardRow[];
+    return this.db
+      .query('SELECT * FROM room_blackboard WHERE room_id = ? ORDER BY key, version')
+      .all(roomId) as RoomBlackboardRow[];
   }
 }

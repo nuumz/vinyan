@@ -1015,9 +1015,52 @@ async function executeTaskCore(
         if (directResult) return directResult;
         // Fall through to pipeline if direct tool execution failed
       }
-      if (intentResolution.strategy === 'agentic-workflow' && intentResolution.workflowPrompt) {
-        // Rewrite goal with the LLM-generated workflow prompt for maximum downstream quality
-        input = { ...input, goal: intentResolution.workflowPrompt };
+      if (intentResolution.strategy === 'agentic-workflow') {
+        // Workflow Planner + Executor: LLM-powered multi-step workflow that
+        // selects per-step strategy and synthesizes a final result. Falls back
+        // to legacy goal-rewrite when planner unavailable or on any error.
+        try {
+          const { executeWorkflow } = await import('./workflow/workflow-executor.ts');
+          const workflowResult = await executeWorkflow(input, {
+            llmRegistry: deps.llmRegistry,
+            worldGraph: deps.worldGraph,
+            agentMemory: deps.agentMemory,
+            toolExecutor: deps.toolExecutor as import('./workflow/workflow-executor.ts').WorkflowExecutorDeps['toolExecutor'],
+            bus: deps.bus,
+            workspace: deps.workspace,
+            executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
+            intentWorkflowPrompt: intentResolution.workflowPrompt,
+          });
+          const trace: ExecutionTrace = {
+            id: `trace-${input.id}-workflow`,
+            taskId: input.id,
+            workerId: 'workflow-executor',
+            timestamp: Date.now(),
+            routingLevel: 2,
+            approach: 'agentic-workflow',
+            oracleVerdicts: {},
+            modelUsed: 'workflow-planner',
+            tokensConsumed: workflowResult.totalTokensConsumed,
+            durationMs: workflowResult.totalDurationMs,
+            outcome: workflowResult.status === 'completed' ? 'success' : 'failure',
+            affectedFiles: input.targetFiles ?? [],
+          };
+          await deps.traceCollector.record(trace);
+          const result: TaskResult = {
+            id: input.id,
+            status: workflowResult.status === 'completed' ? 'completed' : 'failed',
+            mutations: [],
+            trace,
+            answer: workflowResult.synthesizedOutput,
+          };
+          deps.bus?.emit('task:complete', { result });
+          return result;
+        } catch {
+          // Workflow failed — fall back to legacy goal-rewrite path
+          if (intentResolution.workflowPrompt) {
+            input = { ...input, goal: intentResolution.workflowPrompt };
+          }
+        }
       }
     }
     // 'full-pipeline' or failed resolution → existing 6-phase loop
@@ -1330,7 +1373,7 @@ async function executeTaskCore(
           durationMs: Date.now() - generateStart,
           routingLevel: routing.level,
         });
-        const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls } = generateOutcome.value;
+        const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } = generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
 
         // ═══════════════════════════════════════════════════════════════
@@ -1425,6 +1468,7 @@ async function executeTaskCore(
           lastWorkerSelection,
           matchedSkill,
           retry,
+          roomId,
         });
         if (verifyOutcome.action === 'return') return verifyOutcome.result;
         if (verifyOutcome.action === 'escalate') {

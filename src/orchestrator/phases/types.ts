@@ -129,6 +129,10 @@ export interface GenerateResult {
   dagResult: DAGExecutionResult | null;
   mutatingToolCalls: ToolCall[];
   totalTokensConsumed: number;
+  /** R2: when the task was dispatched through a Room, carries the roomId for
+   *  trace enrichment. Phase-verify appends `'room:{roomId}'` to the trace's
+   *  frameworkMarkers so Sleep Cycle and dashboards can correlate. */
+  roomId?: string;
 }
 
 export interface VerifyResult {

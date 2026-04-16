@@ -16,8 +16,13 @@ const SRC = join(REPO_ROOT, 'src');
 const ROOM_DIR = join(SRC, 'orchestrator', 'room');
 
 /** Files outside src/orchestrator/room/ that ARE allowed to import from it.
- *  R0 expects this to be empty. R1 will add phase-generate.ts, factory.ts, etc. */
-const ALLOWLIST: string[] = [];
+ *  R1 wiring: factory.ts + task-decomposer.ts import room-dispatcher + room-selector.
+ *  R2 persistence: room-store.ts imports room/types for LedgerEntry. */
+const ALLOWLIST: string[] = [
+  'src/orchestrator/factory.ts',
+  'src/orchestrator/task-decomposer.ts',
+  'src/db/room-store.ts',
+];
 
 function walkTs(dir: string, files: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -34,13 +39,17 @@ function walkTs(dir: string, files: string[] = []): string[] {
 
 function fileImportsRoom(path: string): boolean {
   const content = readFileSync(path, 'utf-8');
-  // Accept any import specifier containing /room/ or /room.ts; scoped to
-  // the orchestrator subtree so unrelated paths elsewhere don't match.
-  return /from\s+['"][^'"]*orchestrator\/room\/[^'"]+['"]/.test(content);
+  // Match BOTH absolute-style (`orchestrator/room/`) and relative (`./room/`,
+  // `../room/`) import specifiers. R1/R2 wiring files are in ALLOWLIST.
+  return (
+    /from\s+['"][^'"]*orchestrator\/room\/[^'"]+['"]/.test(content) ||
+    /from\s+['"][^'"]*\/room\/room-[^'"]+['"]/.test(content) ||
+    /from\s+['"][^'"]*\/room\/types[^'"]*['"]/.test(content)
+  );
 }
 
 describe('Room isolation invariant', () => {
-  it('no source file outside src/orchestrator/room/ imports from it (R0 gate)', () => {
+  it('only allowlisted files outside src/orchestrator/room/ may import from it', () => {
     const allTsFiles = walkTs(SRC);
     const violators: string[] = [];
     for (const file of allTsFiles) {

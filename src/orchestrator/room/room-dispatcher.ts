@@ -28,6 +28,7 @@
  */
 import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
+import type { RoomStore } from '../../db/room-store.ts';
 import type {
   ConversationEntry,
   PerceptualHierarchy,
@@ -42,7 +43,6 @@ import type { ProposedMutation } from '../worker/session-overlay.ts';
 import { RoomBlackboard } from './room-blackboard.ts';
 import { RoomLedger } from './room-ledger.ts';
 import { type GoalVerifier, type ParticipantResult, RoomSupervisor } from './room-supervisor.ts';
-import type { RoomStore } from '../../db/room-store.ts';
 import {
   BlackboardScopeViolation,
   type RoleSpec,
@@ -413,7 +413,7 @@ export class RoomDispatcher {
       ...input.routing,
       model: participant.workerModelId,
     };
-    const roleContract = this.cloneContractForRole(input.parentContract, role, syntheticId);
+    const roleContract = this.cloneContractForRole(input.parentContract, role, syntheticId, input.contract.roomId);
 
     return this.deps.runAgentLoop(
       syntheticInput,
@@ -432,17 +432,12 @@ export class RoomDispatcher {
     return `[Room role: ${role.name} | round ${round + 1}] ${role.responsibility}\n\nUnderlying goal: ${parentGoal}`;
   }
 
-  /**
-   * Clone the parent contract for a role. Narrows `capabilities` when the
-   * role does not write files (critic), overrides `taskId` to the synthetic
-   * id (so AgentBudgetTracker keys don't collide across participants), and
-   * refreshes `issuedAt`.
-   *
-   * NOTE: `roomContext` injection is deferred to R1 (requires AgentContract
-   * schema extension). The clone is structurally compatible with the current
-   * AgentContract schema and honors A6 scope narrowing via capability pruning.
-   */
-  private cloneContractForRole(parent: AgentContract, role: RoleSpec, syntheticTaskId: string): AgentContract {
+  private cloneContractForRole(
+    parent: AgentContract,
+    role: RoleSpec,
+    syntheticTaskId: string,
+    roomId?: string,
+  ): AgentContract {
     const filteredCaps = role.canWriteFiles
       ? parent.capabilities
       : parent.capabilities.filter((cap) => cap.type !== 'file_write');
@@ -452,6 +447,14 @@ export class RoomDispatcher {
       capabilities: filteredCaps,
       issuedAt: this.clock(),
       immutable: true,
+      roomContext: roomId
+        ? {
+            roomId,
+            participantId: `${roomId}::${role.name}`,
+            roleName: role.name,
+            writableBlackboardKeys: [...role.writableBlackboardKeys],
+          }
+        : undefined,
     };
   }
 
@@ -480,13 +483,25 @@ export class RoomDispatcher {
     }
   }
 
-  /** Persist current blackboard snapshot. Uses INSERT OR REPLACE so idempotent. */
+  /** Persist current blackboard snapshot + emit bus events. DB before emit (crash-safety). */
   private persistBlackboardSnapshot(roomId: string, blackboard: RoomBlackboard): void {
-    if (!this.deps.roomStore) return;
     for (const [key, entry] of blackboard.readAll()) {
       this.persistSafe(() =>
-        this.deps.roomStore?.insertBlackboardEntry(roomId, key, entry.version, JSON.stringify(entry.value), entry.authorRole, entry.timestamp),
+        this.deps.roomStore?.insertBlackboardEntry(
+          roomId,
+          key,
+          entry.version,
+          JSON.stringify(entry.value),
+          entry.authorRole,
+          entry.timestamp,
+        ),
       );
+      this.deps.bus?.emit('room:blackboard_updated', {
+        roomId,
+        key,
+        author: entry.authorRole,
+        version: entry.version,
+      });
     }
   }
 }

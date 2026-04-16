@@ -565,6 +565,41 @@ export interface VinyanBusEvents {
     roleName: string;
     workerModelId: string;
   };
+  'room:blackboard_updated': {
+    roomId: string;
+    key: string;
+    author: string;
+    version: number;
+  };
+  'room:round_completed': {
+    roomId: string;
+    round: number;
+    participantsActed: number;
+    tokensConsumedThisRound: number;
+    convergence: 'converged' | 'partial' | 'open';
+  };
+
+  // A2A cross-instance rooms (R3) — scoped communication channels between peers.
+  'a2a:roomCreated': { roomId: string; name: string; roomType: string; creatorInstanceId: string };
+  'a2a:roomJoined': { roomId: string; instanceId: string; peerUrl: string };
+  'a2a:roomLeft': { roomId: string; instanceId: string };
+  'a2a:roomArchived': { roomId: string };
+  'a2a:roomMessage': { roomId: string; senderId: string; messageType: string; summary: string };
+
+  // Workflow orchestration — self-orchestrating agent workflow planner + executor
+  'workflow:plan_created': { goal: string; stepCount: number; strategies: string[] };
+  'workflow:step_start': { stepId: string; strategy: string; description: string };
+  'workflow:step_complete': {
+    stepId: string;
+    status: 'completed' | 'failed' | 'skipped';
+    strategy: string;
+    durationMs: number;
+    tokensConsumed: number;
+  };
+  'workflow:step_fallback': { stepId: string; primaryStrategy: string; fallbackStrategy: string };
+  'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
+  'workflow:knowledge_query': { stepId: string; query: string };
+  'workflow:human_input_needed': { stepId: string; question: string };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

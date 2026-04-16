@@ -68,6 +68,7 @@ export async function executeGeneratePhase(
   let isAgenticResult = false;
   let lastAgentResult: WorkerLoopResult | null = null;
   let dagResult: DAGExecutionResult | null = null;
+  let roomId: string | undefined;
 
   try {
     const hasAgentDeps = !!deps.workerPool.getAgentLoopDeps?.();
@@ -173,6 +174,7 @@ export async function executeGeneratePhase(
           };
           isAgenticResult = true;
           roomHandled = true;
+          roomId = plan.roomContract!.roomId;
         } catch (roomErr) {
           console.warn(`[vinyan] Room dispatch failed, falling back to agentic-loop: ${String(roomErr)}`);
         }
@@ -422,5 +424,6 @@ export async function executeGeneratePhase(
     dagResult,
     mutatingToolCalls,
     totalTokensConsumed,
+    roomId,
   });
 }

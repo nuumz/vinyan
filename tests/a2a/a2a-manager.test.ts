@@ -1,13 +1,14 @@
 /**
  * A2AManager coordinator tests — integration wiring.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { A2AManagerImpl, createA2AManager } from '../../src/a2a/a2a-manager.ts';
-import { ECP_MIME_TYPE, type ECPDataPart } from '../../src/a2a/ecp-data-part.ts';
-import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { type A2AManagerImpl, createA2AManager } from '../../src/a2a/a2a-manager.ts';
+import type { ECPDataPart } from '../../src/a2a/ecp-data-part.ts';
 import type { VinyanConfig } from '../../src/config/schema.ts';
+import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -21,16 +22,49 @@ function makePhase5(
   overrides: Partial<NonNullable<VinyanConfig['network']>> = {},
 ): NonNullable<VinyanConfig['network']> {
   return {
-    instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
-    knowledge_sharing: { enabled: false, file_invalidation_enabled: true, batch_exchange_enabled: true, max_probation_queue: 100, gossip_enabled: false, gossip_fanout: 3, gossip_max_hops: 6, gossip_dampening_window_ms: 10000 },
-    trust: { promotion_untrusted_lb: 0.6, promotion_provisional_lb: 0.7, promotion_established_lb: 0.8, promotion_min_interactions: 10, demotion_on_consecutive_failures: 5, inactivity_decay_days: 7, trust_sharing_enabled: false, max_remote_trust: 0.4, attestation_min_interactions: 20, attestation_max_attesters: 3 },
-    coordination: { intent_declaration_enabled: false, negotiation_enabled: false, commitment_tracking_enabled: false },
+    instances: {
+      enabled: false,
+      peers: [],
+      listen_port: 3928,
+      heartbeat_interval_ms: 15000,
+      heartbeat_timeout_ms: 45000,
+    },
+    knowledge_sharing: {
+      enabled: false,
+      file_invalidation_enabled: true,
+      batch_exchange_enabled: true,
+      max_probation_queue: 100,
+      gossip_enabled: false,
+      gossip_fanout: 3,
+      gossip_max_hops: 6,
+      gossip_dampening_window_ms: 10000,
+    },
+    trust: {
+      promotion_untrusted_lb: 0.6,
+      promotion_provisional_lb: 0.7,
+      promotion_established_lb: 0.8,
+      promotion_min_interactions: 10,
+      demotion_on_consecutive_failures: 5,
+      inactivity_decay_days: 7,
+      trust_sharing_enabled: false,
+      max_remote_trust: 0.4,
+      attestation_min_interactions: 20,
+      attestation_max_attesters: 3,
+    },
+    coordination: {
+      intent_declaration_enabled: false,
+      negotiation_enabled: false,
+      commitment_tracking_enabled: false,
+      rooms_enabled: false,
+      max_rooms: 50,
+      max_message_history: 1000,
+    },
     tracing: { distributed_enabled: false, w3c_trace_context_enabled: true, sample_rate: 0.1 },
     ...overrides,
   };
 }
 
-function makeECPDataPart(messageType: string, payload: Record<string, unknown> = {}): ECPDataPart {
+function makeEcpDataPart(messageType: string, payload: Record<string, unknown> = {}): ECPDataPart {
   return {
     ecp_version: 1,
     message_type: messageType as any,
@@ -114,6 +148,9 @@ describe('A2AManager — construction', () => {
           intent_declaration_enabled: true,
           negotiation_enabled: true,
           commitment_tracking_enabled: true,
+          rooms_enabled: false,
+          max_rooms: 50,
+          max_message_history: 1000,
         },
       }),
     });
@@ -197,9 +234,7 @@ describe('A2AManager — construction', () => {
     const mgr2 = createA2AManager({ workspace: TEST_WORKSPACE, bus, network });
 
     expect(mgr1.identity.instanceId).toBe(mgr2.identity.instanceId);
-    expect(mgr1.identity.instanceId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
+    expect(mgr1.identity.instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
   test('persists instanceId to .vinyan/instance-id', () => {
@@ -241,6 +276,9 @@ describe('A2AManager — routeECPMessage', () => {
           intent_declaration_enabled: true,
           negotiation_enabled: true,
           commitment_tracking_enabled: true,
+          rooms_enabled: false,
+          max_rooms: 50,
+          max_message_history: 1000,
         },
         trust: {
           promotion_untrusted_lb: 0.6,
@@ -261,7 +299,7 @@ describe('A2AManager — routeECPMessage', () => {
 
   test('routes heartbeat — handled', () => {
     const mgr = makeFullManager();
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('heartbeat'));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('heartbeat'));
 
     expect(result.handled).toBe(true);
     expect(result.type).toBe('heartbeat_ack');
@@ -279,7 +317,7 @@ describe('A2AManager — routeECPMessage', () => {
       round: 1,
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('propose', proposal));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('propose', proposal));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('proposal_received');
 
@@ -299,7 +337,7 @@ describe('A2AManager — routeECPMessage', () => {
       peer_id: 'peer-A',
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('retract', retraction));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('retract', retraction));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('retraction_received');
     expect(mgr.retractionManager.isRetracted('v-001')).toBe(true);
@@ -316,7 +354,7 @@ describe('A2AManager — routeECPMessage', () => {
       timestamp: Date.now(),
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('feedback', feedback));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('feedback', feedback));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('feedback_received');
   });
@@ -334,7 +372,7 @@ describe('A2AManager — routeECPMessage', () => {
       expires_at: Date.now() + 180_000,
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('intent_declare', intent));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('intent_declare', intent));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('intent_ack');
   });
@@ -347,7 +385,7 @@ describe('A2AManager — routeECPMessage', () => {
       update_type: 'full_snapshot',
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('capability_update', update));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('capability_update', update));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('capability_updated');
   });
@@ -365,14 +403,14 @@ describe('A2AManager — routeECPMessage', () => {
       signature: '',
     };
 
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('trust_attestation', attestation));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('trust_attestation', attestation));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('attestation_integrated');
   });
 
   test('routes knowledge_transfer — handled', () => {
     const mgr = makeFullManager();
-    const result = mgr.routeECPMessage('peer-A', makeECPDataPart('knowledge_transfer', { type: 'batch' }));
+    const result = mgr.routeECPMessage('peer-A', makeEcpDataPart('knowledge_transfer', { type: 'batch' }));
     expect(result.handled).toBe(true);
     expect(result.type).toBe('knowledge_transfer_received');
   });
@@ -380,24 +418,24 @@ describe('A2AManager — routeECPMessage', () => {
   test('routes streaming events — handled', () => {
     const mgr = makeFullManager();
 
-    const progress = mgr.routeECPMessage('peer-A', makeECPDataPart('progress'));
+    const progress = mgr.routeECPMessage('peer-A', makeEcpDataPart('progress'));
     expect(progress.handled).toBe(true);
     expect(progress.type).toBe('streaming_event');
 
-    const partial = mgr.routeECPMessage('peer-A', makeECPDataPart('partial_verdict'));
+    const partial = mgr.routeECPMessage('peer-A', makeEcpDataPart('partial_verdict'));
     expect(partial.handled).toBe(true);
   });
 
   test('falls through for request/respond message_types', () => {
     const mgr = makeFullManager();
 
-    const request = mgr.routeECPMessage('peer-A', makeECPDataPart('request'));
+    const request = mgr.routeECPMessage('peer-A', makeEcpDataPart('request'));
     expect(request.handled).toBe(false);
 
-    const respond = mgr.routeECPMessage('peer-A', makeECPDataPart('respond'));
+    const respond = mgr.routeECPMessage('peer-A', makeEcpDataPart('respond'));
     expect(respond.handled).toBe(false);
 
-    const assert_ = mgr.routeECPMessage('peer-A', makeECPDataPart('assert'));
+    const assert_ = mgr.routeECPMessage('peer-A', makeEcpDataPart('assert'));
     expect(assert_.handled).toBe(false);
   });
 
@@ -409,13 +447,13 @@ describe('A2AManager — routeECPMessage', () => {
     });
 
     // These should not throw even though managers are undefined
-    const propose = mgr.routeECPMessage('peer-A', makeECPDataPart('propose'));
+    const propose = mgr.routeECPMessage('peer-A', makeEcpDataPart('propose'));
     expect(propose.handled).toBe(true); // still handled, just no-op
 
-    const intent = mgr.routeECPMessage('peer-A', makeECPDataPart('intent_declare'));
+    const intent = mgr.routeECPMessage('peer-A', makeEcpDataPart('intent_declare'));
     expect(intent.handled).toBe(true);
 
-    const feedback = mgr.routeECPMessage('peer-A', makeECPDataPart('feedback'));
+    const feedback = mgr.routeECPMessage('peer-A', makeEcpDataPart('feedback'));
     expect(feedback.handled).toBe(true);
   });
 });
@@ -448,6 +486,9 @@ describe('A2AManager — lifecycle', () => {
           intent_declaration_enabled: true,
           negotiation_enabled: true,
           commitment_tracking_enabled: true,
+          rooms_enabled: false,
+          max_rooms: 50,
+          max_message_history: 1000,
         },
       }),
     });

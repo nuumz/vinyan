@@ -434,3 +434,98 @@ describe('RoomDispatcher — failure modes', () => {
     expect(outcome.result.rounds).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('RoomDispatcher — context injection', () => {
+  it('critic receives ROOM_CONTEXT constraint with drafter proposals', async () => {
+    const capturedConstraints: Record<string, string[]> = {};
+    let turn = 0;
+    const runAgentLoop = async (input: TaskInput) => {
+      capturedConstraints[input.id] = input.constraints ?? [];
+      const which = turn++;
+      if (which === 0) {
+        return makeLoopResult({
+          mutations: [{ file: 'src/a.ts', content: 'draft A', diff: '', explanation: 'add backoff' }],
+          tokensConsumed: 300,
+        });
+      }
+      if (which === 1) {
+        return makeLoopResult({
+          mutations: [{ file: 'src/b.ts', content: 'draft B', diff: '', explanation: 'add jitter' }],
+          tokensConsumed: 300,
+        });
+      }
+      if (which === 2) {
+        return makeLoopResult({ uncertainties: ['concern about drift'], tokensConsumed: 200 });
+      }
+      return makeLoopResult({
+        mutations: [{ file: 'src/a.ts', content: 'final', diff: '', explanation: 'reconciled' }],
+        tokensConsumed: 400,
+      });
+    };
+
+    const dispatcher = new RoomDispatcher({
+      runAgentLoop,
+      resolveParticipant: resolverByRoleIndex(),
+      workspace: '/ws',
+      goalVerifier: verifyPass(),
+    });
+    await dispatcher.execute(makeExecuteInput());
+
+    // First drafter (turn 0) has no ROOM_CONTEXT — room is empty
+    const drafterKeys = Object.keys(capturedConstraints).filter((k) => k.includes('drafter-0'));
+    const drafter0Constraints = capturedConstraints[drafterKeys[0]!] ?? [];
+    const drafter0HasContext = drafter0Constraints.some((c) => c.startsWith('ROOM_CONTEXT:'));
+    expect(drafter0HasContext).toBe(false);
+
+    // Critic (turn 2) SHOULD have ROOM_CONTEXT with drafter proposals
+    const criticKeys = Object.keys(capturedConstraints).filter((k) => k.includes('critic'));
+    const criticConstraints = capturedConstraints[criticKeys[0]!] ?? [];
+    const criticContext = criticConstraints.find((c) => c.startsWith('ROOM_CONTEXT:'));
+    expect(criticContext).toBeDefined();
+    expect(criticContext).toContain('Drafter Proposals');
+    expect(criticContext).toContain('add backoff');
+
+    // Integrator (turn 3) SHOULD have ROOM_CONTEXT with drafter proposals + critic concerns
+    const integratorKeys = Object.keys(capturedConstraints).filter((k) => k.includes('integrator'));
+    const integratorConstraints = capturedConstraints[integratorKeys[0]!] ?? [];
+    const integratorContext = integratorConstraints.find((c) => c.startsWith('ROOM_CONTEXT:'));
+    expect(integratorContext).toBeDefined();
+    expect(integratorContext).toContain('Critic Concerns');
+    expect(integratorContext).toContain('concern about drift');
+  });
+});
+
+describe('RoomDispatcher — round_completed event', () => {
+  it('emits room:round_completed after each round with convergence outcome', async () => {
+    const bus = createBus();
+    const roundEvents: unknown[] = [];
+    bus.on('room:round_completed', (payload) => roundEvents.push(payload));
+
+    let turn = 0;
+    const runAgentLoop = async () => {
+      const which = turn++;
+      if (which === 3) {
+        return makeLoopResult({
+          mutations: [{ file: 'src/a.ts', content: 'v1', diff: '', explanation: 'int' }],
+          tokensConsumed: 500,
+        });
+      }
+      return makeLoopResult({ tokensConsumed: 100 });
+    };
+
+    const dispatcher = new RoomDispatcher({
+      runAgentLoop,
+      resolveParticipant: resolverByRoleIndex(),
+      workspace: '/ws',
+      bus,
+      goalVerifier: verifyPass(),
+    });
+
+    const outcome = await dispatcher.execute(makeExecuteInput());
+    expect(outcome.result.status).toBe('converged');
+    expect(roundEvents).toHaveLength(1);
+    const event = roundEvents[0] as { round: number; convergence: string };
+    expect(event.round).toBe(1);
+    expect(event.convergence).toBe('converged');
+  });
+});

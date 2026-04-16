@@ -92,13 +92,17 @@ const ForwardPredictorConfigSchema = z.object({
   enabled: z.boolean().default(true),
   tiers: z
     .object({
-      statistical: z.object({
-        min_traces: z.number().positive().default(100),
-      }).default(() => ({ min_traces: 100 })),
-      causal: z.object({
-        min_traces: z.number().positive().default(100),
-        min_edges: z.number().positive().default(50),
-      }).default(() => ({ min_traces: 100, min_edges: 50 })),
+      statistical: z
+        .object({
+          min_traces: z.number().positive().default(100),
+        })
+        .default(() => ({ min_traces: 100 })),
+      causal: z
+        .object({
+          min_traces: z.number().positive().default(100),
+          min_edges: z.number().positive().default(50),
+        })
+        .default(() => ({ min_traces: 100, min_edges: 50 })),
     })
     .default(() => ({
       statistical: { min_traces: 100 },
@@ -129,19 +133,23 @@ export type ForwardPredictorConfig = z.infer<typeof ForwardPredictorConfigSchema
 
 const ExtensibleThinkingConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  modes: z.array(
-    z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']),
-  ).default(['adaptive']),
+  modes: z
+    .array(z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']))
+    .default(['adaptive']),
   /** Configurable 2D grid boundaries (no hardcoded magic numbers). */
-  thresholds: z.object({
-    riskBoundary: z.number().min(0).max(1).default(0.35),
-    uncertaintyBoundary: z.number().min(0).max(1).default(0.50),
-  }).default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.50 })),
+  thresholds: z
+    .object({
+      riskBoundary: z.number().min(0).max(1).default(0.35),
+      uncertaintyBoundary: z.number().min(0).max(1).default(0.5),
+    })
+    .default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.5 })),
   /** Data gate overrides for thinking feature activation. */
-  data_gate_overrides: z.object({
-    uncertainty_min_traces: z.number().positive().default(200),
-    calibration_min_traces: z.number().positive().default(50),
-  }).optional(),
+  data_gate_overrides: z
+    .object({
+      uncertainty_min_traces: z.number().positive().default(200),
+      calibration_min_traces: z.number().positive().default(50),
+    })
+    .optional(),
   /** Audit sample rate for high-confidence tasks (default: 5%). */
   audit_sample_rate: z.number().min(0).max(1).default(0.05),
 });
@@ -178,7 +186,7 @@ const ReplanConfigSchema = z.object({
   /** Max replan attempts before honest escalation. */
   maxReplans: z.number().int().min(1).max(5).default(2),
   /** Replan token spend cap as fraction of remaining task budget. */
-  tokenSpendCapFraction: z.number().min(0).max(1).default(0.20),
+  tokenSpendCapFraction: z.number().min(0).max(1).default(0.2),
   /** Trigram similarity upper bound vs prior failed approaches. */
   trigramSimilarityMax: z.number().min(0).max(1).default(0.85),
 });
@@ -204,7 +212,11 @@ const ReactiveLearningConfigSchema = z.object({
   /** Gated OFF by default — writes probational rules to RuleStore. */
   enabled: z.boolean().default(false),
   /** Rolling window for failure cluster detection. */
-  windowMs: z.number().int().min(60_000).default(60 * 60 * 1000),
+  windowMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .default(60 * 60 * 1000),
   /** Minimum same-signature failures in window to form a cluster. */
   minFailures: z.number().int().min(2).max(10).default(2),
 });
@@ -244,7 +256,9 @@ const OrchestratorConfigSchema = z.object({
   /** Wave 2: Replan Engine (gated OFF by default, requires goalLoop). */
   replan: ReplanConfigSchema.default(() => defaults(ReplanConfigSchema)),
   /** Wave 4: Goal-driven agent-loop termination (gated OFF by default). */
-  agentLoopGoalTermination: AgentLoopGoalTerminationConfigSchema.default(() => defaults(AgentLoopGoalTerminationConfigSchema)),
+  agentLoopGoalTermination: AgentLoopGoalTerminationConfigSchema.default(() =>
+    defaults(AgentLoopGoalTerminationConfigSchema),
+  ),
   /** Wave 5: Reactive micro-learning — bypass data gate when failure cluster forms. */
   reactiveLearning: ReactiveLearningConfigSchema.default(() => defaults(ReactiveLearningConfigSchema)),
   /** Wave 5: Skill hints — inject findSimilar results into agent prompts. Default ON. */
@@ -350,6 +364,9 @@ const CoordinationConfigSchema = z.object({
   intent_declaration_enabled: z.boolean().default(false),
   negotiation_enabled: z.boolean().default(false),
   commitment_tracking_enabled: z.boolean().default(false),
+  rooms_enabled: z.boolean().default(false),
+  max_rooms: z.number().positive().default(50),
+  max_message_history: z.number().positive().default(1000),
 });
 
 const TracingConfigSchema = z.object({
@@ -410,16 +427,20 @@ export type ECPv2Flags = z.infer<typeof ECPv2FlagsSchema>;
 // ─── Engine Configuration (non-LLM reasoning engines) ──────────────
 
 const EnginesConfigSchema = z.object({
-  z3: z.object({
-    enabled: z.boolean().default(false),
-    /** Path to z3 binary (default: 'z3' from PATH). */
-    path: z.string().default('z3'),
-  }).default(() => ({ enabled: false, path: 'z3' })),
-  human: z.object({
-    enabled: z.boolean().default(false),
-    /** Timeout in ms for human review response (default: 5 minutes). */
-    timeout_ms: z.number().positive().default(300_000),
-  }).default(() => ({ enabled: false, timeout_ms: 300_000 })),
+  z3: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Path to z3 binary (default: 'z3' from PATH). */
+      path: z.string().default('z3'),
+    })
+    .default(() => ({ enabled: false, path: 'z3' })),
+  human: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Timeout in ms for human review response (default: 5 minutes). */
+      timeout_ms: z.number().positive().default(300_000),
+    })
+    .default(() => ({ enabled: false, timeout_ms: 300_000 })),
 });
 
 export type EnginesConfig = z.infer<typeof EnginesConfigSchema>;

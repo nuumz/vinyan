@@ -8,6 +8,7 @@
  */
 import type { BusEventName, EventBus, VinyanBusEvents } from '../core/bus.ts';
 import { ECP_MIME_TYPE } from './ecp-data-part.ts';
+import type { RoomManager } from './room.ts';
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ export interface RemoteBusConfig {
   instanceId: string;
   /** Override the default forwarded events. */
   forwardedEvents?: BusEventName[];
+  /** R3: when present, messages with room_id are sent only to room members. */
+  roomManager?: RoomManager;
 }
 
 /** Events safe and useful to forward to peers. */
@@ -67,7 +70,37 @@ export class RemoteBusAdapter {
     return [...this.forwardedEvents];
   }
 
+  /** R3: late-bind a RoomManager for room-scoped forwarding. */
+  setRoomManager(roomManager: RoomManager): void {
+    this.config.roomManager = roomManager;
+  }
+
+  /**
+   * Send a message scoped to a specific room. Only room members receive it.
+   * Falls back to broadcast if the room has no members or roomManager is absent.
+   */
+  async sendToRoom(roomId: string, event: string, payload: unknown): Promise<void> {
+    const targetUrls = this.config.roomManager?.getMemberPeerUrls(roomId);
+    if (targetUrls && targetUrls.length > 0) {
+      await this.forwardToUrls(event, payload, targetUrls, roomId);
+    } else {
+      await this.forwardToUrls(event, payload, this.config.peerUrls);
+    }
+  }
+
   private async forwardToPeers(event: string, payload: unknown): Promise<void> {
+    // R3: if payload carries a room_id, scope delivery to room members
+    const roomId = (payload as Record<string, unknown> | null)?.roomId as string | undefined;
+    if (roomId && this.config.roomManager) {
+      const memberUrls = this.config.roomManager.getMemberPeerUrls(roomId);
+      if (memberUrls.length > 0) {
+        return this.forwardToUrls(event, payload, memberUrls, roomId);
+      }
+    }
+    return this.forwardToUrls(event, payload, this.config.peerUrls);
+  }
+
+  private async forwardToUrls(event: string, payload: unknown, urls: string[], roomId?: string): Promise<void> {
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: `remote-bus-${Date.now()}`,
@@ -86,6 +119,7 @@ export class RemoteBusAdapter {
                 epistemic_type: 'known',
                 confidence: 1.0,
                 confidence_reported: true,
+                ...(roomId ? { room_id: roomId } : {}),
                 payload: {
                   bus_event: event,
                   data: payload,
@@ -100,7 +134,7 @@ export class RemoteBusAdapter {
     });
 
     await Promise.allSettled(
-      this.config.peerUrls.map(async (peerUrl) => {
+      urls.map(async (peerUrl) => {
         try {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 3000);

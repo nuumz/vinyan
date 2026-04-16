@@ -28,9 +28,30 @@ import type { RoutingDecision, TaskDAG, TaskInput } from '../../../src/orchestra
 function buildValidFanInDag(): TaskDAG {
   return {
     nodes: [
-      { id: 'a', description: 'draft A', targetFiles: ['src/a.ts'], dependencies: [], assignedOracles: ['type'], riskScore: 0.9 },
-      { id: 'b', description: 'draft B', targetFiles: ['src/b.ts'], dependencies: [], assignedOracles: ['type'], riskScore: 0.9 },
-      { id: 'c', description: 'integrate', targetFiles: ['src/c.ts'], dependencies: ['a', 'b'], assignedOracles: ['type', 'test'], riskScore: 0.95 },
+      {
+        id: 'a',
+        description: 'draft A',
+        targetFiles: ['src/a.ts'],
+        dependencies: [],
+        assignedOracles: ['type'],
+        riskScore: 0.9,
+      },
+      {
+        id: 'b',
+        description: 'draft B',
+        targetFiles: ['src/b.ts'],
+        dependencies: [],
+        assignedOracles: ['type'],
+        riskScore: 0.9,
+      },
+      {
+        id: 'c',
+        description: 'integrate',
+        targetFiles: ['src/c.ts'],
+        dependencies: ['a', 'b'],
+        assignedOracles: ['type', 'test'],
+        riskScore: 0.95,
+      },
     ],
   };
 }
@@ -61,12 +82,7 @@ describe('TaskDecomposer + selectRoomContract integration', () => {
     const dag = buildValidFanInDag();
     const contract = selectRoomContract(dag, makeRouting(3), makeInput());
     expect(contract).not.toBeNull();
-    expect(contract!.roles.map((r) => r.name)).toEqual([
-      'drafter-0',
-      'drafter-1',
-      'critic',
-      'integrator',
-    ]);
+    expect(contract!.roles.map((r) => r.name)).toEqual(['drafter-0', 'drafter-1', 'critic', 'integrator']);
     // Simulate the decomposer's merge step
     const augmented: TaskDAG = { ...dag, collaborationMode: 'room', roomContract: contract! };
     expect(augmented.collaborationMode).toBe('room');
@@ -88,7 +104,14 @@ describe('TaskDecomposer + selectRoomContract integration', () => {
       nodes: [
         { id: 'a', description: 'x', targetFiles: ['src/a.ts'], dependencies: [], assignedOracles: [], riskScore: 0.3 },
         { id: 'b', description: 'y', targetFiles: ['src/b.ts'], dependencies: [], assignedOracles: [], riskScore: 0.3 },
-        { id: 'c', description: 'z', targetFiles: ['src/c.ts'], dependencies: ['a', 'b'], assignedOracles: [], riskScore: 0.4 },
+        {
+          id: 'c',
+          description: 'z',
+          targetFiles: ['src/c.ts'],
+          dependencies: ['a', 'b'],
+          assignedOracles: [],
+          riskScore: 0.4,
+        },
       ],
     };
     expect(selectRoomContract(dag, makeRouting(3), makeInput())).toBeNull();

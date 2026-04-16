@@ -180,6 +180,7 @@ export class RoomDispatcher {
 
     // ── Sequential round loop ─────────────────────────────────────────
     outer: for (let round = 0; round < input.contract.maxRounds; round++) {
+      const tokensAtRoundStart = state.tokensConsumed;
       for (const role of input.contract.roles) {
         const participantId = this.participantIdFor(input.contract.roomId, role.name);
         const participant = state.participants.get(participantId);
@@ -187,7 +188,7 @@ export class RoomDispatcher {
 
         let loopResult: WorkerLoopResult;
         try {
-          loopResult = await this.runParticipant(input, role, participant, round);
+          loopResult = await this.runParticipant(input, role, participant, round, blackboard, ledger);
         } catch (err) {
           participant.status = 'failed';
           this.deps.bus?.emit('room:failed', {
@@ -267,6 +268,14 @@ export class RoomDispatcher {
         workspace: this.deps.workspace,
         understanding: input.understanding,
         targetFiles: input.parentInput.targetFiles,
+      });
+
+      this.deps.bus?.emit('room:round_completed', {
+        roomId: input.contract.roomId,
+        round: state.rounds,
+        participantsActed: input.contract.roles.length,
+        tokensConsumedThisRound: state.tokensConsumed - tokensAtRoundStart,
+        convergence: outcome,
       });
 
       if (outcome === 'converged') {
@@ -402,12 +411,17 @@ export class RoomDispatcher {
     role: RoleSpec,
     participant: RoomParticipant,
     round: number,
+    blackboard: RoomBlackboard,
+    ledger: RoomLedger,
   ): Promise<WorkerLoopResult> {
     const syntheticId = sanitizeOverlayId(`${input.parentInput.id}__room__${role.name}__r${round}`);
+    const roomContext = this.buildRoomContext(blackboard, ledger, role, round, input.contract);
+    const existingConstraints = input.parentInput.constraints ?? [];
     const syntheticInput: TaskInput = {
       ...input.parentInput,
       id: syntheticId,
       goal: this.composeRoleGoal(input.parentInput.goal, role, round),
+      constraints: roomContext ? [...existingConstraints, `ROOM_CONTEXT:${roomContext}`] : existingConstraints,
     };
     const roleRouting: RoutingDecision = {
       ...input.routing,
@@ -430,6 +444,86 @@ export class RoomDispatcher {
 
   private composeRoleGoal(parentGoal: string, role: RoleSpec, round: number): string {
     return `[Room role: ${role.name} | round ${round + 1}] ${role.responsibility}\n\nUnderlying goal: ${parentGoal}`;
+  }
+
+  /**
+   * Build a room-context briefing from the current blackboard + ledger state.
+   * Returns null when the room is fresh (round 0 with no prior entries) so
+   * the first drafter runs without injected context. For subsequent participants
+   * and rounds, the context includes prior proposals, concerns, and decisions
+   * so the agent can make informed contributions.
+   */
+  private buildRoomContext(
+    blackboard: RoomBlackboard,
+    ledger: RoomLedger,
+    currentRole: RoleSpec,
+    round: number,
+    contract: RoomContract,
+  ): string | null {
+    if (ledger.size() === 0) return null;
+
+    const lines: string[] = ['## Room Context (prior activity)'];
+    lines.push(`You are the **${currentRole.name}** role in round ${round + 1} of ${contract.maxRounds}.`);
+    lines.push(
+      `Other roles: ${contract.roles
+        .filter((r) => r.name !== currentRole.name)
+        .map((r) => r.name)
+        .join(', ')}`,
+    );
+    lines.push('');
+
+    // Drafter proposals
+    const drafterKeys = Array.from(blackboard.readAll().entries()).filter(([k]) => k.startsWith('draft/'));
+    if (drafterKeys.length > 0) {
+      lines.push('### Drafter Proposals');
+      for (const [key, entry] of drafterKeys) {
+        const mutations = entry.value as Array<{ file: string; summary: string }>;
+        if (Array.isArray(mutations)) {
+          lines.push(`**${key}**: ${mutations.map((m) => `${m.file} (${m.summary})`).join(', ')}`);
+        }
+      }
+      lines.push('');
+    }
+
+    // Critic concerns
+    const concerns = blackboard.read('critique/concerns');
+    if (concerns) {
+      const items = concerns.value as string[];
+      lines.push('### Critic Concerns');
+      if (Array.isArray(items) && items.length > 0) {
+        for (const c of items) lines.push(`- ${c}`);
+      } else {
+        lines.push('- No concerns raised (critic affirmed)');
+      }
+      lines.push('');
+    }
+    const review = blackboard.read('critique/review');
+    if (review && typeof review.value === 'string') {
+      lines.push(`### Critic Review\n${review.value}`);
+      lines.push('');
+    }
+
+    // Integrator decisions
+    const finalMutations = blackboard.read('final/mutations');
+    if (finalMutations) {
+      const mutations = finalMutations.value as Array<{ file: string; summary: string }>;
+      lines.push('### Integrator Final Mutations');
+      if (Array.isArray(mutations)) {
+        for (const m of mutations) lines.push(`- ${m.file}: ${m.summary}`);
+      }
+      lines.push('');
+    }
+
+    // Ledger summary (last 5 entries)
+    const recent = ledger.readAll().slice(-5);
+    if (recent.length > 0) {
+      lines.push(`### Recent Ledger (${recent.length} entries)`);
+      for (const entry of recent) {
+        lines.push(`- [${entry.type}] by ${entry.authorRole} (seq ${entry.seq})`);
+      }
+    }
+
+    return lines.length <= 2 ? null : lines.join('\n');
   }
 
   private cloneContractForRole(

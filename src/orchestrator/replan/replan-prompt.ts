@@ -5,14 +5,18 @@
  * A1: the prompt only shapes candidate generation — acceptance/rejection is
  * performed by the rule-based ReplanEngine gates, not by the LLM itself.
  */
+import type { ClassifiedFailure } from '../failure-classifier.ts';
 import type { GoalSatisfaction } from '../goal-satisfaction/goal-evaluator.ts';
 import type { PerceptualHierarchy, TaskInput, WorkingMemoryState } from '../types.ts';
+import { buildFailurePatternLibrary } from './failure-pattern-library.ts';
 
 export interface FailureContext {
   failedApproaches: WorkingMemoryState['failedApproaches'];
   goalSatisfaction: GoalSatisfaction;
   previousPlanDescription: string;
   iteration: number;
+  /** Wave B: structured failure details from failure classifier. */
+  classifiedFailures?: ClassifiedFailure[];
 }
 
 export function buildReplanPrompt(
@@ -81,6 +85,19 @@ Previous plan: ${failure.previousPlanDescription}`;
     userPrompt += `\n\nAcceptance criteria:\n${input.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}`;
   }
 
+  // Wave B: Structured failures with recovery hints (deterministic, A3-safe)
+  if (failure.classifiedFailures?.length) {
+    userPrompt += '\n\nClassified failures from prior attempt:';
+    for (const cf of failure.classifiedFailures) {
+      const loc = cf.file ? ` file=${cf.file}${cf.line ? `:${cf.line}` : ''}` : '';
+      userPrompt += `\n[FAILURE category=${cf.category}${loc} severity=${cf.severity}] ${cf.message}`;
+    }
+    const hints = formatRecoveryHints(failure.classifiedFailures);
+    if (hints) {
+      userPrompt += `\n${hints}`;
+    }
+  }
+
   if (memory.failedApproaches.length > 0) {
     userPrompt += `\n\nDO NOT repeat these failed approaches:\n${memory.failedApproaches
       .map((a) => `- ${a.approach}: ${a.oracleVerdict}`)
@@ -88,4 +105,25 @@ Previous plan: ${failure.previousPlanDescription}`;
   }
 
   return { systemPrompt, userPrompt };
+}
+
+/**
+ * Look up recovery hints from the failure pattern library for each
+ * unique category in the classified failures. Deterministic (A3).
+ */
+function formatRecoveryHints(failures: ClassifiedFailure[]): string | null {
+  const library = buildFailurePatternLibrary();
+  const seen = new Set<string>();
+  const hints: string[] = [];
+
+  for (const f of failures) {
+    if (seen.has(f.category)) continue;
+    seen.add(f.category);
+    const strategy = library.get(f.category);
+    if (strategy) {
+      hints.push(`[RECOVERY HINTS] ${strategy.recoveryHint}`);
+    }
+  }
+
+  return hints.length > 0 ? hints.join('\n') : null;
 }

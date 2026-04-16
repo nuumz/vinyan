@@ -24,6 +24,7 @@ import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
 import type { RiskFactors, VerificationHint } from '../orchestrator/types.ts';
 import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
+import { verifyContentHashes, applyContentHashVerification } from './content-hash-verifier.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
 import {
   computeAggregateConfidence,
@@ -48,6 +49,9 @@ const circuitBreaker = new OracleCircuitBreaker();
 /** Module-level oracle accuracy store — injected by factory.ts via setOracleAccuracyStore(). */
 let oracleAccuracyStore: OracleAccuracyStore | undefined;
 
+/** Wave C: Module-level EMA calibrator — injected by factory.ts via setOracleEMACalibrator(). */
+let oracleEMACalibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator | undefined;
+
 /** Inject the OracleAccuracyStore for accuracy-based conflict resolution. */
 export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
   oracleAccuracyStore = store;
@@ -56,6 +60,29 @@ export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
 /** Reset module-level accuracy store — for test isolation. */
 export function clearOracleAccuracyStore(): void {
   oracleAccuracyStore = undefined;
+}
+
+/** Wave C: Inject the OracleEMACalibrator for EMA-weighted confidence attenuation. */
+export function setOracleEMACalibrator(calibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator): void {
+  oracleEMACalibrator = calibrator;
+}
+
+/** Reset module-level EMA calibrator — for test isolation. */
+export function clearOracleEMACalibrator(): void {
+  oracleEMACalibrator = undefined;
+}
+
+/** Wave C: Module-level bus for gate events (content hash mismatch, etc.). */
+let gateBus: import('../core/bus.ts').VinyanBus | undefined;
+
+/** Inject the bus for gate-level event emission. */
+export function setGateBus(bus: import('../core/bus.ts').VinyanBus): void {
+  gateBus = bus;
+}
+
+/** Reset module-level gate bus — for test isolation. */
+export function clearGateBus(): void {
+  gateBus = undefined;
 }
 
 /**
@@ -88,6 +115,8 @@ export interface GateRequest {
   riskScore?: number;
   /** EO #3: Per-node verification hint — selectively run oracles based on mutation type. */
   verificationHint?: VerificationHint;
+  /** Wave C: routing level for SL fusion depth control. */
+  routingLevel?: number;
 }
 
 export type GateDecision = 'allow' | 'block';
@@ -298,7 +327,12 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
 
           // ECP §4.4 (A5): Clamp confidence by oracle trust tier
           const oracleTier = config.oracles[name]?.tier ?? 'deterministic';
-          const clampedResult = { ...raceResult, confidence: clampByTier(raceResult.confidence, oracleTier) };
+          let clampedConfidence = clampByTier(raceResult.confidence, oracleTier);
+          // Wave C: EMA-weighted attenuation for unreliable oracles (applied after tier clamp)
+          if (oracleEMACalibrator) {
+            clampedConfidence = oracleEMACalibrator.getWeightedConfidence(name, clampedConfidence);
+          }
+          const clampedResult = { ...raceResult, confidence: clampedConfidence };
           return { name, result: clampedResult };
         } catch (err) {
           circuitBreaker.recordFailure(name);
@@ -337,6 +371,12 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     }
   }
 
+  // Wave C: Content hash verification (A4 — verify, not just compute)
+  const hashVerification = verifyContentHashes(oracleResults, request.params.workspace);
+  if (!hashVerification.passed) {
+    applyContentHashVerification(oracleResults, hashVerification, gateBus);
+  }
+
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
   // Build accuracy map from store for accuracy-based tiebreaking in ambiguous K zone
   let oracleAccuracy: Record<string, { total: number; correct: number }> | undefined;
@@ -361,7 +401,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     ),
     informationalOracles: INFORMATIONAL_ORACLES,
     oracleAccuracy,
-  }, oracleAbstentions);
+  }, oracleAbstentions, request.routingLevel);
   reasons.push(...resolved.reasons);
 
   // Compute aggregate confidence (weighted harmonic mean across oracle tiers)

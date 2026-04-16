@@ -25,6 +25,69 @@ export interface GoalSatisfaction {
   blockers: GoalBlocker[];
   passedChecks: string[];
   failedChecks: string[];
+  /** Wave B: progress trajectory point for this iteration. */
+  trajectory?: TrajectoryPoint;
+}
+
+// ── Wave B: Goal Progress Trajectory ──────────────────────────
+
+export interface TrajectoryPoint {
+  iteration: number;
+  score: number;
+  /** score - previousScore (0 for first iteration). */
+  delta: number;
+  /** EMA of score deltas. */
+  momentum: number;
+}
+
+export interface GoalTrajectory {
+  points: TrajectoryPoint[];
+  currentMomentum: number;
+  negativeMomentumDetected: boolean;
+}
+
+const TRAJECTORY_EMA_ALPHA = 0.5;
+
+/**
+ * Tracks goal satisfaction scores across outer-loop iterations and
+ * detects negative momentum (scores declining for N+ consecutive iterations).
+ * A3: pure EMA computation, no LLM.
+ */
+export class GoalTrajectoryTracker {
+  private readonly points: TrajectoryPoint[] = [];
+
+  /** Record a score and return the trajectory point with computed momentum. */
+  record(iteration: number, score: number): TrajectoryPoint {
+    const previous = this.points[this.points.length - 1];
+    const delta = previous ? score - previous.score : 0;
+    const previousMomentum = previous?.momentum ?? 0;
+    // First iteration: no delta signal → momentum stays 0
+    const momentum = previous
+      ? TRAJECTORY_EMA_ALPHA * delta + (1 - TRAJECTORY_EMA_ALPHA) * previousMomentum
+      : 0;
+
+    const point: TrajectoryPoint = { iteration, score, delta, momentum };
+    this.points.push(point);
+    return point;
+  }
+
+  /**
+   * Check if momentum has been negative for >= consecutiveCount iterations.
+   * Requires at least consecutiveCount+1 total points (first has no delta).
+   */
+  isNegativeMomentum(consecutiveCount = 2): boolean {
+    if (this.points.length < consecutiveCount + 1) return false;
+    const recent = this.points.slice(-consecutiveCount);
+    return recent.every((p) => p.momentum < 0);
+  }
+
+  getTrajectory(): GoalTrajectory {
+    return {
+      points: [...this.points],
+      currentMomentum: this.points[this.points.length - 1]?.momentum ?? 0,
+      negativeMomentumDetected: this.isNegativeMomentum(2),
+    };
+  }
 }
 
 export interface GoalEvaluationContext {

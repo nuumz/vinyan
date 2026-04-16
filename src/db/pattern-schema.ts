@@ -7,7 +7,7 @@
 export const PATTERN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS extracted_patterns (
   id                  TEXT PRIMARY KEY,
-  type                TEXT NOT NULL CHECK(type IN ('anti-pattern', 'success-pattern', 'worker-performance')),
+  type                TEXT NOT NULL CHECK(type IN ('anti-pattern', 'success-pattern', 'worker-performance', 'decomposition-pattern')),
   description         TEXT NOT NULL,
   frequency           INTEGER NOT NULL,
   confidence          REAL NOT NULL,

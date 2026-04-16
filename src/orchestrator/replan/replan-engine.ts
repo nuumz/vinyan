@@ -10,8 +10,10 @@
 import { createHash } from 'node:crypto';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { PerceptionAssembler, TaskDecomposer } from '../core-loop.ts';
+import type { ClassifiedFailure, FailureCategory } from '../failure-classifier.ts';
 import type { GoalSatisfaction } from '../goal-satisfaction/goal-evaluator.ts';
 import type { RoutingLevel, TaskDAG, TaskInput, TaskResult, WorkingMemoryState } from '../types.ts';
+import type { FailurePatternLibrary } from './failure-pattern-library.ts';
 import type { FailureContext } from './replan-prompt.ts';
 
 export interface ReplanEngineConfig {
@@ -39,6 +41,7 @@ const ESTIMATED_REPLAN_TOKENS = 2000;
 
 export interface ReplanContext {
   previousInput: TaskInput;
+  /** Wave B: previous plan for deterministic DAG transforms. */
   previousPlan?: TaskDAG;
   previousResult: TaskResult;
   failedApproaches: WorkingMemoryState['failedApproaches'];
@@ -64,6 +67,8 @@ export interface ReplanEngineDeps {
   decomposer: TaskDecomposer;
   perception: PerceptionAssembler;
   bus?: VinyanBus;
+  /** Wave B: deterministic recovery strategies. */
+  failurePatternLibrary?: FailurePatternLibrary;
 }
 
 export class DefaultReplanEngine implements ReplanEngine {
@@ -90,6 +95,10 @@ export class DefaultReplanEngine implements ReplanEngine {
       }
     }
 
+    // ── Wave B: Deterministic DAG transform (zero-LLM fast path) ──
+    const deterministicOutcome = this.tryDeterministicTransform(ctx);
+    if (deterministicOutcome) return deterministicOutcome;
+
     // ── Decomposer must support replan (stub path safety) ──────
     if (typeof this.deps.decomposer.replan !== 'function') {
       this.emitReject(taskId, ctx.iteration, 'decomposer-no-replan');
@@ -106,11 +115,13 @@ export class DefaultReplanEngine implements ReplanEngine {
     }
 
     // ── Build failure context + invoke decomposer.replan ──────
+    const classifiedFailures = collectClassifiedFailures(ctx.failedApproaches);
     const failure: FailureContext = {
       failedApproaches: ctx.failedApproaches,
       goalSatisfaction: ctx.goalSatisfaction,
       previousPlanDescription: describePriorResult(ctx.previousResult),
       iteration: ctx.iteration,
+      classifiedFailures: classifiedFailures.length > 0 ? classifiedFailures : undefined,
     };
 
     const memory: WorkingMemoryState = {
@@ -182,9 +193,80 @@ export class DefaultReplanEngine implements ReplanEngine {
     };
   }
 
+  /**
+   * Wave B: Try a deterministic DAG transform before falling through to LLM.
+   * Returns a ReplanOutcome with tokensUsed=0 on success, null on miss.
+   */
+  private tryDeterministicTransform(ctx: ReplanContext): ReplanOutcome | null {
+    if (!ctx.previousPlan) return null;
+
+    const library = this.deps.failurePatternLibrary;
+    if (!library) return null;
+
+    const allFailures = collectClassifiedFailures(ctx.failedApproaches);
+    if (allFailures.length === 0) return null;
+
+    // Find dominant failure category (most frequent)
+    const counts = new Map<FailureCategory, number>();
+    for (const f of allFailures) {
+      counts.set(f.category, (counts.get(f.category) ?? 0) + 1);
+    }
+    let dominant: FailureCategory | undefined;
+    let maxCount = 0;
+    for (const [cat, count] of counts) {
+      if (count > maxCount) {
+        dominant = cat;
+        maxCount = count;
+      }
+    }
+    if (!dominant) return null;
+
+    const strategy = library.get(dominant);
+    if (!strategy?.dagTransform) return null;
+
+    const transformed = strategy.dagTransform(ctx.previousPlan, allFailures);
+    if (!transformed) return null;
+
+    // Novelty gate: check signature uniqueness
+    const sig = computePlanSignature(transformed);
+    if (ctx.priorPlanSignatures.includes(sig)) return null;
+
+    this.deps.bus?.emit('replan:accepted', {
+      taskId: ctx.previousInput.id,
+      iteration: ctx.iteration,
+      planSignature: sig,
+    });
+
+    const originalGoal = ctx.previousInput.goal.split('\n\n[REPLAN ')[0] ?? ctx.previousInput.goal;
+    const rewrittenGoal =
+      `${originalGoal}\n\n` +
+      `[REPLAN attempt ${ctx.iteration + 1}] Deterministic recovery: ${strategy.recoveryAction}. ` +
+      `${strategy.recoveryHint}`;
+
+    return {
+      input: { ...ctx.previousInput, goal: rewrittenGoal },
+      plan: transformed,
+      planSignature: sig,
+      tokensUsed: 0, // Zero tokens: no LLM invoked
+    };
+  }
+
   private emitReject(taskId: string, iteration: number, reason: string): void {
     this.deps.bus?.emit('replan:rejected', { taskId, iteration, reason });
   }
+}
+
+/** Collect all ClassifiedFailure entries from failed approaches. */
+function collectClassifiedFailures(
+  failedApproaches: WorkingMemoryState['failedApproaches'],
+): ClassifiedFailure[] {
+  const out: ClassifiedFailure[] = [];
+  for (const fa of failedApproaches) {
+    if (fa.classifiedFailures) {
+      out.push(...(fa.classifiedFailures as ClassifiedFailure[]));
+    }
+  }
+  return out;
 }
 
 export function computePlanSignature(dag: TaskDAG): string {

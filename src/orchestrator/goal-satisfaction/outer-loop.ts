@@ -12,7 +12,7 @@ import type { OracleVerdict } from '../../core/types.ts';
 import type { OrchestratorDeps } from '../core-loop.ts';
 import type { ExecutionTrace, TaskInput, TaskResult } from '../types.ts';
 import { WorkingMemory } from '../working-memory.ts';
-import type { GoalEvaluator, GoalSatisfaction } from './goal-evaluator.ts';
+import { GoalTrajectoryTracker, type GoalEvaluator, type GoalSatisfaction } from './goal-evaluator.ts';
 
 export interface GoalLoopConfig {
   maxOuterIterations: number;
@@ -40,12 +40,33 @@ export async function executeWithGoalLoop(
   }
 
   const workingMemory = new WorkingMemory({ bus: deps.bus, taskId: input.id });
+  const trajectoryTracker = new GoalTrajectoryTracker();
 
   let lastResult: TaskResult | undefined;
   let lastSatisfaction: GoalSatisfaction | undefined;
+  // Wave B: track last plan for deterministic DAG transforms in replan engine
+  let lastPlan: import('../types.ts').TaskDAG | undefined;
   // Wave 2: replan budget counter. Shared across iterations, bounded by
   // ReplanEngineConfig.tokenSpendCapFraction to prevent unbounded spend.
   let tokensSpentOnReplanning = 0;
+
+  // Wave B: retrieve seed decomposition shape for first iteration (A7 learning → action)
+  if (deps.decompositionLearner) {
+    try {
+      const { computeTaskSignature } = await import('../prediction/self-model.ts');
+      const taskSig = computeTaskSignature(input);
+      const seed = deps.decompositionLearner.retrieveSeedShape(taskSig);
+      if (seed && seed.nodes.length > 0) {
+        const seedDesc = seed.nodes.map((n) => `${n.id}: ${n.description} [${n.assignedOracles.join(',')}]`).join(' → ');
+        input = {
+          ...input,
+          goal: `${input.goal}\n\n[SEED DECOMPOSITION] A prior winning plan shape for similar tasks: ${seedDesc}. Consider reusing this structure.`,
+        };
+      }
+    } catch {
+      // Best-effort — seed retrieval is optional
+    }
+  }
 
   for (let iteration = 1; iteration <= cfg.maxOuterIterations; iteration++) {
     // ── Budget guard (before every iteration) ──────────────────────
@@ -70,6 +91,11 @@ export async function executeWithGoalLoop(
     const result = await executeAttempt(input, workingMemory);
     lastResult = result;
 
+    // Wave B fix: surface plan from executeTaskCore for deterministic replan + decomposition learning
+    if (result.plan) {
+      lastPlan = result.plan;
+    }
+
     // Terminal-but-not-completed results short-circuit — no evaluation.
     if (result.status !== 'completed') {
       deps.bus?.emit('goal-loop:terminal', {
@@ -90,6 +116,10 @@ export async function executeWithGoalLoop(
     });
     lastSatisfaction = satisfaction;
 
+    // Wave B: record trajectory and attach to satisfaction
+    const trajectoryPoint = trajectoryTracker.record(iteration, satisfaction.score);
+    satisfaction.trajectory = trajectoryPoint;
+
     deps.bus?.emit('goal-loop:evaluation', {
       taskId: input.id,
       iteration,
@@ -100,6 +130,16 @@ export async function executeWithGoalLoop(
     });
 
     if (satisfaction.score >= cfg.goalSatisfactionThreshold) {
+      // Wave B: record winning decomposition for future seed retrieval (A7 loop closure)
+      if (deps.decompositionLearner && lastPlan && lastPlan.nodes.length > 0) {
+        const taskSig = result.trace?.taskTypeSignature ?? input.id;
+        const traceId = result.trace?.id ?? input.id;
+        try {
+          deps.decompositionLearner.recordWinningDecomposition(taskSig, lastPlan, traceId);
+        } catch {
+          // Best-effort — migration may not have run
+        }
+      }
       return result;
     }
 
@@ -109,6 +149,21 @@ export async function executeWithGoalLoop(
       return annotate(result, {
         status: 'escalated',
         reason: `goal not met after ${iteration} iteration(s), score ${satisfaction.score.toFixed(2)} < ${cfg.goalSatisfactionThreshold}`,
+        iteration,
+        satisfaction,
+      });
+    }
+
+    // ── Wave B: Negative momentum → escalate (save budget) ───────
+    if (trajectoryTracker.isNegativeMomentum(2)) {
+      deps.bus?.emit('goal-loop:negative-momentum', {
+        taskId: input.id,
+        iteration,
+        trajectory: trajectoryTracker.getTrajectory(),
+      });
+      return annotate(result, {
+        status: 'escalated',
+        reason: 'negative momentum: scores declining for 2+ iterations',
         iteration,
         satisfaction,
       });
@@ -145,6 +200,7 @@ export async function executeWithGoalLoop(
     const priorPlanSignatures = workingMemory.getPriorPlanSignatures();
     const outcome = await deps.replanEngine.generateAlternative({
       previousInput: input,
+      previousPlan: lastPlan,
       previousResult: result,
       failedApproaches: workingMemory.getSnapshot().failedApproaches,
       goalSatisfaction: satisfaction,
@@ -166,6 +222,7 @@ export async function executeWithGoalLoop(
 
     workingMemory.recordPlanSignature(outcome.planSignature);
     tokensSpentOnReplanning += outcome.tokensUsed;
+    lastPlan = outcome.plan;
     input = outcome.input;
     // fall through to next iteration with updated input + preserved workingMemory
   }

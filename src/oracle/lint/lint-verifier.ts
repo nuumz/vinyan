@@ -7,7 +7,8 @@
  * Linter detection: eslint.config → eslint, ruff.toml/pyproject → ruff.
  */
 
-import { existsSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
@@ -110,13 +111,24 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
   }
 
   const targetPath = join(workspace, target);
+
+  // A4: Compute content hash for the target file (enables content-hash verification in gate)
+  const fileHashes: Record<string, string> = {};
+  try {
+    if (existsSync(targetPath)) {
+      fileHashes[targetPath] = createHash('sha256').update(readFileSync(targetPath)).digest('hex');
+    }
+  } catch {
+    // Hash computation is best-effort
+  }
+
   if (!existsSync(targetPath)) {
     return buildVerdict({
       verified: true,
       type: 'uncertain',
       confidence: 0.5,
       evidence: [],
-      fileHashes: {},
+      fileHashes,
       reason: `Target file ${target} not found`,
       durationMs: performance.now() - start,
       opinion: fromScalar(0.5, BASE_RATE),
@@ -151,7 +163,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         type: 'known',
         confidence: 0.95,
         evidence: [],
-        fileHashes: {},
+        fileHashes,
         reason: `Lint clean (${lintErrors.length} warnings)`,
         durationMs,
         opinion: fromScalar(0.95, BASE_RATE),
@@ -164,7 +176,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       type: 'known',
       confidence: 0.95,
       evidence,
-      fileHashes: {},
+      fileHashes,
       reason: `${errors.length} lint error(s) found`,
       durationMs,
       opinion: fromScalar(0.95, BASE_RATE),
@@ -176,7 +188,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       type: 'unknown',
       confidence: 0,
       evidence: [],
-      fileHashes: {},
+      fileHashes,
       reason: `Linter failed: ${err instanceof Error ? err.message : String(err)}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,

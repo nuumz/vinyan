@@ -510,6 +510,19 @@ export interface VinyanBusEvents {
   'goal-loop:no-replan': { taskId: string; iteration: number };
   'goal-loop:budget-exhausted': { taskId: string; iteration: number };
   'goal-loop:replan-exhausted': { taskId: string; iteration: number };
+  'goal-loop:negative-momentum': {
+    taskId: string;
+    iteration: number;
+    trajectory: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').GoalTrajectory;
+  };
+
+  // Wave C: Content hash verification
+  'gate:content_hash_mismatch': {
+    file: string;
+    oracleName: string;
+    expected: string;
+    actual: string;
+  };
 
   // Wave 2: Replan Engine observability
   'replan:accepted': { taskId: string; iteration: number; planSignature: string };

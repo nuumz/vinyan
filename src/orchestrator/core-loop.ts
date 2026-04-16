@@ -118,6 +118,7 @@ export interface OracleGate {
     mutations: Array<{ file: string; content: string }>,
     workspace: string,
     verificationHint?: import('./types.ts').VerificationHint,
+    routingLevel?: number,
   ): Promise<import('./phases/types.ts').VerificationResult>;
 }
 
@@ -226,6 +227,8 @@ export interface OrchestratorDeps {
   workflowRegistry?: WorkflowRegistry;
   // Wave A: Error attribution bus — routes orphaned learning signals into corrective actions (A7).
   errorAttributionBus?: import('./prediction/error-attribution-bus.ts').ErrorAttributionBus;
+  // Wave B: Decomposition learner — records winning DAG shapes for future seed retrieval.
+  decompositionLearner?: import('./replan/decomposition-learner.ts').DecompositionLearner;
   // ACR (Agent Conversation Room): dispatcher wired by factory when a
   // workerSelector + workerStore are available. When absent, phase-generate
   // falls through to the existing L2+ agentic-loop branch even if the
@@ -1774,6 +1777,7 @@ async function executeTaskCore(
               ? [`Rejected files: ${commitResult.rejected.map((r) => `${r.path} (${r.reason})`).join(', ')}`]
               : undefined,
             contradictions,
+            plan,
           };
 
           // ── Shadow Enqueue (Phase 2.2) ──

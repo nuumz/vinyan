@@ -172,6 +172,20 @@ export class OracleEMACalibrator {
       .sort((a, b) => (a.oracleName < b.oracleName ? -1 : a.oracleName > b.oracleName ? 1 : 0));
   }
 
+  /**
+   * Wave C: Compute EMA-weighted confidence for an oracle's raw confidence.
+   * - Cold oracle (< warm threshold) → return raw (no attenuation)
+   * - Warm oracle with accuracy >= 0.5 → return raw
+   * - Warm oracle with accuracy < 0.5 → attenuate by (accuracy / 0.5)
+   *
+   * Applied AFTER tier clamping (A5 preserved).
+   */
+  getWeightedConfidence(oracleName: string, rawConfidence: number): number {
+    const cal = this.get(oracleName);
+    if (!cal || !cal.warm || cal.accuracy >= 0.5) return rawConfidence;
+    return rawConfidence * (cal.accuracy / 0.5);
+  }
+
   /** Reset state for one oracle (used by drift-recovery). */
   reset(oracleName: string): void {
     this.state.delete(oracleName);

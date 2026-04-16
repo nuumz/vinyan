@@ -88,6 +88,7 @@ export async function executeVerifyPhase(
     workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
     input.targetFiles?.[0] ?? '.',
     activeHint,
+    routing.level,
   );
 
   // ── Emit per-oracle verdicts ──────────────────────────────────
@@ -345,6 +346,7 @@ export async function executeVerifyPhase(
           workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
           input.targetFiles?.[0] ?? '.',
           activeHint,
+          routing.level,
         );
         const reVerConfidence = reVerification.aggregateConfidence ?? (reVerification.passed ? 0.85 : 0.3);
         const reVerPipeline = computePipelineConfidence({

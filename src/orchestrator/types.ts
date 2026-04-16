@@ -430,6 +430,8 @@ export interface TaskResult {
    * them as user-facing prompts (not errors).
    */
   clarificationNeeded?: string[];
+  /** Wave B: plan used for this task — surfaced so outer-loop can pass to replan engine + decomposition learner. */
+  plan?: TaskDAG;
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +753,7 @@ export interface DataGate {
 /** Pattern extracted by Sleep Cycle analysis */
 export interface ExtractedPattern {
   id: string;
-  type: 'anti-pattern' | 'success-pattern' | 'worker-performance';
+  type: 'anti-pattern' | 'success-pattern' | 'worker-performance' | 'decomposition-pattern';
   description: string;
   frequency: number; // occurrence count in traces
   confidence: number; // Wilson score lower bound

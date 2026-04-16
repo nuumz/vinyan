@@ -7,7 +7,8 @@
  * Runner detection: bun.lock → bun test, vitest.config → vitest, pyproject.toml → pytest.
  */
 
-import { existsSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
 import { basename, dirname, join, relative } from 'path';
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
@@ -68,6 +69,17 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
     } satisfies OracleAbstention;
   }
 
+  // A4: Compute content hash for the target source file (enables content-hash verification in gate)
+  const fileHashes: Record<string, string> = {};
+  try {
+    const targetPath = join(workspace, target);
+    if (existsSync(targetPath)) {
+      fileHashes[targetPath] = createHash('sha256').update(readFileSync(targetPath)).digest('hex');
+    }
+  } catch {
+    // Hash computation is best-effort
+  }
+
   const runner = detectTestRunner(workspace);
   const relativeTestFiles = testFiles.map((f) => relative(workspace, f));
 
@@ -96,7 +108,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         type: 'known',
         confidence: 0.95,
         evidence,
-        fileHashes: {},
+        fileHashes,
         reason: `All tests passed (${relativeTestFiles.join(', ')})`,
         durationMs,
         opinion: fromScalar(0.95, BASE_RATE),
@@ -109,7 +121,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       type: 'known',
       confidence: 0.95,
       evidence,
-      fileHashes: {},
+      fileHashes,
       reason: `Tests failed (exit code ${exitCode}): ${output.slice(0, 300)}`,
       durationMs,
       opinion: fromScalar(0.95, BASE_RATE),
@@ -126,7 +138,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         type: 'uncertain',
         confidence: 0.2,
         evidence: [],
-        fileHashes: {},
+        fileHashes,
         reason: `Test runner binary not found: ${errMsg}`,
         errorCode: 'ORACLE_CRASH',
         durationMs: performance.now() - start,
@@ -140,7 +152,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       type: 'unknown',
       confidence: 0,
       evidence: [],
-      fileHashes: {},
+      fileHashes,
       reason: `Test runner failed: ${errMsg}`,
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,

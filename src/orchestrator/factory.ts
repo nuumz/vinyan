@@ -35,7 +35,7 @@ import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { setOracleAccuracyStore } from '../gate/gate.ts';
+import { setOracleAccuracyStore, setOracleEMACalibrator, setGateBus } from '../gate/gate.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
@@ -59,6 +59,8 @@ import {
   type FailureClusterConfig,
 } from './goal-satisfaction/failure-cluster-detector.ts';
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
+import { DecompositionLearner } from './replan/decomposition-learner.ts';
+import { buildFailurePatternLibrary } from './replan/failure-pattern-library.ts';
 import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
 import { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import {
@@ -812,6 +814,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Drift detection is stateless and does not need a dep — it's invoked
   // inline in Phase Learn.
   const oracleEMACalibrator = new OracleEMACalibrator({ bus });
+  // Wave C: inject EMA calibrator into gate for confidence weighting
+  setOracleEMACalibrator(oracleEMACalibrator);
+  // Wave C: inject bus into gate for content hash mismatch events
+  setGateBus(bus);
   const regressionMonitor = new RegressionMonitor({ bus });
 
   const deps: OrchestratorDeps = {
@@ -919,7 +925,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Wave 2: Replan Engine — only active when both goalLoop and replan are
     // enabled. Self-assembles L1 perception so outer-loop doesn't need routing.
     replanEngine: goalLoopConfig?.enabled && replanConfig?.enabled
-      ? new DefaultReplanEngine({ decomposer, perception, bus }, replanConfig)
+      ? new DefaultReplanEngine({ decomposer, perception, bus, failurePatternLibrary: buildFailurePatternLibrary() }, replanConfig)
       : undefined,
     replanConfig,
     // Wave 6: Workflow registry — always instantiated with the 4 built-in
@@ -977,6 +983,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     });
     errorAttribution.start();
     deps.errorAttributionBus = errorAttribution;
+  }
+
+  // Wave B: Decomposition Learner — records winning DAG shapes after successful
+  // outer-loop iterations for future seed retrieval. Gated on patternStore.
+  if (patternStore) {
+    deps.decompositionLearner = new DecompositionLearner({ patternStore });
   }
 
   // Wave 5a: Reactive micro-learning — close the failure-cluster → rule loop.

@@ -627,6 +627,20 @@ export interface VinyanBusEvents {
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
   'workflow:knowledge_query': { stepId: string; query: string };
   'workflow:human_input_needed': { stepId: string; question: string };
+  // Agent Context Layer: emitted during sleep cycle when agent identities are refined
+  'agent:evolved': {
+    cycleId: string;
+    agentsEvolved: number;
+    episodesCompacted: number;
+    personasRefined: number;
+    skillsGraduated: number;
+    soulsEvolved: number;
+  };
+  // Living Agent Soul: emitted when an agent's SOUL.md is synthesized
+  'agent:soul-evolved': {
+    agentId: string;
+    version: number;
+  };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

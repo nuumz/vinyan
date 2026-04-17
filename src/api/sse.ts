@@ -48,33 +48,68 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:clarification_requested',
 ];
 
+interface SSEStreamOptions {
+  /** Send heartbeat comments at this interval to keep connection alive. 0 = no heartbeat. */
+  heartbeatIntervalMs?: number;
+}
+
 /**
- * Create an SSE ReadableStream for a specific task.
+ * Create an SSE ReadableStream.
+ * - With taskId: per-task stream, auto-closes on task:complete, uses named events.
+ * - Without taskId: global stream, stays open, uses data-only format (for EventSource.onmessage).
  */
-export function createSSEStream(bus: VinyanBus, taskId?: string): { stream: ReadableStream; cleanup: () => void } {
+export function createSSEStream(
+  bus: VinyanBus,
+  taskId?: string,
+  options?: SSEStreamOptions,
+): { stream: ReadableStream; cleanup: () => void } {
   const unsubscribers: Array<() => void> = [];
   let controller: ReadableStreamDefaultController | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let closed = false;
+  const encoder = new TextEncoder();
+  const isGlobal = !taskId;
 
   const stream = new ReadableStream({
     start(ctrl) {
       controller = ctrl;
 
+      // Heartbeat to keep proxies/browsers from dropping idle connections
+      const hbMs = options?.heartbeatIntervalMs;
+      if (hbMs && hbMs > 0) {
+        heartbeatTimer = setInterval(() => {
+          if (closed) return;
+          try {
+            controller?.enqueue(encoder.encode(`:heartbeat ${Date.now()}\n\n`));
+          } catch { /* closed */ }
+        }, hbMs);
+      }
+
       for (const eventName of SSE_EVENTS) {
         const unsub = bus.on(eventName, (payload: unknown) => {
+          if (closed) return;
           // Filter by taskId if the payload has one
           const p = payload as Record<string, unknown>;
           const eventTaskId =
             p.taskId ??
             (p.input as Record<string, unknown> | undefined)?.id ??
             (p.result as Record<string, unknown> | undefined)?.id;
-          if (eventTaskId && eventTaskId !== taskId) return;
+          if (eventTaskId && taskId && eventTaskId !== taskId) return;
 
           try {
             const data = JSON.stringify({ event: eventName, payload, ts: Date.now() });
-            controller?.enqueue(new TextEncoder().encode(`event: ${eventName}\ndata: ${data}\n\n`));
+            if (isGlobal) {
+              // Global stream: data-only so EventSource.onmessage receives it
+              controller?.enqueue(encoder.encode(`data: ${data}\n\n`));
+            } else {
+              // Per-task stream: named events
+              controller?.enqueue(encoder.encode(`event: ${eventName}\ndata: ${data}\n\n`));
+            }
 
-            // Auto-close on task completion
-            if (eventName === 'task:complete') {
+            // Auto-close only for per-task streams
+            if (eventName === 'task:complete' && taskId) {
+              closed = true;
+              if (heartbeatTimer) clearInterval(heartbeatTimer);
               controller?.close();
             }
           } catch {
@@ -85,11 +120,15 @@ export function createSSEStream(bus: VinyanBus, taskId?: string): { stream: Read
       }
     },
     cancel() {
+      closed = true;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       for (const unsub of unsubscribers) unsub();
     },
   });
 
   const cleanup = () => {
+    closed = true;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     for (const unsub of unsubscribers) unsub();
     try {
       controller?.close();

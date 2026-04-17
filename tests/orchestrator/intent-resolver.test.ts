@@ -286,7 +286,7 @@ describe('fallbackStrategy', () => {
     expect(fallbackStrategy('code-reasoning', 'inquire', 'none')).toBe('full-pipeline');
   });
 
-  test('general-reasoning + execute + no tools → full-pipeline (safe default)', () => {
-    expect(fallbackStrategy('general-reasoning', 'execute', 'none')).toBe('full-pipeline');
+  test('general-reasoning + execute + no tools → agentic-workflow (creative/generative tasks)', () => {
+    expect(fallbackStrategy('general-reasoning', 'execute', 'none')).toBe('agentic-workflow');
   });
 });

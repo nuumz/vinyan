@@ -97,6 +97,7 @@ export class SleepCycleRunner {
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
+  private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -137,6 +138,8 @@ export class SleepCycleRunner {
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
     costLedger?: CostLedger;
     marketScheduler?: MarketScheduler;
+    /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
+    agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
     /**
      * Wave 5.4: override the default max no-op cycles before the
      * termination sentinel goes dormant. Default: 5. Smaller values
@@ -157,8 +160,14 @@ export class SleepCycleRunner {
     this.knowledgeExchange = options.knowledgeExchange;
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
+    this.agentEvolution = options.agentEvolution;
     this.decayExperiment = createExperimentState();
     this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+  }
+
+  /** Set agent evolution for post-construction wiring (when capabilityModel is available). */
+  setAgentEvolution(evolution: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution): void {
+    this.agentEvolution = evolution;
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */
@@ -388,6 +397,25 @@ export class SleepCycleRunner {
 
       // Emergency reactivation safety net
       this.workerLifecycle.emergencyReactivation();
+    }
+
+    // Agent Context Layer + Living Agent Soul: evolve agent identities and souls
+    if (this.agentEvolution) {
+      try {
+        const evolutionResult = await this.agentEvolution.evolveAll();
+        if (evolutionResult.agentsEvolved > 0 || evolutionResult.soulsEvolved > 0) {
+          this.bus?.emit('agent:evolved', {
+            cycleId,
+            agentsEvolved: evolutionResult.agentsEvolved,
+            episodesCompacted: evolutionResult.episodesCompacted,
+            personasRefined: evolutionResult.personasRefined,
+            skillsGraduated: evolutionResult.skillsGraduated,
+            soulsEvolved: evolutionResult.soulsEvolved,
+          });
+        }
+      } catch {
+        /* Agent evolution is best-effort — never disrupts sleep cycle */
+      }
     }
 
     // Economy OS: Cost pattern mining (E2.4 → Sleep Cycle integration)

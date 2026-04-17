@@ -234,6 +234,8 @@ export interface OrchestratorDeps {
   // falls through to the existing L2+ agentic-loop branch even if the
   // decomposer emits `collaborationMode: 'room'`.
   roomDispatcher?: import('./room/room-dispatcher.ts').RoomDispatcher;
+  // Agent Context Layer: post-task learning for persistent agent identity/memory/skills.
+  agentContextUpdater?: import('./agent-context/context-updater.ts').AgentContextUpdater;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -330,11 +332,19 @@ async function prepareExecution(
   if (needsIntentResolution && deps.llmRegistry) {
     try {
       const { resolveIntent } = await import('./intent-resolver.ts');
+      // Load conversation history for multi-turn intent classification
+      let conversationCtx: import('./types.ts').ConversationEntry[] | undefined;
+      if (input.sessionId && deps.sessionManager) {
+        try {
+          conversationCtx = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 2000);
+        } catch { /* non-fatal */ }
+      }
       intentResolution = await resolveIntent(input, {
         registry: deps.llmRegistry,
         availableTools: deps.toolExecutor?.getToolNames(),
         bus: deps.bus,
         userPreferences: deps.userPreferenceStore?.formatForPrompt(),
+        conversationHistory: conversationCtx,
       });
       deps.bus?.emit('intent:resolved', {
         taskId: input.id,
@@ -599,6 +609,13 @@ async function prepareExecution(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
+/** Detect goals that imply creative/generative content and should NOT be conversational. */
+const GENERATIVE_PATTERN = /\b(write|compose|draft|create|generate|author)\b|แต่ง|เขียน|สร้าง(?:เรื่อง|นิยาย|บทความ|บท)|เล่า(?:เรื่อง|นิทาน|นิยาย)|แต่งนิยาย|แต่งเรื่อง|เขียนเรื่อง|แต่งบท|สรุป|วิเคราะห์|รวบรวม/i;
+
+function shouldEscalateToWorkflow(goal: string): boolean {
+  return GENERATIVE_PATTERN.test(goal);
+}
+
 async function buildConversationalResult(
   input: TaskInput,
   intent: IntentResolution,
@@ -608,14 +625,30 @@ async function buildConversationalResult(
   let answer = intent.refinedGoal;
   if (provider) {
     try {
+      // Load session history for multi-turn conversation continuity
+      let messages: import('./types.ts').HistoryMessage[] | undefined;
+      if (input.sessionId && deps.sessionManager) {
+        try {
+          const history = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 4000);
+          if (history.length > 0) {
+            messages = history.map((e) => ({
+              role: e.role as 'user' | 'assistant',
+              content: e.content,
+            }));
+          }
+        } catch { /* non-fatal */ }
+      }
       const response = await provider.generate({
-        systemPrompt: `You are Vinyan, a friendly assistant. Respond naturally and briefly. Match the user's language.
+        systemPrompt: `You are Vinyan, a friendly and capable assistant. Respond naturally. Match the user's language.
+You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
+When in a multi-turn conversation, maintain context from previous messages.
 Never reveal your underlying model name or provider — you are Vinyan.
-Do NOT use JSON, code blocks, or LaTeX formatting.
+Do NOT use JSON or code blocks unless the user asks for code.
 Do NOT narrate your reasoning process — just respond directly to the user.`,
         userPrompt: input.goal,
-        maxTokens: 1000,
+        maxTokens: 2000,
         temperature: 0.3,
+        messages,
       });
       answer = response.content;
     } catch {
@@ -941,7 +974,19 @@ async function executeTaskCore(
         intentResolution.strategy = fallback as typeof intentResolution.strategy;
       }
       if (intentResolution.strategy === 'conversational') {
-        return buildConversationalResult(input, intentResolution, deps);
+        // Safety net: escalate to agentic-workflow if goal implies creative/generative content
+        if (shouldEscalateToWorkflow(input.goal)) {
+          intentResolution.strategy = 'agentic-workflow';
+          intentResolution.reasoning = `${intentResolution.reasoning ?? ''} [escalated: generative content detected]`;
+          deps.bus?.emit('intent:resolved', {
+            taskId: input.id,
+            strategy: intentResolution.strategy,
+            confidence: intentResolution.confidence,
+            reasoning: intentResolution.reasoning,
+          });
+        } else {
+          return buildConversationalResult(input, intentResolution, deps);
+        }
       }
       // Direct-tool: preserve the LLM-produced tool call when present.
       // Deterministic resolution is fallback-only when classification exists but

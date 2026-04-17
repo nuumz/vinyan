@@ -114,17 +114,18 @@ function ensureTokenExists(tokenPath: string): void {
  * Read-only endpoints (GET health, metrics, facts) do not.
  */
 export function requiresAuth(method: string, path: string): boolean {
-  // Health and metrics are always public
-  if (path === '/api/v1/health' || path === '/api/v1/metrics') return false;
+  // Health, metrics, and auth bootstrap are always public
+  if (path === '/api/v1/health' || path === '/api/v1/metrics' || path === '/api/v1/auth/bootstrap') return false;
 
-  // Read-only query endpoints
+  // Read-only query endpoints + SSE event streams (diagnostic, read-only)
   if (
     method === 'GET' &&
-    (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules' || path === '/api/v1/economy')
+    (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules' ||
+     path === '/api/v1/economy' || path === '/api/v1/events' || path === '/api/v1/sessions' ||
+     path === '/api/v1/tasks')
   )
     return false;
 
-  // SSE event streams require auth
   // All POST/PUT/DELETE require auth
   // All other endpoints require auth
   return true;

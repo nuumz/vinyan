@@ -167,6 +167,11 @@ export class VinyanAPIServer {
       return jsonResponse({ message: 'Dashboard moved to vinyan-ui. Run: cd vinyan-ui && bun run dev' }, 301);
     }
 
+    // ── Auth bootstrap (localhost only — lets the UI auto-fetch the token) ──
+    if (method === 'GET' && path === '/api/v1/auth/bootstrap') {
+      return jsonResponse({ token: this.auth.getToken() });
+    }
+
     // ── Health & Metrics ──────────────────────────────────
     if (method === 'GET' && path === '/api/v1/health') {
       return jsonResponse({ status: 'ok', uptime_ms: process.uptime() * 1000 });
@@ -550,10 +555,12 @@ export class VinyanAPIServer {
   }
 
   private handleGlobalSSE(): Response {
-    const { stream, cleanup } = createSSEStream(this.deps.bus);
+    const { stream, cleanup } = createSSEStream(this.deps.bus, undefined, {
+      heartbeatIntervalMs: 30_000,
+    });
 
-    // Auto-cleanup after 10 minutes
-    setTimeout(cleanup, 600_000);
+    // Safety-net cleanup after 60 minutes (client will auto-reconnect)
+    setTimeout(cleanup, 3_600_000);
 
     return new Response(stream, {
       headers: {

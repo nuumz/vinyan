@@ -24,6 +24,8 @@ import { migration014 } from './014_add_federation_economy.ts';
 import { migration015 } from './015_add_session_messages.ts';
 import { migration016 } from './016_add_room_tables.ts';
 import { migration017 } from './017_add_decomposition_pattern_type.ts';
+import { migration018 } from './018_add_agent_contexts.ts';
+import { migration019 } from './019_add_soul_columns.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -45,4 +47,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration015,
   migration016,
   migration017,
+  migration018,
+  migration019,
 ];

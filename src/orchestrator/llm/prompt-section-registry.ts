@@ -61,6 +61,10 @@ export interface SectionContext {
   conversationHistory?: ConversationEntry[];
   /** Phase 7a: OS/cwd/date/git snapshot — shown in [ENVIRONMENT] system block. */
   environment?: EnvironmentInfo | null;
+  /** Agent Context Layer: persistent identity, memory, and skills for the dispatched agent. */
+  agentContext?: import('../agent-context/types.ts').AgentContext;
+  /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
+  soulContent?: string;
 }
 
 export interface PromptSection {
@@ -622,6 +626,7 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
   });
 
   registerConversationHistorySection(registry);
+  registerAgentContextSections(registry);
 
   return registry;
 }
@@ -938,6 +943,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
   });
 
   registerConversationHistorySection(registry);
+  registerAgentContextSections(registry);
 
   return registry;
 }
@@ -989,6 +995,129 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
       }
 
       return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
+    },
+  });
+}
+
+// ── Shared: Agent Context sections ─────────────────────────────────
+
+/**
+ * Register agent context prompt sections (shared between code and reasoning registries).
+ *
+ * Agent context is ADVISORY (A3: does not change governance/routing).
+ * It enriches the LLM's system/user prompt with the agent's persistent
+ * identity, episodic memory, and learned skills.
+ */
+function registerAgentContextSections(registry: PromptSectionRegistry): void {
+  // Agent Soul — system prompt, session-cached (soul changes only during sleep cycle).
+  // Replaces the old agent-identity section with deeper behavioral guidance from SOUL.md.
+  // ~1000-1500 tokens of philosophy, strategies, anti-patterns, and self-knowledge.
+  registry.register({
+    id: 'agent-soul',
+    target: 'system',
+    cache: 'session',
+    priority: 16,
+    render: (ctx) => {
+      // Prefer soul content (deep, LLM-derived) over ACL identity (shallow, statistical)
+      if (ctx.soulContent) {
+        return `[AGENT SOUL]\n${ctx.soulContent}`;
+      }
+
+      // Fallback to ACL identity when no soul exists (cold-start)
+      const ac = ctx.agentContext;
+      if (!ac || !ac.identity.persona) return null;
+
+      const lines = ['[AGENT IDENTITY]'];
+      lines.push(`You are: ${ac.identity.persona}.`);
+      if (ac.identity.strengths.length > 0) {
+        lines.push(`Your strengths: ${ac.identity.strengths.join(', ')}.`);
+      }
+      if (ac.identity.weaknesses.length > 0) {
+        lines.push(`Be careful with: ${ac.identity.weaknesses.join(', ')}.`);
+      }
+      if (ac.identity.approachStyle) {
+        lines.push(`Your tendency: ${ac.identity.approachStyle}.`);
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Agent Memory — user prompt, after task (priority 20), before semantic-context (priority 22)
+  registry.register({
+    id: 'agent-memory',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 21,
+    render: (ctx) => {
+      const ac = ctx.agentContext;
+      if (!ac) return null;
+
+      const hasLessons = ac.memory.lessonsSummary.length > 0;
+      const hasEpisodes = ac.memory.episodes.length > 0;
+      if (!hasLessons && !hasEpisodes) return null;
+
+      const lines = ['[YOUR RECENT EXPERIENCE]'];
+
+      if (hasLessons) {
+        lines.push(ac.memory.lessonsSummary);
+      }
+
+      if (hasEpisodes) {
+        // Show up to 5 most recent episodes for prompt economy
+        const recent = ac.memory.episodes.slice(0, 5);
+        lines.push('Recent notable tasks:');
+        for (const ep of recent) {
+          lines.push(`  - ${ep.taskSignature}: ${ep.outcome} — ${ep.lesson}`);
+        }
+      }
+
+      return lines.join('\n');
+    },
+  });
+
+  // Agent Skills — user prompt, after agent-memory (priority 21), before semantic-context (priority 22)
+  registry.register({
+    id: 'agent-skills',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 21.5,
+    render: (ctx) => {
+      const ac = ctx.agentContext;
+      if (!ac) return null;
+
+      const profEntries = Object.values(ac.skills.proficiencies);
+      const hasApproaches = Object.keys(ac.skills.preferredApproaches).length > 0;
+      const hasAntiPatterns = ac.skills.antiPatterns.length > 0;
+      if (profEntries.length === 0 && !hasApproaches && !hasAntiPatterns) return null;
+
+      const lines = ['[YOUR SKILL PROFILE]'];
+
+      // Group proficiencies by level
+      const expert = profEntries.filter((p) => p.level === 'expert');
+      const competent = profEntries.filter((p) => p.level === 'competent');
+
+      if (expert.length > 0) {
+        lines.push(`Expert: ${expert.map((p) => p.taskSignature).join(', ')}`);
+      }
+      if (competent.length > 0) {
+        lines.push(`Competent: ${competent.map((p) => p.taskSignature).join(', ')}`);
+      }
+
+      if (hasApproaches) {
+        lines.push('Approaches that work for you:');
+        for (const [sig, approach] of Object.entries(ac.skills.preferredApproaches).slice(0, 5)) {
+          lines.push(`  - ${sig}: ${approach}`);
+        }
+      }
+
+      if (hasAntiPatterns) {
+        lines.push('DO NOT:');
+        for (const pattern of ac.skills.antiPatterns.slice(0, 5)) {
+          lines.push(`  - ${pattern}`);
+        }
+      }
+
+      return lines.join('\n');
     },
   });
 }

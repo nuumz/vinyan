@@ -82,6 +82,10 @@ export interface WorkerPoolConfig {
   warmPoolSize?: number;
   /** Event bus for warm pool observability metrics. */
   bus?: VinyanBus;
+  /** Agent Context Builder for loading persistent agent identity/memory/skills at dispatch time. */
+  agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
+  /** Soul Store for loading SOUL.md at dispatch time (deep prompt injection). */
+  soulStore?: import('../agent-context/soul-store.ts').SoulStore;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -325,6 +329,8 @@ export class WorkerPoolImpl implements WorkerPool {
   private warmPool: WarmWorkerPool | null = null;
   private warmPoolConfig: { enabled: boolean; poolSize: number } = { enabled: false, poolSize: 2 };
   private bus?: VinyanBus;
+  private agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
+  private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -350,6 +356,18 @@ export class WorkerPoolImpl implements WorkerPool {
       enabled: config.useWarmPool ?? this.useSubprocess,
       poolSize: config.warmPoolSize ?? 2,
     };
+    this.agentContextBuilder = config.agentContextBuilder;
+    this.soulStore = config.soulStore;
+  }
+
+  /** Set agent context builder after construction (when capabilityModel is available). */
+  setAgentContextBuilder(builder: import('../agent-context/context-builder.ts').AgentContextBuilder): void {
+    this.agentContextBuilder = builder;
+  }
+
+  /** Set soul store after construction (for SOUL.md loading at dispatch). */
+  setSoulStore(store: import('../agent-context/soul-store.ts').SoulStore): void {
+    this.soulStore = store;
   }
 
   /** Lazily create warm pool on first subprocess dispatch (L2+). */
@@ -521,6 +539,19 @@ export class WorkerPoolImpl implements WorkerPool {
     // so both dispatch paths (in-process + subprocess) render the same context.
     const instructions = workerInput.instructions ?? null;
     const environment = workerInput.environment ?? null;
+
+    // Agent Context Layer: load persistent identity/memory/skills for this agent.
+    // Advisory only (A3) — enriches prompt, does not change routing/governance.
+    const agentContext = routing.workerId && this.agentContextBuilder
+      ? this.agentContextBuilder.buildContext(routing.workerId)
+      : undefined;
+
+    // Living Agent Soul: load SOUL.md for deep behavioral guidance (~1000-1500 tokens).
+    // Session-cached in system prompt — soul changes only during sleep cycle.
+    const soulContent = routing.workerId && this.soulStore
+      ? this.soulStore.loadSoulRaw(routing.workerId)
+      : undefined;
+
     const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
@@ -532,6 +563,8 @@ export class WorkerPoolImpl implements WorkerPool {
       routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
       conversationHistory,
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
+      agentContext, // Agent Context Layer: persistent agent identity/memory/skills
+      soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
     );
 
     const startTime = performance.now();

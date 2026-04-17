@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
-import type { ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
+import type { ConversationEntry, ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Zod schema for LLM response parsing
@@ -48,17 +48,21 @@ Respond as JSON with these fields:
 - workflowPrompt: (only if strategy="agentic-workflow") a detailed, step-by-step execution prompt for the downstream agent
 
 Strategy definitions:
-- "conversational": greetings, questions, explanations, meta-questions, opinion requests. No action needed — answer from knowledge.
+- "conversational": SHORT greetings, simple factual Q&A answerable in 1-3 sentences, meta-questions about capabilities. The response is brief and needs no planning or generation effort.
 - "direct-tool": a SINGLE fire-and-forget action with no expected textual output — the action itself IS the result. Examples: open an app, run a server, launch a URL.
-- "agentic-workflow": multi-step tasks needing planning, information gathering, or synthesis — summarize, analyze, refactor+deploy, build+test+release, research tasks.
+- "agentic-workflow": tasks requiring generation, planning, research, or synthesis — creative writing (stories, poems, essays), summarization, analysis, multi-step tasks, refactor+deploy, build+test+release. If the answer requires more than 3 sentences of original content, this is likely agentic-workflow.
 - "full-pipeline": code modification tasks with clear file targets — bug fixes, feature additions, refactoring.
 
 CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
-1. CONVERSATIONAL test — Does the user want information or explanation?
-   - Questions phrased as "what is", "how does", "why does", "explain" → "conversational"
-   - Greetings, small talk, opinions → "conversational"
+1. CONVERSATIONAL test — Is this a SHORT, simple exchange?
+   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
+   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work") → "conversational"
    - Meta-questions about system capabilities → "conversational"
+   - NEVER "conversational" if the user asks to CREATE, WRITE, or GENERATE content (stories, essays, summaries, reports, poems)
+   - NEVER "conversational" if the answer would require more than a short paragraph
+   - "แต่งนิยาย", "เขียนเรื่อง", "write a story", "compose", "draft" → ALWAYS "agentic-workflow", NOT "conversational"
+   - "สรุป", "วิเคราะห์", "summarize", "analyze", "research" → ALWAYS "agentic-workflow"
 
 2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
    - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
@@ -80,8 +84,10 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
 4. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
    - Multi-step tasks, research, analysis, synthesis
+   - Creative generation: stories, essays, poems, scripts, long-form content
    - Tasks requiring exploration before action
    - Tasks spanning multiple files without clear targets
+   - Any task where the output is substantial text (more than a short paragraph)
 
 5. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
    - If user asks for a CATEGORY (e.g., "แอพ mail", "email app", "browser") and a preference exists → ALWAYS use the preferred app
@@ -198,7 +204,23 @@ export function fallbackStrategy(
   if (taskDomain === 'conversational') return 'conversational';
   if (taskDomain === 'general-reasoning' && taskIntent === 'inquire') return 'conversational';
   if (taskIntent === 'execute' && toolRequirement === 'tool-needed' && taskDomain !== 'code-mutation') return 'direct-tool';
+  // Creative/generative tasks (execute + no tools + general-reasoning) need agentic-workflow, not full-pipeline
+  if (taskIntent === 'execute' && toolRequirement === 'none' && taskDomain === 'general-reasoning') return 'agentic-workflow';
   return 'full-pipeline';
+}
+
+// ---------------------------------------------------------------------------
+// Conversation context formatter
+// ---------------------------------------------------------------------------
+
+function formatConversationContext(history?: ConversationEntry[]): string {
+  if (!history?.length) return '';
+  // Keep last 5 turns for context (enough for intent classification without bloating prompt)
+  const recent = history.slice(-10); // 10 entries ≈ 5 user+assistant pairs
+  const lines = recent.map(
+    (e) => `[${e.role}]: ${e.content.length > 200 ? `${e.content.slice(0, 200)}...` : e.content}`,
+  );
+  return `\nRecent conversation:\n${lines.join('\n')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +233,8 @@ export interface IntentResolverDeps {
   bus?: VinyanBus;
   /** Formatted user preferences string for prompt injection (from UserPreferenceStore). */
   userPreferences?: string;
+  /** Recent conversation history for multi-turn context. */
+  conversationHistory?: ConversationEntry[];
 }
 
 const INTENT_TIMEOUT_MS = 8000;
@@ -227,12 +251,13 @@ export async function resolveIntent(
   const toolList = deps.availableTools?.join(', ') ?? 'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
 
   const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
+  const conversationBlock = formatConversationContext(deps.conversationHistory);
   const userPrompt = `User goal: "${input.goal}"
 Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
 Constraints: ${input.constraints?.join(', ') || 'none'}
 Current platform: ${process.platform}
-Available tools: ${toolList}${preferencesBlock}`;
+Available tools: ${toolList}${preferencesBlock}${conversationBlock}`;
 
   const response = await withTimeout(
     provider.generate({

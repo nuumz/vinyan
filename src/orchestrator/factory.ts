@@ -27,6 +27,12 @@ import { TraceStore } from '../db/trace-store.ts';
 import { UserPreferenceStore } from '../db/user-preference-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
+import { AgentContextStore } from '../db/agent-context-store.ts';
+import { AgentContextBuilder } from './agent-context/context-builder.ts';
+import { AgentContextUpdater } from './agent-context/context-updater.ts';
+import { AgentEvolution } from './agent-context/agent-evolution.ts';
+import { SoulStore } from './agent-context/soul-store.ts';
+import { SoulReflector } from './agent-context/soul-reflector.ts';
 import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
 import { CostLedger } from '../economy/cost-ledger.ts';
 import { CostPredictor } from '../economy/cost-predictor.ts';
@@ -258,6 +264,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
+  let agentContextStore: AgentContextStore | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
@@ -267,6 +274,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
+    agentContextStore = new AgentContextStore(db.getDb());
   }
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
@@ -713,8 +721,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Phase 4: Capability-based worker selector
   let workerSelector: WorkerSelector | undefined;
+  let capabilityModel: CapabilityModel | undefined;
   if (workerStore && db) {
-    const capabilityModel = new CapabilityModel({
+    capabilityModel = new CapabilityModel({
       db: db.getDb(),
       minTraces: 5,
       negativeCapabilityThreshold: 0.6,
@@ -755,6 +764,46 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       costPredictor,
       budgetEnforcer,
     });
+  }
+
+  // Agent Context Layer + Living Agent Soul: create builder, updater, evolution, and soul components.
+  let agentContextUpdater: AgentContextUpdater | undefined;
+  if (agentContextStore) {
+    const builder = new AgentContextBuilder({
+      agentContextStore,
+      capabilityModel,
+      db: db?.getDb(),
+    });
+    workerPool.setAgentContextBuilder(builder);
+
+    // Living Agent Soul: create soul store and reflector
+    const soulStore = new SoulStore(workspace);
+    workerPool.setSoulStore(soulStore);
+
+    // Soul reflector uses tool-uses tier (cheap: haiku ~$0.001/call) for reflection
+    const reflectionProvider = registry.selectByTier('tool-uses');
+    const soulReflector = reflectionProvider
+      ? new SoulReflector({ provider: reflectionProvider, soulStore, agentContextStore })
+      : undefined;
+
+    agentContextUpdater = new AgentContextUpdater({
+      agentContextStore,
+      capabilityModel,
+      soulReflector,
+    });
+
+    const agentEvolution = new AgentEvolution({
+      agentContextStore,
+      capabilityModel,
+      soulReflector,
+      soulStore,
+      db: db?.getDb(),
+    });
+
+    // Wire agent evolution into sleep cycle runner
+    if (sleepCycleRunner) {
+      sleepCycleRunner.setAgentEvolution(agentEvolution);
+    }
   }
 
   // Phase 5: Instance Coordinator (PH5.8) — cross-instance task delegation
@@ -934,6 +983,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // strategies. Additive and metadata-only; the core-loop uses it as a
     // strategy validator (unknown → fallback) without changing dispatch.
     workflowRegistry: new WorkflowRegistry(),
+    // Agent Context Layer: post-task learning for persistent identity/memory/skills
+    agentContextUpdater,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)

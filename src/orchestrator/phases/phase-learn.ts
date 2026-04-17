@@ -203,6 +203,15 @@ export async function executeLearnPhase(
       : undefined;
   trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
 
+  // ── Agent Context Layer: update persistent agent identity/memory/skills ──
+  if (deps.agentContextUpdater && routing.workerId) {
+    try {
+      deps.agentContextUpdater.updateAfterTask(routing.workerId, trace);
+    } catch {
+      /* Agent context update is best-effort — never blocks trace recording */
+    }
+  }
+
   await deps.traceCollector.record(trace);
   deps.bus?.emit('trace:record', { trace });
 

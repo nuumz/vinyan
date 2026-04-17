@@ -864,7 +864,7 @@ export interface ExecutionTrace {
   exploration?: boolean; // PH3.6: true if epsilon-greedy exploration was used
   oracleFailurePattern?: string; // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
   frameworkMarkers?: string[]; // PH4: detected framework markers (e.g., 'react', 'express')
-  workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
+  workerSelectionAudit?: EngineSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
   /** Prompt cache metrics for cost analysis. */
@@ -1208,10 +1208,8 @@ export interface AgentSessionSummary {
 // Worker Profiles — Fleet Governance (→ Phase 4)
 // ---------------------------------------------------------------------------
 
-/** Worker profile status lifecycle: probation → active → demoted → retired */
+/** Engine profile status lifecycle: probation → active → demoted → retired */
 export type EngineProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
-/** @deprecated Use EngineProfileStatus */
-export type WorkerProfileStatus = EngineProfileStatus;
 
 /** Engine profile — reasoning engine configuration paired with empirical performance data. */
 export interface EngineProfile {
@@ -1224,8 +1222,6 @@ export interface EngineProfile {
   demotionReason?: string;
   demotionCount: number; // 3 demotions = permanent retirement
 }
-/** @deprecated Use EngineProfile */
-export type WorkerProfile = EngineProfile;
 
 /** Engine configuration — identity dimensions for a reasoning engine. */
 export interface EngineConfig {
@@ -1240,8 +1236,6 @@ export interface EngineConfig {
   /** Capabilities this engine declares (for capability-first routing). */
   capabilitiesDeclared?: string[];
 }
-/** @deprecated Use EngineConfig */
-export type WorkerConfig = EngineConfig;
 
 /** Engine stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
 export interface EngineStats {
@@ -1261,8 +1255,6 @@ export interface EngineStats {
   >;
   lastActiveAt: number;
 }
-/** @deprecated Use EngineStats */
-export type WorkerStats = EngineStats;
 
 // ---------------------------------------------------------------------------
 // Task Fingerprinting (→ Phase 4.3)
@@ -1295,5 +1287,3 @@ export interface EngineSelectionResult {
   maxCapability?: number; // Phase 4: fleet max capability for this fingerprint
   isUncertain?: boolean; // Phase 4: true if all engines below capability threshold (A2)
 }
-/** @deprecated Use EngineSelectionResult */
-export type WorkerSelectionResult = EngineSelectionResult;

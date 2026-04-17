@@ -2,7 +2,7 @@
  * Migration 018 — Agent Context table.
  *
  * Stores persistent agent identity, episodic memory, and learned skills.
- * Each row corresponds to a WorkerProfile.id — the agent_id foreign key
+ * Each row corresponds to a EngineProfile.id — the agent_id foreign key
  * is logical (not enforced via FK) because worker_profiles may not exist
  * in all deployment modes.
  *

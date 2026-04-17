@@ -1204,7 +1204,7 @@ async function executeTaskCore(
           })
         : undefined;
 
-    let lastWorkerSelection: import('./types.ts').WorkerSelectionResult | undefined;
+    let lastWorkerSelection: import('./types.ts').EngineSelectionResult | undefined;
     const BUDGET_CAP_MULTIPLIER = 6;
     let totalTokensConsumed = 0;
     const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;

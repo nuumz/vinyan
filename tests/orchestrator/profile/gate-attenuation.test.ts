@@ -9,15 +9,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { MigrationRunner, ALL_MIGRATIONS } from '../../../src/db/migrations/index.ts';
 import { LocalOracleProfileStore } from '../../../src/db/local-oracle-profile-store.ts';
-import {
-  profileStatusWeight,
-  setLocalOracleProfileStore,
-  clearLocalOracleProfileStore,
-} from '../../../src/gate/gate.ts';
+import { profileStatusWeight, setGateDeps, clearGateDeps } from '../../../src/gate/gate.ts';
 
 // Reset module-level state between tests so gate attenuation behaves
 // deterministically regardless of test file ordering.
-afterEach(() => clearLocalOracleProfileStore());
+afterEach(() => clearGateDeps());
 
 function freshDb(): Database {
   const db = new Database(':memory:');
@@ -35,15 +31,15 @@ describe('gate profile attenuation', () => {
     expect(profileStatusWeight(null)).toBe(1.0);
   });
 
-  test('setLocalOracleProfileStore registers, clearLocalOracleProfileStore wipes', () => {
+  test('setGateDeps registers the local-oracle store; clearGateDeps wipes', () => {
     const db = freshDb();
     const store = new LocalOracleProfileStore(db);
     store.ensureProfile('ast', 'active');
-    setLocalOracleProfileStore(store);
+    setGateDeps({ localOracleProfileStore: store });
     // Registered: findByName returns the profile
     const p = store.findByName('ast')!;
     expect(p.status).toBe('active');
-    clearLocalOracleProfileStore();
+    clearGateDeps();
     db.close();
   });
 

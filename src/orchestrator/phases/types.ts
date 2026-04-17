@@ -27,7 +27,7 @@ import type {
   TaskResult,
   ToolCall,
   VerificationHint,
-  WorkerSelectionResult,
+  EngineSelectionResult,
   WorkingMemoryState,
 } from '../types.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
@@ -107,7 +107,7 @@ export interface PredictResult {
   metaPredictionConfidence?: number;
   forwardPrediction?: OutcomePrediction;
   routing: RoutingDecision;
-  workerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
 }
 
 export interface PlanResult {

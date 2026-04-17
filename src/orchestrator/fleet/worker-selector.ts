@@ -17,7 +17,7 @@ import { costAwareScore } from '../../economy/cost-aware-scorer.ts';
 import type { CostPredictor } from '../../economy/cost-predictor.ts';
 import type { CapabilityModel } from './capability-model.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../data-gate.ts';
-import type { RoutingLevel, TaskFingerprint, WorkerProfile, WorkerSelectionResult } from '../types.ts';
+import type { RoutingLevel, TaskFingerprint, EngineProfile, EngineSelectionResult } from '../types.ts';
 
 /** Default cycle duration for staleness penalty (10 minutes). */
 const DEFAULT_CYCLE_DURATION_MS = 600_000;
@@ -81,7 +81,7 @@ export class WorkerSelector {
     excludeWorkerIds?: string[],
     taskId?: string,
     isEscalated?: boolean,
-  ): WorkerSelectionResult {
+  ): EngineSelectionResult {
     // Check data gate — fallback to tier if insufficient data
     const gate = checkDataGate('fleet_routing', this.getStats(), this.thresholds);
     if (!gate.satisfied) {
@@ -163,7 +163,7 @@ export class WorkerSelector {
    * Weighted product: capability^2 × quality^1 × cost^0.5 × (1 - negPenalty)
    */
   private scoreWorker(
-    worker: WorkerProfile,
+    worker: EngineProfile,
     fingerprint: TaskFingerprint,
     budget: { maxTokens: number; timeoutMs: number },
   ): number {
@@ -208,11 +208,11 @@ export class WorkerSelector {
   }
 
   private exploreRandomWorker(
-    candidates: WorkerProfile[],
+    candidates: EngineProfile[],
     fingerprint: TaskFingerprint,
     budget: { maxTokens: number; timeoutMs: number },
     taskId?: string,
-  ): WorkerSelectionResult {
+  ): EngineSelectionResult {
     // Pick random candidate (excluding the one that would be selected by score)
     const scored = candidates
       .map((w) => ({
@@ -274,11 +274,11 @@ export class WorkerSelector {
    * select the next-best worker instead (I11 enforcement at runtime).
    */
   private enforceDiversityFloor(
-    scored: Array<{ worker: WorkerProfile; score: number }>,
+    scored: Array<{ worker: EngineProfile; score: number }>,
     _fingerprint: TaskFingerprint,
     _budget: { maxTokens: number; timeoutMs: number },
     taskId?: string,
-  ): WorkerSelectionResult | null {
+  ): EngineSelectionResult | null {
     if (scored.length < 2) return null;
 
     const topWorker = scored[0]!;
@@ -325,7 +325,7 @@ export class WorkerSelector {
     };
   }
 
-  private tierFallback(_routingLevel: RoutingLevel): WorkerSelectionResult {
+  private tierFallback(_routingLevel: RoutingLevel): EngineSelectionResult {
     // No specific worker — let worker pool use tier-based selection.
     // Earn-first bootstrap: when the fleet has no active workers yet (fresh
     // workspace, all newcomers are still on probation), fall through to

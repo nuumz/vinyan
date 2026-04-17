@@ -18,7 +18,7 @@ import type { AgentProfileKind, AgentProfileStatus } from './agent-profile.ts';
 import type { LocalOracleProfileStore } from '../../db/local-oracle-profile-store.ts';
 import type { OracleProfileStore } from '../../db/oracle-profile-store.ts';
 import type { WorkerStore } from '../../db/worker-store.ts';
-import type { WorkerProfile } from '../types.ts';
+import type { EngineProfile } from '../types.ts';
 import type { OracleProfile } from '../instance-coordinator.ts';
 import type { LocalOracleProfile } from './local-oracle-gates.ts';
 
@@ -76,7 +76,7 @@ export class FleetRegistry {
   /** Active-only capability view for planning. Returns worker profiles whose
    * status contributes to routing (active only; probation is informational
    * for the plan phase). */
-  getActiveWorkers(): WorkerProfile[] {
+  getActiveWorkers(): EngineProfile[] {
     return this.deps.workerStore?.findActive() ?? [];
   }
 

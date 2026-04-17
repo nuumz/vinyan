@@ -41,7 +41,7 @@ import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { setOracleAccuracyStore, setOracleEMACalibrator, setGateBus, setLocalOracleProfileStore } from '../gate/gate.ts';
+import { setGateDeps } from '../gate/gate.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
@@ -117,7 +117,7 @@ import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
 import { ToolExecutor } from './tools/tool-executor.ts';
 import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
-import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
+import type { TaskInput, TaskResult, EngineProfile } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
 import type { AgentLoopDeps } from './agent/agent-loop.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
@@ -267,11 +267,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     oracleAccuracyStore = new OracleAccuracyStore(db.getDb());
   } catch {
     // SQLite unavailable — fall back to in-memory only
-  }
-
-  // Wire accuracy store into gate module (module-level injection, like circuitBreaker)
-  if (oracleAccuracyStore) {
-    setOracleAccuracyStore(oracleAccuracyStore);
   }
 
   // Phase 2 stores — all use same db instance
@@ -587,8 +582,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     for (const name of oracleAccuracyStore.listDistinctOracleNames()) {
       localOracleProfileStore.ensureProfile(name, 'probation');
     }
-    // Step 4 Verify: inject store so gate.ts can attenuate verdicts by status.
-    setLocalOracleProfileStore(localOracleProfileStore);
   }
 
   // Hoisted so FleetRegistry can unify remote-oracle view with worker and
@@ -942,10 +935,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Drift detection is stateless and does not need a dep — it's invoked
   // inline in Phase Learn.
   const oracleEMACalibrator = new OracleEMACalibrator({ bus });
-  // Wave C: inject EMA calibrator into gate for confidence weighting
-  setOracleEMACalibrator(oracleEMACalibrator);
-  // Wave C: inject bus into gate for content hash mismatch events
-  setGateBus(bus);
+  // Single-shot gate wiring — consolidates accuracy store, EMA calibrator,
+  // bus, and local-oracle profile store into one module-level injection.
+  setGateDeps({
+    oracleAccuracyStore,
+    oracleEMACalibrator,
+    bus,
+    localOracleProfileStore,
+  });
   const regressionMonitor = new RegressionMonitor({ bus });
 
   const deps: OrchestratorDeps = {
@@ -1525,7 +1522,7 @@ function autoRegisterWorkers(
     const workerId = `worker-${provider.id}`;
     if (workerStore.findById(workerId)) continue;
 
-    const profile: WorkerProfile = {
+    const profile: EngineProfile = {
       id: workerId,
       config: {
         modelId: provider.id,
@@ -1538,7 +1535,6 @@ function autoRegisterWorkers(
       demotionCount: 0,
     };
     workerStore.insert(profile);
-    bus.emit('worker:registered', { profile });
     bus.emit('profile:registered', { kind: 'worker', id: profile.id });
   }
 
@@ -1549,7 +1545,7 @@ function autoRegisterWorkers(
       const workerId = `worker-${engine.id}`;
       if (workerStore.findById(workerId)) continue;
 
-      const profile: WorkerProfile = {
+      const profile: EngineProfile = {
         id: workerId,
         config: {
           modelId: engine.id, // engine.id as model identifier for non-LLM REs
@@ -1564,7 +1560,6 @@ function autoRegisterWorkers(
         demotionCount: 0,
       };
       workerStore.insert(profile);
-      bus.emit('worker:registered', { profile });
       bus.emit('profile:registered', { kind: 'worker', id: profile.id });
     }
   }

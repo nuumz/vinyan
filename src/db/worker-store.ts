@@ -1,84 +1,72 @@
 /**
  * WorkerStore — SQLite persistence for worker profiles + on-demand stats.
  *
- * CRUD for WorkerProfile lifecycle: probation → active → demoted → retired.
+ * CRUD for EngineProfile lifecycle: probation → active → demoted → retired.
  * Stats are computed from execution_traces via SQL aggregates, cached 60s.
  *
  * Source of truth: design/implementation-plan.md §Phase 4.1
  */
 import type { Database } from 'bun:sqlite';
-import type { WorkerConfig, WorkerProfile, WorkerProfileStatus, WorkerStats } from '../orchestrator/types.ts';
-import { WorkerProfileRowSchema } from './schemas.ts';
+import type { EngineConfig, EngineProfile, EngineProfileStatus, EngineStats } from '../orchestrator/types.ts';
+import { EngineProfileRowSchema } from './schemas.ts';
 
 export class WorkerStore {
   private db: Database;
   private insertStmt;
-  private statsCache = new Map<string, { stats: WorkerStats; expiresAt: number }>();
+  private statsCache = new Map<string, { stats: EngineStats; expiresAt: number }>();
   private statsTTL = 60_000; // 60s cache TTL
 
   constructor(db: Database) {
     this.db = db;
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO worker_profiles (
-        id, model_id, model_version, temperature, tool_allowlist,
-        system_prompt_tpl, max_context_tokens, status,
-        created_at, promoted_at, demoted_at, demotion_reason, demotion_count,
-        engine_type, capabilities_declared, engine_config
+        id, model_id, status, created_at,
+        promoted_at, demoted_at, demotion_reason, demotion_count,
+        engine_config
       ) VALUES (
-        $id, $model_id, $model_version, $temperature, $tool_allowlist,
-        $system_prompt_tpl, $max_context_tokens, $status,
-        $created_at, $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
-        $engine_type, $capabilities_declared, $engine_config
+        $id, $model_id, $status, $created_at,
+        $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
+        $engine_config
       )
     `);
   }
 
-  insert(profile: WorkerProfile): void {
-    // Step 6: dual-write engine_config (authoritative JSON) + legacy columns
-    // (compat read path). Callers that read engine_config prefer it; legacy-only
-    // rows fall through to individual columns.
+  insert(profile: EngineProfile): void {
+    // engine_config is the authoritative EngineConfig store. model_id is
+    // duplicated as a column only so SQL queries can filter/index by it.
     this.insertStmt.run({
       $id: profile.id,
       $model_id: profile.config.modelId,
-      $model_version: profile.config.modelVersion ?? null,
-      $temperature: profile.config.temperature,
-      $tool_allowlist: profile.config.toolAllowlist ? JSON.stringify(profile.config.toolAllowlist) : null,
-      $system_prompt_tpl: profile.config.systemPromptTemplate ?? 'default',
-      $max_context_tokens: profile.config.maxContextTokens ?? null,
       $status: profile.status,
       $created_at: profile.createdAt,
       $promoted_at: profile.promotedAt ?? null,
       $demoted_at: profile.demotedAt ?? null,
       $demotion_reason: profile.demotionReason ?? null,
       $demotion_count: profile.demotionCount,
-      $engine_type: profile.config.engineType ?? null,
-      $capabilities_declared: profile.config.capabilitiesDeclared
-        ? JSON.stringify(profile.config.capabilitiesDeclared)
-        : null,
       $engine_config: JSON.stringify(profile.config),
     });
   }
 
-  findById(id: string): WorkerProfile | null {
+  findById(id: string): EngineProfile | null {
     const row = this.db.prepare(`SELECT * FROM worker_profiles WHERE id = ?`).get(id);
     return row ? rowToProfile(row) : null;
   }
 
-  findByStatus(status: WorkerProfileStatus): WorkerProfile[] {
+  findByStatus(status: EngineProfileStatus): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles WHERE status = ? ORDER BY created_at ASC`).all(status);
     return rows.map(rowToProfile);
   }
 
-  findActive(): WorkerProfile[] {
+  findActive(): EngineProfile[] {
     return this.findByStatus('active');
   }
 
-  findAll(): WorkerProfile[] {
+  findAll(): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles ORDER BY created_at ASC`).all();
     return rows.map(rowToProfile);
   }
 
-  findByModelId(modelId: string): WorkerProfile[] {
+  findByModelId(modelId: string): EngineProfile[] {
     const rows = this.db
       .prepare(`SELECT * FROM worker_profiles WHERE model_id = ? ORDER BY created_at ASC`)
       .all(modelId);
@@ -86,7 +74,7 @@ export class WorkerStore {
   }
 
   /** Update worker status with appropriate timestamp fields. */
-  updateStatus(id: string, status: WorkerProfileStatus, reason?: string): void {
+  updateStatus(id: string, status: EngineProfileStatus, reason?: string): void {
     const now = Date.now();
     switch (status) {
       case 'active':
@@ -120,7 +108,7 @@ export class WorkerStore {
     this.statsCache.delete(id);
   }
 
-  countByStatus(status: WorkerProfileStatus): number {
+  countByStatus(status: EngineProfileStatus): number {
     const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM worker_profiles WHERE status = ?`).get(status) as {
       cnt: number;
     };
@@ -140,7 +128,7 @@ export class WorkerStore {
    * Compute worker stats from traces via SQL aggregates.
    * Cached in-memory with 60s TTL to avoid repeated queries.
    */
-  getStats(workerId: string): WorkerStats {
+  getStats(workerId: string): EngineStats {
     const cached = this.statsCache.get(workerId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.stats;
@@ -164,7 +152,7 @@ export class WorkerStore {
    * Compute stats from the most recent N traces for a worker (rolling window).
    * Used by WorkerLifecycle for demotion checks (rolling 30 tasks per plan PH4.2).
    */
-  getRecentStats(workerId: string, limit: number): WorkerStats {
+  getRecentStats(workerId: string, limit: number): EngineStats {
     const agg = this.db
       .prepare(`
       SELECT
@@ -206,7 +194,7 @@ export class WorkerStore {
    * Compute stats from traces since a given timestamp for a worker.
    * Used by WorkerLifecycle for scoped safety-violation checks during probation.
    */
-  getStatsSince(workerId: string, sinceTimestamp: number): WorkerStats {
+  getStatsSince(workerId: string, sinceTimestamp: number): EngineStats {
     const agg = this.db
       .prepare(`
       SELECT
@@ -268,7 +256,7 @@ export class WorkerStore {
     return rows.map((r) => ({ workerId: r.worker_id, count: r.cnt }));
   }
 
-  private computeStats(workerId: string): WorkerStats {
+  private computeStats(workerId: string): EngineStats {
     // Aggregate stats
     const agg = this.db
       .prepare(`
@@ -311,7 +299,7 @@ export class WorkerStore {
       avg_tokens: number;
     }>;
 
-    const taskTypeBreakdown: WorkerStats['taskTypeBreakdown'] = {};
+    const taskTypeBreakdown: EngineStats['taskTypeBreakdown'] = {};
     for (const row of breakdown) {
       taskTypeBreakdown[row.task_type_signature] = {
         count: row.count,
@@ -335,47 +323,11 @@ export class WorkerStore {
 
 // ── Row deserialization ───────────────────────────────────────────────────
 
-function rowToProfile(row: unknown): WorkerProfile {
-  const parsed = WorkerProfileRowSchema.safeParse(row);
-  const r = parsed.success ? parsed.data : (row as any);
-  if (!parsed.success) {
-    console.warn('[vinyan] WorkerStore: row failed Zod validation, using fallback', parsed.error.message);
-  }
-
-  // Step 6: prefer engine_config JSON blob when present (authoritative); fall
-  // back to individual columns for legacy rows written before dual-write.
-  const engineConfig = parsed.success ? (r.engine_config as Partial<WorkerConfig> | undefined) : undefined;
-
-  const config: WorkerConfig = engineConfig
-    ? {
-        modelId: engineConfig.modelId ?? r.model_id,
-        modelVersion: engineConfig.modelVersion ?? r.model_version ?? undefined,
-        temperature: engineConfig.temperature ?? r.temperature,
-        toolAllowlist: engineConfig.toolAllowlist ?? (parsed.success ? r.tool_allowlist : undefined),
-        systemPromptTemplate: engineConfig.systemPromptTemplate ?? r.system_prompt_tpl ?? undefined,
-        maxContextTokens: engineConfig.maxContextTokens ?? r.max_context_tokens ?? undefined,
-        engineType: engineConfig.engineType ?? (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
-        capabilitiesDeclared:
-          engineConfig.capabilitiesDeclared ?? (parsed.success ? r.capabilities_declared : undefined),
-      }
-    : {
-        modelId: r.model_id,
-        modelVersion: r.model_version ?? undefined,
-        temperature: r.temperature,
-        toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
-        systemPromptTemplate: r.system_prompt_tpl ?? undefined,
-        maxContextTokens: r.max_context_tokens ?? undefined,
-        engineType: (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
-        capabilitiesDeclared: parsed.success
-          ? r.capabilities_declared
-          : r.capabilities_declared
-            ? JSON.parse(r.capabilities_declared)
-            : undefined,
-      };
-
+function rowToProfile(row: unknown): EngineProfile {
+  const r = EngineProfileRowSchema.parse(row);
   return {
     id: r.id,
-    config,
+    config: r.engine_config as unknown as EngineConfig,
     status: r.status,
     createdAt: r.created_at,
     promotedAt: r.promoted_at ?? undefined,

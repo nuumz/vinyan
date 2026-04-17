@@ -8,7 +8,7 @@ import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
-import type { LLMProvider, LLMRequest, WorkerProfile } from '../../src/orchestrator/types.ts';
+import type { LLMProvider, LLMRequest, EngineProfile } from '../../src/orchestrator/types.ts';
 import { FileWatcher } from '../../src/world-graph/file-watcher.ts';
 
 // Re-implement autoRegisterWorkers test harness — the function is module-private,
@@ -54,7 +54,7 @@ describe('autoRegisterWorkers logic', () => {
       const workerId = `worker-${p.id}`;
       const existing = workerStore.findById(workerId);
       if (existing) continue;
-      const profile: WorkerProfile = {
+      const profile: EngineProfile = {
         id: workerId,
         config: {
           modelId: p.id,

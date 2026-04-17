@@ -3,7 +3,7 @@
  *
  * Tracks remote oracle accuracy for Phase 5 multi-instance coordination.
  * State machine: probation → active → demoted → retired.
- * Mirrors WorkerProfile lifecycle pattern (Phase 4).
+ * Mirrors EngineProfile lifecycle pattern (Phase 4).
  */
 import type { Database } from 'bun:sqlite';
 import type { Migration } from './migration-runner.ts';

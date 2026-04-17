@@ -18,7 +18,7 @@ import type {
   TaskInput,
   TaskResult,
   ToolCall,
-  WorkerSelectionResult,
+  EngineSelectionResult,
 } from '../types.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { PhaseContext, GenerateResult, WorkerResult, PhaseContinue, PhaseReturn, PhaseRetry, PhaseThrow } from './types.ts';
@@ -31,8 +31,8 @@ interface GenerateInput {
   plan: TaskDAG | undefined;
   totalTokensConsumed: number;
   budgetCapMultiplier: number;
-  workerSelection?: WorkerSelectionResult;
-  lastWorkerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
+  lastWorkerSelection?: EngineSelectionResult;
   retry: number;
 }
 

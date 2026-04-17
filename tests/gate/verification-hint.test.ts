@@ -9,7 +9,7 @@ import { cpSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, runGate } from '../../src/gate/index.ts';
-import { clearOracleAccuracyStore } from '../../src/gate/gate.ts';
+import { clearGateDeps } from '../../src/gate/gate.ts';
 
 let workspace: string;
 
@@ -24,7 +24,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  clearOracleAccuracyStore();
+  clearGateDeps();
 });
 
 function makeRequest(overrides: Partial<GateRequest> = {}): GateRequest {

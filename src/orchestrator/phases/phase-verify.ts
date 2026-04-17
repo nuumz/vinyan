@@ -18,7 +18,7 @@ import type {
   SelfModelPrediction,
   TaskDAG,
   VerificationHint,
-  WorkerSelectionResult,
+  EngineSelectionResult,
 } from '../types.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
@@ -40,8 +40,8 @@ interface VerifyInput {
   predictionConfidence?: number;
   metaPredictionConfidence?: number;
   forwardPrediction?: OutcomePrediction;
-  workerSelection?: WorkerSelectionResult;
-  lastWorkerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
+  lastWorkerSelection?: EngineSelectionResult;
   matchedSkill: import('../types.ts').CachedSkill | null;
   retry: number;
   /** R2: when generate dispatched via Room, carries the roomId for trace tagging. */

@@ -20,7 +20,7 @@ import type {
   TaskResult,
   ToolResult,
   WorkerOutput,
-  WorkerProfile,
+  EngineProfile,
 } from '../orchestrator/types.ts';
 import type { Fact, OracleVerdict } from './types.ts';
 
@@ -197,14 +197,9 @@ export interface VinyanBusEvents {
   // DAG decomposition fallback (A3: deterministic governance transparency)
   'decomposer:fallback': { taskId: string };
 
-  // Worker lifecycle (Phase 4.2)
-  'worker:registered': { profile: WorkerProfile };
-  'worker:promoted': { workerId: string; afterTasks: number; successRate: number };
-  'worker:demoted': { workerId: string; reason: string; permanent: boolean };
-  'worker:reactivated': { workerId: string; previousDemotionCount: number };
-
   // Unified profile lifecycle — kind='worker' | 'oracle-peer' | 'oracle-local'.
-  // Emitted alongside legacy worker:* events during dual-emit period.
+  // Single source of truth for promotion/demotion/retire/reactivate across all
+  // profile kinds. Consumers filter by `kind` when they care about a subset.
   'profile:registered': { kind: string; id: string };
   'profile:promoted': { kind: string; id: string; reason: string };
   'profile:demoted': { kind: string; id: string; reason: string; permanent: boolean };

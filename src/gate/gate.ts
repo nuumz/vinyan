@@ -46,67 +46,43 @@ import { isMutatingTool } from './tool-classifier.ts';
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
 
-/** Module-level oracle accuracy store — injected by factory.ts via setOracleAccuracyStore(). */
-let oracleAccuracyStore: OracleAccuracyStore | undefined;
-
-/** Wave C: Module-level EMA calibrator — injected by factory.ts via setOracleEMACalibrator(). */
-let oracleEMACalibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator | undefined;
-
-/** Inject the OracleAccuracyStore for accuracy-based conflict resolution. */
-export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
-  oracleAccuracyStore = store;
-}
-
-/** Reset module-level accuracy store — for test isolation. */
-export function clearOracleAccuracyStore(): void {
-  oracleAccuracyStore = undefined;
-}
-
-/** Wave C: Inject the OracleEMACalibrator for EMA-weighted confidence attenuation. */
-export function setOracleEMACalibrator(calibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator): void {
-  oracleEMACalibrator = calibrator;
-}
-
-/** Reset module-level EMA calibrator — for test isolation. */
-export function clearOracleEMACalibrator(): void {
-  oracleEMACalibrator = undefined;
-}
-
-/** Wave C: Module-level bus for gate events (content hash mismatch, etc.). */
-let gateBus: import('../core/bus.ts').VinyanBus | undefined;
-
-/** Inject the bus for gate-level event emission. */
-export function setGateBus(bus: import('../core/bus.ts').VinyanBus): void {
-  gateBus = bus;
-}
-
-/** Reset module-level gate bus — for test isolation. */
-export function clearGateBus(): void {
-  gateBus = undefined;
-}
-
 /**
- * Unified profile: module-level local-oracle profile store.
- * When injected, gate weights each oracle verdict by its lifecycle status:
- *   - active    → full weight
- *   - probation → kept (informational) but downweighted (× 0.6)
- *   - demoted   → kept but heavily downweighted (× 0.3)
- *   - retired   → excluded from fusion
- * Status lookup is by oracle name (matching OracleAccuracyStore keys).
+ * GateDeps — everything the gate module needs that is not a call argument.
+ *
+ * One setter replaces the four historical setters (`setOracleAccuracyStore`,
+ * `setOracleEMACalibrator`, `setGateBus`, `setLocalOracleProfileStore`) so
+ * wiring from factory.ts and test harnesses lives in one place. Every field
+ * is optional — the gate behaves sensibly when a dep is missing (no
+ * accuracy-tiebreak, no EMA attenuation, no event emission, no status
+ * weighting).
  */
+export interface GateDeps {
+  oracleAccuracyStore?: OracleAccuracyStore;
+  oracleEMACalibrator?: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
+  bus?: import('../core/bus.ts').VinyanBus;
+  localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+}
+
+let oracleAccuracyStore: OracleAccuracyStore | undefined;
+let oracleEMACalibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator | undefined;
+let gateBus: import('../core/bus.ts').VinyanBus | undefined;
 let localOracleProfileStore:
   | import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore
   | undefined;
 
-/** Inject the local-oracle profile store for status-based verdict weighting. */
-export function setLocalOracleProfileStore(
-  store: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore,
-): void {
-  localOracleProfileStore = store;
+/** Inject everything the gate module needs in a single call. */
+export function setGateDeps(deps: GateDeps): void {
+  oracleAccuracyStore = deps.oracleAccuracyStore;
+  oracleEMACalibrator = deps.oracleEMACalibrator;
+  gateBus = deps.bus;
+  localOracleProfileStore = deps.localOracleProfileStore;
 }
 
-/** Reset — for test isolation. */
-export function clearLocalOracleProfileStore(): void {
+/** Reset all module-level deps — tests call this in afterEach. */
+export function clearGateDeps(): void {
+  oracleAccuracyStore = undefined;
+  oracleEMACalibrator = undefined;
+  gateBus = undefined;
   localOracleProfileStore = undefined;
 }
 
@@ -127,14 +103,6 @@ export function profileStatusWeight(
       // No profile registered yet → neutral (treat as active-equivalent)
       return 1.0;
   }
-}
-
-/**
- * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
- * from trace-based calibration in SelfModel (Phase 3). Kept as no-op for backward compat.
- */
-export function getOracleAccuracy(): Record<string, { total: number; correct: number }> {
-  return {};
 }
 
 // ── Public types ────────────────────────────────────────────────

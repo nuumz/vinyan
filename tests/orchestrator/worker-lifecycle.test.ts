@@ -5,7 +5,7 @@ import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import { WorkerLifecycle } from '../../src/orchestrator/fleet/worker-lifecycle.ts';
-import type { WorkerProfile } from '../../src/orchestrator/types.ts';
+import type { EngineProfile } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');
@@ -14,7 +14,7 @@ function createDb(): Database {
   return db;
 }
 
-function makeProfile(id: string, status: WorkerProfile['status'] = 'probation'): WorkerProfile {
+function makeProfile(id: string, status: EngineProfile['status'] = 'probation'): EngineProfile {
   return {
     id,
     config: { modelId: `model-${id}`, temperature: 0.7, systemPromptTemplate: 'default' },
@@ -147,9 +147,9 @@ describe('WorkerLifecycle', () => {
       expect(result.reason).toContain('Wilson LB');
     });
 
-    test('emits worker:promoted event', () => {
+    test('emits profile:promoted event', () => {
       const events: unknown[] = [];
-      bus.on('worker:promoted', (e) => events.push(e));
+      bus.on('profile:promoted', (e) => events.push(e));
 
       store.insert(makeProfile('w1', 'probation'));
       insertTraces(db, 'w1', 35, { successRate: 0.9, avgQuality: 0.8 });
@@ -157,7 +157,8 @@ describe('WorkerLifecycle', () => {
       lifecycle.evaluatePromotion('w1');
 
       expect(events).toHaveLength(1);
-      expect((events[0] as any).workerId).toBe('w1');
+      expect((events[0] as any).kind).toBe('worker');
+      expect((events[0] as any).id).toBe('w1');
     });
   });
 
@@ -201,9 +202,9 @@ describe('WorkerLifecycle', () => {
       expect(store.findById('w1')!.status).toBe('retired');
     });
 
-    test('emits worker:demoted event', () => {
+    test('emits profile:demoted event', () => {
       const events: unknown[] = [];
-      bus.on('worker:demoted', (e) => events.push(e));
+      bus.on('profile:demoted', (e) => events.push(e));
 
       store.insert(makeProfile('w1', 'active'));
       store.insert(makeProfile('w2', 'active'));
@@ -213,7 +214,8 @@ describe('WorkerLifecycle', () => {
 
       lifecycle.checkDemotions();
       expect(events.length).toBeGreaterThan(0);
-      expect((events[0] as any).workerId).toBe('w2');
+      expect((events[0] as any).kind).toBe('worker');
+      expect((events[0] as any).id).toBe('w2');
     });
 
     test('skips workers with insufficient data', () => {
@@ -286,9 +288,9 @@ describe('WorkerLifecycle', () => {
       expect(store.findById('w1')!.status).toBe('retired');
     });
 
-    test('emits worker:reactivated event', () => {
+    test('emits profile:reactivated event', () => {
       const events: unknown[] = [];
-      bus.on('worker:reactivated', (e) => events.push(e));
+      bus.on('profile:reactivated', (e) => events.push(e));
 
       store.insert(makeProfile('w1', 'active'));
       store.updateStatus('w1', 'demoted', 'test');
@@ -307,7 +309,8 @@ describe('WorkerLifecycle', () => {
 
       lifecycle.reEnrollExpired(100);
       expect(events).toHaveLength(1);
-      expect((events[0] as any).workerId).toBe('w1');
+      expect((events[0] as any).kind).toBe('worker');
+      expect((events[0] as any).id).toBe('w1');
     });
   });
 
@@ -329,15 +332,17 @@ describe('WorkerLifecycle', () => {
       expect(store.findById('w2')!.status).toBe('active');
     });
 
-    test('emits fleet:emergency_reactivation event', () => {
-      const events: unknown[] = [];
-      bus.on('fleet:emergency_reactivation', (e) => events.push(e));
+    test('emits profile:reactivated with emergency flag', () => {
+      const events: Array<{ kind: string; id: string; emergency?: boolean }> = [];
+      bus.on('profile:reactivated', (e) => events.push(e));
 
       store.insert(makeProfile('w1', 'active'));
       store.updateStatus('w1', 'demoted', 'test');
 
       lifecycle.emergencyReactivation();
       expect(events).toHaveLength(1);
+      expect(events[0]!.kind).toBe('worker');
+      expect(events[0]!.emergency).toBe(true);
     });
   });
 

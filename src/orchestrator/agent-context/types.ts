@@ -20,7 +20,7 @@ export type SkillLevel = 'novice' | 'competent' | 'expert';
 export type EpisodeOutcome = 'success' | 'partial' | 'failed';
 
 export interface AgentIdentity {
-  /** Reuses WorkerProfile.id — no new entity created. */
+  /** Reuses EngineProfile.id — no new entity created. */
   agentId: string;
   /** Short natural-language persona: "methodical code reviewer", "fast prototyper". */
   persona: string;

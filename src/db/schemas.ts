@@ -49,49 +49,21 @@ export const EvolutionaryRuleRowSchema = z
     origin: row.origin,
   }));
 
-// ── WorkerProfile row schema ────────────────────────────────────────────
+// ── EngineProfile row schema ────────────────────────────────────────────
 
 const WorkerStatusSchema = z.enum(['probation', 'active', 'demoted', 'retired']);
 
-export const WorkerProfileRowSchema = z.object({
+export const EngineProfileRowSchema = z.object({
   id: z.string(),
   model_id: z.string(),
-  model_version: z.string().nullable().optional(),
-  temperature: z.number(),
-  tool_allowlist: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
-  system_prompt_tpl: z.string().nullable().optional(),
-  max_context_tokens: z.number().nullable().optional(),
   status: WorkerStatusSchema,
   created_at: z.number(),
   promoted_at: z.number().nullable().optional(),
   demoted_at: z.number().nullable().optional(),
   demotion_reason: z.string().nullable().optional(),
   demotion_count: z.number(),
-  // RE-agnostic columns (migration 008)
-  engine_type: z.string().nullable().optional(),
-  capabilities_declared: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
-  // engine_config: canonical JSON blob of WorkerConfig. Parsed when present;
-  // when absent (legacy rows), callers fall back to individual columns.
-  engine_config: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => {
-      if (!v) return undefined;
-      try {
-        return JSON.parse(v) as Record<string, unknown>;
-      } catch {
-        return undefined;
-      }
-    }),
+  // Authoritative EngineConfig JSON blob. Required column after migration 022.
+  engine_config: z.string().transform((v) => JSON.parse(v) as Record<string, unknown>),
 });
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────

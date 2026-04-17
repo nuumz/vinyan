@@ -1,7 +1,7 @@
 /**
  * Agent Profile — shared abstraction across Worker, Oracle Peer, and Local Oracle.
  *
- * Unifies the four-lifecycle sprawl (WorkerProfile, OracleProfile, CachedSkill,
+ * Unifies the four-lifecycle sprawl (EngineProfile, OracleProfile, CachedSkill,
  * EvolutionaryRule) under one typed envelope so that promotion/demotion gates,
  * events, and read APIs can operate on a common shape.
  *

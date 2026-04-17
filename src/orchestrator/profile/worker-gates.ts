@@ -1,5 +1,5 @@
 /**
- * WorkerGates — promotion & demotion gate logic for WorkerProfile.
+ * WorkerGates — promotion & demotion gate logic for EngineProfile.
  *
  * Ported from src/orchestrator/fleet/worker-lifecycle.ts so ProfileLifecycle
  * can drive the state machine generically. The original WorkerLifecycle
@@ -19,7 +19,7 @@
 
 import type { WorkerStore } from '../../db/worker-store.ts';
 import { wilsonLowerBound } from '../../sleep-cycle/wilson.ts';
-import type { WorkerProfile } from '../types.ts';
+import type { EngineProfile } from '../types.ts';
 import type { DemotionVerdict, LifecycleGates, PromotionVerdict } from './profile-lifecycle.ts';
 
 export interface WorkerGatesConfig {
@@ -30,10 +30,10 @@ export interface WorkerGatesConfig {
   safetyViolationCount?: (workerId: string) => number;
 }
 
-export class WorkerGates implements LifecycleGates<WorkerProfile> {
+export class WorkerGates implements LifecycleGates<EngineProfile> {
   constructor(private readonly config: WorkerGatesConfig) {}
 
-  shouldPromote(profile: WorkerProfile, fleet: readonly WorkerProfile[]): PromotionVerdict {
+  shouldPromote(profile: EngineProfile, fleet: readonly EngineProfile[]): PromotionVerdict {
     const stats = this.config.store.getStats(profile.id);
     if (stats.totalTasks < this.config.probationMinTasks) {
       return {
@@ -68,7 +68,7 @@ export class WorkerGates implements LifecycleGates<WorkerProfile> {
     return { promote: true, reason: 'all promotion gates passed' };
   }
 
-  shouldDemote(profile: WorkerProfile, fleet: readonly WorkerProfile[]): DemotionVerdict {
+  shouldDemote(profile: EngineProfile, fleet: readonly EngineProfile[]): DemotionVerdict {
     const stats = this.config.store.getRecentStats(profile.id, this.config.demotionWindowTasks);
     if (stats.totalTasks < this.config.demotionWindowTasks) {
       return { demote: false, reason: 'window not yet full' };
@@ -94,14 +94,14 @@ export class WorkerGates implements LifecycleGates<WorkerProfile> {
   }
 }
 
-function medianSuccessRate(store: WorkerStore, fleet: readonly WorkerProfile[]): number {
+function medianSuccessRate(store: WorkerStore, fleet: readonly EngineProfile[]): number {
   if (fleet.length === 0) return 0;
   const rates = fleet.map((w) => store.getStats(w.id).successRate).sort((a, b) => a - b);
   const mid = Math.floor(rates.length / 2);
   return rates.length % 2 === 0 ? (rates[mid - 1]! + rates[mid]!) / 2 : rates[mid]!;
 }
 
-function baselineQualityScore(store: WorkerStore, fleet: readonly WorkerProfile[]): number {
+function baselineQualityScore(store: WorkerStore, fleet: readonly EngineProfile[]): number {
   if (fleet.length === 0) return 0;
   const q = fleet.map((w) => store.getStats(w.id).avgQualityScore);
   return q.reduce((a, b) => a + b, 0) / q.length;
@@ -109,7 +109,7 @@ function baselineQualityScore(store: WorkerStore, fleet: readonly WorkerProfile[
 
 function qualityMedianAndStddev(
   store: WorkerStore,
-  fleet: readonly WorkerProfile[],
+  fleet: readonly EngineProfile[],
 ): { median: number; stddev: number } {
   if (fleet.length === 0) return { median: 0, stddev: 0 };
   const q = fleet.map((w) => store.getStats(w.id).avgQualityScore).sort((a, b) => a - b);

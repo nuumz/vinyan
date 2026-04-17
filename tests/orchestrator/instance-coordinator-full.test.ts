@@ -4,7 +4,7 @@
  * Tests all 5 deferred features:
  *   A1: Cross-instance conflict resolution
  *   A2: Event forwarder
- *   A3: WorkerProfile sharing
+ *   A3: EngineProfile sharing
  *   A4: Fleet coordinator routing
  *   A5: Sandbox manager lifecycle
  *   I17: Full enforcement in oracle runner
@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
-import type { WorkerStats } from '../../src/orchestrator/types.ts';
+import type { EngineStats } from '../../src/orchestrator/types.ts';
 import {
   InstanceCoordinator,
   reduceWilsonLB,
@@ -38,7 +38,7 @@ function makeVerdict(overrides: Partial<OracleVerdict> = {}): OracleVerdict {
   };
 }
 
-function makeWorkerStats(overrides: Partial<WorkerStats> = {}): WorkerStats {
+function makeWorkerStats(overrides: Partial<EngineStats> = {}): EngineStats {
   return {
     totalTasks: 20,
     successRate: 0.85,
@@ -310,7 +310,7 @@ describe('EventForwarder', () => {
   });
 });
 
-// ── A3: WorkerProfile Sharing ───────────────────────────────────
+// ── A3: EngineProfile Sharing ───────────────────────────────────
 
 describe('reduceWilsonLB', () => {
   test('reduces successRate by 50% by default', () => {

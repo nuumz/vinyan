@@ -23,7 +23,13 @@ import type { WorkerStore } from '../db/worker-store.ts';
 import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import type { EventForwarder } from './event-forwarder.ts';
-import type { TaskFingerprint, TaskInput, TaskResult, WorkerProfile, WorkerStats } from './types.ts';
+import {
+  OraclePeerGates,
+  type OraclePeerAdapterProfile,
+  wrapOracleProfileStore,
+} from './profile/oracle-peer-gates.ts';
+import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
+import type { TaskFingerprint, TaskInput, TaskResult, EngineProfile, EngineStats } from './types.ts';
 
 /** Remote oracle profile — tracks accuracy of remote oracle instances. */
 export interface OracleProfile {
@@ -85,6 +91,8 @@ export class InstanceCoordinator {
     InstanceCoordinatorConfig;
   private lastDiscoveryAt = 0;
   private discoveryIntervalMs = 60_000;
+  /** Lazily-constructed lifecycle — only created when profileStore is available. */
+  private peerLifecycle: ProfileLifecycle<OraclePeerAdapterProfile> | null = null;
 
   constructor(config: InstanceCoordinatorConfig) {
     this.config = {
@@ -93,6 +101,22 @@ export class InstanceCoordinator {
       demotionFalsePositiveThreshold: config.demotionFalsePositiveThreshold ?? 0.3,
       demotionTimeoutThreshold: config.demotionTimeoutThreshold ?? 5,
     };
+  }
+
+  private getPeerLifecycle(): ProfileLifecycle<OraclePeerAdapterProfile> | null {
+    if (this.peerLifecycle) return this.peerLifecycle;
+    if (!this.config.profileStore) return null;
+    const gates = new OraclePeerGates({
+      falsePositiveThreshold: this.config.demotionFalsePositiveThreshold,
+      timeoutThreshold: this.config.demotionTimeoutThreshold,
+    });
+    this.peerLifecycle = new ProfileLifecycle<OraclePeerAdapterProfile>({
+      kind: 'oracle-peer',
+      store: wrapOracleProfileStore(this.config.profileStore),
+      gates,
+      bus: this.config.bus,
+    });
+    return this.peerLifecycle;
   }
 
   /**
@@ -290,7 +314,7 @@ export class InstanceCoordinator {
       if (existing.length > 0) continue; // Skip — already have this model
 
       // Create a new profile in probation with reduced stats
-      const newProfile: WorkerProfile = {
+      const newProfile: EngineProfile = {
         id: `imported-${sourceInstanceId}-${shared.id}`,
         config: shared.config,
         status: 'probation',
@@ -352,40 +376,24 @@ export class InstanceCoordinator {
     if (!this.config.profileStore) return;
 
     const profile = this.config.profileStore.getProfile(instanceId, oracleName);
-    if (profile) {
-      this.config.profileStore.recordResult(profile.id, success);
-
-      // Check demotion triggers
-      if (profile.status === 'active' || profile.status === 'probation') {
-        const falsePositiveRate =
-          profile.verdictsRequested > 0 ? profile.falsePositiveCount / profile.verdictsRequested : 0;
-
-        if (falsePositiveRate > this.config.demotionFalsePositiveThreshold) {
-          const reason = `False positive rate ${falsePositiveRate.toFixed(2)} exceeds threshold`;
-          this.config.profileStore.demote(profile.id, reason);
-          // Unified profile: emit profile:demoted (kind=oracle-peer) — the legacy
-          // worker:demoted event was semantically wrong here (this is an oracle
-          // peer, not a worker). Kept as profile:* so every consumer gets a
-          // kind-tagged lifecycle feed.
-          this.config.bus?.emit('profile:demoted', {
-            kind: 'oracle-peer',
-            id: profile.id,
-            reason,
-            permanent: false,
-          });
-        }
-        if (profile.timeoutCount >= this.config.demotionTimeoutThreshold) {
-          this.config.profileStore.demote(profile.id, `Timeout count ${profile.timeoutCount} exceeds threshold`);
-        }
-      }
-    } else {
-      // Create new profile in probation
-      this.config.profileStore.createProfile({
-        instanceId,
-        oracleName,
-        status: 'probation',
-      });
+    if (!profile) {
+      // First contact — register in probation so the lifecycle can track it.
+      this.config.profileStore.createProfile({ instanceId, oracleName, status: 'probation' });
+      return;
     }
+
+    this.config.profileStore.recordResult(profile.id, success);
+
+    // Run unified lifecycle. `checkDemotions` walks all active peers with
+    // `OraclePeerGates`, which consolidates the FP-rate and timeout checks
+    // formerly open-coded here. Promotion is driven by the same lifecycle
+    // once a probation peer accumulates enough evidence.
+    const lifecycle = this.getPeerLifecycle();
+    if (!lifecycle) return;
+    if (profile.status === 'probation') {
+      lifecycle.evaluatePromotion(profile.id);
+    }
+    lifecycle.checkDemotions();
   }
 }
 
@@ -410,8 +418,8 @@ export interface RemoteConflictResolution {
 
 export interface SharedWorkerProfile {
   id: string;
-  config: WorkerProfile['config'];
-  stats: WorkerStats;
+  config: EngineProfile['config'];
+  stats: EngineStats;
   sourceInstanceId: string;
   sharedAt: number;
 }
@@ -508,10 +516,10 @@ export function resolveRemoteConflict(
 }
 
 /**
- * Reduce WorkerStats confidence by a factor (default 0.5) for cross-instance sharing.
+ * Reduce EngineStats confidence by a factor (default 0.5) for cross-instance sharing.
  * Applies reduction to successRate and avgQualityScore.
  */
-export function reduceWilsonLB(stats: WorkerStats, reductionFactor = 0.5): WorkerStats {
+export function reduceWilsonLB(stats: EngineStats, reductionFactor = 0.5): EngineStats {
   return {
     ...stats,
     successRate: stats.successRate * reductionFactor,

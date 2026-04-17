@@ -62,6 +62,36 @@ export async function executeGeneratePhase(
     // Checkpoint failure is non-fatal — proceed without crash protection
   }
 
+  // A6: Approval gate — require human approval for high-risk tasks before dispatch
+  const riskThreshold = 0.7;
+  if (deps.approvalGate && routing.riskScore !== undefined && routing.riskScore >= riskThreshold) {
+    const reason = `Risk score ${routing.riskScore.toFixed(2)} exceeds threshold ${riskThreshold} (L${routing.level})`;
+    const decision = await deps.approvalGate.requestApproval(input.id, routing.riskScore, reason);
+    if (decision === 'rejected') {
+      const rejectedResult: TaskResult = {
+        id: input.id,
+        status: 'failed',
+        mutations: [],
+        trace: {
+          id: `trace-${input.id}-approval-rejected`,
+          taskId: input.id,
+          routingLevel: routing.level,
+          approach: 'approval-gate',
+          outcome: 'failure',
+          oracleVerdicts: {},
+          tokensConsumed: 0,
+          durationMs: 0,
+          affectedFiles: [],
+          timestamp: Date.now(),
+          modelUsed: 'none',
+        },
+        escalationReason: `Task rejected by approval gate: ${reason}`,
+      };
+      deps.bus?.emit('task:complete', { result: rejectedResult });
+      return Phase.return(rejectedResult);
+    }
+  }
+
   deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
   const dispatchStart = Date.now();
   let workerResult!: WorkerResult;

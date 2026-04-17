@@ -31,6 +31,8 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     console.error('       --summary   Print human-friendly summary to stdout instead of JSON');
     console.error('       --thinking  Enable and show LLM thinking process');
     console.error('       --tool      Enable tool execution (shell, file ops) for non-code tasks');
+    console.error('       --dry-run   Show routing decision without executing');
+    console.error('       --output    Write result JSON to file');
     process.exit(2);
   }
 
@@ -50,6 +52,8 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   const summaryMode = argv.includes('--summary');
   const showThinking = argv.includes('--thinking');
   const enableTools = argv.includes('--tool');
+  const dryRun = argv.includes('--dry-run');
+  const outputFile = parseSingleFlag(argv, '--output');
 
   const input: TaskInput = {
     id: `task-${Date.now().toString(36)}`,
@@ -105,13 +109,33 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   process.on('SIGINT', shutdown);
 
   try {
+    // Dry-run: show what would happen without executing
+    if (dryRun) {
+      console.log(JSON.stringify({
+        mode: 'dry-run',
+        input: { id: input.id, goal: input.goal, taskType: input.taskType, targetFiles: input.targetFiles },
+        budget: input.budget,
+        workspace,
+      }, null, 2));
+      detachProgress?.();
+      orchestrator.close();
+      process.exit(0);
+    }
+
     const result = await orchestrator.executeTask(input);
     const metrics = traceListenerHandle.getMetrics();
+
+    // Write to file if --output specified
+    if (outputFile) {
+      const { writeFileSync } = await import('fs');
+      writeFileSync(outputFile, JSON.stringify(result, null, 2));
+      if (!quiet) console.error(`[vinyan] Result written to ${outputFile}`);
+    }
 
     // Output
     if (summaryMode) {
       printSummary(result, metrics, process.stdout);
-    } else {
+    } else if (!outputFile) {
       console.log(JSON.stringify(result, null, 2));
     }
 

@@ -62,25 +62,35 @@ export async function serve(workspace: string): Promise<void> {
       a2aManager,
       costLedger: orchestrator.costLedger,
       budgetEnforcer: orchestrator.budgetEnforcer,
+      approvalGate: orchestrator.approvalGate,
     },
   );
 
   server.start();
 
+  // Startup banner
+  const port = network?.api?.port ?? 3927;
+  const bind = network?.api?.bind ?? '127.0.0.1';
+  const authEnabled = network?.api?.auth_required ?? true;
+  console.log(`[vinyan] Server listening on http://${bind}:${port}`);
+  console.log(`[vinyan]   Auth: ${authEnabled ? 'enabled' : 'disabled'} | A2A: ${a2aManager ? 'enabled' : 'disabled'}`);
+
   // Start A2A after server is listening (peers need our endpoint up)
   if (a2aManager) {
     await a2aManager.start();
-    console.log(`[vinyan] A2A multi-instance: ${a2aManager.identity.instanceId}`);
+    console.log(`[vinyan]   A2A instance: ${a2aManager.identity.instanceId}`);
   }
 
   // Recover suspended sessions from previous run
   const recovered = sessionManager.recover();
   if (recovered.length > 0) {
-    console.log(`[vinyan] Recovered ${recovered.length} suspended sessions`);
+    console.log(`[vinyan]   Recovered ${recovered.length} suspended session(s)`);
   }
 
-  // Graceful shutdown
+  // Graceful shutdown — suspend sessions before closing DB
   const shutdown = async () => {
+    console.log('[vinyan] Shutting down...');
+    sessionManager.suspendAll();
     if (a2aManager) await a2aManager.stop();
     await server.stop();
     orchestrator.close();

@@ -8,6 +8,9 @@ import type { VinyanConfig } from '../config/schema.ts';
 interface ProjectInfo {
   hasTypeScript: boolean;
   hasPython: boolean;
+  hasGo: boolean;
+  hasRust: boolean;
+  hasJava: boolean;
   hasPackageJson: boolean;
 }
 
@@ -15,7 +18,10 @@ interface ProjectInfo {
 function detectProject(workspacePath: string): ProjectInfo {
   return {
     hasTypeScript: existsSync(join(workspacePath, 'tsconfig.json')),
-    hasPython: existsSync(join(workspacePath, 'pyproject.toml')) || existsSync(join(workspacePath, 'setup.py')),
+    hasPython: existsSync(join(workspacePath, 'pyproject.toml')) || existsSync(join(workspacePath, 'setup.py')) || existsSync(join(workspacePath, 'requirements.txt')),
+    hasGo: existsSync(join(workspacePath, 'go.mod')),
+    hasRust: existsSync(join(workspacePath, 'Cargo.toml')),
+    hasJava: existsSync(join(workspacePath, 'pom.xml')) || existsSync(join(workspacePath, 'build.gradle')) || existsSync(join(workspacePath, 'build.gradle.kts')),
     hasPackageJson: existsSync(join(workspacePath, 'package.json')),
   };
 }
@@ -25,6 +31,9 @@ function buildConfig(project: ProjectInfo): VinyanConfig {
   const languages: string[] = [];
   if (project.hasTypeScript) languages.push('typescript');
   if (project.hasPython) languages.push('python');
+  if (project.hasGo) languages.push('go');
+  if (project.hasRust) languages.push('rust');
+  if (project.hasJava) languages.push('java');
   if (languages.length === 0) languages.push('typescript'); // default
 
   const oracles: VinyanConfig['oracles'] = {
@@ -32,9 +41,18 @@ function buildConfig(project: ProjectInfo): VinyanConfig {
     dep: { enabled: true, tier: 'heuristic', timeout_behavior: 'block' },
   };
 
-  // Enable type oracle only for TypeScript projects
+  // Language-specific oracles
   if (project.hasTypeScript) {
     oracles.type = { enabled: true, command: 'tsc --noEmit', tier: 'deterministic', timeout_behavior: 'block' };
+  }
+  if (project.hasGo) {
+    oracles.go = { enabled: true, command: 'go vet ./...', tier: 'deterministic', timeout_behavior: 'warn' };
+  }
+  if (project.hasRust) {
+    oracles.rust = { enabled: true, command: 'cargo check', tier: 'deterministic', timeout_behavior: 'warn' };
+  }
+  if (project.hasPython) {
+    oracles.python = { enabled: true, command: 'python -m py_compile', tier: 'heuristic', timeout_behavior: 'warn' };
   }
 
   return {

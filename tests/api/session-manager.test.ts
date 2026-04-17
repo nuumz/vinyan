@@ -157,13 +157,13 @@ describe('Session Recovery', () => {
     expect(active.length).toBe(0);
   });
 
-  test('recover returns suspended sessions', () => {
+  test('recover returns suspended sessions and reactivates them', () => {
     const s1 = manager.create('api');
     manager.suspendAll();
 
     const recovered = manager.recover();
     expect(recovered.length).toBe(1);
     expect(recovered[0]!.id).toBe(s1.id);
-    expect(recovered[0]!.status).toBe('suspended');
+    expect(recovered[0]!.status).toBe('active');
   });
 });

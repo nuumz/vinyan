@@ -169,14 +169,17 @@ export class SessionManager {
   }
 
   /**
-   * Recover suspended sessions on startup.
+   * Recover suspended sessions on startup — reactivates them so they can accept new messages.
    */
   recover(): Session[] {
     const suspended = this.sessionStore.listSuspendedSessions();
+    for (const row of suspended) {
+      this.sessionStore.updateSessionStatus(row.id, 'active');
+    }
     return suspended.map((row) => ({
       id: row.id,
       source: row.source,
-      status: row.status,
+      status: 'active' as const,
       createdAt: row.created_at,
       taskCount: this.sessionStore.countSessionTasks(row.id),
     }));

@@ -50,6 +50,8 @@ export interface APIServerDeps {
   /** Economy stores for /api/v1/economy endpoint. */
   costLedger?: { getAggregatedCost(window: string): { total_usd: number; count: number }; count(): number };
   budgetEnforcer?: { checkBudget(): Array<{ window: string; spent_usd: number; limit_usd: number; utilization_pct: number; enforcement: string; exceeded: boolean }> };
+  /** Approval gate for high-risk task approval (A6). */
+  approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
 }
 
 export class VinyanAPIServer {
@@ -208,6 +210,16 @@ export class VinyanAPIServer {
     if (method === 'DELETE' && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
       const taskId = path.split('/').pop()!;
       return this.handleCancelTask(taskId);
+    }
+
+    // ── Task Approval (A6) ──────────────────────────────────
+    if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/approval$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleApproval(taskId, req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/approvals') {
+      return this.handleListApprovals();
     }
 
     if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/events$/)) {
@@ -596,6 +608,28 @@ export class VinyanAPIServer {
       return jsonResponse({ taskId, status: 'cancelled' });
     }
     return jsonResponse({ error: 'Task not found or already completed' }, 404);
+  }
+
+  private async handleApproval(taskId: string, req: Request): Promise<Response> {
+    if (!this.deps.approvalGate) {
+      return jsonResponse({ error: 'Approval gate not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { decision: string };
+      const decision = body.decision === 'approved' ? 'approved' : 'rejected';
+      const resolved = this.deps.approvalGate.resolve(taskId, decision as 'approved' | 'rejected');
+      if (!resolved) {
+        return jsonResponse({ error: 'No pending approval for this task' }, 404);
+      }
+      return jsonResponse({ taskId, decision, status: 'resolved' });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  private handleListApprovals(): Response {
+    const ids = this.deps.approvalGate?.getPendingIds() ?? [];
+    return jsonResponse({ pending: ids });
   }
 
   private handleSSE(taskId: string): Response {

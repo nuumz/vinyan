@@ -32,6 +32,8 @@ import { migration022 } from './022_drop_legacy_worker_config_columns.ts';
 import { migration023 } from './023_add_agent_profile.ts';
 import { migration024 } from './024_cleanup_null_engine_config.ts';
 import { migration025 } from './025_add_agent_id_to_skills.ts';
+import { migration026 } from './026_relax_agent_profile_singleton.ts';
+import { migration027 } from './027_add_agent_profile_role_columns.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -61,4 +63,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration023,
   migration024,
   migration025,
+  migration026,
+  migration027,
 ];

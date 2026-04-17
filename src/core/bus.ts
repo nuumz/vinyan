@@ -333,9 +333,26 @@ export interface VinyanBusEvents {
   'agent:clarification_requested': {
     taskId: string;
     sessionId?: string;
+    /** Legacy string-only rendering. Always populated for back-compat. */
     questions: string[];
+    /**
+     * Structured questions (Phase D). When present, UIs SHOULD prefer this
+     * over `questions` so they can render selectable options. Remains optional
+     * so emitters that haven't migrated yet don't need to change shape.
+     */
+    structuredQuestions?: import('./clarification.ts').ClarificationQuestion[];
     routingLevel: number;
     source?: 'agent' | 'orchestrator';
+  };
+  /**
+   * User's response to a structured clarification. Emitted by UIs (TUI / API
+   * WS) so the orchestrator can resume the paused task with the user's
+   * selections + free-text override.
+   */
+  'agent:clarification_response': {
+    taskId: string;
+    sessionId?: string;
+    responses: import('./clarification.ts').ClarificationResponse[];
   };
   /** Agent thinking/rationale — what the LLM is reasoning about this turn. */
   'agent:thinking': { taskId: string; turnId: string; rationale: string };
@@ -618,6 +635,19 @@ export interface VinyanBusEvents {
 
   // Workflow orchestration — self-orchestrating agent workflow planner + executor
   'workflow:plan_created': { goal: string; stepCount: number; strategies: string[] };
+  /**
+   * Phase E: fires once per task after the plan has been finalized (research
+   * injection applied) and BEFORE any step executes. UIs use this to render a
+   * human-readable TODO checklist and — when `workflow.requireUserApproval`
+   * is on — display an approval prompt.
+   */
+  'workflow:plan_ready': {
+    taskId: string;
+    goal: string;
+    steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
+    /** True when the orchestrator is waiting for the user to approve before executing. */
+    awaitingApproval: boolean;
+  };
   'workflow:step_start': { stepId: string; strategy: string; description: string };
   'workflow:step_complete': {
     stepId: string;
@@ -627,6 +657,7 @@ export interface VinyanBusEvents {
     tokensConsumed: number;
   };
   'workflow:step_fallback': { stepId: string; primaryStrategy: string; fallbackStrategy: string };
+  'workflow:research_injected': { goal: string; reason: string };
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
   'workflow:knowledge_query': { stepId: string; query: string };
   'workflow:human_input_needed': { stepId: string; question: string };
@@ -643,6 +674,13 @@ export interface VinyanBusEvents {
   'agent:soul-evolved': {
     agentId: string;
     version: number;
+  };
+  // Phase 2: AgentRouter decision for specialist selection
+  'agent:routed': {
+    taskId: string;
+    agentId: string;
+    reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
+    score: number;
   };
 }
 

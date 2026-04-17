@@ -16,6 +16,10 @@ import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import type { AgentSpec, ConversationEntry, ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
+import {
+  formatUserContextForPrompt,
+  type UserInterestMiner,
+} from './user-context/user-interest-miner.ts';
 
 // ---------------------------------------------------------------------------
 // Zod schema for LLM response parsing
@@ -64,9 +68,11 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - Meta-questions about system capabilities → "conversational"
    - NEVER "conversational" if the user asks to CREATE, WRITE, BUILD, or GENERATE anything (stories, essays, summaries, reports, poems, websites, apps, systems, diagrams)
    - NEVER "conversational" if the answer would require more than a short paragraph
-   - "แต่งนิยาย", "เขียนเรื่อง", "write a story", "compose", "draft" → ALWAYS "agentic-workflow", NOT "conversational"
+   - "แต่งนิยาย", "เขียนเรื่อง", "เขียนนิยาย", "ช่วยเขียนนิยาย", "อยากเขียนนิยาย", "อยากแต่ง", "write a story", "write a novel", "help me write", "compose", "draft", "author" → ALWAYS "agentic-workflow", NOT "conversational"
+   - "เขียนบทความ", "เขียนบท", "เขียนคอนเทนต์", "ทำคอนเทนต์", "ทำคลิป", "ทำเว็บตูน", "วาดเว็บตูน", "write an article/blog/essay/script/newsletter/deck/presentation/webtoon post" → ALWAYS "agentic-workflow"
    - "ทำเว็บ", "ทำแอพ", "ทำระบบ", "สร้างเว็บ", "พัฒนาระบบ", "build a website/app", "develop X" → ALWAYS "agentic-workflow"
    - "สรุป", "วิเคราะห์", "summarize", "analyze", "research" → ALWAYS "agentic-workflow"
+   - META-RULE: If the user is asking for a LONG-FORM DELIVERABLE ARTIFACT (novel, story, multi-chapter content, article, script, essay, deck, webtoon, blog post, newsletter, screenplay) — regardless of question phrasing — it is ALWAYS "agentic-workflow". Deliverable = something the user could copy/paste/publish. A 1–3 sentence answer is NOT a deliverable.
    - CRITICAL: Question FORM does not mean conversational INTENT. "สามารถทำ X ได้ไหม", "ช่วยทำ X ได้ไหม", "can you build X?", "could you create X?" — when X is a concrete deliverable (web, app, feature, document, artifact), this is a REQUEST TO DO X → "agentic-workflow".
    - CRITICAL: Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation. Use the "Recent conversation" context to recover what action was proposed.
 
@@ -199,6 +205,88 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Heuristic pre-filter: catch long-form creative requests before the LLM call.
+// Runs BEFORE the LLM; saves tokens on unambiguous cases and prevents
+// fast-tier misclassification (e.g., "ช่วยเขียนนิยาย" → conversational).
+// Errs on the side of caution: only short-circuits when the match is explicit.
+// ---------------------------------------------------------------------------
+
+const CREATIVE_TH_REGEX =
+  /(ช่วย|อยาก|อยากให้|ขอ|รบกวน|อยากได้)?\s*(เขียน|แต่ง|สร้าง|ทำ|ร่าง|ประพันธ์|วาด|ผลิต|เรียบเรียง)\s*(?:(?:เป็น|ให้|หน่อย|สัก|สักเรื่อง|สักตอน|ต่อ)\s*)?(นิยาย|เรื่องสั้น|เรื่องยาว|เว็บตูน|การ์ตูน|บทความ|คอนเทนต์|คลิป|โพสต์|บทพากย์|บทภาพยนตร์|สคริปต์|presentation|deck|slide|blog|essay|script|newsletter|ebook|จดหมายข่าว)/iu;
+
+const CREATIVE_EN_REGEX =
+  /(?:help me |i want to |i'd like to |i wanna |please |could you |can you |would you )?\b(write|compose|create|draft|author|build|design|craft|produce|generate)\b[^.?!]{0,60}\b(novel|story|webtoon|article|blog ?post|blog|essay|script|screenplay|deck|presentation|slide|slides|newsletter|post|book|chapter|ebook|content piece)\b/i;
+
+const NEGATION_TH_REGEX =
+  /(แค่อยากรู้|อยากรู้ว่า|อยากทราบ|สงสัยว่า|คืออะไร|แปลว่า(อะไร)?|หมายความว่า|ต่างกัน(อย่างไร|ยังไง)|ทำไม|ยกตัวอย่าง(อะไร|หน่อย)?(ได้ไหม)?)/iu;
+
+const NEGATION_EN_REGEX =
+  /\b(just curious|wondering|what is|what's|what does|define|explain what|difference between|why (do|does|should)|give an example of|example of)\b/i;
+
+/** Output of the pre-filter. When `matched`, callers may skip the LLM call. */
+export interface HeuristicIntentMatch {
+  matched: boolean;
+  strategy?: ExecutionStrategy;
+  matchedPattern?: string;
+  matchedSegment?: string;
+}
+
+/**
+ * Detect long-form creative-deliverable requests via regex.
+ * Short-circuits the LLM call when a match is unambiguous.
+ * Returns `{ matched: false }` for everything else — the LLM still decides.
+ */
+export function heuristicCreativePreFilter(goal: string): HeuristicIntentMatch {
+  const trimmed = goal.trim();
+  if (trimmed.length < 6) return { matched: false };
+
+  // If the utterance is framed as a question-about-a-topic (not a request),
+  // do not short-circuit — let the LLM decide.
+  if (NEGATION_TH_REGEX.test(trimmed) || NEGATION_EN_REGEX.test(trimmed)) {
+    return { matched: false };
+  }
+
+  const thMatch = trimmed.match(CREATIVE_TH_REGEX);
+  if (thMatch) {
+    return {
+      matched: true,
+      strategy: 'agentic-workflow',
+      matchedPattern: 'creative-th',
+      matchedSegment: thMatch[0],
+    };
+  }
+
+  const enMatch = trimmed.match(CREATIVE_EN_REGEX);
+  if (enMatch) {
+    return {
+      matched: true,
+      strategy: 'agentic-workflow',
+      matchedPattern: 'creative-en',
+      matchedSegment: enMatch[0],
+    };
+  }
+
+  return { matched: false };
+}
+
+/**
+ * Broader creative-cue detector used to lower the LLM escalation threshold.
+ * Unlike `heuristicCreativePreFilter`, this does not short-circuit — it only
+ * signals "probably creative" to the escalation logic.
+ */
+export function hasCreativeCues(goal: string): boolean {
+  const trimmed = goal.trim();
+  if (trimmed.length < 6) return false;
+  if (NEGATION_TH_REGEX.test(trimmed) || NEGATION_EN_REGEX.test(trimmed)) return false;
+  return (
+    CREATIVE_TH_REGEX.test(trimmed) ||
+    CREATIVE_EN_REGEX.test(trimmed) ||
+    /\b(write|compose|create|draft|author|build|design|craft)\b/i.test(trimmed) ||
+    /(เขียน|แต่ง|สร้าง|ร่าง|ประพันธ์|วาด|ผลิต|เรียบเรียง)/u.test(trimmed)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Fallback: map existing regex-based classification to ExecutionStrategy
 // ---------------------------------------------------------------------------
 
@@ -259,6 +347,32 @@ function formatAgentCatalog(
 }
 
 // ---------------------------------------------------------------------------
+// Agent-id resolution (shared between LLM path and heuristic short-circuit)
+// ---------------------------------------------------------------------------
+
+function resolveSelectedAgent(
+  input: TaskInput,
+  agents: AgentSpec[] | undefined,
+  defaultAgentId: string | undefined,
+  parsedAgent?: { agentId?: string; agentSelectionReason?: string },
+  fallbackReason = 'registry default (no confident pick)',
+): { agentId?: string; agentSelectionReason?: string } {
+  if (!agents || agents.length === 0) return {};
+  const known = new Set(agents.map((a) => a.id));
+  if (input.agentId && known.has(input.agentId)) {
+    return { agentId: input.agentId, agentSelectionReason: 'user override via --agent flag' };
+  }
+  if (parsedAgent?.agentId && known.has(parsedAgent.agentId)) {
+    return {
+      agentId: parsedAgent.agentId,
+      agentSelectionReason: parsedAgent.agentSelectionReason ?? 'classifier selection',
+    };
+  }
+  const fallback = defaultAgentId && known.has(defaultAgentId) ? defaultAgentId : agents[0]?.id;
+  return { agentId: fallback, agentSelectionReason: fallbackReason };
+}
+
+// ---------------------------------------------------------------------------
 // Main resolver
 // ---------------------------------------------------------------------------
 
@@ -277,6 +391,14 @@ export interface IntentResolverDeps {
   agents?: AgentSpec[];
   /** Default agent id used when resolver cannot confidently pick one. */
   defaultAgentId?: string;
+  /**
+   * Mines user interests / recent topics from TraceStore + SessionStore. When
+   * provided, the resolver includes a "User context" block so the classifier
+   * can reason about ambiguous goals against real past activity.
+   */
+  userInterestMiner?: UserInterestMiner;
+  /** Session id for user-context mining (keyword extraction scoped to session). */
+  sessionId?: string;
 }
 
 const INTENT_TIMEOUT_MS = 8000;
@@ -285,6 +407,29 @@ export async function resolveIntent(
   input: TaskInput,
   deps: IntentResolverDeps,
 ): Promise<IntentResolution> {
+  // 0. Heuristic pre-filter (A3 — deterministic, no LLM in governance path).
+  // Short-circuits unambiguous long-form creative requests so fast-tier LLM
+  // misclassification (e.g., "ช่วยเขียนนิยาย") can never surface as "conversational".
+  const heuristic = heuristicCreativePreFilter(input.goal);
+  if (heuristic.matched && heuristic.strategy) {
+    const { agentId, agentSelectionReason } = resolveSelectedAgent(
+      input,
+      deps.agents,
+      deps.defaultAgentId,
+      undefined,
+      'registry default (heuristic path)',
+    );
+    return {
+      strategy: heuristic.strategy,
+      refinedGoal: input.goal,
+      confidence: 0.9,
+      reasoning: `heuristic-${heuristic.matchedPattern}: matched "${heuristic.matchedSegment}" — long-form creative deliverable`,
+      reasoningSource: 'heuristic',
+      agentId,
+      agentSelectionReason,
+    };
+  }
+
   const provider = deps.registry.selectByTier('tool-uses') ?? deps.registry.selectByTier('fast') ?? deps.registry.selectByTier('balanced');
   if (!provider) {
     throw new Error('No LLM provider available for intent resolution');
@@ -294,6 +439,9 @@ export async function resolveIntent(
 
   const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
   const conversationBlock = formatConversationContext(deps.conversationHistory);
+  const userContextBlock = deps.userInterestMiner
+    ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
+    : '';
 
   // Multi-agent: when CLI override is set, skip the catalog (resolver won't reclassify agent).
   const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
@@ -304,7 +452,7 @@ Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
 Constraints: ${input.constraints?.join(', ') || 'none'}
 Current platform: ${process.platform}
-Available tools: ${toolList}${agentsBlock}${preferencesBlock}${conversationBlock}`;
+Available tools: ${toolList}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
 
   const response = await withTimeout(
     provider.generate({
@@ -351,9 +499,14 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${conversationBlock
   const isNonTrivial =
     input.goal.trim().length > 30 ||
     (deps.conversationHistory?.length ?? 0) > 0;
+  // Raise the escalation bar for goals with creative cues — fast models often
+  // under-classify these as conversational, so we want to escalate more eagerly
+  // (the heuristic pre-filter already catches the unambiguous cases; this
+  // targets the ambiguous middle ground, e.g. "ช่วยเรียบเรียงต่อ").
+  const escalationThreshold = hasCreativeCues(input.goal) ? 0.85 : 0.75;
   const lowConfidenceConversational =
     parsed.strategy === 'conversational' &&
-    (parsed.confidence ?? 0.8) < 0.75 &&
+    (parsed.confidence ?? 0.8) < escalationThreshold &&
     isNonTrivial;
   if (lowConfidenceConversational) {
     const balancedProvider = deps.registry.selectByTier('balanced');
@@ -380,25 +533,12 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${conversationBlock
     }
   }
 
-  // Multi-agent: resolve the agentId with priority:
-  //   1. CLI override (input.agentId) — never overridden by resolver
-  //   2. LLM-picked agentId (parsed.agentId) — validated against registry
-  //   3. Default agent id from registry
-  let resolvedAgentId: string | undefined;
-  let agentSelectionReason: string | undefined;
-  if (deps.agents && deps.agents.length > 0) {
-    const known = new Set(deps.agents.map((a) => a.id));
-    if (input.agentId && known.has(input.agentId)) {
-      resolvedAgentId = input.agentId;
-      agentSelectionReason = 'user override via --agent flag';
-    } else if (parsed.agentId && known.has(parsed.agentId)) {
-      resolvedAgentId = parsed.agentId;
-      agentSelectionReason = parsed.agentSelectionReason ?? 'classifier selection';
-    } else {
-      resolvedAgentId = deps.defaultAgentId && known.has(deps.defaultAgentId) ? deps.defaultAgentId : deps.agents[0]?.id;
-      agentSelectionReason = 'registry default (no confident pick)';
-    }
-  }
+  const { agentId, agentSelectionReason } = resolveSelectedAgent(
+    input,
+    deps.agents,
+    deps.defaultAgentId,
+    { agentId: parsed.agentId, agentSelectionReason: parsed.agentSelectionReason },
+  );
 
   return {
     strategy: parsed.strategy,
@@ -407,7 +547,8 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${conversationBlock
     workflowPrompt: parsed.workflowPrompt,
     confidence: parsed.confidence ?? 0.8,
     reasoning: parsed.reasoning,
-    agentId: resolvedAgentId,
+    reasoningSource: 'llm',
+    agentId,
     agentSelectionReason,
   };
 }

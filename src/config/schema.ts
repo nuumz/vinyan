@@ -530,6 +530,23 @@ export const VinyanConfigSchema = z.object({
   /** Workspace-level Vinyan Agent identity (name, description, preferences). */
   agent: AgentConfigSchema.optional(),
   /**
+   * Agentic-workflow behavior — approval gating and timeouts before dispatch.
+   * Phase E: lets long-form creative workflows surface the plan to the user
+   * before execution instead of running silently.
+   */
+  workflow: z
+    .object({
+      /**
+       * Whether the orchestrator should emit `workflow:plan_ready` and wait
+       * for user approval before running. 'auto' = true for long-form
+       * creative goals (length ≥ 60), false otherwise.
+       */
+      requireUserApproval: z.union([z.boolean(), z.literal('auto')]).default('auto'),
+      /** Auto-abort if the user does not respond within this window. */
+      approvalTimeoutMs: z.number().positive().default(600_000),
+    })
+    .optional(),
+  /**
    * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
    * built-in defaults are merged by the loader. CLI `vinyan agent add`
    * appends here and writes back to vinyan.json.

@@ -69,7 +69,7 @@ export const EngineProfileRowSchema = z.object({
 // ── AgentProfile row schema (workspace singleton, migration 023) ────────
 
 export const AgentProfileRowSchema = z.object({
-  id: z.literal('local'),
+  id: z.string(),
   instance_id: z.string(),
   display_name: z.string(),
   description: z.string().nullable().optional(),

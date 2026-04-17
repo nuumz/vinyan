@@ -21,8 +21,12 @@ export async function runAgentCommand(argv: string[], workspace: string): Promis
   switch (sub) {
     case 'list':
       return runList(workspace);
+    // Phase 2: `inspect` is the primary verb; `show` kept as alias
+    case 'inspect':
     case 'show':
       return runShow(argv[1], workspace);
+    // Phase 2: `create` is the primary verb; `add` kept as alias
+    case 'create':
     case 'add':
       return runAdd(argv.slice(1), workspace);
     case 'remove':
@@ -30,7 +34,7 @@ export async function runAgentCommand(argv: string[], workspace: string): Promis
       return runRemove(argv[1], workspace);
     default:
       console.error(`Unknown agent subcommand: ${sub}`);
-      console.error('Usage: vinyan agent <list|show|add|remove> [args]');
+      console.error('Usage: vinyan agent <list|create|inspect|remove> [args]');
       process.exit(1);
   }
 }
@@ -58,7 +62,7 @@ function runList(workspace: string): void {
 
 function runShow(id: string | undefined, workspace: string): void {
   if (!id) {
-    console.error('Usage: vinyan agent show <id>');
+    console.error('Usage: vinyan agent inspect <id>');
     process.exit(1);
   }
   const config = loadConfig(workspace);
@@ -96,9 +100,62 @@ function runShow(id: string | undefined, workspace: string): void {
     }
   }
 
+  // Phase 2: agent-context summary (episodes, lessons) + skill count
+  printAgentContextSummary(workspace, agent.id);
+  printAgentSkillCount(workspace, agent.id);
+
   if (agent.soul) {
     console.log('\n--- Soul (persona) ---');
     console.log(agent.soul);
+  }
+}
+
+/** Phase 2: read agent_contexts row and print episode/lessons summary. */
+function printAgentContextSummary(workspace: string, agentId: string): void {
+  try {
+    const dbPath = join(workspace, '.vinyan', 'vinyan.db');
+    if (!existsSync(dbPath)) return;
+    // Lazy import to avoid DB dependency in --help paths
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    const { AgentContextStore } = require('../db/agent-context-store.ts') as typeof import('../db/agent-context-store.ts');
+    const db = new Database(dbPath);
+    try {
+      const store = new AgentContextStore(db);
+      const ctx = store.findById(agentId);
+      if (!ctx) return;
+      console.log('\nAgent context:');
+      console.log(`  episodes:    ${ctx.memory.episodes.length}`);
+      if (ctx.memory.lessonsSummary) {
+        const summary = ctx.memory.lessonsSummary.slice(0, 140);
+        console.log(`  lessons:     ${summary}${ctx.memory.lessonsSummary.length > 140 ? '…' : ''}`);
+      }
+      const profCount = Object.keys(ctx.skills.proficiencies).length;
+      if (profCount > 0) console.log(`  proficiencies: ${profCount}`);
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* best-effort — never break inspect */
+  }
+}
+
+/** Phase 2: count agent-scoped skills in SkillStore. */
+function printAgentSkillCount(workspace: string, agentId: string): void {
+  try {
+    const dbPath = join(workspace, '.vinyan', 'vinyan.db');
+    if (!existsSync(dbPath)) return;
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    const db = new Database(dbPath);
+    try {
+      const row = db
+        .prepare(`SELECT COUNT(*) AS n FROM cached_skills WHERE agent_id = ?`)
+        .get(agentId) as { n: number };
+      if (row.n > 0) console.log(`  skills:      ${row.n}`);
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -144,7 +201,7 @@ function runAdd(argv: string[], workspace: string): void {
 
   writeFileSync(configPath, JSON.stringify(json, null, 2) + '\n', 'utf-8');
   console.log(`Added agent '${id}' to ${configPath}`);
-  console.log(`Edit ${join(workspace, '.vinyan', 'agents', id, 'soul.md')} to customize the persona.`);
+  console.log(`Edit ${join(workspace, '.vinyan', 'souls', `${id}.soul.md`)} to customize the persona.`);
 }
 
 function runRemove(id: string | undefined, workspace: string): void {

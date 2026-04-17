@@ -1,11 +1,14 @@
 /**
- * AgentProfileStore — workspace-level singleton persistence for THE Vinyan Agent.
+ * AgentProfileStore — per-agent profile persistence.
  *
- * CRUD for the `agent_profile` table (one row with `id = 'local'`).
- * Aggregate counters are computed on-demand from other stores with 60s cache,
- * matching the pattern of WorkerStore.getStats().
+ * Phase 1 shipped this as a singleton (`id = 'local'`). Phase 2 (migration 026)
+ * relaxed the CHECK constraint; the table now holds one row per agent:
+ *   - The workspace "host" (role='host', id='local') — preserved for backward compat.
+ *   - Each specialist registered via vinyan.json or CLI (role='specialist').
  *
- * Source of truth: AgentProfile ultraplan (docs/plans, approved).
+ * Aggregate counters are still computed on-demand from other stores with 60s cache.
+ *
+ * Source of truth: AgentProfile ultraplan + Phase 2 multi-agent plan.
  */
 import type { Database } from 'bun:sqlite';
 import type {
@@ -16,11 +19,16 @@ import type {
 import { DEFAULT_AGENT_PREFERENCES } from '../orchestrator/types.ts';
 import { AgentProfileRowSchema } from './schemas.ts';
 
+/** ID of the workspace host agent (unchanged for backward compat). */
+export const HOST_AGENT_ID = 'local';
+
 /**
- * Parameters for initial agent bootstrap. Called exactly once per workspace
- * (first run); subsequent calls no-op via INSERT OR IGNORE.
+ * Parameters for initial agent bootstrap. Called for each agent the first time
+ * it's encountered. Idempotent (INSERT OR IGNORE semantics in loadOrCreate).
  */
 export interface LoadOrCreateParams {
+  /** Agent id (defaults to HOST_AGENT_ID = 'local' for backward compat). */
+  id?: string;
   /** Workspace-level A2A instance UUID (from `.vinyan/instance-id`). */
   instanceId: string;
   /** Absolute workspace path. */
@@ -33,6 +41,12 @@ export interface LoadOrCreateParams {
   vinyanMdPath?: string;
   /** SHA-256 of VINYAN.md content. */
   vinyanMdHash?: string;
+  /** Phase 2: role classification ('host' | 'specialist' | 'custom'). */
+  role?: string;
+  /** Phase 2: comma-separated specialization tags. */
+  specialization?: string;
+  /** Phase 2: short one-line persona summary (full soul is on filesystem). */
+  persona?: string;
 }
 
 /** Deps for on-demand summarize() — all optional (stores may be unavailable). */
@@ -60,9 +74,14 @@ export class AgentProfileStore {
   /**
    * Load the agent profile, creating it with defaults if absent.
    * Idempotent: safe to call on every factory bootstrap.
+   *
+   * When `params.id` is omitted, operates on the workspace host (id='local').
+   * When provided, operates on that specific agent — callers use this to
+   * register specialists from vinyan.json `agents[]`.
    */
   loadOrCreate(params: LoadOrCreateParams): AgentProfile {
-    const existing = this.get();
+    const id = params.id ?? HOST_AGENT_ID;
+    const existing = this.get(id);
     if (existing) return existing;
 
     const now = Date.now();
@@ -73,10 +92,11 @@ export class AgentProfileStore {
         `INSERT INTO agent_profile
          (id, instance_id, display_name, description, workspace_path,
           created_at, updated_at, preferences_json, capabilities_json,
-          vinyan_md_path, vinyan_md_hash)
-         VALUES ('local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          vinyan_md_path, vinyan_md_hash, role, specialization, persona)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
+        id,
         params.instanceId,
         params.displayNameOverride ?? 'vinyan',
         params.descriptionOverride ?? null,
@@ -87,52 +107,91 @@ export class AgentProfileStore {
         '[]',
         params.vinyanMdPath ?? null,
         params.vinyanMdHash ?? null,
+        params.role ?? (id === HOST_AGENT_ID ? 'host' : 'specialist'),
+        params.specialization ?? null,
+        params.persona ?? null,
       );
 
-    return this.get()!;
+    return this.get(id)!;
   }
 
-  /** Read the singleton profile. Returns null only if not yet bootstrapped. */
-  get(): AgentProfile | null {
-    const row = this.db.prepare(`SELECT * FROM agent_profile WHERE id = 'local'`).get();
+  /** Read an agent profile by id. Defaults to workspace host. */
+  get(id: string = HOST_AGENT_ID): AgentProfile | null {
+    const row = this.db.prepare(`SELECT * FROM agent_profile WHERE id = ?`).get(id);
     if (!row) return null;
     return rowToProfile(row);
+  }
+
+  /** List all agent profiles (host + specialists). Phase 2 multi-agent query. */
+  findAll(): AgentProfile[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM agent_profile ORDER BY role, id`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => rowToProfile(r)).filter((p): p is AgentProfile => p !== null);
   }
 
   /**
    * Merge preference updates with existing values and bump updated_at.
    * Config-first precedence: factory calls this on every boot with
    * preferences from `vinyan.json` to keep DB in sync.
+   *
+   * Defaults to the workspace host when `id` omitted.
    */
-  updatePreferences(partial: Partial<AgentPreferences>): void {
-    const current = this.get();
+  updatePreferences(partial: Partial<AgentPreferences>, id: string = HOST_AGENT_ID): void {
+    const current = this.get(id);
     if (!current) return;
     const merged: AgentPreferences = { ...current.preferences, ...partial };
     this.db
       .prepare(
-        `UPDATE agent_profile SET preferences_json = ?, updated_at = ? WHERE id = 'local'`,
+        `UPDATE agent_profile SET preferences_json = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(JSON.stringify(merged), Date.now());
+      .run(JSON.stringify(merged), Date.now(), id);
     this.summaryCache = null;
   }
 
   /** Replace the declared capabilities list (idempotent; runs on every boot). */
-  updateCapabilities(capabilities: string[]): void {
+  updateCapabilities(capabilities: string[], id: string = HOST_AGENT_ID): void {
     const unique = Array.from(new Set(capabilities)).sort();
     this.db
       .prepare(
-        `UPDATE agent_profile SET capabilities_json = ?, updated_at = ? WHERE id = 'local'`,
+        `UPDATE agent_profile SET capabilities_json = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(JSON.stringify(unique), Date.now());
+      .run(JSON.stringify(unique), Date.now(), id);
   }
 
   /** Update VINYAN.md link + hash (called on every boot to track freshness). */
-  updateVinyanMdLink(path: string | null, hash: string | null): void {
+  updateVinyanMdLink(path: string | null, hash: string | null, id: string = HOST_AGENT_ID): void {
     this.db
       .prepare(
-        `UPDATE agent_profile SET vinyan_md_path = ?, vinyan_md_hash = ?, updated_at = ? WHERE id = 'local'`,
+        `UPDATE agent_profile SET vinyan_md_path = ?, vinyan_md_hash = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(path, hash, Date.now());
+      .run(path, hash, Date.now(), id);
+  }
+
+  /** Phase 2: update role/specialization/persona columns. */
+  updateRoleColumns(
+    id: string,
+    fields: { role?: string | null; specialization?: string | null; persona?: string | null },
+  ): void {
+    const parts: string[] = [];
+    const values: Array<string | number | null> = [];
+    if (fields.role !== undefined) {
+      parts.push('role = ?');
+      values.push(fields.role);
+    }
+    if (fields.specialization !== undefined) {
+      parts.push('specialization = ?');
+      values.push(fields.specialization);
+    }
+    if (fields.persona !== undefined) {
+      parts.push('persona = ?');
+      values.push(fields.persona);
+    }
+    if (parts.length === 0) return;
+    parts.push('updated_at = ?');
+    values.push(Date.now());
+    values.push(id);
+    this.db.prepare(`UPDATE agent_profile SET ${parts.join(', ')} WHERE id = ?`).run(...values);
   }
 
   /**
@@ -194,13 +253,12 @@ export class AgentProfileStore {
 }
 
 function rowToProfile(raw: unknown): AgentProfile {
+  const row = raw as Record<string, unknown>;
   const parsed = AgentProfileRowSchema.safeParse(raw);
   if (!parsed.success) {
     console.warn('[AgentProfileStore] Invalid row shape, falling back to defaults:', parsed.error.issues);
-    // Best-effort fallback so a corrupt row doesn't break bootstrap
-    const row = raw as Record<string, unknown>;
     return {
-      id: 'local',
+      id: String(row.id ?? HOST_AGENT_ID),
       instanceId: String(row.instance_id ?? ''),
       displayName: String(row.display_name ?? 'vinyan'),
       workspacePath: String(row.workspace_path ?? ''),
@@ -227,7 +285,7 @@ function rowToProfile(raw: unknown): AgentProfile {
   };
 
   return {
-    id: 'local',
+    id: r.id,
     instanceId: r.instance_id,
     displayName: r.display_name,
     description: r.description ?? undefined,
@@ -238,5 +296,9 @@ function rowToProfile(raw: unknown): AgentProfile {
     capabilities: r.capabilities_json,
     vinyanMdPath: r.vinyan_md_path ?? undefined,
     vinyanMdHash: r.vinyan_md_hash ?? undefined,
+    // Phase 2: extended metadata (gracefully NULL for pre-migration rows)
+    role: (row.role as string | null) ?? undefined,
+    specialization: (row.specialization as string | null) ?? undefined,
+    persona: (row.persona as string | null) ?? undefined,
   };
 }

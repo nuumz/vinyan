@@ -297,7 +297,7 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path === '/api/v1/workers') {
-      const workers = this.deps.workerStore?.findActive() ?? [];
+      const workers = this.deps.workerStore?.findAll() ?? [];
       return jsonResponse({ workers });
     }
 

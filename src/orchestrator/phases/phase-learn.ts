@@ -204,9 +204,12 @@ export async function executeLearnPhase(
   trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
 
   // ── Agent Context Layer: update persistent agent identity/memory/skills ──
-  if (deps.agentContextUpdater && routing.workerId) {
+  // Phase 2: key by specialist agent id (ts-coder/writer/...), NOT engine workerId.
+  // Falls back to registry default, then finally to workerId for legacy callers.
+  const aclAgentId = input.agentId ?? deps.agentRegistry?.defaultAgent().id ?? routing.workerId;
+  if (deps.agentContextUpdater && aclAgentId) {
     try {
-      deps.agentContextUpdater.updateAfterTask(routing.workerId, trace);
+      deps.agentContextUpdater.updateAfterTask(aclAgentId, trace);
     } catch {
       /* Agent context update is best-effort — never blocks trace recording */
     }

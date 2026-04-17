@@ -38,6 +38,11 @@ export class SessionManager {
     _traceStore?: TraceStore,
   ) {}
 
+  /** Accessor for direct DB queries (e.g. keyword extraction for user-context mining). */
+  getSessionStore(): SessionStore {
+    return this.sessionStore;
+  }
+
   create(source: string): Session {
     const id = crypto.randomUUID();
     const now = Date.now();

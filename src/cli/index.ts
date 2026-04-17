@@ -18,7 +18,7 @@ Usage: vinyan <command> [options]
 
 Commands:
   run "task"         Run autonomous agent task (supports --agent <id>)
-  agent <sub>        Manage specialist agents (list|add|remove|show)
+  agent <sub>        Manage specialist agents (list|create|inspect|remove)
   chat               Interactive conversation agent mode
   serve              Start the API server (auto-restart on crash; --no-supervise to disable)
   init [path]        Initialize vinyan.json

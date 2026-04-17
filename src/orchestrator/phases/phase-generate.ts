@@ -46,7 +46,13 @@ export async function executeGeneratePhase(
   const conversationHistory = ctx.conversationHistory;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
-  const contract = createContract(input, routing);
+  // Phase 2: intersect agent's ACL overlay with routing-level capabilities.
+  // Never widens — `writer` denied `shell_exec` at L2, `ts-coder` still gets it.
+  const agent = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) : undefined;
+  const agentAcl = agent
+    ? { allowedTools: agent.allowedTools, capabilityOverrides: agent.capabilityOverrides }
+    : undefined;
+  const contract = createContract(input, routing, agentAcl);
 
   // Crash Recovery: persist checkpoint before dispatch
   try {

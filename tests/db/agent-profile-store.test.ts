@@ -60,15 +60,19 @@ describe('AgentProfileStore', () => {
     expect(profile.displayName).toBe('project-alpha');
   });
 
-  test('singleton: inserting id != local throws', () => {
+  test('Phase 2: multi-row inserts succeed (CHECK constraint relaxed)', () => {
     store.loadOrCreate(BOOTSTRAP);
+    // After migration 026, non-'local' ids are allowed
     expect(() => {
       db.prepare(
         `INSERT INTO agent_profile
          (id, instance_id, display_name, workspace_path, created_at, updated_at)
-         VALUES ('other', 'uuid', 'other-agent', '/tmp/x', ?, ?)`,
+         VALUES ('ts-coder', 'uuid', 'TS Coder', '/tmp/x', ?, ?)`,
       ).run(Date.now(), Date.now());
-    }).toThrow();
+    }).not.toThrow();
+
+    const rows = db.prepare(`SELECT id FROM agent_profile ORDER BY id`).all() as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(['local', 'ts-coder']);
   });
 
   test('updatePreferences merges partial + bumps updated_at', async () => {

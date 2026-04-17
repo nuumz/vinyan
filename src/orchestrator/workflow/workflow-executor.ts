@@ -12,6 +12,11 @@ import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
+import {
+  buildResearchStep,
+  detectResearchCues,
+  prependResearchStep,
+} from './research-step-builder.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 import type {
   WorkflowPlan,
@@ -49,12 +54,46 @@ export async function executeWorkflow(
     bus: deps.bus,
   };
 
-  const plan = await planWorkflow(plannerDeps, {
+  const rawPlan = await planWorkflow(plannerDeps, {
     goal: input.goal,
     targetFiles: input.targetFiles,
     constraints: input.constraints,
     acceptanceCriteria: input.acceptanceCriteria,
     intentWorkflowPrompt: deps.intentWorkflowPrompt,
+  });
+
+  // Phase C: prepend a deterministic research step for long-form creative /
+  // market-oriented goals so downstream drafting has trend context to work
+  // against. LLM-knowledge-only — no external web access.
+  const researchCue = detectResearchCues(input.goal);
+  const plan: WorkflowPlan = researchCue.needsResearch && researchCue.brief
+    ? {
+        ...rawPlan,
+        steps: prependResearchStep(rawPlan.steps, buildResearchStep(researchCue.brief)),
+      }
+    : rawPlan;
+
+  if (researchCue.needsResearch) {
+    deps.bus?.emit('workflow:research_injected', {
+      goal: plan.goal,
+      reason: researchCue.reason ?? 'unknown',
+    });
+  }
+
+  // Phase E: emit the final plan so UIs can render a TODO checklist before
+  // execution starts. Approval gating is advisory-only at this stage — the
+  // executor continues immediately; gating is enforced at dispatch time by
+  // the core loop when `workflow.requireUserApproval` is configured.
+  deps.bus?.emit('workflow:plan_ready', {
+    taskId: input.id,
+    goal: plan.goal,
+    steps: plan.steps.map((s) => ({
+      id: s.id,
+      description: s.description,
+      strategy: s.strategy,
+      dependencies: [...s.dependencies],
+    })),
+    awaitingApproval: false,
   });
 
   const stepResults = new Map<string, WorkflowStepResult>();

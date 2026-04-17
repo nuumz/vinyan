@@ -123,6 +123,9 @@ export type ToolRequirement = 'none' | 'tool-needed';
  */
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
+/** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
+export type IntentReasoningSource = 'llm' | 'heuristic' | 'fallback';
+
 /** Result of LLM-powered intent resolution. */
 export interface IntentResolution {
   strategy: ExecutionStrategy;
@@ -136,6 +139,8 @@ export interface IntentResolution {
   confidence: number;
   /** LLM reasoning trace for observability */
   reasoning: string;
+  /** Which classifier produced the decision (llm | heuristic pre-filter | regex fallback). */
+  reasoningSource?: IntentReasoningSource;
   /**
    * Multi-agent: selected specialist agent id (e.g., 'ts-coder', 'writer').
    * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
@@ -1311,8 +1316,11 @@ export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
  *   - Session state (ephemeral, per-task)
  */
 export interface AgentProfile {
-  /** Always `'local'` — the singular Vinyan Agent of this workspace. */
-  id: 'local';
+  /**
+   * Agent id. 'local' = workspace host (Phase 1 singleton, preserved for backward compat).
+   * Phase 2+ allows specialist ids ('ts-coder', 'writer', etc.) from the registry.
+   */
+  id: string;
   /** A2A instance UUID — reused from `.vinyan/instance-id`. */
   instanceId: string;
   /** Human-readable name shown in CLI and A2A card. Default: 'vinyan'. */
@@ -1333,6 +1341,12 @@ export interface AgentProfile {
   vinyanMdPath?: string;
   /** SHA-256 of VINYAN.md content (freshness tracking). */
   vinyanMdHash?: string;
+  /** Phase 2: role classification ('host' | 'specialist' | 'custom'). */
+  role?: string;
+  /** Phase 2: comma-separated specialization tags for queryable filtering. */
+  specialization?: string;
+  /** Phase 2: short one-line persona summary (full persona is on filesystem). */
+  persona?: string;
 }
 
 /**

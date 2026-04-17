@@ -25,12 +25,14 @@ import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { UserPreferenceStore } from '../db/user-preference-store.ts';
+import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
 import { resolveInstanceId } from '../a2a/identity.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
+import { createAgentRouter } from './agent-router.ts';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadInstructionMemory } from './llm/instruction-loader.ts';
@@ -994,6 +996,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
   if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
 
+  // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
+  // Constructed alongside the registry so it sees the same roster.
+  const agentRouter = agentRegistry ? createAgentRouter({ registry: agentRegistry }) : undefined;
+
+  // User-interest miner — live aggregation from traces + session messages.
+  // Noop when traceStore is missing; session-message keywords require SessionManager.
+  const userInterestMiner = traceStore
+    ? new UserInterestMiner({
+        traceStore,
+        sessionStore: config.sessionManager?.getSessionStore(),
+      })
+    : undefined;
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -1050,6 +1065,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     remediationEngine,
     // User preference learning for app/tool resolution (A7)
     userPreferenceStore,
+    // User-interest miner — aggregates traces (and session messages when
+    // available) so the intent resolver can reason against real past activity.
+    userInterestMiner,
     // Monitoring — Self-Improving Autonomy: per-engine EMA calibration +
     // silent-regression watchdog. Phase Learn updates both on every
     // trace; dashboards subscribe to `monitoring:*` events. Drift detection
@@ -1114,6 +1132,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentProfileStore,
     // Specialist agent registry — ts-coder, writer, secretary, etc.
     agentRegistry,
+    // Phase 2: rule-first specialist router (skips LLM when rule-match fires)
+    agentRouter,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)

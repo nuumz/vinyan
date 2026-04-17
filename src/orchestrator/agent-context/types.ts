@@ -20,7 +20,7 @@ export type SkillLevel = 'novice' | 'competent' | 'expert';
 export type EpisodeOutcome = 'success' | 'partial' | 'failed';
 
 export interface AgentIdentity {
-  /** Reuses EngineProfile.id — no new entity created. */
+  /** Phase 2: AgentSpec.id from the registry (e.g., 'ts-coder', 'writer'). */
   agentId: string;
   /** Short natural-language persona: "methodical code reviewer", "fast prototyper". */
   persona: string;

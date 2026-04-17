@@ -3,7 +3,8 @@
  *
  * Path resolution:
  *   1. Explicit `soul_path` from config (absolute or workspace-relative)
- *   2. Default: `<workspace>/.vinyan/agents/<id>/soul.md`
+
+ *   2. Default: `<workspace>/.vinyan/souls/<id>.soul.md` (Phase 2 unified)
  *
  * Returns null if no file exists on disk (caller falls back to built-in soul).
  *
@@ -50,10 +51,11 @@ export function loadAgentSoul(workspace: string, agentId: string, soulPath?: str
 
 /** Resolve the absolute path of an agent's soul file. */
 export function resolveSoulPath(workspace: string, agentId: string, soulPath?: string): string {
+  // Phase 2: unified path with SoulStore. Explicit soulPath from config still wins.
   if (soulPath) {
     return isAbsolute(soulPath) ? soulPath : join(workspace, soulPath);
   }
-  return join(workspace, '.vinyan', 'agents', agentId, 'soul.md');
+  return join(workspace, '.vinyan', 'souls', `${agentId}.soul.md`);
 }
 
 /** Clear the in-process soul cache (testing / config reload). */

@@ -205,6 +205,8 @@ export interface OrchestratorDeps {
   remediationEngine?: import('./remediation-engine.ts').RemediationEngine;
   /** User preference store for learned app/tool preferences. */
   userPreferenceStore?: import('../db/user-preference-store.ts').UserPreferenceStore;
+  /** Mines user interests from traces + session messages. Enriches intent resolution. */
+  userInterestMiner?: import('./user-context/user-interest-miner.ts').UserInterestMiner;
   // Monitoring — Self-Improving Autonomy.
   /** Per-engine EMA accuracy calibrator. Optional; phase-learn updates it on every trace. */
   oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
@@ -251,6 +253,12 @@ export interface OrchestratorDeps {
    * Intent resolver uses this for auto-classification; prompt assembly for persona injection.
    */
   agentRegistry?: import('./agents/registry.ts').AgentRegistry;
+  /**
+   * Phase 2: rule-first AgentRouter. Pre-routes the task to a specialist based on
+   * file extensions, frameworks, and domain signals. When the rule path fires,
+   * the intent resolver's agent-selection step is skipped (deterministic, A3).
+   */
+  agentRouter?: import('./agent-router.ts').AgentRouter;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -341,6 +349,24 @@ async function prepareExecution(
 
   // ── LLM Intent Resolution — semantic classification before pipeline ──
   // Skip for code-mutation tasks (already well-classified by regex) and tasks with explicit target files.
+  // Phase 2: AgentRouter — rule-first specialist selection BEFORE intent resolver.
+  // When rule-match or CLI override fires, we skip the LLM agent pick entirely.
+  // When ambiguous ('needs-llm'), the intent resolver classifies and we use its agentId.
+  if (deps.agentRouter) {
+    const routeDecision = deps.agentRouter.route(input);
+    if (routeDecision.reason === 'override' || routeDecision.reason === 'rule-match') {
+      // Deterministic decision — set it on input; intent resolver (if called)
+      // will see input.agentId pre-set and skip its own classification.
+      input.agentId = routeDecision.agentId;
+      deps.bus?.emit('agent:routed', {
+        taskId: input.id,
+        agentId: routeDecision.agentId,
+        reason: routeDecision.reason,
+        score: routeDecision.score,
+      });
+    }
+  }
+
   // Guard on actual provider presence — an empty registry can't resolve intent and will throw.
   const hasProviders = (deps.llmRegistry?.listProviders().length ?? 0) > 0;
   const needsIntentResolution =
@@ -364,6 +390,8 @@ async function prepareExecution(
         conversationHistory: conversationCtx,
         agents: deps.agentRegistry?.listAgents(),
         defaultAgentId: deps.agentRegistry?.defaultAgent().id,
+        userInterestMiner: deps.userInterestMiner,
+        sessionId: input.sessionId,
       });
       // Multi-agent: propagate resolved agentId onto the input for downstream phases
       if (intentResolution.agentId) {
@@ -1371,10 +1399,12 @@ async function executeTaskCore(
             await deps.traceCollector.record(comprehensionTrace);
             deps.bus?.emit('trace:record', { trace: comprehensionTrace });
 
+            const { liftStringsToStructured } = await import('../core/clarification.ts');
             deps.bus?.emit('agent:clarification_requested', {
               taskId: input.id,
               sessionId: input.sessionId,
               questions: [...verdict.questions],
+              structuredQuestions: liftStringsToStructured([...verdict.questions]),
               routingLevel: routing.level,
               source: 'orchestrator',
             });
@@ -1518,10 +1548,12 @@ async function executeTaskCore(
           // task:complete handler to interpret status='input-required'.
           // `source: 'agent'` distinguishes this from the orchestrator-driven
           // comprehension gate emit site earlier in the pipeline.
+          const { liftStringsToStructured: liftAgentQuestions } = await import('../core/clarification.ts');
           deps.bus?.emit('agent:clarification_requested', {
             taskId: input.id,
             sessionId: input.sessionId,
             questions: [...lastAgentResult.uncertainties],
+            structuredQuestions: liftAgentQuestions([...lastAgentResult.uncertainties]),
             routingLevel: routing.level,
             source: 'agent',
           });

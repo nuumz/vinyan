@@ -68,9 +68,9 @@ describe('AgentRegistry', () => {
     expect(reg.listAgents().length).toBe(4);
   });
 
-  test('soul file on disk overrides built-in soul', () => {
-    mkdirSync(join(workspace, '.vinyan', 'agents', 'ts-coder'), { recursive: true });
-    writeFileSync(join(workspace, '.vinyan', 'agents', 'ts-coder', 'soul.md'), '# Custom TS philosophy\nI live for types.');
+  test('soul file on disk overrides built-in soul (Phase 2 unified path)', () => {
+    mkdirSync(join(workspace, '.vinyan', 'souls'), { recursive: true });
+    writeFileSync(join(workspace, '.vinyan', 'souls', 'ts-coder.soul.md'), '# Custom TS philosophy\nI live for types.');
 
     const reg = loadAgentRegistry(workspace, undefined);
     const agent = reg.getAgent('ts-coder');

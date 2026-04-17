@@ -553,15 +553,17 @@ export class WorkerPoolImpl implements WorkerPool {
     const environment = workerInput.environment ?? null;
 
     // Agent Context Layer: load persistent identity/memory/skills for this agent.
-    // Advisory only (A3) — enriches prompt, does not change routing/governance.
-    const agentContext = routing.workerId && this.agentContextBuilder
-      ? this.agentContextBuilder.buildContext(routing.workerId)
+    // Phase 2: keyed by SPECIALIST id (ts-coder/writer/...), not engine workerId.
+    // Falls back to engine id for legacy compatibility when no agent is resolved.
+    const aclKey = agentProfile?.id ?? routing.workerId;
+    const agentContext = aclKey && this.agentContextBuilder
+      ? this.agentContextBuilder.buildContext(aclKey)
       : undefined;
 
     // Living Agent Soul: load SOUL.md for deep behavioral guidance (~1000-1500 tokens).
-    // Session-cached in system prompt — soul changes only during sleep cycle.
-    const soulContent = routing.workerId && this.soulStore
-      ? this.soulStore.loadSoulRaw(routing.workerId)
+    // Same keying as ACL — specialist id, fallback to engine id.
+    const soulContent = aclKey && this.soulStore
+      ? this.soulStore.loadSoulRaw(aclKey)
       : undefined;
 
     const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(

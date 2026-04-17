@@ -13,7 +13,7 @@
  */
 import type { AgentBudget, DelegationRequest } from './protocol.ts';
 import type { RoutingDecision, TaskInput } from './types.ts';
-import type { AgentBudgetTracker } from './worker/agent-budget.ts';
+import type { AgentBudgetTracker } from './agent/agent-budget.ts';
 
 export interface DelegationDecision {
   allowed: boolean;

@@ -13,7 +13,7 @@ import {
   RoomSupervisor,
 } from '../../../src/orchestrator/room/room-supervisor.ts';
 import type { RoleSpec, RoomContract, RoomParticipant, RoomStatus } from '../../../src/orchestrator/room/types.ts';
-import type { ProposedMutation } from '../../../src/orchestrator/worker/session-overlay.ts';
+import type { ProposedMutation } from '../../../src/orchestrator/agent/session-overlay.ts';
 
 const drafter0: RoleSpec = {
   name: 'drafter-0',

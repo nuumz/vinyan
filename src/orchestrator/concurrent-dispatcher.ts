@@ -22,7 +22,7 @@
 import type { VinyanBus } from '../core/bus.ts';
 import type { TaskQueue } from './task-queue.ts';
 import type { TaskInput, TaskResult } from './types.ts';
-import { AdvisoryFileLock } from './worker/file-lock.ts';
+import { AdvisoryFileLock } from './agent/file-lock.ts';
 
 // ── Conflict graph ──────────────────────────────────────────────────
 

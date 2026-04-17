@@ -38,8 +38,8 @@ import type {
   TaskInput,
   WorkingMemoryState,
 } from '../types.ts';
-import type { AgentLoopDeps, WorkerLoopResult } from '../worker/agent-loop.ts';
-import type { ProposedMutation } from '../worker/session-overlay.ts';
+import type { AgentLoopDeps, WorkerLoopResult } from '../agent/agent-loop.ts';
+import type { ProposedMutation } from '../agent/session-overlay.ts';
 import { RoomBlackboard } from './room-blackboard.ts';
 import { RoomLedger } from './room-ledger.ts';
 import { type GoalVerifier, type ParticipantResult, RoomSupervisor } from './room-supervisor.ts';

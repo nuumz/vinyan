@@ -30,7 +30,7 @@ import type {
   WorkerSelectionResult,
   WorkingMemoryState,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { WorkingMemory } from '../working-memory.ts';
 
 // ---------------------------------------------------------------------------

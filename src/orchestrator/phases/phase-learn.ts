@@ -7,7 +7,7 @@
 
 import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, SelfModelPrediction } from '../types.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { VerificationResult } from './types.ts';
 import type { PhaseContext, LearnResult } from './types.ts';
 import { mapTraceToFPOutcome } from './generate-helpers.ts';

@@ -2,7 +2,7 @@
  * Helper functions shared across generate and learn phases.
  */
 
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { AgentSessionSummary, ExecutionTrace, SelfModelPrediction } from '../types.ts';
 import type { OutcomePrediction, PredictionOutcome } from '../forward-predictor-types.ts';
 

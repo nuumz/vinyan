@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { DefaultConcurrentDispatcher } from '../../src/orchestrator/concurrent-dispatcher.ts';
 import { createTaskQueue } from '../../src/orchestrator/task-queue.ts';
-import { AdvisoryFileLock } from '../../src/orchestrator/worker/file-lock.ts';
+import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 function makeTask(id: string, targetFiles: string[] = []): TaskInput {

@@ -22,7 +22,7 @@ import type {
 } from '../types.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { PhaseContext, VerifyResult, WorkerResult, VerificationResult, PhaseContinue, PhaseReturn, PhaseEscalate } from './types.ts';
 import { Phase } from './types.ts';
 import { buildAgentSessionSummary, mergeForwardAndSelfModel } from './generate-helpers.ts';

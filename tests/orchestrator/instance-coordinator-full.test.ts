@@ -20,7 +20,7 @@ import {
 } from '../../src/orchestrator/instance-coordinator.ts';
 import { EventForwarder } from '../../src/orchestrator/event-forwarder.ts';
 import { FleetCoordinator } from '../../src/orchestrator/fleet/fleet-coordinator.ts';
-import { SandboxManager } from '../../src/orchestrator/worker/sandbox.ts';
+import { SandboxManager } from '../../src/orchestrator/agent/sandbox.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────
 

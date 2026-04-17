@@ -15,7 +15,7 @@ import {
   estimateHistoryTokens,
   runAgentWorkerLoop,
   type WorkerIO,
-} from '../../../src/orchestrator/worker/agent-worker-entry.ts';
+} from '../../../src/orchestrator/agent/agent-worker-entry.ts';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 

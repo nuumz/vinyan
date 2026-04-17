@@ -4,8 +4,8 @@
  * - buildSystemPrompt / buildInitUserMessage (agent-worker-entry.ts) — prompt construction
  */
 import { describe, expect, test } from 'bun:test';
-import { SessionProgress } from '../../../src/orchestrator/worker/agent-loop.ts';
-import { buildInitUserMessage, buildSystemPrompt } from '../../../src/orchestrator/worker/agent-worker-entry.ts';
+import { SessionProgress } from '../../../src/orchestrator/agent/agent-loop.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../../src/orchestrator/agent/agent-worker-entry.ts';
 
 // ── SessionProgress ─────────────────────────────────────────────────
 

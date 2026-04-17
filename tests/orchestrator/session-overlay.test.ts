@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionOverlay } from '../../src/orchestrator/worker/session-overlay';
+import { SessionOverlay } from '../../src/orchestrator/agent/session-overlay';
 
 let workspace: string;
 let overlay: SessionOverlay;

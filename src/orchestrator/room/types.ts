@@ -11,7 +11,7 @@
  * Related: docs/design/agent-conversation.md
  */
 import { z } from 'zod/v4';
-import type { ProposedMutation } from '../worker/session-overlay.ts';
+import type { ProposedMutation } from '../agent/session-overlay.ts';
 
 // ── RoleSpec — one participant's responsibility envelope ────────────
 

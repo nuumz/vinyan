@@ -58,7 +58,7 @@ import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-ali
 import { RoomStore } from '../db/room-store.ts';
 import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
 import { RoomDispatcher } from './room/room-dispatcher.ts';
-import { runAgentLoop } from './worker/agent-loop.ts';
+import { runAgentLoop } from './agent/agent-loop.ts';
 import {
   FailureClusterDetector,
   type FailureCluster,
@@ -115,7 +115,7 @@ import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
 import type { TaskInput, TaskResult, WorkerProfile } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
-import type { AgentLoopDeps } from './worker/agent-loop.ts';
+import type { AgentLoopDeps } from './agent/agent-loop.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
 
 export interface OrchestratorConfig {
@@ -1180,7 +1180,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const agentLoopDeps: Partial<AgentLoopDeps> = {
     workspace,
     contextWindow: 128_000,
-    agentWorkerEntryPath: resolve(import.meta.dir, 'worker/agent-worker-entry.ts'),
+    agentWorkerEntryPath: resolve(import.meta.dir, 'agent/agent-worker-entry.ts'),
     proxySocketPath: llmProxy?.socketPath,
     toolExecutor: {
       execute: async (call, context) => {

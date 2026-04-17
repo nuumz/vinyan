@@ -5,7 +5,7 @@
  * stays bounded, preserves success rate, and handles empty input.
  */
 import { describe, expect, test } from 'bun:test';
-import { formatSkillHintConstraints } from '../../../src/orchestrator/worker/agent-loop.ts';
+import { formatSkillHintConstraints } from '../../../src/orchestrator/agent/agent-loop.ts';
 import type { CachedSkill } from '../../../src/orchestrator/types.ts';
 
 function skill(overrides: Partial<CachedSkill> = {}): CachedSkill {

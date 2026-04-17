@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createContract } from '../../src/core/agent-contract.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 
 const mockTask: TaskInput = {
   id: 'test-task-1',

@@ -6,8 +6,8 @@
  * → flip to uncertain with blocker messages.
  */
 import { describe, expect, test } from 'bun:test';
-import { runWave4GoalCheck } from '../../../src/orchestrator/worker/agent-loop.ts';
-import type { AgentLoopDeps } from '../../../src/orchestrator/worker/agent-loop.ts';
+import { runWave4GoalCheck } from '../../../src/orchestrator/agent/agent-loop.ts';
+import type { AgentLoopDeps } from '../../../src/orchestrator/agent/agent-loop.ts';
 import type { GoalEvaluator, GoalSatisfaction } from '../../../src/orchestrator/goal-satisfaction/goal-evaluator.ts';
 import type { TaskInput, TaskUnderstanding } from '../../../src/orchestrator/types.ts';
 

@@ -20,7 +20,7 @@ import type {
   ToolCall,
   WorkerSelectionResult,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { PhaseContext, GenerateResult, WorkerResult, PhaseContinue, PhaseReturn, PhaseRetry, PhaseThrow } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -161,7 +161,7 @@ export async function executeGeneratePhase(
     } else {
       // L2+: agentic loop (multi-turn with tools) OR Agent Conversation Room
       const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
-      const { runAgentLoop } = await import('../worker/agent-loop.ts');
+      const { runAgentLoop } = await import('../agent/agent-loop.ts');
 
       // ── ACR (Agent Conversation Room) branch ───────────────────────
       // When the decomposer emitted `collaborationMode: 'room'` AND a

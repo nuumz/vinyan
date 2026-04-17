@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TaskDAG, TaskInput, PerceptualHierarchy, WorkingMemoryState, RoutingDecision, VerificationHint } from '../../src/orchestrator/types.ts';
 import { executeDAG, type NodeDispatcher, type DAGExecutionResult } from '../../src/orchestrator/dag-executor.ts';
-import { buildCompactedTranscript, partitionTranscript } from '../../src/orchestrator/worker/transcript-compactor.ts';
+import { buildCompactedTranscript, partitionTranscript } from '../../src/orchestrator/agent/transcript-compactor.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers

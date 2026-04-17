@@ -40,7 +40,7 @@ import {
   type WorkingMemoryState,
 } from '../types.ts';
 import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
-import type { AgentLoopDeps } from './agent-loop.ts';
+import type { AgentLoopDeps } from '../agent/agent-loop.ts';
 
 /** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
 type WorkerOutputWithCache = WorkerOutput & {

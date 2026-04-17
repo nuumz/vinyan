@@ -1209,22 +1209,26 @@ export interface AgentSessionSummary {
 // ---------------------------------------------------------------------------
 
 /** Worker profile status lifecycle: probation → active → demoted → retired */
-export type WorkerProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
+export type EngineProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
+/** @deprecated Use EngineProfileStatus */
+export type WorkerProfileStatus = EngineProfileStatus;
 
-/** First-class worker identity — pairs config with empirical performance data */
-export interface WorkerProfile {
+/** Engine profile — reasoning engine configuration paired with empirical performance data. */
+export interface EngineProfile {
   id: string; // "worker-{modelBase}-{tempBucket}-{hash(config)}"
-  config: WorkerConfig;
-  status: WorkerProfileStatus;
+  config: EngineConfig;
+  status: EngineProfileStatus;
   createdAt: number;
   promotedAt?: number;
   demotedAt?: number;
   demotionReason?: string;
   demotionCount: number; // 3 demotions = permanent retirement
 }
+/** @deprecated Use EngineProfile */
+export type WorkerProfile = EngineProfile;
 
-/** Worker configuration — identity dimensions */
-export interface WorkerConfig {
+/** Engine configuration — identity dimensions for a reasoning engine. */
+export interface EngineConfig {
   modelId: string; // base model name, e.g., "claude-sonnet"
   modelVersion?: string; // specific version for audit trail
   temperature: number; // quantized to 0.1 increments
@@ -1236,9 +1240,11 @@ export interface WorkerConfig {
   /** Capabilities this engine declares (for capability-first routing). */
   capabilitiesDeclared?: string[];
 }
+/** @deprecated Use EngineConfig */
+export type WorkerConfig = EngineConfig;
 
-/** Worker stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
-export interface WorkerStats {
+/** Engine stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
+export interface EngineStats {
   totalTasks: number;
   successRate: number;
   avgQualityScore: number;
@@ -1255,6 +1261,8 @@ export interface WorkerStats {
   >;
   lastActiveAt: number;
 }
+/** @deprecated Use EngineStats */
+export type WorkerStats = EngineStats;
 
 // ---------------------------------------------------------------------------
 // Task Fingerprinting (→ Phase 4.3)
@@ -1270,11 +1278,11 @@ export interface TaskFingerprint {
 }
 
 // ---------------------------------------------------------------------------
-// Worker Selection (→ Phase 4.4)
+// Engine Selection (→ Phase 4.4)
 // ---------------------------------------------------------------------------
 
-/** Result of capability-based worker selection — audit trail */
-export interface WorkerSelectionResult {
+/** Result of capability-based engine selection — audit trail */
+export interface EngineSelectionResult {
   selectedWorkerId: string;
   reason: 'capability-score' | 'exploration' | 'tier-fallback' | 'assign-worker-rule' | 'uncertain';
   score: number;
@@ -1285,5 +1293,7 @@ export interface WorkerSelectionResult {
   explorationTriggered: boolean;
   dataGateMet: boolean;
   maxCapability?: number; // Phase 4: fleet max capability for this fingerprint
-  isUncertain?: boolean; // Phase 4: true if all workers below capability threshold (A2)
+  isUncertain?: boolean; // Phase 4: true if all engines below capability threshold (A2)
 }
+/** @deprecated Use EngineSelectionResult */
+export type WorkerSelectionResult = EngineSelectionResult;

@@ -25,16 +25,16 @@ import { tmpdir } from 'node:os';
 
 import { consultPeer } from '../../src/orchestrator/tools/control-tools.ts';
 import { BUILT_IN_TOOLS } from '../../src/orchestrator/tools/built-in-tools.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import {
   runAgentLoop,
   type AgentLoopDeps,
-} from '../../src/orchestrator/worker/agent-loop.ts';
-import { buildSystemPrompt } from '../../src/orchestrator/worker/agent-worker-entry.ts';
+} from '../../src/orchestrator/agent/agent-loop.ts';
+import { buildSystemPrompt } from '../../src/orchestrator/agent/agent-worker-entry.ts';
 import type {
   IAgentSession,
   SessionState,
-} from '../../src/orchestrator/worker/agent-session.ts';
+} from '../../src/orchestrator/agent/agent-session.ts';
 import type {
   OrchestratorTurn,
   PeerConsultRequest,

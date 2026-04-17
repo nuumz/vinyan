@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { AgentBudget } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision } from '../../src/orchestrator/types.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 
 function makeBudget(overrides: Partial<AgentBudget> = {}): AgentBudget {
   return {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { OrchestratorTurn, WorkerTurn } from '../../../src/orchestrator/protocol.ts';
-import type { SubprocessHandle } from '../../../src/orchestrator/worker/agent-session.ts';
-import { AgentSession } from '../../../src/orchestrator/worker/agent-session.ts';
+import type { SubprocessHandle } from '../../../src/orchestrator/agent/agent-session.ts';
+import { AgentSession } from '../../../src/orchestrator/agent/agent-session.ts';
 
 // ── Mock helpers ─────────────────────────────────────────────────────
 

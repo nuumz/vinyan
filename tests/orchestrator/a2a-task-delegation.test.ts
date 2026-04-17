@@ -14,10 +14,10 @@ import { describe, expect, test } from 'bun:test';
 import { A2ABridge } from '../../src/a2a/bridge.ts';
 import { A2ATransport } from '../../src/a2a/a2a-transport.ts';
 import { createBus } from '../../src/core/bus.ts';
-import { handleDelegation } from '../../src/orchestrator/worker/agent-loop.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
+import { handleDelegation } from '../../src/orchestrator/agent/agent-loop.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import { DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
-import type { AgentLoopDeps } from '../../src/orchestrator/worker/agent-loop.ts';
+import type { AgentLoopDeps } from '../../src/orchestrator/agent/agent-loop.ts';
 import type { DelegationRequest } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 

@@ -20,8 +20,8 @@ import type {
   ToolResult,
   WorkingMemoryState,
 } from '../../src/orchestrator/types.ts';
-import { type AgentLoopDeps, runAgentLoop, type WorkerLoopResult } from '../../src/orchestrator/worker/agent-loop.ts';
-import type { IAgentSession, SessionState } from '../../src/orchestrator/worker/agent-session.ts';
+import { type AgentLoopDeps, runAgentLoop, type WorkerLoopResult } from '../../src/orchestrator/agent/agent-loop.ts';
+import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
 
 // ── Mock helpers ─────────────────────────────────────────────────────
 

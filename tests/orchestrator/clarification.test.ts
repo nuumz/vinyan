@@ -32,10 +32,10 @@ import { Database } from 'bun:sqlite';
 import { parseInputRequiredBlock, SessionManager } from '../../src/api/session-manager.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
-import { runAgentLoop, type AgentLoopDeps } from '../../src/orchestrator/worker/agent-loop.ts';
-import { buildInitUserMessage, buildSystemPrompt } from '../../src/orchestrator/worker/agent-worker-entry.ts';
+import { runAgentLoop, type AgentLoopDeps } from '../../src/orchestrator/agent/agent-loop.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../src/orchestrator/agent/agent-worker-entry.ts';
 import { DelegationRouter, buildSubTaskInput } from '../../src/orchestrator/delegation-router.ts';
-import type { IAgentSession, SessionState } from '../../src/orchestrator/worker/agent-session.ts';
+import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
 import type {
   AgentBudget,
   DelegationRequest,

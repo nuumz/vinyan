@@ -12,7 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import type { AgentContract } from '../../src/core/agent-contract.ts';
 import { createContract } from '../../src/core/agent-contract.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import { authorizeToolCall } from '../../src/security/tool-authorization.ts';
 
 // ── Shared helpers ───────────────────────────────────────────────────

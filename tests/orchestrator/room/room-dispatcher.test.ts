@@ -21,7 +21,7 @@ import type {
   TaskInput,
   WorkingMemoryState,
 } from '../../../src/orchestrator/types.ts';
-import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/worker/agent-loop.ts';
+import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/agent/agent-loop.ts';
 
 // ── Fixtures ───────────────────────────────────────────────────────
 

@@ -15,7 +15,7 @@ import { DefaultEngineSelector } from '../../src/orchestrator/engine-selector.ts
 import { selectProvider } from '../../src/orchestrator/priority-router.ts';
 import { DefaultConcurrentDispatcher } from '../../src/orchestrator/concurrent-dispatcher.ts';
 import { createTaskQueue } from '../../src/orchestrator/task-queue.ts';
-import { AdvisoryFileLock } from '../../src/orchestrator/worker/file-lock.ts';
+import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
 import { MCPClientPool, type MCPGate } from '../../src/mcp/client.ts';
 import type { TaskInput, TaskResult, RoutingLevel } from '../../src/orchestrator/types.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';

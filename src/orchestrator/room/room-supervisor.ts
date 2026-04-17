@@ -18,7 +18,7 @@
 import { type HypothesisTuple, isAbstention, type OracleVerdict } from '../../core/types.ts';
 import { verify as goalAlignmentVerify } from '../../oracle/goal-alignment/goal-alignment-verifier.ts';
 import type { TaskUnderstanding } from '../types.ts';
-import type { ProposedMutation } from '../worker/session-overlay.ts';
+import type { ProposedMutation } from '../agent/session-overlay.ts';
 import type { RoomBlackboard } from './room-blackboard.ts';
 import type { RoomLedger } from './room-ledger.ts';
 import type { ConvergenceOutcome, RoleSpec, RoomContract, RoomParticipant, RoomResult, RoomState } from './types.ts';

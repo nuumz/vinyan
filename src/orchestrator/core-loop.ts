@@ -110,7 +110,7 @@ export interface WorkerPool {
     conversationHistory?: import('./types.ts').ConversationEntry[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
-  getAgentLoopDeps?(): import('./worker/agent-loop.ts').AgentLoopDeps | null;
+  getAgentLoopDeps?(): import('./agent/agent-loop.ts').AgentLoopDeps | null;
 }
 
 export interface OracleGate {

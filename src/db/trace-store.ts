@@ -16,7 +16,7 @@ export class TraceStore {
     this.db = db;
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO execution_traces (
-        id, task_id, session_id, worker_id, timestamp, routing_level,
+        id, task_id, session_id, worker_id, agent_id, timestamp, routing_level,
         task_type_signature, approach, approach_description, risk_score,
         quality_composite, quality_arch, quality_efficiency,
         quality_simplification, quality_testmutation,
@@ -30,7 +30,7 @@ export class TraceStore {
         understanding_depth, understanding_intent, resolved_entities,
         understanding_verified, understanding_primary_action
       ) VALUES (
-        $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
+        $id, $task_id, $session_id, $worker_id, $agent_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
         $quality_composite, $quality_arch, $quality_efficiency,
         $quality_simplification, $quality_testmutation,
@@ -54,6 +54,7 @@ export class TraceStore {
       $task_id: trace.taskId,
       $session_id: trace.sessionId ?? null,
       $worker_id: trace.workerId ?? null,
+      $agent_id: trace.agentId ?? null,
       $timestamp: trace.timestamp,
       $routing_level: trace.routingLevel,
       $task_type_signature: trace.taskTypeSignature ?? null,
@@ -104,6 +105,19 @@ export class TraceStore {
     const rows = this.db
       .prepare(`SELECT * FROM execution_traces WHERE outcome = ? ORDER BY timestamp DESC LIMIT ?`)
       .all(outcome, limit);
+    return rows.map(rowToTrace);
+  }
+
+  /**
+   * Multi-agent: load traces produced by a specific specialist agent. Used
+   * by AgentEvolution to drive per-agent soul reflection and pattern mining
+   * without cross-contamination from other specialists. Rows with NULL
+   * agent_id are pre-multi-agent and intentionally excluded.
+   */
+  findByAgent(agentId: string, limit = 100): ExecutionTrace[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(agentId, limit);
     return rows.map(rowToTrace);
   }
 
@@ -245,6 +259,7 @@ function rowToTrace(row: any): ExecutionTrace {
     taskId: row.task_id,
     sessionId: row.session_id ?? undefined,
     workerId: row.worker_id ?? undefined,
+    agentId: row.agent_id ?? undefined,
     timestamp: row.timestamp,
     routingLevel: row.routing_level,
     taskTypeSignature: row.task_type_signature ?? undefined,

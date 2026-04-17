@@ -518,6 +518,18 @@ export class WorkerPoolImpl implements WorkerPool {
     // [ENVIRONMENT] block regardless of dispatch mode.
     const environment = computeEnvironmentInfo(this.workspace);
 
+    // Multi-agent: resolve specialist identity so the structured subprocess
+    // path (worker-entry.ts) can render the same persona as the in-process
+    // path. Absent registries => legacy workspace-default behaviour.
+    const agentProfile =
+      input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+    const soulContent =
+      input.agentId && this.soulStore ? this.soulStore.loadSoulRaw(input.agentId) ?? undefined : undefined;
+    const agentContext =
+      input.agentId && this.agentContextBuilder
+        ? this.agentContextBuilder.buildContext(input.agentId)
+        : undefined;
+
     return {
       taskId: input.id,
       goal: input.goal,
@@ -537,6 +549,12 @@ export class WorkerPoolImpl implements WorkerPool {
       ...(instructions ? { instructions } : {}),
       environment,
       ...(this.streamingEnabled ? { stream: true } : {}),
+      // Multi-agent: specialist identity shipped across the subprocess
+      // boundary so worker-entry.ts calls assemblePrompt with persona set.
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(agentProfile ? { agentProfile } : {}),
+      ...(soulContent ? { soulContent } : {}),
+      ...(agentContext ? { agentContext } : {}),
     };
   }
 

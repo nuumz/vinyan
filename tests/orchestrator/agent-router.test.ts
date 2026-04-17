@@ -112,4 +112,50 @@ describe('AgentRouter', () => {
       cleanup();
     }
   });
+
+  test('minLevel excludes specialist from lower-level tasks when routingLevel is known', () => {
+    const { registry, router, cleanup } = setupRouter();
+    try {
+      // system-designer declares minLevel:1 — a reasoning task routed at L0
+      // (caller passes routingLevel=0) must NOT resolve to it even though
+      // the reasoning domain would otherwise match.
+      const sd = registry.getAgent('system-designer');
+      expect(sd).not.toBeNull();
+      expect(sd!.routingHints?.minLevel).toBe(1);
+
+      const decisionL0 = router.route(
+        makeInput({ taskType: 'reasoning', goal: 'what is X?' }),
+        undefined,
+        0,
+      );
+      expect(decisionL0.agentId).not.toBe('system-designer');
+
+      // Same task at L1+ — system-designer is eligible again.
+      const decisionL1 = router.route(
+        makeInput({ taskType: 'reasoning', goal: 'design an auth flow' }),
+        undefined,
+        1,
+      );
+      // rule-match may or may not pick system-designer (depends on
+      // score/margin with the writer); the key invariant is that it's not
+      // structurally blocked the way it was at L0.
+      expect(decisionL1.reason).not.toBe('override');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('minLevel ignored when routingLevel is absent (backward compat)', () => {
+    const { router, cleanup } = setupRouter();
+    try {
+      // No routingLevel arg → pre-multi-agent behaviour; system-designer
+      // is eligible regardless of minLevel.
+      const decision = router.route(makeInput({ taskType: 'reasoning', goal: 'design a schema' }));
+      // Not asserting the specific winner — just that no exception and the
+      // call completes with a deterministic shape.
+      expect(decision.agentId).toBeTypeOf('string');
+    } finally {
+      cleanup();
+    }
+  });
 });

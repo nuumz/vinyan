@@ -741,7 +741,15 @@ Do NOT narrate your reasoning process — just respond directly to the user.`,
       const response =
         deps.streamingAssistantDelta && provider.generateStream
           ? await provider.generateStream(llmReq, ({ text }) => {
-              if (text) deps.bus?.emit('agent:text_delta', { taskId: input.id, text });
+              if (!text) return;
+              deps.bus?.emit('agent:text_delta', { taskId: input.id, text });
+              // Mirror to llm:stream_delta so newer UIs (ChatStreamRenderer,
+              // VS Code panel) see the superset shape too.
+              deps.bus?.emit('llm:stream_delta', {
+                taskId: input.id,
+                kind: 'content',
+                text,
+              });
             })
           : await provider.generate(llmReq);
       answer = response.content;
@@ -1307,6 +1315,7 @@ async function executeTaskCore(
             id: `trace-${input.id}-timeout`,
             taskId: input.id,
             workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
             timestamp: Date.now(),
             routingLevel: routing.level,
             approach: 'wall-clock-timeout',
@@ -1548,6 +1557,7 @@ async function executeTaskCore(
             taskId: input.id,
             sessionId: input.sessionId,
             workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
             timestamp: Date.now(),
             routingLevel: routing.level,
             approach: 'input-required-pause',
@@ -2022,6 +2032,7 @@ async function executeTaskCore(
       id: `trace-${input.id}-escalation`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: MAX_ROUTING_LEVEL,
       approach: 'all-levels-exhausted',

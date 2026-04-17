@@ -864,7 +864,9 @@ export interface ExecutionTrace {
   id: string;
   taskId: string;
   sessionId?: string; // Session grouping for multi-step tasks
-  workerId?: string; // Which worker executed this step
+  workerId?: string; // Which worker (oracle/engine) executed this step
+  /** Multi-agent: specialist id (e.g., 'ts-coder') — distinct from workerId (oracle). */
+  agentId?: string;
   timestamp: number;
   routingLevel: RoutingLevel;
   action?: string; // Specific action taken (e.g., 'file_write', 'refactor')

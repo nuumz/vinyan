@@ -893,17 +893,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
 
   // Agent Context Layer + Living Agent Soul: create builder, updater, evolution, and soul components.
+  // Hoisted out of the `if (agentContextStore)` block so agentLoopDeps (built
+  // later) can reference them — subprocess agent dispatch needs the same
+  // registries the in-process path uses to inject persona.
   let agentContextUpdater: AgentContextUpdater | undefined;
+  let agentContextBuilder: AgentContextBuilder | undefined;
+  let soulStore: SoulStore | undefined;
   if (agentContextStore) {
-    const builder = new AgentContextBuilder({
+    agentContextBuilder = new AgentContextBuilder({
       agentContextStore,
       capabilityModel,
       db: db?.getDb(),
     });
-    workerPool.setAgentContextBuilder(builder);
+    workerPool.setAgentContextBuilder(agentContextBuilder);
 
     // Living Agent Soul: create soul store and reflector
-    const soulStore = new SoulStore(workspace);
+    soulStore = new SoulStore(workspace);
     workerPool.setSoulStore(soulStore);
 
     // Soul reflector uses tool-uses tier (cheap: haiku ~$0.001/call) for reflection
@@ -1419,6 +1424,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // default via agentLoopGoalTermination config.
     goalEvaluator: deps.goalEvaluator,
     goalTerminationConfig: agentLoopGoalTerminationConfig,
+    // Phase 2 realtime streaming (gated by vinyan.json → streaming.assistantDelta).
+    streamingAssistantDelta,
+    // Multi-agent: specialist registry + SOUL + episodic context all flow
+    // through the init turn so subprocess workers see the same persona that
+    // the in-process path injects. Absent registries => legacy behaviour.
+    ...(agentRegistry ? { agentRegistry } : {}),
+    ...(soulStore ? { soulStore } : {}),
+    ...(agentContextBuilder ? { agentContextBuilder } : {}),
   };
   workerPool.setAgentLoopDeps(agentLoopDeps as AgentLoopDeps);
 

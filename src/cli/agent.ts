@@ -9,8 +9,8 @@
  *
  * Writes to `vinyan.json` preserving existing formatting (similar to `init`).
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { loadConfig } from '../config/index.ts';
 import { loadAgentRegistry } from '../orchestrator/agents/registry.ts';
 import { resolveSoulPath } from '../orchestrator/agents/soul-loader.ts';
@@ -201,7 +201,72 @@ function runAdd(argv: string[], workspace: string): void {
 
   writeFileSync(configPath, JSON.stringify(json, null, 2) + '\n', 'utf-8');
   console.log(`Added agent '${id}' to ${configPath}`);
-  console.log(`Edit ${join(workspace, '.vinyan', 'souls', `${id}.soul.md`)} to customize the persona.`);
+
+  // Scaffold a SOUL.md template so the user has a concrete starting point —
+  // the template is a blank form; the agent loop treats an empty soul as
+  // "no identity", so the user must fill it in before the specialist feels
+  // distinct. Skip silently when the file already exists so editing and
+  // re-running `vinyan agent create <id>` (e.g. after an accidental
+  // removal) does not clobber the user's work.
+  const soulPath = join(workspace, '.vinyan', 'souls', `${id}.soul.md`);
+  if (!existsSync(soulPath)) {
+    try {
+      mkdirSync(dirname(soulPath), { recursive: true });
+      writeFileSync(soulPath, buildSoulTemplate(id, name, desc), 'utf-8');
+      console.log(`Scaffolded ${soulPath} — fill in the persona / philosophy / strategies sections.`);
+    } catch (err) {
+      console.warn(
+        `Could not write soul template at ${soulPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else {
+    console.log(`Soul file already exists at ${soulPath} — left unchanged.`);
+  }
+}
+
+/**
+ * Return a blank-form SOUL.md template for a new specialist. Sections mirror
+ * the fields the Living Agent Soul + AgentContext layers consume in the
+ * prompt: identity, philosophy, strategies, anti-patterns, self-knowledge.
+ * Content is intentionally stub-only — the user fills each section.
+ */
+function buildSoulTemplate(id: string, name: string, description: string): string {
+  return `# Soul — ${name} (\`${id}\`)
+
+${description}
+
+## Identity
+A 1-2 sentence description of WHO this specialist is. Example: "A meticulous
+TypeScript engineer who prefers small, reviewable changes and reads before
+editing."
+
+## Philosophy
+What core beliefs guide this specialist's decisions? What do they value more
+than speed? When in doubt, what do they default to?
+
+## Domain expertise
+- Core skill 1 — what they are known for
+- Core skill 2
+- Core skill 3
+
+## Preferred strategies
+- When the task is X, they usually do Y.
+- When the task is Z, they check W first.
+- (Keep each bullet concrete and testable, not generic.)
+
+## Anti-patterns (NEVER do)
+- A specific thing they refuse to do, with a brief reason.
+- Another specific trap they know to avoid.
+
+## Self-knowledge
+What are this specialist's known weaknesses? Where do they need to
+double-check themselves? When should they consult a peer?
+
+---
+Edit this file to give \`${id}\` a distinct voice. Empty sections are
+tolerated but the specialist will behave like the generic Vinyan agent
+until you fill them in.
+`;
 }
 
 function runRemove(id: string | undefined, workspace: string): void {

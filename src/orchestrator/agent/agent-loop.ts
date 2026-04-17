@@ -89,6 +89,13 @@ export interface AgentLoopDeps {
   compressPerception: (perception: PerceptualHierarchy, contextWindow: number) => PerceptualHierarchy;
   /** EventBus for observability */
   bus?: VinyanBus;
+  /**
+   * Phase 2 realtime streaming. When true, the init turn carries `stream:true`
+   * so the agent-worker subprocess calls `generateStream` on each LLM call
+   * and emits `text_delta` frames that this session forwards as
+   * `agent:text_delta` bus events. Default false — legacy non-streaming path.
+   */
+  streamingAssistantDelta?: boolean;
   /** Late-bound task executor for delegation (Phase 6.4) */
   executeTask?: (subInput: TaskInput) => Promise<TaskResult>;
   /** Delegation router for Phase 6.4 */
@@ -193,6 +200,23 @@ export interface AgentLoopDeps {
     continuationBudgetFraction: number;
     goalSatisfactionThreshold: number;
   };
+  /**
+   * Multi-agent: specialist registry used to resolve AgentSpec for the task
+   * based on `input.agentId`. When absent, the loop runs without specialist
+   * persona injection (workspace-default path).
+   */
+  agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  /**
+   * Multi-agent: SOUL.md loader keyed by agent id. Resolved SOUL content is
+   * shipped to the subprocess via the init turn.
+   */
+  soulStore?: import('../agent-context/soul-store.ts').SoulStore;
+  /**
+   * Multi-agent: episodic context builder. Resolves per-agent identity,
+   * lessons, proficiencies; result is shipped to the subprocess via the
+   * init turn so specialist memory survives the process boundary.
+   */
+  agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
 }
 
 // ── Session Progress Tracker ────────────────────────────────────────
@@ -999,7 +1023,27 @@ export async function runAgentLoop(
       })();
     }
 
-    session = deps.createSession?.(proc) ?? new AgentSession(proc);
+    session = deps.createSession?.(proc) ?? new AgentSession(proc, (delta) => {
+      // Phase 2: forward LLM token deltas to bus as `agent:text_delta`.
+      // Observational only (A3) — no effect on verification/commit paths.
+      if (deps.streamingAssistantDelta) {
+        deps.bus?.emit('agent:text_delta', {
+          taskId: input.id,
+          turnId: delta.turnId,
+          text: delta.text,
+        });
+        // Mirror to the richer llm:stream_delta event so newer consumers
+        // (ChatStreamRenderer, SSE clients) get the superset shape. Content
+        // is the default kind — providers that later grow richer emissions
+        // (thinking / tool_use_*) can bypass this mirror and emit directly.
+        deps.bus?.emit('llm:stream_delta', {
+          taskId: input.id,
+          turnId: delta.turnId,
+          kind: 'content',
+          text: delta.text,
+        });
+      }
+    });
 
     // Phase 7a: resolve M1-M4 instruction hierarchy in-process (we have workspace
     // access here; the subprocess worker does not). This closes the gap where
@@ -1052,6 +1096,18 @@ export async function runAgentLoop(
           }
         : understanding;
 
+    // Multi-agent: resolve specialist identity once per task so it crosses
+    // the subprocess boundary via the init turn. All three sources are
+    // optional — absent registry/store/builder => legacy workspace path.
+    const agentProfile =
+      input.agentId && deps.agentRegistry ? deps.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+    const soulContent =
+      input.agentId && deps.soulStore ? deps.soulStore.loadSoulRaw(input.agentId) ?? undefined : undefined;
+    const agentContext =
+      input.agentId && deps.agentContextBuilder
+        ? deps.agentContextBuilder.buildContext(input.agentId)
+        : undefined;
+
     // Build and send init turn
     const initTurn: OrchestratorTurn = {
       type: 'init',
@@ -1072,9 +1128,18 @@ export async function runAgentLoop(
       ...(conversationHistory?.length ? { conversationHistory } : {}),
       ...(instructions ? { instructions } : {}),
       environment,
+      // Multi-agent: specialist identity crosses subprocess boundary via
+      // the init turn so agent-worker-entry can render the Agent Identity
+      // block. Fields elide when agentId is unset or registries absent.
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(agentProfile ? { agentProfile } : {}),
+      ...(soulContent ? { soulContent } : {}),
+      ...(agentContext ? { agentContext } : {}),
       // Phase 7c-1: forward typed subagent role so the child worker can
       // render its role preamble. Omitted for root tasks (undefined).
       ...(input.subagentType ? { subagentType: input.subagentType } : {}),
+      // Phase 2: realtime streaming opt-in (config-gated).
+      ...(deps.streamingAssistantDelta ? { stream: true } : {}),
     };
     await session.send(initTurn);
 

@@ -16,13 +16,13 @@
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { SessionManager } from '../api/session-manager.ts';
-import { attachCLIProgressListener } from '../bus/cli-progress-listener.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { expandSlashCommand } from '../orchestrator/commands/command-expander.ts';
 import { loadSlashCommands, type SlashCommandRegistry } from '../orchestrator/commands/command-loader.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
 import type { TaskInput } from '../orchestrator/types.ts';
+import { attachChatStreamRenderer } from './chat-stream-renderer.ts';
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -67,11 +67,9 @@ export async function startChat(argv: string[]): Promise<void> {
   // Create orchestrator with session manager for cross-turn context
   const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager });
 
-  // Attach progress listener (non-quiet)
-  const detachProgress = attachCLIProgressListener(orchestrator.bus, {
-    verbose: false,
-    color: process.stderr.isTTY ?? false,
-  });
+  // Track the currently-active per-turn stream renderer so /thinking can
+  // toggle it live without waiting for the next task to start.
+  let activeRenderer: ReturnType<typeof attachChatStreamRenderer> | null = null;
 
   // Create or resume session
   let session: ReturnType<typeof sessionManager.create>;
@@ -172,6 +170,10 @@ export async function startChat(argv: string[]): Promise<void> {
     if (input.startsWith('/')) {
       const builtinHandled = tryBuiltinCommand(input, session, sessionManager, slashRegistry, showThinking, (v) => {
         showThinking = v;
+        // Propagate to the live renderer so an in-flight turn picks up the
+        // new thinking preference immediately (the buffered thinking block
+        // only opens on the NEXT thinking delta, so nothing to rewind).
+        activeRenderer?.setShowThinking(v);
       });
       if (builtinHandled) {
         rl.prompt();
@@ -240,28 +242,40 @@ export async function startChat(argv: string[]): Promise<void> {
     };
 
     try {
-      // Show spinner indicator
-      process.stderr.write('\x1b[2m  thinking...\x1b[0m');
+      // Attach a fresh per-turn timeline renderer, scoped to this taskId so
+      // events from sibling tasks (delegations, peers) don't cross-render.
+      activeRenderer = attachChatStreamRenderer(orchestrator.bus, {
+        taskId: taskInput.id,
+        color: process.stdout.isTTY ?? false,
+        showThinking,
+      });
 
       const result = await orchestrator.executeTask(taskInput);
 
-      // Clear spinner
-      process.stderr.write('\r\x1b[K');
+      // Detach the renderer before we render the final answer — otherwise a
+      // late `task:complete` event would print a second footer below it.
+      activeRenderer.flushSummary();
+      const answerWasStreamed = activeRenderer.didStreamAnswer();
+      activeRenderer.detach();
+      activeRenderer = null;
 
       // Record assistant turn
       sessionManager.recordAssistantTurn(session.id, taskInput.id, result);
 
-      // Display thinking (if enabled)
+      // Display non-streamed thinking (only when the provider didn't emit
+      // thinking deltas — otherwise the renderer already showed them live).
       if (showThinking && result.thinking) {
         console.log(`\x1b[2m[thinking]\n${result.thinking}\n[/thinking]\x1b[0m`);
       }
 
-      // Display response
+      // Display response. If the answer was already streamed inline via
+      // deltas (the renderer's `vinyan:` block), we skip reprinting it to
+      // avoid a duplicate. Clarifications and mutations still render below.
       if (result.status === 'input-required') {
         // Agent Conversation: surface clarification questions as a friendly
         // prompt, NOT an error. Queue them so the next user line is tagged
         // as a clarification answer via constraints.
-        if (result.answer) {
+        if (result.answer && !answerWasStreamed) {
           console.log(`\n${result.answer}\n`);
         }
         const questions = result.clarificationNeeded ?? [];
@@ -273,7 +287,7 @@ export async function startChat(argv: string[]): Promise<void> {
         } else {
           console.log('\n\x1b[2m(agent requested clarification but did not specify questions)\x1b[0m\n');
         }
-      } else if (result.answer) {
+      } else if (result.answer && !answerWasStreamed) {
         console.log(`\n${result.answer}\n`);
       } else if (result.mutations.length > 0) {
         console.log(`\n\x1b[32mModified ${result.mutations.length} file(s):\x1b[0m`);
@@ -289,7 +303,13 @@ export async function startChat(argv: string[]): Promise<void> {
         console.log('\n\x1b[2m(no response)\x1b[0m\n');
       }
     } catch (err) {
-      process.stderr.write('\r\x1b[K');
+      // Tear down the renderer before printing the error so its buffered
+      // inline block (answer / thinking) doesn't tangle with the error line.
+      if (activeRenderer) {
+        activeRenderer.flushSummary();
+        activeRenderer.detach();
+        activeRenderer = null;
+      }
       console.error(`\n\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
     }
 
@@ -310,7 +330,7 @@ export async function startChat(argv: string[]): Promise<void> {
 
   rl.on('close', () => {
     console.log('\n\x1b[2mSession saved.\x1b[0m');
-    detachProgress();
+    activeRenderer?.detach();
     orchestrator.close();
     db.close();
     process.exit(0);
@@ -324,7 +344,7 @@ export async function startChat(argv: string[]): Promise<void> {
     }
     shutdownRequested = true;
     console.log('\n\x1b[2mSession saved.\x1b[0m');
-    detachProgress();
+    activeRenderer?.detach();
     orchestrator.close();
     db.close();
     process.exit(0);

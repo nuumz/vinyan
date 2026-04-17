@@ -34,6 +34,7 @@ import { migration024 } from './024_cleanup_null_engine_config.ts';
 import { migration025 } from './025_add_agent_id_to_skills.ts';
 import { migration026 } from './026_relax_agent_profile_singleton.ts';
 import { migration027 } from './027_add_agent_profile_role_columns.ts';
+import { migration028 } from './028_add_agent_id_to_traces.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -65,4 +66,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration025,
   migration026,
   migration027,
+  migration028,
 ];

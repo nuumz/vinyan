@@ -32,7 +32,17 @@ export interface AgentRouteDecision {
 }
 
 export interface AgentRouter {
-  route(input: TaskInput, perception?: PerceptualHierarchy): AgentRouteDecision;
+  /**
+   * Select a specialist for this task.
+   *
+   * `routingLevel` is an optional hint. When provided, agents whose
+   * `routingHints.minLevel` exceeds the task's routing level are excluded
+   * from the rule-match candidate set — e.g., `system-designer` (minLevel:1)
+   * is not considered for reflex-tier L0 tasks. When the hint is absent the
+   * router keeps pre-multi-agent behaviour (minLevel ignored) so callers
+   * that don't know the routing level yet still get a deterministic choice.
+   */
+  route(input: TaskInput, perception?: PerceptualHierarchy, routingLevel?: number): AgentRouteDecision;
 }
 
 /** Thresholds for rule-based selection. Tuned for 4 built-ins. */
@@ -50,7 +60,7 @@ export interface DefaultAgentRouterDeps {
 
 export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
   return {
-    route(input, perception) {
+    route(input, perception, routingLevel) {
       const registry = deps.registry;
 
       // Step 1: CLI override — user selected the specialist explicitly
@@ -60,7 +70,19 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
 
       // Step 2: rule-based scoring
       const signals = extractSignals(input, perception);
-      const agents = registry.listAgents();
+      const allAgents = registry.listAgents();
+      // Enforce minLevel hint when a routing level is available — specialists
+      // that declare `minLevel:2` (e.g., system-designer when structural
+      // reasoning is mandatory) are excluded from L0/L1 tasks. The default
+      // agent is still the last-resort fallback below, so this never leaves
+      // the router without a choice.
+      const agents =
+        typeof routingLevel === 'number'
+          ? allAgents.filter((a) => {
+              const min = a.routingHints?.minLevel;
+              return min === undefined || routingLevel >= min;
+            })
+          : allAgents;
       const scored = agents.map((a) => ({ agent: a, score: scoreAgent(a, signals) }));
       scored.sort((a, b) => b.score - a.score);
 

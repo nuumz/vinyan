@@ -234,6 +234,90 @@ export const EnvironmentInfoSchema = z.custom<EnvironmentInfo>(
   { message: 'Expected EnvironmentInfo object' },
 );
 
+// ── Multi-agent IPC payloads ────────────────────────────────────────
+//
+// Specialist identity crosses the subprocess boundary as JSON-serializable
+// AgentSpec + AgentContext objects (the design in agent-context/types.ts
+// guarantees serializability). Subprocess workers render them via the same
+// prompt assembler used in-process, so a ts-coder task reads the same
+// persona regardless of dispatch path.
+
+const AgentRoutingHintsSchemaIPC = z.object({
+  minLevel: z.number().optional(),
+  preferDomains: z.array(z.string()).optional(),
+  preferExtensions: z.array(z.string()).optional(),
+  preferFrameworks: z.array(z.string()).optional(),
+});
+
+const AgentCapabilityOverridesSchemaIPC = z.object({
+  readAny: z.boolean().optional(),
+  writeAny: z.boolean().optional(),
+  network: z.boolean().optional(),
+  shell: z.boolean().optional(),
+});
+
+/** Full AgentSpec shape for IPC — mirrors orchestrator/types.ts AgentSpec. */
+export const AgentSpecSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  soul: z.string().optional(),
+  soulPath: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  capabilityOverrides: AgentCapabilityOverridesSchemaIPC.optional(),
+  routingHints: AgentRoutingHintsSchemaIPC.optional(),
+  builtin: z.boolean().optional(),
+});
+
+export type AgentSpecIPC = z.infer<typeof AgentSpecSchema>;
+
+const AgentIdentitySchemaIPC = z.object({
+  agentId: z.string(),
+  persona: z.string(),
+  strengths: z.array(z.string()),
+  weaknesses: z.array(z.string()),
+  approachStyle: z.string(),
+});
+
+const AgentEpisodeSchemaIPC = z.object({
+  taskId: z.string(),
+  taskSignature: z.string(),
+  outcome: z.enum(['success', 'partial', 'failed']),
+  lesson: z.string(),
+  filesInvolved: z.array(z.string()),
+  approachUsed: z.string(),
+  timestamp: z.number(),
+});
+
+const EpisodicMemorySchemaIPC = z.object({
+  episodes: z.array(AgentEpisodeSchemaIPC),
+  lessonsSummary: z.string(),
+});
+
+const SkillProficiencySchemaIPC = z.object({
+  taskSignature: z.string(),
+  level: z.enum(['novice', 'competent', 'expert']),
+  successRate: z.number(),
+  totalAttempts: z.number(),
+  lastAttempt: z.number(),
+});
+
+const LearnedSkillsSchemaIPC = z.object({
+  proficiencies: z.record(z.string(), SkillProficiencySchemaIPC),
+  preferredApproaches: z.record(z.string(), z.string()),
+  antiPatterns: z.array(z.string()),
+});
+
+/** Full AgentContext shape for IPC — mirrors agent-context/types.ts AgentContext. */
+export const AgentContextSchema = z.object({
+  identity: AgentIdentitySchemaIPC,
+  memory: EpisodicMemorySchemaIPC,
+  skills: LearnedSkillsSchemaIPC,
+  lastUpdated: z.number(),
+});
+
+export type AgentContextIPC = z.infer<typeof AgentContextSchema>;
+
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────
 
 const WorkerBudgetSchema = z.object({
@@ -264,6 +348,14 @@ export const WorkerInputSchema = z.object({
    * stdout BEFORE the final WorkerOutput line. Gated by config.streaming.
    */
   stream: z.boolean().optional(),
+  /** Multi-agent: specialist id selected by AgentRouter for this task. */
+  agentId: z.string().optional(),
+  /** Multi-agent: specialist persona/ACL/hints (pre-resolved by orchestrator). */
+  agentProfile: AgentSpecSchema.optional(),
+  /** Multi-agent: pre-resolved SOUL.md content (deep behavioral guidance). */
+  soulContent: z.string().optional(),
+  /** Multi-agent: pre-resolved episodic context (identity + episodes + skills). */
+  agentContext: AgentContextSchema.optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────
@@ -416,6 +508,21 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
         }),
       )
       .optional(),
+    /**
+     * Phase 2 realtime streaming. When true, the worker should use
+     * `provider.generateStream` on each LLM call and emit
+     * `{ type: 'text_delta', ... }` frames to stdout between WorkerTurns.
+     * Safe no-op when false or when the provider lacks streaming support.
+     */
+    stream: z.boolean().optional(),
+    /** Multi-agent: specialist id selected for this task (ts-coder, writer, ...). */
+    agentId: z.string().optional(),
+    /** Multi-agent: specialist persona/ACL/hints shipped across the subprocess boundary. */
+    agentProfile: AgentSpecSchema.optional(),
+    /** Multi-agent: pre-resolved SOUL.md content — deep behavioral guidance for the specialist. */
+    soulContent: z.string().optional(),
+    /** Multi-agent: pre-resolved episodic context (identity + episodes + skills). */
+    agentContext: AgentContextSchema.optional(),
   }),
   z.object({
     type: z.literal('tool_results'),

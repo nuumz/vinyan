@@ -20,7 +20,12 @@ import {
   type SubagentType,
 } from '../llm/shared-prompt-sections.ts';
 import { REMINDER_PROTOCOL_DESCRIPTION } from '../llm/vinyan-reminder.ts';
-import { OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
+import {
+  type AgentContextIPC,
+  type AgentSpecIPC,
+  OrchestratorTurnSchema,
+  type WorkerTurn,
+} from '../protocol.ts';
 import type { HistoryMessage, LLMProvider, Message, ToolResultMessage } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
 
@@ -103,11 +108,22 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
   // Phase 7c-1: typed subagent role — populated only when this worker was
   // spawned by a parent via delegate_task with an explicit subagentType.
   const subagentType = (init as { subagentType?: SubagentType }).subagentType;
+  // Multi-agent: specialist identity resolved in orchestrator, shipped via init turn.
+  const agentProfile = (init as { agentProfile?: AgentSpecIPC }).agentProfile;
+  const soulContent = (init as { soulContent?: string }).soulContent;
+  const agentContext = (init as { agentContext?: AgentContextIPC }).agentContext;
 
   const history: HistoryMessage[] = [
     {
       role: 'system',
-      content: buildSystemPrompt(init.routingLevel, taskType, { instructions, environment, subagentType }),
+      content: buildSystemPrompt(init.routingLevel, taskType, {
+        instructions,
+        environment,
+        subagentType,
+        agentProfile,
+        soulContent,
+        agentContext,
+      }),
     },
     {
       role: 'user',
@@ -142,7 +158,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
       // 4b. LLM generate
       let response: Awaited<ReturnType<typeof provider.generate>>;
       try {
-        response = await provider.generate({
+        const llmReq = {
           systemPrompt: '', // already in history[0]
           userPrompt: '', // already in history
           maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
@@ -153,7 +169,29 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
             parameters: t.inputSchema,
             kind: t.toolKind ?? 'executable',
           })),
-        });
+        };
+        const turnIdForDelta = `t${turnCount}`;
+        response =
+          init.stream && provider.generateStream
+            ? await provider.generateStream(llmReq, ({ text }) => {
+                if (!text) return;
+                try {
+                  // Delta frames slip between WorkerTurns. AgentSession.receive()
+                  // filters them out and forwards to the bus; if they ever reach
+                  // WorkerTurnSchema they fail parse and are silently dropped.
+                  io.writeLine(
+                    `${JSON.stringify({
+                      type: 'text_delta',
+                      taskId: init.taskId,
+                      turnId: turnIdForDelta,
+                      text,
+                    })}\n`,
+                  );
+                } catch {
+                  /* broken pipe — ignore */
+                }
+              })
+            : await provider.generate(llmReq);
       } catch (err) {
         // PromptTooLargeError → compress history and retry once
         if (err instanceof PromptTooLargeError && compressionAttempts < MAX_COMPRESSION_ATTEMPTS) {
@@ -517,6 +555,105 @@ export interface BuildSystemPromptOptions {
    * general-purpose). Absent → full general-purpose agent framing.
    */
   subagentType?: SubagentType | string | null;
+  /** Multi-agent: specialist spec (ts-coder, writer, secretary, custom). */
+  agentProfile?: AgentSpecIPC | null;
+  /** Multi-agent: specialist SOUL.md content — deep behavioural guidance. */
+  soulContent?: string | null;
+  /** Multi-agent: episodic context (identity + episodes + skills). */
+  agentContext?: AgentContextIPC | null;
+}
+
+/**
+ * Render the "## Agent Identity" prelude injected at the TOP of the system
+ * prompt when the task is routed to a specialist. The section is deliberately
+ * placed before the generic "Vinyan autonomous agent" framing so the LLM
+ * reads specialist persona first, not after many paragraphs of generic text.
+ *
+ * All three inputs are optional — each sub-block is elided when its source
+ * is empty. Returns `null` when no specialist identity is available (legacy
+ * workspace-singleton path).
+ */
+function renderAgentIdentitySection(
+  profile?: AgentSpecIPC | null,
+  soulContent?: string | null,
+  context?: AgentContextIPC | null,
+): string | null {
+  if (!profile && !soulContent && !context) return null;
+
+  const lines: string[] = [];
+  if (profile) {
+    lines.push(`## Agent Identity: ${profile.name} (\`${profile.id}\`)`);
+    lines.push(
+      `You are the \`${profile.id}\` specialist. ${profile.description} Read the identity, soul, and recent lessons below first — they set your primary frame. Fall back to the generic Vinyan agent guidance only when the task lies outside your domain.`,
+    );
+  } else {
+    lines.push('## Agent Identity');
+    lines.push('You are a Vinyan specialist agent. Read the soul and lessons below before proceeding.');
+  }
+
+  const identity = context?.identity;
+  if (identity?.persona && identity.persona.trim()) {
+    lines.push('', '### Persona', identity.persona.trim());
+  }
+  if (identity?.strengths && identity.strengths.length > 0) {
+    lines.push('', '### Strengths', ...identity.strengths.map((s) => `- ${s}`));
+  }
+  if (identity?.weaknesses && identity.weaknesses.length > 0) {
+    lines.push('', '### Weaknesses / be careful of', ...identity.weaknesses.map((s) => `- ${s}`));
+  }
+  if (identity?.approachStyle && identity.approachStyle.trim()) {
+    lines.push('', '### Approach style', identity.approachStyle.trim());
+  }
+
+  if (soulContent && soulContent.trim()) {
+    lines.push('', '### Soul', soulContent.trim());
+  }
+
+  if (profile?.allowedTools && profile.allowedTools.length > 0) {
+    lines.push('', '### Allowed tools', `Restricted to: ${profile.allowedTools.join(', ')}.`);
+  }
+  const caps = profile?.capabilityOverrides;
+  if (caps) {
+    const capBits: string[] = [];
+    if (caps.readAny === false) capBits.push('no read beyond scope');
+    if (caps.writeAny === false) capBits.push('no writes');
+    if (caps.network === false) capBits.push('no network');
+    if (caps.shell === false) capBits.push('no shell');
+    if (capBits.length > 0) lines.push(`Capability limits: ${capBits.join('; ')}.`);
+  }
+
+  const memory = context?.memory;
+  if (memory?.lessonsSummary && memory.lessonsSummary.trim()) {
+    lines.push('', '### Compiled lessons (from prior tasks you handled)', memory.lessonsSummary.trim());
+  }
+  if (memory?.episodes && memory.episodes.length > 0) {
+    const recent = memory.episodes.slice(0, 5);
+    lines.push(
+      '',
+      '### Recent episodes',
+      ...recent.map((e) => `- [${e.outcome}] ${e.taskSignature}: ${e.lesson}`),
+    );
+  }
+
+  const skills = context?.skills;
+  if (skills?.antiPatterns && skills.antiPatterns.length > 0) {
+    lines.push('', '### Anti-patterns (NEVER do)', ...skills.antiPatterns.slice(0, 10).map((a) => `- ${a}`));
+  }
+  if (skills?.proficiencies) {
+    const entries = Object.values(skills.proficiencies);
+    if (entries.length > 0) {
+      const top = entries
+        .sort((a, b) => b.successRate - a.successRate)
+        .slice(0, 8);
+      lines.push(
+        '',
+        '### Proficiency snapshot',
+        ...top.map((p) => `- ${p.taskSignature} — ${p.level} (success ${(p.successRate * 100).toFixed(0)}% over ${p.totalAttempts})`),
+      );
+    }
+  }
+
+  return lines.join('\n');
 }
 
 export function buildSystemPrompt(
@@ -533,7 +670,12 @@ export function buildSystemPrompt(
   // running under a typed delegation spawn. Root tasks never supply it and
   // keep the original "autonomous agent at L{n}" framing.
   const subagentBlock = opts.subagentType ? renderSubagentRolePolicy(normalizeSubagentType(opts.subagentType)) : null;
-  const prelude = [envBlock, instructionsBlock, subagentBlock].filter(Boolean).join('\n\n');
+  // Multi-agent: specialist identity block — placed BEFORE the generic
+  // framing so the LLM reads "you are ts-coder" before "you are a Vinyan
+  // autonomous agent at L{n}". The block is null when the task runs on the
+  // workspace default path.
+  const identityBlock = renderAgentIdentitySection(opts.agentProfile, opts.soulContent, opts.agentContext);
+  const prelude = [envBlock, instructionsBlock, subagentBlock, identityBlock].filter(Boolean).join('\n\n');
   const preludeSection = prelude ? `${prelude}\n\n` : '';
 
   const common = `${preludeSection}You are a Vinyan autonomous agent at routing level L${routingLevel}.

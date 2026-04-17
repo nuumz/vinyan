@@ -268,4 +268,22 @@ describe('AgentSession', () => {
     expect(t2!.type).toBe('done');
     expect(session.sessionState).toBe('WAITING_FOR_ORCHESTRATOR');
   });
+
+  test('Phase 2 streaming: text_delta frames forwarded to handler, not returned as turns', async () => {
+    const doneTurn: WorkerTurn = { type: 'done', turnId: 't0', proposedContent: 'Hello world' };
+    const mock = createMockProcess([
+      JSON.stringify({ type: 'text_delta', taskId: 'task-1', turnId: 't0', text: 'Hello ' }),
+      JSON.stringify({ type: 'text_delta', taskId: 'task-1', turnId: 't0', text: 'world' }),
+      JSON.stringify(doneTurn),
+    ]);
+    const deltas: string[] = [];
+    const session = new AgentSession(mock.proc, (d) => deltas.push(d.text));
+
+    await session.send(makeInitTurn());
+    const turn = await session.receive(1000);
+
+    // AgentSession should have consumed both deltas and returned the done turn.
+    expect(turn?.type).toBe('done');
+    expect(deltas).toEqual(['Hello ', 'world']);
+  });
 });

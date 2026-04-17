@@ -6,6 +6,9 @@
     "test": { "enabled": true, "timeout_ms": 5000, "tier": "deterministic", "timeout_behavior": "warn" },
     "lint": { "enabled": true, "timeout_ms": 1000, "tier": "deterministic", "timeout_behavior": "warn" }
   },
+  "streaming": {
+    "assistantDelta": true
+  },
   "orchestrator": {
     "evolution": {
       "enabled": true

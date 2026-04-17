@@ -1,0 +1,88 @@
+{
+  "//": "Example vinyan.json fragment demonstrating how to add custom specialist agents.",
+  "//2": "Drop these entries into the `agents` array of your vinyan.json, then scaffold soul files via `vinyan agent create <id>`.",
+  "//3": "The built-ins (ts-coder, writer, system-designer, secretary) are always available and don't need to be listed here.",
+  "agents": [
+    {
+      "id": "java-coder",
+      "name": "Java Coder",
+      "description": "Java/Kotlin specialist for Spring, gradle, and JVM tooling tasks.",
+      "allowed_tools": ["file_read", "file_write", "file_edit", "grep", "shell_exec"],
+      "capability_overrides": {
+        "read_any": true,
+        "write_any": true,
+        "network": false,
+        "shell": true
+      },
+      "routing_hints": {
+        "prefer_domains": ["code-mutation", "code-reasoning"],
+        "prefer_extensions": [".java", ".kt", ".kts", ".gradle"],
+        "prefer_frameworks": ["spring", "spring-boot", "junit", "gradle", "maven"]
+      }
+    },
+    {
+      "id": "ceo",
+      "name": "CEO",
+      "description": "Strategic advisor — reasons about product direction, stakeholder framing, and business trade-offs.",
+      "allowed_tools": ["file_read", "grep", "web_fetch"],
+      "capability_overrides": {
+        "read_any": true,
+        "write_any": false,
+        "network": false,
+        "shell": false
+      },
+      "routing_hints": {
+        "min_level": 1,
+        "prefer_domains": ["general-reasoning", "conversational"]
+      }
+    },
+    {
+      "id": "cto",
+      "name": "CTO",
+      "description": "Technology architect — reasons about tech strategy, architectural trade-offs, and team-wide engineering decisions without mutating code.",
+      "allowed_tools": ["file_read", "grep", "web_fetch"],
+      "capability_overrides": {
+        "read_any": true,
+        "write_any": false,
+        "network": false,
+        "shell": false
+      },
+      "routing_hints": {
+        "min_level": 1,
+        "prefer_domains": ["general-reasoning", "code-reasoning"]
+      }
+    },
+    {
+      "id": "accountant",
+      "name": "Accountant",
+      "description": "Numeric reconciliation specialist — reads CSV / XLSX / ledgers and reasons about accounting integrity (no mutations).",
+      "allowed_tools": ["file_read", "grep"],
+      "capability_overrides": {
+        "read_any": true,
+        "write_any": false,
+        "network": false,
+        "shell": false
+      },
+      "routing_hints": {
+        "prefer_domains": ["general-reasoning"],
+        "prefer_extensions": [".csv", ".xlsx", ".tsv", ".json"]
+      }
+    },
+    {
+      "id": "novelist",
+      "name": "Novelist",
+      "description": "Creative prose specialist — long-form fiction, narrative voice, character consistency.",
+      "allowed_tools": ["file_read", "file_write", "file_edit", "grep"],
+      "capability_overrides": {
+        "read_any": true,
+        "write_any": true,
+        "network": false,
+        "shell": false
+      },
+      "routing_hints": {
+        "prefer_domains": ["general-reasoning", "conversational"],
+        "prefer_extensions": [".md", ".mdx", ".txt", ".markdown"]
+      }
+    }
+  ]
+}

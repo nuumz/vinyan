@@ -84,6 +84,11 @@ async function processTask(
     input.routingLevel, // R2 (§5): gate tool descriptions out of L0-L1 prompts
     undefined, // conversationHistory (structured subprocess path is single-shot)
     input.environment ?? null, // Phase 7a: OS/cwd/git snapshot
+    // Multi-agent: specialist fields shipped through WorkerInput (empty on
+    // the legacy workspace-singleton path — assemblePrompt tolerates nulls).
+    input.agentContext,
+    input.soulContent ?? undefined,
+    input.agentProfile,
   );
 
   const startTime = performance.now();

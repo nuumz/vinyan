@@ -377,6 +377,27 @@ export interface VinyanBusEvents {
    * Gated by config.streaming.assistantDelta (default false).
    */
   'agent:text_delta': { taskId: string; turnId?: string; text: string };
+  /**
+   * Rich LLM stream delta — superset of `agent:text_delta` that carries
+   * structured kinds (content / thinking / tool_use_*). Emitted by the
+   * agent loop on the orchestrator side after the worker forwards a
+   * `stream_delta` NDJSON frame, so A3 stays intact (the bus is emitted
+   * in-orchestrator, not from the subprocess).
+   *
+   * Consumers (ChatStreamRenderer, SSE, VS Code panel) MAY subscribe to
+   * either `agent:text_delta` (text-only legacy) or `llm:stream_delta`
+   * (rich) — both fire during the same turn when both paths are active.
+   */
+  'llm:stream_delta': {
+    taskId: string;
+    turnId?: string;
+    engineId?: string;
+    kind: 'content' | 'thinking' | 'tool_use_start' | 'tool_use_input' | 'tool_use_end';
+    text?: string;
+    toolId?: string;
+    tool?: string;
+    partialJson?: string;
+  };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability

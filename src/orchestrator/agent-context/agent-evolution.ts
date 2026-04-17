@@ -132,13 +132,19 @@ export class AgentEvolution {
   private loadAgentTraces(agentId: string): TraceForDomain[] {
     if (!this.db) return [];
     try {
+      // Multi-agent: prefer specialist id (agent_id) over oracle id
+      // (worker_id). The OR clause preserves reads over pre-migration rows
+      // where only worker_id was recorded — remove once all traces are
+      // multi-agent-tagged.
       const rows = this.db
         .prepare(
           `SELECT outcome, affected_files, oracle_verdicts, approach, approach_description,
                   task_type_signature, failure_reason, timestamp
-           FROM execution_traces WHERE worker_id = ? ORDER BY timestamp DESC LIMIT 50`,
+           FROM execution_traces
+           WHERE (agent_id = ? OR (agent_id IS NULL AND worker_id = ?))
+           ORDER BY timestamp DESC LIMIT 50`,
         )
-        .all(agentId) as Array<Record<string, unknown>>;
+        .all(agentId, agentId) as Array<Record<string, unknown>>;
 
       return rows.map((row) => ({
         outcome: row.outcome as TraceForDomain['outcome'],

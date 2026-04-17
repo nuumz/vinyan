@@ -48,6 +48,7 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:tool_started',
   'agent:tool_executed',
   'agent:text_delta',
+  'llm:stream_delta',
   'agent:clarification_requested',
 ];
 
@@ -253,6 +254,7 @@ export function createSessionSSEStream(
         'agent:tool_started',
         'agent:tool_executed',
         'agent:text_delta',
+        'llm:stream_delta',
         'agent:clarification_requested',
       ];
 

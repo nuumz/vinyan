@@ -115,13 +115,18 @@ export class AgentContextBuilder {
   private loadRecentTraces(agentId: string, limit: number): TraceProjection[] {
     if (!this.db) return [];
     try {
+      // Multi-agent: prefer specialist id (agent_id) over oracle id
+      // (worker_id). The OR clause keeps pre-migration rows readable
+      // during the rollout window.
       const rows = this.db
         .prepare(
           `SELECT task_id, worker_id, timestamp, approach, task_type_signature,
                   oracle_verdicts, duration_ms, outcome, failure_reason, affected_files
-           FROM execution_traces WHERE worker_id = ? ORDER BY timestamp DESC LIMIT ?`,
+           FROM execution_traces
+           WHERE (agent_id = ? OR (agent_id IS NULL AND worker_id = ?))
+           ORDER BY timestamp DESC LIMIT ?`,
         )
-        .all(agentId, limit) as Array<Record<string, unknown>>;
+        .all(agentId, agentId, limit) as Array<Record<string, unknown>>;
 
       return rows.map((row) => ({
         taskId: row.task_id as string,

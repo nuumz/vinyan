@@ -31,6 +31,12 @@ export interface IAgentSession {
   readonly pid: number;
 }
 
+/**
+ * Phase 2: callback invoked by AgentSession when the worker emits a
+ * `text_delta` frame in-between WorkerTurns. Observational only.
+ */
+export type AgentSessionDeltaHandler = (delta: { taskId: string; turnId: string; text: string }) => void;
+
 // ── Implementation ───────────────────────────────────────────────────
 
 const encoder = new TextEncoder();
@@ -40,10 +46,12 @@ export class AgentSession implements IAgentSession {
   private state: SessionState = 'INIT';
   private reader!: ReadableStreamDefaultReader<Uint8Array>;
   private buffer = '';
+  private onDelta?: AgentSessionDeltaHandler;
 
-  constructor(private readonly proc: SubprocessHandle) {
+  constructor(private readonly proc: SubprocessHandle, onDelta?: AgentSessionDeltaHandler) {
     // biome-ignore lint: Bun's ReadableStreamDefaultReader has extra `readMany` — duck-type is sufficient
     this.reader = proc.stdout.getReader() as any;
+    this.onDelta = onDelta;
   }
 
   get sessionState(): SessionState {
@@ -77,14 +85,45 @@ export class AgentSession implements IAgentSession {
       throw new Error(`Invalid state for receive: ${this.state}`);
     }
 
-    const line = await Promise.race([this.readNextLine(), sleep(timeoutMs).then(() => null)]);
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return null;
 
-    if (line === null) {
-      return null; // timeout — state stays WAITING_FOR_WORKER
-    }
+      const line = await Promise.race([this.readNextLine(), sleep(remaining).then(() => null)]);
+      if (line === null) return null;
+      if (!line) continue;
 
-    try {
-      const parsed = JSON.parse(line);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        console.error('[AgentSession] Failed to parse JSON from worker');
+        continue;
+      }
+
+      // Phase 2 streaming: `text_delta` frames are observational, not turns.
+      // Forward to the handler and keep reading for a real WorkerTurn.
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        (parsed as { type?: unknown }).type === 'text_delta'
+      ) {
+        const d = parsed as { taskId?: unknown; turnId?: unknown; text?: unknown };
+        if (typeof d.text === 'string' && d.text.length > 0 && this.onDelta) {
+          try {
+            this.onDelta({
+              taskId: String(d.taskId ?? ''),
+              turnId: String(d.turnId ?? ''),
+              text: d.text,
+            });
+          } catch {
+            /* handler errors must not break the session */
+          }
+        }
+        continue;
+      }
+
       const result = WorkerTurnSchema.safeParse(parsed);
       if (!result.success) {
         console.error('[AgentSession] Invalid WorkerTurn:', result.error.message);
@@ -92,9 +131,6 @@ export class AgentSession implements IAgentSession {
       }
       this.state = 'WAITING_FOR_ORCHESTRATOR';
       return result.data;
-    } catch {
-      console.error('[AgentSession] Failed to parse JSON from worker');
-      return null;
     }
   }
 

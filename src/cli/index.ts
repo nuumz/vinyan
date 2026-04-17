@@ -20,7 +20,7 @@ Commands:
   run "task"         Run autonomous agent task (supports --agent <id>)
   agent <sub>        Manage specialist agents (list|create|inspect|remove)
   chat               Interactive conversation agent mode
-  serve              Start the API server (auto-restart on crash; --no-supervise to disable)
+  serve              Start the API server (auto-restart on crash; --watch for hot reload; --no-supervise to disable)
   init [path]        Initialize vinyan.json
   status             Show system status summary
   doctor             Health check: config, DB, oracles, LLM providers
@@ -61,7 +61,9 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
 }
 
 const command = args[0];
-const workspacePath = args[1] || process.cwd();
+// args[1] is an optional workspace path — but only if it doesn't start with '-'
+// (otherwise it's a flag like --watch or --no-supervise).
+const workspacePath = args[1] && !args[1].startsWith('-') ? args[1] : process.cwd();
 const force = args.includes('--force');
 
 switch (command) {

@@ -24,6 +24,10 @@
  *                                        is enforced by RoomDispatcher)
  */
 import type { RoutingDecision, TaskDAG, TaskInput } from '../types.ts';
+import {
+  buildCreativeWritingRoomContract,
+  shouldUseCreativeWritingRoom,
+} from './presets/creative-writing-room.ts';
 import type { RoleSpec, RoomContract } from './types.ts';
 
 /** Minimum node count for room eligibility. */
@@ -146,8 +150,26 @@ export function selectRoomContract(dag: TaskDAG, routing: RoutingDecision, input
   // Rule 5 — aggregate risk floor
   if (aggregateRisk(dag) < RISK_FLOOR) return null;
 
-  const roles = buildRoles(topology);
+  const tokenBudget = Math.floor(
+    (routing.budgetTokens ?? input.budget.maxTokens) * ROOM_BUDGET_MULTIPLIER,
+  );
   const roomId = `room-${input.id}`;
+
+  // Rule 6 (Phase E) — creative-writing bypass: goals for long-form creative
+  // deliverables get a specialized writer/editor/trend-analyst room instead
+  // of the generic drafter/critic/integrator topology. The role set is fixed
+  // (not DAG-derived) because creative collaboration doesn't map to fan-out
+  // topology the way multi-source research does.
+  if (shouldUseCreativeWritingRoom(input.goal)) {
+    return buildCreativeWritingRoomContract({
+      roomId,
+      parentTaskId: input.id,
+      goal: input.goal,
+      tokenBudget,
+    });
+  }
+
+  const roles = buildRoles(topology);
 
   return {
     roomId,
@@ -157,7 +179,7 @@ export function selectRoomContract(dag: TaskDAG, routing: RoutingDecision, input
     maxRounds: DEFAULT_MAX_ROUNDS,
     minRounds: DEFAULT_MIN_ROUNDS,
     convergenceThreshold: DEFAULT_CONVERGENCE_THRESHOLD,
-    tokenBudget: Math.floor((routing.budgetTokens ?? input.budget.maxTokens) * ROOM_BUDGET_MULTIPLIER),
+    tokenBudget,
   };
 }
 

@@ -27,6 +27,7 @@
  * is not exposed on the orchestrator (e.g., when the TUI is launched
  * with a config that didn't pass `sessionManager` into createOrchestrator).
  */
+import type { ClarificationQuestion } from '../../core/clarification.ts';
 import { ANSI, bold, color, dim, padEnd, panel, sideBySide, truncate } from '../renderer.ts';
 import type { ChatMessageEntry, ChatSessionSummary, TUIState } from '../types.ts';
 
@@ -147,10 +148,21 @@ function renderConversation(
   const headerSessionShort = state.chatActiveSessionId.slice(0, 8);
   lines.push(dim(`  Session: ${headerSessionShort}`));
 
-  // Pending clarifications banner — fired when the most recent
-  // assistant turn was an [INPUT-REQUIRED] block. This is the same
-  // signal `vinyan chat` uses to display "Vinyan needs clarification:".
-  if (state.chatPendingClarifications.length > 0) {
+  // Pending clarifications banner — fired when either:
+  //   (a) the most recent assistant turn was an [INPUT-REQUIRED] block
+  //       (legacy string[] path from SessionManager.getPendingClarifications)
+  //   (b) the orchestrator emitted `agent:clarification_requested` with
+  //       structured questions (Phase D path — prefer this when present)
+  const structured = state.chatStructuredClarifications;
+  if (structured.length > 0) {
+    lines.push('');
+    lines.push(color('  ⁇ Waiting for your input:', ANSI.bold, ANSI.yellow));
+    for (const block of renderStructuredClarifications(structured, innerW)) {
+      lines.push(block);
+    }
+    lines.push(dim('    หรือพิมพ์คำตอบของคุณเอง — free text ใช้ได้เสมอ'));
+    lines.push('');
+  } else if (state.chatPendingClarifications.length > 0) {
     lines.push('');
     lines.push(color('  ⁇ Waiting for clarification:', ANSI.bold, ANSI.yellow));
     for (const q of state.chatPendingClarifications) {
@@ -158,6 +170,18 @@ function renderConversation(
     }
     lines.push('');
   } else {
+    lines.push('');
+  }
+
+  // Phase E: workflow TODO checklist (fired by `workflow:plan_ready`).
+  if (state.chatWorkflowPlan && state.chatWorkflowPlan.steps.length > 0) {
+    for (const block of renderWorkflowPlan(
+      state.chatWorkflowPlan.steps,
+      state.chatWorkflowStepStatus,
+      innerW,
+    )) {
+      lines.push(block);
+    }
     lines.push('');
   }
 
@@ -282,6 +306,81 @@ export function wrapText(text: string, width: number): string[] {
       }
     }
     if (current.length > 0) out.push(current);
+  }
+  return out;
+}
+
+/**
+ * Render a structured clarification set as numbered/checkbox lines.
+ *
+ * Kind rendering:
+ *   - 'single' → `  (1) label` — user types one digit.
+ *   - 'multi'  → `  [ ] 1. label` — user types `1,3`.
+ *   - 'free'   → prompt only; user types free text.
+ *
+ * Free-text override is ALWAYS available; callers surface a hint line.
+ */
+export function renderStructuredClarifications(
+  questions: ClarificationQuestion[],
+  innerW: number,
+): string[] {
+  const out: string[] = [];
+  questions.forEach((q, idx) => {
+    const prefix = questions.length > 1 ? `  Q${idx + 1}. ` : '  ';
+    out.push(truncate(color(`${prefix}${q.prompt}`, ANSI.bold, ANSI.cyan), innerW));
+    if (q.kind === 'free' || !q.options || q.options.length === 0) {
+      out.push(truncate(`    ${dim('(free text — พิมพ์คำตอบได้เลย)')}`, innerW));
+      return;
+    }
+    q.options.forEach((opt, i) => {
+      const bracket = q.kind === 'multi'
+        ? color('[ ]', ANSI.yellow)
+        : color(`(${i + 1})`, ANSI.yellow);
+      const hint = opt.hint ? dim(` — ${opt.hint}`) : '';
+      out.push(truncate(`    ${bracket} ${opt.label}${hint}`, innerW));
+    });
+    if (q.kind === 'multi' && q.maxSelections) {
+      out.push(
+        truncate(
+          `    ${dim(`(เลือกได้สูงสุด ${q.maxSelections} ข้อ — พิมพ์หมายเลขคั่นด้วย comma)`)}`,
+          innerW,
+        ),
+      );
+    }
+  });
+  return out;
+}
+
+/**
+ * Render a workflow plan as a TODO checklist with per-step status glyphs.
+ *   ◉ = in-progress
+ *   ✓ = completed
+ *   ✗ = failed
+ *   ○ = pending (default when status missing)
+ */
+export function renderWorkflowPlan(
+  steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>,
+  statusMap: Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>,
+  innerW: number,
+): string[] {
+  const out: string[] = [];
+  const completed = [...statusMap.values()].filter((s) => s === 'completed').length;
+  out.push(color(`  ☰ Workflow plan (${completed}/${steps.length} done):`, ANSI.bold, ANSI.green));
+  for (const step of steps) {
+    const status = statusMap.get(step.id) ?? 'pending';
+    const glyph =
+      status === 'completed'
+        ? color('✓', ANSI.green)
+        : status === 'in-progress'
+          ? color('◉', ANSI.yellow)
+          : status === 'failed'
+            ? color('✗', ANSI.red)
+            : color('○', ANSI.dim);
+    const label =
+      status === 'completed' ? dim(step.description) : step.description;
+    out.push(
+      truncate(`    ${glyph} ${label} ${dim(`[${step.strategy}]`)}`, innerW),
+    );
   }
   return out;
 }

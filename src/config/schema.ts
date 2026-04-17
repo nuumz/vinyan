@@ -547,6 +547,18 @@ export const VinyanConfigSchema = z.object({
     })
     .optional(),
   /**
+   * Realtime streaming (Phase 2). When `assistantDelta: true`, LLM providers
+   * use their native SSE/stream APIs and the orchestrator emits
+   * `agent:text_delta` events on the bus as tokens arrive. Purely
+   * observational — NEVER affects governance decisions (A3). Default false
+   * to keep the legacy non-streaming path the opt-out baseline.
+   */
+  streaming: z
+    .object({
+      assistantDelta: z.boolean().default(false),
+    })
+    .optional(),
+  /**
    * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
    * built-in defaults are merged by the loader. CLI `vinyan agent add`
    * appends here and writes back to vinyan.json.

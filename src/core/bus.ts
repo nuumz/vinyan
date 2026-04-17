@@ -316,7 +316,21 @@ export interface VinyanBusEvents {
     durationMs: number;
   };
   'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
-  'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
+  /**
+   * Tool execution started — emitted by agent-loop BEFORE calling executeTool.
+   * UI surfaces this as a "running" tool card for the "full Claude Code feel".
+   * Safety: observational only (A3). If the tool then fails / times out,
+   * `agent:tool_executed` still fires with `isError:true`, so UI state converges.
+   */
+  'agent:tool_started': { taskId: string; turnId: string; toolCallId: string; toolName: string; args?: unknown };
+  'agent:tool_executed': {
+    taskId: string;
+    turnId: string;
+    toolName: string;
+    durationMs: number;
+    isError: boolean;
+    toolCallId?: string;
+  };
   // Agent Conversation: fires when a task returns status='input-required'
   // because either the agent OR the orchestrator paused to ask the user
   // clarifying questions. Consumers (TUI, API streaming, logging) should
@@ -356,6 +370,13 @@ export interface VinyanBusEvents {
   };
   /** Agent thinking/rationale — what the LLM is reasoning about this turn. */
   'agent:thinking': { taskId: string; turnId: string; rationale: string };
+  /**
+   * Token-level assistant text delta (Phase 2 realtime chat). Emitted while
+   * an LLM response is being generated, before `agent:turn_complete`. Purely
+   * observational — governance decisions NEVER depend on these events (A3).
+   * Gated by config.streaming.assistantDelta (default false).
+   */
+  'agent:text_delta': { taskId: string; turnId?: string; text: string };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
@@ -648,6 +669,10 @@ export interface VinyanBusEvents {
     /** True when the orchestrator is waiting for the user to approve before executing. */
     awaitingApproval: boolean;
   };
+  /** User (via TUI / HTTP / WS) approved a plan that was awaiting approval. */
+  'workflow:plan_approved': { taskId: string; sessionId?: string };
+  /** User rejected a plan or the approval timer expired. */
+  'workflow:plan_rejected': { taskId: string; sessionId?: string; reason?: string };
   'workflow:step_start': { stepId: string; strategy: string; description: string };
   'workflow:step_complete': {
     stepId: string;

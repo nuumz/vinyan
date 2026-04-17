@@ -3,19 +3,35 @@
  *
  * Validates: config, database, oracles, LLM providers, economy, sessions.
  * Reports issues with actionable fix suggestions.
+ *
+ * The check loop is exposed as `runDoctorChecks()` so the HTTP API can
+ * reuse the same logic. The CLI entry point (`runDoctor`) wraps it with
+ * console rendering and an exit code.
  */
 
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-interface Check {
+export interface DoctorCheck {
   name: string;
   status: 'ok' | 'warn' | 'fail';
   detail: string;
 }
 
-export async function runDoctor(workspace: string): Promise<void> {
-  const checks: Check[] = [];
+export interface DoctorOptions {
+  /** Include expensive checks (tsc) — off by default when called from a live server. */
+  deep?: boolean;
+}
+
+/**
+ * Run all workspace health checks and return the structured result.
+ * Never prints; never exits. Safe to call from HTTP handlers and tests.
+ */
+export async function runDoctorChecks(
+  workspace: string,
+  options: DoctorOptions = {},
+): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
 
   // 1. Workspace
   checks.push(
@@ -103,21 +119,23 @@ export async function runDoctor(workspace: string): Promise<void> {
     checks.push({ name: 'LLM Provider', status: 'fail', detail: 'No OPENROUTER_API_KEY or ANTHROPIC_API_KEY — set in .env' });
   }
 
-  // 6. TypeScript (tsc)
-  try {
-    const proc = Bun.spawn(['tsc', '--noEmit', '--pretty', 'false'], {
-      cwd: workspace,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const exitCode = await proc.exited;
-    checks.push(
-      exitCode === 0
-        ? { name: 'TypeScript', status: 'ok', detail: 'tsc --noEmit passes' }
-        : { name: 'TypeScript', status: 'warn', detail: `tsc --noEmit has errors (exit ${exitCode})` },
-    );
-  } catch {
-    checks.push({ name: 'TypeScript', status: 'warn', detail: 'tsc not available — skip type check' });
+  // 6. TypeScript (tsc) — expensive, only when explicitly requested
+  if (options.deep) {
+    try {
+      const proc = Bun.spawn(['tsc', '--noEmit', '--pretty', 'false'], {
+        cwd: workspace,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const exitCode = await proc.exited;
+      checks.push(
+        exitCode === 0
+          ? { name: 'TypeScript', status: 'ok', detail: 'tsc --noEmit passes' }
+          : { name: 'TypeScript', status: 'warn', detail: `tsc --noEmit has errors (exit ${exitCode})` },
+      );
+    } catch {
+      checks.push({ name: 'TypeScript', status: 'warn', detail: 'tsc not available — skip type check' });
+    }
   }
 
   // 7. Sessions
@@ -138,7 +156,30 @@ export async function runDoctor(workspace: string): Promise<void> {
     }
   }
 
-  // Print results
+  return checks;
+}
+
+/** Overall verdict from a set of check results. */
+export function summarizeChecks(checks: DoctorCheck[]): {
+  status: 'healthy' | 'degraded' | 'critical';
+  passed: number;
+  total: number;
+} {
+  const total = checks.length;
+  const passed = checks.filter((c) => c.status === 'ok').length;
+  const failed = checks.filter((c) => c.status === 'fail').length;
+  const warned = checks.filter((c) => c.status === 'warn').length;
+
+  const status: 'healthy' | 'degraded' | 'critical' =
+    failed > 0 ? 'critical' : warned > 0 ? 'degraded' : 'healthy';
+
+  return { status, passed, total };
+}
+
+/** CLI entry point — runs the checks with deep mode and prints to console. */
+export async function runDoctor(workspace: string): Promise<void> {
+  const checks = await runDoctorChecks(workspace, { deep: true });
+
   console.log('\n  Vinyan Doctor — Health Check\n');
 
   let hasFailures = false;
@@ -150,7 +191,8 @@ export async function runDoctor(workspace: string): Promise<void> {
     if (check.status === 'fail') hasFailures = true;
   }
 
-  console.log(`\n  ${checks.filter((c) => c.status === 'ok').length}/${checks.length} checks passed\n`);
+  const { passed, total } = summarizeChecks(checks);
+  console.log(`\n  ${passed}/${total} checks passed\n`);
 
   if (hasFailures) process.exit(1);
 }

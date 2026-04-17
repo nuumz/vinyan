@@ -334,7 +334,11 @@ export class SleepCycleRunner {
     for (const pattern of promotablePatterns) {
       this.patternStore.insert(pattern);
 
-      // Phase 2.5: Create skills from success patterns
+      // Phase 2.5: Create skills from success patterns.
+      // Phase 3 note: patterns here are fleet-wide (mined across ALL traces),
+      // so derived skills enter the shared pool (agent_id NULL). Any agent can
+      // fall back to these when they lack an owned match. Agent-scoped patterns
+      // (mined from a single specialist's trace slice) would pass agentId here.
       if (pattern.type === 'success-pattern' && pattern.approach && this.skillManager) {
         const affectedFiles = this.extractAffectedFilesFromPattern(pattern, traces);
         const depConeHashes = this.skillManager.computeCurrentHashes(affectedFiles);

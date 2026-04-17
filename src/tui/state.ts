@@ -32,6 +32,9 @@ export function createInitialState(workspace = '.'): TUIState {
     chatActiveSessionId: null,
     chatConversation: [],
     chatPendingClarifications: [],
+    chatStructuredClarifications: [],
+    chatWorkflowPlan: null,
+    chatWorkflowStepStatus: new Map(),
     chatSessions: [],
     chatScroll: 0,
 

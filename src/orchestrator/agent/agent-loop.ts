@@ -1270,6 +1270,16 @@ export async function runAgentLoop(
           }
 
           const toolStart = performance.now();
+          // Phase 2 UX: emit tool_started BEFORE execution so UIs can render an
+          // in-progress card (Claude Code feel). `agent:tool_executed` still
+          // fires below with matching toolCallId so consumers pair start→end.
+          deps.bus?.emit('agent:tool_started', {
+            taskId: input.id,
+            turnId: turn.turnId,
+            toolCallId: call.id,
+            toolName: call.tool,
+            args: call.parameters,
+          });
           let result = await deps.toolExecutor.execute(call, toolContext);
           // Guardrails scan on every tool result (A6)
           result = scanToolResult(result, deps.guardrailsScan);
@@ -1306,6 +1316,7 @@ export async function runAgentLoop(
             taskId: input.id,
             turnId: turn.turnId,
             toolName: call.tool,
+            toolCallId: call.id,
             durationMs: Math.round(performance.now() - toolStart),
             isError: result.status !== 'success',
           });

@@ -89,12 +89,25 @@ async function processTask(
   const startTime = performance.now();
   // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision
   const temperature = (input.taskType ?? 'code') === 'reasoning' ? 0.3 : 0.2;
-  const response = await provider.generate({
+  const llmRequest = {
     systemPrompt,
     userPrompt,
     maxTokens: input.budget.maxTokens,
     temperature,
-  });
+  };
+  const response =
+    input.stream && provider.generateStream
+      ? await provider.generateStream(llmRequest, ({ text }) => {
+          // Emit delta line to stdout; parent worker-pool pumps these to bus.
+          // Newline is the framing delimiter — `text` may contain any chars
+          // including newlines, so we JSON-encode the whole envelope.
+          try {
+            process.stdout.write(`${JSON.stringify({ type: 'delta', taskId: input.taskId, text })}\n`);
+          } catch {
+            /* broken pipe — parent gone; ignore */
+          }
+        })
+      : await provider.generate(llmRequest);
   const durationMs = Math.round(performance.now() - startTime);
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
 

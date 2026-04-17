@@ -73,6 +73,18 @@ export async function serve(workspace: string): Promise<void> {
       agentProfileStore: orchestrator.agentProfileStore,
       skillStore: orchestrator.skillStore,
       patternStore: orchestrator.patternStore,
+      agentContextStore: orchestrator.agentContextStore,
+      agentRegistry: orchestrator.agentRegistry,
+      mcpClientPool: orchestrator.mcpClientPool,
+      oracleAccuracyStore: orchestrator.oracleAccuracyStore,
+      sleepCycleRunner: orchestrator.sleepCycleRunner,
+      shadowStore: orchestrator.shadowStore,
+      predictionLedger: orchestrator.predictionLedger,
+      providerTrustStore: orchestrator.providerTrustStore,
+      federationBudgetPool: orchestrator.federationBudgetPool,
+      marketScheduler: orchestrator.marketScheduler,
+      capabilityModel: orchestrator.capabilityModel,
+      workspace,
     },
   );
 

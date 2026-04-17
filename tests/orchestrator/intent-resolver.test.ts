@@ -1,12 +1,20 @@
 /**
  * Tests for Intent Resolver — LLM-powered semantic intent classification.
+ *
+ * Post-redux (see plan vinyan-agent-intent-replicated-kite.md):
+ *   - No regex-based heuristic pre-filter.
+ *   - Provider tier preference: balanced > tool-uses > fast.
+ *   - Deterministic structural features injected into the user prompt.
+ *   - Few-shot canonical examples embedded in the system prompt.
+ *   - Session-scoped goal cache with TTL.
  */
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import {
-  resolveIntent,
+  clearIntentResolverCache,
+  computeStructuralFeatures,
   fallbackStrategy,
-  heuristicCreativePreFilter,
-  hasCreativeCues,
+  intentResolverCacheSize,
+  resolveIntent,
   type IntentResolverDeps,
 } from '../../src/orchestrator/intent-resolver.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
@@ -16,25 +24,25 @@ import type { LLMProvider, LLMRequest, LLMResponse, TaskInput } from '../../src/
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeProvider(responseContent: string): LLMProvider {
+function makeProvider(responseContent: string, id = 'test-fast', tier: LLMProvider['tier'] = 'fast'): LLMProvider {
   return {
-    id: 'test-fast',
-    tier: 'fast',
+    id,
+    tier,
     async generate(_req: LLMRequest): Promise<LLMResponse> {
       return {
         content: responseContent,
         toolCalls: [],
         tokensUsed: { input: 50, output: 50 },
-        model: 'test-fast',
+        model: id,
         stopReason: 'end_turn',
       };
     },
   };
 }
 
-function makeRegistry(provider?: LLMProvider): LLMProviderRegistry {
+function makeRegistry(...providers: LLMProvider[]): LLMProviderRegistry {
   const reg = new LLMProviderRegistry();
-  if (provider) reg.register(provider);
+  for (const p of providers) reg.register(p);
   return reg;
 }
 
@@ -49,14 +57,20 @@ function makeInput(goal: string, overrides?: Partial<TaskInput>): TaskInput {
   };
 }
 
-function makeDeps(provider?: LLMProvider): IntentResolverDeps {
+function makeDeps(provider?: LLMProvider, extra: Partial<IntentResolverDeps> = {}): IntentResolverDeps {
   return {
-    registry: makeRegistry(provider),
+    registry: provider ? makeRegistry(provider) : new LLMProviderRegistry(),
+    ...extra,
   };
 }
 
+// Cache is module-scoped — reset before each test for isolation.
+beforeEach(() => {
+  clearIntentResolverCache();
+});
+
 // ---------------------------------------------------------------------------
-// resolveIntent
+// resolveIntent — core classification (behaviour preserved from pre-redux)
 // ---------------------------------------------------------------------------
 
 describe('resolveIntent', () => {
@@ -64,7 +78,7 @@ describe('resolveIntent', () => {
     const provider = makeProvider(JSON.stringify({
       strategy: 'conversational',
       refinedGoal: 'สวัสดี ผู้ใช้ทักทาย',
-      reasoning: 'User is greeting, no task to execute.',
+      reasoning: 'User is greeting.',
       confidence: 0.95,
     }));
     const result = await resolveIntent(makeInput('สวัสดี'), makeDeps(provider));
@@ -72,13 +86,14 @@ describe('resolveIntent', () => {
     expect(result.strategy).toBe('conversational');
     expect(result.confidence).toBe(0.95);
     expect(result.refinedGoal).toBe('สวัสดี ผู้ใช้ทักทาย');
+    expect(result.reasoningSource).toBe('llm');
   });
 
   test('classifies direct-tool with tool call details', async () => {
     const provider = makeProvider(JSON.stringify({
       strategy: 'direct-tool',
       refinedGoal: 'Open Google Chrome application',
-      reasoning: 'User wants to open an application — single shell_exec call.',
+      reasoning: 'Single shell_exec call.',
       directToolCall: { tool: 'shell_exec', parameters: { command: 'open -a "Google Chrome"' } },
       confidence: 0.9,
     }));
@@ -93,85 +108,12 @@ describe('resolveIntent', () => {
     expect(result.directToolCall!.parameters.command).toBe('open -a "Google Chrome"');
   });
 
-  test('retries with balanced provider when fast provider emits a chained cross-platform command', async () => {
-    const expectedCommand = process.platform === 'darwin'
-      ? 'open https://mail.google.com/'
-      : process.platform === 'win32'
-        ? 'start "" https://mail.google.com/'
-        : 'xdg-open https://mail.google.com/';
-    let fastCalls = 0;
-    let balancedCalls = 0;
-    const fastProvider: LLMProvider = {
-      id: 'test-tool-uses',
-      tier: 'tool-uses',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        fastCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'direct-tool',
-            refinedGoal: 'เปิดแอพพลิเคชัน Gmail',
-            reasoning: 'User wants to open Gmail app — a single fire-and-forget action with no textual output expected; the side-effect (app opening) is the entire goal.',
-            directToolCall: {
-              tool: 'shell_exec',
-              parameters: {
-                command: 'open -a Gmail || gmail || xdg-open https://mail.google.com/',
-              },
-            },
-            confidence: 0.8,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 50, output: 50 },
-          model: 'test-tool-uses',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    const balancedProvider: LLMProvider = {
-      id: 'test-balanced',
-      tier: 'balanced',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        balancedCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'direct-tool',
-            refinedGoal: 'เปิด Gmail ในเบราว์เซอร์',
-            reasoning: 'Gmail is primarily a web service, so the canonical URL is the correct direct action.',
-            directToolCall: {
-              tool: 'shell_exec',
-              parameters: {
-                command: expectedCommand,
-              },
-            },
-            confidence: 0.95,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 50, output: 50 },
-          model: 'test-balanced',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-
-    const registry = new LLMProviderRegistry();
-    registry.register(fastProvider);
-    registry.register(balancedProvider);
-
-    const result = await resolveIntent(makeInput('เปิดแอพ gmail'), { registry, availableTools: ['shell_exec'] });
-
-    expect(result.strategy).toBe('direct-tool');
-    expect(result.directToolCall).toBeDefined();
-    expect(result.directToolCall!.tool).toBe('shell_exec');
-    expect(result.directToolCall!.parameters.command).toBe(expectedCommand);
-    expect(fastCalls).toBe(1);
-    expect(balancedCalls).toBe(1);
-  });
-
   test('classifies agentic-workflow with workflow prompt', async () => {
     const provider = makeProvider(JSON.stringify({
       strategy: 'agentic-workflow',
       refinedGoal: 'Refactor auth module and deploy',
-      reasoning: 'Multi-step task requiring planning: refactor then deploy.',
-      workflowPrompt: 'Step 1: Identify auth module files. Step 2: Refactor to use JWT. Step 3: Run tests. Step 4: Deploy to staging.',
+      reasoning: 'Multi-step task requiring planning.',
+      workflowPrompt: 'Step 1: Identify auth files. Step 2: Refactor. Step 3: Run tests. Step 4: Deploy.',
       confidence: 0.85,
     }));
     const result = await resolveIntent(
@@ -222,33 +164,30 @@ describe('resolveIntent', () => {
   });
 
   test('throws when no provider is available', async () => {
-    const emptyRegistry = makeRegistry();
-
+    const emptyRegistry = new LLMProviderRegistry();
     await expect(resolveIntent(makeInput('hello'), { registry: emptyRegistry }))
       .rejects.toThrow('No LLM provider available');
   });
 
-  test('throws on invalid JSON from LLM', async () => {
+  test('throws on invalid JSON when no alternate provider is available', async () => {
     const provider = makeProvider('This is not JSON at all');
-
     await expect(resolveIntent(makeInput('hello'), makeDeps(provider)))
       .rejects.toThrow();
   });
 
-  test('throws on invalid strategy value from LLM', async () => {
+  test('throws on invalid strategy value when no alternate is available', async () => {
     const provider = makeProvider(JSON.stringify({
       strategy: 'invalid-strategy',
       refinedGoal: 'Test',
       reasoning: 'Test.',
     }));
-
     await expect(resolveIntent(makeInput('hello'), makeDeps(provider)))
       .rejects.toThrow();
   });
 
   test('respects timeout', async () => {
     const slowProvider: LLMProvider = {
-      id: 'slow-provider',
+      id: 'slow',
       tier: 'fast',
       async generate(_req: LLMRequest): Promise<LLMResponse> {
         await new Promise((resolve) => setTimeout(resolve, 15000));
@@ -268,7 +207,415 @@ describe('resolveIntent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// fallbackStrategy
+// resolveIntent — provider tier preference
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (provider tier preference)', () => {
+  test('prefers balanced tier when available', async () => {
+    let fastCalls = 0;
+    let balancedCalls = 0;
+    const fast: LLMProvider = {
+      id: 'p-fast',
+      tier: 'fast',
+      async generate(_req): Promise<LLMResponse> {
+        fastCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
+          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-fast', stopReason: 'end_turn',
+        };
+      },
+    };
+    const balanced: LLMProvider = {
+      id: 'p-balanced',
+      tier: 'balanced',
+      async generate(_req): Promise<LLMResponse> {
+        balancedCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'agentic-workflow', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
+          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-balanced', stopReason: 'end_turn',
+        };
+      },
+    };
+    const registry = makeRegistry(fast, balanced);
+
+    const result = await resolveIntent(makeInput('อยากให้ช่วยเขียนนิยาย'), { registry });
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(balancedCalls).toBe(1);
+    expect(fastCalls).toBe(0);
+  });
+
+  test('falls back to tool-uses when balanced is not registered', async () => {
+    let fastCalls = 0;
+    let toolUsesCalls = 0;
+    const fast: LLMProvider = {
+      id: 'p-fast',
+      tier: 'fast',
+      async generate(_req): Promise<LLMResponse> {
+        fastCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-fast', stopReason: 'end_turn',
+        };
+      },
+    };
+    const toolUses: LLMProvider = {
+      id: 'p-tool-uses',
+      tier: 'tool-uses',
+      async generate(_req): Promise<LLMResponse> {
+        toolUsesCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'direct-tool', refinedGoal: 'x', reasoning: 'x', directToolCall: { tool: 'shell_exec', parameters: { command: 'echo hi' } } }),
+          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-tool-uses', stopReason: 'end_turn',
+        };
+      },
+    };
+    const registry = makeRegistry(fast, toolUses);
+
+    const result = await resolveIntent(makeInput('echo hi please'), { registry });
+    expect(result.strategy).toBe('direct-tool');
+    expect(toolUsesCalls).toBe(1);
+    expect(fastCalls).toBe(0);
+  });
+
+  test('retries with alternate tier when primary emits a semantically invalid command chain', async () => {
+    const expectedCommand =
+      process.platform === 'darwin'
+        ? 'open https://mail.google.com/'
+        : process.platform === 'win32'
+          ? 'start "" https://mail.google.com/'
+          : 'xdg-open https://mail.google.com/';
+
+    let balancedCalls = 0;
+    let toolUsesCalls = 0;
+    const balanced: LLMProvider = {
+      id: 'p-balanced',
+      tier: 'balanced',
+      async generate(_req): Promise<LLMResponse> {
+        balancedCalls++;
+        return {
+          content: JSON.stringify({
+            strategy: 'direct-tool',
+            refinedGoal: 'Open Gmail',
+            reasoning: 'Single action.',
+            directToolCall: {
+              tool: 'shell_exec',
+              parameters: { command: 'open -a Gmail || gmail || xdg-open https://mail.google.com/' },
+            },
+            confidence: 0.8,
+          }),
+          toolCalls: [], tokensUsed: { input: 50, output: 50 }, model: 'p-balanced', stopReason: 'end_turn',
+        };
+      },
+    };
+    const toolUses: LLMProvider = {
+      id: 'p-tool-uses',
+      tier: 'tool-uses',
+      async generate(_req): Promise<LLMResponse> {
+        toolUsesCalls++;
+        return {
+          content: JSON.stringify({
+            strategy: 'direct-tool',
+            refinedGoal: 'Open Gmail in browser',
+            reasoning: 'Canonical URL.',
+            directToolCall: { tool: 'shell_exec', parameters: { command: expectedCommand } },
+            confidence: 0.95,
+          }),
+          toolCalls: [], tokensUsed: { input: 50, output: 50 }, model: 'p-tool-uses', stopReason: 'end_turn',
+        };
+      },
+    };
+    const registry = makeRegistry(balanced, toolUses);
+
+    const result = await resolveIntent(makeInput('เปิดแอพ gmail'), { registry, availableTools: ['shell_exec'] });
+    expect(result.strategy).toBe('direct-tool');
+    expect(result.directToolCall!.parameters.command).toBe(expectedCommand);
+    expect(balancedCalls).toBe(1);
+    expect(toolUsesCalls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — structural features in the user prompt
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (structural features)', () => {
+  test('renders length, question marker, and turn number into the user prompt', async () => {
+    let captured = '';
+    const provider: LLMProvider = {
+      id: 'capture',
+      tier: 'fast',
+      async generate(req): Promise<LLMResponse> {
+        captured = req.userPrompt;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+        };
+      },
+    };
+    await resolveIntent(makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'), makeDeps(provider));
+
+    expect(captured).toContain('Goal metadata (deterministic)');
+    expect(captured).toMatch(/length=\d+ chars/);
+    expect(captured).toContain('session turn: #1');
+    expect(captured).toContain('ends with question marker:');
+  });
+
+  test('computeStructuralFeatures detects Thai question particles', () => {
+    expect(computeStructuralFeatures('นิยายเว็บตูนคืออะไร').endsWithQuestion).toBe(false);
+    expect(computeStructuralFeatures('เขียนนิยายได้ไหม').endsWithQuestion).toBe(true);
+    expect(computeStructuralFeatures('ช่วยได้มั้ย').endsWithQuestion).toBe(true);
+    expect(computeStructuralFeatures('ทำได้หรือเปล่า').endsWithQuestion).toBe(true);
+  });
+
+  test('computeStructuralFeatures recognises ASCII and full-width question marks', () => {
+    expect(computeStructuralFeatures('is this a novel?').endsWithQuestion).toBe(true);
+    // Full-width '？' (U+FF1F) is common in Thai/CJK IME input; the original
+    // code had a duplicate ASCII '?' check which silently missed this case.
+    expect(computeStructuralFeatures('เขียนนิยายได้ไหม？').endsWithQuestion).toBe(true);
+    expect(computeStructuralFeatures('เขียนนิยายเรื่องใหม่').endsWithQuestion).toBe(false);
+  });
+
+  test('computeStructuralFeatures increments turn number from history length', () => {
+    expect(computeStructuralFeatures('hi').turnNumber).toBe(1);
+    expect(
+      computeStructuralFeatures('hi', [
+        { role: 'user', content: 'a', taskId: 't1', timestamp: 0, tokenEstimate: 1 },
+        { role: 'assistant', content: 'b', taskId: 't1', timestamp: 1, tokenEstimate: 1 },
+      ]).turnNumber,
+    ).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — few-shot canonical examples in the system prompt
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (canonical examples)', () => {
+  test('system prompt includes the webtoon bug case and the false-positive guard', async () => {
+    let capturedSystem = '';
+    const provider: LLMProvider = {
+      id: 'capture',
+      tier: 'fast',
+      async generate(req): Promise<LLMResponse> {
+        capturedSystem = req.systemPrompt ?? '';
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+        };
+      },
+    };
+    await resolveIntent(makeInput('anything'), makeDeps(provider));
+
+    expect(capturedSystem).toContain('Canonical Examples');
+    // Bug case that motivated the redux:
+    expect(capturedSystem).toContain('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง');
+    // False-positive guard for noun-collision optimization tasks:
+    expect(capturedSystem).toContain('ทำให้เว็บตูนโหลดเร็วขึ้น');
+    // Translation-as-long-form distinction:
+    expect(capturedSystem).toContain('แปลนิยายเรื่องนี้เป็นอังกฤษ');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — session cache
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (cache)', () => {
+  test('returns cached result for identical (session, goal) within TTL', async () => {
+    let calls = 0;
+    const provider: LLMProvider = {
+      id: 'cached',
+      tier: 'fast',
+      async generate(_req): Promise<LLMResponse> {
+        calls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+        };
+      },
+    };
+    const deps: IntentResolverDeps = { registry: makeRegistry(provider), sessionId: 's1', now: () => 10_000 };
+    await resolveIntent(makeInput('hi'), deps);
+    const second = await resolveIntent(makeInput('hi'), deps);
+
+    expect(calls).toBe(1);
+    expect(second.reasoningSource).toBe('cache');
+  });
+
+  test('re-classifies after TTL expires', async () => {
+    let calls = 0;
+    const provider: LLMProvider = {
+      id: 'cached',
+      tier: 'fast',
+      async generate(_req): Promise<LLMResponse> {
+        calls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+        };
+      },
+    };
+    let clock = 10_000;
+    const deps: IntentResolverDeps = {
+      registry: makeRegistry(provider),
+      sessionId: 's1',
+      now: () => clock,
+    };
+    await resolveIntent(makeInput('hi'), deps);
+    clock += 60_000; // past 30s TTL
+    await resolveIntent(makeInput('hi'), deps);
+
+    expect(calls).toBe(2);
+  });
+
+  test('cache does not collide across sessions', async () => {
+    let calls = 0;
+    const provider: LLMProvider = {
+      id: 'cached',
+      tier: 'fast',
+      async generate(_req): Promise<LLMResponse> {
+        calls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+        };
+      },
+    };
+    const registry = makeRegistry(provider);
+    await resolveIntent(makeInput('hi'), { registry, sessionId: 's1' });
+    await resolveIntent(makeInput('hi'), { registry, sessionId: 's2' });
+
+    expect(calls).toBe(2);
+  });
+
+  test('prunes expired entries once the cache crosses the eviction threshold', async () => {
+    const provider = makeProvider(JSON.stringify({
+      strategy: 'conversational',
+      refinedGoal: 'x',
+      reasoning: 'x',
+    }));
+    const registry = makeRegistry(provider);
+    let clock = 10_000;
+    const deps = (): IntentResolverDeps => ({ registry, now: () => clock });
+
+    // Fill past the prune threshold (64).
+    for (let i = 0; i < 70; i++) {
+      await resolveIntent(makeInput(`goal-${i}`), deps());
+    }
+    const sizeBeforeExpiry = intentResolverCacheSize();
+    expect(sizeBeforeExpiry).toBeGreaterThanOrEqual(70);
+
+    // Jump past the 30s TTL so every entry above is now expired.
+    clock += 60_000;
+    // One more resolve triggers pruneIntentCache() which drops the expired
+    // 70 entries before writing the new one.
+    await resolveIntent(makeInput('trigger-prune'), deps());
+
+    // After pruning: all 70 expired entries are gone, only the new one remains.
+    expect(intentResolverCacheSize()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — user-context injection (Phase B integration)
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (user-context injection)', () => {
+  test('injects User context block into the user prompt when a miner is provided', async () => {
+    let captured = '';
+    const provider: LLMProvider = {
+      id: 'capture',
+      tier: 'fast',
+      async generate(req): Promise<LLMResponse> {
+        captured = req.userPrompt;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+        };
+      },
+    };
+    const { UserInterestMiner } = await import('../../src/orchestrator/user-context/user-interest-miner.ts');
+    const miner = new UserInterestMiner({
+      traceStore: {
+        findRecent: () => [
+          {
+            id: 't1',
+            taskId: 't1',
+            timestamp: Date.now() - 1000,
+            routingLevel: 1 as const,
+            approach: 'x',
+            oracleVerdicts: {},
+            modelUsed: 'mock',
+            tokensConsumed: 0,
+            durationMs: 0,
+            outcome: 'success' as const,
+            affectedFiles: [],
+            taskTypeSignature: 'write::novel::long',
+          },
+        ],
+      } as never,
+    });
+    await resolveIntent(
+      makeInput('ทักทายหน่อย', { sessionId: 's1' }),
+      { registry: makeRegistry(provider), userInterestMiner: miner, sessionId: 's1' },
+    );
+
+    expect(captured).toContain('User context (learned from past activity)');
+    expect(captured).toContain('creative-writing');
+  });
+
+  test('omits User context block when miner is absent', async () => {
+    let captured = '';
+    const provider: LLMProvider = {
+      id: 'capture',
+      tier: 'fast',
+      async generate(req): Promise<LLMResponse> {
+        captured = req.userPrompt;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+        };
+      },
+    };
+    await resolveIntent(makeInput('hello'), makeDeps(provider));
+    expect(captured).not.toContain('User context');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — the original bug case (documentation-style regression test)
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent (original bug case)', () => {
+  test('webtoon novel request classifies as agentic-workflow when the LLM returns the correct label', async () => {
+    // Post-redux: we trust the LLM (with canonical examples + balanced tier +
+    // structural features) to produce the right label. This test verifies the
+    // plumbing surfaces that label correctly.
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'agentic-workflow',
+        refinedGoal: 'Write a webtoon novel for publication',
+        reasoning: 'Long-form creative deliverable (multi-chapter novel).',
+        workflowPrompt: 'Plan genre → outline → chapter drafts.',
+        confidence: 0.95,
+      }),
+      'p-balanced',
+      'balanced',
+    );
+    const result = await resolveIntent(
+      makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'),
+      makeDeps(provider),
+    );
+
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.reasoningSource).toBe('llm');
+    expect(result.workflowPrompt).toContain('genre');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fallbackStrategy (regex-based fallback — still used by core-loop when the
+// LLM is unavailable)
 // ---------------------------------------------------------------------------
 
 describe('fallbackStrategy', () => {
@@ -294,319 +641,5 @@ describe('fallbackStrategy', () => {
 
   test('general-reasoning + execute + no tools → agentic-workflow (creative/generative tasks)', () => {
     expect(fallbackStrategy('general-reasoning', 'execute', 'none')).toBe('agentic-workflow');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// heuristicCreativePreFilter
-// ---------------------------------------------------------------------------
-
-describe('heuristicCreativePreFilter', () => {
-  test('matches Thai request to write a webtoon novel (the original bug)', () => {
-    const result = heuristicCreativePreFilter('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง');
-    expect(result.matched).toBe(true);
-    expect(result.strategy).toBe('agentic-workflow');
-    expect(result.matchedPattern).toBe('creative-th');
-  });
-
-  test('matches Thai request to write an article', () => {
-    const result = heuristicCreativePreFilter('ช่วยเขียนบทความเกี่ยวกับ AI สักหัวข้อ');
-    expect(result.matched).toBe(true);
-    expect(result.strategy).toBe('agentic-workflow');
-  });
-
-  test('matches Thai request to produce a TikTok clip content', () => {
-    const result = heuristicCreativePreFilter('อยากทำคลิปสยองขวัญ');
-    expect(result.matched).toBe(true);
-    expect(result.strategy).toBe('agentic-workflow');
-  });
-
-  test('matches English request to write a webtoon novel', () => {
-    const result = heuristicCreativePreFilter('help me write a webtoon novel');
-    expect(result.matched).toBe(true);
-    expect(result.strategy).toBe('agentic-workflow');
-    expect(result.matchedPattern).toBe('creative-en');
-  });
-
-  test('matches English request to draft a blog post', () => {
-    const result = heuristicCreativePreFilter('draft a blog post about rust performance');
-    expect(result.matched).toBe(true);
-    expect(result.strategy).toBe('agentic-workflow');
-  });
-
-  test('does NOT match a greeting', () => {
-    expect(heuristicCreativePreFilter('สวัสดี').matched).toBe(false);
-    expect(heuristicCreativePreFilter('hi there').matched).toBe(false);
-  });
-
-  test('does NOT match a question-about-a-topic (negation keywords)', () => {
-    expect(heuristicCreativePreFilter('นิยายคืออะไร').matched).toBe(false);
-    expect(heuristicCreativePreFilter('แค่อยากรู้ว่านิยายเว็บตูนต่างจากนิยายทั่วไปยังไง').matched).toBe(false);
-    expect(heuristicCreativePreFilter('what is a webtoon').matched).toBe(false);
-    expect(heuristicCreativePreFilter("what's a novel?").matched).toBe(false);
-    expect(heuristicCreativePreFilter('explain what a blog post is').matched).toBe(false);
-  });
-
-  test('does NOT match a code bug fix request', () => {
-    expect(heuristicCreativePreFilter('fix type error in src/foo.ts').matched).toBe(false);
-    expect(heuristicCreativePreFilter('แก้ bug ใน auth.ts').matched).toBe(false);
-  });
-
-  test('does NOT match very short input', () => {
-    expect(heuristicCreativePreFilter('hi').matched).toBe(false);
-    expect(heuristicCreativePreFilter('').matched).toBe(false);
-  });
-
-  test('hasCreativeCues detects loose creative verbs without needing object match', () => {
-    expect(hasCreativeCues('ช่วยเขียนต่อหน่อย')).toBe(true);
-    expect(hasCreativeCues('can you compose something for me')).toBe(true);
-    expect(hasCreativeCues('fix the bug in foo.ts')).toBe(false);
-    expect(hasCreativeCues('สวัสดี')).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveIntent — heuristic short-circuit path
-// ---------------------------------------------------------------------------
-
-describe('resolveIntent (heuristic pre-filter)', () => {
-  test('short-circuits to agentic-workflow without calling the LLM for webtoon novel request', async () => {
-    let providerCalls = 0;
-    const provider: LLMProvider = {
-      id: 'test-fast',
-      tier: 'fast',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        providerCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'conversational',
-            refinedGoal: 'fake',
-            reasoning: 'should not be used',
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 1, output: 1 },
-          model: 'test-fast',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    const result = await resolveIntent(
-      makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'),
-      makeDeps(provider),
-    );
-    expect(result.strategy).toBe('agentic-workflow');
-    expect(result.reasoningSource).toBe('heuristic');
-    expect(result.confidence).toBe(0.9);
-    expect(result.reasoning).toContain('heuristic-creative-th');
-    expect(providerCalls).toBe(0);
-  });
-
-  test('short-circuits without a provider registered (heuristic path is LLM-free)', async () => {
-    const emptyRegistry = makeRegistry();
-    const result = await resolveIntent(
-      makeInput('help me write a webtoon novel'),
-      { registry: emptyRegistry },
-    );
-    expect(result.strategy).toBe('agentic-workflow');
-    expect(result.reasoningSource).toBe('heuristic');
-  });
-
-  test('non-creative goal falls through to LLM and reasoningSource is "llm"', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'conversational',
-      refinedGoal: 'hello',
-      reasoning: 'Greeting.',
-      confidence: 0.95,
-    }));
-    const result = await resolveIntent(makeInput('hello'), makeDeps(provider));
-    expect(result.strategy).toBe('conversational');
-    expect(result.reasoningSource).toBe('llm');
-  });
-
-  test('question-about-topic is NOT short-circuited (lets LLM decide)', async () => {
-    let providerCalls = 0;
-    const provider: LLMProvider = {
-      id: 'test-fast',
-      tier: 'fast',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        providerCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'conversational',
-            refinedGoal: 'Explain what a webtoon is',
-            reasoning: 'Informational question.',
-            confidence: 0.9,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 50, output: 50 },
-          model: 'test-fast',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    const result = await resolveIntent(
-      makeInput('นิยายเว็บตูนคืออะไร'),
-      makeDeps(provider),
-    );
-    expect(result.strategy).toBe('conversational');
-    expect(result.reasoningSource).toBe('llm');
-    expect(providerCalls).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveIntent — user-context injection
-// ---------------------------------------------------------------------------
-
-describe('resolveIntent (user-context injection)', () => {
-  test('injects User context block into the LLM user prompt when a miner is provided', async () => {
-    let capturedUserPrompt = '';
-    const provider: LLMProvider = {
-      id: 'test-fast',
-      tier: 'fast',
-      async generate(req: LLMRequest): Promise<LLMResponse> {
-        capturedUserPrompt = req.userPrompt;
-        return {
-          content: JSON.stringify({
-            strategy: 'conversational',
-            refinedGoal: 'ack',
-            reasoning: 'generic',
-            confidence: 0.95,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 1, output: 1 },
-          model: 'test-fast',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    const { UserInterestMiner } = await import('../../src/orchestrator/user-context/user-interest-miner.ts');
-    const miner = new UserInterestMiner({
-      traceStore: {
-        findRecent: () => [
-          {
-            id: 't1',
-            taskId: 't1',
-            timestamp: Date.now() - 1000,
-            routingLevel: 1 as const,
-            approach: 'x',
-            oracleVerdicts: {},
-            modelUsed: 'mock',
-            tokensConsumed: 0,
-            durationMs: 0,
-            outcome: 'success' as const,
-            affectedFiles: [],
-            taskTypeSignature: 'write::novel::long',
-          },
-        ],
-      } as never,
-    });
-
-    await resolveIntent(
-      makeInput('ทักทายหน่อย', { sessionId: 's1' }),
-      {
-        registry: makeRegistry(provider),
-        userInterestMiner: miner,
-        sessionId: 's1',
-      },
-    );
-
-    expect(capturedUserPrompt).toContain('User context (learned from past activity)');
-    expect(capturedUserPrompt).toContain('write::novel::long');
-    expect(capturedUserPrompt).toContain('creative-writing');
-  });
-
-  test('omits User context block when miner is absent', async () => {
-    let capturedUserPrompt = '';
-    const provider: LLMProvider = {
-      id: 'test-fast',
-      tier: 'fast',
-      async generate(req: LLMRequest): Promise<LLMResponse> {
-        capturedUserPrompt = req.userPrompt;
-        return {
-          content: JSON.stringify({
-            strategy: 'conversational',
-            refinedGoal: 'ack',
-            reasoning: 'generic',
-            confidence: 0.95,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 1, output: 1 },
-          model: 'test-fast',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    await resolveIntent(makeInput('hello'), makeDeps(provider));
-    expect(capturedUserPrompt).not.toContain('User context');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveIntent — confidence escalation with creative cues
-// ---------------------------------------------------------------------------
-
-describe('resolveIntent (creative-cue escalation)', () => {
-  test('lowers escalation threshold to 0.65 for goals with creative cues', async () => {
-    // Ambiguous Thai goal: creative cue ("ช่วยเล่า") but no explicit deliverable noun,
-    // so the heuristic pre-filter does NOT match. We want the LLM escalation
-    // threshold to still catch a low-confidence conversational classification.
-    let fastCalls = 0;
-    let balancedCalls = 0;
-    const fastProvider: LLMProvider = {
-      id: 'test-fast',
-      tier: 'fast',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        fastCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'conversational',
-            refinedGoal: 'User wants a short story continuation',
-            reasoning: 'Could be conversational continuation.',
-            confidence: 0.7, // between 0.65 and 0.75 — only escalates with creative cue
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 50, output: 50 },
-          model: 'test-fast',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-    const balancedProvider: LLMProvider = {
-      id: 'test-balanced',
-      tier: 'balanced',
-      async generate(_req: LLMRequest): Promise<LLMResponse> {
-        balancedCalls++;
-        return {
-          content: JSON.stringify({
-            strategy: 'agentic-workflow',
-            refinedGoal: 'Continue the user\'s ongoing creative piece',
-            reasoning: 'Creative continuation needs planning.',
-            workflowPrompt: 'Step 1: review context...',
-            confidence: 0.85,
-          }),
-          toolCalls: [],
-          tokensUsed: { input: 50, output: 50 },
-          model: 'test-balanced',
-          stopReason: 'end_turn',
-        };
-      },
-    };
-
-    const registry = new LLMProviderRegistry();
-    registry.register(fastProvider);
-    registry.register(balancedProvider);
-
-    // Goal with creative cue but no deliverable object noun → heuristic does NOT match.
-    // fast tier returns conversational with 0.7 confidence → should escalate (creative threshold 0.65).
-    const result = await resolveIntent(
-      makeInput('ช่วยเรียบเรียงต่อจากที่คุยกันนะ เผื่อจะลงคอลัมน์ได้'),
-      { registry },
-    );
-
-    expect(result.strategy).toBe('agentic-workflow');
-    expect(result.reasoning).toContain('escalated from low-confidence conversational');
-    expect(fastCalls).toBe(1);
-    expect(balancedCalls).toBe(1);
   });
 });

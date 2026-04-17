@@ -230,6 +230,24 @@ export interface Orchestrator {
   agentProfileStore?: AgentProfileStore;
   /** Resolved AgentProfile snapshot from bootstrap (convenience). */
   agentProfile?: AgentProfile;
+  /** AgentContextStore — per-agent episodic memory and learned skills. */
+  agentContextStore?: AgentContextStore;
+  /** AgentRegistry — merged built-in + config agent specs. */
+  agentRegistry?: ReturnType<typeof loadAgentRegistry>;
+  /** MCP client pool — exposed read-only for dashboard inspection. */
+  mcpClientPool?: MCPClientPool;
+  /** Oracle accuracy store — per-oracle verdict outcomes for /oracles dashboard. */
+  oracleAccuracyStore?: OracleAccuracyStore;
+  /** Prediction ledger — recorded predictions + Brier scores for /calibration dashboard. */
+  predictionLedger?: PredictionLedger;
+  /** Provider trust store — per-(provider, capability) reliability for /providers dashboard. */
+  providerTrustStore?: ProviderTrustStore;
+  /** Federation budget pool — shared across instances for /federation dashboard. */
+  federationBudgetPool?: import('../economy/federation-budget-pool.ts').FederationBudgetPool;
+  /** Market scheduler — Vickrey auction + phase for /market dashboard. */
+  marketScheduler?: import('../economy/market/market-scheduler.ts').MarketScheduler;
+  /** Capability model — per-worker capability scores, for /engines deepen. */
+  capabilityModel?: import('./fleet/capability-model.ts').CapabilityModel;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   approvalGate?: ApprovalGateImpl;
@@ -373,6 +391,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         goalSatisfactionThreshold: number;
       }
     | undefined;
+  // Phase 2: realtime streaming (token-level `agent:text_delta`). Default OFF.
+  let streamingAssistantDelta = false;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -431,6 +451,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
     if (vinyanConfig.fleet) {
       fleetConfig = vinyanConfig.fleet;
+    }
+    if (vinyanConfig.streaming?.assistantDelta) {
+      streamingAssistantDelta = true;
     }
   } catch {
     /* config loading is best-effort */
@@ -496,6 +519,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   } catch {
     /* HMS wiring is best-effort */
+  }
+
+  // Workflow approval gating — Phase E. Default 'auto' (approve short goals,
+  // require approval for long-form). No-ops until a user wires the config.
+  let workflowConfig: import('./workflow/approval-gate.ts').WorkflowConfig | undefined;
+  try {
+    const vinyanConfig = loadConfig(workspace);
+    if (vinyanConfig.workflow) {
+      workflowConfig = vinyanConfig.workflow;
+    }
+  } catch {
+    /* workflow config is best-effort */
   }
 
   // Non-LLM Reasoning Engines — Z3 constraint solver, human-in-the-loop bridge
@@ -696,6 +731,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     useSubprocess: config.useSubprocess ?? true, // A1/A6: subprocess isolation by default
     proxySocketPath: llmProxy?.socketPath,
     bus,
+    streaming: streamingAssistantDelta,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore, bus);
@@ -929,12 +965,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // Forward Predictor (A7: prediction error as learning signal)
   let forwardPredictor: import('./forward-predictor-types.ts').ForwardPredictor | undefined;
+  let predictionLedger: PredictionLedger | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     const fpConfig = vinyanConfig.orchestrator?.forward_predictor;
     if (fpConfig?.enabled && db) {
       migratePredictionLedgerSchema(db.getDb());
-      const predictionLedger = new PredictionLedger(db.getDb());
+      predictionLedger = new PredictionLedger(db.getDb());
       forwardPredictor = new ForwardPredictorImpl({
         selfModel,
         ledger: predictionLedger,
@@ -1068,6 +1105,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // User-interest miner — aggregates traces (and session messages when
     // available) so the intent resolver can reason against real past activity.
     userInterestMiner,
+    // Workflow approval gating config — passed to workflow-executor so it
+    // can pause for user approval when configured.
+    workflowConfig,
     // Monitoring — Self-Improving Autonomy: per-engine EMA calibration +
     // silent-regression watchdog. Phase Learn updates both on every
     // trace; dashboards subscribe to `monitoring:*` events. Drift detection
@@ -1134,6 +1174,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentRegistry,
     // Phase 2: rule-first specialist router (skips LLM when rule-match fires)
     agentRouter,
+    // Phase 2: gate for token-level `agent:text_delta` emission in the
+    // conversational short-circuit path of the core loop.
+    streamingAssistantDelta,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -1491,6 +1534,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore,
     agentProfileStore,
     agentProfile,
+    agentContextStore,
+    agentRegistry,
+    mcpClientPool,
+    oracleAccuracyStore,
+    predictionLedger,
+    providerTrustStore,
+    federationBudgetPool,
+    marketScheduler,
+    capabilityModel,
     worldGraph,
     metricsCollector,
     approvalGate,

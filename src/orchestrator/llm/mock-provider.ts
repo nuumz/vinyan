@@ -3,7 +3,7 @@
  * Implements the LLMProvider interface without calling any external API.
  * Also provides createMockReasoningEngine for RE-agnostic testing.
  */
-import type { LLMProvider, LLMRequest, LLMResponse, ReasoningEngine, ToolCall } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ReasoningEngine, ToolCall } from '../types.ts';
 import { LLMReasoningEngine } from './llm-reasoning-engine.ts';
 
 export interface MockProviderOptions {
@@ -59,6 +59,23 @@ export function createScriptedMockProvider(
 }
 
 export function createMockProvider(options: MockProviderOptions = {}): LLMProvider {
+  const buildResponse = (): LLMResponse => {
+    const content =
+      options.responseContent ??
+      JSON.stringify({
+        proposedMutations: [],
+        proposedToolCalls: options.responseToolCalls ?? [],
+        uncertainties: [],
+      });
+    return {
+      content,
+      thinking: options.thinking,
+      toolCalls: options.responseToolCalls ?? [],
+      tokensUsed: { input: 100, output: 50 },
+      model: 'mock-model',
+      stopReason: options.stopReason ?? (options.responseToolCalls?.length ? 'tool_use' : 'end_turn'),
+    };
+  };
   return {
     id: options.id ?? 'mock/test',
     tier: options.tier ?? 'fast',
@@ -71,22 +88,20 @@ export function createMockProvider(options: MockProviderOptions = {}): LLMProvid
         throw new Error('Mock provider: simulated failure');
       }
 
-      const content =
-        options.responseContent ??
-        JSON.stringify({
-          proposedMutations: [],
-          proposedToolCalls: options.responseToolCalls ?? [],
-          uncertainties: [],
-        });
-
-      return {
-        content,
-        thinking: options.thinking,
-        toolCalls: options.responseToolCalls ?? [],
-        tokensUsed: { input: 100, output: 50 },
-        model: 'mock-model',
-        stopReason: options.stopReason ?? (options.responseToolCalls?.length ? 'tool_use' : 'end_turn'),
-      };
+      return buildResponse();
+    },
+    async generateStream(_request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      if (options.shouldFail) throw new Error('Mock provider: simulated failure');
+      const response = buildResponse();
+      // Chunk content into ~8-char pieces to simulate streaming.
+      const chunkSize = 8;
+      for (let i = 0; i < response.content.length; i += chunkSize) {
+        const text = response.content.slice(i, i + chunkSize);
+        onDelta({ text });
+        if (options.latencyMs !== undefined)
+          await new Promise((r) => setTimeout(r, Math.max(1, Math.floor(options.latencyMs! / 10))));
+      }
+      return response;
     },
   };
 }

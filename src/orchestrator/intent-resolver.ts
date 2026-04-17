@@ -15,7 +15,14 @@
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
-import type { AgentSpec, ConversationEntry, ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
+import type {
+  AgentSpec,
+  ConversationEntry,
+  ExecutionStrategy,
+  IntentResolution,
+  LLMProvider,
+  TaskInput,
+} from './types.ts';
 import {
   formatUserContextForPrompt,
   type UserInterestMiner,
@@ -64,17 +71,13 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
 1. CONVERSATIONAL test — Is this a SHORT, simple exchange?
    - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
-   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work") → "conversational"
+   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work", "นิยายเว็บตูนคืออะไร") → "conversational"
    - Meta-questions about system capabilities → "conversational"
-   - NEVER "conversational" if the user asks to CREATE, WRITE, BUILD, or GENERATE anything (stories, essays, summaries, reports, poems, websites, apps, systems, diagrams)
-   - NEVER "conversational" if the answer would require more than a short paragraph
-   - "แต่งนิยาย", "เขียนเรื่อง", "เขียนนิยาย", "ช่วยเขียนนิยาย", "อยากเขียนนิยาย", "อยากแต่ง", "write a story", "write a novel", "help me write", "compose", "draft", "author" → ALWAYS "agentic-workflow", NOT "conversational"
-   - "เขียนบทความ", "เขียนบท", "เขียนคอนเทนต์", "ทำคอนเทนต์", "ทำคลิป", "ทำเว็บตูน", "วาดเว็บตูน", "write an article/blog/essay/script/newsletter/deck/presentation/webtoon post" → ALWAYS "agentic-workflow"
-   - "ทำเว็บ", "ทำแอพ", "ทำระบบ", "สร้างเว็บ", "พัฒนาระบบ", "build a website/app", "develop X" → ALWAYS "agentic-workflow"
-   - "สรุป", "วิเคราะห์", "summarize", "analyze", "research" → ALWAYS "agentic-workflow"
-   - META-RULE: If the user is asking for a LONG-FORM DELIVERABLE ARTIFACT (novel, story, multi-chapter content, article, script, essay, deck, webtoon, blog post, newsletter, screenplay) — regardless of question phrasing — it is ALWAYS "agentic-workflow". Deliverable = something the user could copy/paste/publish. A 1–3 sentence answer is NOT a deliverable.
-   - CRITICAL: Question FORM does not mean conversational INTENT. "สามารถทำ X ได้ไหม", "ช่วยทำ X ได้ไหม", "can you build X?", "could you create X?" — when X is a concrete deliverable (web, app, feature, document, artifact), this is a REQUEST TO DO X → "agentic-workflow".
-   - CRITICAL: Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation. Use the "Recent conversation" context to recover what action was proposed.
+   - DELIVERABLE META-RULE: If the answer would be a copy/paste/publishable ARTIFACT (novel chapter, full article, script, deck, application, website, report, summary) — regardless of the verb the user chose or whether they phrased it as a question — it is ALWAYS "agentic-workflow". A 1–3 sentence answer is NOT a deliverable; anything longer likely is.
+   - Semantic test (not keyword match): ask yourself "would a complete, satisfying answer fit in one short paragraph?" If NO → "agentic-workflow".
+   - Question FORM ≠ conversational INTENT. "ช่วยทำ X ได้ไหม", "can you build X?" — when X is a concrete deliverable, treat as REQUEST TO DO X → "agentic-workflow".
+   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation.
+   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization, NOT authoring). Read the verb + object semantically, not keywords in isolation.
 
 2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
    - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
@@ -126,6 +129,40 @@ Available tools (use ONLY these exact names — do NOT invent tool names):
 - http_get: HTTP GET request. Parameters: { "url": "..." }
 
 IMPORTANT: For opening apps, running system commands, or any OS interaction, use shell_exec with the appropriate command.
+
+## Canonical Examples (study these — they cover cases that trip up naive keyword matching)
+
+1. GOAL: "อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง"
+   STRATEGY: agentic-workflow
+   WHY: Multi-chapter creative deliverable. The answer is a publishable artifact, not a chat reply.
+
+2. GOAL: "สวัสดีครับ"
+   STRATEGY: conversational
+   WHY: Greeting; 1-sentence friendly reply.
+
+3. GOAL: "นิยายเว็บตูนคืออะไร"
+   STRATEGY: conversational
+   WHY: Informational question — user wants a definition, not a novel. Mentioning "นิยาย" does NOT mean "write one".
+
+4. GOAL: "fix type error in src/foo.ts"
+   STRATEGY: full-pipeline
+   WHY: Code modification with an explicit file target.
+
+5. GOAL: "เปิดแอพ Gmail ให้หน่อย"
+   STRATEGY: direct-tool
+   WHY: Single fire-and-forget OS action; the side-effect IS the result.
+
+6. GOAL: "แปลนิยายเรื่องนี้เป็นอังกฤษ"
+   STRATEGY: agentic-workflow
+   WHY: Multi-chapter text transformation (translation). Output is long even though the user is not "authoring" from scratch.
+
+7. GOAL: "ทำให้เว็บตูนโหลดเร็วขึ้น"
+   STRATEGY: full-pipeline (with targetFiles) OR agentic-workflow (without)
+   WHY: Performance optimization in a codebase. "เว็บตูน" here names the PRODUCT being optimized, NOT a writing task. Verb+object semantics beats keyword matching.
+
+8. GOAL: "ช่วยคิดพล็อตนิยายหน่อย"
+   STRATEGY: agentic-workflow
+   WHY: Creative ideation — the user wants a structured plot outline. The verb is "คิด" not "เขียน", but the deliverable is still long-form.
 
 Respond ONLY with valid JSON, no markdown fences.`;
 
@@ -205,85 +242,93 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Heuristic pre-filter: catch long-form creative requests before the LLM call.
-// Runs BEFORE the LLM; saves tokens on unambiguous cases and prevents
-// fast-tier misclassification (e.g., "ช่วยเขียนนิยาย" → conversational).
-// Errs on the side of caution: only short-circuits when the match is explicit.
+// Structural features — deterministic metadata fed into the classifier prompt.
+// We do NOT pattern-match semantic intent here (that's the LLM's job). We only
+// compute signals that are unambiguous: length, end-punctuation, turn number.
+// The classifier uses these alongside the goal text itself.
 // ---------------------------------------------------------------------------
 
-const CREATIVE_TH_REGEX =
-  /(ช่วย|อยาก|อยากให้|ขอ|รบกวน|อยากได้)?\s*(เขียน|แต่ง|สร้าง|ทำ|ร่าง|ประพันธ์|วาด|ผลิต|เรียบเรียง)\s*(?:(?:เป็น|ให้|หน่อย|สัก|สักเรื่อง|สักตอน|ต่อ)\s*)?(นิยาย|เรื่องสั้น|เรื่องยาว|เว็บตูน|การ์ตูน|บทความ|คอนเทนต์|คลิป|โพสต์|บทพากย์|บทภาพยนตร์|สคริปต์|presentation|deck|slide|blog|essay|script|newsletter|ebook|จดหมายข่าว)/iu;
-
-const CREATIVE_EN_REGEX =
-  /(?:help me |i want to |i'd like to |i wanna |please |could you |can you |would you )?\b(write|compose|create|draft|author|build|design|craft|produce|generate)\b[^.?!]{0,60}\b(novel|story|webtoon|article|blog ?post|blog|essay|script|screenplay|deck|presentation|slide|slides|newsletter|post|book|chapter|ebook|content piece)\b/i;
-
-const NEGATION_TH_REGEX =
-  /(แค่อยากรู้|อยากรู้ว่า|อยากทราบ|สงสัยว่า|คืออะไร|แปลว่า(อะไร)?|หมายความว่า|ต่างกัน(อย่างไร|ยังไง)|ทำไม|ยกตัวอย่าง(อะไร|หน่อย)?(ได้ไหม)?)/iu;
-
-const NEGATION_EN_REGEX =
-  /\b(just curious|wondering|what is|what's|what does|define|explain what|difference between|why (do|does|should)|give an example of|example of)\b/i;
-
-/** Output of the pre-filter. When `matched`, callers may skip the LLM call. */
-export interface HeuristicIntentMatch {
-  matched: boolean;
-  strategy?: ExecutionStrategy;
-  matchedPattern?: string;
-  matchedSegment?: string;
+export interface StructuralFeatures {
+  /** Goal length in characters after trim. */
+  lengthChars: number;
+  /** True when the goal ends with a punctuation or particle that marks it as a question. */
+  endsWithQuestion: boolean;
+  /** Number of the current turn in the session (1-indexed). */
+  turnNumber: number;
 }
 
-/**
- * Detect long-form creative-deliverable requests via regex.
- * Short-circuits the LLM call when a match is unambiguous.
- * Returns `{ matched: false }` for everything else — the LLM still decides.
- */
-export function heuristicCreativePreFilter(goal: string): HeuristicIntentMatch {
+const THAI_QUESTION_PARTICLE_REGEX = /(ไหม|มั้ย|หรือเปล่า|หรอ|รึเปล่า|หรือไม่)[\s.?？]*$/u;
+
+export function computeStructuralFeatures(
+  goal: string,
+  history?: ConversationEntry[],
+): StructuralFeatures {
   const trimmed = goal.trim();
-  if (trimmed.length < 6) return { matched: false };
-
-  // If the utterance is framed as a question-about-a-topic (not a request),
-  // do not short-circuit — let the LLM decide.
-  if (NEGATION_TH_REGEX.test(trimmed) || NEGATION_EN_REGEX.test(trimmed)) {
-    return { matched: false };
-  }
-
-  const thMatch = trimmed.match(CREATIVE_TH_REGEX);
-  if (thMatch) {
-    return {
-      matched: true,
-      strategy: 'agentic-workflow',
-      matchedPattern: 'creative-th',
-      matchedSegment: thMatch[0],
-    };
-  }
-
-  const enMatch = trimmed.match(CREATIVE_EN_REGEX);
-  if (enMatch) {
-    return {
-      matched: true,
-      strategy: 'agentic-workflow',
-      matchedPattern: 'creative-en',
-      matchedSegment: enMatch[0],
-    };
-  }
-
-  return { matched: false };
+  // Accept ASCII '?' and full-width '？' (U+FF1F, common in Thai/CJK IME input)
+  // plus trailing Thai interrogative particles.
+  const endsWithQuestion =
+    trimmed.endsWith('?') ||
+    trimmed.endsWith('？') ||
+    THAI_QUESTION_PARTICLE_REGEX.test(trimmed);
+  return {
+    lengthChars: trimmed.length,
+    endsWithQuestion,
+    turnNumber: Math.floor((history?.length ?? 0) / 2) + 1,
+  };
 }
 
+function renderStructuralFeatures(f: StructuralFeatures): string {
+  return `Goal metadata (deterministic): length=${f.lengthChars} chars; ends with question marker: ${f.endsWithQuestion ? 'yes' : 'no'}; session turn: #${f.turnNumber}`;
+}
+
+// ---------------------------------------------------------------------------
+// Session cache — skip re-classifying identical goals within a short TTL.
+// Keyed by (sessionId, goal). Process-global; tests must call
+// clearIntentResolverCache() between cases to avoid cross-contamination.
+// ---------------------------------------------------------------------------
+
+const INTENT_CACHE_TTL_MS = 30_000;
 /**
- * Broader creative-cue detector used to lower the LLM escalation threshold.
- * Unlike `heuristicCreativePreFilter`, this does not short-circuit — it only
- * signals "probably creative" to the escalation logic.
+ * Pruning threshold — eviction of expired entries runs only when the cache
+ * reaches this size. Keeps the common (small-cache) path zero-overhead while
+ * preventing unbounded growth in long-running processes.
  */
-export function hasCreativeCues(goal: string): boolean {
-  const trimmed = goal.trim();
-  if (trimmed.length < 6) return false;
-  if (NEGATION_TH_REGEX.test(trimmed) || NEGATION_EN_REGEX.test(trimmed)) return false;
-  return (
-    CREATIVE_TH_REGEX.test(trimmed) ||
-    CREATIVE_EN_REGEX.test(trimmed) ||
-    /\b(write|compose|create|draft|author|build|design|craft)\b/i.test(trimmed) ||
-    /(เขียน|แต่ง|สร้าง|ร่าง|ประพันธ์|วาด|ผลิต|เรียบเรียง)/u.test(trimmed)
-  );
+const INTENT_CACHE_PRUNE_THRESHOLD = 64;
+/** Hard cap — when live entries exceed this after pruning, drop oldest first. */
+const INTENT_CACHE_MAX_SIZE = 256;
+const intentCache = new Map<string, { result: IntentResolution; expiresAt: number }>();
+
+function buildCacheKey(goal: string, sessionId?: string): string {
+  return `${sessionId ?? '__nosess__'}::${goal.trim().toLowerCase()}`;
+}
+
+/** Evict expired entries and enforce the hard size cap. */
+function pruneIntentCache(now: number): void {
+  if (intentCache.size < INTENT_CACHE_PRUNE_THRESHOLD) return;
+  for (const [key, entry] of intentCache) {
+    if (entry.expiresAt <= now) intentCache.delete(key);
+  }
+  // If every remaining entry is still live AND we blew past the hard cap,
+  // drop the oldest (insertion-ordered) until we're back under the limit.
+  if (intentCache.size > INTENT_CACHE_MAX_SIZE) {
+    const overflow = intentCache.size - INTENT_CACHE_MAX_SIZE;
+    let dropped = 0;
+    for (const key of intentCache.keys()) {
+      if (dropped >= overflow) break;
+      intentCache.delete(key);
+      dropped++;
+    }
+  }
+}
+
+/** Test-only: reset the module-level cache so each test starts clean. */
+export function clearIntentResolverCache(): void {
+  intentCache.clear();
+}
+
+/** Test-only: introspect cache size (for eviction assertions). */
+export function intentResolverCacheSize(): number {
+  return intentCache.size;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,61 +444,47 @@ export interface IntentResolverDeps {
   userInterestMiner?: UserInterestMiner;
   /** Session id for user-context mining (keyword extraction scoped to session). */
   sessionId?: string;
+  /** Test hook for deterministic clock (cache TTL). */
+  now?: () => number;
 }
 
 const INTENT_TIMEOUT_MS = 8000;
 
-export async function resolveIntent(
-  input: TaskInput,
-  deps: IntentResolverDeps,
-): Promise<IntentResolution> {
-  // 0. Heuristic pre-filter (A3 — deterministic, no LLM in governance path).
-  // Short-circuits unambiguous long-form creative requests so fast-tier LLM
-  // misclassification (e.g., "ช่วยเขียนนิยาย") can never surface as "conversational".
-  const heuristic = heuristicCreativePreFilter(input.goal);
-  if (heuristic.matched && heuristic.strategy) {
-    const { agentId, agentSelectionReason } = resolveSelectedAgent(
-      input,
-      deps.agents,
-      deps.defaultAgentId,
-      undefined,
-      'registry default (heuristic path)',
-    );
-    return {
-      strategy: heuristic.strategy,
-      refinedGoal: input.goal,
-      confidence: 0.9,
-      reasoning: `heuristic-${heuristic.matchedPattern}: matched "${heuristic.matchedSegment}" — long-form creative deliverable`,
-      reasoningSource: 'heuristic',
-      agentId,
-      agentSelectionReason,
-    };
+/**
+ * Provider-tier preference for intent resolution.
+ *
+ * Rationale (see plan `vinyan-agent-intent-replicated-kite.md`): intent calls
+ * run once per task, so the marginal cost of using the `balanced` tier is
+ * negligible compared to the accuracy win over `fast`/`tool-uses`. A regex
+ * pre-filter used to paper over `fast` misclassification — it was brittle
+ * and keyword-bound, so it was removed in favour of a stronger default tier
+ * plus canonical few-shot examples in the system prompt.
+ */
+const TIER_PREFERENCE = ['balanced', 'tool-uses', 'fast'] as const;
+
+function pickPrimaryProvider(registry: LLMProviderRegistry): LLMProvider | null {
+  for (const tier of TIER_PREFERENCE) {
+    const p = registry.selectByTier(tier);
+    if (p) return p;
   }
+  return null;
+}
 
-  const provider = deps.registry.selectByTier('tool-uses') ?? deps.registry.selectByTier('fast') ?? deps.registry.selectByTier('balanced');
-  if (!provider) {
-    throw new Error('No LLM provider available for intent resolution');
+function pickAlternateProvider(
+  registry: LLMProviderRegistry,
+  excludeId: string,
+): LLMProvider | null {
+  for (const tier of TIER_PREFERENCE) {
+    const p = registry.selectByTier(tier);
+    if (p && p.id !== excludeId) return p;
   }
+  return null;
+}
 
-  const toolList = deps.availableTools?.join(', ') ?? 'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
-
-  const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
-  const conversationBlock = formatConversationContext(deps.conversationHistory);
-  const userContextBlock = deps.userInterestMiner
-    ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
-    : '';
-
-  // Multi-agent: when CLI override is set, skip the catalog (resolver won't reclassify agent).
-  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
-  const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
-
-  const userPrompt = `User goal: "${input.goal}"
-Task type: ${input.taskType}
-Target files: ${input.targetFiles?.join(', ') || 'none'}
-Constraints: ${input.constraints?.join(', ') || 'none'}
-Current platform: ${process.platform}
-Available tools: ${toolList}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
-
+async function classifyOnce(
+  provider: LLMProvider,
+  userPrompt: string,
+): Promise<z.infer<typeof IntentResponseSchema>> {
   const response = await withTimeout(
     provider.generate({
       systemPrompt: INTENT_SYSTEM_PROMPT,
@@ -463,76 +494,70 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${userContextBlock}
     }),
     INTENT_TIMEOUT_MS,
   );
+  const parsed = parseIntentResponse(response.content.trim());
+  parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
+  return parsed;
+}
 
-  let content = response.content.trim();
+export async function resolveIntent(
+  input: TaskInput,
+  deps: IntentResolverDeps,
+): Promise<IntentResolution> {
+  const now = deps.now?.() ?? Date.now();
 
+  // 0. Cache — skip re-classifying identical (session, goal) pairs within TTL.
+  // Keeps latency + token cost predictable when a user repeats themselves
+  // ("ok", "ทำเลย") or the TUI re-invokes resolution on the same input.
+  const cacheKey = buildCacheKey(input.goal, deps.sessionId);
+  const cached = intentCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return { ...cached.result, reasoningSource: 'cache' };
+  }
+
+  // 1. Provider selection — balanced first for accuracy.
+  const primary = pickPrimaryProvider(deps.registry);
+  if (!primary) {
+    throw new Error('No LLM provider available for intent resolution');
+  }
+
+  // 2. Build user prompt. Structural features are deterministic metadata
+  // (length, end-of-sentence marker, turn number) — NOT pattern matching;
+  // they give the classifier useful signal without baking in keyword lists.
+  const toolList =
+    deps.availableTools?.join(', ') ??
+    'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
+
+  const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
+  const conversationBlock = formatConversationContext(deps.conversationHistory);
+  const userContextBlock = deps.userInterestMiner
+    ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
+    : '';
+  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
+  const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
+  const structuralBlock = `\n${renderStructuralFeatures(
+    computeStructuralFeatures(input.goal, deps.conversationHistory),
+  )}`;
+
+  const userPrompt = `User goal: "${input.goal}"
+Task type: ${input.taskType}
+Target files: ${input.targetFiles?.join(', ') || 'none'}
+Constraints: ${input.constraints?.join(', ') || 'none'}
+Current platform: ${process.platform}
+Available tools: ${toolList}${structuralBlock}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
+
+  // 3. Classify. One attempt at primary; on parse/semantic failure, one retry
+  // with any alternate tier. No confidence-based escalation — balanced is
+  // already our strongest default.
   let parsed: z.infer<typeof IntentResponseSchema>;
   try {
-    parsed = parseIntentResponse(content);
-    parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
+    parsed = await classifyOnce(primary, userPrompt);
   } catch (firstError) {
-    // Fast-tier model returned malformed or semantically invalid structured output.
-    // Retry once with balanced tier before giving up.
-    const balancedProvider = deps.registry.selectByTier('balanced');
-    if (balancedProvider && balancedProvider.id !== provider.id) {
-      const retryResponse = await withTimeout(
-        balancedProvider.generate({
-          systemPrompt: INTENT_SYSTEM_PROMPT,
-          userPrompt,
-          maxTokens: 500,
-          temperature: 0,
-        }),
-        INTENT_TIMEOUT_MS,
-      );
-      content = retryResponse.content.trim();
-      parsed = parseIntentResponse(content);
-      parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
-    } else {
-      throw firstError;
-    }
+    const alternate = pickAlternateProvider(deps.registry, primary.id);
+    if (!alternate) throw firstError;
+    parsed = await classifyOnce(alternate, userPrompt);
   }
 
-  // Trust-based escalation: when fast tier classifies a non-trivial goal as
-  // "conversational" with low confidence, retry with a stronger tier. This
-  // catches cases where fast models miss generative/follow-up intent (e.g.,
-  // "สามารถทำเว็บได้ไหม" — question form, action intent).
-  const isNonTrivial =
-    input.goal.trim().length > 30 ||
-    (deps.conversationHistory?.length ?? 0) > 0;
-  // Raise the escalation bar for goals with creative cues — fast models often
-  // under-classify these as conversational, so we want to escalate more eagerly
-  // (the heuristic pre-filter already catches the unambiguous cases; this
-  // targets the ambiguous middle ground, e.g. "ช่วยเรียบเรียงต่อ").
-  const escalationThreshold = hasCreativeCues(input.goal) ? 0.85 : 0.75;
-  const lowConfidenceConversational =
-    parsed.strategy === 'conversational' &&
-    (parsed.confidence ?? 0.8) < escalationThreshold &&
-    isNonTrivial;
-  if (lowConfidenceConversational) {
-    const balancedProvider = deps.registry.selectByTier('balanced');
-    if (balancedProvider && balancedProvider.id !== provider.id) {
-      try {
-        const retryResponse = await withTimeout(
-          balancedProvider.generate({
-            systemPrompt: INTENT_SYSTEM_PROMPT,
-            userPrompt: `${userPrompt}\n\nNote: A previous classifier returned "conversational" with low confidence. Re-examine carefully — does the goal actually request action, generation, or analysis (in which case use "agentic-workflow" or "full-pipeline")?`,
-            maxTokens: 500,
-            temperature: 0,
-          }),
-          INTENT_TIMEOUT_MS,
-        );
-        const retryParsed = parseIntentResponse(retryResponse.content.trim());
-        retryParsed.directToolCall = normalizeDirectToolCall(retryParsed.strategy, retryParsed.directToolCall);
-        if (retryParsed.strategy !== 'conversational') {
-          retryParsed.reasoning = `[escalated from low-confidence conversational] ${retryParsed.reasoning}`;
-        }
-        parsed = retryParsed;
-      } catch {
-        // Retry failed — keep original classification rather than fail
-      }
-    }
-  }
-
+  // 4. Resolve specialist agent + cache the result + return.
   const { agentId, agentSelectionReason } = resolveSelectedAgent(
     input,
     deps.agents,
@@ -540,7 +565,7 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${userContextBlock}
     { agentId: parsed.agentId, agentSelectionReason: parsed.agentSelectionReason },
   );
 
-  return {
+  const result: IntentResolution = {
     strategy: parsed.strategy,
     refinedGoal: parsed.refinedGoal,
     directToolCall: parsed.directToolCall,
@@ -551,4 +576,8 @@ Available tools: ${toolList}${agentsBlock}${preferencesBlock}${userContextBlock}
     agentId,
     agentSelectionReason,
   };
+
+  pruneIntentCache(now);
+  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  return result;
 }

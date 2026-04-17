@@ -156,3 +156,51 @@ describe('selectRoomContract — trigger rules', () => {
     expect(contract.tokenBudget).toBe(5_000 * ROOM_SELECTOR_CONSTANTS.ROOM_BUDGET_MULTIPLIER);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rule 6 — creative-writing bypass (Phase E)
+// ---------------------------------------------------------------------------
+
+describe('selectRoomContract — creative-writing bypass', () => {
+  it('returns the creative-writing preset when the goal matches and routing permits', () => {
+    const contract = selectRoomContract(
+      makeFanInDag(),
+      makeRouting(),
+      makeInput({ goal: 'อยากเขียนนิยายเว็บตูนแนวโรแมนซ์' }),
+    )!;
+    expect(contract).not.toBeNull();
+    const names = contract.roles.map((r) => r.name);
+    expect(names).toEqual(['writer', 'editor', 'trend-analyst']);
+    expect(contract.convergenceThreshold).toBeCloseTo(0.75, 2);
+    expect(contract.maxRounds).toBe(3);
+  });
+
+  it('still respects the routing level floor even for creative goals', () => {
+    expect(
+      selectRoomContract(
+        makeFanInDag(),
+        makeRouting({ level: 1 }),
+        makeInput({ goal: 'write a webtoon novel' }),
+      ),
+    ).toBeNull();
+  });
+
+  it('token budget scales with ROOM_BUDGET_MULTIPLIER in the creative path', () => {
+    const contract = selectRoomContract(
+      makeFanInDag(),
+      makeRouting({ budgetTokens: 10_000 }),
+      makeInput({ goal: 'write a webtoon novel' }),
+    )!;
+    expect(contract.tokenBudget).toBe(10_000 * ROOM_SELECTOR_CONSTANTS.ROOM_BUDGET_MULTIPLIER);
+  });
+
+  it('does NOT take the creative bypass for code goals that happen to mention "novel"', () => {
+    // "novel approach" is a common phrase — must not trigger creative preset.
+    const contract = selectRoomContract(
+      makeFanInDag(),
+      makeRouting(),
+      makeInput({ goal: 'Refactor the payment retry logic' }),
+    )!;
+    expect(contract.roles.map((r) => r.name)).not.toContain('writer');
+  });
+});

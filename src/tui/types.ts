@@ -204,6 +204,27 @@ export interface TUIState {
   chatActiveSessionId: string | null;
   chatConversation: ChatMessageEntry[];
   chatPendingClarifications: string[];
+  /**
+   * Phase D+E: structured clarification questions populated by the
+   * `agent:clarification_requested` bus event. When present, the chat view
+   * renders them as selectable option chips/checkboxes; otherwise the view
+   * falls back to the legacy string list in `chatPendingClarifications`.
+   */
+  chatStructuredClarifications: import('../core/clarification.ts').ClarificationQuestion[];
+  /**
+   * Phase E: workflow plan surfaced by `workflow:plan_ready`. Rendered as a
+   * TODO checklist under the conversation. `null` when no plan is active.
+   */
+  chatWorkflowPlan: {
+    taskId: string;
+    goal: string;
+    steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
+  } | null;
+  /**
+   * Per-step status driven by `workflow:step_start` / `workflow:step_complete`.
+   * Entries missing from the map are considered 'pending'.
+   */
+  chatWorkflowStepStatus: Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>;
   chatSessions: ChatSessionSummary[];
   chatScroll: number;
 

@@ -227,6 +227,12 @@ export class EmbeddedDataSource implements DataSource {
       ['agent:session_end', (p) => this.onAgentSessionEnd(p)],
       ['agent:turn_complete', (p) => this.onAgentTurnComplete(p)],
       ['agent:tool_executed', (p) => this.onAgentToolExecuted(p)],
+      // Phase D: structured clarifications (renders as selectable options).
+      ['agent:clarification_requested', (p) => this.onClarificationRequested(p)],
+      // Phase E: workflow plan + per-step progress (TODO checklist).
+      ['workflow:plan_ready', (p) => this.onWorkflowPlanReady(p)],
+      ['workflow:step_start', (p) => this.onWorkflowStepStart(p)],
+      ['workflow:step_complete', (p) => this.onWorkflowStepComplete(p)],
     ]);
 
     // Events with specific state handlers
@@ -602,6 +608,59 @@ export class EmbeddedDataSource implements DataSource {
     if (!session) return;
     session.currentTool = String(p.toolName ?? '');
     session.lastToolAt = Date.now();
+    this.state.dirty = true;
+  }
+
+  // ── Phase D: structured clarifications ──────────────────────────
+
+  private onClarificationRequested(p: Record<string, unknown>): void {
+    const structured = Array.isArray(p.structuredQuestions)
+      ? (p.structuredQuestions as import('../../core/clarification.ts').ClarificationQuestion[])
+      : [];
+    const stringQuestions = Array.isArray(p.questions) ? (p.questions as string[]) : [];
+    this.state.chatStructuredClarifications = structured;
+    // Keep the legacy list in sync so older chat views still get something.
+    if (stringQuestions.length > 0 || structured.length === 0) {
+      this.state.chatPendingClarifications = stringQuestions;
+    } else {
+      this.state.chatPendingClarifications = structured.map((q) => q.prompt);
+    }
+    this.state.dirty = true;
+  }
+
+  // ── Phase E: workflow plan + step progress ──────────────────────
+
+  private onWorkflowPlanReady(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    const goal = String(p.goal ?? '');
+    const rawSteps = Array.isArray(p.steps) ? p.steps : [];
+    const steps = rawSteps.map((s) => {
+      const step = s as Record<string, unknown>;
+      return {
+        id: String(step.id ?? ''),
+        description: String(step.description ?? ''),
+        strategy: String(step.strategy ?? ''),
+        dependencies: Array.isArray(step.dependencies) ? (step.dependencies as string[]) : [],
+      };
+    });
+    this.state.chatWorkflowPlan = { taskId, goal, steps };
+    // Reset per-step status — every step starts 'pending'.
+    this.state.chatWorkflowStepStatus = new Map(steps.map((s) => [s.id, 'pending'] as const));
+    this.state.dirty = true;
+  }
+
+  private onWorkflowStepStart(p: Record<string, unknown>): void {
+    const stepId = String(p.stepId ?? '');
+    if (!stepId) return;
+    this.state.chatWorkflowStepStatus.set(stepId, 'in-progress');
+    this.state.dirty = true;
+  }
+
+  private onWorkflowStepComplete(p: Record<string, unknown>): void {
+    const stepId = String(p.stepId ?? '');
+    if (!stepId) return;
+    const status = p.status === 'failed' ? 'failed' : 'completed';
+    this.state.chatWorkflowStepStatus.set(stepId, status);
     this.state.dirty = true;
   }
 

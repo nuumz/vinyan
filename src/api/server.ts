@@ -58,6 +58,30 @@ export interface APIServerDeps {
   skillStore?: import('../db/skill-store.ts').SkillStore;
   /** Pattern store for agent-profile summarize(). */
   patternStore?: import('../db/pattern-store.ts').PatternStore;
+  /** AgentContextStore — per-agent episodic memory for /agents/:id detail. */
+  agentContextStore?: import('../db/agent-context-store.ts').AgentContextStore;
+  /** AgentRegistry — merged built-in + config agent specs for /agents listing. */
+  agentRegistry?: import('../orchestrator/agents/registry.ts').AgentRegistry;
+  /** Workspace path — root of vinyan.json, .vinyan/, etc. Used by /doctor and /config. */
+  workspace?: string;
+  /** MCP client pool — exposed read-only via /mcp for dashboard inspection. */
+  mcpClientPool?: import('../mcp/client.ts').MCPClientPool;
+  /** Oracle accuracy store — per-oracle verdict outcomes for /oracles dashboard. */
+  oracleAccuracyStore?: import('../db/oracle-accuracy-store.ts').OracleAccuracyStore;
+  /** Sleep cycle runner — status + manual trigger for /sleep-cycle dashboard. */
+  sleepCycleRunner?: import('../sleep-cycle/sleep-cycle.ts').SleepCycleRunner;
+  /** Shadow store — read-only view of shadow validation queue. */
+  shadowStore?: import('../db/shadow-store.ts').ShadowStore;
+  /** Prediction ledger — Brier scores + outcomes for /calibration. */
+  predictionLedger?: import('../db/prediction-ledger.ts').PredictionLedger;
+  /** Provider trust store — per-(provider, capability) reliability for /providers. */
+  providerTrustStore?: import('../db/provider-trust-store.ts').ProviderTrustStore;
+  /** Federation budget pool — shared across instances for /federation. */
+  federationBudgetPool?: import('../economy/federation-budget-pool.ts').FederationBudgetPool;
+  /** Market scheduler — Vickrey auction + phase for /market. */
+  marketScheduler?: import('../economy/market/market-scheduler.ts').MarketScheduler;
+  /** Capability model — per-worker capability scores for /engines deepen. */
+  capabilityModel?: import('../orchestrator/fleet/capability-model.ts').CapabilityModel;
 }
 
 export class VinyanAPIServer {
@@ -278,6 +302,23 @@ export class VinyanAPIServer {
       return this.handleSessionStream(sessionId);
     }
 
+    // Phase D: user responds to a structured clarification request.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/clarification\/respond$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleClarificationResponse(sessionId, req);
+    }
+
+    // Phase E: user approves or rejects a workflow plan that is awaiting
+    // approval (`workflow:plan_ready` with `awaitingApproval: true`).
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/approve$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowApprove(sessionId, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/reject$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowReject(sessionId, req);
+    }
+
     // ── Read-only queries ─────────────────────────────────
     if (method === 'GET' && path === '/api/v1/agent-profile') {
       if (!this.deps.agentProfileStore) {
@@ -302,8 +343,110 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path === '/api/v1/rules') {
-      const rules = this.deps.ruleStore?.findByStatus('active') ?? [];
-      return jsonResponse({ rules });
+      return this.handleListRules(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/agents') {
+      return this.handleListAgents();
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/agents\/[^/]+$/)) {
+      const agentId = path.split('/').pop()!;
+      return this.handleGetAgent(agentId);
+    }
+
+    if (method === 'GET' && path === '/api/v1/skills') {
+      return this.handleListSkills(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/patterns') {
+      return this.handleListPatterns(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/doctor') {
+      return this.handleDoctor(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/config') {
+      return this.handleGetConfig();
+    }
+
+    if (method === 'POST' && path === '/api/v1/config/validate') {
+      return this.handleValidateConfig(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/mcp') {
+      return this.handleGetMCP();
+    }
+
+    if (method === 'GET' && path === '/api/v1/oracles') {
+      return this.handleListOracles();
+    }
+
+    if (method === 'GET' && path === '/api/v1/sleep-cycle') {
+      return this.handleSleepCycleStatus();
+    }
+
+    if (method === 'POST' && path === '/api/v1/sleep-cycle/trigger') {
+      return this.handleSleepCycleTrigger();
+    }
+
+    if (method === 'GET' && path === '/api/v1/shadow') {
+      return this.handleListShadow(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/traces') {
+      return this.handleListTraces(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/memory') {
+      return this.handleListMemory();
+    }
+
+    if (method === 'POST' && path === '/api/v1/memory/approve') {
+      return this.handleMemoryApprove(req);
+    }
+
+    if (method === 'POST' && path === '/api/v1/memory/reject') {
+      return this.handleMemoryReject(req);
+    }
+
+    if (method === 'GET' && path === '/api/v1/predictions/calibration') {
+      return this.handleCalibration();
+    }
+
+    if (method === 'GET' && path === '/api/v1/hms') {
+      return this.handleHMS();
+    }
+
+    if (method === 'GET' && path === '/api/v1/peers') {
+      return this.handleListPeers();
+    }
+
+    if (method === 'GET' && path === '/api/v1/providers') {
+      return this.handleListProviders();
+    }
+
+    if (method === 'GET' && path === '/api/v1/federation') {
+      return this.handleFederation();
+    }
+
+    if (method === 'GET' && path === '/api/v1/market') {
+      return this.handleMarket();
+    }
+
+    if (method === 'GET' && path === '/api/v1/economy/recent') {
+      return this.handleEconomyRecent(req);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/engines\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleGetEngine(id);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/clarifications$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionClarifications(sessionId);
     }
 
     if (method === 'GET' && path === '/api/v1/facts') {
@@ -660,6 +803,728 @@ export class VinyanAPIServer {
   private handleListApprovals(): Response {
     const ids = this.deps.approvalGate?.getPendingIds() ?? [];
     return jsonResponse({ pending: ids });
+  }
+
+  // ── Phase D: structured clarification response ────────────
+
+  private async handleClarificationResponse(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as {
+        taskId?: string;
+        responses?: Array<{
+          questionId?: string;
+          selectedOptionIds?: string[];
+          freeText?: string;
+        }>;
+      };
+      if (!body.taskId || !Array.isArray(body.responses)) {
+        return jsonResponse({ error: 'taskId and responses[] are required' }, 400);
+      }
+      const responses = body.responses.map((r) => ({
+        questionId: String(r.questionId ?? ''),
+        selectedOptionIds: Array.isArray(r.selectedOptionIds) ? r.selectedOptionIds.map(String) : [],
+        freeText: typeof r.freeText === 'string' ? r.freeText : undefined,
+      }));
+      this.deps.bus.emit('agent:clarification_response', {
+        taskId: body.taskId,
+        sessionId,
+        responses,
+      });
+      return jsonResponse({ taskId: body.taskId, sessionId, status: 'recorded' });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  // ── Phase E: workflow approval / rejection ────────────────
+
+  private async handleWorkflowApprove(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string };
+      if (!body.taskId) {
+        return jsonResponse({ error: 'taskId is required' }, 400);
+      }
+      this.deps.bus.emit('workflow:plan_approved', { taskId: body.taskId, sessionId });
+      return jsonResponse({ taskId: body.taskId, sessionId, status: 'approved' });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  private async handleWorkflowReject(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string; reason?: string };
+      if (!body.taskId) {
+        return jsonResponse({ error: 'taskId is required' }, 400);
+      }
+      this.deps.bus.emit('workflow:plan_rejected', {
+        taskId: body.taskId,
+        sessionId,
+        reason: typeof body.reason === 'string' ? body.reason : undefined,
+      });
+      return jsonResponse({ taskId: body.taskId, sessionId, status: 'rejected' });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  // ── Agent / Skill / Pattern Handlers (read-only) ────────
+
+  private handleListAgents(): Response {
+    const registry = this.deps.agentRegistry;
+    const profileStore = this.deps.agentProfileStore;
+    const contextStore = this.deps.agentContextStore;
+
+    if (!registry) {
+      return jsonResponse({ agents: [] });
+    }
+
+    const specs = registry.listAgents();
+    const defaultId = registry.defaultAgent().id;
+
+    const agents = specs.map((a) => {
+      const profile = profileStore?.get(a.id) ?? null;
+      const context = contextStore?.findById(a.id) ?? null;
+      return {
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        builtin: a.builtin ?? false,
+        isDefault: a.id === defaultId,
+        allowedTools: a.allowedTools ?? null,
+        routingHints: a.routingHints ?? null,
+        capabilityOverrides: a.capabilityOverrides ?? null,
+        role: profile?.role ?? null,
+        specialization: profile?.specialization ?? null,
+        persona: profile?.persona ?? context?.identity.persona ?? null,
+        episodeCount: context?.memory.episodes.length ?? 0,
+        proficiencyCount: context ? Object.keys(context.skills.proficiencies).length : 0,
+      };
+    });
+
+    return jsonResponse({ agents });
+  }
+
+  private handleGetAgent(id: string): Response {
+    const registry = this.deps.agentRegistry;
+    if (!registry) {
+      return jsonResponse({ error: 'agent registry not configured' }, 503);
+    }
+    const spec = registry.getAgent(id);
+    if (!spec) {
+      return jsonResponse({ error: `agent '${id}' not found` }, 404);
+    }
+    const profile = this.deps.agentProfileStore?.get(id) ?? null;
+    const context = this.deps.agentContextStore?.findById(id) ?? null;
+
+    return jsonResponse({
+      spec: {
+        id: spec.id,
+        name: spec.name,
+        description: spec.description,
+        builtin: spec.builtin ?? false,
+        isDefault: registry.defaultAgent().id === spec.id,
+        soul: spec.soul ?? null,
+        soulPath: spec.soulPath ?? null,
+        allowedTools: spec.allowedTools ?? null,
+        routingHints: spec.routingHints ?? null,
+        capabilityOverrides: spec.capabilityOverrides ?? null,
+      },
+      profile,
+      context,
+    });
+  }
+
+  private handleListSkills(req: Request): Response {
+    const store = this.deps.skillStore;
+    if (!store) return jsonResponse({ skills: [] });
+
+    const statusParam = new URL(req.url).searchParams.get('status');
+    const skills = statusParam
+      ? store.findByStatus(statusParam as 'active' | 'probation' | 'demoted')
+      : [
+          ...store.findByStatus('active'),
+          ...store.findByStatus('probation'),
+          ...store.findByStatus('demoted'),
+        ];
+
+    return jsonResponse({ skills });
+  }
+
+  private handleListPatterns(req: Request): Response {
+    const store = this.deps.patternStore;
+    if (!store) return jsonResponse({ patterns: [] });
+
+    const minDecay = parseFloat(new URL(req.url).searchParams.get('minDecay') ?? '0');
+    const patterns = store.findActive(minDecay);
+    return jsonResponse({ patterns });
+  }
+
+  // ── Rules / Oracles / Sleep Cycle Handlers ──────────────
+
+  private handleListRules(req: Request): Response {
+    const store = this.deps.ruleStore;
+    if (!store) return jsonResponse({ rules: [], counts: { active: 0, probation: 0, retired: 0 } });
+
+    const statusParam = new URL(req.url).searchParams.get('status') as
+      | 'active'
+      | 'probation'
+      | 'retired'
+      | null;
+
+    const rules = statusParam ? store.findByStatus(statusParam) : store.findByStatus('active');
+    const counts = {
+      active: store.countByStatus('active'),
+      probation: store.countByStatus('probation'),
+      retired: store.countByStatus('retired'),
+    };
+    return jsonResponse({ rules, counts });
+  }
+
+  private async handleListOracles(): Promise<Response> {
+    // Static registry — built-in oracles always known, even without runtime state.
+    const { listOracles, getOracleEntry } = await import('../oracle/registry.ts');
+    const { getOracleCircuitBreaker } = await import('../gate/gate.ts');
+    const names = listOracles();
+    const breakerStates = getOracleCircuitBreaker().getAllStates();
+    const accuracyStore = this.deps.oracleAccuracyStore;
+
+    // Pull config overrides from vinyan.json if workspace is available
+    let configOverrides: Record<string, unknown> = {};
+    if (this.deps.workspace) {
+      try {
+        const { loadConfig } = await import('../config/index.ts');
+        const cfg = loadConfig(this.deps.workspace);
+        configOverrides = (cfg.oracles ?? {}) as Record<string, unknown>;
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    // Also surface any names seen in traces but not in the static registry
+    const seenNames = new Set(names);
+    if (accuracyStore) {
+      for (const n of accuracyStore.listDistinctOracleNames()) {
+        seenNames.add(n);
+      }
+    }
+
+    const oracles = Array.from(seenNames).map((name) => {
+      const entry = getOracleEntry(name);
+      // Strip prefix "-oracle" when looking up config (ast-oracle → ast)
+      const configKey = name.replace(/-oracle$/, '');
+      const cfg = (configOverrides[configKey] ?? configOverrides[name] ?? {}) as {
+        enabled?: boolean;
+        tier?: string;
+        timeout_ms?: number;
+        timeout_behavior?: string;
+      };
+
+      const accuracy = accuracyStore ? accuracyStore.computeOracleAccuracy(name) : null;
+
+      return {
+        name,
+        builtin: entry != null,
+        tier: cfg.tier ?? entry?.tier ?? null,
+        timeoutMs: cfg.timeout_ms ?? entry?.timeoutMs ?? null,
+        timeoutBehavior: cfg.timeout_behavior ?? null,
+        enabled: cfg.enabled ?? true,
+        languages: entry?.languages ?? [],
+        transport: entry?.transport ?? 'stdio',
+        circuitState: breakerStates[name] ?? 'closed',
+        accuracy,
+      };
+    });
+
+    oracles.sort((a, b) => a.name.localeCompare(b.name));
+    return jsonResponse({ oracles });
+  }
+
+  private handleSleepCycleStatus(): Response {
+    const runner = this.deps.sleepCycleRunner;
+    const patternStore = this.deps.patternStore;
+
+    const interval = runner?.getInterval() ?? null;
+    const totalRuns = patternStore?.countCycleRuns() ?? 0;
+    const recentRuns = patternStore?.getRecentCycleTimestamps(10) ?? [];
+
+    return jsonResponse({
+      enabled: runner != null,
+      interval,
+      totalRuns,
+      recentRuns,
+      patternsExtracted: patternStore?.count() ?? 0,
+    });
+  }
+
+  private async handleSleepCycleTrigger(): Promise<Response> {
+    const runner = this.deps.sleepCycleRunner;
+    if (!runner) {
+      return jsonResponse({ error: 'sleep-cycle runner not configured' }, 503);
+    }
+    // Fire-and-forget: kick off run, return immediately.
+    // SSE event sleep:cycleComplete will notify the UI when it finishes.
+    runner.run().catch((err) => {
+      console.error('[vinyan-api] sleep-cycle trigger failed:', err);
+    });
+    return jsonResponse({ triggered: true, startedAt: Date.now() }, 202);
+  }
+
+  // ── Tier 3: Peers / Providers / Federation / Market / Engine / Sessions ───
+
+  private handleListPeers(): Response {
+    const a2a = this.deps.a2aManager as { peerTrustManager?: { getAllPeers(): unknown[] } } | undefined;
+    const trustManager = a2a?.peerTrustManager;
+    if (!trustManager) {
+      return jsonResponse({ enabled: false, peers: [] });
+    }
+    const peers = trustManager.getAllPeers();
+    return jsonResponse({ enabled: true, peers });
+  }
+
+  private handleListProviders(): Response {
+    const store = this.deps.providerTrustStore;
+    if (!store) return jsonResponse({ enabled: false, providers: [] });
+    const providers = store.getAllProviders();
+    return jsonResponse({ enabled: true, providers });
+  }
+
+  private handleFederation(): Response {
+    const pool = this.deps.federationBudgetPool;
+    if (!pool) {
+      return jsonResponse({
+        enabled: false,
+        pool: { total_contributed_usd: 0, total_consumed_usd: 0, remaining_usd: 0, exhausted: false },
+      });
+    }
+    return jsonResponse({ enabled: true, pool: pool.getStatus() });
+  }
+
+  private handleMarket(): Response {
+    const scheduler = this.deps.marketScheduler;
+    if (!scheduler) {
+      return jsonResponse({ enabled: false, active: false });
+    }
+    const phase = scheduler.getPhase();
+    const bidderStats = scheduler.getAccuracyTracker().getAllRecords();
+    return jsonResponse({
+      enabled: true,
+      active: scheduler.isActive(),
+      phase,
+      bidderStats,
+    });
+  }
+
+  private handleEconomyRecent(req: Request): Response {
+    const ledger = this.deps.costLedger as
+      | { queryByTimeRange?: (from: number, to: number) => unknown[] }
+      | undefined;
+    if (!ledger?.queryByTimeRange) return jsonResponse({ entries: [] });
+    const limit = Math.min(
+      parseInt(new URL(req.url).searchParams.get('limit') ?? '100', 10) || 100,
+      500,
+    );
+    const since = Date.now() - 7 * 24 * 3600 * 1000; // last 7 days
+    const all = ledger.queryByTimeRange(since, Date.now()) as Array<{ timestamp: number }>;
+    const sorted = [...all].sort((a, b) => b.timestamp - a.timestamp);
+    return jsonResponse({ entries: sorted.slice(0, limit), total: all.length });
+  }
+
+  private handleGetEngine(id: string): Response {
+    const worker = this.deps.workerStore?.findById(id);
+    if (!worker) return jsonResponse({ error: `engine '${id}' not found` }, 404);
+
+    const capModel = this.deps.capabilityModel;
+    const capabilities = capModel?.getWorkerCapabilities(id) ?? [];
+
+    const trustStore = this.deps.providerTrustStore;
+    const providerTrust =
+      trustStore && worker.config.modelId
+        ? trustStore.getProvider(worker.config.modelId.split('/')[0] ?? worker.config.modelId)
+        : null;
+
+    return jsonResponse({ worker, capabilities, providerTrust });
+  }
+
+  private handleSessionClarifications(sessionId: string): Response {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (!session) return jsonResponse({ error: 'session not found' }, 404);
+    const pending = (session as { pendingClarifications?: string[] }).pendingClarifications ?? [];
+    return jsonResponse({
+      sessionId,
+      pendingClarifications: pending,
+      status: session.status,
+    });
+  }
+
+  // ── Shadow / Trace / Memory / Calibration / HMS ────────
+
+  private handleListShadow(req: Request): Response {
+    const store = this.deps.shadowStore;
+    if (!store) {
+      return jsonResponse({
+        enabled: false,
+        jobs: [],
+        counts: { pending: 0, running: 0, done: 0, failed: 0 },
+      });
+    }
+    const statusParam = new URL(req.url).searchParams.get('status') as
+      | 'pending'
+      | 'running'
+      | 'done'
+      | 'failed'
+      | null;
+    const jobs = statusParam ? store.findByStatus(statusParam) : store.findPending();
+    const counts = {
+      pending: store.countByStatus('pending'),
+      running: store.countByStatus('running'),
+      done: store.countByStatus('done'),
+      failed: store.countByStatus('failed'),
+    };
+
+    // Redact mutations content (may be huge); expose file list + size only
+    const compact = jobs.map((j) => ({
+      id: j.id,
+      taskId: j.taskId,
+      status: j.status,
+      enqueuedAt: j.enqueuedAt,
+      startedAt: j.startedAt,
+      completedAt: j.completedAt,
+      retryCount: j.retryCount,
+      maxRetries: j.maxRetries,
+      result: j.result,
+      mutationCount: j.mutations?.length ?? 0,
+      mutationFiles: (j.mutations ?? []).map((m) => m.file),
+    }));
+
+    return jsonResponse({ enabled: true, jobs: compact, counts });
+  }
+
+  private handleListTraces(req: Request): Response {
+    const store = this.deps.traceStore;
+    if (!store) return jsonResponse({ traces: [], count: 0 });
+
+    const url = new URL(req.url);
+    const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 500);
+    const outcome = url.searchParams.get('outcome');
+    const taskType = url.searchParams.get('taskType');
+
+    let traces;
+    if (taskType) {
+      traces = store.findByTaskType(taskType, limit);
+    } else if (outcome) {
+      traces = store.findByOutcome(outcome, limit);
+    } else {
+      traces = store.findRecent(limit);
+    }
+
+    return jsonResponse({
+      traces,
+      count: traces.length,
+      total: store.count(),
+    });
+  }
+
+  private async handleListMemory(): Promise<Response> {
+    const workspace = this.deps.workspace;
+    if (!workspace) {
+      return jsonResponse({ error: 'workspace not configured' }, 503);
+    }
+    try {
+      const { listPendingProposals, parseProposalFile } = await import(
+        '../orchestrator/memory/memory-proposals.ts'
+      );
+      const pending = listPendingProposals(workspace);
+      const proposals = pending.map((p) => {
+        const parsed = parseProposalFile(p.content);
+        return {
+          filename: p.filename,
+          path: p.path,
+          slug: parsed?.slug ?? p.filename.replace(/\.md$/, ''),
+          category: parsed?.category ?? null,
+          confidence: parsed?.confidence ?? null,
+          description: parsed?.description ?? null,
+          content: p.content,
+        };
+      });
+      return jsonResponse({ proposals });
+    } catch (err) {
+      return jsonResponse(
+        {
+          error: 'Failed to list memory proposals',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        500,
+      );
+    }
+  }
+
+  private async handleMemoryApprove(req: Request): Promise<Response> {
+    const workspace = this.deps.workspace;
+    if (!workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    let body: { handle?: string; reviewer?: string };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+
+    if (!body.handle) return jsonResponse({ error: 'handle is required' }, 400);
+    if (!body.reviewer) {
+      return jsonResponse(
+        { error: 'reviewer is required (A1 compliance: audit trail must name a human)' },
+        400,
+      );
+    }
+
+    try {
+      const { approveProposal } = await import('../orchestrator/memory/memory-proposals.ts');
+      const result = approveProposal(workspace, body.handle, body.reviewer);
+      return jsonResponse({ approved: result.consumedPending, learnedPath: result.learnedPath });
+    } catch (err) {
+      return jsonResponse(
+        {
+          error: 'Approve failed',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        400,
+      );
+    }
+  }
+
+  private async handleMemoryReject(req: Request): Promise<Response> {
+    const workspace = this.deps.workspace;
+    if (!workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    let body: { handle?: string; reviewer?: string; reason?: string };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+
+    if (!body.handle) return jsonResponse({ error: 'handle is required' }, 400);
+    if (!body.reviewer) {
+      return jsonResponse({ error: 'reviewer is required (audit trail must name a human)' }, 400);
+    }
+    if (!body.reason) {
+      return jsonResponse({ error: 'reason is required (rejections must be explained)' }, 400);
+    }
+
+    try {
+      const { rejectProposal } = await import('../orchestrator/memory/memory-proposals.ts');
+      const result = rejectProposal(workspace, body.handle, body.reviewer, body.reason);
+      return jsonResponse({ rejected: result.consumedPending, rejectedPath: result.rejectedPath });
+    } catch (err) {
+      return jsonResponse(
+        {
+          error: 'Reject failed',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        400,
+      );
+    }
+  }
+
+  private handleCalibration(): Response {
+    const ledger = this.deps.predictionLedger;
+    if (!ledger) {
+      return jsonResponse({
+        enabled: false,
+        traceCount: 0,
+        recentBrierScores: [],
+        averageBrier: null,
+      });
+    }
+    const recentBrierScores = ledger.getRecentBrierScores(100);
+    const averageBrier =
+      recentBrierScores.length > 0
+        ? recentBrierScores.reduce((a, b) => a + b, 0) / recentBrierScores.length
+        : null;
+    return jsonResponse({
+      enabled: true,
+      traceCount: ledger.getTraceCount(),
+      recentBrierScores,
+      averageBrier,
+    });
+  }
+
+  private async handleHMS(): Promise<Response> {
+    // HMS is stateless — no store. Expose config + recent trace risk scores.
+    const workspace = this.deps.workspace;
+    let config: unknown = null;
+    if (workspace) {
+      try {
+        const { loadConfig } = await import('../config/index.ts');
+        const cfg = loadConfig(workspace);
+        config = cfg.hms ?? null;
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    const traceStore = this.deps.traceStore;
+    const recentTraces = traceStore?.findRecent(50) ?? [];
+    // Surface traces with non-null risk scores + outcome
+    const riskScored = recentTraces
+      .filter((t) => typeof (t as { riskScore?: number }).riskScore === 'number')
+      .map((t) => ({
+        id: t.id,
+        taskId: t.taskId,
+        timestamp: t.timestamp,
+        outcome: t.outcome,
+        riskScore: (t as { riskScore?: number }).riskScore ?? null,
+        approach: t.approach,
+      }));
+
+    const highRiskCount = riskScored.filter((t) => (t.riskScore ?? 0) >= 0.6).length;
+
+    return jsonResponse({
+      config,
+      recentTraces: riskScored,
+      summary: {
+        totalAnalyzed: riskScored.length,
+        highRiskCount,
+        avgRisk:
+          riskScored.length > 0
+            ? riskScored.reduce((acc, t) => acc + (t.riskScore ?? 0), 0) / riskScored.length
+            : null,
+      },
+    });
+  }
+
+  // ── Doctor / Config / MCP Handlers (read-only) ──────────
+
+  private async handleDoctor(req: Request): Promise<Response> {
+    const workspace = this.deps.workspace;
+    if (!workspace) {
+      return jsonResponse({ error: 'workspace not configured' }, 503);
+    }
+    const deep = new URL(req.url).searchParams.get('deep') === 'true';
+    const { runDoctorChecks, summarizeChecks } = await import('../cli/doctor.ts');
+    const checks = await runDoctorChecks(workspace, { deep });
+    const summary = summarizeChecks(checks);
+    return jsonResponse({
+      status: summary.status,
+      timestamp: Date.now(),
+      checks,
+      summary: { passed: summary.passed, total: summary.total },
+      deep,
+    });
+  }
+
+  private async handleGetConfig(): Promise<Response> {
+    const workspace = this.deps.workspace;
+    if (!workspace) {
+      return jsonResponse({ error: 'workspace not configured' }, 503);
+    }
+    try {
+      const { loadConfig } = await import('../config/index.ts');
+      const config = loadConfig(workspace);
+      return jsonResponse({ config });
+    } catch (err) {
+      return jsonResponse(
+        {
+          error: 'Failed to load config',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        500,
+      );
+    }
+  }
+
+  private async handleValidateConfig(req: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ valid: false, errors: [{ path: '', message: 'Request body is not valid JSON' }] }, 400);
+    }
+    const { VinyanConfigSchema } = await import('../config/schema.ts');
+    const result = VinyanConfigSchema.safeParse(body);
+    if (result.success) {
+      return jsonResponse({ valid: true });
+    }
+    return jsonResponse({
+      valid: false,
+      errors: result.error.issues.map((i) => ({
+        path: i.path.join('.'),
+        message: i.message,
+      })),
+    });
+  }
+
+  private async handleGetMCP(): Promise<Response> {
+    const pool = this.deps.mcpClientPool;
+    const workspace = this.deps.workspace;
+
+    // Configured servers (from vinyan.json) — redact command for safety
+    let configured: Array<{ name: string; trustLevel: string }> = [];
+    if (workspace) {
+      try {
+        const { loadConfig } = await import('../config/index.ts');
+        const config = loadConfig(workspace);
+        const servers = config.network?.mcp?.client_servers ?? [];
+        configured = servers.map((s) => ({
+          name: s.name,
+          trustLevel: s.trust_level,
+        }));
+      } catch {
+        /* best-effort — missing config shouldn't break /mcp */
+      }
+    }
+
+    if (!pool) {
+      return jsonResponse({
+        enabled: false,
+        configured,
+        servers: [],
+      });
+    }
+
+    const connected = new Set(pool.listServers());
+    let tools: Array<{ serverName: string; name: string; description?: string }> = [];
+    try {
+      const raw = await pool.listAllTools();
+      tools = raw.map((t) => ({
+        serverName: t.serverName,
+        name: t.tool.name,
+        description: t.tool.description,
+      }));
+    } catch {
+      /* best-effort */
+    }
+
+    const servers = configured.map((c) => ({
+      name: c.name,
+      trustLevel: c.trustLevel,
+      connected: connected.has(c.name),
+      toolCount: tools.filter((t) => t.serverName === c.name).length,
+    }));
+
+    // Include connected servers that aren't in config (edge case)
+    for (const name of connected) {
+      if (!servers.find((s) => s.name === name)) {
+        servers.push({
+          name,
+          trustLevel: 'unknown',
+          connected: true,
+          toolCount: tools.filter((t) => t.serverName === name).length,
+        });
+      }
+    }
+
+    return jsonResponse({ enabled: true, configured, servers, tools });
   }
 
   private handleSSE(taskId: string): Response {

@@ -86,6 +86,13 @@ export interface WorkerPoolConfig {
   agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
   /** Soul Store for loading SOUL.md at dispatch time (deep prompt injection). */
   soulStore?: import('../agent-context/soul-store.ts').SoulStore;
+  /**
+   * Phase 2 realtime streaming. When true, WorkerInput.stream is set for
+   * subprocess dispatch, workers emit `{type:"delta",...}` lines, and
+   * worker-pool forwards them as `agent:text_delta` bus events.
+   * Default false — the legacy non-streaming path is the opt-out baseline.
+   */
+  streaming?: boolean;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -332,6 +339,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  private streamingEnabled: boolean;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -340,6 +348,7 @@ export class WorkerPoolImpl implements WorkerPool {
     this.workspace = config.workspace;
     this.useSubprocess = config.useSubprocess ?? true;
     this.proxySocketPath = config.proxySocketPath;
+    this.streamingEnabled = config.streaming ?? false;
     if (!this.useSubprocess) {
       console.warn('[vinyan] WARNING: In-process worker mode is not A6-compliant. Use for testing only.');
     }
@@ -527,6 +536,7 @@ export class WorkerPoolImpl implements WorkerPool {
       understanding: resolvedUnderstanding,
       ...(instructions ? { instructions } : {}),
       environment,
+      ...(this.streamingEnabled ? { stream: true } : {}),
     };
   }
 
@@ -663,13 +673,57 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     const timeoutMs = routing.latencyBudgetMs;
-    const linePromise = worker.reader.readLine();
-    const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), timeoutMs));
+    const deadline = Date.now() + timeoutMs;
 
-    const line = await Promise.race([linePromise, timeoutPromise]);
+    // Streaming path may interleave `{type:"delta",...}` lines before the
+    // final WorkerOutput line. Loop until we see a line that matches the
+    // output schema, forwarding deltas to the bus as they arrive.
+    // Loop bound: one extra timeout guard per line — total budget still
+    // bounded by `timeoutMs` from submission.
+    let output: WorkerOutput | null = null;
+    let parseFailure = false;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const linePromise = worker.reader.readLine();
+      const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), Math.max(1, remaining)));
+      const line = await Promise.race([linePromise, timeoutPromise]);
+      if (line === null) break;
 
-    if (line === null) {
-      // Timeout or worker died — kill and replace
+      let raw: any;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        parseFailure = true;
+        continue;
+      }
+
+      if (raw?.type === 'delta' && typeof raw.text === 'string') {
+        this.bus?.emit('agent:text_delta', {
+          taskId: String(raw.taskId ?? workerInput.taskId),
+          text: raw.text,
+        });
+        continue;
+      }
+
+      const candidate = WorkerOutputSchema.safeParse(raw);
+      if (candidate.success) {
+        output = candidate.data;
+        break;
+      }
+      parseFailure = true;
+    }
+
+    if (!output) {
+      if (parseFailure) {
+        worker.consecutiveErrors++;
+        if (worker.consecutiveErrors >= WARM_WORKER_ERROR_THRESHOLD) {
+          this.warmPool!.kill(worker, 'parse_error');
+        } else {
+          this.warmPool!.release(worker);
+        }
+        return emptyOutput(workerInput.taskId);
+      }
+      // Timeout / worker died
       this.bus?.emit('warmpool:timeout', {
         taskId: workerInput.taskId,
         workerTaskCount: worker.taskCount,
@@ -679,22 +733,8 @@ export class WorkerPoolImpl implements WorkerPool {
       return emptyOutput(workerInput.taskId);
     }
 
-    try {
-      const raw = JSON.parse(line);
-      const output = WorkerOutputSchema.parse(raw);
-      // Success — release worker back to pool for reuse
-      this.warmPool!.release(worker);
-      return output;
-    } catch {
-      // Parse failure — track consecutive errors, kill after threshold
-      worker.consecutiveErrors++;
-      if (worker.consecutiveErrors >= WARM_WORKER_ERROR_THRESHOLD) {
-        this.warmPool!.kill(worker, 'parse_error');
-      } else {
-        this.warmPool!.release(worker);
-      }
-      return emptyOutput(workerInput.taskId);
-    }
+    this.warmPool!.release(worker);
+    return output;
   }
 
   private async dispatchColdSubprocess(workerInput: WorkerInput, routing: RoutingDecision): Promise<WorkerOutput> {
@@ -733,8 +773,26 @@ export class WorkerPoolImpl implements WorkerPool {
     }
 
     try {
-      const raw = JSON.parse(result.stdout.trim());
-      return WorkerOutputSchema.parse(raw);
+      // Streaming cold path: stdout may contain delta lines before the final
+      // WorkerOutput JSON. Split on newline and pick the last JSON object that
+      // matches WorkerOutputSchema; forward any `{type:"delta",...}` lines to bus.
+      const lines = result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      let output: WorkerOutput | null = null;
+      for (const line of lines) {
+        let raw: any;
+        try { raw = JSON.parse(line); } catch { continue; }
+        if (raw?.type === 'delta' && typeof raw.text === 'string') {
+          this.bus?.emit('agent:text_delta', {
+            taskId: String(raw.taskId ?? workerInput.taskId),
+            text: raw.text,
+          });
+          continue;
+        }
+        const candidate = WorkerOutputSchema.safeParse(raw);
+        if (candidate.success) output = candidate.data;
+      }
+      if (output) return output;
+      return emptyOutput(workerInput.taskId);
     } catch {
       return emptyOutput(workerInput.taskId);
     }

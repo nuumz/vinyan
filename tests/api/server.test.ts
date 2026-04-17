@@ -181,6 +181,230 @@ describe('API Server', () => {
     expect(data.rules).toBeArray();
   });
 
+  test('GET /agents returns array (empty when registry not configured)', async () => {
+    const res = await server.handleRequest(req('/api/v1/agents'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.agents).toBeArray();
+  });
+
+  test('GET /agents/:id returns 503 when registry not configured', async () => {
+    const res = await server.handleRequest(req('/api/v1/agents/any-id'));
+    expect(res.status).toBe(503);
+  });
+
+  test('GET /skills returns array', async () => {
+    const res = await server.handleRequest(req('/api/v1/skills'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.skills).toBeArray();
+  });
+
+  test('GET /patterns returns array', async () => {
+    const res = await server.handleRequest(req('/api/v1/patterns'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.patterns).toBeArray();
+  });
+
+  test('GET /doctor returns 503 without workspace', async () => {
+    const res = await server.handleRequest(req('/api/v1/doctor'));
+    expect(res.status).toBe(503);
+  });
+
+  test('GET /config returns 503 without workspace', async () => {
+    const res = await server.handleRequest(req('/api/v1/config'));
+    expect(res.status).toBe(503);
+  });
+
+  test('POST /config/validate accepts JSON body', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/config/validate', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(typeof data.valid).toBe('boolean');
+  });
+
+  test('POST /config/validate rejects invalid JSON', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/config/validate', {
+        method: 'POST',
+        headers: authHeaders,
+        body: 'not json{{',
+      }),
+    );
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as any;
+    expect(data.valid).toBe(false);
+    expect(data.errors).toBeArray();
+  });
+
+  test('POST /config/validate reports zod errors', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/config/validate', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ oracles: { ast: { tier: 'bogus-tier' } } }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.valid).toBe(false);
+    expect(data.errors.length).toBeGreaterThan(0);
+  });
+
+  test('GET /mcp returns disabled when pool not configured', async () => {
+    const res = await server.handleRequest(req('/api/v1/mcp'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.servers).toBeArray();
+  });
+
+  test('GET /rules returns counts object', async () => {
+    const res = await server.handleRequest(req('/api/v1/rules'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.rules).toBeArray();
+    expect(data.counts).toBeObject();
+  });
+
+  test('GET /rules?status=probation returns filtered array', async () => {
+    const res = await server.handleRequest(req('/api/v1/rules?status=probation'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.rules).toBeArray();
+  });
+
+  test('GET /oracles returns oracle list (builtin always present)', async () => {
+    const res = await server.handleRequest(req('/api/v1/oracles'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.oracles).toBeArray();
+    expect(data.oracles.length).toBeGreaterThan(0);
+    // Every built-in oracle should have a name and circuitState
+    for (const o of data.oracles) {
+      expect(typeof o.name).toBe('string');
+      expect(typeof o.circuitState).toBe('string');
+    }
+  });
+
+  test('GET /sleep-cycle returns status payload', async () => {
+    const res = await server.handleRequest(req('/api/v1/sleep-cycle'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(typeof data.enabled).toBe('boolean');
+    expect(data.recentRuns).toBeArray();
+  });
+
+  test('POST /sleep-cycle/trigger returns 503 when runner not configured', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/sleep-cycle/trigger', { method: 'POST', headers: authHeaders }),
+    );
+    expect(res.status).toBe(503);
+  });
+
+  test('GET /shadow returns disabled payload when store not configured', async () => {
+    const res = await server.handleRequest(req('/api/v1/shadow'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.jobs).toBeArray();
+  });
+
+  test('GET /traces returns empty array when no store', async () => {
+    const res = await server.handleRequest(req('/api/v1/traces'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.traces).toBeArray();
+  });
+
+  test('GET /memory returns 503 without workspace', async () => {
+    const res = await server.handleRequest(req('/api/v1/memory'));
+    expect(res.status).toBe(503);
+  });
+
+  test('POST /memory/approve rejects missing fields', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/memory/approve', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({}),
+      }),
+    );
+    // 503 because no workspace in test setup; we only check it doesn't crash
+    expect([400, 503]).toContain(res.status);
+  });
+
+  test('GET /predictions/calibration returns disabled payload', async () => {
+    const res = await server.handleRequest(req('/api/v1/predictions/calibration'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.recentBrierScores).toBeArray();
+  });
+
+  test('GET /hms returns summary with no store', async () => {
+    const res = await server.handleRequest(req('/api/v1/hms'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.recentTraces).toBeArray();
+    expect(data.summary).toBeObject();
+  });
+
+  test('GET /peers returns disabled when a2aManager absent', async () => {
+    const res = await server.handleRequest(req('/api/v1/peers'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.peers).toBeArray();
+  });
+
+  test('GET /providers returns disabled when store absent', async () => {
+    const res = await server.handleRequest(req('/api/v1/providers'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.providers).toBeArray();
+  });
+
+  test('GET /federation returns default pool when not configured', async () => {
+    const res = await server.handleRequest(req('/api/v1/federation'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+    expect(data.pool).toBeObject();
+  });
+
+  test('GET /market returns disabled when scheduler absent', async () => {
+    const res = await server.handleRequest(req('/api/v1/market'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.enabled).toBe(false);
+  });
+
+  test('GET /economy/recent returns entries array', async () => {
+    const res = await server.handleRequest(req('/api/v1/economy/recent'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.entries).toBeArray();
+  });
+
+  test('GET /engines/:id returns 404 without worker', async () => {
+    const res = await server.handleRequest(req('/api/v1/engines/nonexistent'));
+    expect(res.status).toBe(404);
+  });
+
+  test('GET /sessions/:id/clarifications returns 404 without session', async () => {
+    const res = await server.handleRequest(req('/api/v1/sessions/nonexistent/clarifications'));
+    expect(res.status).toBe(404);
+  });
+
   // ── 404 for unknown routes ──────────────────────────────
   test('unknown route returns 404', async () => {
     const res = await server.handleRequest(req('/api/v1/unknown', { headers: authHeaders }));

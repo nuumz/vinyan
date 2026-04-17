@@ -46,6 +46,11 @@ import { isMutatingTool } from './tool-classifier.ts';
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
 
+/** Read-only accessor for dashboards — never mutate the breaker state externally. */
+export function getOracleCircuitBreaker(): OracleCircuitBreaker {
+  return circuitBreaker;
+}
+
 /**
  * GateDeps — everything the gate module needs that is not a call argument.
  *

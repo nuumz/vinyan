@@ -14,6 +14,8 @@ import {
   CHAT_PANEL_COUNT,
   renderChat,
   renderMessageBlock,
+  renderStructuredClarifications,
+  renderWorkflowPlan,
   wrapText,
 } from '../../src/tui/views/chat.ts';
 import { createInitialState } from '../../src/tui/state.ts';
@@ -224,7 +226,180 @@ describe('chat state initialization', () => {
     expect(state.chatActiveSessionId).toBeNull();
     expect(state.chatConversation).toEqual([]);
     expect(state.chatPendingClarifications).toEqual([]);
+    expect(state.chatStructuredClarifications).toEqual([]);
+    expect(state.chatWorkflowPlan).toBeNull();
+    expect(state.chatWorkflowStepStatus.size).toBe(0);
     expect(state.chatSessions).toEqual([]);
     expect(state.chatScroll).toBe(0);
+  });
+});
+
+// ── Structured clarifications (Phase D) ─────────────────────────
+
+describe('renderStructuredClarifications', () => {
+  test('renders single-select options with numbered labels', () => {
+    const out = renderStructuredClarifications(
+      [
+        {
+          id: 'genre',
+          prompt: 'อยากได้แนวเรื่องแบบไหน?',
+          kind: 'single',
+          options: [
+            { id: 'a', label: 'โรแมนซ์' },
+            { id: 'b', label: 'แอ็กชัน' },
+          ],
+          allowFreeText: true,
+        },
+      ],
+      120,
+    ).join('\n');
+    expect(out).toContain('อยากได้แนวเรื่องแบบไหน');
+    expect(out).toContain('(1)');
+    expect(out).toContain('(2)');
+    expect(out).toContain('โรแมนซ์');
+  });
+
+  test('renders multi-select options with checkbox brackets + cap hint', () => {
+    const out = renderStructuredClarifications(
+      [
+        {
+          id: 'tone',
+          prompt: 'โทนเรื่อง?',
+          kind: 'multi',
+          options: [
+            { id: 'x', label: 'ดราม่า' },
+            { id: 'y', label: 'ตลก' },
+          ],
+          allowFreeText: true,
+          maxSelections: 2,
+        },
+      ],
+      120,
+    ).join('\n');
+    expect(out).toContain('[ ]');
+    expect(out).toContain('ดราม่า');
+    expect(out).toContain('เลือกได้สูงสุด 2');
+  });
+
+  test('free-text question renders a free-text hint only', () => {
+    const out = renderStructuredClarifications(
+      [
+        {
+          id: 'custom',
+          prompt: 'รายละเอียดเพิ่มเติม?',
+          kind: 'free',
+          allowFreeText: true,
+        },
+      ],
+      120,
+    ).join('\n');
+    expect(out).toContain('รายละเอียด');
+    expect(out).toContain('free text');
+    expect(out).not.toContain('(1)');
+    expect(out).not.toContain('[ ]');
+  });
+
+  test('numbers the question blocks when multiple are present (Q1, Q2)', () => {
+    const out = renderStructuredClarifications(
+      [
+        { id: 'a', prompt: 'first?', kind: 'free', allowFreeText: true },
+        { id: 'b', prompt: 'second?', kind: 'free', allowFreeText: true },
+      ],
+      120,
+    ).join('\n');
+    expect(out).toContain('Q1');
+    expect(out).toContain('Q2');
+  });
+
+  test('is surfaced by renderChat when chatStructuredClarifications is populated', () => {
+    const state = makeState({
+      chatActiveSessionId: 'session-abcdefgh',
+      chatConversation: [],
+      chatStructuredClarifications: [
+        {
+          id: 'audience',
+          prompt: 'กลุ่มผู้อ่าน?',
+          kind: 'single',
+          options: [
+            { id: 't', label: 'ทีน' },
+            { id: 'a', label: 'ผู้ใหญ่' },
+          ],
+          allowFreeText: true,
+        },
+      ],
+    });
+    const out = renderChat(state);
+    expect(out).toContain('Waiting for your input');
+    expect(out).toContain('กลุ่มผู้อ่าน');
+    expect(out).toContain('ทีน');
+  });
+
+  test('renderChat prefers structured questions over legacy strings', () => {
+    const state = makeState({
+      chatActiveSessionId: 'session-abcdefgh',
+      chatPendingClarifications: ['LEGACY QUESTION'],
+      chatStructuredClarifications: [
+        { id: 'q', prompt: 'STRUCTURED QUESTION', kind: 'free', allowFreeText: true },
+      ],
+    });
+    const out = renderChat(state);
+    expect(out).toContain('STRUCTURED QUESTION');
+    // Legacy banner not shown when structured is present.
+    expect(out).toContain('Waiting for your input');
+  });
+});
+
+// ── Workflow plan TODO checklist (Phase E) ─────────────────────
+
+describe('renderWorkflowPlan', () => {
+  const steps = [
+    { id: 's1', description: 'Research trends', strategy: 'llm-reasoning', dependencies: [] },
+    { id: 's2', description: 'Draft outline', strategy: 'llm-reasoning', dependencies: ['s1'] },
+    { id: 's3', description: 'Write chapter 1', strategy: 'full-pipeline', dependencies: ['s2'] },
+  ];
+
+  test('renders a header with X/N done counter', () => {
+    const status = new Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>([
+      ['s1', 'completed'],
+      ['s2', 'completed'],
+      ['s3', 'pending'],
+    ]);
+    const out = renderWorkflowPlan(steps, status, 120).join('\n');
+    expect(out).toContain('Workflow plan (2/3 done)');
+    expect(out).toContain('Research trends');
+    expect(out).toContain('[llm-reasoning]');
+  });
+
+  test('glyphs reflect per-step status (pending / in-progress / completed / failed)', () => {
+    const status = new Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>([
+      ['s1', 'completed'],
+      ['s2', 'in-progress'],
+      ['s3', 'failed'],
+    ]);
+    const out = renderWorkflowPlan(steps, status, 120).join('\n');
+    expect(out).toContain('✓');
+    expect(out).toContain('◉');
+    expect(out).toContain('✗');
+  });
+
+  test('missing entries default to pending (○)', () => {
+    const out = renderWorkflowPlan(steps, new Map(), 120).join('\n');
+    expect(out).toContain('○');
+    expect(out).toContain('0/3 done');
+  });
+
+  test('renderChat surfaces the plan below any clarification banner', () => {
+    const state = makeState({
+      chatActiveSessionId: 'session-abcdefgh',
+      chatWorkflowPlan: {
+        taskId: 'task-1',
+        goal: 'Write a webtoon novel',
+        steps,
+      },
+      chatWorkflowStepStatus: new Map([['s1', 'in-progress']]),
+    });
+    const out = renderChat(state);
+    expect(out).toContain('Workflow plan');
+    expect(out).toContain('Research trends');
   });
 });

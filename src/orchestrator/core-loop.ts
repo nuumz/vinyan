@@ -207,6 +207,8 @@ export interface OrchestratorDeps {
   userPreferenceStore?: import('../db/user-preference-store.ts').UserPreferenceStore;
   /** Mines user interests from traces + session messages. Enriches intent resolution. */
   userInterestMiner?: import('./user-context/user-interest-miner.ts').UserInterestMiner;
+  /** Workflow approval gating config (from vinyan.json `workflow`). */
+  workflowConfig?: import('./workflow/approval-gate.ts').WorkflowConfig;
   // Monitoring — Self-Improving Autonomy.
   /** Per-engine EMA accuracy calibrator. Optional; phase-learn updates it on every trace. */
   oracleEMACalibrator?: import('./monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
@@ -259,6 +261,12 @@ export interface OrchestratorDeps {
    * the intent resolver's agent-selection step is skipped (deterministic, A3).
    */
   agentRouter?: import('./agent-router.ts').AgentRouter;
+  /**
+   * Phase 2: when true, the conversational short-circuit path uses
+   * `provider.generateStream` (if available) and emits `agent:text_delta`
+   * bus events as tokens arrive. Purely observational (A3). Default false.
+   */
+  streamingAssistantDelta?: boolean;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -718,7 +726,7 @@ async function buildConversationalResult(
           }
         } catch { /* non-fatal */ }
       }
-      const response = await provider.generate({
+      const llmReq = {
         systemPrompt: `You are Vinyan, a friendly and capable assistant. Respond naturally. Match the user's language.
 You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
 When in a multi-turn conversation, maintain context from previous messages.
@@ -729,7 +737,13 @@ Do NOT narrate your reasoning process — just respond directly to the user.`,
         maxTokens: 2000,
         temperature: 0.3,
         messages,
-      });
+      };
+      const response =
+        deps.streamingAssistantDelta && provider.generateStream
+          ? await provider.generateStream(llmReq, ({ text }) => {
+              if (text) deps.bus?.emit('agent:text_delta', { taskId: input.id, text });
+            })
+          : await provider.generate(llmReq);
       answer = response.content;
     } catch {
       answer = intent.refinedGoal;
@@ -1134,6 +1148,14 @@ async function executeTaskCore(
         // Fall through to pipeline if direct tool execution failed
       }
       if (intentResolution.strategy === 'agentic-workflow') {
+        // Phase D+E gate: fresh long-form creative tasks surface structured
+        // clarification questions (genre/audience/tone/length/platform) before
+        // dispatching the workflow. Skipped once the session has any prior
+        // turns — history = implicit consent to proceed.
+        const { maybeEmitCreativeClarificationGate } = await import('./creative-clarification-gate.ts');
+        const creativeClarify = await maybeEmitCreativeClarificationGate(input, prep.routing, deps);
+        if (creativeClarify) return creativeClarify;
+
         // Workflow Planner + Executor: LLM-powered multi-step workflow that
         // selects per-step strategy and synthesizes a final result. Falls back
         // to legacy goal-rewrite when planner unavailable or on any error.
@@ -1148,6 +1170,7 @@ async function executeTaskCore(
             workspace: deps.workspace,
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
             intentWorkflowPrompt: intentResolution.workflowPrompt,
+            workflowConfig: deps.workflowConfig,
           });
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,
@@ -1309,10 +1332,12 @@ async function executeTaskCore(
         }
 
         // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
+        // Phase 3: skill lookup is scoped by specialist agent. A ts-coder task
+        // sees ts-coder's skills (+ legacy shared), never writer's private skills.
         if (deps.skillManager && routing.level <= 1) {
           const fp = (input.targetFiles ?? []).sort().join(',') || '*';
           const taskSig = `${input.goal.slice(0, 50)}::${fp}`;
-          const skill = deps.skillManager.match(taskSig);
+          const skill = deps.skillManager.match(taskSig, input.agentId);
           if (skill) {
             const check = deps.skillManager.verify(skill);
             if (check.valid) {

@@ -124,7 +124,7 @@ export type ToolRequirement = 'none' | 'tool-needed';
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
 /** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
-export type IntentReasoningSource = 'llm' | 'heuristic' | 'fallback';
+export type IntentReasoningSource = 'llm' | 'fallback' | 'cache';
 
 /** Result of LLM-powered intent resolution. */
 export interface IntentResolution {
@@ -1088,6 +1088,9 @@ export interface ToolResult {
 // LLM Generator Engine (→ TDD §17)
 // ---------------------------------------------------------------------------
 
+/** Delta-callback for token-level text streaming (Phase 2 realtime chat). */
+export type OnTextDelta = (delta: { text: string }) => void;
+
 /** LLM provider abstraction */
 export interface LLMProvider {
   id: string;
@@ -1096,6 +1099,12 @@ export interface LLMProvider {
   maxContextTokens?: number; // Provider's context window size
   supportsToolUse?: boolean; // Whether provider supports tool_use stop reason
   generate(request: LLMRequest): Promise<LLMResponse>;
+  /**
+   * Optional: token-level streaming. Calls `onDelta` as text chunks arrive.
+   * Must still resolve to a complete LLMResponse identical to generate().
+   * Callers that want a non-streaming path should fall back to generate().
+   */
+  generateStream?(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse>;
 }
 
 /** Request to an LLM provider */

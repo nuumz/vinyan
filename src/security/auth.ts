@@ -122,7 +122,17 @@ export function requiresAuth(method: string, path: string): boolean {
     method === 'GET' &&
     (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules' ||
      path === '/api/v1/economy' || path === '/api/v1/events' || path === '/api/v1/sessions' ||
-     path === '/api/v1/tasks')
+     path === '/api/v1/tasks' || path === '/api/v1/agents' || path.startsWith('/api/v1/agents/') ||
+     path === '/api/v1/skills' || path === '/api/v1/patterns' ||
+     path === '/api/v1/doctor' || path === '/api/v1/config' || path === '/api/v1/mcp' ||
+     path === '/api/v1/oracles' || path === '/api/v1/sleep-cycle' ||
+     path === '/api/v1/shadow' || path === '/api/v1/traces' ||
+     path === '/api/v1/memory' || path === '/api/v1/predictions/calibration' ||
+     path === '/api/v1/hms' || path === '/api/v1/peers' ||
+     path === '/api/v1/providers' || path === '/api/v1/federation' ||
+     path === '/api/v1/market' || path === '/api/v1/economy/recent' ||
+     path.match(/^\/api\/v1\/engines\/[^/]+$/) ||
+     path.match(/^\/api\/v1\/sessions\/[^/]+\/clarifications$/))
   )
     return false;
 

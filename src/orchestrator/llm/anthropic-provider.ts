@@ -7,7 +7,7 @@
  * Source of truth: spec/tdd.md §17.1
  */
 import { PromptTooLargeError } from '../types.ts';
-import type { CacheControl, LLMProvider, LLMRequest, LLMResponse, ThinkingConfig, ToolCall } from '../types.ts';
+import type { CacheControl, LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
@@ -183,6 +183,79 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           },
         },
       );
+    },
+
+    async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const tools = request.tools?.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters as { type: 'object'; properties: Record<string, unknown> },
+      }));
+      const messages = request.messages?.length
+        ? (normalizeMessages(request.messages, 'anthropic') as AnthropicMessage[])
+        : buildUserMessages(request);
+      const thinkingEnabled = isThinkingEnabled(request.thinking);
+      const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
+        {
+          type: 'text' as const,
+          text: request.systemPrompt,
+          ...(shouldCache(request.cacheControl) ? { cache_control: { type: 'ephemeral' as const } } : {}),
+        },
+      ];
+
+      try {
+        const stream = await client.messages.stream({
+          model,
+          max_tokens: request.maxTokens,
+          system: systemBlocks,
+          messages,
+          ...(tools?.length ? { tools } : {}),
+          ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...buildThinkingParams(request.thinking),
+        });
+
+        stream.on('text', (textDelta: string) => {
+          if (textDelta) onDelta({ text: textDelta });
+        });
+
+        const final = await stream.finalMessage();
+        const toolCalls: ToolCall[] = [];
+        let textContent = '';
+        let thinking: string | undefined;
+        for (const block of final.content) {
+          if (block.type === 'text') textContent += block.text;
+          else if (block.type === 'tool_use') {
+            toolCalls.push({
+              id: block.id,
+              tool: block.name,
+              parameters: block.input as Record<string, unknown>,
+            });
+          } else if ((block as any).type === 'thinking') {
+            thinking = thinking ? `${thinking}\n---\n${(block as any).thinking}` : (block as any).thinking;
+          }
+        }
+        return {
+          content: textContent,
+          thinking,
+          toolCalls,
+          tokensUsed: {
+            input: final.usage.input_tokens,
+            output: final.usage.output_tokens,
+            cacheRead: (final.usage as any).cache_read_input_tokens,
+            cacheCreation: (final.usage as any).cache_creation_input_tokens,
+          },
+          model: final.model,
+          stopReason:
+            final.stop_reason === 'tool_use'
+              ? 'tool_use'
+              : final.stop_reason === 'max_tokens'
+                ? 'max_tokens'
+                : 'end_turn',
+        };
+      } catch (err) {
+        // Fall back to non-streaming on any streaming error — preserves availability.
+        return this.generate(request);
+      }
     },
   };
 }

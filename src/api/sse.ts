@@ -45,7 +45,9 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:session_start',
   'agent:session_end',
   'agent:turn_complete',
+  'agent:tool_started',
   'agent:tool_executed',
+  'agent:text_delta',
   'agent:clarification_requested',
 ];
 
@@ -248,7 +250,9 @@ export function createSessionSSEStream(
         'agent:session_start',
         'agent:session_end',
         'agent:turn_complete',
+        'agent:tool_started',
         'agent:tool_executed',
+        'agent:text_delta',
         'agent:clarification_requested',
       ];
 

@@ -258,6 +258,12 @@ export const WorkerInputSchema = z.object({
   instructions: InstructionMemorySchema.optional(),
   /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
   environment: EnvironmentInfoSchema.optional(),
+  /**
+   * Phase 2 streaming: when true, the worker MUST use provider.generateStream
+   * (if available) and emit `{type:"delta", taskId, text}` JSON lines on
+   * stdout BEFORE the final WorkerOutput line. Gated by config.streaming.
+   */
+  stream: z.boolean().optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────
@@ -276,6 +282,17 @@ export const WorkerOutputSchema = z.object({
   tokensConsumed: z.number(),
   durationMs: z.number(),
   proposedContent: z.string().optional(),
+});
+
+/**
+ * Streaming delta line emitted on worker stdout BEFORE the final WorkerOutput.
+ * Worker-pool consumers MUST distinguish delta lines (`type:"delta"`) from
+ * the final output (no `type` field — shaped per WorkerOutputSchema).
+ */
+export const WorkerDeltaLineSchema = z.object({
+  type: z.literal('delta'),
+  taskId: z.string(),
+  text: z.string(),
 });
 
 // ── TaskInput (CLI/API entry point) ──────────────────────────────────

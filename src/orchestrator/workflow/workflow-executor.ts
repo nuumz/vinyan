@@ -11,6 +11,12 @@ import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
+import {
+  approvalTimeoutMs,
+  awaitApprovalDecision,
+  requiresApproval,
+  type WorkflowConfig,
+} from './approval-gate.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
 import {
   buildResearchStep,
@@ -40,6 +46,8 @@ export interface WorkflowExecutorDeps {
   workspace?: string;
   executeTask?: (subInput: TaskInput) => Promise<TaskResult>;
   intentWorkflowPrompt?: string;
+  /** Workflow config from vinyan.json — controls approval gating behaviour. */
+  workflowConfig?: WorkflowConfig;
 }
 
 export async function executeWorkflow(
@@ -81,20 +89,55 @@ export async function executeWorkflow(
   }
 
   // Phase E: emit the final plan so UIs can render a TODO checklist before
-  // execution starts. Approval gating is advisory-only at this stage — the
-  // executor continues immediately; gating is enforced at dispatch time by
-  // the core loop when `workflow.requireUserApproval` is configured.
-  deps.bus?.emit('workflow:plan_ready', {
-    taskId: input.id,
-    goal: plan.goal,
-    steps: plan.steps.map((s) => ({
-      id: s.id,
-      description: s.description,
-      strategy: s.strategy,
-      dependencies: [...s.dependencies],
-    })),
-    awaitingApproval: false,
-  });
+  // execution starts. When `workflow.requireUserApproval` is active, the
+  // executor pauses here until the user approves (via bus event). On timeout
+  // or rejection, the workflow returns a failed result and no steps execute.
+  const stepsForEvent = plan.steps.map((s) => ({
+    id: s.id,
+    description: s.description,
+    strategy: s.strategy,
+    dependencies: [...s.dependencies],
+  }));
+  const needsApproval = deps.bus != null && requiresApproval(deps.workflowConfig, input.goal);
+  if (needsApproval && deps.bus) {
+    const bus = deps.bus;
+    const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+    // Subscribe BEFORE emitting plan_ready so we never miss an approval event
+    // that races the emit (HTTP client may POST approve very quickly).
+    const decisionPromise = awaitApprovalDecision(bus, input.id, timeoutMs);
+    bus.emit('workflow:plan_ready', {
+      taskId: input.id,
+      goal: plan.goal,
+      steps: stepsForEvent,
+      awaitingApproval: true,
+    });
+    const decision = await decisionPromise;
+    if (decision !== 'approved') {
+      const reason = decision === 'timeout'
+        ? `Approval timed out after ${timeoutMs}ms`
+        : 'User rejected workflow plan';
+      bus.emit('workflow:complete', {
+        goal: plan.goal,
+        status: 'failed',
+        stepsCompleted: 0,
+        totalSteps: plan.steps.length,
+      });
+      return {
+        status: 'failed',
+        stepResults: [],
+        synthesizedOutput: reason,
+        totalTokensConsumed: 0,
+        totalDurationMs: performance.now() - startTime,
+      };
+    }
+  } else {
+    deps.bus?.emit('workflow:plan_ready', {
+      taskId: input.id,
+      goal: plan.goal,
+      steps: stepsForEvent,
+      awaitingApproval: false,
+    });
+  }
 
   const stepResults = new Map<string, WorkflowStepResult>();
   const completed = new Set<string>();

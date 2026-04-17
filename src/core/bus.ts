@@ -404,7 +404,33 @@ export interface VinyanBusEvents {
   'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
 
   // Intent Resolution (pre-pipeline LLM classification)
-  'intent:resolved': { taskId: string; strategy: string; confidence: number; reasoning: string };
+  'intent:resolved': {
+    taskId: string;
+    strategy: string;
+    confidence: number;
+    reasoning: string;
+    /** Epistemic state: `known` | `uncertain` | `contradictory`. */
+    type?: string;
+    /** Origin of the decision: `deterministic`, `llm`, `merged`, `cache`, `fallback`. */
+    source?: string;
+  };
+  /** Deterministic rule and LLM disagreed — A5 tier order selected the winning strategy. */
+  'intent:contradiction': {
+    taskId: string;
+    ruleStrategy: string;
+    llmStrategy: string;
+    ruleConfidence: number;
+    llmConfidence: number;
+    winner: string;
+  };
+  /** Low-confidence or ambiguous resolution — user clarification requested. */
+  'intent:uncertain': {
+    taskId: string;
+    reason: string;
+    clarificationRequest: string;
+  };
+  /** Cache hit — re-used a prior resolution without re-classifying. */
+  'intent:cache_hit': { taskId: string; cacheKey: string };
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };

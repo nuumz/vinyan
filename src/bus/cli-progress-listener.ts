@@ -35,8 +35,29 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   const detachers: Array<() => void> = [];
 
   detachers.push(
-    bus.on('intent:resolved', ({ strategy, confidence, reasoning }) => {
-      write(`${dim('[vinyan]')} Intent: ${bold(strategy)} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+    bus.on('intent:resolved', ({ strategy, confidence, reasoning, type, source }) => {
+      const typeTag = type && type !== 'known' ? ` ${yellow(`[${type}]`)}` : '';
+      const srcTag = source ? ` ${dim(`<${source}>`)}` : '';
+      write(`${dim('[vinyan]')} Intent: ${bold(strategy)}${typeTag}${srcTag} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:contradiction', ({ ruleStrategy, llmStrategy, winner }) => {
+      write(`${dim('[vinyan]')} ${yellow('Intent conflict')}: rule=${ruleStrategy} vs llm=${llmStrategy}, A5 winner=${bold(winner)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:uncertain', ({ reason, clarificationRequest }) => {
+      write(`${dim('[vinyan]')} ${yellow('Intent uncertain')}: ${reason}`);
+      if (verbose) write(`${dim('[vinyan]')}   ${clarificationRequest}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:cache_hit', ({ cacheKey }) => {
+      if (verbose) write(`${dim('[vinyan]')} Intent: cache hit ${dim(`(${cacheKey.slice(0, 40)}…)`)}`);
     }),
   );
 

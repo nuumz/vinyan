@@ -400,17 +400,18 @@ async function prepareExecution(
         defaultAgentId: deps.agentRegistry?.defaultAgent().id,
         userInterestMiner: deps.userInterestMiner,
         sessionId: input.sessionId,
+        // Deterministic-first pipeline: pass STU so the resolver can compute
+        // a rule candidate before the LLM runs (tier 0.8, may bypass LLM).
+        understanding,
       });
       // Multi-agent: propagate resolved agentId onto the input for downstream phases
       if (intentResolution.agentId) {
         input.agentId = intentResolution.agentId;
       }
-      deps.bus?.emit('intent:resolved', {
-        taskId: input.id,
-        strategy: intentResolution.strategy,
-        confidence: intentResolution.confidence,
-        reasoning: intentResolution.reasoning,
-      });
+      // resolveIntent now emits 'intent:resolved' itself with richer payload
+      // (type, source). Legacy emit kept for listeners that haven't migrated —
+      // but only when resolver didn't already emit (cache hit path). Skipping
+      // duplicate emits by default.
     } catch (err) {
       // Intent resolution failure is non-fatal — fall back to regex-based classification
       const reason = err instanceof Error ? err.message : String(err);
@@ -425,12 +426,16 @@ async function prepareExecution(
         refinedGoal: input.goal,
         confidence: 0.5,
         reasoning: `Fallback: regex-based (${reason})`,
+        reasoningSource: 'fallback',
+        type: 'known',
       };
       deps.bus?.emit('intent:resolved', {
         taskId: input.id,
         strategy: intentResolution.strategy,
         confidence: intentResolution.confidence,
         reasoning: intentResolution.reasoning,
+        type: 'known',
+        source: 'fallback',
       });
     }
   }
@@ -1059,6 +1064,46 @@ async function executeTaskCore(
     // ── Strategy routing — short-circuit non-pipeline strategies ──
     const intentResolution = prep.intentResolution;
     if (intentResolution) {
+      // ── Uncertain / contradictory intent → ask the user instead of guessing ──
+      // A3 safety: when the resolver flagged epistemic failure, we refuse to
+      // dispatch a strategy that may be wrong. Task returns status='input-required'
+      // with the clarification carried from the resolver, matching A2A
+      // semantics (the next user turn answers the question).
+      if (intentResolution.type === 'uncertain' || intentResolution.type === 'contradictory') {
+        const clarifText = intentResolution.clarificationRequest
+          ?? 'Vinyan is uncertain about how to proceed. Could you clarify?';
+        const trace: ExecutionTrace = {
+          id: `trace-${input.id}-intent-clarify`,
+          taskId: input.id,
+          workerId: 'intent-resolver',
+          timestamp: Date.now(),
+          routingLevel: 0,
+          approach: intentResolution.type === 'contradictory' ? 'intent-contradiction' : 'intent-uncertain',
+          oracleVerdicts: {},
+          modelUsed: intentResolution.reasoningSource ?? 'none',
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'escalated',
+          failureReason: intentResolution.reasoning,
+          affectedFiles: [],
+        };
+        await deps.traceCollector.record(trace);
+        deps.bus?.emit('trace:record', { trace });
+        const result: TaskResult = {
+          id: input.id,
+          status: 'input-required',
+          mutations: [],
+          trace,
+          answer: clarifText,
+          clarificationNeeded: intentResolution.clarificationOptions?.length
+            ? [clarifText, ...intentResolution.clarificationOptions]
+            : [clarifText],
+          escalationReason: `intent:${intentResolution.type}: ${intentResolution.reasoning}`,
+        };
+        deps.bus?.emit('task:complete', { result });
+        return result;
+      }
+
       // Wave 6: validate strategy against registry. Unknown strategies
       // (e.g. LLM-fabricated labels that don't match any registered
       // handler metadata) fall back to registry.fallback() which by
@@ -1205,8 +1250,16 @@ async function executeTaskCore(
           deps.bus?.emit('task:complete', { result });
           return result;
         } catch {
-          // Workflow failed — fall back to legacy goal-rewrite path
-          if (intentResolution.workflowPrompt) {
+          // Workflow failed — fall back to legacy goal-rewrite path.
+          // Only rewrite when confidence clears the threshold; below it the
+          // LLM's paraphrase may drift from user intent, so we let downstream
+          // phases plan from the raw goal instead.
+          const AGENTIC_REWRITE_CONFIDENCE = 0.7;
+          if (
+            intentResolution.workflowPrompt &&
+            intentResolution.confidence >= AGENTIC_REWRITE_CONFIDENCE
+          ) {
+            intentResolution.originalGoal = input.goal;
             input = { ...input, goal: intentResolution.workflowPrompt };
           }
         }

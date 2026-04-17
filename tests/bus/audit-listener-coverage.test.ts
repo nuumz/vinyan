@@ -59,6 +59,12 @@ const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
   'fleet:convergence_warning',
   'fleet:emergency_reactivation',
   'fleet:diversity_enforced',
+  // Unified AgentProfile lifecycle
+  'profile:registered',
+  'profile:promoted',
+  'profile:demoted',
+  'profile:reactivated',
+  'profile:retired',
   'task:uncertain',
   'commit:rejected',
   // Phase 5 — Observability

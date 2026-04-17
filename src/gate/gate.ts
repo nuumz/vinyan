@@ -86,6 +86,50 @@ export function clearGateBus(): void {
 }
 
 /**
+ * Unified profile: module-level local-oracle profile store.
+ * When injected, gate weights each oracle verdict by its lifecycle status:
+ *   - active    → full weight
+ *   - probation → kept (informational) but downweighted (× 0.6)
+ *   - demoted   → kept but heavily downweighted (× 0.3)
+ *   - retired   → excluded from fusion
+ * Status lookup is by oracle name (matching OracleAccuracyStore keys).
+ */
+let localOracleProfileStore:
+  | import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore
+  | undefined;
+
+/** Inject the local-oracle profile store for status-based verdict weighting. */
+export function setLocalOracleProfileStore(
+  store: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore,
+): void {
+  localOracleProfileStore = store;
+}
+
+/** Reset — for test isolation. */
+export function clearLocalOracleProfileStore(): void {
+  localOracleProfileStore = undefined;
+}
+
+/** Convert profile status → confidence multiplier. Exported for tests + transparency. */
+export function profileStatusWeight(
+  status: 'active' | 'probation' | 'demoted' | 'retired' | null,
+): number {
+  switch (status) {
+    case 'active':
+      return 1.0;
+    case 'probation':
+      return 0.6;
+    case 'demoted':
+      return 0.3;
+    case 'retired':
+      return 0.0;
+    default:
+      // No profile registered yet → neutral (treat as active-equivalent)
+      return 1.0;
+  }
+}
+
+/**
  * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
  * from trace-based calibration in SelfModel (Phase 3). Kept as no-op for backward compat.
  */
@@ -331,6 +375,17 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           // Wave C: EMA-weighted attenuation for unreliable oracles (applied after tier clamp)
           if (oracleEMACalibrator) {
             clampedConfidence = oracleEMACalibrator.getWeightedConfidence(name, clampedConfidence);
+          }
+          // Unified profile: attenuate by local-oracle lifecycle status. Retired
+          // oracles return a zero-confidence verdict that downstream code can treat
+          // as excluded from fusion; demoted/probation oracles contribute but with
+          // reduced weight. A null weight (store absent) preserves existing behavior.
+          // First-use side-effect: register the oracle in the profile store so the
+          // A7 learning loop can observe it (idempotent, hot-path safe).
+          if (localOracleProfileStore) {
+            const profile = localOracleProfileStore.ensureProfile(name);
+            const statusWeight = profileStatusWeight(profile.status);
+            clampedConfidence = clampedConfidence * statusWeight;
           }
           const clampedResult = { ...raceResult, confidence: clampedConfidence };
           return { name, result: clampedResult };

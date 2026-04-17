@@ -23,17 +23,20 @@ export class WorkerStore {
         id, model_id, model_version, temperature, tool_allowlist,
         system_prompt_tpl, max_context_tokens, status,
         created_at, promoted_at, demoted_at, demotion_reason, demotion_count,
-        engine_type, capabilities_declared
+        engine_type, capabilities_declared, engine_config
       ) VALUES (
         $id, $model_id, $model_version, $temperature, $tool_allowlist,
         $system_prompt_tpl, $max_context_tokens, $status,
         $created_at, $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
-        $engine_type, $capabilities_declared
+        $engine_type, $capabilities_declared, $engine_config
       )
     `);
   }
 
   insert(profile: WorkerProfile): void {
+    // Step 6: dual-write engine_config (authoritative JSON) + legacy columns
+    // (compat read path). Callers that read engine_config prefer it; legacy-only
+    // rows fall through to individual columns.
     this.insertStmt.run({
       $id: profile.id,
       $model_id: profile.config.modelId,
@@ -52,6 +55,7 @@ export class WorkerStore {
       $capabilities_declared: profile.config.capabilitiesDeclared
         ? JSON.stringify(profile.config.capabilitiesDeclared)
         : null,
+      $engine_config: JSON.stringify(profile.config),
     });
   }
 
@@ -254,6 +258,16 @@ export class WorkerStore {
     return row.cnt;
   }
 
+  /** Trace counts grouped by worker_id — used for fleet diversity / Gini. */
+  getTraceCountsByWorker(): Array<{ workerId: string; count: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT worker_id, COUNT(*) as cnt FROM execution_traces WHERE worker_id IS NOT NULL GROUP BY worker_id`,
+      )
+      .all() as Array<{ worker_id: string; cnt: number }>;
+    return rows.map((r) => ({ workerId: r.worker_id, count: r.cnt }));
+  }
+
   private computeStats(workerId: string): WorkerStats {
     // Aggregate stats
     const agg = this.db
@@ -328,20 +342,36 @@ function rowToProfile(row: unknown): WorkerProfile {
     console.warn('[vinyan] WorkerStore: row failed Zod validation, using fallback', parsed.error.message);
   }
 
-  const config: WorkerConfig = {
-    modelId: r.model_id,
-    modelVersion: r.model_version ?? undefined,
-    temperature: r.temperature,
-    toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
-    systemPromptTemplate: r.system_prompt_tpl ?? undefined,
-    maxContextTokens: r.max_context_tokens ?? undefined,
-    engineType: (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
-    capabilitiesDeclared: parsed.success
-      ? r.capabilities_declared
-      : r.capabilities_declared
-        ? JSON.parse(r.capabilities_declared)
-        : undefined,
-  };
+  // Step 6: prefer engine_config JSON blob when present (authoritative); fall
+  // back to individual columns for legacy rows written before dual-write.
+  const engineConfig = parsed.success ? (r.engine_config as Partial<WorkerConfig> | undefined) : undefined;
+
+  const config: WorkerConfig = engineConfig
+    ? {
+        modelId: engineConfig.modelId ?? r.model_id,
+        modelVersion: engineConfig.modelVersion ?? r.model_version ?? undefined,
+        temperature: engineConfig.temperature ?? r.temperature,
+        toolAllowlist: engineConfig.toolAllowlist ?? (parsed.success ? r.tool_allowlist : undefined),
+        systemPromptTemplate: engineConfig.systemPromptTemplate ?? r.system_prompt_tpl ?? undefined,
+        maxContextTokens: engineConfig.maxContextTokens ?? r.max_context_tokens ?? undefined,
+        engineType: engineConfig.engineType ?? (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
+        capabilitiesDeclared:
+          engineConfig.capabilitiesDeclared ?? (parsed.success ? r.capabilities_declared : undefined),
+      }
+    : {
+        modelId: r.model_id,
+        modelVersion: r.model_version ?? undefined,
+        temperature: r.temperature,
+        toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
+        systemPromptTemplate: r.system_prompt_tpl ?? undefined,
+        maxContextTokens: r.max_context_tokens ?? undefined,
+        engineType: (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
+        capabilitiesDeclared: parsed.success
+          ? r.capabilities_declared
+          : r.capabilities_declared
+            ? JSON.parse(r.capabilities_declared)
+            : undefined,
+      };
 
   return {
     id: r.id,

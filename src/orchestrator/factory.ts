@@ -41,7 +41,7 @@ import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { setOracleAccuracyStore, setOracleEMACalibrator, setGateBus } from '../gate/gate.ts';
+import { setOracleAccuracyStore, setOracleEMACalibrator, setGateBus, setLocalOracleProfileStore } from '../gate/gate.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
@@ -85,6 +85,10 @@ import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
 import { CapabilityModel } from './fleet/capability-model.ts';
 import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
+import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
+import { LocalOracleGates, type LocalOracleProfile } from './profile/local-oracle-gates.ts';
+import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
+import { FleetRegistry } from './profile/fleet-registry.ts';
 import { WorkerSelector } from './fleet/worker-selector.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
@@ -166,6 +170,17 @@ export interface OrchestratorConfig {
    * (useful when using a custom engineRegistry with non-LLM REs).
    */
   workerModelAllowlist?: string[];
+  /**
+   * Unified AgentProfile: bootstrap policy for newly-registered workers.
+   *   'earn'       — register newcomers as `probation`; promote via Wilson LB gate
+   *                 from real traces. Existing providers with ≥ probationMinTasks
+   *                 historical traces are grandfathered to `active`.
+   *   'grandfather' — register newcomers as `active` (legacy behavior, kept so
+   *                 smoke tests and fixtures that depend on immediate dispatch
+   *                 continue to pass).
+   * Default: 'earn' (A7 compliance — engines must earn trust from evidence).
+   */
+  workerBootstrapPolicy?: 'earn' | 'grandfather';
   /** Command approval gate — enables interactive approval for unlisted shell commands. */
   commandApprovalGate?: import('./tools/command-approval-gate.ts').CommandApprovalGate;
   /** Enable background workspace watching for WorldGraph invalidation (default: true). */
@@ -191,6 +206,10 @@ export interface Orchestrator {
   skillManager?: SkillManager;
   sleepCycleRunner?: SleepCycleRunner;
   workerLifecycle?: WorkerLifecycle;
+  // Unified profile layer (Step 1-3 of the AgentProfile ultraplan).
+  localOracleProfileStore?: LocalOracleProfileStore;
+  localOracleLifecycle?: ProfileLifecycle<LocalOracleProfile>;
+  fleetRegistry?: import('./profile/fleet-registry.ts').FleetRegistry;
   // Exposed stores for API server (G7)
   traceStore?: TraceStore;
   ruleStore?: RuleStore;
@@ -277,9 +296,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentContextStore = new AgentContextStore(db.getDb());
   }
 
-  // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding)
+  // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding).
+  // fleetConfig is loaded lower; use the same default probation threshold here.
   if (workerStore) {
-    autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist, config.engineRegistry);
+    autoRegisterWorkers(
+      registry,
+      workerStore,
+      bus,
+      config.workerModelAllowlist,
+      config.engineRegistry,
+      config.workerBootstrapPolicy ?? 'earn',
+      30,
+    );
   }
 
   // Set up WorldGraph for fact invalidation (A4: content-addressed truth)
@@ -475,7 +503,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       // Register non-LLM engines as workers (autoRegisterWorkers ran earlier with config.engineRegistry)
       if (workerStore) {
-        autoRegisterWorkers(registry, workerStore, bus, config.workerModelAllowlist, engineRegistry);
+        autoRegisterWorkers(
+          registry,
+          workerStore,
+          bus,
+          config.workerModelAllowlist,
+          engineRegistry,
+          config.workerBootstrapPolicy ?? 'earn',
+          fleetConfig?.probation_min_tasks ?? 30,
+        );
       }
     }
   } catch {
@@ -531,6 +567,44 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     });
   }
 
+  // Unified profile layer — local oracle lifecycle (A7 loop).
+  // Registers each oracle observed by OracleAccuracyStore as `probation` so it
+  // must earn `active` from resolved-verdict accuracy. Read-only at this step
+  // (gate.ts and routing don't yet consult the profile store).
+  let localOracleProfileStore: LocalOracleProfileStore | undefined;
+  let localOracleLifecycle: ProfileLifecycle<LocalOracleProfile> | undefined;
+  if (db && oracleAccuracyStore) {
+    localOracleProfileStore = new LocalOracleProfileStore(db.getDb());
+    const localOracleGates = new LocalOracleGates({ accuracyStore: oracleAccuracyStore });
+    localOracleLifecycle = new ProfileLifecycle<LocalOracleProfile>({
+      kind: 'oracle-local',
+      store: localOracleProfileStore,
+      gates: localOracleGates,
+      bus,
+    });
+    // Bootstrap: seed a probation profile for every oracle already observed.
+    // New oracles register themselves lazily via ensureProfile on first use.
+    for (const name of oracleAccuracyStore.listDistinctOracleNames()) {
+      localOracleProfileStore.ensureProfile(name, 'probation');
+    }
+    // Step 4 Verify: inject store so gate.ts can attenuate verdicts by status.
+    setLocalOracleProfileStore(localOracleProfileStore);
+  }
+
+  // Hoisted so FleetRegistry can unify remote-oracle view with worker and
+  // local oracle views. The InstanceCoordinator block below reuses this
+  // instance instead of constructing its own.
+  const oracleProfileStore = db ? new OracleProfileStore(db.getDb()) : undefined;
+
+  // FleetRegistry — unified read API over every profile store. Consumed by
+  // phases (wired in Step 4). Currently read-only; construction order is
+  // independent of routing.
+  const fleetRegistry = new FleetRegistry({
+    workerStore,
+    oraclePeerStore: oracleProfileStore,
+    localOracleProfileStore,
+  });
+
   // Phase 2 managers
   const skillManager = skillStore ? new SkillManager({ skillStore, workspace }) : undefined;
   const shadowRunner = shadowStore ? new ShadowRunner({ shadowStore, workspace }) : undefined;
@@ -544,6 +618,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           bus,
           workerStore,
           workerLifecycle,
+          localOracleProfileStore,
+          localOracleLifecycle,
           costLedger,
           marketScheduler,
         })
@@ -763,6 +839,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // Economy L2: wire cost-aware scoring when economy is enabled
       costPredictor,
       budgetEnforcer,
+      // Unified profile: read-only view for probation-aware exploration.
+      fleetRegistry,
     });
   }
 
@@ -813,7 +891,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const vinyanConfig = loadConfig(workspace);
     const instancesConfig = vinyanConfig.network?.instances;
     if (instancesConfig?.enabled && instancesConfig.peers?.length) {
-      const oracleProfileStore = db ? new OracleProfileStore(db.getDb()) : undefined;
       // Economy L4: create federation budget pool when federation economy is enabled
       if (economyConfig?.federation?.cost_sharing_enabled) {
         const fraction = economyConfig.federation.shared_pool_fraction ?? 0.1;
@@ -888,6 +965,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerSelector,
     workerStore,
     workerLifecycle,
+    fleetRegistry,
     worldGraph,
     criticEngine,
     testGenerator,
@@ -1233,7 +1311,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Wire bus listeners (read-only observers — A3 compliance)
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
-  const traceListenerHandle = attachTraceListener(bus);
+  const traceListenerHandle = attachTraceListener(bus, { workerStore });
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
 
@@ -1330,6 +1408,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillManager,
     sleepCycleRunner,
     workerLifecycle,
+    localOracleProfileStore,
+    localOracleLifecycle,
+    fleetRegistry,
     // Exposed stores for API server wiring (G7)
     traceStore,
     ruleStore,
@@ -1393,8 +1474,12 @@ export async function createOrchestratorAsync(
 
 /**
  * Auto-register existing providers as WorkerProfiles.
- * Grandfathered as "active" — these are proven models from Phase 3.
- * Allowlist is configurable; pass [] to skip filtering (for custom RE types).
+ *
+ * Policy (A7 compliance — earn trust from evidence):
+ *   'earn' (default): newcomers register as `probation`. If the DB already has
+ *                    ≥ probationMinTasks traces for a provider, that provider
+ *                    is grandfathered to `active` (evidence-backed).
+ *   'grandfather':    all newcomers register as `active` (legacy behavior).
  *
  * Also registers non-LLM engines from engineRegistry so fleet governance
  * (WorkerLifecycle, WorkerSelector, CapabilityModel) can track them.
@@ -1405,7 +1490,19 @@ function autoRegisterWorkers(
   bus: VinyanBus,
   allowlist: string[] = DEFAULT_WORKER_MODEL_ALLOWLIST,
   engineRegistry?: ReasoningEngineRegistry,
+  policy: 'earn' | 'grandfather' = 'earn',
+  probationMinTasks = 30,
 ): void {
+  const resolveBootstrapStatus = (workerId: string): 'active' | 'probation' => {
+    if (policy === 'grandfather') return 'active';
+    // Earn policy: grandfather only when DB has sufficient traces for this id.
+    try {
+      const stats = workerStore.getStats(workerId);
+      return stats.totalTasks >= probationMinTasks ? 'active' : 'probation';
+    } catch {
+      return 'probation';
+    }
+  };
   // Register LLM providers from the legacy registry
   for (const provider of registry.listProviders()) {
     // tool-uses tier is a utility tier (intent resolver, remediation) — not a general worker
@@ -1436,12 +1533,13 @@ function autoRegisterWorkers(
         systemPromptTemplate: 'default',
         maxContextTokens: provider.maxContextTokens,
       },
-      status: 'active', // grandfathered — proven from Phase 3
+      status: resolveBootstrapStatus(workerId),
       createdAt: Date.now(),
       demotionCount: 0,
     };
     workerStore.insert(profile);
     bus.emit('worker:registered', { profile });
+    bus.emit('profile:registered', { kind: 'worker', id: profile.id });
   }
 
   // Register non-LLM engines from engineRegistry (fleet governance visibility)
@@ -1461,12 +1559,13 @@ function autoRegisterWorkers(
           engineType: engine.engineType,
           capabilitiesDeclared: engine.capabilities,
         },
-        status: 'active',
+        status: resolveBootstrapStatus(workerId),
         createdAt: Date.now(),
         demotionCount: 0,
       };
       workerStore.insert(profile);
       bus.emit('worker:registered', { profile });
+      bus.emit('profile:registered', { kind: 'worker', id: profile.id });
     }
   }
 }

@@ -203,6 +203,14 @@ export interface VinyanBusEvents {
   'worker:demoted': { workerId: string; reason: string; permanent: boolean };
   'worker:reactivated': { workerId: string; previousDemotionCount: number };
 
+  // Unified profile lifecycle — kind='worker' | 'oracle-peer' | 'oracle-local'.
+  // Emitted alongside legacy worker:* events during dual-emit period.
+  'profile:registered': { kind: string; id: string };
+  'profile:promoted': { kind: string; id: string; reason: string };
+  'profile:demoted': { kind: string; id: string; reason: string; permanent: boolean };
+  'profile:reactivated': { kind: string; id: string; emergency?: boolean };
+  'profile:retired': { kind: string; id: string; reason: string };
+
   // Worker selection (Phase 4.4)
   'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
   'worker:exploration': { taskId: string; selectedWorkerId: string; defaultWorkerId: string };

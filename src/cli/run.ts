@@ -98,8 +98,13 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     watchWorkspace: files.length > 0,
   });
 
-  // Graceful shutdown on signals
+  // Graceful shutdown on signals — second signal forces immediate exit
+  let shutdownRequested = false;
   const shutdown = () => {
+    if (shutdownRequested) {
+      process.exit(130);
+    }
+    shutdownRequested = true;
     commandApprovalGate.clear();
     detachProgress?.();
     orchestrator.close();

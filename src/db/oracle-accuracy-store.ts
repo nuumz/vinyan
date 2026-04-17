@@ -171,4 +171,15 @@ export class OracleAccuracyStore {
       accuracy: resolved >= 10 ? row.correct / resolved : null,
     };
   }
+
+  /**
+   * List every distinct oracle name that has ever produced a verdict. Used by
+   * the profile bootstrap to seed lifecycle tracking for each local oracle.
+   */
+  listDistinctOracleNames(): string[] {
+    const rows = this.db
+      .prepare(`SELECT DISTINCT oracle_name FROM oracle_accuracy ORDER BY oracle_name ASC`)
+      .all() as Array<{ oracle_name: string }>;
+    return rows.map((r) => r.oracle_name);
+  }
 }

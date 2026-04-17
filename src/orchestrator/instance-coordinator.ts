@@ -361,13 +361,16 @@ export class InstanceCoordinator {
           profile.verdictsRequested > 0 ? profile.falsePositiveCount / profile.verdictsRequested : 0;
 
         if (falsePositiveRate > this.config.demotionFalsePositiveThreshold) {
-          this.config.profileStore.demote(
-            profile.id,
-            `False positive rate ${falsePositiveRate.toFixed(2)} exceeds threshold`,
-          );
-          this.config.bus?.emit('worker:demoted', {
-            workerId: profile.id,
-            reason: 'high false positive rate',
+          const reason = `False positive rate ${falsePositiveRate.toFixed(2)} exceeds threshold`;
+          this.config.profileStore.demote(profile.id, reason);
+          // Unified profile: emit profile:demoted (kind=oracle-peer) — the legacy
+          // worker:demoted event was semantically wrong here (this is an oracle
+          // peer, not a worker). Kept as profile:* so every consumer gets a
+          // kind-tagged lifecycle feed.
+          this.config.bus?.emit('profile:demoted', {
+            kind: 'oracle-peer',
+            id: profile.id,
+            reason,
             permanent: false,
           });
         }

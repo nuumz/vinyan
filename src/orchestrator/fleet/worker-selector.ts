@@ -35,6 +35,12 @@ export interface WorkerSelectorConfig {
   costPredictor?: CostPredictor;
   /** Economy L2: budget enforcer for budget pressure signal. */
   budgetEnforcer?: BudgetEnforcer;
+  /**
+   * Unified profile: read-only fleet view. When injected, epsilon exploration
+   * can sample probation workers (weighted 0.3) so they earn traces toward
+   * promotion. Main-dispatch pool is still active-only.
+   */
+  fleetRegistry?: import('../profile/fleet-registry.ts').FleetRegistry;
 }
 
 export class WorkerSelector {
@@ -48,6 +54,7 @@ export class WorkerSelector {
   private cycleDurationMs: number;
   private costPredictor?: CostPredictor;
   private budgetEnforcer?: BudgetEnforcer;
+  private fleetRegistry?: import('../profile/fleet-registry.ts').FleetRegistry;
 
   constructor(config: WorkerSelectorConfig) {
     this.store = config.workerStore;
@@ -60,6 +67,7 @@ export class WorkerSelector {
     this.cycleDurationMs = config.cycleDurationMs ?? DEFAULT_CYCLE_DURATION_MS;
     this.costPredictor = config.costPredictor;
     this.budgetEnforcer = config.budgetEnforcer;
+    this.fleetRegistry = config.fleetRegistry;
   }
 
   /**
@@ -318,12 +326,37 @@ export class WorkerSelector {
   }
 
   private tierFallback(_routingLevel: RoutingLevel): WorkerSelectionResult {
-    // No specific worker — let worker pool use tier-based selection
+    // No specific worker — let worker pool use tier-based selection.
+    // Earn-first bootstrap: when the fleet has no active workers yet (fresh
+    // workspace, all newcomers are still on probation), fall through to
+    // probation so the system can still serve tasks and earn trust. Probation
+    // takes full weight here because the downstream scoring path is skipped.
     const activeWorkers = this.store.findActive();
-    const workerId = activeWorkers.length > 0 ? (activeWorkers[0]?.id ?? '') : '';
+    if (activeWorkers.length > 0) {
+      return {
+        selectedWorkerId: activeWorkers[0]?.id ?? '',
+        reason: 'tier-fallback',
+        score: 0,
+        alternatives: [],
+        explorationTriggered: false,
+        dataGateMet: false,
+      };
+    }
+
+    const probationPool = this.store.findByStatus('probation');
+    if (probationPool.length > 0) {
+      return {
+        selectedWorkerId: probationPool[0]?.id ?? '',
+        reason: 'tier-fallback',
+        score: 0,
+        alternatives: [],
+        explorationTriggered: false,
+        dataGateMet: false,
+      };
+    }
 
     return {
-      selectedWorkerId: workerId,
+      selectedWorkerId: '',
       reason: 'tier-fallback',
       score: 0,
       alternatives: [],

@@ -88,13 +88,23 @@ export async function serve(workspace: string): Promise<void> {
   }
 
   // Graceful shutdown — suspend sessions before closing DB
+  let shutdownRequested = false;
   const shutdown = async () => {
-    console.log('[vinyan] Shutting down...');
-    sessionManager.suspendAll();
-    if (a2aManager) await a2aManager.stop();
-    await server.stop();
-    orchestrator.close();
-    db.close();
+    if (shutdownRequested) {
+      console.log('[vinyan] Forced exit');
+      process.exit(1);
+    }
+    shutdownRequested = true;
+    console.log('[vinyan] Shutting down... (repeat signal to force exit)');
+    try {
+      sessionManager.suspendAll();
+      if (a2aManager) await a2aManager.stop();
+      await server.stop();
+      orchestrator.close();
+      db.close();
+    } catch {
+      // Best-effort cleanup
+    }
     process.exit(0);
   };
 

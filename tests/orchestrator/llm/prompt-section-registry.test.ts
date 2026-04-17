@@ -71,9 +71,9 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 19 sections', () => {
+  it('registers 22 sections', () => {
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(19);
+    expect(registry.getSectionIds()).toHaveLength(22);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {

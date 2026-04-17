@@ -236,6 +236,10 @@ export interface OrchestratorDeps {
   roomDispatcher?: import('./room/room-dispatcher.ts').RoomDispatcher;
   // Agent Context Layer: post-task learning for persistent agent identity/memory/skills.
   agentContextUpdater?: import('./agent-context/context-updater.ts').AgentContextUpdater;
+  // Unified profile: read-only fleet view passed to phases (Predict/Plan/Generate).
+  // Attenuation of oracle verdicts (Verify) uses the module-level store injected
+  // into gate.ts via setLocalOracleProfileStore — not carried here.
+  fleetRegistry?: import('./profile/fleet-registry.ts').FleetRegistry;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -326,8 +330,10 @@ async function prepareExecution(
 
   // ── LLM Intent Resolution — semantic classification before pipeline ──
   // Skip for code-mutation tasks (already well-classified by regex) and tasks with explicit target files.
+  // Guard on actual provider presence — an empty registry can't resolve intent and will throw.
+  const hasProviders = (deps.llmRegistry?.listProviders().length ?? 0) > 0;
   const needsIntentResolution =
-    deps.llmRegistry && understanding.taskDomain !== 'code-mutation' && !input.targetFiles?.length;
+    hasProviders && understanding.taskDomain !== 'code-mutation' && !input.targetFiles?.length;
   let intentResolution: IntentResolution | undefined;
   if (needsIntentResolution && deps.llmRegistry) {
     try {
@@ -609,19 +615,48 @@ async function prepareExecution(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
-/** Detect goals that imply creative/generative content and should NOT be conversational. */
-const GENERATIVE_PATTERN = /\b(write|compose|draft|create|generate|author)\b|แต่ง|เขียน|สร้าง(?:เรื่อง|นิยาย|บทความ|บท)|เล่า(?:เรื่อง|นิทาน|นิยาย)|แต่งนิยาย|แต่งเรื่อง|เขียนเรื่อง|แต่งบท|สรุป|วิเคราะห์|รวบรวม/i;
-
-function shouldEscalateToWorkflow(goal: string): boolean {
-  return GENERATIVE_PATTERN.test(goal);
-}
-
 async function buildConversationalResult(
   input: TaskInput,
   intent: IntentResolution,
   deps: OrchestratorDeps,
 ): Promise<TaskResult> {
   const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
+  const providerCount = deps.llmRegistry?.listProviders().length ?? 0;
+
+  // A2: Honest "I don't know" — no provider available means no conversational answer possible.
+  // Previous behavior echoed the goal back as the answer, which was dishonest.
+  if (!provider && providerCount === 0) {
+    const trace: ExecutionTrace = {
+      id: `trace-${input.id}-no-provider`,
+      taskId: input.id,
+      workerId: 'kernel',
+      timestamp: Date.now(),
+      routingLevel: 0,
+      approach: 'no-provider-escalation',
+      oracleVerdicts: {},
+      modelUsed: 'none',
+      tokensConsumed: 0,
+      durationMs: 0,
+      outcome: 'escalated',
+      failureReason: 'No LLM provider configured',
+      affectedFiles: [],
+    };
+    await deps.traceCollector.record(trace);
+    deps.bus?.emit('trace:record', { trace });
+    const result: TaskResult = {
+      id: input.id,
+      status: 'escalated',
+      mutations: [],
+      trace,
+      answer: '',
+      notes: ['No LLM provider configured — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY'],
+    };
+    deps.bus?.emit('task:complete', { result });
+    return result;
+  }
+
+  // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
+  // fall back to refinedGoal — this is a degraded-but-recoverable path, not a no-provider case.
   let answer = intent.refinedGoal;
   if (provider) {
     try {
@@ -974,19 +1009,7 @@ async function executeTaskCore(
         intentResolution.strategy = fallback as typeof intentResolution.strategy;
       }
       if (intentResolution.strategy === 'conversational') {
-        // Safety net: escalate to agentic-workflow if goal implies creative/generative content
-        if (shouldEscalateToWorkflow(input.goal)) {
-          intentResolution.strategy = 'agentic-workflow';
-          intentResolution.reasoning = `${intentResolution.reasoning ?? ''} [escalated: generative content detected]`;
-          deps.bus?.emit('intent:resolved', {
-            taskId: input.id,
-            strategy: intentResolution.strategy,
-            confidence: intentResolution.confidence,
-            reasoning: intentResolution.reasoning,
-          });
-        } else {
-          return buildConversationalResult(input, intentResolution, deps);
-        }
+        return buildConversationalResult(input, intentResolution, deps);
       }
       // Direct-tool: preserve the LLM-produced tool call when present.
       // Deterministic resolution is fallback-only when classification exists but

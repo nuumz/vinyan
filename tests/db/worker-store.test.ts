@@ -407,4 +407,65 @@ describe('WorkerStore', () => {
       expect(found.config.maxContextTokens).toBe(200_000);
     });
   });
+
+  // Step 6 — engine_config authoritative
+  describe('engine_config dual-write', () => {
+    test('insert writes engine_config JSON and read returns the same shape', () => {
+      store.insert(
+        makeProfile({
+          id: 'w-ec',
+          config: {
+            modelId: 'claude-opus',
+            temperature: 0.5,
+            systemPromptTemplate: 'custom',
+            maxContextTokens: 180_000,
+            engineType: 'llm',
+            capabilitiesDeclared: ['code-generation', 'reasoning'],
+          },
+        }),
+      );
+
+      // Raw column value is JSON
+      const raw = db
+        .prepare(`SELECT engine_config FROM worker_profiles WHERE id = ?`)
+        .get('w-ec') as { engine_config: string | null };
+      expect(raw.engine_config).not.toBeNull();
+      expect(() => JSON.parse(raw.engine_config!)).not.toThrow();
+
+      const found = store.findById('w-ec')!;
+      expect(found.config.modelId).toBe('claude-opus');
+      expect(found.config.capabilitiesDeclared).toEqual(['code-generation', 'reasoning']);
+    });
+
+    test('legacy row without engine_config still round-trips via fallback', () => {
+      // Simulate a pre-dual-write row
+      db.run(
+        `INSERT INTO worker_profiles
+           (id, model_id, temperature, system_prompt_tpl, status, created_at, demotion_count, engine_type, engine_config)
+         VALUES (?, ?, ?, ?, 'probation', ?, 0, ?, NULL)`,
+        ['legacy-w1', 'claude-legacy', 0.4, 'default', Date.now(), 'llm'],
+      );
+      const found = store.findById('legacy-w1')!;
+      expect(found.config.modelId).toBe('claude-legacy');
+      expect(found.config.temperature).toBe(0.4);
+    });
+  });
+
+  // Step 7 — stats cache invalidation (F9)
+  describe('invalidateCache', () => {
+    test('clears cached stats for a worker so next read reflects new traces', () => {
+      store.insert(makeProfile({ id: 'w-cache', status: 'active' }));
+      insertTrace(db, 'w-cache', { outcome: 'success' });
+      const first = store.getStats('w-cache');
+      expect(first.totalTasks).toBe(1);
+
+      // Insert another trace but do NOT invalidate — cache still returns 1
+      insertTrace(db, 'w-cache', { outcome: 'success' });
+      expect(store.getStats('w-cache').totalTasks).toBe(1);
+
+      // Invalidate and re-read — now we should see 2
+      store.invalidateCache('w-cache');
+      expect(store.getStats('w-cache').totalTasks).toBe(2);
+    });
+  });
 });

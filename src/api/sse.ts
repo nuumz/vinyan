@@ -75,9 +75,14 @@ export function createSSEStream(
     start(ctrl) {
       controller = ctrl;
 
-      // Heartbeat to keep proxies/browsers from dropping idle connections
+      // Heartbeat to keep proxies/browsers from dropping idle connections.
+      // Send one immediately so the client + proxy see bytes on the wire
+      // before any server-side idle timeout can fire.
       const hbMs = options?.heartbeatIntervalMs;
       if (hbMs && hbMs > 0) {
+        try {
+          controller.enqueue(encoder.encode(`:heartbeat ${Date.now()}\n\n`));
+        } catch { /* closed */ }
         heartbeatTimer = setInterval(() => {
           if (closed) return;
           try {

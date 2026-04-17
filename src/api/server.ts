@@ -64,6 +64,8 @@ export class VinyanAPIServer {
   private a2aBridge: A2ABridge;
   private defaultSessionId: string | null = null;
   private wsClients = new Set<{ ws: unknown; authenticated: boolean }>();
+  /** Dedup map: key = "sessionId:content" → timestamp of last submission. */
+  private recentMessageDedup = new Map<string, number>();
 
   constructor(
     private config: APIServerConfig,
@@ -84,6 +86,10 @@ export class VinyanAPIServer {
     this.server = Bun.serve({
       port: this.config.port,
       hostname: this.config.bind,
+      // Long-lived SSE/WS connections require a generous idle window.
+      // Bun's default (10s) kills streams before the 30s heartbeat fires,
+      // which the Vite proxy surfaces as "socket hang up" every ~28s.
+      idleTimeout: 255,
       async fetch(req, server) {
         // WebSocket upgrade for /ws/ecp
         const url = new URL(req.url);
@@ -724,6 +730,23 @@ export class VinyanAPIServer {
       return jsonResponse({ error: `Invalid request: ${parsed.error.message}` }, 400);
     }
     const { content, taskType, targetFiles, budget, showThinking, stream } = parsed.data;
+
+    // ── Dedup: reject identical messages within a short window ──
+    // Prevents duplicate tasks when the UI retries on timeout or the
+    // user double-clicks Send. Key = session+content hash, TTL = 60s.
+    const dedupKey = `${sessionId}:${content}`;
+    const now = Date.now();
+    const lastSeen = this.recentMessageDedup.get(dedupKey);
+    if (lastSeen && now - lastSeen < 60_000) {
+      return jsonResponse({ error: 'Duplicate message — task already submitted' }, 409);
+    }
+    this.recentMessageDedup.set(dedupKey, now);
+    // Evict old entries periodically (keep map from growing unbounded)
+    if (this.recentMessageDedup.size > 500) {
+      for (const [k, ts] of this.recentMessageDedup) {
+        if (now - ts > 60_000) this.recentMessageDedup.delete(k);
+      }
+    }
 
     // Auto-detect clarification follow-up: if the last assistant message
     // was an [INPUT-REQUIRED] block and the user has not yet answered, this

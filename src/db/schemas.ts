@@ -78,7 +78,20 @@ export const WorkerProfileRowSchema = z.object({
     .nullable()
     .optional()
     .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
-  engine_config: z.string().nullable().optional(),
+  // engine_config: canonical JSON blob of WorkerConfig. Parsed when present;
+  // when absent (legacy rows), callers fall back to individual columns.
+  engine_config: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => {
+      if (!v) return undefined;
+      try {
+        return JSON.parse(v) as Record<string, unknown>;
+      } catch {
+        return undefined;
+      }
+    }),
 });
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────

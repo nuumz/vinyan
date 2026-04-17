@@ -316,8 +316,13 @@ export async function startChat(argv: string[]): Promise<void> {
     process.exit(0);
   });
 
-  // Graceful signal handling
+  // Graceful signal handling — second signal forces immediate exit
+  let shutdownRequested = false;
   const shutdown = () => {
+    if (shutdownRequested) {
+      process.exit(1);
+    }
+    shutdownRequested = true;
     console.log('\n\x1b[2mSession saved.\x1b[0m');
     detachProgress();
     orchestrator.close();

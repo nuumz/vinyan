@@ -59,7 +59,10 @@ export interface SystemMetrics {
     probation: number;
     demoted: number;
     retired: number;
+    /** Distinct engines observed across recent traces. */
     traceDiversity: number;
+    /** Gini coefficient (0–1) of trace counts per engine — 0 = perfectly balanced, →1 = concentrated. */
+    fleetGini: number;
   };
   dataGates: {
     sleepCycle: boolean;
@@ -130,7 +133,9 @@ export function getSystemMetrics(deps: MetricsDeps, skipEvolution = false): Syst
   const workerProbation = workerStore?.countByStatus('probation') ?? 0;
   const workerDemoted = workerStore?.countByStatus('demoted') ?? 0;
   const workerRetired = workerStore?.countByStatus('retired') ?? 0;
-  const workerTraceDiversity = workerStore?.countDistinctWorkerIds() ?? 0;
+  const workerTraceCounts = workerStore?.getTraceCountsByWorker() ?? [];
+  const workerTraceDiversity = workerTraceCounts.length;
+  const fleetGini = computeGini(workerTraceCounts.map((w) => w.count));
 
   // Data gates
   const gateStats: DataGateStats = {
@@ -179,6 +184,7 @@ export function getSystemMetrics(deps: MetricsDeps, skipEvolution = false): Syst
       demoted: workerDemoted,
       retired: workerRetired,
       traceDiversity: workerTraceDiversity,
+      fleetGini,
     },
     dataGates: {
       sleepCycle: checkDataGate('sleep_cycle', gateStats, DEFAULT_GATE_THRESHOLDS).satisfied,
@@ -241,4 +247,19 @@ export class MetricsCollector {
   reset(): void {
     this.counters.clear();
   }
+}
+
+// Gini coefficient on a non-negative distribution. 0 = perfectly equal, →1 = concentrated.
+// Returns 0 for empty input or all-zero distribution.
+function computeGini(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const sum = sorted.reduce((a, b) => a + b, 0);
+  if (sum === 0) return 0;
+  let weighted = 0;
+  for (let i = 0; i < n; i++) {
+    weighted += (2 * (i + 1) - n - 1) * sorted[i]!;
+  }
+  return weighted / (n * sum);
 }

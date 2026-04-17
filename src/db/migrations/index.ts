@@ -26,6 +26,8 @@ import { migration016 } from './016_add_room_tables.ts';
 import { migration017 } from './017_add_decomposition_pattern_type.ts';
 import { migration018 } from './018_add_agent_contexts.ts';
 import { migration019 } from './019_add_soul_columns.ts';
+import { migration020 } from './020_add_local_oracle_profiles.ts';
+import { migration021 } from './021_drop_dead_worker_columns.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -49,4 +51,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration017,
   migration018,
   migration019,
+  migration020,
+  migration021,
 ];

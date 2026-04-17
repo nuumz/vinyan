@@ -94,6 +94,10 @@ export class SleepCycleRunner {
   private bus?: VinyanBus;
   private workerStore?: import('../db/worker-store.ts').WorkerStore;
   private workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
+  private localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+  private localOracleLifecycle?: import('../orchestrator/profile/profile-lifecycle.ts').ProfileLifecycle<
+    import('../orchestrator/profile/local-oracle-gates.ts').LocalOracleProfile
+  >;
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
@@ -135,6 +139,11 @@ export class SleepCycleRunner {
     bus?: VinyanBus;
     workerStore?: import('../db/worker-store.ts').WorkerStore;
     workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
+    /** Unified profile: local oracle FSM — part of the AgentProfile ultraplan. */
+    localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+    localOracleLifecycle?: import('../orchestrator/profile/profile-lifecycle.ts').ProfileLifecycle<
+      import('../orchestrator/profile/local-oracle-gates.ts').LocalOracleProfile
+    >;
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
     costLedger?: CostLedger;
     marketScheduler?: MarketScheduler;
@@ -157,6 +166,8 @@ export class SleepCycleRunner {
     this.bus = options.bus;
     this.workerStore = options.workerStore;
     this.workerLifecycle = options.workerLifecycle;
+    this.localOracleProfileStore = options.localOracleProfileStore;
+    this.localOracleLifecycle = options.localOracleLifecycle;
     this.knowledgeExchange = options.knowledgeExchange;
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
@@ -397,6 +408,18 @@ export class SleepCycleRunner {
 
       // Emergency reactivation safety net
       this.workerLifecycle.emergencyReactivation();
+    }
+
+    // Unified profile: local oracle lifecycle (A7 loop).
+    // Drives promotion/demotion based on retrospective accuracy, emitting
+    // profile:* events. Read-only vs routing at this step — gate.ts does not
+    // yet consult the profile status.
+    if (this.localOracleLifecycle && this.localOracleProfileStore) {
+      for (const probation of this.localOracleProfileStore.findByStatus('probation')) {
+        this.localOracleLifecycle.evaluatePromotion(probation.id);
+      }
+      this.localOracleLifecycle.checkDemotions();
+      this.localOracleLifecycle.reEnrollExpired();
     }
 
     // Agent Context Layer + Living Agent Soul: evolve agent identities and souls

@@ -59,10 +59,13 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
    - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work") → "conversational"
    - Meta-questions about system capabilities → "conversational"
-   - NEVER "conversational" if the user asks to CREATE, WRITE, or GENERATE content (stories, essays, summaries, reports, poems)
+   - NEVER "conversational" if the user asks to CREATE, WRITE, BUILD, or GENERATE anything (stories, essays, summaries, reports, poems, websites, apps, systems, diagrams)
    - NEVER "conversational" if the answer would require more than a short paragraph
    - "แต่งนิยาย", "เขียนเรื่อง", "write a story", "compose", "draft" → ALWAYS "agentic-workflow", NOT "conversational"
+   - "ทำเว็บ", "ทำแอพ", "ทำระบบ", "สร้างเว็บ", "พัฒนาระบบ", "build a website/app", "develop X" → ALWAYS "agentic-workflow"
    - "สรุป", "วิเคราะห์", "summarize", "analyze", "research" → ALWAYS "agentic-workflow"
+   - CRITICAL: Question FORM does not mean conversational INTENT. "สามารถทำ X ได้ไหม", "ช่วยทำ X ได้ไหม", "can you build X?", "could you create X?" — when X is a concrete deliverable (web, app, feature, document, artifact), this is a REQUEST TO DO X → "agentic-workflow".
+   - CRITICAL: Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation. Use the "Recent conversation" context to recover what action was proposed.
 
 2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
    - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
@@ -294,6 +297,42 @@ Available tools: ${toolList}${preferencesBlock}${conversationBlock}`;
       parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
     } else {
       throw firstError;
+    }
+  }
+
+  // Trust-based escalation: when fast tier classifies a non-trivial goal as
+  // "conversational" with low confidence, retry with a stronger tier. This
+  // catches cases where fast models miss generative/follow-up intent (e.g.,
+  // "สามารถทำเว็บได้ไหม" — question form, action intent).
+  const isNonTrivial =
+    input.goal.trim().length > 30 ||
+    (deps.conversationHistory?.length ?? 0) > 0;
+  const lowConfidenceConversational =
+    parsed.strategy === 'conversational' &&
+    (parsed.confidence ?? 0.8) < 0.75 &&
+    isNonTrivial;
+  if (lowConfidenceConversational) {
+    const balancedProvider = deps.registry.selectByTier('balanced');
+    if (balancedProvider && balancedProvider.id !== provider.id) {
+      try {
+        const retryResponse = await withTimeout(
+          balancedProvider.generate({
+            systemPrompt: INTENT_SYSTEM_PROMPT,
+            userPrompt: `${userPrompt}\n\nNote: A previous classifier returned "conversational" with low confidence. Re-examine carefully — does the goal actually request action, generation, or analysis (in which case use "agentic-workflow" or "full-pipeline")?`,
+            maxTokens: 500,
+            temperature: 0,
+          }),
+          INTENT_TIMEOUT_MS,
+        );
+        const retryParsed = parseIntentResponse(retryResponse.content.trim());
+        retryParsed.directToolCall = normalizeDirectToolCall(retryParsed.strategy, retryParsed.directToolCall);
+        if (retryParsed.strategy !== 'conversational') {
+          retryParsed.reasoning = `[escalated from low-confidence conversational] ${retryParsed.reasoning}`;
+        }
+        parsed = retryParsed;
+      } catch {
+        // Retry failed — keep original classification rather than fail
+      }
     }
   }
 

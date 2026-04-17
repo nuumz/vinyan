@@ -588,6 +588,7 @@ ${REMINDER_PROTOCOL_DESCRIPTION}
   2. Check your assumptions — is the file path correct? Does the function exist?
   3. Try a DIFFERENT fix, not a variation of the same one.
 - If 2+ consecutive failures, you MUST pivot to a fundamentally different approach. Do NOT try a third variation.
+- If the system says [STALL WARNING], you have 1 turn to make visible progress before the next escalation — pivot approach or call attempt_completion with status 'uncertain'.
 - If the system says [FORCED PIVOT], you MUST change strategy entirely or call attempt_completion.
 - Read before writing — ALWAYS understand existing code before modifying it.
 - Search for existing patterns in the codebase before creating anything new.

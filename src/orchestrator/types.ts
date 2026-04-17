@@ -124,7 +124,27 @@ export type ToolRequirement = 'none' | 'tool-needed';
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
 /** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
-export type IntentReasoningSource = 'llm' | 'fallback' | 'cache';
+export type IntentReasoningSource = 'llm' | 'fallback' | 'cache' | 'deterministic' | 'merged';
+
+/**
+ * Epistemic state of an intent resolution — mirrors VerifiedClaim taxonomy.
+ *
+ * - `known`: deterministic + LLM agree (or one side is high-confidence alone).
+ * - `uncertain`: LLM was low confidence or ambiguity signals triggered — user clarification needed.
+ * - `contradictory`: deterministic and LLM disagreed. A5 tier order decides the surviving
+ *    strategy; the other is recorded for observability and a clarification is surfaced.
+ */
+export type IntentResolutionType = 'known' | 'uncertain' | 'contradictory';
+
+/** Candidate produced by the deterministic (rule-based, tier 0.8) classifier before the LLM runs. */
+export interface IntentDeterministicCandidate {
+  strategy: ExecutionStrategy;
+  confidence: number;
+  /** Which rule produced the candidate (observability). */
+  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed';
+  /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
+  ambiguous: boolean;
+}
 
 /** Result of LLM-powered intent resolution. */
 export interface IntentResolution {
@@ -149,6 +169,24 @@ export interface IntentResolution {
   agentId?: string;
   /** Resolver's reasoning for agent selection (observability). */
   agentSelectionReason?: string;
+  /**
+   * Epistemic state — `known` when deterministic+LLM agree (or one is confident alone),
+   * `uncertain` for low-confidence / ambiguous inputs, `contradictory` when rule and LLM
+   * disagree. The core-loop dispatches `uncertain`/`contradictory` to the clarification
+   * path instead of executing the strategy.
+   */
+  type?: IntentResolutionType;
+  /** User-facing clarification message when `type` is `uncertain` or `contradictory`. */
+  clarificationRequest?: string;
+  /** Optional structured choices paired with `clarificationRequest`. */
+  clarificationOptions?: string[];
+  /**
+   * Original goal preserved when the core-loop rewrites `input.goal` to `workflowPrompt`
+   * (agentic-workflow). Enables tracing and post-mortem comparison against the rewrite.
+   */
+  originalGoal?: string;
+  /** Rule-based candidate produced before the LLM ran, for observability. */
+  deterministicCandidate?: IntentDeterministicCandidate;
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */

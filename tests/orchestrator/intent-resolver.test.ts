@@ -618,6 +618,315 @@ describe('resolveIntent (original bug case)', () => {
 // LLM is unavailable)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// resolveIntent — deterministic-first pipeline (tier 0.8, A5)
+// ---------------------------------------------------------------------------
+
+import {
+  composeDeterministicCandidate,
+  mapUnderstandingToStrategy,
+} from '../../src/orchestrator/intent-resolver.ts';
+import type { SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
+import { createBus } from '../../src/core/bus.ts';
+
+function makeUnderstanding(
+  input: TaskInput,
+  overrides: Partial<SemanticTaskUnderstanding> = {},
+): SemanticTaskUnderstanding {
+  return {
+    rawGoal: input.goal,
+    actionVerb: 'do',
+    actionCategory: 'analysis',
+    frameworkContext: [],
+    constraints: input.constraints ?? [],
+    acceptanceCriteria: input.acceptanceCriteria ?? [],
+    expectsMutation: false,
+    taskDomain: 'general-reasoning',
+    taskIntent: 'inquire',
+    toolRequirement: 'none',
+    resolvedEntities: [],
+    understandingDepth: 1,
+    verifiedClaims: [],
+    understandingFingerprint: `fp-${input.goal.length}-${input.id}`,
+    ...overrides,
+  };
+}
+
+describe('mapUnderstandingToStrategy', () => {
+  test('conversational domain → conversational at high confidence', () => {
+    const u = makeUnderstanding(makeInput('สวัสดี'), { taskDomain: 'conversational', taskIntent: 'converse' });
+    const r = mapUnderstandingToStrategy(u);
+    expect(r.strategy).toBe('conversational');
+    expect(r.confidence).toBeGreaterThanOrEqual(0.9);
+    expect(r.ambiguous).toBe(false);
+  });
+
+  test('code-mutation with resolved entity → full-pipeline at high confidence', () => {
+    const u = makeUnderstanding(makeInput('fix bug in foo', { targetFiles: ['src/foo.ts'] }), {
+      taskDomain: 'code-mutation',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+      resolvedEntities: [
+        {
+          reference: 'foo',
+          resolvedPaths: ['src/foo.ts'],
+          resolution: 'exact',
+          confidence: 0.95,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
+    });
+    const r = mapUnderstandingToStrategy(u);
+    expect(r.strategy).toBe('full-pipeline');
+    expect(r.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(r.ambiguous).toBe(false);
+  });
+
+  test('creative-generation ambiguity lowers confidence', () => {
+    const u = makeUnderstanding(makeInput('เขียนนิยายสักเรื่อง'), {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'none',
+    });
+    const r = mapUnderstandingToStrategy(u);
+    expect(r.ambiguous).toBe(true);
+    expect(r.confidence).toBeLessThan(0.7);
+  });
+
+  test('file-token without resolver hit flags ambiguity', () => {
+    const u = makeUnderstanding(makeInput('explain config.yaml to me'), {
+      taskDomain: 'code-reasoning',
+      taskIntent: 'inquire',
+      toolRequirement: 'none',
+      resolvedEntities: [],
+    });
+    const r = mapUnderstandingToStrategy(u);
+    expect(r.ambiguous).toBe(true);
+  });
+});
+
+describe('composeDeterministicCandidate', () => {
+  test('direct-tool pattern produces resolved shell_exec command', () => {
+    const input = makeInput('เปิดแอพ Google Chrome');
+    const u = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+    });
+    const candidate = composeDeterministicCandidate(input, u);
+    expect(candidate.strategy).toBe('direct-tool');
+    expect(candidate.directToolCall).toBeDefined();
+    expect(candidate.directToolCall!.tool).toBe('shell_exec');
+    expect(String(candidate.directToolCall!.parameters.command)).toContain('Google Chrome');
+    expect(candidate.reasoningSource).toBe('deterministic');
+    expect(candidate.confidence).toBeGreaterThanOrEqual(0.85);
+  });
+
+  test('ambiguous rule produces skeleton without directToolCall', () => {
+    const input = makeInput('จัดการระบบให้หน่อย');
+    const u = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'none',
+    });
+    const candidate = composeDeterministicCandidate(input, u);
+    expect(candidate.deterministicCandidate.ambiguous).toBe(true);
+    expect(candidate.directToolCall).toBeUndefined();
+    expect(candidate.type).toBe('uncertain');
+  });
+});
+
+describe('resolveIntent (deterministic pipeline)', () => {
+  test('high-confidence deterministic greeting skips the LLM entirely', async () => {
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      id: 'should-not-fire',
+      tier: 'balanced',
+      async generate(_req): Promise<LLMResponse> {
+        llmCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'x', stopReason: 'end_turn',
+        };
+      },
+    };
+    const input = makeInput('สวัสดี');
+    const understanding = makeUnderstanding(input, {
+      taskDomain: 'conversational',
+      taskIntent: 'converse',
+      toolRequirement: 'none',
+    });
+    const result = await resolveIntent(input, { registry: makeRegistry(provider), understanding });
+
+    expect(result.strategy).toBe('conversational');
+    expect(result.type).toBe('known');
+    expect(result.reasoningSource).toBe('deterministic');
+    expect(llmCalls).toBe(0);
+  });
+
+  test('direct-tool app launch skips LLM and resolves platform command', async () => {
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      id: 'llm',
+      tier: 'balanced',
+      async generate(_req): Promise<LLMResponse> {
+        llmCalls++;
+        return {
+          content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'llm', stopReason: 'end_turn',
+        };
+      },
+    };
+    const input = makeInput('เปิดแอพ Safari');
+    const understanding = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+    });
+    const result = await resolveIntent(input, { registry: makeRegistry(provider), understanding });
+
+    expect(result.strategy).toBe('direct-tool');
+    expect(result.directToolCall).toBeDefined();
+    expect(llmCalls).toBe(0);
+  });
+
+  test('disagreement → contradictory (A5: rule wins, event emitted)', async () => {
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'direct-tool',
+        refinedGoal: 'open a thing',
+        reasoning: 'LLM thinks this is a direct tool call',
+        directToolCall: { tool: 'shell_exec', parameters: { command: 'echo hi' } },
+        confidence: 0.9,
+      }),
+      'p-balanced',
+      'balanced',
+    );
+    const bus = createBus();
+    let contradictionEvents = 0;
+    bus.on('intent:contradiction', () => { contradictionEvents++; });
+
+    const input = makeInput('analyze the codebase for performance bottlenecks');
+    const understanding = makeUnderstanding(input, {
+      // Rule: general-reasoning + inquire + no-tools → conversational (non-ambiguous)
+      taskDomain: 'general-reasoning',
+      taskIntent: 'inquire',
+      toolRequirement: 'none',
+    });
+    const result = await resolveIntent(input, {
+      registry: makeRegistry(provider),
+      understanding,
+      bus,
+    });
+
+    expect(result.type).toBe('contradictory');
+    // A5: rule (conversational) beats LLM (direct-tool)
+    expect(result.strategy).toBe('conversational');
+    expect(result.clarificationRequest).toBeDefined();
+    expect(contradictionEvents).toBe(1);
+  });
+
+  test('low LLM confidence → uncertain + clarification surfaced', async () => {
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'agentic-workflow',
+        refinedGoal: 'unclear ask',
+        reasoning: 'Not sure what to do',
+        confidence: 0.3,
+      }),
+      'p-balanced',
+      'balanced',
+    );
+    const bus = createBus();
+    let uncertainEvents = 0;
+    bus.on('intent:uncertain', () => { uncertainEvents++; });
+
+    const input = makeInput('จัดการเรื่องนี้ให้หน่อย');
+    const understanding = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'none',
+    });
+    const result = await resolveIntent(input, {
+      registry: makeRegistry(provider),
+      understanding,
+      bus,
+    });
+
+    expect(result.type).toBe('uncertain');
+    expect(result.clarificationRequest).toBeDefined();
+    expect(uncertainEvents).toBe(1);
+  });
+
+  test('agreement → LLM enrichment accepted (workflowPrompt added)', async () => {
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'agentic-workflow',
+        refinedGoal: 'Refactor auth',
+        reasoning: 'Multi-step refactor',
+        workflowPrompt: 'Step 1: locate auth module. Step 2: extract interface. Step 3: run tests.',
+        confidence: 0.9,
+      }),
+      'p-balanced',
+      'balanced',
+    );
+    const input = makeInput('refactor the auth module carefully');
+    const understanding = makeUnderstanding(input, {
+      // Rule says agentic-workflow too (general-reasoning + execute + no tools)
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'none',
+    });
+    const result = await resolveIntent(input, {
+      registry: makeRegistry(provider),
+      understanding,
+    });
+
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.type).toBe('known');
+    expect(result.workflowPrompt).toContain('Step 1');
+    expect(result.reasoningSource).toBe('merged');
+  });
+
+  test('cache hit fires intent:cache_hit event and re-uses result', async () => {
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      id: 'p-balanced',
+      tier: 'balanced',
+      async generate(_req): Promise<LLMResponse> {
+        llmCalls++;
+        return {
+          content: JSON.stringify({
+            strategy: 'agentic-workflow',
+            refinedGoal: 'x',
+            reasoning: 'x',
+            workflowPrompt: 'step 1',
+            confidence: 0.9,
+          }),
+          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'p-balanced', stopReason: 'end_turn',
+        };
+      },
+    };
+    const bus = createBus();
+    let cacheHits = 0;
+    bus.on('intent:cache_hit', () => { cacheHits++; });
+
+    const input = makeInput('refactor the auth module carefully');
+    const understanding = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'none',
+    });
+    const deps: IntentResolverDeps = { registry: makeRegistry(provider), understanding, bus };
+    await resolveIntent(input, deps);
+    const second = await resolveIntent(input, deps);
+
+    expect(llmCalls).toBe(1);
+    expect(second.reasoningSource).toBe('cache');
+    expect(cacheHits).toBe(1);
+  });
+});
+
 describe('fallbackStrategy', () => {
   test('conversational domain → conversational', () => {
     expect(fallbackStrategy('conversational', 'converse', 'none')).toBe('conversational');

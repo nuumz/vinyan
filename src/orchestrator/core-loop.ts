@@ -240,6 +240,17 @@ export interface OrchestratorDeps {
   // Attenuation of oracle verdicts (Verify) uses the module-level store injected
   // into gate.ts via setLocalOracleProfileStore — not carried here.
   fleetRegistry?: import('./profile/fleet-registry.ts').FleetRegistry;
+  // AgentProfile — workspace-level Vinyan Agent identity (singleton).
+  // Set by factory after bootstrapAgentProfile() during construction.
+  agentProfile?: import('./types.ts').AgentProfile;
+  /** Store for reading/updating the singleton AgentProfile at runtime. */
+  agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
+  /**
+   * Multi-agent: specialist registry (ts-coder, writer, etc.).
+   * Built from vinyan.json `agents[]` + built-in defaults by the factory.
+   * Intent resolver uses this for auto-classification; prompt assembly for persona injection.
+   */
+  agentRegistry?: import('./agents/registry.ts').AgentRegistry;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -351,7 +362,13 @@ async function prepareExecution(
         bus: deps.bus,
         userPreferences: deps.userPreferenceStore?.formatForPrompt(),
         conversationHistory: conversationCtx,
+        agents: deps.agentRegistry?.listAgents(),
+        defaultAgentId: deps.agentRegistry?.defaultAgent().id,
       });
+      // Multi-agent: propagate resolved agentId onto the input for downstream phases
+      if (intentResolution.agentId) {
+        input.agentId = intentResolution.agentId;
+      }
       deps.bus?.emit('intent:resolved', {
         taskId: input.id,
         strategy: intentResolution.strategy,
@@ -1214,6 +1231,8 @@ async function executeTaskCore(
     // `constraints`) and the core-loop swaps `ctx.input` for subsequent
     // phases. The caller's original `input` is never mutated because the
     // enhanced variant is a shallow clone produced by phase-plan.
+    // Multi-agent: resolve the specialist spec from input.agentId (set by intent resolver).
+    const agentProfile = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) ?? undefined : undefined;
     let ctx: PhaseContext = {
       input,
       deps,
@@ -1221,6 +1240,7 @@ async function executeTaskCore(
       workingMemory,
       explorationFlag,
       conversationHistory,
+      agentProfile,
     };
 
     // Outer loop: routing level escalation

@@ -33,10 +33,12 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     console.error('       --tool      Enable tool execution (shell, file ops) for non-code tasks');
     console.error('       --dry-run   Show routing decision without executing');
     console.error('       --output    Write result JSON to file');
+    console.error('       --agent <id> Force a specific specialist agent (e.g., ts-coder, writer)');
     process.exit(2);
   }
 
   const files = parseArrayFlag(argv, '--file');
+  const agentIdOverride = parseSingleFlag(argv, '--agent');
   const budgetRaw = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
   const retriesRaw = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
   const timeoutRaw = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);
@@ -61,6 +63,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     goal,
     taskType: files.length > 0 ? 'code' : 'reasoning',
     targetFiles: files.length > 0 ? files : undefined,
+    agentId: agentIdOverride,
     budget: {
       maxTokens: budget,
       maxDurationMs: timeout,

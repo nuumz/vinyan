@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
-import type { ConversationEntry, ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
+import type { AgentSpec, ConversationEntry, ExecutionStrategy, IntentResolution, TaskInput } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Zod schema for LLM response parsing
@@ -31,6 +31,9 @@ const IntentResponseSchema = z.object({
   }).optional(),
   workflowPrompt: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
+  /** Multi-agent: id of specialist best-fit for this task. */
+  agentId: z.string().optional(),
+  agentSelectionReason: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +229,35 @@ function formatConversationContext(history?: ConversationEntry[]): string {
   return `\nRecent conversation:\n${lines.join('\n')}`;
 }
 
+/**
+ * Render the specialist agent catalog for the classifier prompt.
+ * When override is active, signal the LLM to keep that id.
+ */
+function formatAgentCatalog(
+  agents: AgentSpec[] | undefined,
+  overrideActive: boolean,
+  overrideId?: string,
+): string {
+  if (!agents || agents.length === 0) return '';
+
+  if (overrideActive && overrideId) {
+    return `\nAgent override active: the user selected '${overrideId}'. Return that id in your response agentId field unchanged.`;
+  }
+
+  const lines: string[] = [];
+  lines.push('Available specialist agents (pick the best-fit for this task):');
+  for (const a of agents) {
+    const hints: string[] = [];
+    if (a.routingHints?.preferDomains) hints.push(`domains: ${a.routingHints.preferDomains.join(',')}`);
+    if (a.routingHints?.preferExtensions) hints.push(`ext: ${a.routingHints.preferExtensions.join(',')}`);
+    if (a.routingHints?.preferFrameworks) hints.push(`frameworks: ${a.routingHints.preferFrameworks.join(',')}`);
+    const hintsStr = hints.length > 0 ? ` [${hints.join(' | ')}]` : '';
+    lines.push(`  - ${a.id}: ${a.description}${hintsStr}`);
+  }
+  lines.push('Return the chosen agent id in the response `agentId` field, with a brief `agentSelectionReason`.');
+  return `\n${lines.join('\n')}`;
+}
+
 // ---------------------------------------------------------------------------
 // Main resolver
 // ---------------------------------------------------------------------------
@@ -238,6 +270,13 @@ export interface IntentResolverDeps {
   userPreferences?: string;
   /** Recent conversation history for multi-turn context. */
   conversationHistory?: ConversationEntry[];
+  /**
+   * Multi-agent: roster of specialist agents. When provided, resolver picks
+   * the best-fit agentId based on goal + task characteristics.
+   */
+  agents?: AgentSpec[];
+  /** Default agent id used when resolver cannot confidently pick one. */
+  defaultAgentId?: string;
 }
 
 const INTENT_TIMEOUT_MS = 8000;
@@ -255,12 +294,17 @@ export async function resolveIntent(
 
   const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
   const conversationBlock = formatConversationContext(deps.conversationHistory);
+
+  // Multi-agent: when CLI override is set, skip the catalog (resolver won't reclassify agent).
+  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
+  const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
+
   const userPrompt = `User goal: "${input.goal}"
 Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
 Constraints: ${input.constraints?.join(', ') || 'none'}
 Current platform: ${process.platform}
-Available tools: ${toolList}${preferencesBlock}${conversationBlock}`;
+Available tools: ${toolList}${agentsBlock}${preferencesBlock}${conversationBlock}`;
 
   const response = await withTimeout(
     provider.generate({
@@ -336,6 +380,26 @@ Available tools: ${toolList}${preferencesBlock}${conversationBlock}`;
     }
   }
 
+  // Multi-agent: resolve the agentId with priority:
+  //   1. CLI override (input.agentId) — never overridden by resolver
+  //   2. LLM-picked agentId (parsed.agentId) — validated against registry
+  //   3. Default agent id from registry
+  let resolvedAgentId: string | undefined;
+  let agentSelectionReason: string | undefined;
+  if (deps.agents && deps.agents.length > 0) {
+    const known = new Set(deps.agents.map((a) => a.id));
+    if (input.agentId && known.has(input.agentId)) {
+      resolvedAgentId = input.agentId;
+      agentSelectionReason = 'user override via --agent flag';
+    } else if (parsed.agentId && known.has(parsed.agentId)) {
+      resolvedAgentId = parsed.agentId;
+      agentSelectionReason = parsed.agentSelectionReason ?? 'classifier selection';
+    } else {
+      resolvedAgentId = deps.defaultAgentId && known.has(deps.defaultAgentId) ? deps.defaultAgentId : deps.agents[0]?.id;
+      agentSelectionReason = 'registry default (no confident pick)';
+    }
+  }
+
   return {
     strategy: parsed.strategy,
     refinedGoal: parsed.refinedGoal,
@@ -343,5 +407,7 @@ Available tools: ${toolList}${preferencesBlock}${conversationBlock}`;
     workflowPrompt: parsed.workflowPrompt,
     confidence: parsed.confidence ?? 0.8,
     reasoning: parsed.reasoning,
+    agentId: resolvedAgentId,
+    agentSelectionReason,
   };
 }

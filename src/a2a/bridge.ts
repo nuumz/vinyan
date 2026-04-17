@@ -20,6 +20,8 @@ export interface A2ABridgeDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   baseUrl: string;
   a2aManager?: A2AManagerImpl;
+  /** Optional AgentProfile — when present, agent card name/description/capabilities come from here. */
+  agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
 }
 
 export class A2ABridge {
@@ -210,7 +212,8 @@ export class A2ABridge {
 
   /** Serve /.well-known/agent.json */
   getAgentCard(): unknown {
-    return generateAgentCard(this.deps.baseUrl, this.deps.a2aManager?.identity);
+    const agentProfile = this.deps.agentProfileStore?.get() ?? undefined;
+    return generateAgentCard(this.deps.baseUrl, this.deps.a2aManager?.identity, 1, { agentProfile });
   }
 
   /** Map Vinyan TaskResult to A2A Task with artifacts, applying confidence cap */

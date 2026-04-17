@@ -59,7 +59,16 @@ export class AgentSession implements IAgentSession {
       throw new Error(`Invalid state for send: ${this.state}`);
     }
     const line = `${JSON.stringify(turn)}\n`;
-    this.proc.stdin.write(encoder.encode(line));
+    try {
+      this.proc.stdin.write(encoder.encode(line));
+    } catch (err) {
+      // EPIPE / closed stdin — worker subprocess already died. Convert to
+      // a recoverable session error instead of letting it crash the host process.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[AgentSession] stdin write failed (worker pid=${this.proc.pid}): ${msg}`);
+      this.state = 'CLOSED';
+      throw new Error(`Worker pipe closed: ${msg}`);
+    }
     this.state = 'WAITING_FOR_WORKER';
   }
 

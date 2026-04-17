@@ -46,6 +46,13 @@ export interface PhaseContext {
   readonly explorationFlag: boolean;
   /** Conversation history from prior turns (loaded when sessionId present). */
   readonly conversationHistory?: ConversationEntry[];
+  /**
+   * Multi-agent: resolved specialist for this task (ts-coder, writer, etc.).
+   * Set by core-loop after intent resolution. Downstream phases use this for
+   * prompt assembly (persona/soul), contract (ACL), and skill scoping.
+   * Access the raw id via `ctx.input.agentId`.
+   */
+  readonly agentProfile?: import('../types.ts').AgentSpec;
 }
 
 // ---------------------------------------------------------------------------

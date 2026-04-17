@@ -7,10 +7,10 @@
  *
  * Zero overhead when network.instances.enabled = false (default).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import type { VinyanConfig } from '../config/schema.ts';
+import { resolveInstanceId } from './identity.ts';
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import { CalibrationExchange } from './calibration.ts';
 import type { CapabilityUpdate } from './capability-updates.ts';
@@ -429,21 +429,4 @@ export class A2AManagerImpl {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
-
-function resolveInstanceId(workspace: string): string {
-  const vinyanDir = join(workspace, '.vinyan');
-  const idPath = join(vinyanDir, 'instance-id');
-
-  if (existsSync(idPath)) {
-    return readFileSync(idPath, 'utf-8').trim();
-  }
-
-  if (!existsSync(vinyanDir)) {
-    mkdirSync(vinyanDir, { recursive: true });
-  }
-
-  const id = crypto.randomUUID();
-  writeFileSync(idPath, id);
-  return id;
-}
+// resolveInstanceId moved to ./identity.ts — shared by A2AManager and factory.ts

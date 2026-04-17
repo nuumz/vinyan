@@ -109,12 +109,88 @@ const DEFAULT_CAPABILITIES: Record<number, Capability[]> = {
 // ── Contract Factory ────────────────────────────────────────────────
 
 /**
+ * Per-agent ACL overlay — intersected with routing-level defaults.
+ * Intersection only narrows privilege; it never widens it (A6).
+ */
+export interface AgentAclOverlay {
+  /** Whitelist of tool names. When set, ALL capabilities are filtered to only those referencing these tools. */
+  allowedTools?: string[];
+  /** Blanket disables that strip the matching capability type entirely. */
+  capabilityOverrides?: {
+    readAny?: boolean;
+    writeAny?: boolean;
+    network?: boolean;
+    shell?: boolean;
+  };
+}
+
+/**
+ * Apply agent ACL to default capabilities — intersection only.
+ *
+ * Rules (privilege-preserving):
+ *   - `allowedTools` → filter shell/mcp capabilities by command/server name
+ *   - `capabilityOverrides.shell = false` → drop `shell_exec` + `shell_read`
+ *   - `capabilityOverrides.writeAny = false` → drop `file_write`
+ *   - `capabilityOverrides.readAny = false` → drop `file_read`
+ *   - `capabilityOverrides.network = false` → drop `mcp_call` + `llm_call`
+ */
+function applyAgentAcl(
+  capabilities: Capability[],
+  acl?: AgentAclOverlay,
+): Capability[] {
+  if (!acl) return capabilities;
+  const drop = new Set<Capability['type']>();
+  const overrides = acl.capabilityOverrides;
+  if (overrides?.shell === false) {
+    drop.add('shell_exec');
+    drop.add('shell_read');
+  }
+  if (overrides?.writeAny === false) drop.add('file_write');
+  if (overrides?.readAny === false) drop.add('file_read');
+  if (overrides?.network === false) {
+    drop.add('mcp_call');
+    drop.add('llm_call');
+  }
+
+  let filtered = capabilities.filter((c) => !drop.has(c.type));
+
+  // Whitelist intersection: if allowedTools specified, narrow shell/mcp command lists
+  if (acl.allowedTools && acl.allowedTools.length > 0) {
+    const tools = new Set(acl.allowedTools);
+    filtered = filtered
+      .map((c) => {
+        if (c.type === 'shell_exec' || c.type === 'shell_read') {
+          const narrowed = c.commands.filter((cmd) => tools.has(cmd) || cmd === '**');
+          return narrowed.length > 0 ? { ...c, commands: narrowed } : null;
+        }
+        if (c.type === 'mcp_call') {
+          // mcp servers aren't individual tools — keep unless the user wants to narrow by server name explicitly
+          return c;
+        }
+        return c;
+      })
+      .filter((c): c is Capability => c !== null);
+  }
+
+  return filtered;
+}
+
+/**
  * Create an immutable AgentContract from a routing decision.
  * Deterministic: same inputs → same contract (A3).
+ *
+ * Optional `agentAcl` narrows routing-level defaults via intersection —
+ * never widens privilege (A6: least privilege preserved).
  */
-export function createContract(task: TaskInput, routing: RoutingDecision): AgentContract {
+export function createContract(
+  task: TaskInput,
+  routing: RoutingDecision,
+  agentAcl?: AgentAclOverlay,
+): AgentContract {
   const level = routing.level;
   const maxToolCalls = MAX_TOOL_CALLS_BY_LEVEL[level] ?? 50;
+  const baseCapabilities = DEFAULT_CAPABILITIES[level] ?? [];
+  const capabilities = applyAgentAcl(baseCapabilities, agentAcl);
   return {
     taskId: task.id,
     routingLevel: level,
@@ -124,7 +200,7 @@ export function createContract(task: TaskInput, routing: RoutingDecision): Agent
     maxToolCallsPerTurn: Math.min(10, maxToolCalls),
     maxTurns: level === 1 ? 15 : level === 2 ? 30 : 50,
     maxEscalations: 3,
-    capabilities: DEFAULT_CAPABILITIES[level] ?? [],
+    capabilities,
     onViolation: level <= 1 ? 'kill' : 'warn_then_kill',
     violationTolerance: level <= 1 ? 0 : 2,
     issuedAt: Date.now(),

@@ -6,6 +6,7 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { AgentProfileStore } from '../db/agent-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
@@ -41,6 +42,7 @@ export async function runStatusCommand(workspace: string): Promise<void> {
     const shadowStore = new ShadowStore(raw);
 
     const workerStore = new WorkerStore(raw);
+    const agentProfileStore = new AgentProfileStore(raw);
 
     const m = getSystemMetrics({
       traceStore,
@@ -50,6 +52,55 @@ export async function runStatusCommand(workspace: string): Promise<void> {
       shadowStore,
       workerStore,
     });
+
+    // === Vinyan Agent === workspace-level identity card (shown first)
+    const profile = agentProfileStore.get();
+    if (profile) {
+      const summary = agentProfileStore.summarize({
+        traceStore,
+        skillStore,
+        workerStore,
+        patternStore,
+        db: raw,
+      });
+      console.log('=== Vinyan Agent ===');
+      console.log(`  Name:        ${profile.displayName}`);
+      if (profile.description) console.log(`  Description: ${profile.description}`);
+      console.log(`  Instance:    ${profile.instanceId}`);
+      console.log(`  Workspace:   ${profile.workspacePath}`);
+      console.log(
+        `  Created:     ${new Date(profile.createdAt).toISOString()}  Updated: ${new Date(profile.updatedAt).toISOString()}`,
+      );
+      console.log('');
+      console.log('  Preferences:');
+      console.log(`    Approval mode: ${profile.preferences.approvalMode}`);
+      console.log(`    Verbosity:     ${profile.preferences.verbosity}`);
+      console.log(`    Thinking:      ${profile.preferences.defaultThinkingLevel}`);
+      console.log(`    Language:      ${profile.preferences.language}`);
+      if (profile.vinyanMdPath) {
+        console.log(`  VINYAN.md:   ${profile.vinyanMdPath}`);
+        if (profile.vinyanMdHash) console.log(`    hash:        ${profile.vinyanMdHash.slice(0, 20)}…`);
+      }
+      if (profile.capabilities.length > 0) {
+        console.log(`  Capabilities (${profile.capabilities.length}):`);
+        for (const cap of profile.capabilities) console.log(`    - ${cap}`);
+      }
+      console.log('');
+      console.log('  Experience:');
+      console.log(
+        `    Tasks: ${summary.totalTasks}  (success rate: ${(summary.successRate * 100).toFixed(1)}%)  task types: ${summary.distinctTaskTypes}`,
+      );
+      console.log(
+        `    Active skills: ${summary.activeSkills}  active engines: ${summary.activeWorkers}  sleep cycles: ${summary.sleepCyclesRun}`,
+      );
+      if (summary.lastActiveAt > 0) {
+        console.log(`    Last active:     ${new Date(summary.lastActiveAt).toISOString()}`);
+      }
+      if (summary.lastSleepCycleAt > 0) {
+        console.log(`    Last sleep cycle: ${new Date(summary.lastSleepCycleAt).toISOString()}`);
+      }
+      console.log('');
+    }
 
     console.log('=== Vinyan System Status ===\n');
 

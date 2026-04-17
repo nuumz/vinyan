@@ -29,6 +29,9 @@ import { migration019 } from './019_add_soul_columns.ts';
 import { migration020 } from './020_add_local_oracle_profiles.ts';
 import { migration021 } from './021_drop_dead_worker_columns.ts';
 import { migration022 } from './022_drop_legacy_worker_config_columns.ts';
+import { migration023 } from './023_add_agent_profile.ts';
+import { migration024 } from './024_cleanup_null_engine_config.ts';
+import { migration025 } from './025_add_agent_id_to_skills.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -55,4 +58,7 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration020,
   migration021,
   migration022,
+  migration023,
+  migration024,
+  migration025,
 ];

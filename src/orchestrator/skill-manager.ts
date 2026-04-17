@@ -25,6 +25,12 @@ export interface SkillManagerConfig {
   minEffectiveness?: number;
   /** Probation sessions before promotion (default: 10) */
   probationSessions?: number;
+  /**
+   * Multi-agent: scope skill lookup/creation to this specialist agent.
+   * When set, matches prefer exact agent ownership, falling back to legacy
+   * shared skills (agent_id IS NULL). When omitted, behaves as before (shared pool).
+   */
+  agentId?: string;
 }
 
 export class SkillManager {
@@ -32,12 +38,14 @@ export class SkillManager {
   private workspace: string;
   private minEffectiveness: number;
   private probationSessions: number;
+  private agentId?: string;
 
   constructor(config: SkillManagerConfig) {
     this.store = config.skillStore;
     this.workspace = config.workspace;
     this.minEffectiveness = config.minEffectiveness ?? 0.7;
     this.probationSessions = config.probationSessions ?? 10;
+    this.agentId = config.agentId;
   }
 
   /** Count active (promoted) skills. */
@@ -49,9 +57,12 @@ export class SkillManager {
    * Try to match a task to a cached active skill.
    * First attempts exact match, then falls back to fuzzy matching (PH3.4).
    * Fuzzy matches return with confidence: 0.4; exact matches omit confidence field.
+   *
+   * Scoped to this.agentId when set — prefers agent-owned skill, falls back
+   * to legacy shared skills (agent_id IS NULL).
    */
   match(taskSignature: string): CachedSkill | null {
-    const skill = this.store.findBySignature(taskSignature);
+    const skill = this.store.findBySignature(taskSignature, this.agentId);
     if (skill && skill.status === 'active') return skill;
 
     // PH3.4: fuzzy fallback — same verb + overlapping file extensions
@@ -72,7 +83,7 @@ export class SkillManager {
     if (!verb || !exts) return null;
 
     const targetExts = new Set(exts.split(','));
-    const candidates = this.store.findActive();
+    const candidates = this.store.findActive(this.agentId);
 
     let best: CachedSkill | null = null;
     for (const skill of candidates) {
@@ -182,6 +193,7 @@ export class SkillManager {
    * Called periodically by the Sleep Cycle (GAP-9).
    */
   reVerifyStaleSkills(): { checked: number; demoted: number } {
+    // Sleep cycle verification is fleet-wide, not per-agent
     const activeSkills = this.store.findActive();
     let checked = 0;
     let demoted = 0;

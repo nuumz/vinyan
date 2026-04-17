@@ -21,6 +21,7 @@ import type {
   WorkingMemoryState,
 } from '../types.ts';
 import type { AgentContext } from '../agent-context/types.ts';
+import type { AgentSpec } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 import type { SectionContext } from './prompt-section-registry.ts';
 import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
@@ -79,6 +80,10 @@ export function assemblePrompt(
   agentContext?: AgentContext,
   /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
   soulContent?: string,
+  /** Multi-agent: the specialist assigned to this task (ts-coder, writer, etc.). */
+  agentProfile?: AgentSpec,
+  /** Multi-agent: consultable peer agents (for agent-peers section). */
+  peerAgents?: AgentSpec[],
 ): AssembledPrompt {
   // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
@@ -94,6 +99,8 @@ export function assemblePrompt(
       environment,
       agentContext,
       soulContent,
+      agentProfile,
+      peerAgents,
     };
     const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
     const userPrompt = reasoningRegistry.renderTarget('user', ctx);
@@ -122,6 +129,8 @@ export function assemblePrompt(
     environment,
     agentContext,
     soulContent,
+    agentProfile,
+    peerAgents,
   };
   const systemPrompt = defaultRegistry.renderTarget('system', ctx);
   const userPrompt = defaultRegistry.renderTarget('user', ctx);

@@ -66,6 +66,37 @@ export const EngineProfileRowSchema = z.object({
   engine_config: z.string().transform((v) => JSON.parse(v) as Record<string, unknown>),
 });
 
+// ── AgentProfile row schema (workspace singleton, migration 023) ────────
+
+export const AgentProfileRowSchema = z.object({
+  id: z.literal('local'),
+  instance_id: z.string(),
+  display_name: z.string(),
+  description: z.string().nullable().optional(),
+  workspace_path: z.string(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  // JSON-encoded AgentPreferences; transformed into plain object for consumers
+  preferences_json: z.string().transform((v) => {
+    try {
+      return JSON.parse(v) as Record<string, unknown>;
+    } catch {
+      return {} as Record<string, unknown>;
+    }
+  }),
+  // JSON-encoded string[] of declared capabilities
+  capabilities_json: z.string().transform((v) => {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [] as string[];
+    }
+  }),
+  vinyan_md_path: z.string().nullable().optional(),
+  vinyan_md_hash: z.string().nullable().optional(),
+});
+
 // ── ExecutionTrace row schema ───────────────────────────────────────────
 
 const TraceOutcomeSchema = z.enum(['success', 'failure', 'timeout', 'escalated']);

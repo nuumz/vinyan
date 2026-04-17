@@ -331,6 +331,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private bus?: VinyanBus;
   private agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
+  private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -368,6 +369,11 @@ export class WorkerPoolImpl implements WorkerPool {
   /** Set soul store after construction (for SOUL.md loading at dispatch). */
   setSoulStore(store: import('../agent-context/soul-store.ts').SoulStore): void {
     this.soulStore = store;
+  }
+
+  /** Set specialist agent registry after construction (multi-agent prompt injection). */
+  setAgentRegistry(registry: import('../agents/registry.ts').AgentRegistry): void {
+    this.agentRegistry = registry;
   }
 
   /** Lazily create warm pool on first subprocess dispatch (L2+). */
@@ -445,9 +451,13 @@ export class WorkerPoolImpl implements WorkerPool {
         `[vinyan] RE dispatch: engine '${selectedEngine?.id}' (type: ${selectedEngine?.engineType}) is non-LLM — subprocess isolation unavailable. Dispatching in-process (isolation degraded).`,
       );
     }
+    // Multi-agent: resolve specialist profile + peers from registry (prompt injection)
+    const agentProfile = input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+    const peerAgents = this.agentRegistry?.listAgents();
+
     const output = useSubprocessForTask
       ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing, ConversationHistory);
+      : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents);
 
     return this.toWorkerResult(output, startTime);
   }
@@ -526,6 +536,8 @@ export class WorkerPoolImpl implements WorkerPool {
     workerInput: WorkerInput,
     routing: RoutingDecision,
     conversationHistory?: import('../types.ts').ConversationEntry[],
+    agentProfile?: import('../types.ts').AgentSpec,
+    peerAgents?: import('../types.ts').AgentSpec[],
   ): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select engine if available, fallback to tier-based
     const engine = routing.workerId
@@ -565,6 +577,8 @@ export class WorkerPoolImpl implements WorkerPool {
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
       agentContext, // Agent Context Layer: persistent agent identity/memory/skills
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
+      agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
+      peerAgents, // Multi-agent: consultable peer agents roster
     );
 
     const startTime = performance.now();

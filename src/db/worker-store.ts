@@ -49,12 +49,13 @@ export class WorkerStore {
 
   findById(id: string): EngineProfile | null {
     const row = this.db.prepare(`SELECT * FROM worker_profiles WHERE id = ?`).get(id);
-    return row ? rowToProfile(row) : null;
+    if (!row) return null;
+    return rowToProfileSafe(row);
   }
 
   findByStatus(status: EngineProfileStatus): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles WHERE status = ? ORDER BY created_at ASC`).all(status);
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
   findActive(): EngineProfile[] {
@@ -63,14 +64,14 @@ export class WorkerStore {
 
   findAll(): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles ORDER BY created_at ASC`).all();
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
   findByModelId(modelId: string): EngineProfile[] {
     const rows = this.db
       .prepare(`SELECT * FROM worker_profiles WHERE model_id = ? ORDER BY created_at ASC`)
       .all(modelId);
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
   /** Update worker status with appropriate timestamp fields. */
@@ -335,4 +336,21 @@ function rowToProfile(row: unknown): EngineProfile {
     demotionReason: r.demotion_reason ?? undefined,
     demotionCount: r.demotion_count,
   };
+}
+
+/**
+ * Like `rowToProfile`, but returns null instead of throwing on malformed
+ * rows (e.g. legacy rows with NULL engine_config). Logs a warning so the
+ * operator can see there's stale data that warrants a cleanup, but does
+ * NOT crash the server — callers filter out nulls.
+ */
+function rowToProfileSafe(row: unknown): EngineProfile | null {
+  try {
+    return rowToProfile(row);
+  } catch (err) {
+    const id = (row as { id?: string } | null)?.id ?? '<unknown>';
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[worker-store] Skipping malformed worker_profiles row "${id}": ${msg}`);
+    return null;
+  }
 }

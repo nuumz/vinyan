@@ -31,9 +31,9 @@ describe('MigrationRunner', () => {
   test('fresh install applies all migrations', () => {
     const result = runner.migrate(db, ALL_MIGRATIONS);
 
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
-    expect(result.current).toBe(22);
-    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+    expect(result.current).toBe(25);
+    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
 
     // Verify all tables exist
     const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
@@ -59,7 +59,7 @@ describe('MigrationRunner', () => {
 
     // Verify schema_version tracks all applied
     const versions = db.query('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[];
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
 
     // Verify oracle_profiles table from migration 005
     expect(tableNames).toContain('oracle_profiles');
@@ -67,26 +67,27 @@ describe('MigrationRunner', () => {
 
   // ── Acceptance Criterion 2: Upgrade without data loss ───
   test('existing Phase 4 DB upgrades without data loss', () => {
-    // Simulate a Phase 4 DB by applying only migration 1
-    const result1 = runner.migrate(db, [ALL_MIGRATIONS[0]!]);
-    expect(result1.applied).toEqual([1]);
+    // Simulate mid-migration DB by applying migrations 1-8 (enough to have engine_config column from 008)
+    const earlyMigrations = ALL_MIGRATIONS.slice(0, 8);
+    const result1 = runner.migrate(db, earlyMigrations);
+    expect(result1.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 
-    // Insert some Phase 4 data
+    // Insert some Phase 4 data (engine_config required by migration 024 cleanup)
     db.run(
       `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files)
        VALUES ('trace-1', 'task-1', ?, 1, 'test-approach', 'mock/test', 100, 500, 'success', '{}', '[]')`,
       [Date.now()],
     );
     db.run(
-      `INSERT INTO worker_profiles (id, model_id, temperature, status, created_at, demotion_count)
-       VALUES ('worker-1', 'mock/test', 0.7, 'active', ?, 0)`,
-      [Date.now()],
+      `INSERT INTO worker_profiles (id, model_id, temperature, status, created_at, demotion_count, engine_config)
+       VALUES ('worker-1', 'mock/test', 0.7, 'active', ?, 0, ?)`,
+      [Date.now(), JSON.stringify({ modelId: 'mock/test', temperature: 0.7 })],
     );
 
-    // Now upgrade to latest (migrations 2-5)
+    // Now upgrade to latest
     const result2 = runner.migrate(db, ALL_MIGRATIONS);
-    expect(result2.applied).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
-    expect(result2.current).toBe(22);
+    expect(result2.applied).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+    expect(result2.current).toBe(25);
 
     // Verify existing data is intact
     const trace = db.query("SELECT id, approach FROM execution_traces WHERE id = 'trace-1'").get() as {
@@ -117,7 +118,7 @@ describe('MigrationRunner', () => {
     // Second run
     const result = runner.migrate(db, ALL_MIGRATIONS);
     expect(result.applied).toEqual([]);
-    expect(result.current).toBe(22);
+    expect(result.current).toBe(25);
     expect(result.pending).toEqual([]);
   });
 
@@ -143,7 +144,7 @@ describe('MigrationRunner', () => {
 
     // Verify: good migrations applied, failed one rolled back
     const currentVersion = runner.getCurrentVersion(db);
-    expect(currentVersion).toBe(22);
+    expect(currentVersion).toBe(25);
 
     // The table from the failed migration should NOT exist (rolled back)
     const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'test_fail_table'").all();
@@ -182,7 +183,7 @@ describe('MigrationRunner', () => {
 
   test('getCurrentVersion returns latest after migration', () => {
     runner.migrate(db, ALL_MIGRATIONS);
-    expect(runner.getCurrentVersion(db)).toBe(22);
+    expect(runner.getCurrentVersion(db)).toBe(25);
   });
 
   // ── dryRun ──────────────────────────────────────────────
@@ -190,7 +191,7 @@ describe('MigrationRunner', () => {
     const result = runner.migrate(db, ALL_MIGRATIONS, { dryRun: true });
     expect(result.applied).toEqual([]);
     expect(result.current).toBe(0);
-    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
 
     // Verify NO tables were created (except schema_version from getCurrentVersion)
     const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'execution_traces'").all();
@@ -203,6 +204,6 @@ describe('MigrationRunner', () => {
     const result = runner.migrate(db, ALL_MIGRATIONS, { dryRun: true });
     expect(result.applied).toEqual([]);
     expect(result.current).toBe(1);
-    expect(result.pending).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(result.pending).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
   });
 });

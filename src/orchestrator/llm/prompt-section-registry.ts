@@ -65,6 +65,10 @@ export interface SectionContext {
   agentContext?: import('../agent-context/types.ts').AgentContext;
   /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
   soulContent?: string;
+  /** Multi-agent: the specialist agent assigned to this task (ts-coder, writer, etc.). */
+  agentProfile?: import('../types.ts').AgentSpec;
+  /** Multi-agent: peer agents available for consultation via delegation. */
+  peerAgents?: import('../types.ts').AgentSpec[];
 }
 
 export interface PromptSection {
@@ -627,6 +631,7 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
 
   registerConversationHistorySection(registry);
   registerAgentContextSections(registry);
+  registerSpecialistAgentSections(registry);
 
   return registry;
 }
@@ -944,6 +949,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
 
   registerConversationHistorySection(registry);
   registerAgentContextSections(registry);
+  registerSpecialistAgentSections(registry);
 
   return registry;
 }
@@ -1117,6 +1123,57 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
         }
       }
 
+      return lines.join('\n');
+    },
+  });
+}
+
+// ── Specialist agent sections (multi-agent fleet) ─────────────────────
+
+/**
+ * Register specialist-agent prompt sections. These render the currently
+ * assigned specialist's persona (soul) and the roster of peer agents that
+ * can be consulted via delegation.
+ *
+ * agent-persona (system, priority 15) fires BEFORE agent-soul (priority 16)
+ * so when both are present the specialist persona appears first.
+ */
+function registerSpecialistAgentSections(registry: PromptSectionRegistry): void {
+  // Specialist persona — who am I for this task?
+  registry.register({
+    id: 'agent-persona',
+    target: 'system',
+    cache: 'session',
+    priority: 15,
+    render: (ctx) => {
+      const agent = ctx.agentProfile;
+      if (!agent) return null;
+
+      const lines = [`[AGENT] ${agent.name} (${agent.id})`];
+      lines.push(agent.description);
+      if (agent.soul) {
+        lines.push('');
+        lines.push(agent.soul.trim());
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Peer agents — who can I consult via delegation?
+  registry.register({
+    id: 'agent-peers',
+    target: 'system',
+    cache: 'static',
+    priority: 55,
+    render: (ctx) => {
+      const peers = (ctx.peerAgents ?? []).filter((a) => a.id !== ctx.agentProfile?.id);
+      if (peers.length === 0) return null;
+
+      const lines = ['[CONSULTABLE AGENTS]'];
+      lines.push('You can delegate subtasks to these peers via the delegate tool with targetAgentId:');
+      for (const p of peers) {
+        lines.push(`  - ${p.id}: ${p.description}`);
+      }
       return lines.join('\n');
     },
   });

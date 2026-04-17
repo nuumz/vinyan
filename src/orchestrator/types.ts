@@ -136,6 +136,14 @@ export interface IntentResolution {
   confidence: number;
   /** LLM reasoning trace for observability */
   reasoning: string;
+  /**
+   * Multi-agent: selected specialist agent id (e.g., 'ts-coder', 'writer').
+   * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
+   * Overridden by `input.agentId` (CLI --agent flag).
+   */
+  agentId?: string;
+  /** Resolver's reasoning for agent selection (observability). */
+  agentSelectionReason?: string;
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */
@@ -338,6 +346,14 @@ export interface TaskInput {
    * Absent / root tasks run with the full agent manifest.
    */
   subagentType?: 'explore' | 'plan' | 'general-purpose';
+  /**
+   * Specialist agent ID (e.g., 'ts-coder', 'writer'). Set by:
+   *   1. CLI `--agent=<id>` (user override, skips auto-classification)
+   *   2. Intent resolver auto-classification (when not pre-set)
+   *   3. Registry default (fallback)
+   * Flows into prompt (soul/persona), contract (ACL), and skill manager (scope).
+   */
+  agentId?: string;
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
@@ -802,6 +818,12 @@ export interface CachedSkill {
   confidence?: number; // PH3.4: fuzzy match confidence (omitted = exact match)
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
   composedOf?: string[]; // PH5 D2: ordered list of sub-skill task signatures
+  /**
+   * Multi-agent: owning specialist agent id (e.g., 'ts-coder').
+   * NULL/undefined = legacy shared skill (readable by any agent).
+   * New skills are written with the creating agent's id.
+   */
+  agentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1254,6 +1276,128 @@ export interface EngineStats {
     }
   >;
   lastActiveAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Profile — workspace-level Vinyan Agent identity (singleton)
+// ---------------------------------------------------------------------------
+
+/** Runtime preferences for THE Vinyan Agent in this workspace. */
+export interface AgentPreferences {
+  /** Approval behavior for high-risk/destructive tasks. Default: 'interactive'. */
+  approvalMode: 'strict' | 'interactive' | 'trusting';
+  /** Verbosity of CLI output and logging. Default: 'normal'. */
+  verbosity: 'quiet' | 'normal' | 'verbose';
+  /** Default thinking depth when not overridden per-task. Default: 'medium'. */
+  defaultThinkingLevel: 'off' | 'low' | 'medium' | 'high';
+  /** Primary interaction language. Default: 'en'. */
+  language: 'en' | 'th';
+}
+
+/** Default preferences when none are specified. */
+export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
+  approvalMode: 'interactive',
+  verbosity: 'normal',
+  defaultThinkingLevel: 'medium',
+  language: 'en',
+};
+
+/**
+ * AgentProfile — workspace-level singleton representing THE Vinyan Agent.
+ *
+ * Exactly ONE per workspace. `id` is always `'local'` (enforced at DB level
+ * via CHECK constraint). Persists across runs. Distinct from:
+ *   - EngineProfile (per-model execution config, N per workspace)
+ *   - Session state (ephemeral, per-task)
+ */
+export interface AgentProfile {
+  /** Always `'local'` — the singular Vinyan Agent of this workspace. */
+  id: 'local';
+  /** A2A instance UUID — reused from `.vinyan/instance-id`. */
+  instanceId: string;
+  /** Human-readable name shown in CLI and A2A card. Default: 'vinyan'. */
+  displayName: string;
+  /** Optional tagline/description for A2A discovery. */
+  description?: string;
+  /** Absolute path of the workspace. */
+  workspacePath: string;
+  /** Epoch ms of first bootstrap. */
+  createdAt: number;
+  /** Epoch ms of last preference/capability update. */
+  updatedAt: number;
+  /** Runtime preferences (config-overridable). */
+  preferences: AgentPreferences;
+  /** Declared capabilities (oracles, engines, MCP servers) advertised to peers. */
+  capabilities: string[];
+  /** Resolved path of VINYAN.md if present (memory link). */
+  vinyanMdPath?: string;
+  /** SHA-256 of VINYAN.md content (freshness tracking). */
+  vinyanMdHash?: string;
+}
+
+/**
+ * Computed aggregate counters for THE Vinyan Agent.
+ * Not stored in DB — computed on-demand via AgentProfileStore.summarize()
+ * with 60s in-memory cache.
+ */
+export interface AgentProfileSummary {
+  totalTasks: number;
+  distinctTaskTypes: number;
+  successRate: number;
+  activeSkills: number;
+  activeWorkers: number;
+  sleepCyclesRun: number;
+  lastActiveAt: number;
+  lastSleepCycleAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Specialist Agent Fleet — multiple named agents (ts-coder, writer, etc.)
+// Distinct from workspace singleton AgentProfile (id='local').
+// ---------------------------------------------------------------------------
+
+/** Capability overrides for agent ACL intersection (never widens privilege). */
+export interface AgentCapabilityOverrides {
+  readAny?: boolean;
+  writeAny?: boolean;
+  network?: boolean;
+  shell?: boolean;
+}
+
+/** Routing hints — advisory inputs to the intent resolver's agent selection. */
+export interface AgentRoutingHints {
+  minLevel?: number;
+  preferDomains?: string[];
+  preferExtensions?: string[];
+  preferFrameworks?: string[];
+}
+
+/**
+ * AgentSpec — runtime representation of a specialist agent.
+ *
+ * Multiple allowed per workspace. Each has its own persona (soul.md),
+ * ACL (allowed tools + capability overrides), and routing hints.
+ *
+ * Fields:
+ *   - id: kebab-case unique identifier (e.g., 'ts-coder', 'writer')
+ *   - name: human-readable display name
+ *   - description: one-line role summary for intent resolver
+ *   - soul: pre-loaded soul.md content (persona + philosophy + strategies)
+ *   - allowedTools: tool allowlist (intersection with routing defaults)
+ *   - capabilityOverrides: capability restrictions (never widens)
+ *   - routingHints: advisory hints for auto-classification
+ *   - builtin: true if shipped with Vinyan
+ */
+export interface AgentSpec {
+  id: string;
+  name: string;
+  description: string;
+  soul?: string;
+  soulPath?: string;
+  allowedTools?: string[];
+  capabilityOverrides?: AgentCapabilityOverrides;
+  routingHints?: AgentRoutingHints;
+  builtin?: boolean;
 }
 
 // ---------------------------------------------------------------------------

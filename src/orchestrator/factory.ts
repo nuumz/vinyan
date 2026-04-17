@@ -28,6 +28,13 @@ import { UserPreferenceStore } from '../db/user-preference-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
+import { AgentProfileStore } from '../db/agent-profile-store.ts';
+import { resolveInstanceId } from '../a2a/identity.ts';
+import { loadAgentRegistry } from './agents/registry.ts';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { loadInstructionMemory } from './llm/instruction-loader.ts';
+import type { AgentProfile, AgentPreferences } from './types.ts';
 import { AgentContextBuilder } from './agent-context/context-builder.ts';
 import { AgentContextUpdater } from './agent-context/context-updater.ts';
 import { AgentEvolution } from './agent-context/agent-evolution.ts';
@@ -217,6 +224,10 @@ export interface Orchestrator {
   patternStore?: PatternStore;
   shadowStore?: ShadowStore;
   workerStore?: WorkerStore;
+  /** AgentProfileStore — workspace singleton (Vinyan Agent identity). */
+  agentProfileStore?: AgentProfileStore;
+  /** Resolved AgentProfile snapshot from bootstrap (convenience). */
+  agentProfile?: AgentProfile;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   approvalGate?: ApprovalGateImpl;
@@ -279,6 +290,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let providerTrustStore: ProviderTrustStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
+  let agentProfileStore: AgentProfileStore | undefined;
+  let agentProfile: AgentProfile | undefined;
   if (db) {
     patternStore = new PatternStore(db.getDb());
     shadowStore = new ShadowStore(db.getDb());
@@ -289,6 +302,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     providerTrustStore = new ProviderTrustStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
+
+    // AgentProfile — workspace-level Vinyan Agent identity (singleton)
+    agentProfileStore = new AgentProfileStore(db.getDb());
+    agentProfile = bootstrapAgentProfile(agentProfileStore, workspace, config);
   }
 
   // Phase 4: Auto-register existing LLM providers as WorkerProfiles (PH4.0 data seeding).
@@ -945,6 +962,38 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   });
   const regressionMonitor = new RegressionMonitor({ bus });
 
+  // Update AgentProfile declared capabilities now that all components are wired.
+  // Advertised to peers via A2A agent card.
+  if (agentProfileStore) {
+    try {
+      // Oracle names come from the loaded vinyan config (the enabled oracles)
+      const cfg = loadConfig(workspace);
+      const oracleNames = Object.entries(cfg.oracles ?? {})
+        .filter(([, o]) => (o as { enabled?: boolean }).enabled !== false)
+        .map(([name]) => name);
+      const engineIds = (config.engineRegistry ?? engineRegistry)?.listEngines()?.map((e) => e.id) ?? [];
+      const mcpServerIds = mcpClientPool?.listServers() ?? [];
+      const caps = collectDeclaredCapabilities({ oracleNames, engineIds, mcpServerIds });
+      agentProfileStore.updateCapabilities(caps);
+      // Refresh in-memory reference to include capabilities
+      if (agentProfile) agentProfile = agentProfileStore.get() ?? agentProfile;
+    } catch (err) {
+      console.warn('[vinyan] AgentProfile capability update failed:', err);
+    }
+  }
+
+  // Multi-agent: load specialist registry (vinyan.json agents[] + built-in defaults)
+  let agentRegistry: ReturnType<typeof loadAgentRegistry> | undefined;
+  try {
+    const vinyanCfg = loadConfig(workspace);
+    agentRegistry = loadAgentRegistry(workspace, vinyanCfg.agents);
+  } catch (err) {
+    console.warn('[vinyan] Agent registry load failed, using built-in defaults:', err);
+    agentRegistry = loadAgentRegistry(workspace, undefined);
+  }
+  // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
+  if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -1060,6 +1109,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workflowRegistry: new WorkflowRegistry(),
     // Agent Context Layer: post-task learning for persistent identity/memory/skills
     agentContextUpdater,
+    // AgentProfile — workspace-level Vinyan Agent identity (singleton)
+    agentProfile,
+    agentProfileStore,
+    // Specialist agent registry — ts-coder, writer, secretary, etc.
+    agentRegistry,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -1415,6 +1469,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     patternStore,
     shadowStore,
     workerStore,
+    agentProfileStore,
+    agentProfile,
     worldGraph,
     metricsCollector,
     approvalGate,
@@ -1481,6 +1537,99 @@ export async function createOrchestratorAsync(
  * Also registers non-LLM engines from engineRegistry so fleet governance
  * (WorkerLifecycle, WorkerSelector, CapabilityModel) can track them.
  */
+/**
+ * Bootstrap THE Vinyan Agent identity (workspace singleton).
+ *
+ * On first call per workspace: inserts default row with instance UUID,
+ * display name, and VINYAN.md link. On subsequent calls: merges
+ * `vinyan.json` agent.preferences into the DB (config-first precedence).
+ */
+function bootstrapAgentProfile(
+  store: AgentProfileStore,
+  workspace: string,
+  config: OrchestratorConfig,
+): AgentProfile {
+  const instanceId = resolveInstanceId(workspace);
+
+  // Read VINYAN.md path + hash if present (non-fatal if missing)
+  let vinyanMdPath: string | undefined;
+  let vinyanMdHash: string | undefined;
+  try {
+    const mem = loadInstructionMemory(workspace);
+    if (mem) {
+      vinyanMdPath = mem.filePath;
+      // mem.contentHash is already SHA-256 of merged content
+      vinyanMdHash = `sha256:${mem.contentHash}`;
+    }
+  } catch {
+    /* no VINYAN.md — skip link */
+  }
+
+  // Pull config overrides
+  let configAgent: {
+    display_name?: string;
+    description?: string;
+    preferences?: {
+      approval_mode?: AgentPreferences['approvalMode'];
+      verbosity?: AgentPreferences['verbosity'];
+      default_thinking_level?: AgentPreferences['defaultThinkingLevel'];
+      language?: AgentPreferences['language'];
+    };
+  } | undefined;
+  try {
+    const loaded = loadConfig(workspace);
+    configAgent = (loaded as { agent?: typeof configAgent }).agent;
+  } catch {
+    /* no config → defaults */
+  }
+
+  // First-bootstrap or idempotent load
+  store.loadOrCreate({
+    instanceId,
+    workspace,
+    displayNameOverride: configAgent?.display_name,
+    descriptionOverride: configAgent?.description,
+    vinyanMdPath,
+    vinyanMdHash,
+  });
+
+  // Apply config preferences on every boot (source-of-truth is the config file
+  // when present; DB is a fallback for runtime-mutable state).
+  const cp = configAgent?.preferences;
+  if (cp) {
+    const partial: Partial<AgentPreferences> = {};
+    if (cp.approval_mode) partial.approvalMode = cp.approval_mode;
+    if (cp.verbosity) partial.verbosity = cp.verbosity;
+    if (cp.default_thinking_level) partial.defaultThinkingLevel = cp.default_thinking_level;
+    if (cp.language) partial.language = cp.language;
+    if (Object.keys(partial).length > 0) store.updatePreferences(partial);
+  }
+
+  // Refresh VINYAN.md link on every boot (path may have changed)
+  store.updateVinyanMdLink(vinyanMdPath ?? null, vinyanMdHash ?? null);
+
+  return store.get()!;
+}
+
+/**
+ * Collect declared capabilities for A2A advertisement:
+ *   - oracle names (from oracleGate)
+ *   - engine IDs (from registry)
+ *   - MCP server identifiers (from mcpClientPool)
+ * Called from the factory after all components are wired.
+ */
+function collectDeclaredCapabilities(deps: {
+  oracleNames?: string[];
+  engineIds?: string[];
+  mcpServerIds?: string[];
+}): string[] {
+  const caps: string[] = [];
+  for (const name of deps.oracleNames ?? []) caps.push(`oracle:${name}`);
+  for (const id of deps.engineIds ?? []) caps.push(`engine:${id}`);
+  for (const id of deps.mcpServerIds ?? []) caps.push(`mcp:${id}`);
+  return caps;
+}
+
 function autoRegisterWorkers(
   registry: LLMProviderRegistry,
   workerStore: WorkerStore,

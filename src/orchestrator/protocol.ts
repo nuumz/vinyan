@@ -294,6 +294,8 @@ export const TaskInputSchema = z.object({
   targetFiles: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),
   acceptanceCriteria: z.array(z.string()).optional(),
+  /** Specialist agent ID — CLI override or pre-set by caller. */
+  agentId: z.string().optional(),
   budget: TaskBudgetSchema,
 });
 
@@ -460,6 +462,13 @@ export const DelegationRequestSchema = z.object({
    * omitted → treated as 'general-purpose'.
    */
   subagentType: SubagentTypeSchema.optional(),
+  /**
+   * Multi-agent: route the delegated subtask to a specific peer agent
+   * (e.g., 'system-designer', 'writer'). The child inherits that peer's
+   * persona, ACL, and skills. Governance rules (depth, budget, scope) are
+   * unchanged — this only selects which specialist does the work.
+   */
+  targetAgentId: z.string().optional(),
 });
 export type DelegationRequest = z.infer<typeof DelegationRequestSchema>;
 

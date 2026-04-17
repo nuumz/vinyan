@@ -19,11 +19,13 @@ export class SkillStore {
       INSERT OR REPLACE INTO cached_skills (
         task_signature, approach, success_rate, status,
         probation_remaining, usage_count, risk_at_creation,
-        dep_cone_hashes, last_verified_at, verification_profile, origin, composed_of
+        dep_cone_hashes, last_verified_at, verification_profile, origin, composed_of,
+        agent_id
       ) VALUES (
         $task_signature, $approach, $success_rate, $status,
         $probation_remaining, $usage_count, $risk_at_creation,
-        $dep_cone_hashes, $last_verified_at, $verification_profile, $origin, $composed_of
+        $dep_cone_hashes, $last_verified_at, $verification_profile, $origin, $composed_of,
+        $agent_id
       )
     `);
   }
@@ -42,15 +44,43 @@ export class SkillStore {
       $verification_profile: skill.verificationProfile,
       $origin: skill.origin ?? 'local',
       $composed_of: skill.composedOf ? JSON.stringify(skill.composedOf) : null,
+      $agent_id: skill.agentId ?? null,
     });
   }
 
-  findBySignature(taskSignature: string): CachedSkill | null {
+  /**
+   * Find skill by task signature.
+   *
+   * Multi-agent semantics: when `agentId` is provided, prefer exact agent
+   * match; fall back to legacy shared skills (agent_id IS NULL). When
+   * omitted, match any (shared or agent-owned).
+   */
+  findBySignature(taskSignature: string, agentId?: string): CachedSkill | null {
+    if (agentId !== undefined) {
+      const row = this.db
+        .prepare(
+          `SELECT * FROM cached_skills WHERE task_signature = ? AND (agent_id = ? OR agent_id IS NULL)
+           ORDER BY CASE WHEN agent_id = ? THEN 0 ELSE 1 END LIMIT 1`,
+        )
+        .get(taskSignature, agentId, agentId);
+      return row ? rowToSkill(row) : null;
+    }
     const row = this.db.prepare(`SELECT * FROM cached_skills WHERE task_signature = ?`).get(taskSignature);
     return row ? rowToSkill(row) : null;
   }
 
-  findActive(): CachedSkill[] {
+  /** All active skills. Optionally scoped to a specific agent (+ legacy shared). */
+  findActive(agentId?: string): CachedSkill[] {
+    if (agentId !== undefined) {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM cached_skills WHERE status = 'active'
+             AND (agent_id = ? OR agent_id IS NULL)
+             ORDER BY success_rate DESC`,
+        )
+        .all(agentId);
+      return rows.map(rowToSkill);
+    }
     const rows = this.db
       .prepare(`SELECT * FROM cached_skills WHERE status = 'active' ORDER BY success_rate DESC`)
       .all();
@@ -218,5 +248,6 @@ function rowToSkill(row: any): CachedSkill {
     verificationProfile: row.verification_profile,
     origin: row.origin ?? 'local',
     composedOf: row.composed_of ? JSON.parse(row.composed_of) : undefined,
+    agentId: row.agent_id ?? undefined,
   };
 }

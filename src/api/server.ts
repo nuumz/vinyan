@@ -52,6 +52,12 @@ export interface APIServerDeps {
   budgetEnforcer?: { checkBudget(): Array<{ window: string; spent_usd: number; limit_usd: number; utilization_pct: number; enforcement: string; exceeded: boolean }> };
   /** Approval gate for high-risk task approval (A6). */
   approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
+  /** AgentProfileStore — workspace-level Vinyan Agent identity (singleton). */
+  agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
+  /** Skill store for agent-profile summarize(). */
+  skillStore?: import('../db/skill-store.ts').SkillStore;
+  /** Pattern store for agent-profile summarize(). */
+  patternStore?: import('../db/pattern-store.ts').PatternStore;
 }
 
 export class VinyanAPIServer {
@@ -77,6 +83,7 @@ export class VinyanAPIServer {
       executeTask: deps.executeTask,
       baseUrl: `http://${config.bind}:${config.port}`,
       a2aManager: deps.a2aManager,
+      agentProfileStore: deps.agentProfileStore,
     });
   }
 
@@ -272,6 +279,23 @@ export class VinyanAPIServer {
     }
 
     // ── Read-only queries ─────────────────────────────────
+    if (method === 'GET' && path === '/api/v1/agent-profile') {
+      if (!this.deps.agentProfileStore) {
+        return jsonResponse({ error: 'agent-profile store not configured' }, 503);
+      }
+      const profile = this.deps.agentProfileStore.get();
+      if (!profile) {
+        return jsonResponse({ error: 'agent profile not bootstrapped' }, 404);
+      }
+      const summary = this.deps.agentProfileStore.summarize({
+        traceStore: this.deps.traceStore,
+        skillStore: this.deps.skillStore,
+        workerStore: this.deps.workerStore,
+        patternStore: this.deps.patternStore,
+      });
+      return jsonResponse({ profile, summary });
+    }
+
     if (method === 'GET' && path === '/api/v1/workers') {
       const workers = this.deps.workerStore?.findActive() ?? [];
       return jsonResponse({ workers });

@@ -17,9 +17,10 @@ function printUsage(stream: NodeJS.WritableStream = process.stdout) {
 Usage: vinyan <command> [options]
 
 Commands:
-  run "task"         Run autonomous agent task
+  run "task"         Run autonomous agent task (supports --agent <id>)
+  agent <sub>        Manage specialist agents (list|add|remove|show)
   chat               Interactive conversation agent mode
-  serve              Start the API server
+  serve              Start the API server (auto-restart on crash; --no-supervise to disable)
   init [path]        Initialize vinyan.json
   status             Show system status summary
   doctor             Health check: config, DB, oracles, LLM providers
@@ -127,6 +128,12 @@ switch (command) {
     break;
   }
 
+  case 'agent': {
+    const { runAgentCommand } = await import('./agent.ts');
+    await runAgentCommand(args.slice(1), workspacePath);
+    break;
+  }
+
   case 'chat': {
     const { startChat } = await import('./chat.ts');
     await startChat(args.slice(1));
@@ -159,8 +166,17 @@ switch (command) {
   }
 
   case 'serve': {
-    const { serve } = await import('./serve.ts');
-    await serve(workspacePath);
+    // Supervisor mode: default ON. Parent process respawns the child on
+    // crash so one bad task can never take down the API server permanently.
+    // Disable with --no-supervise (useful for dev/debugging).
+    const supervise = !args.includes('--no-supervise') && process.env.VINYAN_SUPERVISED !== '1';
+    if (supervise) {
+      const { superviseServe } = await import('./supervise.ts');
+      await superviseServe(workspacePath, process.argv);
+    } else {
+      const { serve } = await import('./serve.ts');
+      await serve(workspacePath);
+    }
     break;
   }
 

@@ -283,6 +283,76 @@ const FleetConfigSchema = z.object({
   staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
 });
 
+// ─── Agent schema (workspace-level Vinyan Agent identity) ──────────
+
+/**
+ * Workspace-level AgentProfile overrides. Config-first: these values
+ * override DB defaults on every factory boot. When absent, AgentProfileStore
+ * uses built-in defaults (see DEFAULT_AGENT_PREFERENCES).
+ */
+const AgentPreferencesConfigSchema = z.object({
+  approval_mode: z.enum(['strict', 'interactive', 'trusting']).optional(),
+  verbosity: z.enum(['quiet', 'normal', 'verbose']).optional(),
+  default_thinking_level: z.enum(['off', 'low', 'medium', 'high']).optional(),
+  language: z.enum(['en', 'th']).optional(),
+});
+
+const AgentConfigSchema = z.object({
+  display_name: z.string().optional(),
+  description: z.string().optional(),
+  preferences: AgentPreferencesConfigSchema.optional(),
+});
+
+// ─── Specialist agents (fleet of roles: ts-coder, writer, etc.) ────────
+
+/**
+ * Routing hints for specialist agent selection.
+ * Used by the intent resolver to pick an agent based on task characteristics.
+ */
+const AgentRoutingHintsSchema = z.object({
+  /** Minimum routing level this agent should handle. */
+  min_level: z.number().min(0).max(3).optional(),
+  /** Preferred task domains (e.g., 'code-mutation', 'reasoning'). */
+  prefer_domains: z.array(z.string()).optional(),
+  /** Preferred file extensions (e.g., '.ts', '.md'). */
+  prefer_extensions: z.array(z.string()).optional(),
+  /** Preferred frameworks (e.g., 'react', 'express'). */
+  prefer_frameworks: z.array(z.string()).optional(),
+});
+
+/**
+ * AgentSpec — specialist agent configuration. Multiple allowed per workspace.
+ * Each spec has own persona (soul.md), ACL, and routing hints.
+ * Distinct from the workspace singleton AgentProfile (id='local').
+ */
+export const AgentSpecSchema = z.object({
+  /** Unique agent identifier (e.g., 'ts-coder', 'writer', 'ceo'). */
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'agent id must be kebab-case'),
+  /** Human-readable name shown in CLI and prompts. */
+  name: z.string(),
+  /** One-line role description — used by intent resolver for auto-classification. */
+  description: z.string(),
+  /** Path to the agent's soul.md (persona). Defaults to `.vinyan/agents/<id>/soul.md`. */
+  soul_path: z.string().optional(),
+  /** Allowed tool names (intersection with routing level defaults, never widens). */
+  allowed_tools: z.array(z.string()).optional(),
+  /** Capability overrides (e.g., disable read_any) — intersection only. */
+  capability_overrides: z
+    .object({
+      read_any: z.boolean().optional(),
+      write_any: z.boolean().optional(),
+      network: z.boolean().optional(),
+      shell: z.boolean().optional(),
+    })
+    .optional(),
+  /** Routing hints for the intent resolver. */
+  routing_hints: AgentRoutingHintsSchema.optional(),
+  /** True if this is a built-in agent (shipped with Vinyan). */
+  builtin: z.boolean().optional(),
+});
+
+export type AgentSpecConfig = z.infer<typeof AgentSpecSchema>;
+
 // ─── Network schema (multi-instance coordination) ───────────────────
 
 const APIConfigSchema = z.object({
@@ -457,6 +527,14 @@ export const VinyanConfigSchema = z.object({
   hms: HMSConfigSchema.optional(),
   /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
   engines: EnginesConfigSchema.optional(),
+  /** Workspace-level Vinyan Agent identity (name, description, preferences). */
+  agent: AgentConfigSchema.optional(),
+  /**
+   * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
+   * built-in defaults are merged by the loader. CLI `vinyan agent add`
+   * appends here and writes back to vinyan.json.
+   */
+  agents: z.array(AgentSpecSchema).optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

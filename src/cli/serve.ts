@@ -88,6 +88,67 @@ export async function serve(workspace: string): Promise<void> {
     },
   );
 
+  // Graceful shutdown — suspend sessions before closing DB.
+  //
+  // CRITICAL: register SIGINT/SIGTERM handlers BEFORE server.start()
+  // and BEFORE the synchronous sessionManager.recover() call. During
+  // startup there is a window where the child is fully async-scheduled
+  // but signal handlers have not been installed — Bun's default
+  // behavior would either ignore or terminate without running our
+  // cleanup. Registering early eliminates that window.
+  let shutdownRequested = false;
+  const FORCE_EXIT_MS = 8_000;
+  const shutdown = async () => {
+    if (shutdownRequested) {
+      console.log('[vinyan] Forced exit');
+      process.exit(1);
+    }
+    shutdownRequested = true;
+    console.log('[vinyan] Shutting down... (repeat signal to force exit)');
+
+    // Backstop: even if any cleanup step hangs (Bun.serve.stop awaiting
+    // a stuck connection, SQLite checkpoint blocked on disk, worker
+    // that won't die), force exit after FORCE_EXIT_MS so the user does
+    // not have to send a second signal. unref() so this timer itself
+    // never keeps the process alive once cleanup completes.
+    const forceExit = setTimeout(() => {
+      console.error(`[vinyan] Cleanup exceeded ${FORCE_EXIT_MS}ms — forcing exit`);
+      process.exit(1);
+    }, FORCE_EXIT_MS);
+    (forceExit as { unref?: () => void }).unref?.();
+
+    try {
+      sessionManager.suspendAll();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      if (a2aManager) await a2aManager.stop();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      await server.stop();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      orchestrator.close();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      db.close();
+    } catch {
+      /* best-effort */
+    }
+    clearTimeout(forceExit);
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
   server.start();
 
   // Startup banner
@@ -108,30 +169,6 @@ export async function serve(workspace: string): Promise<void> {
   if (recovered.length > 0) {
     console.log(`[vinyan]   Recovered ${recovered.length} suspended session(s)`);
   }
-
-  // Graceful shutdown — suspend sessions before closing DB
-  let shutdownRequested = false;
-  const shutdown = async () => {
-    if (shutdownRequested) {
-      console.log('[vinyan] Forced exit');
-      process.exit(1);
-    }
-    shutdownRequested = true;
-    console.log('[vinyan] Shutting down... (repeat signal to force exit)');
-    try {
-      sessionManager.suspendAll();
-      if (a2aManager) await a2aManager.stop();
-      await server.stop();
-      orchestrator.close();
-      db.close();
-    } catch {
-      // Best-effort cleanup
-    }
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
 }
 
 // ── Process-level resilience ─────────────────────────────────────────

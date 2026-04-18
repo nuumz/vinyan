@@ -93,6 +93,9 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         process.exit(1);
       }
     }, 10_000);
+    // unref() so the watchdog alone cannot hold this worker alive
+    // once its main tasks have resolved.
+    (watchdog as { unref?: () => void }).unref?.();
   }
 
   // 2. Compress perception

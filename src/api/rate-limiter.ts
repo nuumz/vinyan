@@ -81,6 +81,29 @@ export class RateLimiter {
   reset(): void {
     this.buckets.clear();
   }
+
+  /**
+   * Evict buckets whose `lastRefill` is older than `maxIdleMs`. A bucket
+   * that has been idle longer than its full refill window is indistinguishable
+   * from a freshly-created one (both start at `bucketSize` tokens), so
+   * dropping it is safe and prevents unbounded growth across long uptimes.
+   */
+  prune(maxIdleMs: number): number {
+    const cutoff = Date.now() - maxIdleMs;
+    let removed = 0;
+    for (const [k, b] of this.buckets) {
+      if (b.lastRefill < cutoff) {
+        this.buckets.delete(k);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  /** Number of tracked buckets — for tests / observability. */
+  size(): number {
+    return this.buckets.size;
+  }
 }
 
 /** Classify an endpoint path to a rate-limit category. */

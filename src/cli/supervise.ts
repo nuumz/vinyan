@@ -49,6 +49,11 @@ function shouldIgnore(absPath: string): boolean {
   return false;
 }
 
+/** How long to wait for graceful child shutdown before SIGKILL escalation. */
+const FORCE_KILL_MS = 5_000;
+/** Hard deadline after first signal — supervisor itself exits no matter what. */
+const SUPERVISOR_FORCE_EXIT_MS = 10_000;
+
 export async function superviseServe(workspace: string, originalArgv: string[]): Promise<void> {
   // Strip the node/bun executable path; keep the script + args
   const [, scriptPath, ...rest] = originalArgv;
@@ -65,18 +70,55 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   let reloadRequested = false;
   let watcher: FSWatcher | null = null;
 
-  const installSignalForwarding = (child: ChildProcess) => {
-    const forward = (signal: 'SIGTERM' | 'SIGINT') => () => {
-      stopping = true;
-      try {
-        child.kill(signal);
-      } catch {
-        /* child already gone */
-      }
-    };
-    process.on('SIGTERM', forward('SIGTERM'));
-    process.on('SIGINT', forward('SIGINT'));
+  // ── Signal handling (registered ONCE, outside the respawn loop) ──
+  //
+  // Previously `installSignalForwarding(child)` was called per loop
+  // iteration, adding a fresh SIGINT/SIGTERM listener on every child
+  // respawn and leaking handlers across long uptimes. Hoisting out of
+  // the loop keeps the listener count at exactly 1/signal and lets us
+  // implement proper escalation (SIGKILL on 2nd signal or after timeout).
+  let sigintCount = 0;
+  const handleStop = (signal: 'SIGTERM' | 'SIGINT') => {
+    stopping = true;
+    sigintCount++;
+    const child = currentChild;
+    if (!child || child.killed) {
+      // No live child — just exit. Shouldn't normally happen because
+      // supervisor awaits child exit inside the respawn loop, but
+      // handle defensively.
+      process.exit(sigintCount >= 2 ? 1 : 0);
+    }
+
+    if (sigintCount >= 2) {
+      // Second signal = user is insistent. Hard-kill the child and
+      // exit immediately so the user is not stranded.
+      console.error('[vinyan-supervisor] Second signal received — SIGKILL + exit');
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      process.exit(1);
+    }
+
+    // First signal: forward for graceful shutdown. If the child does
+    // not exit within FORCE_KILL_MS, escalate to SIGKILL.
+    try { child.kill(signal); } catch { /* ignore */ }
+    const escalate = setTimeout(() => {
+      if (child.killed) return;
+      console.error(`[vinyan-supervisor] Child did not exit after ${FORCE_KILL_MS}ms — SIGKILL`);
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+    }, FORCE_KILL_MS);
+    (escalate as { unref?: () => void }).unref?.();
+
+    // Belt-and-suspenders: even if SIGKILL somehow fails to terminate
+    // the child (zombie, stuck in uninterruptible sleep, etc.) exit
+    // the supervisor itself after SUPERVISOR_FORCE_EXIT_MS. The user's
+    // Ctrl+C must always take effect within a bounded window.
+    const forceExit = setTimeout(() => {
+      console.error(`[vinyan-supervisor] Shutdown exceeded ${SUPERVISOR_FORCE_EXIT_MS}ms — forcing exit`);
+      process.exit(1);
+    }, SUPERVISOR_FORCE_EXIT_MS);
+    (forceExit as { unref?: () => void }).unref?.();
   };
+  process.on('SIGTERM', () => handleStop('SIGTERM'));
+  process.on('SIGINT', () => handleStop('SIGINT'));
 
   // ── Hot reload: watch source files and SIGTERM the child on change ──
   if (watchMode) {
@@ -129,8 +171,8 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
       env: { ...process.env, VINYAN_SUPERVISED: '1' },
     });
     currentChild = child;
-
-    installSignalForwarding(child);
+    // Signal forwarding is registered ONCE at the top of superviseServe
+    // and reads `currentChild` at signal-time, so no per-iteration setup.
 
     const exitCode: number = await new Promise((resolve) => {
       child.once('exit', (code, signal) => {

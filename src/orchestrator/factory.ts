@@ -1506,6 +1506,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         /* best-effort background processing */
       }
     }, 10_000);
+    // unref() so this timer alone does not hold the process alive when
+    // the API server shuts down. close() also clears it explicitly.
+    (shadowInterval as { unref?: () => void }).unref?.();
   }
 
   return {
@@ -1571,6 +1574,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
+      // Kill warm worker subprocesses — without this, their stdin
+      // pipes hold file descriptors that keep the parent event loop
+      // alive past shutdown, and the subprocesses themselves outlive
+      // the parent in some shells.
+      try {
+        workerPool.shutdown();
+      } catch {
+        /* best-effort */
+      }
       mcpClientPool?.shutdown().catch(() => {});
       llmProxy?.close();
       worldGraph?.close();

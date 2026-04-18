@@ -159,28 +159,37 @@ export class ComprehensionCalibrator {
     const minHistorical = opts.minSamplesPerWindow ?? DATA_GATE_MIN;
 
     const all = this.loader.recentByEngine(engineId, this.sampleWindow);
-    // Require enough samples for a full recent window PLUS a statistically
-    // meaningful historical window. The recent window need not equal
-    // minHistorical — recent is for freshness, historical is for stability.
     if (all.length < recentWindow + minHistorical) return null;
 
     const recent = all.slice(0, recentWindow);
     const historical = all.slice(recentWindow);
-    // Only the historical window must meet the min-samples gate; the recent
-    // window size is bounded by `recentWindow` by construction.
     if (historical.length < minHistorical) return null;
 
-    const rate = (rows: ComprehensionRecordRow[]): number => {
+    const positives = (rows: ComprehensionRecordRow[]): number => {
       let pos = 0;
       for (const r of rows) {
         if (r.outcome && OUTCOME_IS_CORRECT[r.outcome] === 1) pos++;
       }
-      return pos / rows.length;
+      return pos;
     };
-
-    const recentAccuracy = rate(recent);
-    const historicalAccuracy = rate(historical);
+    const rPos = positives(recent);
+    const hPos = positives(historical);
+    const recentAccuracy = rPos / recent.length;
+    const historicalAccuracy = hPos / historical.length;
     const delta = recentAccuracy - historicalAccuracy;
+
+    // AXM#8: CI-gated divergence. Don't cry wolf on 1-2 bad samples.
+    // We require BOTH the raw delta to exceed threshold AND the Wilson
+    // 95% CIs to actually separate (recent upper < historical lower).
+    // This is the same statistical hygiene the rest of Vinyan applies
+    // (Wilson LB ranking in WorkerSelector, etc.).
+    const recentCI = wilson95(rPos, recent.length);
+    const historicalCI = wilson95(hPos, historical.length);
+    const deltaPassesThreshold = -delta >= threshold;
+    const ciSeparates =
+      recentCI != null && historicalCI != null && recentCI.upper < historicalCI.lower;
+    const diverged = deltaPassesThreshold && ciSeparates;
+
     return {
       engineId,
       recentAccuracy,
@@ -188,8 +197,78 @@ export class ComprehensionCalibrator {
       historicalAccuracy,
       historicalSamples: historical.length,
       delta,
-      diverged: -delta >= threshold,
+      diverged,
       computedAt: this.now(),
+    };
+  }
+
+  /**
+   * P3.A — EFFECTIVE ceiling: `confidenceCeiling` tightened by a
+   * divergence penalty when the engine is currently degrading. This is
+   * Vinyan's observe→respond half of A7: the ceiling GOVERNS future
+   * output, and degradation AUTOMATICALLY tightens the governance.
+   *
+   * Computation:
+   *   base = confidenceCeiling(engineId)
+   *   if base is unknown → return unknown (no divergence math on no data)
+   *   sig  = detectDivergence(engineId)
+   *   if sig == null OR !sig.diverged → return base (no adjustment)
+   *   else → penalty = recentAccuracy (the degraded rate).
+   *         New ceiling = min(base.value, recentAccuracy)
+   *         — we refuse to trust a degraded engine beyond its NEW rate.
+   *
+   * A5 conservative: `effectiveCeiling` is always ≤ `confidenceCeiling`.
+   */
+  effectiveCeiling(engineId: string, opts: DivergenceOptions = {}): ConfidenceCeiling {
+    const base = this.confidenceCeiling(engineId);
+    if (base.kind === 'unknown') return base;
+    const sig = this.detectDivergence(engineId, opts);
+    if (!sig || !sig.diverged) return base;
+    // AXM#6: use Wilson 95% LOWER bound on recent-window accuracy
+    // instead of the raw point estimate. On small samples a point
+    // estimate can over-tighten (e.g. 1 bad outcome in 10 → 0.9 cap);
+    // Wilson LB is statistically honest about the sample-size
+    // uncertainty. Same reasoning as WorkerSelector's Wilson ranking.
+    const rPos = Math.round(sig.recentAccuracy * sig.recentSamples);
+    const ci = wilson95(rPos, sig.recentSamples);
+    const tighteningCap = ci != null ? ci.lower : sig.recentAccuracy;
+    const tightened = Math.max(0, Math.min(base.value, tighteningCap));
+    return { kind: 'known', value: tightened };
+  }
+
+  /**
+   * AXM#7 — Brier score (mean squared prediction error) measures
+   * calibration QUALITY, not just accuracy. A "confirmed" outcome with
+   * confidence=0.9 scores 0.01; with confidence=0.3 it scores 0.49.
+   * The accuracy metric treats both as "correct"; Brier distinguishes
+   * well-calibrated from lucky.
+   *
+   * Lower = better. 0.0 = perfect calibration. 0.25 = coin flip. >0.25 = worse than random.
+   *
+   * Returns `insufficient` when fewer than DATA_GATE_MIN records — same
+   * A2 honesty pattern as `confidenceCeiling`. Caller decides fallback.
+   */
+  brierScore(engineId: string): {
+    readonly brier: number | null;
+    readonly sampleSize: number;
+    readonly insufficient: boolean;
+  } {
+    const rows = this.loader.recentByEngine(engineId, this.sampleWindow);
+    const n = rows.length;
+    if (n === 0) return { brier: null, sampleSize: 0, insufficient: true };
+    let sumSquaredError = 0;
+    for (const r of rows) {
+      if (!r.outcome) continue; // only rows with outcomes contribute
+      const predicted = r.confidence; // engine's self-reported confidence
+      const actual = OUTCOME_IS_CORRECT[r.outcome]; // 0 or 1
+      const diff = predicted - actual;
+      sumSquaredError += diff * diff;
+    }
+    const insufficient = n < DATA_GATE_MIN;
+    return {
+      brier: insufficient ? null : sumSquaredError / n,
+      sampleSize: n,
+      insufficient,
     };
   }
 

@@ -31,11 +31,17 @@ import type { ReasoningEngine } from '../types.ts';
 
 import { CommitmentBridge, type TaskFacts } from './commitment-bridge.ts';
 import { CommitmentLedger } from './commitment-ledger.ts';
-import { DepartmentIndex, type DepartmentSeed } from './department.ts';
+import { DepartmentIndex } from './department.ts';
 import { HelpfulnessTracker } from './helpfulness-tracker.ts';
 import { RuntimeStateManager } from './runtime-state.ts';
 import { TeamManager } from './team.ts';
-import { VolunteerRegistry } from './volunteer-protocol.ts';
+import {
+  VolunteerRegistry,
+  selectVolunteer,
+  type SelectionVerdict,
+  type VolunteerCandidate,
+  type VolunteerContext,
+} from './volunteer-protocol.ts';
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -150,6 +156,82 @@ export class EcosystemCoordinator {
 
   get departmentIndex(): DepartmentIndex {
     return this.departments;
+  }
+
+  // ── Volunteer fallback ───────────────────────────────────────────
+
+  /**
+   * Market-empty fallback: pick a winning volunteer for a task when the
+   * auction returned no winner. Deterministic (A3): all standby engines
+   * in the task's department (or fleet-wide when no department is given)
+   * declare an implicit offer, the caller supplies scoring context, and
+   * the highest score wins.
+   *
+   * When a winner is picked, a VolunteerOffer is persisted, accepted, and
+   * bound to a new Commitment. The caller is responsible for flipping the
+   * runtime state to Working (usually via `markWorking` on dispatch).
+   *
+   * Returns `null` when no standby engine can volunteer.
+   */
+  attemptVolunteerFallback(params: {
+    taskId: string;
+    goal: string;
+    targetFiles?: readonly string[];
+    deadlineAt: number;
+    departmentId?: string;
+    /** Scoring context for each eligible engine. Usually supplied by the selector. */
+    contextProvider: (engineId: string) => VolunteerContext;
+  }): { engineId: string; commitmentId: string; verdict: SelectionVerdict } | null {
+    // 1. Build the eligible pool: standby + Working-with-capacity.
+    const eligible = new Set<string>();
+    for (const snap of this.runtime.listByState('standby')) {
+      eligible.add(snap.agentId);
+    }
+    for (const snap of this.runtime.listByState('working')) {
+      if (snap.activeTaskCount < snap.capacityMax) eligible.add(snap.agentId);
+    }
+
+    // 2. Narrow by department if asked and the department has members.
+    if (params.departmentId) {
+      const members = new Set(
+        this.departments.getEnginesInDepartment(params.departmentId),
+      );
+      if (members.size > 0) {
+        for (const id of [...eligible]) {
+          if (!members.has(id)) eligible.delete(id);
+        }
+      }
+    }
+
+    if (eligible.size === 0) return null;
+
+    // 3. Record offers for each eligible engine (persist for audit).
+    const candidates: VolunteerCandidate[] = [];
+    for (const engineId of eligible) {
+      const offer = this.volunteers.declareOffer({ taskId: params.taskId, engineId });
+      candidates.push({ offer, context: params.contextProvider(engineId) });
+    }
+
+    // 4. Pure selection — no persistence side effects.
+    const verdict = selectVolunteer(candidates);
+    if (!verdict.winner) return null;
+
+    // 5. Open the real commitment with the winner bound, then finalize to
+    //    link winner's offer → commitmentId and decline the rest.
+    const commitment = this.commitments.open({
+      engineId: verdict.winner.engineId,
+      taskId: params.taskId,
+      goal: params.goal,
+      targetFiles: params.targetFiles ?? [],
+      deadlineAt: params.deadlineAt,
+    });
+    this.volunteers.finalize(params.taskId, candidates, commitment.commitmentId);
+
+    return {
+      engineId: verdict.winner.engineId,
+      commitmentId: commitment.commitmentId,
+      verdict,
+    };
   }
 
   // ── Reconciliation (cross-system invariants) ─────────────────────

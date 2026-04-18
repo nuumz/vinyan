@@ -226,3 +226,41 @@ Five phases. Each is independently shippable and testable. No phase commits befo
 - Cross-instance ecosystem (federation of ecosystems) → depends on A2A R3.
 - UI/TUI for observing the ecosystem → `src/tui/` enhancement, not part of this plan.
 - Self-directed org-restructure (agents proposing their own departments) → violates A3 spirit; revisit only after evolution-engine maturity.
+
+---
+
+## 8. Activation Status (as of 2026-04-19)
+
+All phases O1–O5 implemented AND wired into the default `vinyan run` path,
+gated by `ecosystem.enabled: true` in `vinyan.json`. When the flag is off
+the system runs in legacy mode (no runtime FSM tracking, no commitment
+ledger, no department index). With it on:
+
+| Integration point | Wiring | Source |
+|---|---|---|
+| Ecosystem bundle construction | `buildEcosystem` called from `factory.ts` when `ecosystem.enabled` | factory.ts |
+| Runtime FSM hooks on dispatch/return | `WorkerPoolImpl.acquireRuntimeSlot` in the dispatch path | worker-pool.ts |
+| Engine selector runtime gate | `DefaultEngineSelector` drops providers in dormant/awakening state | engine-selector.ts |
+| Department-scoped engine selection | `DefaultEngineSelector` narrows pool when `options.departmentId` is set | engine-selector.ts |
+| Commitment bridge | `CommitmentBridge.start()` subscribes to `market:auction_completed` + `trace:record` | ecosystem-coordinator.ts |
+| Helpfulness tiebreaker in promotion | `WorkerGates` uses `helpfulnessCount` for Wilson-LB ties | worker-gates.ts |
+| Volunteer fallback on auction empty | `DefaultEngineSelector` calls `volunteerFallback` when market + wilson-LB miss | engine-selector.ts + factory.ts |
+| Crash recovery | `coordinator.start()` calls `recoverFromCrash()` on every boot | ecosystem-coordinator.ts |
+| Reconcile invariants (I-E1/I-E2/I-E3) | `coordinator.reconcile()` — manual call, schedule via config `reconcile_interval_ms` (TODO: scheduler wire) | ecosystem-coordinator.ts |
+
+### Intentional gaps (not part of O1-O5)
+
+1. **Room ↔ Team blackboard bridge** — rooms still use their own blackboard.
+   Teams can hold long-running state, but `RoomDispatcher` does not yet merge
+   a shared team blackboard into its role context. A follow-up integration.
+2. **Reconciliation scheduler** — `reconcile_interval_ms` config exists; a
+   timer that calls `coordinator.reconcile()` on that cadence is not yet
+   wired. Invariant checks are manual for now.
+3. **Department membership auto-recompute on engine register** — the index
+   is built on `coordinator.start()` but does not subscribe to new engines
+   being added at runtime. Manual `departments.refresh(roster)` required.
+4. **Market-driven volunteer phase** — the volunteer protocol fires through
+   `EngineSelector.volunteerFallback` when the selector can't find a
+   trusted pick. There is no separate `volunteering` phase emitted by
+   `MarketScheduler` itself; the fallback is in the selector path so it
+   integrates with the existing trust-weighted flow.

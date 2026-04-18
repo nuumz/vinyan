@@ -1015,10 +1015,17 @@ export async function resolveIntent(
   const deterministic = understanding ? composeDeterministicCandidate(input, understanding) : null;
 
   // [B.skip] High-confidence deterministic → bypass LLM entirely.
+  // Exception: when this turn is a clarification answer, the user's reply
+  // may contradict the deterministic candidate (which was computed on the
+  // original, ambiguous goal). Defer to the LLM so it can honor the reply
+  // via the ROUTING RULE emitted in the classifier prompt.
+  const isClarificationAnswer =
+    deps.comprehension?.params.data?.state.isClarificationAnswer === true;
   if (
     deterministic &&
     deterministic.confidence >= DETERMINISTIC_SKIP_THRESHOLD &&
-    !deterministic.deterministicCandidate.ambiguous
+    !deterministic.deterministicCandidate.ambiguous &&
+    !isClarificationAnswer
   ) {
     return finalizeDeterministicSkip(input, deterministic, deps, cacheKey, now);
   }
@@ -1037,7 +1044,7 @@ export async function resolveIntent(
   const parsed = await classifyWithFallback(deps.registry, primary, userPrompt);
 
   // [D] Verify + merge. Rule + LLM → known / uncertain / contradictory.
-  const mergeResult: { resolution: IntentResolution; type: IntentResolutionType } =
+  let mergeResult: { resolution: IntentResolution; type: IntentResolutionType } =
     deterministic && understanding
       ? mergeDeterministicAndLLM(input, understanding, deterministic, parsed, deps.bus, input.id)
       : {
@@ -1052,6 +1059,33 @@ export async function resolveIntent(
           },
           type: 'known',
         };
+
+  // [D.2] Clarification-answer bypass. When the comprehender flagged this
+  // turn as an answer to a prior clarification, the user has JUST disambiguated
+  // — surfacing another `uncertain` / `contradictory` verdict re-shows the same
+  // clarification UI and traps the session in a loop. Trust the LLM strategy
+  // (it received an explicit ROUTING RULE instructing it to honor the user's
+  // reply) and promote the result to `known`. Deterministic still contributed
+  // via the prompt; this only gates the verdict emission, not the generation.
+  if (
+    (mergeResult.type === 'contradictory' || mergeResult.type === 'uncertain') &&
+    isClarificationAnswer
+  ) {
+    const bypassedType = mergeResult.type;
+    mergeResult = {
+      resolution: {
+        strategy: parsed.strategy,
+        refinedGoal: parsed.refinedGoal,
+        directToolCall: parsed.directToolCall,
+        workflowPrompt: parsed.workflowPrompt,
+        confidence: parsed.confidence ?? 0.8,
+        reasoning:
+          `${parsed.reasoning ?? ''} [clarification-answer: bypassed ${bypassedType} gate, user already disambiguated]`.trim(),
+        reasoningSource: 'merged',
+      },
+      type: 'known',
+    };
+  }
 
   const { agentId, agentSelectionReason } = resolveSelectedAgent(
     input,

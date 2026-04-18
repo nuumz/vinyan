@@ -9,6 +9,7 @@ import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { attachAuditListener } from '../bus/audit-listener.ts';
 import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
+import { attachComprehensionTraceListener } from '../bus/comprehension-trace-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
@@ -17,8 +18,10 @@ import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
+import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
+import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
@@ -89,6 +92,7 @@ import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mo
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
 import { DelegationRouter } from './delegation-router.ts';
+import { buildEcosystem, type EcosystemBundle } from './ecosystem/builder.ts';
 import { DefaultEngineSelector } from './engine-selector.ts';
 import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
@@ -334,6 +338,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
+  let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
   let agentProfileStore: AgentProfileStore | undefined;
@@ -346,6 +351,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
+    comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
 
@@ -629,7 +635,50 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // everywhere it matters.
   const mcpToolMap = new Map<string, Tool>();
 
-  // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
+  // Ecosystem layer — runtime FSM + commitment ledger + department/team +
+  // volunteer protocol + coordinator. Opt-in via `ecosystem.enabled` in
+  // vinyan.json. Built before WorkerLifecycle so the helpfulness tiebreaker
+  // (O4) can be wired into the promotion gate.
+  //
+  // Source of truth: docs/design/vinyan-os-ecosystem-plan.md
+  let ecosystemBundle: EcosystemBundle | undefined;
+  let ecosystemConfig: import('../config/schema.ts').VinyanConfig['ecosystem'] | undefined;
+  try {
+    const vinyanConfigForEco = loadConfig(workspace);
+    ecosystemConfig = vinyanConfigForEco.ecosystem;
+    const effectiveEngineRegistry = engineRegistry ?? config.engineRegistry;
+    if (db && ecosystemConfig?.enabled && effectiveEngineRegistry) {
+      ecosystemBundle = buildEcosystem({
+        db: db.getDb(),
+        bus,
+        departments: (ecosystemConfig.departments ?? []).map((d) => ({
+          id: d.id,
+          anchorCapabilities: d.anchor_capabilities,
+          minMatchCount: d.min_match_count,
+        })),
+        taskResolver: () => null, // populated at dispatch time by core-loop
+        engineRoster: () => effectiveEngineRegistry.listEngines(),
+      });
+
+      // Seed runtime FSM for every engine already in the registry so the
+      // bridge + reconcile loop have something to observe.
+      for (const eng of effectiveEngineRegistry.listEngines()) {
+        ecosystemBundle.runtime.register(eng.id);
+        ecosystemBundle.runtime.awaken(eng.id, 'boot');
+        ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+      }
+
+      ecosystemBundle.coordinator.start();
+      console.log(
+        `[vinyan] ecosystem: ${effectiveEngineRegistry.listEngines().length} engine(s) registered; ${ecosystemBundle.departments.listDepartments().length} department(s) seeded`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[vinyan] ecosystem wiring skipped: ${(err as Error).message}`);
+  }
+
+  // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance.
+  // Wired after the ecosystem so O4 helpfulness can feed the promotion gate.
   let workerLifecycle: WorkerLifecycle | undefined;
   if (workerStore) {
     workerLifecycle = new WorkerLifecycle({
@@ -639,6 +688,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       demotionWindowTasks: fleetConfig?.demotion_window_tasks ?? 30,
       demotionMaxReentries: fleetConfig?.demotion_max_reentries ?? 3,
       reentryCooldownSessions: fleetConfig?.reentry_cooldown_sessions ?? 50,
+      ...(ecosystemBundle
+        ? {
+            helpfulnessCount: (workerId: string) =>
+              ecosystemBundle!.helpfulness.get(workerId)?.deliveriesCompleted ?? 0,
+          }
+        : {}),
     });
   }
 
@@ -758,6 +813,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     proxySocketPath: llmProxy?.socketPath,
     bus,
     streaming: streamingAssistantDelta,
+    runtimeStateManager: ecosystemBundle?.runtime,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore, bus);
@@ -1108,6 +1164,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     forwardPredictor,
     // Cross-task learning: eviction archiving + prior-approach loading
     rejectedApproachStore,
+    // A7 learning loop — comprehension calibration persistence
+    comprehensionStore,
     // STU: historical profiler for enrichUnderstanding()
     traceStore,
     // STU Layer 2: semantic intent extraction
@@ -1162,6 +1220,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             }
             return undefined;
           },
+          // Ecosystem O1 + O3 — when the ecosystem is enabled, the selector
+          // pre-filters by runtime state and department membership.
+          runtimeStateManager:
+            ecosystemConfig?.runtime_gate_selection !== false ? ecosystemBundle?.runtime : undefined,
+          departmentIndex: ecosystemBundle?.departments,
+          // Ecosystem O4 — volunteer fallback invoked only when market + wilson-LB
+          // fail to produce a trusted pick. Scoring context comes from the trust
+          // store (trust), runtime FSM (load), and a default capability baseline.
+          volunteerFallback:
+            ecosystemBundle && providerTrustStore
+              ? ({ taskId, departmentId }) => {
+                  const bundle = ecosystemBundle!;
+                  const ts = providerTrustStore!;
+                  const ctx = (id: string) => {
+                    const rec = ts.getProvider(id);
+                    const total = (rec?.successes ?? 0) + (rec?.failures ?? 0);
+                    const trust = total > 0 ? rec!.successes / total : 0.5;
+                    const load = bundle.runtime.get(id)?.activeTaskCount ?? 0;
+                    return { capability: 0.5, trust, currentLoad: load };
+                  };
+                  const res = bundle.coordinator.attemptVolunteerFallback({
+                    taskId,
+                    goal: taskId,
+                    deadlineAt: Date.now() + 60_000,
+                    ...(departmentId ? { departmentId } : {}),
+                    contextProvider: ctx,
+                  });
+                  return res?.engineId ?? null;
+                }
+              : undefined,
         })
       : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
@@ -1203,6 +1291,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentProfileStore,
     // Specialist agent registry — ts-coder, writer, secretary, etc.
     agentRegistry,
+    // Multi-agent: SOUL.md store — used by conversational short-circuit
+    // to inject the same evolved persona that worker-pool injects in
+    // full-pipeline. Optional; falls back to inline `agent.soul` when absent.
+    soulStore,
     // Phase 2: rule-first specialist router (skips LLM when rule-match fires)
     agentRouter,
     // Phase 2: gate for token-level `agent:text_delta` emission in the
@@ -1465,6 +1557,20 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
+  // P3.B.2 — records adaptive-behavior comprehension events
+  // (calibrated, calibration_diverged, ceiling_adjusted) into
+  // ExecutionTrace. AXM#7 wiring: when a ComprehensionStore is
+  // available, also attach a ComprehensionCalibrator so the listener
+  // can compute Brier on every calibrated event and surface
+  // `comprehension:miscalibrated` when quality drops.
+  const comprehensionCalibrator = comprehensionStore
+    ? new ComprehensionCalibrator(comprehensionStore)
+    : undefined;
+  const comprehensionTraceHandle = attachComprehensionTraceListener({
+    bus,
+    traceCollector,
+    calibrator: comprehensionCalibrator,
+  });
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
 
@@ -1608,6 +1714,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachGapH();
       detachMetrics();
       traceListenerHandle.detach();
+      comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();

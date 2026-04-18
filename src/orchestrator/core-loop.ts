@@ -256,6 +256,13 @@ export interface OrchestratorDeps {
    */
   agentRegistry?: import('./agents/registry.ts').AgentRegistry;
   /**
+   * Multi-agent: SOUL.md store for evolved/reflected persona content.
+   * Used by conversational short-circuit to inject the same persona that
+   * worker-pool injects in full-pipeline. When absent, falls back to the
+   * inline `agent.soul` baked into AgentSpec.
+   */
+  soulStore?: import('./agent-context/soul-store.ts').SoulStore;
+  /**
    * Phase 2: rule-first AgentRouter. Pre-routes the task to a specialist based on
    * file extensions, frameworks, and domain signals. When the rule path fires,
    * the intent resolver's agent-selection step is skipped (deterministic, A3).
@@ -502,6 +509,31 @@ async function prepareExecution(
       } catch { /* best-effort */ }
     }
 
+    // Clarification-answer fallback: when the API handler records the user
+    // turn BEFORE dispatching this task, `getPendingClarifications()` returns
+    // `[]` (its guard: "last message is user → already answered"). The
+    // original questions + user reply survive in the `CLARIFICATION_BATCH:`
+    // constraint emitted by server.ts/chat.ts. Parse them here so the
+    // comprehender sees `pendingQuestions` non-empty and can flag
+    // `isClarificationAnswer=true` — preventing the intent-resolver from
+    // re-triggering the same contradiction that produced the clarification.
+    if (pendingQuestions.length === 0 && input.constraints) {
+      for (const c of input.constraints) {
+        if (!c.startsWith('CLARIFICATION_BATCH:')) continue;
+        try {
+          const raw = c.slice('CLARIFICATION_BATCH:'.length);
+          const parsed = JSON.parse(raw) as { questions?: unknown };
+          if (Array.isArray(parsed.questions)) {
+            const qs = parsed.questions.filter((q): q is string => typeof q === 'string');
+            if (qs.length > 0) {
+              pendingQuestions = qs;
+              break;
+            }
+          }
+        } catch { /* malformed constraint — best-effort */ }
+      }
+    }
+
     // Load user AutoMemory (`~/.vinyan/memory/<slug>/MEMORY.md` or Claude
     // Code shared path). Null when absent — engine emits empty
     // memoryLaneRelevance. Every returned entry is tagged
@@ -558,7 +590,9 @@ async function prepareExecution(
     ) {
       try {
         const stage2Engine = deps.llmComprehensionEngine;
+        const stage2StartMs = Date.now();
         const stage2Envelope = await stage2Engine.comprehend(comprehensionInput);
+        const stage2GenDurationMs = Date.now() - stage2StartMs;
         deps.bus?.emit('comprehension:generated', {
           taskId: input.id,
           engineId: stage2Engine.id,
@@ -566,7 +600,7 @@ async function prepareExecution(
           type: stage2Envelope.params.type,
           confidence: stage2Envelope.params.confidence,
           inputHash: stage2Envelope.params.inputHash,
-          durationMs: 0, // LLM engine encodes its own duration in evidence
+          durationMs: stage2GenDurationMs,
         });
         const stage2Verdict = verifyComprehension({
           message: stage2Envelope,
@@ -582,6 +616,32 @@ async function prepareExecution(
           rejectReason: stage2Verdict.rejectReason,
           durationMs: stage2Verdict.durationMs,
         });
+
+        // P3.A.3 — parity with stage 1: record an ExecutionTrace for
+        // stage 2 so Sleep Cycle + SelfModel see both engines
+        // uniformly. Without this, per-engine analytics would silently
+        // miss stage-2 activity (its data only lived in
+        // comprehension_records, not execution_traces).
+        try {
+          await deps.traceCollector.record({
+            id: `trace-${input.id}-comprehension-stage2`,
+            taskId: input.id,
+            sessionId: input.sessionId,
+            workerId: 'comprehension-phase',
+            timestamp: Date.now(),
+            routingLevel: 0,
+            approach: 'comprehension',
+            approachDescription: `engine=${stage2Engine.id}, tier=${stage2Envelope.params.tier}, type=${stage2Envelope.params.type}, verified=${stage2Verdict.verified}`,
+            oracleVerdicts: { 'comprehension-oracle': stage2Verdict.verified },
+            modelUsed: stage2Engine.id,
+            engineId: stage2Engine.id,
+            tokensConsumed: 0,
+            durationMs: stage2GenDurationMs + stage2Verdict.durationMs,
+            outcome: stage2Verdict.verified ? 'success' : 'failure',
+            failureReason: stage2Verdict.rejectReason,
+            affectedFiles: [],
+          });
+        } catch { /* TraceCollector is best-effort */ }
 
         if (stage2Verdict.verified) {
           const { mergeComprehensions } = await import('./comprehension/merge.ts');
@@ -1142,6 +1202,18 @@ async function buildConversationalResult(
   // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
   // fall back to refinedGoal — this is a degraded-but-recoverable path, not a no-provider case.
   let answer = intent.refinedGoal;
+
+  // Multi-agent: resolve the specialist persona for this turn so the
+  // short-circuit reply matches the same identity that worker-pool would
+  // inject in full-pipeline. Falls back to generic Vinyan when no registry.
+  const resolvedAgent = (() => {
+    const reg = deps.agentRegistry;
+    if (!reg) return undefined;
+    const id = intent.agentId ?? reg.defaultAgent().id;
+    return reg.getAgent(id) ?? reg.defaultAgent();
+  })();
+  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps);
+
   if (provider) {
     try {
       // Load session history for multi-turn conversation continuity
@@ -1158,12 +1230,7 @@ async function buildConversationalResult(
         } catch { /* non-fatal */ }
       }
       const llmReq = {
-        systemPrompt: `You are Vinyan, a friendly and capable assistant. Respond naturally. Match the user's language.
-You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
-When in a multi-turn conversation, maintain context from previous messages.
-Never reveal your underlying model name or provider — you are Vinyan.
-Do NOT use JSON or code blocks unless the user asks for code.
-Do NOT narrate your reasoning process — just respond directly to the user.`,
+        systemPrompt: personaSystemPrompt,
         userPrompt: input.goal,
         maxTokens: 2000,
         temperature: 0.3,
@@ -1191,7 +1258,10 @@ Do NOT narrate your reasoning process — just respond directly to the user.`,
   const trace: ExecutionTrace = {
     id: `trace-${input.id}-conversational`,
     taskId: input.id,
-    workerId: 'intent-resolver',
+    // Multi-agent: attribute the trace to the resolved specialist (e.g. 'secretary')
+    // so context-builder/agent-evolution count this episode against the right agent.
+    // Falls back to 'intent-resolver' for the legacy no-registry path.
+    workerId: resolvedAgent?.id ?? 'intent-resolver',
     timestamp: Date.now(),
     routingLevel: 0,
     approach: 'conversational-shortcircuit',
@@ -1207,6 +1277,61 @@ Do NOT narrate your reasoning process — just respond directly to the user.`,
   const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
   deps.bus?.emit('task:complete', { result });
   return result;
+}
+
+/**
+ * Compose the conversational short-circuit system prompt with specialist
+ * persona injection. Mirrors the persona/peer sections produced by
+ * `assemblePrompt()` for the full pipeline so the same identity speaks in
+ * both paths. When no agent registry is wired, returns the legacy generic
+ * Vinyan prompt for backward compatibility.
+ *
+ * Soul lookup precedence: SoulStore (evolved/reflected) → AgentSpec.soul (built-in).
+ */
+function buildConversationalSystemPrompt(
+  agent: import('./types.ts').AgentSpec | undefined,
+  deps: OrchestratorDeps,
+): string {
+  const closing = `Respond naturally. Match the user's language. Maintain context across turns.
+Never reveal your underlying model name or provider — you are Vinyan.
+Do NOT use JSON or code blocks unless the user asks for code.
+Do NOT narrate your reasoning process — just respond directly to the user.`;
+
+  if (!agent) {
+    return `You are Vinyan, a friendly and capable assistant. You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
+${closing}`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`You are ${agent.name} (${agent.id}), a Vinyan specialist agent.`);
+  lines.push(agent.description);
+
+  // Soul: prefer disk-backed evolved soul (SoulReflector writes here), fall back to built-in.
+  const evolvedSoul = deps.soulStore?.loadSoulRaw(agent.id) ?? null;
+  const soul = evolvedSoul ?? agent.soul ?? null;
+  if (soul) {
+    lines.push('');
+    lines.push('[AGENT SOUL]');
+    lines.push(soul.trim());
+  }
+
+  // Peer roster: list other specialists this agent can mention/recommend
+  // delegating to. Conversational path can't dispatch (no tool layer here),
+  // but knowing peers exist prevents the "I don't have specialist agents"
+  // misanswer that triggered this fix.
+  const peers = (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id);
+  if (peers.length > 0) {
+    lines.push('');
+    lines.push('[CONSULTABLE AGENTS]');
+    lines.push('Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:');
+    for (const p of peers) {
+      lines.push(`  - ${p.id}: ${p.description}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(closing);
+  return lines.join('\n');
 }
 
 async function executeDirectTool(

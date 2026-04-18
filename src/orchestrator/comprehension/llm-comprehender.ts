@@ -28,6 +28,7 @@
  */
 
 import { z } from 'zod';
+import type { VinyanBus } from '../../core/bus.ts';
 import { OracleCircuitBreaker } from '../../oracle/circuit-breaker.ts';
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
 import type { ComprehensionCalibrator } from './learning/calibrator.ts';
@@ -167,6 +168,14 @@ export interface LlmComprehenderOptions {
    * with default config (3 failures → 60s open).
    */
   readonly circuitBreaker?: OracleCircuitBreaker;
+  /**
+   * Optional bus — when provided, emits `comprehension:ceiling_adjusted`
+   * each time the divergence-aware `effectiveCeiling` tightens the
+   * ceiling below the base. Purely observational (A3 compliant).
+   */
+  readonly bus?: VinyanBus;
+  /** Optional taskId for bus event attribution. When omitted, 'unknown'. */
+  readonly taskId?: string;
   /** Test hook for deterministic clock. */
   readonly now?: () => number;
 }
@@ -252,14 +261,33 @@ class LlmComprehender implements ComprehensionEngine {
     this.circuitBreaker.recordSuccess(CIRCUIT_KEY);
 
     // A7: clamp self-reported confidence by the calibrator's ceiling.
+    //     P3.A — use `effectiveCeiling` (not `confidenceCeiling`) so a
+    //     degrading engine auto-tightens on divergence; emit a bus event
+    //     when the tightening actually fires.
     //     A2: `unknown` ceiling → fall back to conservative default rather
     //     than silently treating as 0.5.
     const selfConfidence = Math.min(parsed.confidence, LLM_MAX_SELF_CONFIDENCE);
     let ceiling = LLM_UNKNOWN_DATA_CEILING;
     if (this.opts.calibrator) {
-      const c = this.opts.calibrator.confidenceCeiling(this.id);
-      if (c.kind === 'known') {
-        ceiling = c.value;
+      const base = this.opts.calibrator.confidenceCeiling(this.id);
+      const eff = this.opts.calibrator.effectiveCeiling(this.id);
+      if (eff.kind === 'known') {
+        ceiling = eff.value;
+        // P3.A.4: surface the adjustment when divergence actually
+        // tightened the ceiling. Silent no-op when eff == base.
+        if (
+          this.opts.bus &&
+          base.kind === 'known' &&
+          eff.value < base.value - 1e-9
+        ) {
+          this.opts.bus.emit('comprehension:ceiling_adjusted', {
+            taskId: this.opts.taskId ?? 'unknown',
+            engineId: this.id,
+            baseCeiling: base.value,
+            effectiveCeiling: eff.value,
+            tightening: base.value - eff.value,
+          });
+        }
       } else {
         // Engine-not-seen + insufficient-data both use the conservative default.
         ceiling = LLM_UNKNOWN_DATA_CEILING;

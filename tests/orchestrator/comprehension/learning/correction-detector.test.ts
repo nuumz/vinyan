@@ -183,4 +183,89 @@ describe('CorrectionDetector', () => {
     });
     expect(() => JSON.stringify(v?.evidence)).not.toThrow();
   });
+
+  // ── AXM#5: per-rule label confidence ────────────────────────────────
+  describe('evidence.confidence reflects rule strength', () => {
+    test('explicit correction token → confidence 1', () => {
+      const v = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'no, not that',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      });
+      expect(v?.evidence.confidence).toBe(1);
+    });
+
+    test('clarification-answer → confidence 1', () => {
+      const v = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'anything',
+        currentIsClarificationAnswer: true,
+        currentIsNewTopic: false,
+      });
+      expect(v?.evidence.confidence).toBe(1);
+    });
+
+    test('embedded negation → confidence 0.9', () => {
+      const v = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'I do not want that approach',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      });
+      expect(v?.evidence.confidence).toBe(0.9);
+    });
+
+    test('new-topic → confidence 0.7', () => {
+      const v = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'Write a completely different thing',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: true,
+      });
+      expect(v?.evidence.confidence).toBe(0.7);
+    });
+
+    test('continuation default → confidence 0.5 (weakest claim)', () => {
+      const v = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'thanks',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      });
+      expect(v?.outcome).toBe('confirmed');
+      expect(v?.evidence.confidence).toBe(0.5);
+    });
+
+    test('confidence is monotonically non-increasing across rule precedence', () => {
+      // Verify the taxonomy: explicit > embedded > new-topic > continuation.
+      const explicit = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'no, wrong',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      })!.evidence.confidence;
+      const embedded = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'do not want that',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      })!.evidence.confidence;
+      const newTopic = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'unrelated thing',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: true,
+      })!.evidence.confidence;
+      const contin = detectCorrection({
+        priorRecord: priorRecord(),
+        currentUserMessage: 'thanks',
+        currentIsClarificationAnswer: false,
+        currentIsNewTopic: false,
+      })!.evidence.confidence;
+      expect(explicit).toBeGreaterThanOrEqual(embedded);
+      expect(embedded).toBeGreaterThanOrEqual(newTopic);
+      expect(newTopic).toBeGreaterThanOrEqual(contin);
+    });
+  });
 });

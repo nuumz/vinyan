@@ -27,6 +27,7 @@ function providerReturning(content: string, overrides: Partial<LLMResponse> = {}
         toolCalls: [],
         tokensUsed: { input: 100, output: 50 },
         model: 'mock-model',
+        stopReason: 'end_turn',
         ...overrides,
       };
     },
@@ -229,9 +230,10 @@ describe('LlmComprehender', () => {
       confidence: 0.7,
       reasoning: 'r',
     });
-    // Fake calibrator exposing a known-low ceiling.
+    // Fake calibrator exposing a known-low ceiling, same base + effective.
     const calib = {
       confidenceCeiling: () => ({ kind: 'known' as const, value: 0.2 }),
+      effectiveCeiling: () => ({ kind: 'known' as const, value: 0.2 }),
     };
     const eng = newLlmComprehender({
       provider: providerReturning(high),
@@ -259,6 +261,10 @@ describe('LlmComprehender', () => {
         kind: 'unknown' as const,
         reason: 'engine-not-seen' as const,
       }),
+      effectiveCeiling: () => ({
+        kind: 'unknown' as const,
+        reason: 'engine-not-seen' as const,
+      }),
     };
     const eng = newLlmComprehender({
       provider: providerReturning(high),
@@ -267,6 +273,67 @@ describe('LlmComprehender', () => {
     const out = await eng.comprehend(makeInput({ goal: 'ok' }));
     // LLM_UNKNOWN_DATA_CEILING = 0.3
     expect(out.params.confidence).toBeLessThanOrEqual(0.3);
+  });
+
+  test('P3.A — effectiveCeiling below base triggers ceiling_adjusted bus event', async () => {
+    const high = JSON.stringify({
+      resolvedGoal: 'grounded goal mentioned earlier',
+      priorContextSummary: 'y',
+      confidence: 0.7,
+      reasoning: 'r',
+    });
+    const calib = {
+      // Divergence tightens from 0.6 → 0.1 — adjustment must emit.
+      confidenceCeiling: () => ({ kind: 'known' as const, value: 0.6 }),
+      effectiveCeiling: () => ({ kind: 'known' as const, value: 0.1 }),
+    };
+    // Real VinyanBus would inject; for tests, capture emissions.
+    const events: Array<{ name: string; payload: unknown }> = [];
+    const bus = {
+      emit(name: string, payload: unknown) {
+        events.push({ name, payload });
+      },
+    } as unknown as Parameters<typeof newLlmComprehender>[0]['bus'];
+    const eng = newLlmComprehender({
+      provider: providerReturning(high),
+      calibrator: calib as unknown as Parameters<typeof newLlmComprehender>[0]['calibrator'],
+      bus,
+      taskId: 't-divergent',
+    });
+    await eng.comprehend(makeInput({ goal: 'ok' }));
+    const adjusted = events.find((e) => e.name === 'comprehension:ceiling_adjusted');
+    expect(adjusted).toBeDefined();
+    const p = adjusted!.payload as { baseCeiling: number; effectiveCeiling: number; tightening: number };
+    expect(p.baseCeiling).toBe(0.6);
+    expect(p.effectiveCeiling).toBe(0.1);
+    expect(p.tightening).toBeCloseTo(0.5, 3);
+  });
+
+  test('P3.A — no bus event when effectiveCeiling == confidenceCeiling', async () => {
+    const high = JSON.stringify({
+      resolvedGoal: 'grounded goal mentioned earlier',
+      priorContextSummary: 'y',
+      confidence: 0.4,
+      reasoning: 'r',
+    });
+    const calib = {
+      confidenceCeiling: () => ({ kind: 'known' as const, value: 0.5 }),
+      effectiveCeiling: () => ({ kind: 'known' as const, value: 0.5 }), // identical
+    };
+    const events: Array<{ name: string; payload: unknown }> = [];
+    const bus = {
+      emit(name: string, payload: unknown) {
+        events.push({ name, payload });
+      },
+    } as unknown as Parameters<typeof newLlmComprehender>[0]['bus'];
+    const eng = newLlmComprehender({
+      provider: providerReturning(high),
+      calibrator: calib as unknown as Parameters<typeof newLlmComprehender>[0]['calibrator'],
+      bus,
+      taskId: 't-stable',
+    });
+    await eng.comprehend(makeInput({ goal: 'ok' }));
+    expect(events.find((e) => e.name === 'comprehension:ceiling_adjusted')).toBeUndefined();
   });
 
   test('LLM output is sanitized at write boundary (defense-in-depth)', async () => {

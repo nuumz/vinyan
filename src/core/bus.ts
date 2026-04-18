@@ -576,6 +576,36 @@ export interface VinyanBusEvents {
     recentSamples: number;
     historicalSamples: number;
   };
+  /**
+   * P3.A — fires when `effectiveCeiling` has tightened an engine's
+   * confidence relative to its base `confidenceCeiling`. The LLM
+   * comprehender's self-reported confidence is then clamped to this
+   * tighter value. Observability + sanity — operators can watch the
+   * system auto-damping a degraded engine.
+   */
+  'comprehension:ceiling_adjusted': {
+    taskId: string;
+    engineId: string;
+    /** Ceiling before divergence adjustment. */
+    baseCeiling: number;
+    /** Effective ceiling after divergence adjustment. */
+    effectiveCeiling: number;
+    /** `baseCeiling - effectiveCeiling` — how much got tightened. */
+    tightening: number;
+  };
+  /**
+   * AXM#7 wiring: fires when an engine's Brier score exceeds the
+   * miscalibration threshold (> 0.25 = worse than a coin flip) — the
+   * engine's confidence outputs are systematically misleading. A7
+   * signal; consumers (tier-clamp, dashboards) can tighten further.
+   */
+  'comprehension:miscalibrated': {
+    taskId: string;
+    engineId: string;
+    brier: number;
+    sampleSize: number;
+    threshold: number;
+  };
 
   // Extensible Thinking events
   'thinking:policy-compiled': {

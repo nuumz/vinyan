@@ -104,7 +104,17 @@ export interface CorrectionDetectorInput {
 export type CorrectionVerdict =
   | {
       outcome: 'confirmed' | 'corrected' | 'abandoned';
-      evidence: Record<string, unknown>;
+      /**
+       * Structured evidence for the label. `confidence` reflects how
+       * strongly the firing rule supports the outcome — downstream
+       * calibration can weight labels instead of treating a
+       * "continuation default" the same as a "correction-token match".
+       * Higher confidence = label is more reliable.
+       */
+      evidence: {
+        reason: string;
+        confidence: number;
+      } & Record<string, unknown>;
     }
   | null;
 
@@ -118,12 +128,22 @@ export function detectCorrection(input: CorrectionDetectorInput): CorrectionVerd
 
   const normalized = input.currentUserMessage.toLowerCase().trim();
 
+  // Per-rule confidence tags — downstream calibration uses these to weight
+  // labels. Ordering matches A5 tiered-trust semantics: structural signals
+  // (clarification-answer) and explicit tokens get 1.0 (deterministic
+  // pattern); regex matches 0.9 (heuristic); new-topic inference 0.7;
+  // silent-continuation DEFAULT 0.5 (weakest — claim lacks direct evidence).
+  //
   // 1. Clarification-answer path — always confirms (user is providing
   //    the data we asked for, not disputing the prior resolvedGoal).
   if (input.currentIsClarificationAnswer) {
     return {
       outcome: 'confirmed',
-      evidence: { reason: 'clarification-answer', signal: 'continuation' },
+      evidence: {
+        reason: 'clarification-answer',
+        signal: 'continuation',
+        confidence: 1,
+      },
     };
   }
 
@@ -132,7 +152,12 @@ export function detectCorrection(input: CorrectionDetectorInput): CorrectionVerd
     if (normalized.startsWith(token)) {
       return {
         outcome: 'corrected',
-        evidence: { reason: 'correction-token', token, position: 'opening' },
+        evidence: {
+          reason: 'correction-token',
+          token,
+          position: 'opening',
+          confidence: 1,
+        },
       };
     }
   }
@@ -142,7 +167,11 @@ export function detectCorrection(input: CorrectionDetectorInput): CorrectionVerd
     if (re.test(input.currentUserMessage)) {
       return {
         outcome: 'corrected',
-        evidence: { reason: 'embedded-negation', pattern: re.source },
+        evidence: {
+          reason: 'embedded-negation',
+          pattern: re.source,
+          confidence: 0.9,
+        },
       };
     }
   }
@@ -151,14 +180,26 @@ export function detectCorrection(input: CorrectionDetectorInput): CorrectionVerd
   if (input.currentIsNewTopic) {
     return {
       outcome: 'abandoned',
-      evidence: { reason: 'new-topic', signal: 'topic-shift' },
+      evidence: {
+        reason: 'new-topic',
+        signal: 'topic-shift',
+        confidence: 0.7,
+      },
     };
   }
 
   // 5. Default: the user continued the thread without corrective language.
-  //    Treat as confirmed — this is the common happy path.
+  //    Treat as confirmed — this is the common happy path — but label it
+  //    with the LOWEST confidence so a downstream calibrator can choose
+  //    to de-weight it. This is an A2 honesty move: "continuation" is a
+  //    claim, not evidence; owning that distinction up-front prevents
+  //    false-positive confirms from polluting accuracy metrics.
   return {
     outcome: 'confirmed',
-    evidence: { reason: 'continuation', signal: 'no-correction-detected' },
+    evidence: {
+      reason: 'continuation',
+      signal: 'no-correction-detected',
+      confidence: 0.5,
+    },
   };
 }

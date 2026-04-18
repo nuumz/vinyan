@@ -24,8 +24,16 @@
 
 import { watch, type FSWatcher } from 'chokidar';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'path';
+import { join } from 'path';
+import { loadConfig } from '../config/index.ts';
+import {
+  EXIT_CODE_STARTUP_FATAL as EXIT_CODE_STARTUP_FATAL_SHARED,
+  isProcessAlive,
+  readPidFile,
+  recoverStaleInstance,
+  removePidFile,
+  writePidFile,
+} from './_serve-lifecycle.ts';
 
 const INITIAL_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
@@ -34,8 +42,8 @@ const MAX_CONSECUTIVE_CRASHES = 20;
 const WATCH_DEBOUNCE_MS = 200;
 /** Fast-fatal threshold: if the child dies in < this on its first attempt, we assume a config/port error and exit instead of respawn-looping. */
 const FAST_FATAL_MS = 2_000;
-/** Exit code the child uses to signal "startup-fatal, do not retry" (matches serve.ts EXIT_CODE_STARTUP_FATAL). */
-const EXIT_CODE_STARTUP_FATAL = 78;
+/** Exit code the child uses to signal "startup-fatal, do not retry". */
+const EXIT_CODE_STARTUP_FATAL = EXIT_CODE_STARTUP_FATAL_SHARED;
 
 /** Paths (relative to workspace) to watch for hot reload. */
 const WATCH_PATHS = ['src', 'vinyan.json'];
@@ -75,19 +83,37 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   let reloadRequested = false;
   let watcher: FSWatcher | null = null;
 
-  // ── PID file: stale-detect a previous supervisor + persist our PID ──
-  const pidFilePath = join(workspace, '.vinyan', 'supervisor.pid');
-  const stalePid = readSupervisorPid(pidFilePath);
-  if (stalePid !== null && stalePid !== process.pid) {
-    if (isProcessAlive(stalePid)) {
-      console.error(`[vinyan-supervisor] Another supervisor is running (pid ${stalePid}).`);
-      console.error(`[vinyan-supervisor] Stop it first: kill ${stalePid}   or remove ${pidFilePath} if stale.`);
-      process.exit(EXIT_CODE_STARTUP_FATAL);
-    }
-    // Stale — remove and continue.
-    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+  // ── Auto-recovery of any stale vinyan-serve state ──
+  //
+  // "vinyan serve" should be idempotent: running it always gives the
+  // user a working server, regardless of whether a prior run died
+  // uncleanly. Recovery:
+  //   1. Read port from vinyan.json (same precedence as serve.ts).
+  //   2. Find candidates: supervisor.pid, serve.pid, and port holder.
+  //   3. Verify each candidate is a vinyan-serve process for THIS
+  //      workspace (ps cmdline check) — never kills unrelated PIDs.
+  //   4. SIGTERM → 3s → SIGKILL survivors → wait for port release.
+  //   5. Clean stale PID files.
+  // After this, the supervisor claims its own PID file and proceeds.
+  const supervisorPidPath = join(workspace, '.vinyan', 'supervisor.pid');
+  const servePidPath = join(workspace, '.vinyan', 'serve.pid');
+  const port = loadConfig(workspace).network?.api?.port ?? 3927;
+
+  const recovery = await recoverStaleInstance({
+    workspace,
+    port,
+    supervisorPidPath,
+    servePidPath,
+    logPrefix: '[vinyan-supervisor]',
+  });
+  if (recovery.foreignHolders.length > 0) {
+    console.error(
+      `[vinyan-supervisor] Port ${port} held by non-vinyan process(es): ${recovery.foreignHolders.join(', ')}. ` +
+        'Stop them first or change network.api.port in vinyan.json.',
+    );
+    process.exit(EXIT_CODE_STARTUP_FATAL);
   }
-  writeSupervisorPid(pidFilePath);
+  writePidFile(supervisorPidPath);
 
   // ── Last-resort sync cleanup on any exit path ──
   //   - Remove our PID file.
@@ -95,7 +121,7 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   //     guarantee: if the supervisor process dies for ANY reason,
   //     the child goes with it).
   process.on('exit', () => {
-    try { unlinkSync(pidFilePath); } catch { /* already removed */ }
+    removePidFile(supervisorPidPath);
     const c = currentChild;
     if (c && !c.killed) {
       try { c.kill('SIGKILL'); } catch { /* already gone */ }
@@ -299,34 +325,4 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   }
 
   if (watcher) await watcher.close().catch(() => {});
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function readSupervisorPid(path: string): number | null {
-  try {
-    if (!existsSync(path)) return null;
-    const pid = parseInt(readFileSync(path, 'utf8').trim(), 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSupervisorPid(path: string): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, String(process.pid), 'utf8');
-  } catch {
-    // Non-fatal — PID file is convenience, not correctness.
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }

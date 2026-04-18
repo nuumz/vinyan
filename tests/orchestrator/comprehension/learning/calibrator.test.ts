@@ -184,17 +184,33 @@ describe('ComprehensionCalibrator', () => {
       expect(sig!.delta).toBe(-1);
     });
 
-    test('honors custom threshold (lower = more sensitive)', () => {
+    test('honors custom threshold (lower = more sensitive) + CI separation gate', () => {
       const data: ComprehensionRecordRow[] = [];
-      // 30% drop recent (7/10) vs historical (1.0 from 25 confirmed).
+      // Recent: 1/10 confirmed (Wilson upper ~ 0.40).
+      // Historical: 25/25 confirmed (Wilson lower ~ 0.87).
+      // CIs separate cleanly → divergence fires when threshold permits.
+      for (let i = 0; i < 1; i++) data.push(row('confirmed', 2000 - i));
+      for (let i = 0; i < 9; i++) data.push(row('corrected', 1900 - i));
+      for (let i = 0; i < 25; i++) data.push(row('confirmed', 1000 - i));
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      const lenient = calib.detectDivergence('rule-comprehender', { deltaThreshold: 0.95 });
+      expect(lenient!.diverged).toBe(false); // delta ~ -0.9, threshold 0.95 → fails delta gate
+      const strict = calib.detectDivergence('rule-comprehender', { deltaThreshold: 0.2 });
+      expect(strict!.diverged).toBe(true); // delta + CI both pass
+    });
+
+    test('AXM#8: noisy small-sample drop does NOT fire when CIs overlap', () => {
+      const data: ComprehensionRecordRow[] = [];
+      // 7/10 recent (CI ~ [0.40, 0.89]) vs 25/25 historical (CI ~ [0.87, 1.0]).
+      // Delta exceeds 0.2 threshold — BUT CIs overlap marginally; gate holds.
       for (let i = 0; i < 7; i++) data.push(row('confirmed', 2000 - i));
       for (let i = 0; i < 3; i++) data.push(row('corrected', 1900 - i));
       for (let i = 0; i < 25; i++) data.push(row('confirmed', 1000 - i));
       const calib = new ComprehensionCalibrator(loaderWith(data));
-      const lenient = calib.detectDivergence('rule-comprehender', { deltaThreshold: 0.5 });
-      expect(lenient!.diverged).toBe(false); // 30% drop < 50% threshold
-      const strict = calib.detectDivergence('rule-comprehender', { deltaThreshold: 0.2 });
-      expect(strict!.diverged).toBe(true); // 30% drop > 20% threshold
+      const sig = calib.detectDivergence('rule-comprehender', { deltaThreshold: 0.2 });
+      expect(sig).not.toBeNull();
+      // Delta passes, but CIs have too much overlap at small n → no alarm.
+      expect(sig!.diverged).toBe(false);
     });
 
     test('ignores pending records', () => {
@@ -206,6 +222,111 @@ describe('ComprehensionCalibrator', () => {
       const sig = calib.detectDivergence('rule-comprehender');
       expect(sig).not.toBeNull();
       expect(sig!.recentSamples + sig!.historicalSamples).toBe(40);
+    });
+  });
+
+  // ── AXM#7: Brier calibration quality ───────────────────────────────
+
+  describe('brierScore', () => {
+    test('perfect calibration (conf=1, all confirmed) → Brier ~ 0', () => {
+      const data: ComprehensionRecordRow[] = [];
+      for (let i = 0; i < DATA_GATE_MIN; i++) {
+        data.push({ ...row('confirmed', i), confidence: 1 });
+      }
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      const b = calib.brierScore('rule-comprehender');
+      expect(b.insufficient).toBe(false);
+      expect(b.brier).toBeCloseTo(0, 5);
+    });
+
+    test('overconfident misses (conf=0.9, all corrected) → Brier ~ 0.81', () => {
+      const data: ComprehensionRecordRow[] = [];
+      for (let i = 0; i < DATA_GATE_MIN; i++) {
+        data.push({ ...row('corrected', i), confidence: 0.9 });
+      }
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      const b = calib.brierScore('rule-comprehender');
+      expect(b.brier).toBeCloseTo(0.81, 2);
+    });
+
+    test('insufficient data returns brier=null (A2 honesty)', () => {
+      const calib = new ComprehensionCalibrator(loaderWith([row('confirmed', 0)]));
+      const b = calib.brierScore('rule-comprehender');
+      expect(b.insufficient).toBe(true);
+      expect(b.brier).toBeNull();
+    });
+  });
+
+  // ── P3.A.1: effectiveCeiling ═ confidenceCeiling + divergence penalty ──
+
+  describe('effectiveCeiling (P3.A — observe→respond)', () => {
+    test('returns the same as confidenceCeiling when there is no divergence signal', () => {
+      const data: ComprehensionRecordRow[] = [];
+      for (let i = 0; i < DATA_GATE_MIN; i++) data.push(row('confirmed', i));
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      const base = calib.confidenceCeiling('rule-comprehender');
+      const eff = calib.effectiveCeiling('rule-comprehender');
+      expect(eff).toEqual(base);
+    });
+
+    test('returns unknown when base is unknown (no data to modulate)', () => {
+      const calib = new ComprehensionCalibrator(loaderWith([]));
+      const eff = calib.effectiveCeiling('new-engine');
+      expect(eff.kind).toBe('unknown');
+    });
+
+    test('tightens to the recent accuracy when divergence fires', () => {
+      const data: ComprehensionRecordRow[] = [];
+      // 10 corrected recent (accuracy 0), 25 confirmed historical (accuracy 1).
+      for (let i = 0; i < 10; i++) data.push(row('corrected', 2000 - i));
+      for (let i = 0; i < 25; i++) data.push(row('confirmed', 1000 - i));
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      // Sanity — divergence IS detected.
+      const sig = calib.detectDivergence('rule-comprehender');
+      expect(sig?.diverged).toBe(true);
+      // Base ceiling is sampled over the full window (around 10/35 ≈ 0.28).
+      const base = calib.confidenceCeiling('rule-comprehender');
+      expect(base.kind).toBe('known');
+      const eff = calib.effectiveCeiling('rule-comprehender');
+      expect(eff.kind).toBe('known');
+      // Recent accuracy is 0 — effective ceiling drops to 0.
+      if (eff.kind === 'known') expect(eff.value).toBe(0);
+    });
+
+    test('does not RAISE the ceiling when recent accuracy exceeds base', () => {
+      // Pathological case: divergence detected but recent BETTER than historical
+      // (a positive delta, so diverged=false under default threshold).
+      // Still — effectiveCeiling must never exceed base. Verify that.
+      const data: ComprehensionRecordRow[] = [];
+      for (let i = 0; i < 10; i++) data.push(row('confirmed', 2000 - i));
+      for (let i = 0; i < 25; i++) data.push(row('corrected', 1000 - i));
+      const calib = new ComprehensionCalibrator(loaderWith(data));
+      const sig = calib.detectDivergence('rule-comprehender');
+      // delta = recent(1) - historical(0) = +1, no divergence triggered
+      expect(sig?.diverged).toBe(false);
+      const base = calib.confidenceCeiling('rule-comprehender');
+      const eff = calib.effectiveCeiling('rule-comprehender');
+      // No change — no degradation, no tightening.
+      expect(eff).toEqual(base);
+    });
+
+    test('effective <= base always (A5 conservative invariant)', () => {
+      // Run a battery: varied outcome mixes, never effective > base.
+      const mkData = (confirmedCount: number, correctedCount: number): ComprehensionRecordRow[] => {
+        const out: ComprehensionRecordRow[] = [];
+        let t = 5000;
+        for (let i = 0; i < correctedCount; i++) out.push(row('corrected', t--));
+        for (let i = 0; i < confirmedCount; i++) out.push(row('confirmed', t--));
+        return out;
+      };
+      for (const [c, e] of [[20, 20], [15, 25], [30, 10], [25, 15]] as const) {
+        const calib = new ComprehensionCalibrator(loaderWith(mkData(c, e)));
+        const base = calib.confidenceCeiling('x');
+        const eff = calib.effectiveCeiling('x');
+        if (base.kind === 'known' && eff.kind === 'known') {
+          expect(eff.value).toBeLessThanOrEqual(base.value);
+        }
+      }
     });
   });
 

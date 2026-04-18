@@ -28,8 +28,8 @@
  *      even if we exit uncleanly.
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'path';
+import { unlinkSync } from 'node:fs';
+import { join } from 'path';
 import { createA2AManager, type A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { VinyanAPIServer } from '../api/server.ts';
 import { SessionManager } from '../api/session-manager.ts';
@@ -38,9 +38,13 @@ import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
 import { createTaskQueue } from '../orchestrator/task-queue.ts';
-
-/** Standardized exit code: "service startup failure that the user can act on (port bind, DB lock)." Chosen in the LSB 64–113 reserved range. */
-const EXIT_CODE_STARTUP_FATAL = 78;
+import {
+  EXIT_CODE_STARTUP_FATAL,
+  findPortHolder,
+  readPidFile,
+  recoverStaleInstance,
+  writePidFile,
+} from './_serve-lifecycle.ts';
 /** Hard wall-clock deadline for the entire shutdown sequence. */
 const SHUTDOWN_FORCE_EXIT_MS = 8_000;
 /** Per-step soft deadline — if exceeded we log which step hung, the global deadline still applies. */
@@ -50,8 +54,12 @@ const STEP_TIMEOUT_MS = {
   orchestrator_close: 2_000,
   db_close: 1_000,
 };
-/** How often the parent-death watchdog polls. */
-const PARENT_WATCHDOG_INTERVAL_MS = 5_000;
+/**
+ * How often the parent-death watchdog polls. Tight (1s) so an orphaned
+ * child self-terminates quickly, narrowing the zombie window after a
+ * supervisor SIGKILL / terminal force-close / OS crash.
+ */
+const PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 
 /**
  * Error codes that must ALWAYS be fatal regardless of phase. These indicate
@@ -101,17 +109,56 @@ export async function serve(workspace: string): Promise<void> {
   process.on('SIGTERM', () => earlySignalHandler('SIGTERM'));
   process.on('SIGHUP', () => earlySignalHandler('SIGHUP'));
 
-  // ── PID file + stale detection ──────────────────────────────────
+  // ── Load config early so we know the port for recovery ─────────
+  const vinyanConfigEarly = loadConfig(workspace);
+  const portEarly = vinyanConfigEarly.network?.api?.port ?? 3927;
+
+  // ── Auto-recovery of stale instances ───────────────────────────
+  //
+  // Under supervisor: recovery already ran in supervise.ts before we
+  // were spawned, so skip. Direct / --no-supervise: WE must do it,
+  // otherwise a previous zombie still holding the port would block us.
+  //
+  // The recovery kills any lingering vinyan-serve process for THIS
+  // workspace (SIGTERM → 3s → SIGKILL), releases the port, cleans up
+  // stale PID files, and proceeds. The user never has to manually
+  // hunt down a zombie — zombie-free under any circumstance.
   const pidFilePath = join(workspace, '.vinyan', 'serve.pid');
-  const stalePid = readPidFile(pidFilePath);
-  if (stalePid !== null && stalePid !== process.pid) {
-    if (isProcessAlive(stalePid)) {
-      console.error(`[vinyan] Another vinyan serve is running (pid ${stalePid}).`);
-      console.error(`[vinyan] Stop it first: kill ${stalePid}   or remove ${pidFilePath} if stale.`);
+  const supervisorPidPath = join(workspace, '.vinyan', 'supervisor.pid');
+  const supervisorPid = parseInt(process.env.VINYAN_SUPERVISOR_PID ?? '0');
+
+  if (!process.env.VINYAN_SUPERVISED) {
+    const { foreignHolders } = await recoverStaleInstance({
+      workspace,
+      port: portEarly,
+      supervisorPidPath,
+      servePidPath: pidFilePath,
+      logPrefix: '[vinyan]',
+      protectedPids: supervisorPid > 0 ? [supervisorPid] : undefined,
+    });
+    if (foreignHolders.length > 0) {
+      console.error(`[vinyan] Port ${portEarly} held by non-vinyan process(es): ${foreignHolders.join(', ')}.`);
+      console.error('[vinyan] Stop them first or pick a different port in vinyan.json.');
       process.exit(EXIT_CODE_STARTUP_FATAL);
     }
-    // Stale — remove and continue.
-    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+  } else {
+    // Under supervisor: quickly double-check there's no stale serve.pid
+    // pointing at a dead process — can happen after a SIGKILL of a
+    // previous child that bypassed our exit handler.
+    const stalePid = readPidFile(pidFilePath);
+    if (stalePid !== null && stalePid !== process.pid && stalePid !== supervisorPid) {
+      try {
+        process.kill(stalePid, 0);
+        // Alive AND not our supervisor — supervisor should have run
+        // recovery first. Refuse to start so two children cannot race
+        // for the port.
+        console.error(`[vinyan] Stale child still alive (pid ${stalePid}); supervisor should have cleaned this up.`);
+        process.exit(EXIT_CODE_STARTUP_FATAL);
+      } catch {
+        // Dead — remove stale PID file.
+        try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+      }
+    }
   }
 
   // ── Parent-death watchdog (supervised mode only) ────────────────
@@ -119,7 +166,6 @@ export async function serve(workspace: string): Promise<void> {
   // PID via VINYAN_SUPERVISOR_PID. If the supervisor is SIGKILL'd
   // (or crashes) before it can signal us, we would otherwise orphan.
   // Polling process.kill(pid, 0) lets us self-terminate cleanly.
-  const supervisorPid = parseInt(process.env.VINYAN_SUPERVISOR_PID ?? '0');
   if (supervisorPid > 0) {
     const watchdog = setInterval(() => {
       try {
@@ -138,9 +184,8 @@ export async function serve(workspace: string): Promise<void> {
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });
 
-  // Load network config for A2A multi-instance
-  const vinyanConfig = loadConfig(workspace);
-  const network = vinyanConfig.network;
+  // Reuse the config we loaded early for port preflight.
+  const network = vinyanConfigEarly.network;
 
   // Create A2AManager if multi-instance is enabled
   let a2aManager: A2AManagerImpl | undefined;
@@ -249,7 +294,7 @@ export async function serve(workspace: string): Promise<void> {
     const code = (err as { code?: string }).code;
     const msg = err instanceof Error ? err.message : String(err);
     if (code === 'EADDRINUSE') {
-      const holder = await tryFindPortHolder(port);
+      const holder = await findPortHolder(port);
       console.error(`[vinyan] Port ${bind}:${port} is already in use${holder ? ` (pid ${holder})` : ''}.`);
       console.error(`[vinyan] Stop the other instance first: kill ${holder ?? '<pid>'}`);
       process.exit(EXIT_CODE_STARTUP_FATAL);
@@ -319,51 +364,6 @@ async function withTimeout<T>(label: string, ms: number, promise: Promise<T>): P
   } finally {
     settled = true;
     clearTimeout(timer);
-  }
-}
-
-/** Read PID from file; returns null on any error (missing, malformed, empty). */
-function readPidFile(path: string): number | null {
-  try {
-    if (!existsSync(path)) return null;
-    const pid = parseInt(readFileSync(path, 'utf8').trim(), 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePidFile(path: string): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, String(process.pid), 'utf8');
-  } catch {
-    // Non-fatal — PID file is convenience, not correctness.
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Best-effort: shell out to lsof to find the PID holding the port. */
-async function tryFindPortHolder(port: number): Promise<number | null> {
-  try {
-    const proc = Bun.spawn(['lsof', '-ti', `:${port}`, '-sTCP:LISTEN'], {
-      stdout: 'pipe',
-      stderr: 'ignore',
-    });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    const pid = parseInt(out.trim().split('\n')[0] ?? '', 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
   }
 }
 

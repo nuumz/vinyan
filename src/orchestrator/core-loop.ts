@@ -267,6 +267,37 @@ export interface OrchestratorDeps {
    * bus events as tokens arrive. Purely observational (A3). Default false.
    */
   streamingAssistantDelta?: boolean;
+  /**
+   * Conversation comprehension engine — runs BEFORE intent resolution to
+   * produce an oracle-verified, structured understanding of the current
+   * turn (rootGoal anchoring, clarification-answer detection, referent
+   * ambiguity flagging). When omitted, the core-loop instantiates a
+   * rule-based comprehender on demand — the pipeline never hard-fails
+   * because comprehension is available; it either produces a verified
+   * envelope or a `type:'unknown'` envelope that downstream routing
+   * gracefully ignores.
+   *
+   * See `src/orchestrator/comprehension/` and `src/oracle/comprehension/`.
+   */
+  comprehensionEngine?: import('./comprehension/types.ts').ComprehensionEngine;
+  /**
+   * A7 learning-loop persistence (P2.A). When provided, each comprehension
+   * turn is recorded via ComprehensionStore, and the prior turn's outcome
+   * is marked via CorrectionDetector before the new turn runs. Without
+   * this, the pipeline works identically — just without calibration data
+   * for `comprehension:calibrated` bus events or data-gate enforcement.
+   */
+  comprehensionStore?: import('../db/comprehension-store.ts').ComprehensionStore;
+  /**
+   * P2.C stage-2 engine — LLM-backed comprehender. Runs ONLY when the
+   * rule-based stage 1 flags `hasAmbiguousReferents=true`. Its envelope
+   * is verified separately (engineType='llm' → tier ceiling 'probabilistic')
+   * and merged into the final output via A5 rules (see merge.ts).
+   *
+   * When omitted the pipeline runs stage 1 alone — identical to P2.B
+   * behavior. Graceful degradation; never hard-fails on missing stage 2.
+   */
+  llmComprehensionEngine?: import('./comprehension/types.ts').ComprehensionEngine;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -303,6 +334,14 @@ async function prepareExecution(
       workingMemory: WorkingMemory;
       explorationFlag: boolean;
       intentResolution?: IntentResolution;
+      /**
+       * Oracle-verified conversation comprehension (A1). Present when the
+       * comprehension phase ran AND the oracle accepted the envelope.
+       * Downstream phases (intent resolver, gate, worker prompt) read
+       * structured state (isClarificationAnswer, rootGoal, resolvedGoal)
+       * from here; they fall back to the literal goal when absent.
+       */
+      comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
     }
   | TaskResult
 > {
@@ -355,6 +394,379 @@ async function prepareExecution(
     isRecurring: understanding.historicalProfile?.isRecurring ?? false,
   });
 
+  // ── Conversation Comprehension (A1: engine proposes → oracle verifies) ──
+  // Runs BEFORE intent resolution so the resolver sees structured state
+  // flags (isClarificationAnswer, rootGoal, resolvedGoal) instead of
+  // having to rediscover them from raw conversation history. Any failure
+  // (missing session manager, engine error, oracle reject) falls back to
+  // the literal goal — the pipeline never hard-fails.
+  let comprehension: import('./comprehension/types.ts').ComprehendedTaskMessage | undefined;
+  try {
+    const { newRuleComprehender } = await import('./comprehension/rule-comprehender.ts');
+    const { verifyComprehension } = await import('../oracle/comprehension/index.ts');
+    const { loadAutoMemory } = await import('../memory/auto-memory-loader.ts');
+    const { detectCorrection } = await import('./comprehension/learning/correction-detector.ts');
+    const engine = deps.comprehensionEngine ?? newRuleComprehender();
+
+    // A7 learning-loop step 1 (markOutcome on prior turn):
+    // BEFORE running this turn's comprehension, look up the session's
+    // most-recent comprehension record and label its outcome based on
+    // what the user just said. This closes the calibration half of A7.
+    // Purely best-effort — a DB error / missing store skips this step.
+    if (deps.comprehensionStore && input.sessionId) {
+      try {
+        const priorRows = deps.comprehensionStore.mostRecentForSession(input.sessionId, 1);
+        const priorRecord = priorRows[0] ?? null;
+        if (priorRecord && !priorRecord.outcome) {
+          // Peek at pending clarifications for this turn's message to decide
+          // if this is a clarification-answer continuation.
+          let thisTurnIsClarAnswer = false;
+          try {
+            const pending = deps.sessionManager?.getPendingClarifications(input.sessionId) ?? [];
+            thisTurnIsClarAnswer = pending.length > 0;
+          } catch { /* best-effort */ }
+          // Simple new-topic heuristic: no prior user turns in history other
+          // than the current message. Detailed detection lives in the
+          // comprehender, but we don't have its output YET at this point —
+          // so we use the session manager's raw history count.
+          let thisTurnIsNewTopic = false;
+          try {
+            const histAll = deps.sessionManager?.getConversationHistory(input.sessionId, 2000) ?? [];
+            const priorUserCount = histAll.filter(
+              (h) => h.role === 'user' && h.content !== input.goal,
+            ).length;
+            thisTurnIsNewTopic = priorUserCount === 0;
+          } catch { /* best-effort */ }
+
+          const verdict = detectCorrection({
+            priorRecord,
+            currentUserMessage: input.goal,
+            currentIsClarificationAnswer: thisTurnIsClarAnswer,
+            currentIsNewTopic: thisTurnIsNewTopic,
+          });
+          if (verdict) {
+            deps.comprehensionStore.markOutcome(priorRecord.input_hash, {
+              outcome: verdict.outcome,
+              evidence: verdict.evidence,
+            });
+            deps.bus?.emit('comprehension:calibrated', {
+              taskId: input.id,
+              priorInputHash: priorRecord.input_hash,
+              engineId: priorRecord.engine_id,
+              outcome: verdict.outcome,
+              evidence: verdict.evidence,
+            });
+
+            // AXM#3: after labeling an outcome, check whether this
+            // engine's recent accuracy has dropped materially below its
+            // historical window. When the divergence gate fires, emit
+            // a bus event — consumers (oracle tier-clamp, dashboards)
+            // react without blocking the pipeline.
+            try {
+              const { ComprehensionCalibrator } = await import(
+                './comprehension/learning/calibrator.ts'
+              );
+              const calib = new ComprehensionCalibrator(deps.comprehensionStore);
+              const signal = calib.detectDivergence(priorRecord.engine_id);
+              if (signal && signal.diverged) {
+                deps.bus?.emit('comprehension:calibration_diverged', {
+                  taskId: input.id,
+                  engineId: signal.engineId,
+                  engineType: priorRecord.engine_type ?? 'unknown',
+                  recentAccuracy: signal.recentAccuracy,
+                  historicalAccuracy: signal.historicalAccuracy,
+                  delta: signal.delta,
+                  recentSamples: signal.recentSamples,
+                  historicalSamples: signal.historicalSamples,
+                });
+              }
+            } catch { /* divergence check is advisory */ }
+          }
+        }
+      } catch { /* best-effort — calibration never blocks the pipeline */ }
+    }
+
+    // Build input from session + pending clarifications.
+    let history: import('./types.ts').ConversationEntry[] = [];
+    let pendingQuestions: string[] = [];
+    let rootGoal: string | null = null;
+    if (input.sessionId && deps.sessionManager) {
+      try {
+        history = deps.sessionManager.getConversationHistory(input.sessionId, 4000);
+      } catch { /* best-effort */ }
+      try {
+        pendingQuestions = deps.sessionManager.getPendingClarifications(input.sessionId);
+      } catch { /* best-effort */ }
+      try {
+        rootGoal = deps.sessionManager.getOriginalTaskGoal(input.sessionId);
+      } catch { /* best-effort */ }
+    }
+
+    // Load user AutoMemory (`~/.vinyan/memory/<slug>/MEMORY.md` or Claude
+    // Code shared path). Null when absent — engine emits empty
+    // memoryLaneRelevance. Every returned entry is tagged
+    // `trustTier: 'probabilistic'` and passes through `sanitizeForPrompt`
+    // (A5 + Red Team #3 — second-order injection defense).
+    let autoMemory: Awaited<ReturnType<typeof loadAutoMemory>> = null;
+    try {
+      autoMemory = loadAutoMemory({ workspace: deps.workspace ?? process.cwd() });
+    } catch { /* best-effort — null means no memory lane, pipeline proceeds */ }
+
+    const generatedAt = Date.now();
+    const comprehensionInput = {
+      input,
+      history,
+      pendingQuestions,
+      rootGoal,
+      autoMemory,
+    };
+    const stage1Envelope = await engine.comprehend(comprehensionInput);
+    // The envelope USED by downstream is stage1 until stage 2 contributes.
+    let envelope = stage1Envelope;
+    deps.bus?.emit('comprehension:generated', {
+      taskId: input.id,
+      engineId: engine.id,
+      tier: envelope.params.tier,
+      type: envelope.params.type,
+      confidence: envelope.params.confidence,
+      inputHash: envelope.params.inputHash,
+      durationMs: Date.now() - generatedAt,
+    });
+
+    const stage1Verdict = verifyComprehension({
+      message: stage1Envelope,
+      history,
+      pendingQuestions,
+      // AXM#1 (A3/A5): pass the orchestrator-declared engineType so the
+      // oracle enforces a per-type tier ceiling. Prevents an LLM engine
+      // from claiming deterministic/heuristic at face value.
+      engineType: engine.engineType,
+    });
+    let verdict = stage1Verdict;
+
+    // P2.C.3 — HYBRID pipeline. Run the LLM comprehender only when:
+    //   (a) stage 1 succeeded AND stage 1 explicitly flagged ambiguous referents
+    //       (no speculative LLM invocations — A3 discipline), AND
+    //   (b) a stage-2 engine is registered.
+    // Merge via A5 rules (see merge.ts). Stage-2 failure is graceful —
+    // we keep stage 1's result and its verdict.
+    if (
+      deps.llmComprehensionEngine &&
+      stage1Verdict.verified &&
+      stage1Envelope.params.type === 'comprehension' &&
+      stage1Envelope.params.data?.state.hasAmbiguousReferents === true
+    ) {
+      try {
+        const stage2Engine = deps.llmComprehensionEngine;
+        const stage2Envelope = await stage2Engine.comprehend(comprehensionInput);
+        deps.bus?.emit('comprehension:generated', {
+          taskId: input.id,
+          engineId: stage2Engine.id,
+          tier: stage2Envelope.params.tier,
+          type: stage2Envelope.params.type,
+          confidence: stage2Envelope.params.confidence,
+          inputHash: stage2Envelope.params.inputHash,
+          durationMs: 0, // LLM engine encodes its own duration in evidence
+        });
+        const stage2Verdict = verifyComprehension({
+          message: stage2Envelope,
+          history,
+          pendingQuestions,
+          engineType: stage2Engine.engineType,
+        });
+        deps.bus?.emit('comprehension:verified', {
+          taskId: input.id,
+          verified: stage2Verdict.verified,
+          verdictType: stage2Verdict.type,
+          tier: stage2Verdict.tier,
+          rejectReason: stage2Verdict.rejectReason,
+          durationMs: stage2Verdict.durationMs,
+        });
+
+        if (stage2Verdict.verified) {
+          const { mergeComprehensions } = await import('./comprehension/merge.ts');
+          const merged = mergeComprehensions(stage1Envelope, stage2Envelope);
+          if (merged.s2Contributed) {
+            envelope = merged.envelope;
+            // verdict stays stage 1 — both sides were independently verified,
+            // and the merged envelope carries the lower of the two tiers.
+          }
+        }
+
+        // Always persist stage 2's record (even on reject) — calibration
+        // feeds on every outcome, including rejected ones.
+        if (deps.comprehensionStore) {
+          try {
+            deps.comprehensionStore.record({
+              envelope: stage2Envelope,
+              taskId: input.id,
+              sessionId: input.sessionId,
+              engineId: stage2Engine.id,
+              engineType: stage2Engine.engineType,
+              verdictPass: stage2Verdict.verified,
+              verdictReason: stage2Verdict.rejectReason,
+            });
+          } catch { /* best-effort */ }
+        }
+      } catch {
+        // Stage-2 engines are FAIL-OPEN — any unhandled exception leaves
+        // stage 1's result intact.
+      }
+    }
+    deps.bus?.emit('comprehension:verified', {
+      taskId: input.id,
+      verified: verdict.verified,
+      verdictType: verdict.type,
+      tier: verdict.tier,
+      rejectReason: verdict.rejectReason,
+      durationMs: verdict.durationMs,
+    });
+
+    // A7 scaffolding: record an ExecutionTrace for the comprehension phase
+    // so SelfModel / Sleep Cycle can calibrate comprehension accuracy from
+    // downstream outcomes (falsifiable_by: user-corrects-resolved-goal).
+    // durationMs = generate + verify (both rule-based, typically <70ms).
+    const totalDurationMs = Date.now() - generatedAt;
+    try {
+      await deps.traceCollector.record({
+        id: `trace-${input.id}-comprehension`,
+        taskId: input.id,
+        sessionId: input.sessionId,
+        workerId: 'comprehension-phase',
+        timestamp: Date.now(),
+        routingLevel: 0,
+        approach: 'comprehension',
+        approachDescription: `engine=${engine.id}, tier=${envelope.params.tier}, type=${envelope.params.type}, verified=${verdict.verified}`,
+        oracleVerdicts: { 'comprehension-oracle': verdict.verified },
+        modelUsed: engine.id,
+        engineId: engine.id,
+        tokensConsumed: 0,
+        durationMs: totalDurationMs,
+        outcome: verdict.verified ? 'success' : 'failure',
+        failureReason: verdict.rejectReason,
+        affectedFiles: [],
+      });
+    } catch { /* TraceCollector is best-effort */ }
+
+    // A7 learning-loop step 2 (record this turn's comprehension). We
+    // persist EVERY turn — verified or rejected — because calibration
+    // feeds on both (a rejected engine output still counts as a
+    // negative sample for that engine's accuracy).
+    if (deps.comprehensionStore) {
+      try {
+        deps.comprehensionStore.record({
+          envelope,
+          taskId: input.id,
+          sessionId: input.sessionId,
+          engineId: engine.id,
+          engineType: engine.engineType,
+          verdictPass: verdict.verified,
+          verdictReason: verdict.rejectReason,
+        });
+      } catch { /* best-effort — persistence never blocks the pipeline */ }
+    }
+
+    if (verdict.verified && envelope.params.type === 'comprehension') {
+      comprehension = envelope;
+      // Thread a compact summary of the oracle-verified comprehension into
+      // the DOWNSTREAM understanding.constraints (NOT input.constraints).
+      //
+      // Two bugs this avoids:
+      //  (A6) Mutating `input.constraints` leaks oracle-verified state back
+      //       to the caller's reference — a side-channel no upstream code
+      //       subscribed to. `understanding` is orchestrator-local and safe
+      //       to mutate.
+      //  (ref-staleness) `enrichUnderstanding` already ran above, so
+      //       `understanding.constraints` is a separate reference from
+      //       `input.constraints`. Reassigning `input.constraints` to a
+      //       new array would leave `understanding.constraints` pointing
+      //       at the old array — the worker (which reads from
+      //       understanding) would never see the payload.
+      //
+      // The projection carries only the minimal shape the worker prompt
+      // cares about; the full ECP envelope stays internal to the
+      // orchestrator / telemetry.
+      const data = envelope.params.data;
+      if (data) {
+        const summary = {
+          rootGoal: data.state.rootGoal ?? undefined,
+          resolvedGoal: data.resolvedGoal,
+          priorContextSummary: data.priorContextSummary,
+          isClarificationAnswer: data.state.isClarificationAnswer,
+        };
+        const extraConstraints: string[] = [
+          `COMPREHENSION_SUMMARY:${JSON.stringify(summary)}`,
+        ];
+
+        // P1: when the comprehender flagged relevant AutoMemory entries,
+        // look them up in the loaded memory (which the orchestrator holds
+        // but the envelope does not — envelope carries refs only), and
+        // emit a MEMORY_CONTEXT: payload with the actual content. The
+        // worker renders this as `## Relevant User Memory (trust=probabilistic)`.
+        //
+        // Security notes:
+        //  - `trustTier: 'probabilistic'` is fixed at envelope schema level
+        //    (Zod literal). No promotion path without explicit verification.
+        //  - Content was already sanitized at load time (auto-memory-loader).
+        //  - The rule-comprehender caps floor-only entries to 1 and
+        //    overall count to MAX_MEMORY_HITS, so a malicious memory pile
+        //    cannot crowd out substance-matched hits.
+        const matchedRefs = data.memoryLaneRelevance.autoMem ?? [];
+        if (matchedRefs.length > 0 && autoMemory) {
+          const entriesByRef = new Map(
+            autoMemory.entries.map((e) => [e.ref, e] as const),
+          );
+          const payload = {
+            entries: matchedRefs
+              .map((m) => {
+                const full = entriesByRef.get(m.ref);
+                if (!full) return null;
+                return {
+                  ref: m.ref,
+                  type: full.type,
+                  description: full.description,
+                  trustTier: m.trustTier,
+                  content: full.content,
+                };
+              })
+              .filter((e): e is NonNullable<typeof e> => e !== null),
+          };
+          if (payload.entries.length > 0) {
+            extraConstraints.push(`MEMORY_CONTEXT:${JSON.stringify(payload)}`);
+          }
+        }
+
+        understanding = {
+          ...understanding,
+          constraints: [...(understanding.constraints ?? []), ...extraConstraints],
+        };
+      }
+      deps.bus?.emit('comprehension:committed', {
+        taskId: input.id,
+        resolvedGoal: envelope.params.data?.resolvedGoal ?? input.goal,
+        used: true,
+      });
+    } else {
+      // Oracle rejected OR engine honestly reported unknown — fall back.
+      deps.bus?.emit('comprehension:committed', {
+        taskId: input.id,
+        resolvedGoal: input.goal,
+        used: false,
+        fallbackReason:
+          verdict.rejectReason ?? `engine.type=${envelope.params.type}`,
+      });
+    }
+  } catch (err) {
+    // Comprehension is advisory — never throw out of this block.
+    const reason = err instanceof Error ? err.message : String(err);
+    deps.bus?.emit('comprehension:committed', {
+      taskId: input.id,
+      resolvedGoal: input.goal,
+      used: false,
+      fallbackReason: `comprehension error: ${reason}`,
+    });
+  }
+
   // ── LLM Intent Resolution — semantic classification before pipeline ──
   // Skip for code-mutation tasks (already well-classified by regex) and tasks with explicit target files.
   // Phase 2: AgentRouter — rule-first specialist selection BEFORE intent resolver.
@@ -403,6 +815,9 @@ async function prepareExecution(
         // Deterministic-first pipeline: pass STU so the resolver can compute
         // a rule candidate before the LLM runs (tier 0.8, may bypass LLM).
         understanding,
+        // Oracle-verified conversation comprehension (A1): cache-key binding
+        // (A4) + explicit "isClarificationAnswer" routing rule in the prompt.
+        comprehension,
       });
       // Multi-agent: propagate resolved agentId onto the input for downstream phases
       if (intentResolution.agentId) {
@@ -420,6 +835,10 @@ async function prepareExecution(
         understanding.taskDomain,
         understanding.taskIntent,
         understanding.toolRequirement,
+        // Pass comprehension so context-aware fallback preserves workflow
+        // on clarification-answer turns even when LLM is down (A3 graceful
+        // degradation).
+        comprehension,
       );
       intentResolution = {
         strategy,
@@ -666,7 +1085,14 @@ async function prepareExecution(
     }
   }
 
-  return { understanding, routing, workingMemory, explorationFlag, intentResolution };
+  return {
+    understanding,
+    routing,
+    workingMemory,
+    explorationFlag,
+    intentResolution,
+    comprehension,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -255,7 +255,33 @@ export interface Orchestrator {
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
   getSessionCount(): number;
-  close(): void;
+  /**
+   * Release all resources held by the orchestrator. Awaits truly async
+   * teardown (chokidar file-watcher, MCP subprocess pool) so callers
+   * can guarantee process exit is not blocked on leftover fds / pipes.
+   * Legacy callers that do not await get fire-and-forget behavior —
+   * equivalent to the old sync signature.
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * Await `p`, but give up after `ms` and resolve anyway. The timer is
+ * unref'd so it never holds the event loop alive on its own. Used for
+ * shutdown steps where we want best-effort cleanup but cannot let a
+ * misbehaving resource block process exit.
+ */
+async function raceTimeout<T>(p: Promise<T>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const to = new Promise<void>((resolve) => {
+    timer = setTimeout(() => resolve(), ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    await Promise.race([p.then(() => undefined), to]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200_000): number {
@@ -1565,28 +1591,57 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     costLedger,
     budgetEnforcer,
     getSessionCount: () => sessionCount,
-    close: () => {
+    close: async () => {
+      // Order matters:
+      //   1. Stop event sources (interval, bus listeners) so new work
+      //      cannot arrive while we tear down stores.
+      //   2. Kill subprocesses (warm workers, MCP) to release their
+      //      stdin/stdout fds before anything that depends on stable
+      //      file descriptors.
+      //   3. Await file-watcher close (chokidar holds fs.watch fds)
+      //      BEFORE db.close() — otherwise chokidar can fire events
+      //      into a closed DB and the chokidar worker thread may
+      //      briefly outlive us.
+      //   4. Close LLM proxy, world graph, DB — in increasing order
+      //      of "holds file locks for long time".
       if (shadowInterval) clearInterval(shadowInterval);
-      fileWatcher?.stop();
       detachGapH();
       detachMetrics();
       traceListenerHandle.detach();
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
-      // Kill warm worker subprocesses — without this, their stdin
+
+      // Kill warm worker subprocesses FIRST — without this, their stdin
       // pipes hold file descriptors that keep the parent event loop
-      // alive past shutdown, and the subprocesses themselves outlive
-      // the parent in some shells.
+      // alive past shutdown, and the subprocesses themselves can
+      // outlive the parent in some shells.
       try {
         workerPool.shutdown();
       } catch {
         /* best-effort */
       }
-      mcpClientPool?.shutdown().catch(() => {});
-      llmProxy?.close();
-      worldGraph?.close();
-      db?.close();
+      // MCP client pool — subprocess-based. shutdown() is async but we
+      // bound the wait so a misbehaving MCP server cannot strand us.
+      if (mcpClientPool) {
+        try {
+          await raceTimeout(mcpClientPool.shutdown(), 2_000);
+        } catch {
+          /* best-effort */
+        }
+      }
+      // Chokidar file watcher — releases fs.watch fds. Await so these
+      // fds are closed before the event loop tries to exit.
+      if (fileWatcher) {
+        try {
+          await raceTimeout(fileWatcher.stop(), 1_000);
+        } catch {
+          /* best-effort */
+        }
+      }
+      try { llmProxy?.close(); } catch { /* best-effort */ }
+      try { worldGraph?.close(); } catch { /* best-effort */ }
+      try { db?.close(); } catch { /* best-effort */ }
     },
   };
 }

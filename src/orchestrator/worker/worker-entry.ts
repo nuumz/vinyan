@@ -17,6 +17,32 @@ import { assemblePrompt } from '../llm/prompt-assembler.ts';
 import { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import { WorkerInputSchema, WorkerOutputSchema } from '../protocol.ts';
 
+/**
+ * Parent-death watchdog — self-terminate if the parent process disappears
+ * without having called our shutdown path. Without this, warm workers
+ * become orphan zombies when the API server dies via SIGKILL / OOM /
+ * uncaught crash before it can call WarmWorkerPool.shutdown(). Polls via
+ * `kill(ppid, 0)` every 10s; if the parent is gone, exits cleanly.
+ *
+ * Registered at module top-level so both warm and cold modes get the
+ * protection from the moment the worker starts, not just after init is
+ * parsed.
+ */
+function installParentDeathWatchdog(): void {
+  const parentPid = parseInt(process.env.VINYAN_PARENT_PID ?? process.env.VINYAN_ORCHESTRATOR_PID ?? '0');
+  if (parentPid <= 0) return;
+  const timer = setInterval(() => {
+    try {
+      process.kill(parentPid, 0); // signal 0 = alive check
+    } catch {
+      // ESRCH — parent is gone. Exit immediately so we don't orphan.
+      process.exit(1);
+    }
+  }, 10_000);
+  (timer as { unref?: () => void }).unref?.();
+}
+installParentDeathWatchdog();
+
 // ── Shared logic ──────────────────────────────────────────────────────
 
 /** Set up LLM provider registry from env vars (proxy or direct API keys). */

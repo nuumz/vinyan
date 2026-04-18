@@ -173,6 +173,33 @@ export class SessionManager {
     return compactionResult;
   }
 
+  /** List recent tasks across all sessions (newest first). */
+  listAllTasks(limit = 100): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
+    const rows = this.sessionStore.listRecentTasks(limit);
+    return rows.map((row) => {
+      let goal: string | undefined;
+      try {
+        const input = JSON.parse(row.task_input_json);
+        goal = input.goal;
+      } catch { /* best effort */ }
+
+      let result: TaskResult | undefined;
+      if (row.result_json) {
+        try {
+          result = JSON.parse(row.result_json);
+        } catch { /* best effort */ }
+      }
+
+      return {
+        taskId: row.task_id,
+        sessionId: row.session_id,
+        status: row.status,
+        goal,
+        result,
+      };
+    });
+  }
+
   /**
    * Recover suspended sessions on startup — reactivates them so they can accept new messages.
    */
@@ -269,6 +296,44 @@ export class SessionManager {
     if (last.role === 'user') return [];
     if (last.role !== 'assistant') return [];
     return parseInputRequiredBlock(last.content);
+  }
+
+  /**
+   * Agent Conversation: find the goal text of the "root" user task that the
+   * current pending clarifications are attached to. Walks the message history
+   * backward: every [assistant-[INPUT-REQUIRED], user-reply] pair is a
+   * clarification round answering the same underlying task, so we skip past
+   * it and return the most recent user message that was NOT itself a
+   * clarification reply.
+   *
+   * Returns null when no root user goal can be located (empty session or
+   * malformed history).
+   *
+   * Used by POST /sessions/:id/messages to preserve the original task goal
+   * when the user's reply would otherwise overwrite it — without this, the
+   * next task's goal becomes the clarification answer instead of the task.
+   *
+   * Pure text matching — A3 compliant, no LLM.
+   */
+  getOriginalTaskGoal(sessionId: string): string | null {
+    const messages = this.sessionStore.getMessages(sessionId);
+    if (messages.length === 0) return null;
+
+    let i = messages.length - 1;
+    while (i >= 0) {
+      const m = messages[i]!;
+      if (m.role === 'user') {
+        const prev = i > 0 ? messages[i - 1] : null;
+        const isClarificationReply =
+          prev?.role === 'assistant' && prev.content.includes('[INPUT-REQUIRED]');
+        if (!isClarificationReply) return m.content;
+        // skip this reply and the clarification that triggered it
+        i -= 2;
+        continue;
+      }
+      i -= 1;
+    }
+    return null;
   }
 
   /** Get conversation history within a token budget. */

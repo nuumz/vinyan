@@ -137,7 +137,14 @@ export async function startChat(argv: string[]): Promise<void> {
   // the agent is waiting for the user to answer follow-up questions. We
   // capture those questions here so the NEXT user message can be tagged as
   // a clarification answer rather than a fresh intent.
+  //
+  // `pendingTaskGoal` anchors the original user task across one or more
+  // clarification rounds — without it, the next task's goal would be
+  // overwritten with the short reply text (e.g. "โรแมนติก, สั้นๆ") and
+  // the LLM would lose track of the actual request ("แต่งนิยาย...").
   let pendingClarifications: string[] = sessionManager.getPendingClarifications(session.id);
+  let pendingTaskGoal: string | null =
+    pendingClarifications.length > 0 ? sessionManager.getOriginalTaskGoal(session.id) : null;
   if (pendingClarifications.length > 0) {
     console.log('\x1b[33m(Vinyan is waiting for you to answer:)\x1b[0m');
     for (const q of pendingClarifications) console.log(`  • ${q}`);
@@ -212,29 +219,42 @@ export async function startChat(argv: string[]): Promise<void> {
     // faithfully shows `/commit foo` rather than the expanded prompt.
     sessionManager.recordUserTurn(session.id, input);
 
-    // Agent Conversation: if the previous turn was input-required, inject the
-    // open questions + this user message as typed constraints so the
-    // understanding pipeline sees this turn as a clarification answer, not a
-    // fresh intent. Each question becomes a CLARIFIED:<q>=><a> constraint.
+    // Agent Conversation: if the previous turn was input-required, pack the
+    // open questions + this user message into a single CLARIFICATION_BATCH
+    // constraint so the understanding pipeline sees this turn as a
+    // clarification answer (not a fresh intent) and buildInitUserMessage
+    // can render the Q→reply mapping for the LLM to infer.
     const clarificationConstraints: string[] =
       pendingClarifications.length > 0
-        ? pendingClarifications.map((q) => `CLARIFIED:${q}=>${input}`)
+        ? [
+            `CLARIFICATION_BATCH:${JSON.stringify({
+              questions: pendingClarifications,
+              reply: input,
+            })}`,
+          ]
         : [];
     const constraintsForTurn = [
       ...(showThinking ? ['THINKING:enabled'] : []),
       ...clarificationConstraints,
     ];
+    // Anchor the task's goal to the original user request when we're
+    // resolving a clarification round, so the reply text doesn't become
+    // the new goal (see pendingTaskGoal comment above).
+    const goalForTask = pendingTaskGoal ?? taskGoal;
     // Consume — a single answer resolves all queued questions for this turn.
+    // `pendingTaskGoal` is also cleared here; the input-required branch
+    // below re-arms it when a new clarification round is opened.
     pendingClarifications = [];
+    pendingTaskGoal = null;
 
     // Build TaskInput — let understanding pipeline classify per-turn (D1)
     // taskType defaults to 'reasoning' but code-related goals with target files
     // can be classified as code-mutation/code-reasoning by the pipeline.
-    const hasCodeContext = /`[^`]+`|\.(?:ts|js|py|java|tsx|jsx|go|rs)\b/.test(taskGoal);
+    const hasCodeContext = /`[^`]+`|\.(?:ts|js|py|java|tsx|jsx|go|rs)\b/.test(goalForTask);
     const taskInput: TaskInput = {
       id: `chat-${Date.now().toString(36)}`,
       source: 'cli',
-      goal: taskGoal,
+      goal: goalForTask,
       taskType: hasCodeContext ? 'code' : 'reasoning',
       sessionId: session.id,
       budget: DEFAULT_BUDGET,
@@ -284,6 +304,11 @@ export async function startChat(argv: string[]): Promise<void> {
           for (const q of questions) console.log(`  • ${q}`);
           console.log();
           pendingClarifications = [...questions];
+          // Propagate the root task goal through re-clarification chains:
+          // goalForTask is either the prior pendingTaskGoal (mid-chain) or
+          // this turn's taskGoal (start of chain). Either way, the next
+          // clarification answer should resolve to the same root goal.
+          pendingTaskGoal = goalForTask;
         } else {
           console.log('\n\x1b[2m(agent requested clarification but did not specify questions)\x1b[0m\n');
         }

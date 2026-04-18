@@ -24,13 +24,18 @@
 
 import { watch, type FSWatcher } from 'chokidar';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'path';
 
 const INITIAL_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const HEALTHY_THRESHOLD_MS = 60_000;
 const MAX_CONSECUTIVE_CRASHES = 20;
 const WATCH_DEBOUNCE_MS = 200;
+/** Fast-fatal threshold: if the child dies in < this on its first attempt, we assume a config/port error and exit instead of respawn-looping. */
+const FAST_FATAL_MS = 2_000;
+/** Exit code the child uses to signal "startup-fatal, do not retry" (matches serve.ts EXIT_CODE_STARTUP_FATAL). */
+const EXIT_CODE_STARTUP_FATAL = 78;
 
 /** Paths (relative to workspace) to watch for hot reload. */
 const WATCH_PATHS = ['src', 'vinyan.json'];
@@ -70,6 +75,33 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   let reloadRequested = false;
   let watcher: FSWatcher | null = null;
 
+  // ── PID file: stale-detect a previous supervisor + persist our PID ──
+  const pidFilePath = join(workspace, '.vinyan', 'supervisor.pid');
+  const stalePid = readSupervisorPid(pidFilePath);
+  if (stalePid !== null && stalePid !== process.pid) {
+    if (isProcessAlive(stalePid)) {
+      console.error(`[vinyan-supervisor] Another supervisor is running (pid ${stalePid}).`);
+      console.error(`[vinyan-supervisor] Stop it first: kill ${stalePid}   or remove ${pidFilePath} if stale.`);
+      process.exit(EXIT_CODE_STARTUP_FATAL);
+    }
+    // Stale — remove and continue.
+    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+  }
+  writeSupervisorPid(pidFilePath);
+
+  // ── Last-resort sync cleanup on any exit path ──
+  //   - Remove our PID file.
+  //   - SIGKILL the current child so it cannot outlive us (zombie
+  //     guarantee: if the supervisor process dies for ANY reason,
+  //     the child goes with it).
+  process.on('exit', () => {
+    try { unlinkSync(pidFilePath); } catch { /* already removed */ }
+    const c = currentChild;
+    if (c && !c.killed) {
+      try { c.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  });
+
   // ── Signal handling (registered ONCE, outside the respawn loop) ──
   //
   // Previously `installSignalForwarding(child)` was called per loop
@@ -78,7 +110,7 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   // the loop keeps the listener count at exactly 1/signal and lets us
   // implement proper escalation (SIGKILL on 2nd signal or after timeout).
   let sigintCount = 0;
-  const handleStop = (signal: 'SIGTERM' | 'SIGINT') => {
+  const handleStop = (signal: 'SIGTERM' | 'SIGINT' | 'SIGHUP') => {
     stopping = true;
     sigintCount++;
     const child = currentChild;
@@ -98,8 +130,12 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
     }
 
     // First signal: forward for graceful shutdown. If the child does
-    // not exit within FORCE_KILL_MS, escalate to SIGKILL.
-    try { child.kill(signal); } catch { /* ignore */ }
+    // not exit within FORCE_KILL_MS, escalate to SIGKILL. SIGHUP
+    // (terminal close) is treated as SIGTERM so the child runs its
+    // shutdown — direct SIGHUP forwarding would kill the child without
+    // letting it suspend sessions / flush state.
+    const forwardSignal: 'SIGTERM' | 'SIGINT' = signal === 'SIGHUP' ? 'SIGTERM' : signal;
+    try { child.kill(forwardSignal); } catch { /* ignore */ }
     const escalate = setTimeout(() => {
       if (child.killed) return;
       console.error(`[vinyan-supervisor] Child did not exit after ${FORCE_KILL_MS}ms — SIGKILL`);
@@ -119,6 +155,11 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   };
   process.on('SIGTERM', () => handleStop('SIGTERM'));
   process.on('SIGINT', () => handleStop('SIGINT'));
+  // SIGHUP = terminal close. Without a handler the kernel default
+  // would kill only us (not the child), orphaning the child with
+  // nothing listening for graceful shutdown. Routing through handleStop
+  // ensures the child shuts down cleanly, then we exit.
+  process.on('SIGHUP', () => handleStop('SIGHUP'));
 
   // ── Hot reload: watch source files and SIGTERM the child on change ──
   if (watchMode) {
@@ -168,7 +209,16 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
 
     const child = spawn(bunExec, [scriptPath, ...rest], {
       stdio: ['ignore', 'inherit', 'inherit'],
-      env: { ...process.env, VINYAN_SUPERVISED: '1' },
+      // VINYAN_SUPERVISED=1 tells index.ts the next dispatch should run
+      // serve() directly instead of re-spawning the supervisor.
+      // VINYAN_SUPERVISOR_PID lets the child's parent-death watchdog
+      // self-terminate if we are SIGKILL'd without running our exit
+      // handler — an essential zombie-free guarantee.
+      env: {
+        ...process.env,
+        VINYAN_SUPERVISED: '1',
+        VINYAN_SUPERVISOR_PID: String(process.pid),
+      },
     });
     currentChild = child;
     // Signal forwarding is registered ONCE at the top of superviseServe
@@ -197,6 +247,32 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
       process.exit(exitCode ?? 0);
     }
 
+    // Startup-fatal exit code: child told us explicitly "don't retry,
+    // the user needs to fix something" (port bind, config, permissions).
+    // Respawning would just reproduce the same error — infuriating the
+    // user and wasting resources. Exit immediately with the child's code
+    // so shell scripts can detect the specific failure.
+    if (exitCode === EXIT_CODE_STARTUP_FATAL) {
+      console.error(
+        `[vinyan-supervisor] Child exited with startup-fatal code ${exitCode}. Not retrying — fix the error above and re-run.`,
+      );
+      if (watcher) await watcher.close().catch(() => {});
+      process.exit(exitCode);
+    }
+
+    // Fast-fatal on first boot — e.g. config error, missing binary,
+    // syntax error in generated code. Exponential-backoff loop would
+    // burn through 20 respawns in minutes, generating a wall of
+    // identical error output. Exit after one confirmation instead.
+    if (aliveMs < FAST_FATAL_MS && crashCount === 0) {
+      console.error(
+        `[vinyan-supervisor] Child died in ${aliveMs}ms on first start (code=${exitCode}). ` +
+          'Likely a startup error (port, config, permissions). Not retrying — fix and re-run.',
+      );
+      if (watcher) await watcher.close().catch(() => {});
+      process.exit(exitCode);
+    }
+
     // Reset backoff if the child was healthy for a while before crashing
     if (aliveMs > HEALTHY_THRESHOLD_MS) {
       crashCount = 0;
@@ -223,4 +299,34 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
   }
 
   if (watcher) await watcher.close().catch(() => {});
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+function readSupervisorPid(path: string): number | null {
+  try {
+    if (!existsSync(path)) return null;
+    const pid = parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSupervisorPid(path: string): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, String(process.pid), 'utf8');
+  } catch {
+    // Non-fatal — PID file is convenience, not correctness.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

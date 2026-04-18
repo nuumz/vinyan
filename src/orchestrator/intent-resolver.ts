@@ -18,6 +18,7 @@ import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
+import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
   ConversationEntry,
@@ -308,7 +309,17 @@ function buildCacheKey(
   goal: string,
   sessionId?: string,
   understanding?: SemanticTaskUnderstanding,
+  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
 ): string {
+  // When comprehension is available, bind the cache entry to its inputHash
+  // (A4: content-addressed). Conversation state changes (new user turn,
+  // pending-clarification flip) → comprehension inputHash changes → stale
+  // cache auto-invalidates. This fixes the prior footgun where the same
+  // `(session+goal)` across turns would reuse an intent that predated the
+  // new context.
+  if (comprehension?.params.inputHash) {
+    return `cmp::${comprehension.params.inputHash}`;
+  }
   // Prefer the content-addressed understandingFingerprint when available — it
   // invalidates automatically when the goal OR resolved paths OR task signature
   // change, giving us a stable cross-task key that survives minor goal edits
@@ -356,7 +367,22 @@ export function fallbackStrategy(
   taskDomain: string,
   taskIntent: string,
   toolRequirement: string,
+  /**
+   * Oracle-verified comprehension (optional). When present AND marks this
+   * turn as a clarification answer, the fallback PRESERVES the workflow
+   * path (agentic-workflow) even if the literal reply text ("โรแมนติก")
+   * would otherwise read as conversational/inquire. Without this, LLM
+   * outage + clarification-answer would silently re-route the user's
+   * creative task to a chat reply.
+   */
+  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
 ): ExecutionStrategy {
+  if (comprehension?.params.type === 'comprehension' && comprehension.params.data?.state.isClarificationAnswer) {
+    // Stay in whichever workflow the prior task was already in. Without
+    // richer state we default to agentic-workflow (the only strategy that
+    // currently honors a multi-step creative/exploratory thread).
+    return 'agentic-workflow';
+  }
   if (taskDomain === 'conversational') return 'conversational';
   if (taskDomain === 'general-reasoning' && taskIntent === 'inquire') return 'conversational';
   if (taskIntent === 'execute' && toolRequirement === 'tool-needed' && taskDomain !== 'code-mutation') return 'direct-tool';
@@ -614,6 +640,19 @@ export interface IntentResolverDeps {
    * absent, the resolver falls back to the pure-LLM path for backwards compat.
    */
   understanding?: SemanticTaskUnderstanding;
+  /**
+   * Oracle-verified conversation comprehension (pre-routing). When present:
+   *  - `state.isClarificationAnswer=true` → resolver preserves the prior
+   *    workflow (suppresses re-classification to conversational/direct-tool)
+   *    by blending the signal into the cache key and the LLM user prompt.
+   *  - `state.rootGoal` / `data.resolvedGoal` → appended to the prompt as
+   *    grounding; classifier sees the user's real intent, not just the
+   *    short reply text.
+   *  - `state.hasAmbiguousReferents=true` without a resolved rootGoal →
+   *    forces the resolver to treat the literal message as provisional
+   *    (LLM advisory path even if deterministic would skip).
+   */
+  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
 }
 
 const INTENT_TIMEOUT_MS = 8000;
@@ -876,13 +915,64 @@ function buildClassifierUserPrompt(
   const deterministicBlock = deterministic
     ? `\nRule-based candidate (tier 0.8 — treat as grounding; override only with strong evidence): strategy=${deterministic.strategy}, confidence=${deterministic.confidence.toFixed(2)}${deterministic.deterministicCandidate.ambiguous ? ', AMBIGUOUS' : ''}. If the rule is already correct, confirm it — do not fabricate complexity.`
     : '';
+  const comprehensionBlock = buildComprehensionBlock(deps.comprehension);
+
+  // Strip orchestrator-internal prefixes — the intent classifier sees only
+  // user intent, not JSON payloads / routing metadata that belong to other
+  // pipeline stages.
+  const userCs = userConstraintsOnly(input.constraints);
 
   return `User goal: "${input.goal}"
 Task type: ${input.taskType}
 Target files: ${input.targetFiles?.join(', ') || 'none'}
-Constraints: ${input.constraints?.join(', ') || 'none'}
+Constraints: ${userCs.length > 0 ? userCs.join(', ') : 'none'}
 Current platform: ${process.platform}
-Available tools: ${toolList}${structuralBlock}${deterministicBlock}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
+Available tools: ${toolList}${structuralBlock}${deterministicBlock}${comprehensionBlock}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
+}
+
+/**
+ * Render the oracle-verified conversation comprehension as a prompt block
+ * the classifier can reason over. Keep it short and structured — the LLM
+ * parses fields, not prose.
+ *
+ * The critical signal is `isClarificationAnswer=true`: when the user's
+ * message is an answer to a pending question, the classifier MUST preserve
+ * the prior workflow (do not re-route to conversational / direct-tool)
+ * unless the user explicitly asks for a topic change.
+ */
+function buildComprehensionBlock(
+  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
+): string {
+  if (!comprehension || comprehension.params.type !== 'comprehension') return '';
+  const data = comprehension.params.data;
+  if (!data) return '';
+  const s = data.state;
+  const lines: string[] = [];
+  lines.push('\nConversation comprehension (oracle-verified, tier='
+    + comprehension.params.tier + '):');
+  lines.push(`- isNewTopic: ${s.isNewTopic}`);
+  lines.push(`- isClarificationAnswer: ${s.isClarificationAnswer}`);
+  lines.push(`- isFollowUp: ${s.isFollowUp}`);
+  lines.push(`- hasAmbiguousReferents: ${s.hasAmbiguousReferents}`);
+  if (s.rootGoal) {
+    const root = s.rootGoal.length > 160 ? `${s.rootGoal.slice(0, 157)}...` : s.rootGoal;
+    lines.push(`- rootGoal: "${root}"`);
+  }
+  if (s.pendingQuestions.length > 0) {
+    lines.push(`- pendingQuestions (${s.pendingQuestions.length}):`);
+    for (const q of s.pendingQuestions.slice(0, 5)) lines.push(`    - ${q}`);
+  }
+  if (data.resolvedGoal && data.resolvedGoal !== data.literalGoal) {
+    const resolved = data.resolvedGoal.length > 160
+      ? `${data.resolvedGoal.slice(0, 157)}...` : data.resolvedGoal;
+    lines.push(`- resolvedGoal (prefer over literal): "${resolved}"`);
+  }
+  if (s.isClarificationAnswer) {
+    lines.push(
+      '- ROUTING RULE: the user is answering a prior clarification. Preserve the existing workflow (stay in agentic-workflow / do NOT reclassify as conversational or direct-tool) unless the user explicitly asks to change topic.',
+    );
+  }
+  return lines.join('\n');
 }
 
 /** Primary + alternate-tier classification call. */
@@ -907,8 +997,14 @@ export async function resolveIntent(
   const now = deps.now?.() ?? Date.now();
   const understanding = deps.understanding;
 
-  // [A] Cache — prefer understandingFingerprint; else (session, goal).
-  const cacheKey = buildCacheKey(input.goal, deps.sessionId, understanding);
+  // [A] Cache — prefer comprehension.inputHash (A4 content-addressed) →
+  // understandingFingerprint → (session, goal) as a last resort.
+  const cacheKey = buildCacheKey(
+    input.goal,
+    deps.sessionId,
+    understanding,
+    deps.comprehension,
+  );
   const cached = intentCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
     deps.bus?.emit('intent:cache_hit', { taskId: input.id, cacheKey });

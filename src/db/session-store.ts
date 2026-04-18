@@ -136,6 +136,12 @@ export class SessionStore {
       .all() as SessionTaskRow[];
   }
 
+  listRecentTasks(limit = 100): SessionTaskRow[] {
+    return this.db
+      .query('SELECT * FROM session_tasks ORDER BY created_at DESC LIMIT ?')
+      .all(limit) as SessionTaskRow[];
+  }
+
   // ── Session Messages (Conversation Agent Mode) ──────────
 
   insertMessage(msg: Omit<SessionMessageRow, 'id'>): void {

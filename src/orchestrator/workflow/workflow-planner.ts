@@ -83,7 +83,13 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
     userPrompt += `\nTarget files: ${opts.targetFiles.join(', ')}`;
   }
   if (opts.constraints?.length) {
-    userPrompt += `\n\nConstraints:\n${opts.constraints.map((c) => `- ${c}`).join('\n')}`;
+    // Strip orchestrator-internal prefixes — workflow planner should only see
+    // user intent, not JSON payloads from other pipeline stages.
+    const { userConstraintsOnly } = await import('../constraints/pipeline-constraints.ts');
+    const userCs = userConstraintsOnly(opts.constraints);
+    if (userCs.length > 0) {
+      userPrompt += `\n\nConstraints:\n${userCs.map((c) => `- ${c}`).join('\n')}`;
+    }
   }
   if (opts.acceptanceCriteria?.length) {
     userPrompt += `\n\nAcceptance criteria:\n${opts.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}`;

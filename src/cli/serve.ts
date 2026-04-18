@@ -4,10 +4,32 @@
  * Creates an Orchestrator and wraps it with the HTTP API server.
  * If network.instances.enabled, also creates and starts the A2AManager
  * to enable multi-instance coordination.
- * SIGTERM/SIGINT trigger graceful shutdown.
+ *
+ * Zombie-free guarantees:
+ *   1. Phase-aware error gating — startup errors are fatal, steady-state
+ *      worker crashes are non-fatal. Prevents "server died but process
+ *      idles forever" pattern.
+ *   2. Port preflight via server.start() try/catch — EADDRINUSE exits(78)
+ *      immediately with a clear message including the holding PID.
+ *   3. PID file at .vinyan/serve.pid — enables external tooling
+ *      (systemd / launchd / manual cleanup) and stale-PID detection
+ *      on next start.
+ *   4. Parent-death watchdog — when run as a supervised child
+ *      (VINYAN_SUPERVISOR_PID set), polls the supervisor and self-
+ *      terminates if it disappears, so a SIGKILL'd supervisor cannot
+ *      orphan us.
+ *   5. Early signal handlers — SIGINT/SIGTERM/SIGHUP registered BEFORE
+ *      orchestrator init + server start, closing the startup-window
+ *      hole where default signal behavior would apply.
+ *   6. Per-step shutdown timeouts — each cleanup step wrapped in
+ *      withTimeout(label, ms, promise). If any step hangs we log
+ *      which one, and the global 8s force-exit still fires.
+ *   7. process.on('exit') last-resort sync cleanup — remove PID file
+ *      even if we exit uncleanly.
  */
 
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'path';
 import { createA2AManager, type A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { VinyanAPIServer } from '../api/server.ts';
 import { SessionManager } from '../api/session-manager.ts';
@@ -17,14 +39,100 @@ import { VinyanDB } from '../db/vinyan-db.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
 import { createTaskQueue } from '../orchestrator/task-queue.ts';
 
-export async function serve(workspace: string): Promise<void> {
-  // ── Resilience: never die from a stray error in a subprocess handler ──
-  // Worker subprocesses (agent-worker-entry, oracle subprocesses, etc.) can
-  // crash/close stdin mid-write. Those throw EPIPE / unhandled rejections
-  // which would otherwise kill the API server. Log and keep serving —
-  // the orchestrator already tracks task failures via its own error paths.
-  installProcessSafetyNets();
+/** Standardized exit code: "service startup failure that the user can act on (port bind, DB lock)." Chosen in the LSB 64–113 reserved range. */
+const EXIT_CODE_STARTUP_FATAL = 78;
+/** Hard wall-clock deadline for the entire shutdown sequence. */
+const SHUTDOWN_FORCE_EXIT_MS = 8_000;
+/** Per-step soft deadline — if exceeded we log which step hung, the global deadline still applies. */
+const STEP_TIMEOUT_MS = {
+  a2a_stop: 2_000,
+  server_stop: 3_000,
+  orchestrator_close: 2_000,
+  db_close: 1_000,
+};
+/** How often the parent-death watchdog polls. */
+const PARENT_WATCHDOG_INTERVAL_MS = 5_000;
 
+/**
+ * Error codes that must ALWAYS be fatal regardless of phase. These indicate
+ * a misconfiguration the process cannot recover from — silently "continuing"
+ * just creates a zombie that holds nothing useful.
+ */
+const ALWAYS_FATAL_CODES = new Set([
+  'EADDRINUSE',
+  'EACCES',
+  'EROFS',
+  'SQLITE_BUSY',
+  'SQLITE_CANTOPEN',
+  'SQLITE_READONLY',
+  'MODULE_NOT_FOUND',
+]);
+/** Error codes that are always OK to log + ignore (transient I/O hiccups from subprocesses / dropped clients). */
+const TRANSIENT_IO_CODES = new Set(['EPIPE', 'ECONNRESET', 'ERR_STREAM_DESTROYED']);
+
+type Phase = 'startup' | 'steady' | 'shutting_down';
+
+export async function serve(workspace: string): Promise<void> {
+  // ── Phase tracker ───────────────────────────────────────────────
+  // Mutable — flipped to 'steady' at the end of serve() after a clean
+  // startup, then to 'shutting_down' when shutdown fires.
+  let phase: Phase = 'startup';
+
+  // ── Resilience safety nets, phase-aware ─────────────────────────
+  // Must be installed BEFORE any other init so early errors (config
+  // parse, DB open) are handled uniformly.
+  installProcessSafetyNets(() => phase);
+
+  // ── Signal handlers: register FIRST, stand-in handler that kicks
+  //    us into the real shutdown once it's defined. Closes the
+  //    startup-window hole where Ctrl+C between `serve()` start and
+  //    handler registration would terminate via the default handler
+  //    and strand resources.
+  let shutdownFn: (() => Promise<void>) | null = null;
+  const earlySignalHandler = (signal: NodeJS.Signals) => {
+    if (shutdownFn) {
+      void shutdownFn();
+    } else {
+      console.error(`[vinyan] Received ${signal} during startup — exiting`);
+      process.exit(1);
+    }
+  };
+  process.on('SIGINT', () => earlySignalHandler('SIGINT'));
+  process.on('SIGTERM', () => earlySignalHandler('SIGTERM'));
+  process.on('SIGHUP', () => earlySignalHandler('SIGHUP'));
+
+  // ── PID file + stale detection ──────────────────────────────────
+  const pidFilePath = join(workspace, '.vinyan', 'serve.pid');
+  const stalePid = readPidFile(pidFilePath);
+  if (stalePid !== null && stalePid !== process.pid) {
+    if (isProcessAlive(stalePid)) {
+      console.error(`[vinyan] Another vinyan serve is running (pid ${stalePid}).`);
+      console.error(`[vinyan] Stop it first: kill ${stalePid}   or remove ${pidFilePath} if stale.`);
+      process.exit(EXIT_CODE_STARTUP_FATAL);
+    }
+    // Stale — remove and continue.
+    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+  }
+
+  // ── Parent-death watchdog (supervised mode only) ────────────────
+  // When run as a child of supervise.ts, the supervisor exports its
+  // PID via VINYAN_SUPERVISOR_PID. If the supervisor is SIGKILL'd
+  // (or crashes) before it can signal us, we would otherwise orphan.
+  // Polling process.kill(pid, 0) lets us self-terminate cleanly.
+  const supervisorPid = parseInt(process.env.VINYAN_SUPERVISOR_PID ?? '0');
+  if (supervisorPid > 0) {
+    const watchdog = setInterval(() => {
+      try {
+        process.kill(supervisorPid, 0);
+      } catch {
+        console.error(`[vinyan] Supervisor (pid ${supervisorPid}) is gone — self-terminating`);
+        process.exit(1);
+      }
+    }, PARENT_WATCHDOG_INTERVAL_MS);
+    (watchdog as { unref?: () => void }).unref?.();
+  }
+
+  // ── Orchestrator + server wiring ────────────────────────────────
   const orchestrator = createOrchestrator({ workspace });
 
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
@@ -49,12 +157,16 @@ export async function serve(workspace: string): Promise<void> {
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
 
+  const port = network?.api?.port ?? 3927;
+  const bind = network?.api?.bind ?? '127.0.0.1';
+  const authEnabled = network?.api?.auth_required ?? true;
+
   const server = new VinyanAPIServer(
     {
-      port: network?.api?.port ?? 3927,
-      bind: network?.api?.bind ?? '127.0.0.1',
+      port,
+      bind,
       tokenPath: join(workspace, '.vinyan', 'api-token'),
-      authRequired: network?.api?.auth_required ?? true,
+      authRequired: authEnabled,
       rateLimitEnabled: network?.api?.rate_limit_enabled ?? true,
     },
     {
@@ -88,86 +200,170 @@ export async function serve(workspace: string): Promise<void> {
     },
   );
 
-  // Graceful shutdown — suspend sessions before closing DB.
-  //
-  // CRITICAL: register SIGINT/SIGTERM handlers BEFORE server.start()
-  // and BEFORE the synchronous sessionManager.recover() call. During
-  // startup there is a window where the child is fully async-scheduled
-  // but signal handlers have not been installed — Bun's default
-  // behavior would either ignore or terminate without running our
-  // cleanup. Registering early eliminates that window.
+  // ── Shutdown machinery ──────────────────────────────────────────
   let shutdownRequested = false;
-  const FORCE_EXIT_MS = 8_000;
-  const shutdown = async () => {
+  const shutdown = async (): Promise<void> => {
     if (shutdownRequested) {
       console.log('[vinyan] Forced exit');
       process.exit(1);
     }
     shutdownRequested = true;
+    phase = 'shutting_down';
     console.log('[vinyan] Shutting down... (repeat signal to force exit)');
 
-    // Backstop: even if any cleanup step hangs (Bun.serve.stop awaiting
-    // a stuck connection, SQLite checkpoint blocked on disk, worker
-    // that won't die), force exit after FORCE_EXIT_MS so the user does
-    // not have to send a second signal. unref() so this timer itself
-    // never keeps the process alive once cleanup completes.
+    // Global deadline. Clears if every step completes first. unref()
+    // so the timer alone never holds the process alive.
     const forceExit = setTimeout(() => {
-      console.error(`[vinyan] Cleanup exceeded ${FORCE_EXIT_MS}ms — forcing exit`);
+      console.error(`[vinyan] Cleanup exceeded ${SHUTDOWN_FORCE_EXIT_MS}ms — forcing exit`);
       process.exit(1);
-    }, FORCE_EXIT_MS);
+    }, SHUTDOWN_FORCE_EXIT_MS);
     (forceExit as { unref?: () => void }).unref?.();
 
-    try {
-      sessionManager.suspendAll();
-    } catch {
-      /* best-effort */
+    try { sessionManager.suspendAll(); } catch { /* best-effort */ }
+    if (a2aManager) {
+      await withTimeout('a2a.stop', STEP_TIMEOUT_MS.a2a_stop, Promise.resolve().then(() => a2aManager!.stop()));
     }
-    try {
-      if (a2aManager) await a2aManager.stop();
-    } catch {
-      /* best-effort */
-    }
-    try {
-      await server.stop();
-    } catch {
-      /* best-effort */
-    }
-    try {
-      orchestrator.close();
-    } catch {
-      /* best-effort */
-    }
-    try {
-      db.close();
-    } catch {
-      /* best-effort */
-    }
+    await withTimeout('server.stop', STEP_TIMEOUT_MS.server_stop, server.stop());
+    await withTimeout('orchestrator.close', STEP_TIMEOUT_MS.orchestrator_close, Promise.resolve().then(() => orchestrator.close()));
+    await withTimeout('db.close', STEP_TIMEOUT_MS.db_close, Promise.resolve().then(() => db.close()));
+
     clearTimeout(forceExit);
+    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
     process.exit(0);
   };
+  shutdownFn = shutdown;
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  // ── Last-resort sync cleanup on any exit path ───────────────────
+  // `exit` handlers MUST be synchronous — no awaits, no promises.
+  // Guarantees PID-file removal and one more attempt to nuke worker
+  // subprocesses even if cleanup was bypassed (force-exit, uncaught
+  // error, process.exit from deep in the code).
+  process.on('exit', () => {
+    try { unlinkSync(pidFilePath); } catch { /* already removed */ }
+  });
 
-  server.start();
+  // ── Server start — synchronous throw on EADDRINUSE etc. ─────────
+  try {
+    server.start();
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (code === 'EADDRINUSE') {
+      const holder = await tryFindPortHolder(port);
+      console.error(`[vinyan] Port ${bind}:${port} is already in use${holder ? ` (pid ${holder})` : ''}.`);
+      console.error(`[vinyan] Stop the other instance first: kill ${holder ?? '<pid>'}`);
+      process.exit(EXIT_CODE_STARTUP_FATAL);
+    }
+    console.error(`[vinyan] FATAL: server.start() failed (${code ?? 'unknown'}): ${msg}`);
+    process.exit(EXIT_CODE_STARTUP_FATAL);
+  }
+
+  // Server is bound — safe to claim the PID file. Write AFTER start()
+  // so a failed start never leaves a stale PID on disk.
+  writePidFile(pidFilePath);
 
   // Startup banner
-  const port = network?.api?.port ?? 3927;
-  const bind = network?.api?.bind ?? '127.0.0.1';
-  const authEnabled = network?.api?.auth_required ?? true;
-  console.log(`[vinyan] Server listening on http://${bind}:${port}`);
+  console.log(`[vinyan] Server listening on http://${bind}:${port} (pid ${process.pid})`);
   console.log(`[vinyan]   Auth: ${authEnabled ? 'enabled' : 'disabled'} | A2A: ${a2aManager ? 'enabled' : 'disabled'}`);
 
   // Start A2A after server is listening (peers need our endpoint up)
   if (a2aManager) {
-    await a2aManager.start();
-    console.log(`[vinyan]   A2A instance: ${a2aManager.identity.instanceId}`);
+    try {
+      await a2aManager.start();
+      console.log(`[vinyan]   A2A instance: ${a2aManager.identity.instanceId}`);
+    } catch (err) {
+      console.error('[vinyan] FATAL: A2A start failed:', err);
+      process.exit(EXIT_CODE_STARTUP_FATAL);
+    }
   }
 
   // Recover suspended sessions from previous run
-  const recovered = sessionManager.recover();
-  if (recovered.length > 0) {
-    console.log(`[vinyan]   Recovered ${recovered.length} suspended session(s)`);
+  try {
+    const recovered = sessionManager.recover();
+    if (recovered.length > 0) {
+      console.log(`[vinyan]   Recovered ${recovered.length} suspended session(s)`);
+    }
+  } catch (err) {
+    // Session recovery failure is not fatal — the server can still
+    // accept new requests. Log and continue.
+    console.error('[vinyan] Session recovery failed (continuing):', err);
+  }
+
+  // Transition to steady-state — from here on, subprocess crashes
+  // are recoverable (logged but not fatal), while ALWAYS_FATAL codes
+  // still exit.
+  phase = 'steady';
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Wrap a promise with a diagnostic timeout. If the promise hasn't resolved
+ * within `ms`, log which step is stuck. Does NOT cancel the underlying
+ * work — that's the hard-exit timer's job. Purpose is visibility: users
+ * learn which cleanup step actually hung instead of staring at a generic
+ * "Forcing exit" message.
+ */
+async function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise<void> {
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (!settled) {
+      console.error(`[vinyan] shutdown step "${label}" exceeded ${ms}ms (still waiting)`);
+    }
+  }, ms);
+  (timer as { unref?: () => void }).unref?.();
+  try {
+    await promise;
+  } catch (err) {
+    console.error(`[vinyan] shutdown step "${label}" errored:`, err);
+  } finally {
+    settled = true;
+    clearTimeout(timer);
+  }
+}
+
+/** Read PID from file; returns null on any error (missing, malformed, empty). */
+function readPidFile(path: string): number | null {
+  try {
+    if (!existsSync(path)) return null;
+    const pid = parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePidFile(path: string): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, String(process.pid), 'utf8');
+  } catch {
+    // Non-fatal — PID file is convenience, not correctness.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort: shell out to lsof to find the PID holding the port. */
+async function tryFindPortHolder(port: number): Promise<number | null> {
+  try {
+    const proc = Bun.spawn(['lsof', '-ti', `:${port}`, '-sTCP:LISTEN'], {
+      stdout: 'pipe',
+      stderr: 'ignore',
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const pid = parseInt(out.trim().split('\n')[0] ?? '', 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
   }
 }
 
@@ -177,37 +373,51 @@ let safetyNetsInstalled = false;
 
 /**
  * Install process-level handlers so transient subprocess errors (EPIPE,
- * worker crashes, orphaned promise rejections) never take down the API
- * server. Fatal errors (out-of-memory, stack overflow) still exit —
- * those indicate real bugs that need external restart.
+ * worker crashes) never take down the API server — BUT ensure that
+ * errors during startup are always fatal, and always-fatal codes (port
+ * bind, DB lock, etc.) exit no matter what phase we're in.
+ *
+ * The anti-pattern we're avoiding: the previous implementation caught
+ * EVERY uncaughtException post-boot. If `Bun.serve()` threw EADDRINUSE
+ * asynchronously, the server was never actually listening but the
+ * process would idle forever, holding nothing useful — creating a
+ * zombie on every port conflict.
  *
  * Idempotent: safe to call multiple times.
  */
-function installProcessSafetyNets(): void {
+function installProcessSafetyNets(getPhase: () => Phase): void {
   if (safetyNetsInstalled) return;
   safetyNetsInstalled = true;
 
-  process.on('uncaughtException', (err) => {
+  const handle = (kind: 'uncaughtException' | 'unhandledRejection', err: unknown) => {
+    const code = (err as { code?: string } | null)?.code;
     const msg = err instanceof Error ? err.message : String(err);
-    const code = (err as { code?: string }).code;
-    // EPIPE = worker subprocess closed stdin before we finished writing.
-    // ECONNRESET = a client/peer dropped a socket mid-response.
-    // Both are recoverable — the request/task layer has its own retry.
-    if (code === 'EPIPE' || code === 'ECONNRESET' || code === 'ERR_STREAM_DESTROYED') {
-      console.error(`[vinyan] Non-fatal ${code}: ${msg} (server continues)`);
-      return;
-    }
-    console.error('[vinyan] uncaughtException:', err);
-    console.error('[vinyan] Server continues — investigate the cause above.');
-  });
 
-  process.on('unhandledRejection', (reason) => {
-    const msg = reason instanceof Error ? reason.message : String(reason);
-    const code = (reason as { code?: string } | null)?.code;
-    if (code === 'EPIPE' || code === 'ECONNRESET' || code === 'ERR_STREAM_DESTROYED') {
+    // Always-fatal misconfigurations — exit regardless of phase.
+    if (code && ALWAYS_FATAL_CODES.has(code)) {
+      console.error(`[vinyan] FATAL ${code}: ${msg}`);
+      process.exit(EXIT_CODE_STARTUP_FATAL);
+    }
+
+    // Transient I/O from subprocess pipes / dropped clients — always OK.
+    if (code && TRANSIENT_IO_CODES.has(code)) {
       console.error(`[vinyan] Non-fatal ${code}: ${msg} (server continues)`);
       return;
     }
-    console.error('[vinyan] unhandledRejection:', reason);
-  });
+
+    // During startup, any unexpected error is fatal — better to fail
+    // loudly and let the supervisor / user see it than to idle silently.
+    const phase = getPhase();
+    if (phase === 'startup') {
+      console.error(`[vinyan] FATAL ${kind} during startup:`, err);
+      process.exit(1);
+    }
+
+    // Steady-state: log but continue. The orchestrator has its own
+    // retry/escalation paths for actual task failures.
+    console.error(`[vinyan] ${kind} (steady-state, continuing):`, err);
+  };
+
+  process.on('uncaughtException', (err) => handle('uncaughtException', err));
+  process.on('unhandledRejection', (reason) => handle('unhandledRejection', reason));
 }

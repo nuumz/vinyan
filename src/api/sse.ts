@@ -33,6 +33,7 @@ const SSE_EVENTS: BusEventName[] = [
   'trace:record',
   // Worker / oracle
   'worker:dispatch',
+  'worker:selected',
   'worker:complete',
   'worker:error',
   'oracle:verdict',
@@ -48,6 +49,9 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:tool_started',
   'agent:tool_executed',
   'agent:text_delta',
+  'agent:thinking',
+  'agent:contract_violation',
+  'agent:plan_update',
   'llm:stream_delta',
   'agent:clarification_requested',
 ];
@@ -346,6 +350,7 @@ export function createSessionSSEStream(
         'agent:text_delta',
         'llm:stream_delta',
         'agent:clarification_requested',
+        'agent:plan_update',
       ];
 
       for (const eventName of membershipFilteredEvents) {

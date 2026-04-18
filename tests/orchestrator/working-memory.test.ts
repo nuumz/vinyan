@@ -6,6 +6,7 @@ import {
   MAX_UNCERTAINTIES,
   WorkingMemory,
 } from '../../src/orchestrator/working-memory.ts';
+import type { WorkingMemoryState } from '../../src/orchestrator/types.ts';
 
 describe('WorkingMemory', () => {
   test('recordFailedApproach adds to snapshot', () => {
@@ -261,5 +262,75 @@ describe('WorkingMemory', () => {
     wm.markSessionHydrated();
     expect(wm.isSessionHydrated()).toBe(true);
     expect(wm.isCrossTaskLoaded()).toBe(false);
+  });
+
+  // ── A5/A7 evidence-chain preservation on eviction ───────────────────
+  // Regression guard: the archiver is called with the FULL entry
+  // (approach + oracleVerdict + verdictConfidence + failureOracle +
+  // classifiedFailures) BEFORE the entry is removed from working memory.
+  // No evidence is orphaned from its verdict during eviction.
+
+  test('archiver receives full entry (approach + verdict + evidence) BEFORE eviction', () => {
+    const archived: Array<WorkingMemoryState['failedApproaches'][number]> = [];
+    const wm = new WorkingMemory({ archiver: (e) => archived.push(e) });
+
+    // Fill to cap with low-confidence entries, each carrying structured
+    // failure evidence. The next insertion must evict the lowest-confidence
+    // entry and hand its COMPLETE payload (including classifiedFailures)
+    // to the archiver — no silent loss of the forensic trail.
+    for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
+      wm.recordFailedApproach(
+        `approach-${i}`,
+        `verdict-${i}`,
+        0.5,
+        'type',
+        [
+          {
+            category: 'type-error',
+            file: `src/f${i}.ts`,
+            line: i + 1,
+            message: `msg-${i}`,
+            severity: 'error',
+          },
+        ],
+      );
+    }
+    // Insert one more with lower confidence — the EVICTED entry is NOT
+    // this new one (it has min-confidence amongst pre-existing = the
+    // first one at 0.5), the archiver gets that full entry.
+    wm.recordFailedApproach('pushes-eviction', 'v', 0.4, 'ast');
+
+    expect(archived.length).toBe(1);
+    const evicted = archived[0]!;
+    // Evidence chain travels WITH the verdict.
+    expect(evicted.approach).toMatch(/approach-/);
+    expect(evicted.oracleVerdict).toMatch(/verdict-/);
+    expect(evicted.failureOracle).toBe('type');
+    expect(evicted.verdictConfidence).toBe(0.5);
+    expect(evicted.classifiedFailures).toBeDefined();
+    expect(evicted.classifiedFailures!.length).toBe(1);
+    expect(evicted.classifiedFailures![0]!.category).toBe('type-error');
+    expect(evicted.classifiedFailures![0]!.file).toMatch(/^src\/f/);
+  });
+
+  test('archiver not invoked when eviction does NOT occur (below cap)', () => {
+    const archived: unknown[] = [];
+    const wm = new WorkingMemory({ archiver: (e) => archived.push(e) });
+    wm.recordFailedApproach('a', 'v', 0.5);
+    expect(archived.length).toBe(0);
+  });
+
+  test('archiver throwing does not block eviction (best-effort)', () => {
+    const wm = new WorkingMemory({
+      archiver: () => {
+        throw new Error('storage offline');
+      },
+    });
+    for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
+      wm.recordFailedApproach(`a-${i}`, 'v', 0.5);
+    }
+    // Should not throw — the eviction path tolerates archiver failures.
+    expect(() => wm.recordFailedApproach('post', 'v', 0.4)).not.toThrow();
+    expect(wm.getSnapshot().failedApproaches.length).toBe(MAX_FAILED_APPROACHES);
   });
 });

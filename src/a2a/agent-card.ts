@@ -8,6 +8,7 @@
  * Source of truth: Plan Phase D1
  */
 import { getOracleEntry, listOracles } from '../oracle/registry.ts';
+import type { AgentProfile } from '../orchestrator/types.ts';
 import type { A2AAgentCard, VinyanECPExtension } from './types.ts';
 
 export interface AgentCardIdentity {
@@ -20,6 +21,12 @@ const DEFAULT_FEATURES = ['knowledge_sharing', 'feedback_loop', 'file_invalidati
 
 export interface AgentCardOptions {
   streaming?: boolean;
+  /**
+   * Workspace-level Vinyan Agent identity (if bootstrapped).
+   * When present: card.name/description and declared capabilities come from here
+   * instead of hardcoded defaults.
+   */
+  agentProfile?: AgentProfile;
 }
 
 /** Build an A2A Agent Card from the current oracle registry state */
@@ -41,9 +48,10 @@ export function generateAgentCard(
     };
   });
 
+  const profile = options.agentProfile;
   const card: A2AAgentCard = {
-    name: 'Vinyan',
-    description: 'Autonomous task orchestrator built on the Epistemic Orchestration paradigm',
+    name: profile?.displayName ?? 'Vinyan',
+    description: profile?.description ?? 'Autonomous task orchestrator built on the Epistemic Orchestration paradigm',
     url: baseUrl,
     version: '5.0.0',
     capabilities: {
@@ -64,6 +72,16 @@ export function generateAgentCard(
       };
     });
 
+    // Merge DEFAULT_FEATURES with agent's declared capabilities (if any).
+    // Profile capabilities are prefixed (oracle:/engine:/mcp:) — we add them
+    // as additional feature strings so peers can discover what this agent offers.
+    const features: string[] = [...DEFAULT_FEATURES];
+    if (profile?.capabilities?.length) {
+      for (const cap of profile.capabilities) {
+        if (!features.includes(cap)) features.push(cap);
+      }
+    }
+
     card['x-vinyan-ecp'] = {
       protocol: 'vinyan-ecp',
       ecp_version: 1,
@@ -72,7 +90,7 @@ export function generateAgentCard(
       public_key: identity.publicKey,
       capability_version: capabilityVersion,
       oracle_capabilities: oracleCapabilities,
-      features: [...DEFAULT_FEATURES],
+      features,
     };
   }
 

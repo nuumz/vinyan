@@ -42,7 +42,7 @@ function makeQs(composite: number): QualityScore {
     efficiency: composite,
     composite,
     dimensionsAvailable: 2,
-    phase: 'phase0',
+    phase: 'basic',
   };
 }
 

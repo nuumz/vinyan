@@ -50,8 +50,6 @@ export interface ResolvedGateResult {
   /** True if any conflict escalated to step 5 (unresolvable). */
   hasContradiction: boolean;
 
-  // ── ECP v2 additions ──
-
   /** Fused SL opinion from all non-conflicting verdicts. Undefined if L0-L1 or no fusion. */
   fusedOpinion?: SubjectiveOpinion;
   /** Derived from fusedOpinion: [belief, 1-disbelief]. Shows 'how much we don't know' after fusion.
@@ -124,7 +122,7 @@ export function resolveConflicts(
   oracleResults: Record<string, OracleVerdict>,
   config: ResolverConfig,
   abstentions?: Record<string, OracleAbstention>,
-  /** ECP v2: routing level determines fusion depth. L0-L1 skip SL fusion. */
+  /** Routing level determines fusion depth. L0-L1 skip SL fusion. */
   routingLevel?: number,
 ): ResolvedGateResult {
   // Abstaining oracles are NOT in oracleResults — they're passed separately.
@@ -153,11 +151,34 @@ export function resolveConflicts(
       const verdict = oracleResults[name]!;
       reasons.push(`Oracle "${name}" rejected: ${verdict.reason ?? 'no reason given'}`);
     }
+
+    // Wave C: SL fusion even for unanimous verdicts (L1+).
+    let fusedOpinion: SubjectiveOpinion | undefined;
+    let beliefInterval: { belief: number; plausibility: number } | undefined;
+    if (routingLevel === undefined || routingLevel >= 1) {
+      const allOpinions = Object.values(oracleResults)
+        .filter((v) => !config.informationalOracles.has(Object.keys(oracleResults).find((k) => oracleResults[k] === v)!))
+        .map(verdictToOpinion);
+      if (allOpinions.length >= 2) {
+        let fused = allOpinions[0]!;
+        for (let i = 1; i < allOpinions.length; i++) {
+          fused = cumulativeFusion(fused, allOpinions[i]!);
+        }
+        fusedOpinion = fused;
+        beliefInterval = { belief: fused.belief, plausibility: 1 - fused.disbelief };
+      } else if (allOpinions.length === 1) {
+        fusedOpinion = allOpinions[0];
+        beliefInterval = { belief: allOpinions[0]!.belief, plausibility: 1 - allOpinions[0]!.disbelief };
+      }
+    }
+
     return {
       decision: reasons.length > 0 ? 'block' : 'allow',
       reasons,
       resolutions: [],
       hasContradiction: false,
+      fusedOpinion,
+      beliefInterval,
     };
   }
 
@@ -199,12 +220,13 @@ export function resolveConflicts(
     reasons.push('Unresolved oracle contradiction — escalated to contradictory state');
   }
 
-  // ECP v2: Fuse all verdict opinions into a single aggregate opinion.
-  // L0-L1 skip SL fusion (too cheap to justify the computation).
+  // Fuse all verdict opinions into a single aggregate opinion.
+  // L0 skips SL fusion (hash-only tier — no oracle verdicts to fuse).
+  // L1+ get full fusion for epistemically richer uncertainty representation.
   let fusedOpinion: SubjectiveOpinion | undefined;
   let beliefInterval: { belief: number; plausibility: number } | undefined;
 
-  if (routingLevel === undefined || routingLevel >= 2) {
+  if (routingLevel === undefined || routingLevel >= 1) {
     const allOpinions = Object.values(oracleResults)
       .filter((v) => !config.informationalOracles.has(Object.keys(oracleResults).find((k) => oracleResults[k] === v)!))
       .map(verdictToOpinion);

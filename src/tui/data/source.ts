@@ -22,10 +22,11 @@ const LOG_ONLY_EVENTS: BusEventName[] = [
   'task:explore',
   'worker:complete',
   'worker:error',
-  'worker:registered',
-  'worker:promoted',
-  'worker:demoted',
-  'worker:reactivated',
+  'profile:registered',
+  'profile:promoted',
+  'profile:demoted',
+  'profile:reactivated',
+  'profile:retired',
   'worker:selected',
   'worker:exploration',
   'oracle:contradiction',
@@ -120,6 +121,10 @@ export class EmbeddedDataSource implements DataSource {
     this.startClockTick();
     // Defer initial metrics load so screen can render first frame immediately
     setTimeout(() => this.refreshMetricsAsync(), 50);
+    // Chat tab (PR #11): pre-populate session list so the Chat tab is
+    // not empty before any task fires. Best-effort — no-ops when
+    // sessionManager is not configured.
+    setTimeout(() => this.refreshChatState(), 50);
   }
 
   stop(): void {
@@ -222,6 +227,12 @@ export class EmbeddedDataSource implements DataSource {
       ['agent:session_end', (p) => this.onAgentSessionEnd(p)],
       ['agent:turn_complete', (p) => this.onAgentTurnComplete(p)],
       ['agent:tool_executed', (p) => this.onAgentToolExecuted(p)],
+      // Phase D: structured clarifications (renders as selectable options).
+      ['agent:clarification_requested', (p) => this.onClarificationRequested(p)],
+      // Phase E: workflow plan + per-step progress (TODO checklist).
+      ['workflow:plan_ready', (p) => this.onWorkflowPlanReady(p)],
+      ['workflow:step_start', (p) => this.onWorkflowStepStart(p)],
+      ['workflow:step_complete', (p) => this.onWorkflowStepComplete(p)],
     ]);
 
     // Events with specific state handlers
@@ -282,6 +293,13 @@ export class EmbeddedDataSource implements DataSource {
     if (!this.state.selectedTaskId) {
       this.state.selectedTaskId = task.id;
     }
+    // Chat tab (PR #11): track the active session id so the Chat
+    // view can show the most-recently-active session by default.
+    const incomingSessionId = input.sessionId as string | undefined;
+    if (incomingSessionId) {
+      this.state.chatActiveSessionId = incomingSessionId;
+      this.refreshChatState();
+    }
     this.state.dirty = true;
   }
 
@@ -308,7 +326,70 @@ export class EmbeddedDataSource implements DataSource {
       this.state.successHistory.shift();
     }
 
+    // Chat tab (PR #11): refresh conversation snapshot whenever a task
+    // completes — the conversation may have new entries (recordUserTurn /
+    // recordAssistantTurn), and pendingClarifications may have changed
+    // if the task ended in input-required.
+    this.refreshChatState();
+
     this.state.dirty = true;
+  }
+
+  /**
+   * Chat tab (PR #11): refresh the in-state conversation snapshot from
+   * SessionManager. Best-effort — silently no-ops when sessionManager
+   * is not exposed on the orchestrator (e.g., when the TUI is run with
+   * a config that did not pass `sessionManager` into createOrchestrator).
+   *
+   * Strategy:
+   *   1. Refresh the session list (newest first).
+   *   2. If chatActiveSessionId is null, default to the most recently
+   *      created session.
+   *   3. Pull the conversation history + pending clarifications for
+   *      the active session.
+   *
+   * Called from onTaskStart (when a new task names a session id) and
+   * onTaskComplete (when conversation entries may have been recorded).
+   */
+  private refreshChatState(): void {
+    const sm = this.orchestrator.sessionManager;
+    if (!sm) return;
+
+    try {
+      const sessions = sm.listSessions();
+      // Sort newest-first so the chat sidebar shows the most recent
+      // session at the top.
+      const sorted = [...sessions].sort((a, b) => b.createdAt - a.createdAt);
+      this.state.chatSessions = sorted.map((s) => ({
+        id: s.id,
+        source: s.source,
+        status: s.status,
+        createdAt: s.createdAt,
+        messageCount: sm.getMessageCount(s.id),
+      }));
+
+      // Default the active session to the most recent one if none set.
+      if (!this.state.chatActiveSessionId && sorted.length > 0) {
+        this.state.chatActiveSessionId = sorted[0]!.id;
+      }
+
+      if (this.state.chatActiveSessionId) {
+        const history = sm.getConversationHistory(this.state.chatActiveSessionId, 1_000_000);
+        this.state.chatConversation = history.map((h) => ({
+          role: h.role,
+          content: h.content,
+          timestamp: h.timestamp,
+          taskId: h.taskId || undefined,
+        }));
+        this.state.chatPendingClarifications = sm.getPendingClarifications(
+          this.state.chatActiveSessionId,
+        );
+      }
+      this.state.dirty = true;
+    } catch {
+      // SessionManager / SQLite errors are best-effort — never crash
+      // the TUI for an observability feature.
+    }
   }
 
   private onTaskEscalate(p: Record<string, unknown>): void {
@@ -530,6 +611,59 @@ export class EmbeddedDataSource implements DataSource {
     this.state.dirty = true;
   }
 
+  // ── Phase D: structured clarifications ──────────────────────────
+
+  private onClarificationRequested(p: Record<string, unknown>): void {
+    const structured = Array.isArray(p.structuredQuestions)
+      ? (p.structuredQuestions as import('../../core/clarification.ts').ClarificationQuestion[])
+      : [];
+    const stringQuestions = Array.isArray(p.questions) ? (p.questions as string[]) : [];
+    this.state.chatStructuredClarifications = structured;
+    // Keep the legacy list in sync so older chat views still get something.
+    if (stringQuestions.length > 0 || structured.length === 0) {
+      this.state.chatPendingClarifications = stringQuestions;
+    } else {
+      this.state.chatPendingClarifications = structured.map((q) => q.prompt);
+    }
+    this.state.dirty = true;
+  }
+
+  // ── Phase E: workflow plan + step progress ──────────────────────
+
+  private onWorkflowPlanReady(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    const goal = String(p.goal ?? '');
+    const rawSteps = Array.isArray(p.steps) ? p.steps : [];
+    const steps = rawSteps.map((s) => {
+      const step = s as Record<string, unknown>;
+      return {
+        id: String(step.id ?? ''),
+        description: String(step.description ?? ''),
+        strategy: String(step.strategy ?? ''),
+        dependencies: Array.isArray(step.dependencies) ? (step.dependencies as string[]) : [],
+      };
+    });
+    this.state.chatWorkflowPlan = { taskId, goal, steps };
+    // Reset per-step status — every step starts 'pending'.
+    this.state.chatWorkflowStepStatus = new Map(steps.map((s) => [s.id, 'pending'] as const));
+    this.state.dirty = true;
+  }
+
+  private onWorkflowStepStart(p: Record<string, unknown>): void {
+    const stepId = String(p.stepId ?? '');
+    if (!stepId) return;
+    this.state.chatWorkflowStepStatus.set(stepId, 'in-progress');
+    this.state.dirty = true;
+  }
+
+  private onWorkflowStepComplete(p: Record<string, unknown>): void {
+    const stepId = String(p.stepId ?? '');
+    if (!stepId) return;
+    const status = p.status === 'failed' ? 'failed' : 'completed';
+    this.state.chatWorkflowStepStatus.set(stepId, status);
+    this.state.dirty = true;
+  }
+
   // ── Real-time Counters ──────────────────────────────────────────
 
   private incrementCounter(event: string): void {
@@ -606,6 +740,36 @@ export class EmbeddedDataSource implements DataSource {
         } catch {
           // Best-effort
         }
+
+        // ── Step 3: economy data ──────────────────────────────────
+        try {
+          const { costLedger, budgetEnforcer } = this.orchestrator;
+          if (costLedger || budgetEnforcer) {
+            const budgetWindows = (budgetEnforcer?.checkBudget() ?? []).map((b) => ({
+              label: b.window,
+              spent: b.spent_usd,
+              limit: b.limit_usd,
+              pct: b.utilization_pct,
+            }));
+            const costHour = costLedger?.getAggregatedCost('hour');
+            const costDay = costLedger?.getAggregatedCost('day');
+            (this.state as TUIState & { economy?: import('../views/economy.ts').EconomyDisplayState }).economy = {
+              budgetWindows,
+              costHistory: [],
+              totalCostUsd: costDay?.total_usd ?? 0,
+              totalEntries: costLedger?.count() ?? 0,
+              marketPhase: 'idle',
+              marketEnabled: false,
+              auctionCount: 0,
+              engineTrust: [],
+              federationEnabled: false,
+            };
+            this.state.dirty = true;
+          }
+        } catch {
+          // Best-effort
+        }
+
         this.metricsRunning = false;
       }, 0);
     }, 0);

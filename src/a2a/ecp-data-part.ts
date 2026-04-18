@@ -81,6 +81,8 @@ export const ECPMessageTypeSchema = z.enum([
   // Streaming — Phase F
   'progress',
   'partial_verdict',
+  // Cross-instance rooms — Phase R3
+  'room_update',
 ]);
 
 export type ECPMessageType = z.infer<typeof ECPMessageTypeSchema>;
@@ -98,27 +100,32 @@ export const ECPDataPartSchema = z.object({
   epistemic_type: EpistemicTypeSchema,
   confidence: z.number().min(0).max(1),
   /** Optional SL opinion — must be consistent with confidence scalar */
-  opinion: z.object({
-    belief: z.number().min(0).max(1),
-    disbelief: z.number().min(0).max(1),
-    uncertainty: z.number().min(0).max(1),
-    baseRate: z.number().min(0).max(1),
-  }).refine(
-    (o) => Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001,
-    { message: 'belief + disbelief + uncertainty must sum to 1' },
-  ).optional(),
+  opinion: z
+    .object({
+      belief: z.number().min(0).max(1),
+      disbelief: z.number().min(0).max(1),
+      uncertainty: z.number().min(0).max(1),
+      baseRate: z.number().min(0).max(1),
+    })
+    .refine((o) => Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001, {
+      message: 'belief + disbelief + uncertainty must sum to 1',
+    })
+    .optional(),
   confidence_reported: z.boolean(),
   evidence: z.array(EvidencePartSchema).optional(),
   falsifiable_by: z.string().optional(),
   temporal_context: TemporalContextSchema.optional(),
   conversation_id: z.string().optional(),
+  /** R3: when present, scopes this message to a named room. Messages without
+   *  room_id are broadcast to all peers (backward compatible). */
+  room_id: z.string().optional(),
   trace_context: TraceContextSchema.optional(),
   cost: CostSignalSchema.optional(),
   payload: z.unknown(),
   signer: SignerSchema.optional(),
   signature: z.string().optional(),
 
-  // ── ECP v2 wire-format additions (all optional for backward compat) ──
+  // ── ECP wire-format additions (all optional for backward compat) ──
   tier_reliability: z.number().min(0).max(1).optional(),
   engine_certainty: z.number().min(0).max(1).optional(),
   confidence_source: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),

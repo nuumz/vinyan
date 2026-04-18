@@ -3,8 +3,10 @@
  */
 
 import { resolve } from 'path';
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeResult, TOOL_TIMEOUT_MS } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
+
+const FIRE_AND_FORGET_GRACE_MS = 300;
 
 export const shellExec: Tool = {
   name: 'shell_exec',
@@ -21,6 +23,10 @@ export const shellExec: Tool = {
         properties: {
           command: { type: 'string', description: 'Shell command to execute' },
           cwd: { type: 'string', description: 'Working directory' },
+          fireAndForget: {
+            type: 'boolean',
+            description: 'Return after launch instead of waiting for process exit',
+          },
         },
         required: ['command'],
       },
@@ -32,17 +38,26 @@ export const shellExec: Tool = {
   },
   async execute(params, context) {
     const command = params.command as string;
+    const fireAndForget = params.fireAndForget === true;
 
     // Agentic mode: enforce read-only whitelist (A6 — zero-trust execution)
     if (context.overlayDir) {
       const SHELL_READ_ONLY_WHITELIST = [
-        'grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc',
-        'git log', 'git diff', 'git status', 'git show', 'git blame',
+        'grep',
+        'find',
+        'cat',
+        'head',
+        'tail',
+        'ls',
+        'wc',
+        'git log',
+        'git diff',
+        'git status',
+        'git show',
+        'git blame',
       ];
       const cmd = command.trim();
-      const allowed = SHELL_READ_ONLY_WHITELIST.some(
-        prefix => cmd === prefix || cmd.startsWith(`${prefix} `),
-      );
+      const allowed = SHELL_READ_ONLY_WHITELIST.some((prefix) => cmd === prefix || cmd.startsWith(`${prefix} `));
       if (!allowed) {
         return makeResult((params.callId as string) ?? '', 'shell_exec', {
           status: 'error',
@@ -60,7 +75,23 @@ export const shellExec: Tool = {
         error: `cwd '${cwd}' escapes workspace`,
       });
     }
+
     try {
+      if (fireAndForget) {
+        if (isLaunchStyleCommand(command)) {
+          return await executeLaunchStyleFireAndForget(
+            command,
+            effectiveCwd,
+            (params.callId as string) ?? '',
+          );
+        }
+        return await executeGenericFireAndForget(
+          command,
+          effectiveCwd,
+          (params.callId as string) ?? '',
+        );
+      }
+
       const proc = Bun.spawn(['sh', '-c', command], {
         cwd: effectiveCwd,
         stdout: 'pipe',
@@ -94,3 +125,53 @@ export const shellExec: Tool = {
     }
   },
 };
+
+function isLaunchStyleCommand(command: string): boolean {
+  return /^(open(\s+-a)?\s|xdg-open\s|start\s+""\s)/i.test(command.trim());
+}
+
+async function executeLaunchStyleFireAndForget(command: string, cwd: string, callId: string) {
+  const proc = Bun.spawn(['sh', '-c', `${command} >/dev/null 2>&1 &`], {
+    cwd,
+    stdin: 'ignore',
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+
+  const exitCode = await proc.exited;
+  return makeResult(callId, 'shell_exec', {
+    status: exitCode === 0 ? 'success' : 'error',
+    error: exitCode !== 0 ? `Exit code ${exitCode}` : undefined,
+  });
+}
+
+async function executeGenericFireAndForget(command: string, cwd: string, callId: string) {
+  const proc = Bun.spawn(['sh', '-c', command], {
+    cwd,
+    stdin: 'ignore',
+    stdout: 'ignore',
+    stderr: 'ignore',
+    detached: true,
+  });
+
+  const outcome = await Promise.race<
+    { type: 'exit'; exitCode: number } | { type: 'launched' }
+  >([
+    proc.exited.then((exitCode) => ({ type: 'exit', exitCode } as const)),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ type: 'launched' } as const), FIRE_AND_FORGET_GRACE_MS),
+    ),
+  ]);
+
+  if (outcome.type === 'launched') {
+    proc.unref?.();
+    return makeResult(callId, 'shell_exec', {
+      status: 'success',
+    });
+  }
+
+  return makeResult(callId, 'shell_exec', {
+    status: outcome.exitCode === 0 ? 'success' : 'error',
+    error: outcome.exitCode !== 0 ? `Exit code ${outcome.exitCode}` : undefined,
+  });
+}

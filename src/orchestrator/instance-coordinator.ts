@@ -23,7 +23,13 @@ import type { WorkerStore } from '../db/worker-store.ts';
 import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import type { EventForwarder } from './event-forwarder.ts';
-import type { TaskFingerprint, TaskInput, TaskResult, WorkerProfile, WorkerStats } from './types.ts';
+import {
+  OraclePeerGates,
+  type OraclePeerAdapterProfile,
+  wrapOracleProfileStore,
+} from './profile/oracle-peer-gates.ts';
+import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
+import type { TaskFingerprint, TaskInput, TaskResult, EngineProfile, EngineStats } from './types.ts';
 
 /** Remote oracle profile — tracks accuracy of remote oracle instances. */
 export interface OracleProfile {
@@ -85,6 +91,8 @@ export class InstanceCoordinator {
     InstanceCoordinatorConfig;
   private lastDiscoveryAt = 0;
   private discoveryIntervalMs = 60_000;
+  /** Lazily-constructed lifecycle — only created when profileStore is available. */
+  private peerLifecycle: ProfileLifecycle<OraclePeerAdapterProfile> | null = null;
 
   constructor(config: InstanceCoordinatorConfig) {
     this.config = {
@@ -93,6 +101,22 @@ export class InstanceCoordinator {
       demotionFalsePositiveThreshold: config.demotionFalsePositiveThreshold ?? 0.3,
       demotionTimeoutThreshold: config.demotionTimeoutThreshold ?? 5,
     };
+  }
+
+  private getPeerLifecycle(): ProfileLifecycle<OraclePeerAdapterProfile> | null {
+    if (this.peerLifecycle) return this.peerLifecycle;
+    if (!this.config.profileStore) return null;
+    const gates = new OraclePeerGates({
+      falsePositiveThreshold: this.config.demotionFalsePositiveThreshold,
+      timeoutThreshold: this.config.demotionTimeoutThreshold,
+    });
+    this.peerLifecycle = new ProfileLifecycle<OraclePeerAdapterProfile>({
+      kind: 'oracle-peer',
+      store: wrapOracleProfileStore(this.config.profileStore),
+      gates,
+      bus: this.config.bus,
+    });
+    return this.peerLifecycle;
   }
 
   /**
@@ -105,7 +129,20 @@ export class InstanceCoordinator {
 
   /**
    * Delegate a task to a peer instance.
-   * The peer's result is NOT automatically trusted — caller must re-verify (I12).
+   *
+   * Agent Conversation §5.6: this now uses `A2ATransport.delegateTask()`,
+   * which sends a real `tasks/send` request to the peer's bridge so the
+   * peer runs the FULL task pipeline (perception → predict → plan →
+   * generate → verify) and returns a complete `TaskResult` — including
+   * mutations, oracle verdicts, and any `input-required` clarification
+   * questions. Previously this method abused the oracle `verify()` path
+   * and synthesized a stub result with `mutations: []`, which made
+   * delegated work invisible to the parent.
+   *
+   * The peer's result is NOT automatically trusted — caller must
+   * re-verify (I12). Federation budget is consumed up-front; if all
+   * attempts fail the budget is NOT refunded (pessimistic — peers may
+   * still have done partial work we don't see).
    */
   async delegate(input: TaskInput, _fingerprint?: TaskFingerprint): Promise<DelegationResult> {
     const peers = this.getActivePeers();
@@ -125,55 +162,28 @@ export class InstanceCoordinator {
 
     for (let attempt = 0; attempt < this.config.maxDelegationAttempts && attempt < peers.length; attempt++) {
       const peer = peers[attempt]!;
-      try {
-        const transport = new A2ATransport({
-          peerUrl: peer.url,
-          oracleName: 'task-delegation',
-          instanceId: this.config.instanceId,
-        });
+      const transport = new A2ATransport({
+        peerUrl: peer.url,
+        oracleName: 'task-delegation',
+        instanceId: this.config.instanceId,
+      });
 
-        // Use verify() to send task as an ECP verification request
-        // The peer will execute the full task and return a result
-        const verdict = await transport.verify(
-          {
-            target: input.goal,
-            pattern: 'task-delegation',
-            workspace: input.targetFiles?.[0] ?? '',
-            context: { taskInput: input },
-          },
-          input.budget?.maxDurationMs ?? 60_000,
-        );
-
-        if (verdict.verified || verdict.type !== 'unknown') {
-          return {
-            delegated: true,
-            peerId: peer.url,
-            result: {
-              id: input.id,
-              status: verdict.verified ? 'completed' : 'failed',
-              mutations: [],
-              trace: {
-                id: `delegated-${input.id}`,
-                taskId: input.id,
-                timestamp: Date.now(),
-                routingLevel: 0,
-                approach: `delegated to ${peer.url}`,
-                oracleVerdicts: {},
-                modelUsed: 'remote',
-                tokensConsumed: 0,
-                durationMs: verdict.durationMs,
-                outcome: verdict.verified ? 'success' : 'failure',
-                affectedFiles: [],
-                correlationId: input.id,
-                sourceInstanceId: this.config.instanceId,
-              },
-            },
-            reason: `Delegated to ${peer.url}`,
-          };
+      const result = await transport.delegateTask(input, input.budget?.maxDurationMs ?? 60_000);
+      if (result) {
+        // Stamp provenance so downstream consumers know this came from
+        // a peer (and can re-verify per I12). The peer may already have
+        // set sourceInstanceId; we don't overwrite it.
+        if (!result.trace.sourceInstanceId) {
+          result.trace.sourceInstanceId = this.config.instanceId;
         }
-      } catch {
-        // Try next peer
+        return {
+          delegated: true,
+          peerId: peer.url,
+          result,
+          reason: `Delegated to ${peer.url}`,
+        };
       }
+      // Otherwise: try next peer (transport returned null on failure)
     }
 
     return { delegated: false, reason: 'All delegation attempts failed' };
@@ -304,7 +314,7 @@ export class InstanceCoordinator {
       if (existing.length > 0) continue; // Skip — already have this model
 
       // Create a new profile in probation with reduced stats
-      const newProfile: WorkerProfile = {
+      const newProfile: EngineProfile = {
         id: `imported-${sourceInstanceId}-${shared.id}`,
         config: shared.config,
         status: 'probation',
@@ -366,37 +376,24 @@ export class InstanceCoordinator {
     if (!this.config.profileStore) return;
 
     const profile = this.config.profileStore.getProfile(instanceId, oracleName);
-    if (profile) {
-      this.config.profileStore.recordResult(profile.id, success);
-
-      // Check demotion triggers
-      if (profile.status === 'active' || profile.status === 'probation') {
-        const falsePositiveRate =
-          profile.verdictsRequested > 0 ? profile.falsePositiveCount / profile.verdictsRequested : 0;
-
-        if (falsePositiveRate > this.config.demotionFalsePositiveThreshold) {
-          this.config.profileStore.demote(
-            profile.id,
-            `False positive rate ${falsePositiveRate.toFixed(2)} exceeds threshold`,
-          );
-          this.config.bus?.emit('worker:demoted', {
-            workerId: profile.id,
-            reason: 'high false positive rate',
-            permanent: false,
-          });
-        }
-        if (profile.timeoutCount >= this.config.demotionTimeoutThreshold) {
-          this.config.profileStore.demote(profile.id, `Timeout count ${profile.timeoutCount} exceeds threshold`);
-        }
-      }
-    } else {
-      // Create new profile in probation
-      this.config.profileStore.createProfile({
-        instanceId,
-        oracleName,
-        status: 'probation',
-      });
+    if (!profile) {
+      // First contact — register in probation so the lifecycle can track it.
+      this.config.profileStore.createProfile({ instanceId, oracleName, status: 'probation' });
+      return;
     }
+
+    this.config.profileStore.recordResult(profile.id, success);
+
+    // Run unified lifecycle. `checkDemotions` walks all active peers with
+    // `OraclePeerGates`, which consolidates the FP-rate and timeout checks
+    // formerly open-coded here. Promotion is driven by the same lifecycle
+    // once a probation peer accumulates enough evidence.
+    const lifecycle = this.getPeerLifecycle();
+    if (!lifecycle) return;
+    if (profile.status === 'probation') {
+      lifecycle.evaluatePromotion(profile.id);
+    }
+    lifecycle.checkDemotions();
   }
 }
 
@@ -421,8 +418,8 @@ export interface RemoteConflictResolution {
 
 export interface SharedWorkerProfile {
   id: string;
-  config: WorkerProfile['config'];
-  stats: WorkerStats;
+  config: EngineProfile['config'];
+  stats: EngineStats;
   sourceInstanceId: string;
   sharedAt: number;
 }
@@ -519,10 +516,10 @@ export function resolveRemoteConflict(
 }
 
 /**
- * Reduce WorkerStats confidence by a factor (default 0.5) for cross-instance sharing.
+ * Reduce EngineStats confidence by a factor (default 0.5) for cross-instance sharing.
  * Applies reduction to successRate and avgQualityScore.
  */
-export function reduceWilsonLB(stats: WorkerStats, reductionFactor = 0.5): WorkerStats {
+export function reduceWilsonLB(stats: EngineStats, reductionFactor = 0.5): EngineStats {
   return {
     ...stats,
     successRate: stats.successRate * reductionFactor,

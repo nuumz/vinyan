@@ -7,7 +7,7 @@
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
 import { PromptTooLargeError } from '../types.ts';
-import type { LLMProvider, LLMRequest, LLMResponse, ToolCall } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
@@ -152,6 +152,139 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           },
         },
       );
+    },
+
+    async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const body: Record<string, unknown> = {
+        model,
+        stream: true,
+        max_tokens: request.maxTokens,
+        messages: request.messages?.length
+          ? [
+              { role: 'system', content: request.systemPrompt },
+              ...(normalizeMessages(request.messages, 'openai-compat') as OpenAIMessage[]),
+            ]
+          : [
+              { role: 'system', content: request.systemPrompt },
+              { role: 'user', content: request.userPrompt },
+            ],
+      };
+      if (request.temperature !== undefined) body.temperature = request.temperature;
+      if (request.tools?.length) {
+        body.tools = request.tools.map((t) => ({
+          type: 'function',
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        }));
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      let response: Response;
+      try {
+        response = await fetch(OPENROUTER_BASE_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            'HTTP-Referer': 'https://github.com/vinyan-agent',
+            'X-Title': 'Vinyan Agent',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        // Fall back to non-streaming path on transport error.
+        return this.generate(request);
+      }
+
+      if (!response.ok || !response.body) {
+        clearTimeout(timer);
+        const errorText = await response.text().catch(() => '');
+        if (response.status === 413 || errorText.includes('context_length_exceeded')) {
+          const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+          throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
+        }
+        // Transient error — fall back to non-streaming retry path.
+        return this.generate(request);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let contentAcc = '';
+      const toolArgAcc: Map<number, { id: string; name: string; args: string }> = new Map();
+      let finishReason: string | undefined;
+      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
+      let modelId: string | undefined;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (!trimmed.startsWith('data:')) continue;
+            const data = trimmed.slice(5).trim();
+            if (data === '[DONE]') continue;
+            let chunk: any;
+            try { chunk = JSON.parse(data); } catch { continue; }
+            if (chunk.model) modelId = chunk.model;
+            if (chunk.usage) usage = chunk.usage;
+            const choice = chunk.choices?.[0];
+            if (!choice) continue;
+            if (choice.finish_reason) finishReason = choice.finish_reason;
+            const delta = choice.delta;
+            if (!delta) continue;
+            if (typeof delta.content === 'string' && delta.content.length > 0) {
+              contentAcc += delta.content;
+              onDelta({ text: delta.content });
+            }
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index ?? 0;
+                const existing = toolArgAcc.get(idx) ?? { id: '', name: '', args: '' };
+                if (tc.id) existing.id = tc.id;
+                if (tc.function?.name) existing.name = tc.function.name;
+                if (tc.function?.arguments) existing.args += tc.function.arguments;
+                toolArgAcc.set(idx, existing);
+              }
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+        try { reader.releaseLock(); } catch { /* ignore */ }
+      }
+
+      const toolCalls: ToolCall[] = [];
+      for (const { id, name, args } of toolArgAcc.values()) {
+        if (!name) continue;
+        let params: Record<string, unknown> = {};
+        try { params = args ? JSON.parse(args) : {}; } catch { /* use empty */ }
+        toolCalls.push({ id: id || `tc_${name}`, tool: name, parameters: params });
+      }
+      const stopReason: LLMResponse['stopReason'] =
+        finishReason === 'tool_calls' ? 'tool_use'
+          : finishReason === 'length' ? 'max_tokens'
+            : 'end_turn';
+
+      return {
+        content: contentAcc,
+        toolCalls,
+        tokensUsed: {
+          input: usage?.prompt_tokens ?? 0,
+          output: usage?.completion_tokens ?? 0,
+        },
+        model: modelId ?? model,
+        stopReason,
+      };
     },
   };
 }

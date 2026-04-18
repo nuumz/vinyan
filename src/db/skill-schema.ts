@@ -20,9 +20,11 @@ CREATE TABLE IF NOT EXISTS cached_skills (
   last_verified_at     INTEGER NOT NULL,
   verification_profile TEXT NOT NULL CHECK(verification_profile IN ('hash-only', 'structural', 'full')),
   origin               TEXT CHECK(origin IN ('local', 'a2a', 'mcp')) DEFAULT 'local',
-  composed_of          TEXT DEFAULT NULL
+  composed_of          TEXT DEFAULT NULL,
+  agent_id             TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_skills_status ON cached_skills(status);
 CREATE INDEX IF NOT EXISTS idx_skills_task_sig ON cached_skills(task_signature);
+CREATE INDEX IF NOT EXISTS idx_skills_agent_sig ON cached_skills(agent_id, task_signature);
 `;

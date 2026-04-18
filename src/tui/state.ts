@@ -28,6 +28,16 @@ export function createInitialState(workspace = '.'): TUIState {
     peers: new Map(),
     selectedPeerId: null,
 
+    // Chat tab (PR #11) — Agent Conversation read-only viewer
+    chatActiveSessionId: null,
+    chatConversation: [],
+    chatPendingClarifications: [],
+    chatStructuredClarifications: [],
+    chatWorkflowPlan: null,
+    chatWorkflowStepStatus: new Map(),
+    chatSessions: [],
+    chatScroll: 0,
+
     successHistory: [],
 
     termWidth: Math.max(40, (process.stdout.columns || 121) - 1),

@@ -29,10 +29,12 @@ const EVENT_MAP: Record<string, EventStyle> = {
   'worker:dispatch': { domain: 'worker', icon: '→', color: ANSI.blue, defaultVisible: false },
   'worker:complete': { domain: 'worker', icon: '←', color: ANSI.green, defaultVisible: false },
   'worker:error': { domain: 'worker', icon: '✗', color: ANSI.red, defaultVisible: true },
-  'worker:registered': { domain: 'worker', icon: '+', color: ANSI.green, defaultVisible: false },
-  'worker:promoted': { domain: 'worker', icon: '↑', color: ANSI.green, defaultVisible: true },
-  'worker:demoted': { domain: 'worker', icon: '↓', color: ANSI.red, defaultVisible: true },
-  'worker:reactivated': { domain: 'worker', icon: '↻', color: ANSI.yellow, defaultVisible: true },
+  // Unified profile lifecycle — TUI filters by kind when rendering to the worker domain
+  'profile:registered': { domain: 'worker', icon: '+', color: ANSI.green, defaultVisible: false },
+  'profile:promoted': { domain: 'worker', icon: '↑', color: ANSI.green, defaultVisible: true },
+  'profile:demoted': { domain: 'worker', icon: '↓', color: ANSI.red, defaultVisible: true },
+  'profile:reactivated': { domain: 'worker', icon: '↻', color: ANSI.yellow, defaultVisible: true },
+  'profile:retired': { domain: 'worker', icon: '✗', color: ANSI.red, defaultVisible: true },
   'worker:selected': { domain: 'worker', icon: '·', color: ANSI.blue, defaultVisible: false },
   'worker:exploration': { domain: 'worker', icon: 'ε', color: ANSI.cyan, defaultVisible: false },
 
@@ -183,10 +185,16 @@ export function summarizeEvent(event: string, payload: unknown): string {
       return `task=${truncStr(String(p.taskId ?? ''), 12)} ${p.durationMs}ms`;
     case 'worker:error':
       return truncStr(String(p.error ?? ''), 50);
-    case 'worker:promoted':
-      return `${p.workerId} rate=${fmtNum(p.successRate)}`;
-    case 'worker:demoted':
-      return `${p.workerId} ${truncStr(String(p.reason ?? ''), 30)}`;
+    case 'profile:promoted':
+      return `${p.id} ${truncStr(String(p.reason ?? ''), 40)}`;
+    case 'profile:demoted':
+      return `${p.id} ${truncStr(String(p.reason ?? ''), 30)}${p.permanent ? ' [retired]' : ''}`;
+    case 'profile:reactivated':
+      return `${p.id}${p.emergency ? ' [emergency]' : ''}`;
+    case 'profile:retired':
+      return `${p.id} ${truncStr(String(p.reason ?? ''), 30)}`;
+    case 'profile:registered':
+      return `${p.kind} ${p.id}`;
     case 'worker:selected':
       return `${p.workerId} score=${fmtNum(p.score)}`;
     case 'sleep:cycleComplete':

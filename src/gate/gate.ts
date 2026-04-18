@@ -24,6 +24,7 @@ import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
 import type { RiskFactors, VerificationHint } from '../orchestrator/types.ts';
 import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
+import { verifyContentHashes, applyContentHashVerification } from './content-hash-verifier.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
 import {
   computeAggregateConfidence,
@@ -45,20 +46,68 @@ import { isMutatingTool } from './tool-classifier.ts';
 /** Module-level singleton — shared across all gate calls. Resets on process restart. */
 const circuitBreaker = new OracleCircuitBreaker();
 
-/** Module-level oracle accuracy store — injected by factory.ts via setOracleAccuracyStore(). */
-let oracleAccuracyStore: OracleAccuracyStore | undefined;
-
-/** Inject the OracleAccuracyStore for accuracy-based conflict resolution. */
-export function setOracleAccuracyStore(store: OracleAccuracyStore): void {
-  oracleAccuracyStore = store;
+/** Read-only accessor for dashboards — never mutate the breaker state externally. */
+export function getOracleCircuitBreaker(): OracleCircuitBreaker {
+  return circuitBreaker;
 }
 
 /**
- * @deprecated Circular accuracy tracking removed — oracle accuracy is now derived
- * from trace-based calibration in SelfModel (Phase 3). Kept as no-op for backward compat.
+ * GateDeps — everything the gate module needs that is not a call argument.
+ *
+ * One setter replaces the four historical setters (`setOracleAccuracyStore`,
+ * `setOracleEMACalibrator`, `setGateBus`, `setLocalOracleProfileStore`) so
+ * wiring from factory.ts and test harnesses lives in one place. Every field
+ * is optional — the gate behaves sensibly when a dep is missing (no
+ * accuracy-tiebreak, no EMA attenuation, no event emission, no status
+ * weighting).
  */
-export function getOracleAccuracy(): Record<string, { total: number; correct: number }> {
-  return {};
+export interface GateDeps {
+  oracleAccuracyStore?: OracleAccuracyStore;
+  oracleEMACalibrator?: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator;
+  bus?: import('../core/bus.ts').VinyanBus;
+  localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+}
+
+let oracleAccuracyStore: OracleAccuracyStore | undefined;
+let oracleEMACalibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator | undefined;
+let gateBus: import('../core/bus.ts').VinyanBus | undefined;
+let localOracleProfileStore:
+  | import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore
+  | undefined;
+
+/** Inject everything the gate module needs in a single call. */
+export function setGateDeps(deps: GateDeps): void {
+  oracleAccuracyStore = deps.oracleAccuracyStore;
+  oracleEMACalibrator = deps.oracleEMACalibrator;
+  gateBus = deps.bus;
+  localOracleProfileStore = deps.localOracleProfileStore;
+}
+
+/** Reset all module-level deps — tests call this in afterEach. */
+export function clearGateDeps(): void {
+  oracleAccuracyStore = undefined;
+  oracleEMACalibrator = undefined;
+  gateBus = undefined;
+  localOracleProfileStore = undefined;
+}
+
+/** Convert profile status → confidence multiplier. Exported for tests + transparency. */
+export function profileStatusWeight(
+  status: 'active' | 'probation' | 'demoted' | 'retired' | null,
+): number {
+  switch (status) {
+    case 'active':
+      return 1.0;
+    case 'probation':
+      return 0.6;
+    case 'demoted':
+      return 0.3;
+    case 'retired':
+      return 0.0;
+    default:
+      // No profile registered yet → neutral (treat as active-equivalent)
+      return 1.0;
+  }
 }
 
 // ── Public types ────────────────────────────────────────────────
@@ -83,6 +132,8 @@ export interface GateRequest {
   riskScore?: number;
   /** EO #3: Per-node verification hint — selectively run oracles based on mutation type. */
   verificationHint?: VerificationHint;
+  /** Wave C: routing level for SL fusion depth control. */
+  routingLevel?: number;
 }
 
 export type GateDecision = 'allow' | 'block';
@@ -293,7 +344,23 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
 
           // ECP §4.4 (A5): Clamp confidence by oracle trust tier
           const oracleTier = config.oracles[name]?.tier ?? 'deterministic';
-          const clampedResult = { ...raceResult, confidence: clampByTier(raceResult.confidence, oracleTier) };
+          let clampedConfidence = clampByTier(raceResult.confidence, oracleTier);
+          // Wave C: EMA-weighted attenuation for unreliable oracles (applied after tier clamp)
+          if (oracleEMACalibrator) {
+            clampedConfidence = oracleEMACalibrator.getWeightedConfidence(name, clampedConfidence);
+          }
+          // Unified profile: attenuate by local-oracle lifecycle status. Retired
+          // oracles return a zero-confidence verdict that downstream code can treat
+          // as excluded from fusion; demoted/probation oracles contribute but with
+          // reduced weight. A null weight (store absent) preserves existing behavior.
+          // First-use side-effect: register the oracle in the profile store so the
+          // A7 learning loop can observe it (idempotent, hot-path safe).
+          if (localOracleProfileStore) {
+            const profile = localOracleProfileStore.ensureProfile(name);
+            const statusWeight = profileStatusWeight(profile.status);
+            clampedConfidence = clampedConfidence * statusWeight;
+          }
+          const clampedResult = { ...raceResult, confidence: clampedConfidence };
           return { name, result: clampedResult };
         } catch (err) {
           circuitBreaker.recordFailure(name);
@@ -332,6 +399,12 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     }
   }
 
+  // Wave C: Content hash verification (A4 — verify, not just compute)
+  const hashVerification = verifyContentHashes(oracleResults, request.params.workspace);
+  if (!hashVerification.passed) {
+    applyContentHashVerification(oracleResults, hashVerification, gateBus);
+  }
+
   // ④½ Resolve conflicts via 5-step deterministic tree (concept §3.2, A5)
   // Build accuracy map from store for accuracy-based tiebreaking in ambiguous K zone
   let oracleAccuracy: Record<string, { total: number; correct: number }> | undefined;
@@ -356,7 +429,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     ),
     informationalOracles: INFORMATIONAL_ORACLES,
     oracleAccuracy,
-  }, oracleAbstentions);
+  }, oracleAbstentions, request.routingLevel);
   reasons.push(...resolved.reasons);
 
   // Compute aggregate confidence (weighted harmonic mean across oracle tiers)

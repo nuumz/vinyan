@@ -60,15 +60,17 @@ const ALL_EVENTS: BusEventName[] = [
   // Decomposer
   'decomposer:fallback',
   // Phase 4 — Fleet Governance
-  'worker:registered',
-  'worker:promoted',
-  'worker:demoted',
-  'worker:reactivated',
   'worker:selected',
   'worker:exploration',
   'fleet:convergence_warning',
   'fleet:emergency_reactivation',
   'fleet:diversity_enforced',
+  // Unified AgentProfile lifecycle — kind-tagged: worker | oracle-peer | oracle-local
+  'profile:registered',
+  'profile:promoted',
+  'profile:demoted',
+  'profile:reactivated',
+  'profile:retired',
   'task:uncertain',
   // Phase 4 — additional
   'guardrail:violation',

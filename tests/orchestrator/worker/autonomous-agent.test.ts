@@ -4,11 +4,8 @@
  * - buildSystemPrompt / buildInitUserMessage (agent-worker-entry.ts) — prompt construction
  */
 import { describe, expect, test } from 'bun:test';
-import { SessionProgress } from '../../../src/orchestrator/worker/agent-loop.ts';
-import {
-  buildInitUserMessage,
-  buildSystemPrompt,
-} from '../../../src/orchestrator/worker/agent-worker-entry.ts';
+import { SessionProgress } from '../../../src/orchestrator/agent/agent-loop.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../../src/orchestrator/agent/agent-worker-entry.ts';
 
 // ── SessionProgress ─────────────────────────────────────────────────
 
@@ -77,7 +74,7 @@ describe('SessionProgress', () => {
 
   test('getSystemHint returns urgent warning at 85%', () => {
     const sp = new SessionProgress();
-    const hint = sp.getSystemHint(0.90, 3);
+    const hint = sp.getSystemHint(0.9, 3);
     expect(hint).not.toBeNull();
     expect(hint).toContain('BUDGET WARNING');
     expect(hint).toContain('85%');
@@ -106,7 +103,18 @@ describe('SessionProgress', () => {
     expect(hint).toContain('different approach');
   });
 
-  test('getSystemHint returns stall warning on 3+ turns without progress', () => {
+  test('getSystemHint returns stall warning at 2 turns without progress', () => {
+    const sp = new SessionProgress();
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+
+    const hint = sp.getSystemHint(0.3, 8);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('2 turns');
+  });
+
+  test('getSystemHint escalates to forced pivot at 3+ turns without progress', () => {
     const sp = new SessionProgress();
     sp.recordTurn(false);
     sp.recordTurn(false);
@@ -114,8 +122,36 @@ describe('SessionProgress', () => {
 
     const hint = sp.getSystemHint(0.3, 8);
     expect(hint).not.toBeNull();
-    expect(hint).toContain('STALL WARNING');
+    // 3+ stalled turns escalates from warning to forced pivot
+    expect(hint).toContain('FORCED PIVOT');
     expect(hint).toContain('3 turns');
+  });
+
+  test('checkDuplicate detects identical calls regardless of key order', () => {
+    const sp = new SessionProgress();
+    // First call — not a duplicate
+    const first = sp.checkDuplicate('file_read', { file_path: '/a.ts', limit: 100 });
+    expect(first).toBeNull();
+
+    // Same params, different key order — MUST still be detected as duplicate
+    const second = sp.checkDuplicate('file_read', { limit: 100, file_path: '/a.ts' });
+    expect(second).not.toBeNull();
+    expect(second).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate detects identical calls with nested objects in different key order', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { HOME: '/', USER: 'x' } });
+    const dup = sp.checkDuplicate('shell_exec', { cmd: 'ls', env: { USER: 'x', HOME: '/' } });
+    expect(dup).not.toBeNull();
+    expect(dup).toContain('DUPLICATE WARNING');
+  });
+
+  test('checkDuplicate does NOT flag different params as duplicates', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const different = sp.checkDuplicate('file_read', { file_path: '/b.ts' });
+    expect(different).toBeNull();
   });
 
   test('getSystemHint combines multiple warnings', () => {
@@ -130,13 +166,312 @@ describe('SessionProgress', () => {
     sp.recordTurn(true);
 
     // Budget at 90%, only 1 turn remaining
-    const hint = sp.getSystemHint(0.90, 1);
+    const hint = sp.getSystemHint(0.9, 1);
     expect(hint).not.toBeNull();
-    // Should contain all four warnings
+    // Should contain all four warnings — at 3 stalled turns, the stall
+    // warning escalates to a forced pivot.
     expect(hint).toContain('BUDGET WARNING');
     expect(hint).toContain('TURNS WARNING');
     expect(hint).toContain('GUIDANCE');
+    expect(hint).toContain('FORCED PIVOT');
+  });
+
+  test('getSystemHint wraps output in <vinyan-reminder> tags', () => {
+    const sp = new SessionProgress();
+    const hint = sp.getSystemHint(0.9, 1);
+    expect(hint).not.toBeNull();
+    // Reminder protocol: hint output is a tagged block so the worker LLM can
+    // clearly distinguish system guidance from tool output.
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('BUDGET WARNING');
+  });
+
+  test('getSystemHint returns null (no empty tags) when there is nothing to say', () => {
+    const sp = new SessionProgress();
+    // No budget pressure, no stalls, no failures — must return null, not an
+    // empty `<vinyan-reminder></vinyan-reminder>` block.
+    expect(sp.getSystemHint(0.3, 8)).toBeNull();
+  });
+
+  test('checkDuplicate returns a reminder-wrapped warning on re-call', () => {
+    const sp = new SessionProgress();
+    sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    const dup = sp.checkDuplicate('file_read', { file_path: '/a.ts' });
+    expect(dup).not.toBeNull();
+    expect(dup!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(dup!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(dup).toContain('DUPLICATE WARNING');
+    expect(dup).toContain('file_read');
+  });
+
+  // ── Phase 3d: memory-proposal backlog surfacing ────────────────────
+
+  test('buildSessionSnapshot omits [MEMORY QUEUE] when no pending proposals', () => {
+    const sp = new SessionProgress();
+    // pendingMemoryProposals defaults to 0, so no memory line should appear.
+    expect(sp.pendingMemoryProposals).toBe(0);
+    expect(sp.buildSessionSnapshot()).toBeNull();
+  });
+
+  test('buildSessionSnapshot adds [MEMORY QUEUE] line with singular noun for exactly 1', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 1;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).not.toBeNull();
+    expect(snap).toContain('[MEMORY QUEUE]');
+    expect(snap).toContain('1 memory proposal');
+    // Singular form — do not render "1 memory proposals".
+    expect(snap).not.toContain('1 memory proposals');
+  });
+
+  test('buildSessionSnapshot pluralizes noun for 2+ proposals', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).toContain('3 memory proposals');
+  });
+
+  test('buildSessionSnapshot stays silent at low backlog (<= 3)', () => {
+    // At 1-3, the snapshot should NOT nag with duplicate-avoidance advice:
+    // that pressure escalation only kicks in once the backlog is larger.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 3;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).not.toContain('review the existing backlog');
+    expect(snap).not.toContain('overloaded');
+  });
+
+  test('buildSessionSnapshot adds duplicate-avoidance nudge at 4+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 5;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('5 memory proposals');
+    expect(snap).toContain('review the existing backlog');
+  });
+
+  test('buildSessionSnapshot escalates to strong backpressure at 10+ backlog', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 12;
+    const snap = sp.buildSessionSnapshot()!;
+    expect(snap).toContain('12 memory proposals');
+    expect(snap).toContain('overloaded');
+    // Must tell the worker to stop proposing entirely (backpressure).
+    expect(snap).toContain('do NOT call memory_propose');
+  });
+
+  test('getSystemHint wraps [MEMORY QUEUE] in a <vinyan-reminder> block', () => {
+    // The memory-queue line must flow through the same reminder pipeline as
+    // every other session-state hint so the worker LLM parses it the same way.
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 2;
+    // No budget pressure, no stall — the memory queue is the ONLY hint.
+    const hint = sp.getSystemHint(0.2, 10);
+    expect(hint).not.toBeNull();
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('2 memory proposals');
+  });
+
+  test('getSystemHint combines [MEMORY QUEUE] with other warnings', () => {
+    const sp = new SessionProgress();
+    sp.pendingMemoryProposals = 4;
+    sp.recordTurn(false);
+    sp.recordTurn(false);
+    // Budget warning + stall warning + memory queue — all three should coexist.
+    const hint = sp.getSystemHint(0.72, 5);
+    expect(hint).toContain('BUDGET NOTICE');
     expect(hint).toContain('STALL WARNING');
+    expect(hint).toContain('[MEMORY QUEUE]');
+    expect(hint).toContain('4 memory proposals');
+  });
+
+  // ── Phase 7c-2: plan_update / session plan tracking ─────────────────
+
+  test('recordPlanUpdate accepts a well-formed plan and assigns monotonic ids', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'Read the file', activeForm: 'Reading the file', status: 'completed' },
+      { content: 'Edit the function', activeForm: 'Editing the function', status: 'in_progress' },
+      { content: 'Run tests', activeForm: 'Running tests', status: 'pending' },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.count).toBe(3);
+    expect(sp.plan).toHaveLength(3);
+    // Ids must be unique and ordered.
+    const ids = sp.plan.map((t) => t.id);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids[0]! < ids[1]!).toBe(true);
+    expect(ids[1]! < ids[2]!).toBe(true);
+  });
+
+  test('recordPlanUpdate replaces the previous plan on each call', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'pending' },
+      { content: 'B', activeForm: 'Doing B', status: 'pending' },
+    ]);
+    expect(sp.plan).toHaveLength(2);
+
+    const r = sp.recordPlanUpdate([{ content: 'C', activeForm: 'Doing C', status: 'in_progress' }]);
+    expect(r.ok).toBe(true);
+    // Plan is replaced, not merged.
+    expect(sp.plan).toHaveLength(1);
+    expect(sp.plan[0]!.content).toBe('C');
+    // Ids keep counting upward (monotonic) — the second batch gets fresh ids
+    // beyond the first batch, which is what we want for dedup/history tracking.
+    expect(sp.plan[0]!.id).toBeGreaterThan(2);
+  });
+
+  test('recordPlanUpdate rejects a plan with more than one in_progress item', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'in_progress' },
+      { content: 'B', activeForm: 'Doing B', status: 'in_progress' },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('in_progress');
+      expect(r.error).toContain('2');
+    }
+    // Rejected plans must NOT be installed.
+    expect(sp.plan).toHaveLength(0);
+  });
+
+  test('recordPlanUpdate allows zero in_progress items (all pending or completed)', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      { content: 'A', activeForm: 'Doing A', status: 'pending' },
+      { content: 'B', activeForm: 'Doing B', status: 'completed' },
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  test('recordPlanUpdate rejects an item with empty content', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([{ content: '   ', activeForm: 'Doing A', status: 'pending' }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('content');
+  });
+
+  test('recordPlanUpdate rejects an item with empty activeForm', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([{ content: 'A', activeForm: '', status: 'pending' }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('activeForm');
+  });
+
+  test('recordPlanUpdate rejects an item with an invalid status', () => {
+    const sp = new SessionProgress();
+    const r = sp.recordPlanUpdate([
+      // biome-ignore lint/suspicious/noExplicitAny: exercising runtime validation
+      { content: 'A', activeForm: 'Doing A', status: 'blocked' as any },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('status');
+  });
+
+  test('recordPlanUpdate rejects plans above MAX_PLAN_ITEMS', () => {
+    const sp = new SessionProgress();
+    const big = Array.from({ length: SessionProgress.MAX_PLAN_ITEMS + 1 }, (_, i) => ({
+      content: `step ${i}`,
+      activeForm: `Doing step ${i}`,
+      status: 'pending' as const,
+    }));
+    const r = sp.recordPlanUpdate(big);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain(String(SessionProgress.MAX_PLAN_ITEMS));
+      expect(r.error).toContain(String(SessionProgress.MAX_PLAN_ITEMS + 1));
+    }
+  });
+
+  test('recordPlanUpdate accepts an empty plan (clearing is legal)', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'A', activeForm: 'Doing A', status: 'pending' }]);
+    expect(sp.plan).toHaveLength(1);
+    const r = sp.recordPlanUpdate([]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.count).toBe(0);
+    expect(sp.plan).toHaveLength(0);
+  });
+
+  test('recordPlanUpdate trims whitespace around content and activeForm', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: '  Read file  ', activeForm: '  Reading file  ', status: 'in_progress' }]);
+    expect(sp.plan[0]!.content).toBe('Read file');
+    expect(sp.plan[0]!.activeForm).toBe('Reading file');
+  });
+
+  test('renderPlanBlock returns null for an empty plan', () => {
+    const sp = new SessionProgress();
+    expect(sp.renderPlanBlock()).toBeNull();
+  });
+
+  test('renderPlanBlock produces a markdown checklist with correct status markers', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'Read file', activeForm: 'Reading file', status: 'completed' },
+      { content: 'Edit code', activeForm: 'Editing code', status: 'in_progress' },
+      { content: 'Run tests', activeForm: 'Running tests', status: 'pending' },
+    ]);
+    const block = sp.renderPlanBlock();
+    expect(block).not.toBeNull();
+    expect(block).toContain('[PLAN]');
+    // Completed → [x] with the imperative form.
+    expect(block).toContain('[x] Read file');
+    // In progress → [-] with the present-continuous (activeForm).
+    expect(block).toContain('[-] Editing code');
+    // Pending → [ ] with the imperative form.
+    expect(block).toContain('[ ] Run tests');
+  });
+
+  test('renderPlanBlock preserves plan ordering', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([
+      { content: 'First', activeForm: 'Doing first', status: 'completed' },
+      { content: 'Second', activeForm: 'Doing second', status: 'completed' },
+      { content: 'Third', activeForm: 'Doing third', status: 'pending' },
+    ]);
+    const block = sp.renderPlanBlock()!;
+    const firstIdx = block.indexOf('First');
+    const secondIdx = block.indexOf('Second');
+    const thirdIdx = block.indexOf('Third');
+    expect(firstIdx).toBeGreaterThan(-1);
+    expect(secondIdx).toBeGreaterThan(firstIdx);
+    expect(thirdIdx).toBeGreaterThan(secondIdx);
+  });
+
+  test('buildSessionSnapshot includes the plan block at the top when plan is non-empty', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'Refactor', activeForm: 'Refactoring', status: 'in_progress' }]);
+    // Add other state so we can assert relative ordering.
+    sp.pendingMemoryProposals = 2;
+    sp.recordToolResult('file_read', false, 'Reading /tmp/x.ts');
+    const snap = sp.buildSessionSnapshot();
+    expect(snap).not.toBeNull();
+    const planIdx = snap!.indexOf('[PLAN]');
+    const memIdx = snap!.indexOf('[MEMORY QUEUE]');
+    expect(planIdx).toBe(0); // plan goes first
+    expect(memIdx).toBeGreaterThan(planIdx);
+  });
+
+  test('getSystemHint wraps the plan block inside <vinyan-reminder> tags', () => {
+    const sp = new SessionProgress();
+    sp.recordPlanUpdate([{ content: 'Run tests', activeForm: 'Running tests', status: 'in_progress' }]);
+    const hint = sp.getSystemHint(0.2, 10);
+    expect(hint).not.toBeNull();
+    expect(hint!.startsWith('<vinyan-reminder>')).toBe(true);
+    expect(hint!.endsWith('</vinyan-reminder>')).toBe(true);
+    expect(hint).toContain('[PLAN]');
+    expect(hint).toContain('[-] Running tests');
+  });
+
+  test('empty plan remains invisible in getSystemHint when nothing else to say', () => {
+    const sp = new SessionProgress();
+    // No plan, no failures, no stall — hint must be null.
+    expect(sp.getSystemHint(0.2, 10)).toBeNull();
   });
 });
 
@@ -169,6 +504,20 @@ describe('buildSystemPrompt', () => {
     expect(reasoningPrompt).toContain('attempt_completion');
   });
 
+  test('system prompt documents the reminder protocol and tag format', () => {
+    // The worker LLM must know how to interpret <vinyan-reminder> tags that
+    // the orchestrator injects into tool results. The protocol section lives
+    // in the common system prompt body, so it should appear for both task types.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Reminder Protocol');
+      expect(prompt).toContain('<vinyan-reminder>');
+      expect(prompt).toContain('Authoritative');
+      expect(prompt).toContain('Non-interactive');
+      expect(prompt).toContain('Refreshable');
+    }
+  });
+
   test('both types mention budget awareness', () => {
     const codePrompt = buildSystemPrompt(1, 'code');
     const reasoningPrompt = buildSystemPrompt(1, 'reasoning');
@@ -176,6 +525,54 @@ describe('buildSystemPrompt', () => {
     expect(reasoningPrompt).toContain('BUDGET WARNING');
     expect(codePrompt).toContain('Budget Awareness');
     expect(reasoningPrompt).toContain('Budget Awareness');
+  });
+
+  test('L2+ prompts include the memory_propose capability section', () => {
+    // The memory_propose tool is L2+ only, so its usage instructions should
+    // only appear when the prompt is built for L2+ workers.
+    for (const taskType of ['code', 'reasoning'] as const) {
+      const prompt = buildSystemPrompt(2, taskType);
+      expect(prompt).toContain('Memory Proposals');
+      expect(prompt).toContain('memory_propose');
+      // The three core categories should be listed so the agent knows the whitelist.
+      expect(prompt).toContain('convention');
+      expect(prompt).toContain('anti-pattern');
+      expect(prompt).toContain('finding');
+      // The confidence floor must be explicit to prevent timid spam proposals.
+      expect(prompt).toContain('0.7');
+      // Must emphasize async review so agents know the proposal does NOT affect this session.
+      expect(prompt.toLowerCase()).toContain('human');
+      expect(prompt).toContain('pending');
+    }
+  });
+
+  test('L2+ prompts instruct the agent NOT to spam or distract from the task', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    // "Do NOT use it for" guidance should be present.
+    expect(prompt).toContain('Do NOT');
+    // Scarcity signal — prompt should say most tasks need zero proposals.
+    expect(prompt.toLowerCase()).toMatch(/sparingly|most tasks need zero|one or two/);
+  });
+
+  test('L1 prompt omits the memory_propose section (tool unavailable)', () => {
+    // At L1 the memory_propose tool is not in the manifest, so describing it
+    // would be wasted context. The section must be gated on routingLevel >= 2.
+    const prompt = buildSystemPrompt(1, 'code');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L0 prompt also omits the memory_propose section', () => {
+    const prompt = buildSystemPrompt(0, 'reasoning');
+    expect(prompt).not.toContain('Memory Proposals');
+    expect(prompt).not.toContain('memory_propose');
+  });
+
+  test('L3 prompt includes the memory_propose section', () => {
+    // Deep agentic workers also have memory_propose available.
+    const prompt = buildSystemPrompt(3, 'code');
+    expect(prompt).toContain('Memory Proposals');
+    expect(prompt).toContain('memory_propose');
   });
 });
 
@@ -231,12 +628,7 @@ describe('buildInitUserMessage', () => {
       },
     };
 
-    const msg = buildInitUserMessage(
-      'Add sort to table',
-      {},
-      undefined,
-      understanding,
-    );
+    const msg = buildInitUserMessage('Add sort to table', {}, undefined, understanding);
     expect(msg).toContain('## Success Criteria');
     expect(msg).toContain('You are done when ALL of these are met');
     expect(msg).toContain('- [ ] Table headers are clickable');
@@ -249,9 +641,7 @@ describe('buildInitUserMessage', () => {
       taskTarget: { file: 'src/components/table.ts', content: 'export class Table {}' },
       depCone: ['src/utils/sort.ts', 'src/types.ts'],
       diagnostics: [{ file: 'table.ts', line: 10, message: 'unused variable' }],
-      worldFacts: [
-        { key: 'framework', value: 'React', tier_reliability: 'deterministic' },
-      ],
+      worldFacts: [{ key: 'framework', value: 'React', tier_reliability: 'deterministic' }],
     };
 
     const msg = buildInitUserMessage('Fix table', perception);
@@ -275,15 +665,11 @@ describe('buildInitUserMessage', () => {
   });
 
   test('prior attempts rendered as lessons with approach/result/lesson format', () => {
-    const msg = buildInitUserMessage(
-      'Refactor module',
-      {},
-      [
-        { approach: 'Inline all functions', outcome: 'failed', failureReason: 'Circular dependency detected' },
-        { approach: 'Extract to utils', outcome: 'partial', failureReason: 'Missing type exports' },
-        { description: 'Try DI pattern', status: 'failed', error: 'Too many constructor params' },
-      ],
-    );
+    const msg = buildInitUserMessage('Refactor module', {}, [
+      { approach: 'Inline all functions', outcome: 'failed', failureReason: 'Circular dependency detected' },
+      { approach: 'Extract to utils', outcome: 'partial', failureReason: 'Missing type exports' },
+      { description: 'Try DI pattern', status: 'failed', error: 'Too many constructor params' },
+    ]);
     expect(msg).toContain('## Prior Attempts (DO NOT repeat these)');
 
     // First attempt

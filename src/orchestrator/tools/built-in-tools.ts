@@ -9,16 +9,22 @@
 
 import { createHash } from 'crypto';
 import type { ToolResult } from '../types.ts';
-import type { Tool } from './tool-interface.ts';
-
-// ── Category imports ────────────────────────────────────────────────
-import { fileRead, fileWrite, fileEdit } from './file-tools.ts';
+import {
+  attemptCompletion,
+  consultPeer,
+  delegateTask,
+  planUpdate,
+  requestBudgetExtension,
+} from './control-tools.ts';
 import { directoryList } from './directory-tools.ts';
+// ── Category imports ────────────────────────────────────────────────
+import { fileEdit, fileRead, fileWrite } from './file-tools.ts';
+import { gitDiff, gitStatus } from './git-tools.ts';
+import { httpGet } from './http-tools.ts';
+import { memoryPropose } from './memory-tools.ts';
 import { searchGrep, searchSemantic } from './search-tools.ts';
 import { shellExec } from './shell-tools.ts';
-import { gitStatus, gitDiff } from './git-tools.ts';
-import { httpGet } from './http-tools.ts';
-import { attemptCompletion, requestBudgetExtension, delegateTask } from './control-tools.ts';
+import type { Tool } from './tool-interface.ts';
 
 // ── Shared constants ────────────────────────────────────────────────
 
@@ -61,13 +67,22 @@ export function makeResult(callId: string, tool: string, partial: Partial<ToolRe
 // ── Re-exports for backwards compatibility ──────────────────────────
 
 export {
-  fileRead, fileWrite, fileEdit,
+  attemptCompletion,
+  consultPeer,
+  delegateTask,
   directoryList,
-  searchGrep, searchSemantic,
-  shellExec,
-  gitStatus, gitDiff,
+  fileEdit,
+  fileRead,
+  fileWrite,
+  gitDiff,
+  gitStatus,
   httpGet,
-  attemptCompletion, requestBudgetExtension, delegateTask,
+  memoryPropose,
+  planUpdate,
+  requestBudgetExtension,
+  searchGrep,
+  searchSemantic,
+  shellExec,
 };
 
 // ── Scan utility ────────────────────────────────────────────────────
@@ -106,7 +121,10 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['git_diff', gitDiff],
   ['search_semantic', searchSemantic],
   ['http_get', httpGet],
+  ['memory_propose', memoryPropose],
   ['attempt_completion', attemptCompletion],
   ['request_budget_extension', requestBudgetExtension],
   ['delegate_task', delegateTask],
+  ['consult_peer', consultPeer],
+  ['plan_update', planUpdate],
 ]);

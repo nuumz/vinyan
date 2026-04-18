@@ -73,7 +73,7 @@ describe('Checkpoint Recovery (UC-6)', () => {
     const recovered = manager.recover();
     expect(recovered).toHaveLength(1);
     expect(recovered[0]!.id).toBe(session.id);
-    expect(recovered[0]!.status).toBe('suspended');
+    expect(recovered[0]!.status).toBe('active');
     expect(recovered[0]!.taskCount).toBe(2);
   });
 

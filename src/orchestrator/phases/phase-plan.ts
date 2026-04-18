@@ -5,15 +5,16 @@
  * causal risk, predicts cost, and checks the approval gate.
  */
 
+import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type {
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
   SemanticTaskUnderstanding,
+  TaskInput,
   TaskResult,
 } from '../types.ts';
-import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { PhaseContext, PlanResult, PhaseContinue, PhaseReturn } from './types.ts';
+import type { PhaseContext, PhaseContinue, PhaseReturn, PlanResult } from './types.ts';
 import { Phase } from './types.ts';
 
 export async function executePlanPhase(
@@ -28,10 +29,40 @@ export async function executePlanPhase(
   // ── Step 3: PLAN (L2+ only) ──────────────────────────────────
   let plan: PlanResult['plan'];
   if (routing.level >= 2) {
-    plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot());
+    plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot(), routing);
     if (plan.isFallback) {
       deps.bus?.emit('decomposer:fallback', { taskId: input.id });
     }
+  }
+
+  // Wave 5.2 (Phase A §7 seam #2 closure): if the decomposer emitted a
+  // preamble on the DAG, merge it into a CLONED TaskInput and return
+  // that clone on `enhancedInput`. The core-loop swaps `ctx.input` for
+  // the enhanced version on subsequent phases so downstream worker
+  // dispatch and prompt assembly see the merged constraints. The
+  // caller's original input is never mutated.
+  //
+  // Deep-audit #1 (2026-04-15): dedupe via Set to handle the retry
+  // path correctly. On routing-loop iteration N, `ctx.input` already
+  // carries the preamble from iteration N-1 (because core-loop swaps
+  // ctx.input → enhancedInput after plan phase). Without dedupe, the
+  // preamble would be appended again on every retry, accumulating
+  // linearly. Set preserves insertion order (ES2015 spec), so the
+  // original user constraints still come first.
+  let enhancedInput: TaskInput | undefined;
+  if (plan?.preamble && plan.preamble.length > 0) {
+    const existing = input.constraints ?? [];
+    const existingSet = new Set(existing);
+    const toAdd = plan.preamble.filter((c) => !existingSet.has(c));
+    if (toAdd.length > 0) {
+      enhancedInput = {
+        ...input,
+        constraints: [...existing, ...toAdd],
+      };
+    }
+    // When `toAdd.length === 0` the preamble is already fully present
+    // — retry case — and we leave `enhancedInput` undefined so
+    // core-loop doesn't do a pointless ctx swap.
   }
 
   // C2: Score plan nodes by causal risk → reorder for fail-fast
@@ -83,14 +114,14 @@ export async function executePlanPhase(
     }
   }
 
-  return Phase.continue({ plan });
+  return Phase.continue({
+    plan,
+    ...(enhancedInput ? { enhancedInput } : {}),
+  });
 }
 
 /** Score plan nodes by ForwardPredictor causal risk → reorder for fail-fast. */
-export function scorePlanByPrediction(
-  plan: import('../types.ts').TaskDAG,
-  forwardPrediction: OutcomePrediction,
-): void {
+export function scorePlanByPrediction(plan: import('../types.ts').TaskDAG, forwardPrediction: OutcomePrediction): void {
   if (!forwardPrediction.causalRiskFiles.length) return;
   for (const node of plan.nodes) {
     const matchingRisks = forwardPrediction.causalRiskFiles.filter((r) => node.targetFiles.includes(r.filePath));

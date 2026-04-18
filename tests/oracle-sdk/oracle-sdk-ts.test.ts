@@ -289,7 +289,7 @@ describe('buildVerdict', () => {
         efficiency: 0.7,
         composite: 0.75,
         dimensionsAvailable: 2,
-        phase: 'phase0',
+        phase: 'basic',
       },
     });
     expect(verdict.qualityScore!.composite).toBe(0.75);

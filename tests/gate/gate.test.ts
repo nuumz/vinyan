@@ -4,12 +4,14 @@
  *
  * Reuses tests/benchmark/fixtures/simple-project/ as the workspace.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
 import { clearConfigCache } from '../../src/config/loader.ts';
+import { clearGateDeps } from '../../src/gate/gate.ts';
+import { clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 
 // ── Workspace setup ─────────────────────────────────────────────
 
@@ -23,6 +25,17 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(workspace, { recursive: true, force: true });
+});
+
+// The type oracle caches tsc results per-workspace for 5s (DEDUP_WINDOW_MS) to
+// dedup concurrent calls. Between tests we mutate the workspace (write broken
+// files, edit vinyan.json) and MUST see fresh tsc runs — otherwise test #2
+// "blocks when type oracle finds errors" sees test #1's stale "no errors"
+// result. `clearTscCache()` is exported from the oracle specifically for this
+// use-case — same pattern as tests/oracle/type/type-oracle.test.ts.
+beforeEach(() => {
+  clearTscCache();
+  clearGateDeps();
 });
 
 // ── Helpers ─────────────────────────────────────────────────────

@@ -1,88 +1,81 @@
 /**
  * WorkerStore — SQLite persistence for worker profiles + on-demand stats.
  *
- * CRUD for WorkerProfile lifecycle: probation → active → demoted → retired.
+ * CRUD for EngineProfile lifecycle: probation → active → demoted → retired.
  * Stats are computed from execution_traces via SQL aggregates, cached 60s.
  *
  * Source of truth: design/implementation-plan.md §Phase 4.1
  */
 import type { Database } from 'bun:sqlite';
-import type { WorkerConfig, WorkerProfile, WorkerProfileStatus, WorkerStats } from '../orchestrator/types.ts';
-import { WorkerProfileRowSchema } from './schemas.ts';
+import type { EngineConfig, EngineProfile, EngineProfileStatus, EngineStats } from '../orchestrator/types.ts';
+import { EngineProfileRowSchema } from './schemas.ts';
 
 export class WorkerStore {
   private db: Database;
   private insertStmt;
-  private statsCache = new Map<string, { stats: WorkerStats; expiresAt: number }>();
+  private statsCache = new Map<string, { stats: EngineStats; expiresAt: number }>();
   private statsTTL = 60_000; // 60s cache TTL
 
   constructor(db: Database) {
     this.db = db;
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO worker_profiles (
-        id, model_id, model_version, temperature, tool_allowlist,
-        system_prompt_tpl, max_context_tokens, status,
-        created_at, promoted_at, demoted_at, demotion_reason, demotion_count,
-        engine_type, capabilities_declared
+        id, model_id, status, created_at,
+        promoted_at, demoted_at, demotion_reason, demotion_count,
+        engine_config
       ) VALUES (
-        $id, $model_id, $model_version, $temperature, $tool_allowlist,
-        $system_prompt_tpl, $max_context_tokens, $status,
-        $created_at, $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
-        $engine_type, $capabilities_declared
+        $id, $model_id, $status, $created_at,
+        $promoted_at, $demoted_at, $demotion_reason, $demotion_count,
+        $engine_config
       )
     `);
   }
 
-  insert(profile: WorkerProfile): void {
+  insert(profile: EngineProfile): void {
+    // engine_config is the authoritative EngineConfig store. model_id is
+    // duplicated as a column only so SQL queries can filter/index by it.
     this.insertStmt.run({
       $id: profile.id,
       $model_id: profile.config.modelId,
-      $model_version: profile.config.modelVersion ?? null,
-      $temperature: profile.config.temperature,
-      $tool_allowlist: profile.config.toolAllowlist ? JSON.stringify(profile.config.toolAllowlist) : null,
-      $system_prompt_tpl: profile.config.systemPromptTemplate ?? 'default',
-      $max_context_tokens: profile.config.maxContextTokens ?? null,
       $status: profile.status,
       $created_at: profile.createdAt,
       $promoted_at: profile.promotedAt ?? null,
       $demoted_at: profile.demotedAt ?? null,
       $demotion_reason: profile.demotionReason ?? null,
       $demotion_count: profile.demotionCount,
-      $engine_type: profile.config.engineType ?? null,
-      $capabilities_declared: profile.config.capabilitiesDeclared
-        ? JSON.stringify(profile.config.capabilitiesDeclared)
-        : null,
+      $engine_config: JSON.stringify(profile.config),
     });
   }
 
-  findById(id: string): WorkerProfile | null {
+  findById(id: string): EngineProfile | null {
     const row = this.db.prepare(`SELECT * FROM worker_profiles WHERE id = ?`).get(id);
-    return row ? rowToProfile(row) : null;
+    if (!row) return null;
+    return rowToProfileSafe(row);
   }
 
-  findByStatus(status: WorkerProfileStatus): WorkerProfile[] {
+  findByStatus(status: EngineProfileStatus): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles WHERE status = ? ORDER BY created_at ASC`).all(status);
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
-  findActive(): WorkerProfile[] {
+  findActive(): EngineProfile[] {
     return this.findByStatus('active');
   }
 
-  findAll(): WorkerProfile[] {
+  findAll(): EngineProfile[] {
     const rows = this.db.prepare(`SELECT * FROM worker_profiles ORDER BY created_at ASC`).all();
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
-  findByModelId(modelId: string): WorkerProfile[] {
+  findByModelId(modelId: string): EngineProfile[] {
     const rows = this.db
       .prepare(`SELECT * FROM worker_profiles WHERE model_id = ? ORDER BY created_at ASC`)
       .all(modelId);
-    return rows.map(rowToProfile);
+    return rows.map(rowToProfileSafe).filter((p): p is EngineProfile => p !== null);
   }
 
   /** Update worker status with appropriate timestamp fields. */
-  updateStatus(id: string, status: WorkerProfileStatus, reason?: string): void {
+  updateStatus(id: string, status: EngineProfileStatus, reason?: string): void {
     const now = Date.now();
     switch (status) {
       case 'active':
@@ -116,7 +109,7 @@ export class WorkerStore {
     this.statsCache.delete(id);
   }
 
-  countByStatus(status: WorkerProfileStatus): number {
+  countByStatus(status: EngineProfileStatus): number {
     const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM worker_profiles WHERE status = ?`).get(status) as {
       cnt: number;
     };
@@ -136,7 +129,7 @@ export class WorkerStore {
    * Compute worker stats from traces via SQL aggregates.
    * Cached in-memory with 60s TTL to avoid repeated queries.
    */
-  getStats(workerId: string): WorkerStats {
+  getStats(workerId: string): EngineStats {
     const cached = this.statsCache.get(workerId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.stats;
@@ -160,7 +153,7 @@ export class WorkerStore {
    * Compute stats from the most recent N traces for a worker (rolling window).
    * Used by WorkerLifecycle for demotion checks (rolling 30 tasks per plan PH4.2).
    */
-  getRecentStats(workerId: string, limit: number): WorkerStats {
+  getRecentStats(workerId: string, limit: number): EngineStats {
     const agg = this.db
       .prepare(`
       SELECT
@@ -202,7 +195,7 @@ export class WorkerStore {
    * Compute stats from traces since a given timestamp for a worker.
    * Used by WorkerLifecycle for scoped safety-violation checks during probation.
    */
-  getStatsSince(workerId: string, sinceTimestamp: number): WorkerStats {
+  getStatsSince(workerId: string, sinceTimestamp: number): EngineStats {
     const agg = this.db
       .prepare(`
       SELECT
@@ -254,7 +247,17 @@ export class WorkerStore {
     return row.cnt;
   }
 
-  private computeStats(workerId: string): WorkerStats {
+  /** Trace counts grouped by worker_id — used for fleet diversity / Gini. */
+  getTraceCountsByWorker(): Array<{ workerId: string; count: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT worker_id, COUNT(*) as cnt FROM execution_traces WHERE worker_id IS NOT NULL GROUP BY worker_id`,
+      )
+      .all() as Array<{ worker_id: string; cnt: number }>;
+    return rows.map((r) => ({ workerId: r.worker_id, count: r.cnt }));
+  }
+
+  private computeStats(workerId: string): EngineStats {
     // Aggregate stats
     const agg = this.db
       .prepare(`
@@ -297,7 +300,7 @@ export class WorkerStore {
       avg_tokens: number;
     }>;
 
-    const taskTypeBreakdown: WorkerStats['taskTypeBreakdown'] = {};
+    const taskTypeBreakdown: EngineStats['taskTypeBreakdown'] = {};
     for (const row of breakdown) {
       taskTypeBreakdown[row.task_type_signature] = {
         count: row.count,
@@ -321,31 +324,11 @@ export class WorkerStore {
 
 // ── Row deserialization ───────────────────────────────────────────────────
 
-function rowToProfile(row: unknown): WorkerProfile {
-  const parsed = WorkerProfileRowSchema.safeParse(row);
-  const r = parsed.success ? parsed.data : (row as any);
-  if (!parsed.success) {
-    console.warn('[vinyan] WorkerStore: row failed Zod validation, using fallback', parsed.error.message);
-  }
-
-  const config: WorkerConfig = {
-    modelId: r.model_id,
-    modelVersion: r.model_version ?? undefined,
-    temperature: r.temperature,
-    toolAllowlist: parsed.success ? r.tool_allowlist : r.tool_allowlist ? JSON.parse(r.tool_allowlist) : undefined,
-    systemPromptTemplate: r.system_prompt_tpl ?? undefined,
-    maxContextTokens: r.max_context_tokens ?? undefined,
-    engineType: (r.engine_type as import('../orchestrator/types.ts').REEngineType | null | undefined) ?? undefined,
-    capabilitiesDeclared: parsed.success
-      ? r.capabilities_declared
-      : r.capabilities_declared
-        ? JSON.parse(r.capabilities_declared)
-        : undefined,
-  };
-
+function rowToProfile(row: unknown): EngineProfile {
+  const r = EngineProfileRowSchema.parse(row);
   return {
     id: r.id,
-    config,
+    config: r.engine_config as unknown as EngineConfig,
     status: r.status,
     createdAt: r.created_at,
     promotedAt: r.promoted_at ?? undefined,
@@ -353,4 +336,21 @@ function rowToProfile(row: unknown): WorkerProfile {
     demotionReason: r.demotion_reason ?? undefined,
     demotionCount: r.demotion_count,
   };
+}
+
+/**
+ * Like `rowToProfile`, but returns null instead of throwing on malformed
+ * rows (e.g. legacy rows with NULL engine_config). Logs a warning so the
+ * operator can see there's stale data that warrants a cleanup, but does
+ * NOT crash the server — callers filter out nulls.
+ */
+function rowToProfileSafe(row: unknown): EngineProfile | null {
+  try {
+    return rowToProfile(row);
+  } catch (err) {
+    const id = (row as { id?: string } | null)?.id ?? '<unknown>';
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[worker-store] Skipping malformed worker_profiles row "${id}": ${msg}`);
+    return null;
+  }
 }

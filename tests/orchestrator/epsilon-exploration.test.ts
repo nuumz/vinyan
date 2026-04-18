@@ -60,7 +60,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
             architecturalCompliance: 0.4,
             efficiency: 0.4,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
         makeTrace({
@@ -70,7 +70,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
             architecturalCompliance: 0.5,
             efficiency: 0.5,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
         // Non-matching traces at L2 with high quality (proxy for "after")
@@ -82,7 +82,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
             architecturalCompliance: 0.9,
             efficiency: 0.9,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
         makeTrace({
@@ -93,7 +93,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
             architecturalCompliance: 0.85,
             efficiency: 0.85,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       ];
@@ -121,7 +121,7 @@ describe('PH3.6: Epsilon Exploration & Quality Impact', () => {
             architecturalCompliance: 0.6,
             efficiency: 0.6,
             dimensionsAvailable: 2,
-            phase: 'phase0',
+            phase: 'basic',
           },
         }),
       ];

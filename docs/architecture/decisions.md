@@ -630,12 +630,12 @@ START → Perceive → [Level ≥ 2?] → Predict → Plan → Validate Plan
 interface QualityScore {
   architecturalCompliance: number;  // import depth, circular deps, layer violations (0.0–1.0)
   efficiency: number;               // tokens consumed / quality achieved (0.0–1.0)
-  simplificationGain?: number;      // reduction in cyclomatic complexity (0.0–1.0). Phase 1+.
-  testMutationScore?: number;       // % of injected faults caught by tests. Phase 1+.
+  simplificationGain?: number;      // reduction in cyclomatic complexity (0.0–1.0). extended+.
+  testMutationScore?: number;       // % of injected faults caught by tests. extended+.
 
   composite: number;                // weighted combination → single scalar for ranking
   dimensions_available: number;     // how many dimensions were actually computed
-  phase: 'phase0' | 'phase1' | 'phase2';  // which dimensions are trustworthy
+  phase: 'basic' | 'extended' | 'full';  // which dimensions are trustworthy
 }
 ```
 

@@ -45,7 +45,7 @@ describe('Dep Cone Hashes for Skill Creation (P3.0 Gap 5)', () => {
       efficiency: composite,
       composite,
       dimensionsAvailable: 2,
-      phase: 'phase0',
+      phase: 'basic',
     };
   }
 

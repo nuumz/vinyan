@@ -2,6 +2,13 @@ export type { BypassResult } from './bypass-detection.ts';
 export { BYPASS_PATTERNS, containsBypassAttempt } from './bypass-detection.ts';
 export type { InjectionResult } from './prompt-injection.ts';
 export { detectPromptInjection, INJECTION_PATTERNS } from './prompt-injection.ts';
+export type {
+  SilentAgentConfig,
+  SilentAgentRecord,
+  SilentAgentState,
+  SilentAgentTransition,
+} from './silent-agent.ts';
+export { SilentAgentDetector } from './silent-agent.ts';
 export { extractStrings, normalizeForScan } from './text-utils.ts';
 
 import { BYPASS_PATTERNS, containsBypassAttempt } from './bypass-detection.ts';

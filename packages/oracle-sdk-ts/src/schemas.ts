@@ -49,7 +49,7 @@ export const QualityScoreSchema = z.object({
   testMutationScore: z.number().optional(),
   composite: z.number(),
   dimensionsAvailable: z.number().default(2),
-  phase: z.enum(['phase0', 'phase1', 'phase2']).default('phase0'),
+  phase: z.enum(['basic', 'extended', 'full']).default('basic'),
 });
 
 export type QualityScore = z.infer<typeof QualityScoreSchema>;
@@ -103,7 +103,7 @@ export const OracleVerdictSchema = z.object({
   verified: z.boolean(),
   /** Epistemic state: known (deterministic), unknown, uncertain, contradictory. */
   type: z.enum(['known', 'unknown', 'uncertain', 'contradictory']).default('known'),
-  /** Confidence level [0, 1]. ECP v2 default: 0.5 (maximum uncertainty). */
+  /** Confidence level [0, 1]. Default: 0.5 (maximum uncertainty, A2). */
   confidence: z.number().min(0).max(1).default(0.5),
   /** Evidence chain — source locations supporting the verdict. */
   evidence: z.array(EvidenceSchema),
@@ -126,7 +126,7 @@ export const OracleVerdictSchema = z.object({
   /** Temporal validity context. */
   temporalContext: TemporalContextSchema.optional(),
 
-  // ── ECP v2 additions (all optional for backward compat) ──
+  // ── SL + tier metadata (all optional for backward compat) ──
   /** SL opinion tuple. */
   opinion: z.object({
     belief: z.number().min(0).max(1),

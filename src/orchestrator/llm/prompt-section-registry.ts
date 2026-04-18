@@ -9,6 +9,7 @@
  */
 
 import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
   ConversationEntry,
@@ -20,8 +21,12 @@ import type {
   WorkingMemoryState,
 } from '../types.ts';
 import { READONLY_TOOLS } from '../types.ts';
-import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
+import {
+  type EnvironmentInfo,
+  renderEnvironmentSection,
+  renderInstructionHierarchy,
+} from './shared-prompt-sections.ts';
 
 /** Sanitize a string for safe prompt inclusion. */
 function clean(s: string): string {
@@ -54,6 +59,16 @@ export interface SectionContext {
   routingLevel?: number;
   /** Conversation history from prior turns in the same session. */
   conversationHistory?: ConversationEntry[];
+  /** Phase 7a: OS/cwd/date/git snapshot — shown in [ENVIRONMENT] system block. */
+  environment?: EnvironmentInfo | null;
+  /** Agent Context Layer: persistent identity, memory, and skills for the dispatched agent. */
+  agentContext?: import('../agent-context/types.ts').AgentContext;
+  /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
+  soulContent?: string;
+  /** Multi-agent: the specialist agent assigned to this task (ts-coder, writer, etc.). */
+  agentProfile?: import('../types.ts').AgentSpec;
+  /** Multi-agent: peer agents available for consultation via delegation. */
+  peerAgents?: import('../types.ts').AgentSpec[];
 }
 
 export interface PromptSection {
@@ -136,6 +151,16 @@ Do NOT self-evaluate your output — external verification determines correctnes
 Do NOT apologize or narrate your process. Produce the code change directly.`,
   });
 
+  // Phase 7a: [ENVIRONMENT] — cwd / OS / date / git branch for code tasks.
+  // Cache tier ephemeral because cwd is stable per session but date / git state change.
+  registry.register({
+    id: 'environment',
+    target: 'system',
+    cache: 'ephemeral',
+    priority: 15,
+    render: (ctx) => renderEnvironmentSection(ctx.environment),
+  });
+
   registry.register({
     id: 'output-format',
     target: 'system',
@@ -187,7 +212,9 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
       }
       // When multiple failed approaches exist, escalate caution
       if (ctx.memory.failedApproaches.length >= 2) {
-        rules.push('- Multiple approaches have failed. Try a fundamentally different strategy — do NOT repeat variations of failed approaches.');
+        rules.push(
+          '- Multiple approaches have failed. Try a fundamentally different strategy — do NOT repeat variations of failed approaches.',
+        );
       }
       return `[BEHAVIORAL RULES]\n${rules.join('\n')}`;
     },
@@ -217,11 +244,14 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
 
       const lines = ['[AVAILABLE TOOLS]'];
       if (executable.length) lines.push(`Executable: ${executable.join(', ')}`);
-      if (control.length) lines.push(`Control (orchestrator signals — do not execute, only propose): ${control.join(', ')}`);
+      if (control.length)
+        lines.push(`Control (orchestrator signals — do not execute, only propose): ${control.join(', ')}`);
       lines.push('');
       lines.push(`Runtime: ${process.platform} (${process.arch})`);
       lines.push('Do NOT execute tool calls yourself — propose them and the Orchestrator will execute.');
-      lines.push('Prefer reversible tool calls (read, search, list) over destructive ones (write, delete) when gathering information.');
+      lines.push(
+        'Prefer reversible tool calls (read, search, list) over destructive ones (write, delete) when gathering information.',
+      );
       lines.push('Use ONLY the tools listed above — do NOT invent tool names.');
       return lines.join('\n');
     },
@@ -263,9 +293,13 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
         // Powerful-tier models (L3): prevent over-engineering, gold-plating
         lines.push('[QUALITY GUIDELINES]');
         lines.push('- Avoid over-engineering. Only make changes that are directly requested or clearly necessary.');
-        lines.push('- Do NOT gold-plate: a working solution that does exactly what was asked is better than a "clever" solution that does more.');
+        lines.push(
+          '- Do NOT gold-plate: a working solution that does exactly what was asked is better than a "clever" solution that does more.',
+        );
         lines.push('- Three similar lines of code are better than a premature abstraction.');
-        lines.push('- Read existing code patterns FIRST — search for how similar things are already done before creating anything new.');
+        lines.push(
+          '- Read existing code patterns FIRST — search for how similar things are already done before creating anything new.',
+        );
       }
 
       return lines.length > 0 ? lines.join('\n') : null;
@@ -279,7 +313,7 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => (ctx.instructions ? `[PROJECT INSTRUCTIONS]\n${clean(ctx.instructions.content)}` : null),
+    render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
   registry.register({
@@ -543,8 +577,12 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
       });
       const header = [`[FAILED APPROACHES — DO NOT REPEAT]`];
       if (ctx.memory.failedApproaches.length >= 3) {
-        header.push('WARNING: Multiple approaches have failed. Step back and analyze the root cause before trying another variation.');
-        header.push('Consider: Is the task specification correct? Is there a prerequisite missing? Is a fundamentally different strategy needed?');
+        header.push(
+          'WARNING: Multiple approaches have failed. Step back and analyze the root cause before trying another variation.',
+        );
+        header.push(
+          'Consider: Is the task specification correct? Is there a prerequisite missing? Is a fundamentally different strategy needed?',
+        );
       }
       header.push(...lines);
       return header.join('\n');
@@ -592,6 +630,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
   });
 
   registerConversationHistorySection(registry);
+  registerAgentContextSections(registry);
+  registerSpecialistAgentSections(registry);
 
   return registry;
 }
@@ -703,13 +743,18 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     },
   });
 
-  // Environment context — available for ALL domains (OS info is always relevant)
+  // Environment context — available for ALL domains (OS info is always relevant).
+  // Phase 7a: prefer rich ctx.environment (cwd + git) when present, fall back to
+  // OS-only from perception.runtime for backwards compat.
   registry.register({
     id: 'reasoning-environment',
     target: 'system',
     cache: 'ephemeral',
     priority: 25,
     render: (ctx) => {
+      const shared = renderEnvironmentSection(ctx.environment);
+      if (shared) return shared;
+
       const os = ctx.perception.runtime.os;
       if (!os) return null;
       const osName = os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os === 'linux' ? 'Linux' : os;
@@ -752,7 +797,7 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     target: 'user',
     cache: 'session',
     priority: 10,
-    render: (ctx) => (ctx.instructions ? `[PROJECT INSTRUCTIONS]\n${clean(ctx.instructions.content)}` : null),
+    render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
   registry.register({
@@ -903,6 +948,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
   });
 
   registerConversationHistorySection(registry);
+  registerAgentContextSections(registry);
+  registerSpecialistAgentSections(registry);
 
   return registry;
 }
@@ -925,9 +972,10 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
       if (!ctx.conversationHistory?.length) return null;
 
       // Keep only the most recent turns to save tokens
-      const entries = ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
-        ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
-        : ctx.conversationHistory;
+      const entries =
+        ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
+          ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
+          : ctx.conversationHistory;
 
       const skippedCount = ctx.conversationHistory.length - entries.length;
 
@@ -953,6 +1001,180 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
       }
 
       return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
+    },
+  });
+}
+
+// ── Shared: Agent Context sections ─────────────────────────────────
+
+/**
+ * Register agent context prompt sections (shared between code and reasoning registries).
+ *
+ * Agent context is ADVISORY (A3: does not change governance/routing).
+ * It enriches the LLM's system/user prompt with the agent's persistent
+ * identity, episodic memory, and learned skills.
+ */
+function registerAgentContextSections(registry: PromptSectionRegistry): void {
+  // Agent Soul — system prompt, session-cached (soul changes only during sleep cycle).
+  // Replaces the old agent-identity section with deeper behavioral guidance from SOUL.md.
+  // ~1000-1500 tokens of philosophy, strategies, anti-patterns, and self-knowledge.
+  registry.register({
+    id: 'agent-soul',
+    target: 'system',
+    cache: 'session',
+    priority: 16,
+    render: (ctx) => {
+      // Prefer soul content (deep, LLM-derived) over ACL identity (shallow, statistical)
+      if (ctx.soulContent) {
+        return `[AGENT SOUL]\n${ctx.soulContent}`;
+      }
+
+      // Fallback to ACL identity when no soul exists (cold-start)
+      const ac = ctx.agentContext;
+      if (!ac || !ac.identity.persona) return null;
+
+      const lines = ['[AGENT IDENTITY]'];
+      lines.push(`You are: ${ac.identity.persona}.`);
+      if (ac.identity.strengths.length > 0) {
+        lines.push(`Your strengths: ${ac.identity.strengths.join(', ')}.`);
+      }
+      if (ac.identity.weaknesses.length > 0) {
+        lines.push(`Be careful with: ${ac.identity.weaknesses.join(', ')}.`);
+      }
+      if (ac.identity.approachStyle) {
+        lines.push(`Your tendency: ${ac.identity.approachStyle}.`);
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Agent Memory — user prompt, after task (priority 20), before semantic-context (priority 22)
+  registry.register({
+    id: 'agent-memory',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 21,
+    render: (ctx) => {
+      const ac = ctx.agentContext;
+      if (!ac) return null;
+
+      const hasLessons = ac.memory.lessonsSummary.length > 0;
+      const hasEpisodes = ac.memory.episodes.length > 0;
+      if (!hasLessons && !hasEpisodes) return null;
+
+      const lines = ['[YOUR RECENT EXPERIENCE]'];
+
+      if (hasLessons) {
+        lines.push(ac.memory.lessonsSummary);
+      }
+
+      if (hasEpisodes) {
+        // Show up to 5 most recent episodes for prompt economy
+        const recent = ac.memory.episodes.slice(0, 5);
+        lines.push('Recent notable tasks:');
+        for (const ep of recent) {
+          lines.push(`  - ${ep.taskSignature}: ${ep.outcome} — ${ep.lesson}`);
+        }
+      }
+
+      return lines.join('\n');
+    },
+  });
+
+  // Agent Skills — user prompt, after agent-memory (priority 21), before semantic-context (priority 22)
+  registry.register({
+    id: 'agent-skills',
+    target: 'user',
+    cache: 'ephemeral',
+    priority: 21.5,
+    render: (ctx) => {
+      const ac = ctx.agentContext;
+      if (!ac) return null;
+
+      const profEntries = Object.values(ac.skills.proficiencies);
+      const hasApproaches = Object.keys(ac.skills.preferredApproaches).length > 0;
+      const hasAntiPatterns = ac.skills.antiPatterns.length > 0;
+      if (profEntries.length === 0 && !hasApproaches && !hasAntiPatterns) return null;
+
+      const lines = ['[YOUR SKILL PROFILE]'];
+
+      // Group proficiencies by level
+      const expert = profEntries.filter((p) => p.level === 'expert');
+      const competent = profEntries.filter((p) => p.level === 'competent');
+
+      if (expert.length > 0) {
+        lines.push(`Expert: ${expert.map((p) => p.taskSignature).join(', ')}`);
+      }
+      if (competent.length > 0) {
+        lines.push(`Competent: ${competent.map((p) => p.taskSignature).join(', ')}`);
+      }
+
+      if (hasApproaches) {
+        lines.push('Approaches that work for you:');
+        for (const [sig, approach] of Object.entries(ac.skills.preferredApproaches).slice(0, 5)) {
+          lines.push(`  - ${sig}: ${approach}`);
+        }
+      }
+
+      if (hasAntiPatterns) {
+        lines.push('DO NOT:');
+        for (const pattern of ac.skills.antiPatterns.slice(0, 5)) {
+          lines.push(`  - ${pattern}`);
+        }
+      }
+
+      return lines.join('\n');
+    },
+  });
+}
+
+// ── Specialist agent sections (multi-agent fleet) ─────────────────────
+
+/**
+ * Register specialist-agent prompt sections. These render the currently
+ * assigned specialist's persona (soul) and the roster of peer agents that
+ * can be consulted via delegation.
+ *
+ * agent-persona (system, priority 15) fires BEFORE agent-soul (priority 16)
+ * so when both are present the specialist persona appears first.
+ */
+function registerSpecialistAgentSections(registry: PromptSectionRegistry): void {
+  // Specialist persona — who am I for this task?
+  registry.register({
+    id: 'agent-persona',
+    target: 'system',
+    cache: 'session',
+    priority: 15,
+    render: (ctx) => {
+      const agent = ctx.agentProfile;
+      if (!agent) return null;
+
+      const lines = [`[AGENT] ${agent.name} (${agent.id})`];
+      lines.push(agent.description);
+      if (agent.soul) {
+        lines.push('');
+        lines.push(agent.soul.trim());
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Peer agents — who can I consult via delegation?
+  registry.register({
+    id: 'agent-peers',
+    target: 'system',
+    cache: 'static',
+    priority: 55,
+    render: (ctx) => {
+      const peers = (ctx.peerAgents ?? []).filter((a) => a.id !== ctx.agentProfile?.id);
+      if (peers.length === 0) return null;
+
+      const lines = ['[CONSULTABLE AGENTS]'];
+      lines.push('You can delegate subtasks to these peers via the delegate tool with targetAgentId:');
+      for (const p of peers) {
+        lines.push(`  - ${p.id}: ${p.description}`);
+      }
+      return lines.join('\n');
     },
   });
 }

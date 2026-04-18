@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { PromptSectionRegistry, createDefaultRegistry, createReasoningRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import {
+  createDefaultRegistry,
+  createReasoningRegistry,
+  PromptSectionRegistry,
+} from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { SemanticTaskUnderstanding, TaskDomain, TaskIntent } from '../../../src/orchestrator/types.ts';
 
 function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
@@ -67,9 +71,9 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 17 sections', () => {
+  it('registers 24 sections', () => {
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(18);
+    expect(registry.getSectionIds()).toHaveLength(24);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {
@@ -111,12 +115,66 @@ describe('createDefaultRegistry', () => {
   it('user prompt includes instructions when present', () => {
     const registry = createDefaultRegistry();
     const ctx = makeContext({
-      instructions: { content: 'Use Bun for everything', contentHash: 'abc123', filePath: '/workspace/VINYAN.md' },
+      instructions: {
+        content: 'Use Bun for everything',
+        contentHash: 'abc123',
+        filePath: '/workspace/VINYAN.md',
+        sources: [],
+      },
     });
     const user = registry.renderTarget('user', ctx);
 
     expect(user).toContain('[PROJECT INSTRUCTIONS]');
     expect(user).toContain('Use Bun for everything');
+  });
+
+  it('user prompt renders tiered instruction sources with provenance headers', () => {
+    const registry = createDefaultRegistry();
+    const ctx = makeContext({
+      instructions: {
+        content: 'merged',
+        contentHash: 'h',
+        filePath: '/workspace/VINYAN.md',
+        sources: [
+          {
+            tier: 'project',
+            filePath: '/workspace/VINYAN.md',
+            content: 'Root project rules',
+            contentHash: 'h1',
+            frontmatter: {},
+            includes: [],
+          },
+          {
+            tier: 'scoped-rule',
+            filePath: '/workspace/.vinyan/rules/api.md',
+            content: 'Use async/await',
+            contentHash: 'h2',
+            frontmatter: { applyTo: ['src/api/**'], description: 'API conventions' },
+            includes: [],
+          },
+          {
+            tier: 'learned',
+            filePath: '/workspace/.vinyan/memory/learned.md',
+            content: 'Prefer early returns',
+            contentHash: 'h3',
+            frontmatter: {},
+            includes: [],
+          },
+        ],
+      },
+    });
+    const user = registry.renderTarget('user', ctx);
+
+    expect(user).toContain('[PROJECT INSTRUCTIONS]');
+    expect(user).toContain('PROJECT INSTRUCTIONS');
+    expect(user).toContain('SCOPED RULE');
+    expect(user).toContain('API conventions');
+    expect(user).toContain('src/api/**');
+    expect(user).toContain('LEARNED CONVENTIONS');
+    expect(user).toContain('agent-proposed, human-verified');
+    expect(user).toContain('Root project rules');
+    expect(user).toContain('Use async/await');
+    expect(user).toContain('Prefer early returns');
   });
 
   it('user prompt includes KNOWN FACTS with trust annotations', () => {
@@ -127,7 +185,15 @@ describe('createDefaultRegistry', () => {
         dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 1 },
         diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
         verifiedFacts: [
-          { target: 'src/auth.ts', pattern: 'export function login', verified_at: 1, hash: 'h1', confidence: 0.95, oracleName: 'ast', tierReliability: 0.99 },
+          {
+            target: 'src/auth.ts',
+            pattern: 'export function login',
+            verified_at: 1,
+            hash: 'h1',
+            confidence: 0.95,
+            oracleName: 'ast',
+            tierReliability: 0.99,
+          },
         ],
         runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: ['bun'] },
       },
@@ -475,7 +541,15 @@ describe('semantic-context — expanded SemanticIntent fields', () => {
         taskDomain: 'code-mutation',
         taskIntent: 'execute',
         toolRequirement: 'none',
-        resolvedEntities: [{ reference: 'registration', resolvedPaths: ['src/routes/reg.ts'], resolution: 'fuzzy-path', confidence: 0.8, confidenceSource: 'evidence-derived' }],
+        resolvedEntities: [
+          {
+            reference: 'registration',
+            resolvedPaths: ['src/routes/reg.ts'],
+            resolution: 'fuzzy-path',
+            confidence: 0.8,
+            confidenceSource: 'evidence-derived',
+          },
+        ],
         understandingDepth: 2,
         verifiedClaims: [],
         understandingFingerprint: 'test-fp',
@@ -524,7 +598,15 @@ describe('semantic-context — expanded SemanticIntent fields', () => {
         taskDomain: 'code-mutation',
         taskIntent: 'execute',
         toolRequirement: 'none',
-        resolvedEntities: [{ reference: 'auth', resolvedPaths: ['src/auth.ts'], resolution: 'exact', confidence: 1.0, confidenceSource: 'evidence-derived' }],
+        resolvedEntities: [
+          {
+            reference: 'auth',
+            resolvedPaths: ['src/auth.ts'],
+            resolution: 'exact',
+            confidence: 1.0,
+            confidenceSource: 'evidence-derived',
+          },
+        ],
         understandingDepth: 2,
         verifiedClaims: [],
         understandingFingerprint: 'test-fp',

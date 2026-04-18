@@ -39,8 +39,10 @@ const EVENT_STYLES: Record<string, { icon: string; color: string; category: stri
   'worker:complete': { icon: '+', color: ANSI.green, category: 'worker' },
   'worker:error': { icon: '!', color: ANSI.red, category: 'worker' },
   'worker:selected': { icon: '-', color: ANSI.blue, category: 'worker' },
-  'worker:promoted': { icon: '^', color: ANSI.green, category: 'worker' },
-  'worker:demoted': { icon: 'v', color: ANSI.red, category: 'worker' },
+  'profile:promoted': { icon: '^', color: ANSI.green, category: 'worker' },
+  'profile:demoted': { icon: 'v', color: ANSI.red, category: 'worker' },
+  'profile:reactivated': { icon: '↻', color: ANSI.yellow, category: 'worker' },
+  'profile:retired': { icon: 'x', color: ANSI.red, category: 'worker' },
 
   'evolution:rulePromoted': { icon: '*', color: ANSI.green, category: 'evolution' },
   'evolution:ruleRetired': { icon: '-', color: ANSI.yellow, category: 'evolution' },
@@ -54,6 +56,11 @@ const EVENT_STYLES: Record<string, { icon: string; color: string; category: stri
   'a2a:knowledgeOffered': { icon: '->', color: ANSI.cyan, category: 'knowledge' },
 
   'guardrail:violation': { icon: '!!', color: ANSI.red, category: 'security' },
+  // Book-integration Wave 1.1: worker-level silence watchdog. Yellow for
+  // `silent` (recoverable warning) and red for `stalled` (forcible kill
+  // recommended). Category sits under `worker` because it's about one
+  // agent subprocess, not a system-wide security event.
+  'guardrail:silent_agent': { icon: 'zZ', color: ANSI.yellow, category: 'worker' },
   'api:request': { icon: '->', color: ANSI.gray, category: 'api' },
   'api:response': { icon: '<-', color: ANSI.gray, category: 'api' },
 };
@@ -83,6 +90,8 @@ function summarizePayload(event: string, payload: unknown): string {
       return `peer=${p.peerId ?? '?'}`;
     case 'a2a:knowledgeImported':
       return `from=${p.peerId ?? '?'} patterns=${p.patternsImported ?? 0}`;
+    case 'guardrail:silent_agent':
+      return `task=${p.taskId ?? '?'} state=${p.state ?? '?'} for=${p.silentForMs ?? 0}ms lastEvent=${p.lastEvent ?? '?'}`;
     default:
       return JSON.stringify(payload).slice(0, 60);
   }
@@ -115,8 +124,10 @@ export class EventRenderer {
       'worker:complete',
       'worker:error',
       'worker:selected',
-      'worker:promoted',
-      'worker:demoted',
+      'profile:promoted',
+      'profile:demoted',
+      'profile:reactivated',
+      'profile:retired',
       'evolution:rulePromoted',
       'evolution:ruleRetired',
       'sleep:cycleComplete',
@@ -125,6 +136,10 @@ export class EventRenderer {
       'a2a:knowledgeImported',
       'a2a:knowledgeOffered',
       'guardrail:violation',
+      // Book-integration Wave 1.1: surface the per-worker silence
+      // watchdog in the default watch view so operators see it without
+      // needing to switch to `vinyan tui peek`.
+      'guardrail:silent_agent',
       'api:request',
       'api:response',
     ];

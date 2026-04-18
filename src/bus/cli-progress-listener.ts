@@ -35,8 +35,29 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   const detachers: Array<() => void> = [];
 
   detachers.push(
-    bus.on('intent:resolved', ({ strategy, confidence, reasoning }) => {
-      write(`${dim('[vinyan]')} Intent: ${bold(strategy)} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+    bus.on('intent:resolved', ({ strategy, confidence, reasoning, type, source }) => {
+      const typeTag = type && type !== 'known' ? ` ${yellow(`[${type}]`)}` : '';
+      const srcTag = source ? ` ${dim(`<${source}>`)}` : '';
+      write(`${dim('[vinyan]')} Intent: ${bold(strategy)}${typeTag}${srcTag} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:contradiction', ({ ruleStrategy, llmStrategy, winner }) => {
+      write(`${dim('[vinyan]')} ${yellow('Intent conflict')}: rule=${ruleStrategy} vs llm=${llmStrategy}, A5 winner=${bold(winner)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:uncertain', ({ reason, clarificationRequest }) => {
+      write(`${dim('[vinyan]')} ${yellow('Intent uncertain')}: ${reason}`);
+      if (verbose) write(`${dim('[vinyan]')}   ${clarificationRequest}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('intent:cache_hit', ({ cacheKey }) => {
+      if (verbose) write(`${dim('[vinyan]')} Intent: cache hit ${dim(`(${cacheKey.slice(0, 40)}…)`)}`);
     }),
   );
 
@@ -91,10 +112,73 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
       const status =
         result.status === 'completed'
           ? green('completed')
-          : result.status === 'escalated'
-            ? yellow('escalated')
-            : red('failed');
+          : result.status === 'input-required'
+            ? yellow('input-required')
+            : result.status === 'escalated'
+              ? yellow('escalated')
+              : red('failed');
       write(`${dim('[vinyan]')} Task ${status}: ${result.mutations.length} mutation(s)`);
+    }),
+  );
+
+  // Agent session lifecycle — show what the agent is thinking/doing
+  detachers.push(
+    bus.on('agent:session_start', ({ taskId, routingLevel, budget }) => {
+      write(`${dim('[vinyan]')} Agent session started ${dim(`(L${routingLevel}, ${budget.maxTurns} turns, ${budget.maxTokens} tokens)`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:thinking', ({ rationale }) => {
+      // Truncate long rationale to keep output scannable
+      const text = rationale.length > 200 ? `${rationale.slice(0, 200)}…` : rationale;
+      write(`${dim('[vinyan]')} ${dim('💭')} ${text}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:tool_executed', ({ toolName, durationMs, isError }) => {
+      const status = isError ? red('ERR') : green('OK');
+      write(`${dim('[vinyan]')}   → ${bold(toolName)} ${status} ${dim(`(${durationMs}ms)`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:turn_complete', ({ tokensConsumed, turnsRemaining }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')}   Turn complete — ${dim(`${tokensConsumed} tokens used, ${turnsRemaining} turns left`)}`);
+      }
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:session_end', ({ outcome, tokensConsumed, turnsUsed, durationMs }) => {
+      const outcomeStr = outcome === 'completed' ? green(outcome) : outcome === 'uncertain' ? yellow(outcome) : red(outcome);
+      write(`${dim('[vinyan]')} Agent session ${outcomeStr} — ${turnsUsed} turns, ${tokensConsumed} tokens, ${dim(`${Math.round(durationMs / 1000)}s`)}`);
+    }),
+  );
+
+  detachers.push(
+    bus.on('agent:tool_denied', ({ toolName, violation }) => {
+      write(`${dim('[vinyan]')} ${red('Tool denied')}: ${bold(toolName)}${violation ? ` — ${violation}` : ''}`);
+    }),
+  );
+
+  // Phase timing
+  detachers.push(
+    bus.on('phase:timing', ({ phase, durationMs }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')}   ${phase} ${dim(`${durationMs}ms`)}`);
+      }
+    }),
+  );
+
+  // Task understanding
+  detachers.push(
+    bus.on('understanding:layer0_complete', ({ verb, category }) => {
+      if (verbose) {
+        write(`${dim('[vinyan]')} Understanding: ${bold(verb)} → ${category}`);
+      }
     }),
   );
 

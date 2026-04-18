@@ -7,6 +7,7 @@
  * Source of truth: spec/tdd.md §1C.4
  */
 import type { VinyanBus } from '../core/bus.ts';
+import type { WorkerStore } from '../db/worker-store.ts';
 
 export interface TraceTelemetry {
   totalTraces: number;
@@ -19,7 +20,10 @@ export interface TraceTelemetry {
   byRoutingLevel: Record<number, { total: number; success: number }>;
 }
 
-export function attachTraceListener(bus: VinyanBus): {
+export function attachTraceListener(
+  bus: VinyanBus,
+  opts?: { workerStore?: WorkerStore },
+): {
   getMetrics: () => TraceTelemetry;
   detach: () => void;
 } {
@@ -76,6 +80,14 @@ export function attachTraceListener(bus: VinyanBus): {
     metrics.byRoutingLevel[level].total++;
     if (trace.outcome === 'success') {
       metrics.byRoutingLevel[level].success++;
+    }
+
+    // Step 7 (F9): invalidate per-worker stats cache eagerly. The 60s TTL is
+    // kept as safety net, but routing decisions that happen right after a
+    // trace was persisted should see the fresh numbers — otherwise we can
+    // keep dispatching to a worker whose success rate just cratered.
+    if (opts?.workerStore && trace.workerId) {
+      opts.workerStore.invalidateCache(trace.workerId);
     }
   });
 

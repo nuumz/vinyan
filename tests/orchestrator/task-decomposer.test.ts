@@ -161,4 +161,37 @@ describe('TaskDecomposerImpl', () => {
     expect(capturedPrompt).toContain('direct edit');
     expect(capturedPrompt).toContain('type errors');
   });
+
+  // ── Wave 5.2: caller's input is not mutated when preset fires ──
+  test('Wave 5.2: research-swarm preset returns preamble on DAG and does not mutate caller input', async () => {
+    const registry = new LLMProviderRegistry();
+    // Mock provider registered but preset should short-circuit before it fires
+    registry.register(createMockProvider({ tier: 'balanced', responseContent: VALID_DAG_JSON }));
+
+    const decomposer = new TaskDecomposerImpl({ registry });
+    const callerInput: TaskInput = {
+      id: 'task-preset',
+      source: 'cli',
+      goal: 'investigate the auth module',
+      taskType: 'reasoning',
+      targetFiles: [],
+      // Intentionally provide a stable constraints array we can inspect later
+      constraints: ['USER:please be thorough'],
+      budget: { maxTokens: 10000, maxRetries: 3, maxDurationMs: 60000 },
+    };
+    const beforeConstraints = [...(callerInput.constraints ?? [])];
+
+    const dag = await decomposer.decompose(callerInput, makePerception(), makeMemory());
+
+    // The DAG carries the preamble
+    expect(dag.preamble).toBeDefined();
+    expect(dag.preamble?.length ?? 0).toBeGreaterThan(0);
+    // The DAG's preamble contains the REPORT_CONTRACT marker
+    expect(dag.preamble?.some((p) => p.includes('REPORT_CONTRACT'))).toBe(true);
+
+    // CRITICAL: the caller's input is untouched (seam #2 closure)
+    expect(callerInput.constraints).toEqual(beforeConstraints);
+    const hasReportContract = callerInput.constraints?.some((c) => c.includes('REPORT_CONTRACT'));
+    expect(hasReportContract).toBe(false);
+  });
 });

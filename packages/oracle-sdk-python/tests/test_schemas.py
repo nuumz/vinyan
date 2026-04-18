@@ -63,7 +63,23 @@ class TestQualityScore:
     def test_defaults(self):
         q = QualityScore(architectural_compliance=0.9, efficiency=0.8, composite=0.85)
         assert q.dimensions_available == 2
-        assert q.phase == "phase0"
+        assert q.phase == "basic"
+
+    def test_explicit_phase_values(self):
+        # Cross-language drift fix (2026-04-15): phase vocabulary is
+        # 'basic' | 'extended' | 'full' to match the TS SDK.
+        q_basic = QualityScore(
+            architectural_compliance=0.9, efficiency=0.8, composite=0.85, phase="basic"
+        )
+        assert q_basic.phase == "basic"
+        q_extended = QualityScore(
+            architectural_compliance=0.9, efficiency=0.8, composite=0.85, phase="extended"
+        )
+        assert q_extended.phase == "extended"
+        q_full = QualityScore(
+            architectural_compliance=0.9, efficiency=0.8, composite=0.85, phase="full"
+        )
+        assert q_full.phase == "full"
 
     def test_camel_case(self):
         q = QualityScore(architectural_compliance=0.9, efficiency=0.8, composite=0.85)

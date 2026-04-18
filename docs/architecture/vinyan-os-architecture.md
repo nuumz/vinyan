@@ -5,7 +5,7 @@
 > For academic foundations and LLM deadlocks → [theory.md](../foundation/theory.md).
 > For concrete implementation decisions D1-D19 → [decisions.md](decisions.md).
 > For K1/K2 implementable design → [k1-implementable-system-design.md](../design/k1-implementable-system-design.md).
-> For ECP v2 wire protocol → [ecp-v2-system-design.md](../design/ecp-v2-system-design.md).
+> For ECP wire protocol → [ecp-system-design.md](../design/ecp-system-design.md).
 > For worker IPC and tool authorization → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md).
 > For A2A protocol → [a2a-protocol.md](../spec/a2a-protocol.md).
 > For task classification and routing invariants → [task-routing-spec.md](../foundation/task-routing-spec.md).
@@ -121,6 +121,45 @@ Each axiom maps to a concrete kernel subsystem with running code. Full axiom def
 **A5 enforced (K1.0):** `confidence_source: 'llm-self-report'` verdicts are now filtered from gate decisions in `gate.ts`. Deterministic evidence is separated from probabilistic evidence as A5 requires.
 
 **A6 enforced (K1.2+K1.3):** `createContract()` issues AgentContract at dispatch. `authorizeToolCall()` enforces capability scope in agent-loop. Guardrails block at entry (K1.5).
+
+### 3.1 The Three-Tier Mental Model — Operator Vocabulary
+
+> **Where it comes from:** adapted from the *Multi-Agent Orchestration* field guide
+> (Soul Brews Studio, see [`book-integration-overview.md`](book-integration-overview.md)).
+> The book's three-tier taxonomy is a *mental model for operators*, not a new subsystem.
+> Vinyan already runs three distinct classes of agent — this section gives them a shared
+> vocabulary so operators can say "that's a Tier 2 failure" in one sentence instead of
+> three paragraphs of protocol jargon.
+
+The kernel already distinguishes three classes of agent along the *governance trust*
+axis. None of them are in-process subagents — Vinyan rejects Tier 1-as-coroutine because
+it violates **A1** (Epistemic Separation requires the generator to be a separate
+process). The three tiers are:
+
+| Tier | What it is | Where it runs | Governance boundary | Axiom anchor |
+|------|------------|---------------|---------------------|--------------|
+| **Tier 1 — Worker** | A single agent loop that owns one task. Subprocess spawned by `runAgentLoop`, communicates over JSON-newline IPC, scoped by an `AgentContract`. | `src/orchestrator/worker/agent-loop.ts`, spawned via `Bun.spawn` | Contract-bounded: tool whitelist, token budget, turn cap, file scope | **A6** (zero-trust execution) |
+| **Tier 2 — Swarm** | A group of Tier-1 workers coordinated by the orchestrator for one logical goal. DAG nodes execute in parallel via `ConcurrentDispatcher` with file-lock arbitration, or as a research swarm preset (Wave 1.2). | `src/orchestrator/concurrent-dispatcher.ts`, `task-decomposer-presets.ts`, `dag-executor.ts` | Rule-based scheduling: file-lock conflict detection, topological parallelism, no LLM in coordination path | **A3** (deterministic governance) |
+| **Tier 3 — Fleet** | A population of workers (local and remote instances) that a `FleetCoordinator` routes across over time. Includes peer instances discovered via A2A, trust-weighted selection, and lifecycle transitions (probation → active → retired). | `src/orchestrator/fleet/`, `src/a2a/`, `src/orchestrator/instance-coordinator.ts` | Deterministic selection: Wilson LB scoring, capability matching, trust thresholds per level | **A1 + A3 + A5** (separation, governance, tiered trust) |
+
+**How to use the vocabulary** (rules of thumb for operators):
+
+1. *"Is it stuck?"* — one worker going silent is a **Tier 1** event. The guardrail that
+   detects this is the silent-agent watchdog in `src/guardrails/silent-agent.ts` (Wave 1.1).
+   Symptom: `guardrail:silent_agent` event on the bus.
+2. *"Is the plan wrong?"* — the workers are fine individually but produce conflicting
+   mutations. That's a **Tier 2** event — look at `ConcurrentDispatcher`'s file-lock
+   arbitration or the DAG nodes. Symptom: repeated `commit:rejected` from the same
+   task-group.
+3. *"Is the population regressing?"* — individual tasks succeed but overall success rate
+   is drifting. That's a **Tier 3** event. Look at `WorkerLifecycle` stats, sleep-cycle
+   anti-pattern output, and `monitoring:silent_regression` alerts.
+
+**What Vinyan rejects from the book's Tier 1 model:** in-process subagents — functions
+called *inside* the orchestrator's own runtime. Vinyan requires the generator to live
+in a separate subprocess so **A1** is enforced by the OS boundary, not by a comment in
+the code. Any ergonomic gain from coroutines is not worth the epistemic-separation
+regression.
 
 ---
 
@@ -664,3 +703,47 @@ All citations verified against arXiv or primary sources as of 2026-04-09.
 | [12] | seL4: Formal Verification of an OS Kernel | SOSP 2009, CACM 2010 | **Peer-reviewed** |
 | [13] | ECMA-430 to ECMA-434 (NLIP Agent Communication Standard) | Ecma International | **Ratified** (Dec 2025) |
 | [14] | Google A2A Protocol v1.0.0 | Linux Foundation AAIF | Production (Mar 2026) |
+
+---
+
+## Appendix B: Tier ↔ Transport Mapping
+
+> Companion to §3.1 (Three-Tier mental model). Source: book-integration
+> Wave 3.3. This table is load-bearing for operator diagnostics — when
+> something misbehaves, the first question is "which tier?" and the second
+> is "which transport?". Having both answers on one page closes the gap
+> between the code layout and the runtime mental model.
+
+Every tier in §3.1 communicates through a specific set of transports. The
+transports are not interchangeable — each one exists because the axioms
+require it:
+
+| Tier | Transport | What moves across it | Axiom justification | Key code |
+|------|-----------|----------------------|---------------------|----------|
+| **Tier 1 — Worker** | JSON-newline stdio | `OrchestratorTurn` / `WorkerTurn` protocol frames between the agent loop and the subprocess it spawned | **A1** — the subprocess boundary is the epistemic-separation barrier; a function-call boundary would not be | `src/orchestrator/protocol.ts`, `src/orchestrator/worker/agent-session.ts`, `src/a2a/stdio-transport.ts` |
+| **Tier 1 — Worker** | In-process bus | Turn-level observability events (`agent:tool_executed`, `agent:turn_complete`, etc.) | **A3** — purely observational, no governance reads from here | `src/core/bus.ts` |
+| **Tier 2 — Swarm** | Advisory file lock + task queue | Scheduling decisions (who runs now, who waits) | **A3** — deterministic graph on file intersections; no LLM in the decision path | `src/orchestrator/concurrent-dispatcher.ts`, `src/orchestrator/worker/file-lock.ts` |
+| **Tier 2 — Swarm** | Session overlay | Proposed mutations from multiple workers staged before commit | **A6** — workers propose, orchestrator disposes; overlay is the "propose" half | `src/orchestrator/worker/session-overlay.ts` |
+| **Tier 3 — Fleet** | A2A JSON-RPC (HTTP / WebSocket) | Task delegation, peer health, knowledge exchange between Vinyan instances | **A1 + A5** — remote peers run their own generator / verifier loops; trust is Wilson-LB clamped per peer | `src/a2a/a2a-manager.ts`, `src/a2a/http-transport.ts`, `src/a2a/websocket-transport.ts` |
+| **Tier 3 — Fleet** | ECP data parts | Confidence-carrying payloads embedded inside A2A messages — heartbeats, verdicts, knowledge offers | **A2 + A5** — transports carry structured uncertainty as first-class data | `src/a2a/ecp-data-part.ts`, `src/a2a/peer-health.ts` |
+| **Tier 3 — Fleet** | Gossip layer | Eventual-consistency distribution of trust / capability updates | **A3** — gossip delivery itself is not a governance decision; the receiving side re-applies deterministic rules | `src/a2a/gossip.ts`, `src/a2a/capability-updates.ts` |
+
+**Operator rules of thumb** (paired with §3.1):
+
+1. A Tier 1 anomaly = something on the JSON-newline stdio channel or the
+   in-process bus. Look at `guardrail:silent_agent` (Wave 1.1) and
+   `agent:*` events via `vinyan tui peek <task-id>` (Wave 3.1).
+2. A Tier 2 anomaly = a scheduling conflict or an overlay rejection. Look
+   at `dag:executed` events and `commit:rejected` — the conflict plan
+   from `computeConflictPlan` is deterministic so an "impossible" group
+   usually means a bug in `targetFiles` derivation, not a race.
+3. A Tier 3 anomaly = a peer health or trust transition. Look at
+   `peer:*` events, `a2a:knowledge*` events, and the instance coordinator
+   log. Trust regressions surface as `worker:demoted` on the local
+   fleet because the lifecycle state machine is the same shape regardless
+   of whether the worker is local or remote.
+
+**What this table is NOT:** it is not a wire-format spec. For
+byte-level details see [`ecp-spec.md`](../spec/ecp-spec.md) and
+[`a2a-protocol.md`](../spec/a2a-protocol.md). This table is a *map* — it
+tells you where to look, not what to decode.

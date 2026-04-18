@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-The Epistemic Humility Deficit (EHD) is a systematic condition where AI systems express confidence exceeding their epistemic warrant — structurally caused by next-token prediction loss, RLHF reward hacking, and benchmark design that penalizes abstention. Vinyan's 7-axiom architecture addresses EHD more principally than any comparable system in the literature (tiered trust clamping, First-Class `type: "unknown"`, content-addressed facts, calibrated Self-Model), but a codebase audit reveals 4 critical and 7 moderate implementation gaps where axioms outpace code. The 2025-2026 research landscape has shifted decisively toward **Agentic UQ** — treating uncertainty as bidirectional control signals rather than passive diagnostics — with Salesforce's AUQ framework (Zhang et al., Jan 2026) and the Epistemic AI position paper (Cuzzolin & Manchingal, May 2025) representing the two most significant recent contributions. **Recommendation**: Adopt Subjective Logic opinion tuples as the ECP v2 confidence model (migration path already designed), close the 4 critical implementation gaps (confidence laundering, compositional propagation, absence-as-evidence, circular accuracy), and integrate the Dual-Process UQ pattern from AUQ into Vinyan's escalation routing.
+The Epistemic Humility Deficit (EHD) is a systematic condition where AI systems express confidence exceeding their epistemic warrant — structurally caused by next-token prediction loss, RLHF reward hacking, and benchmark design that penalizes abstention. Vinyan's 7-axiom architecture addresses EHD more principally than any comparable system in the literature (tiered trust clamping, First-Class `type: "unknown"`, content-addressed facts, calibrated Self-Model), but a codebase audit reveals 4 critical and 7 moderate implementation gaps where axioms outpace code. The 2025-2026 research landscape has shifted decisively toward **Agentic UQ** — treating uncertainty as bidirectional control signals rather than passive diagnostics — with Salesforce's AUQ framework (Zhang et al., Jan 2026) and the Epistemic AI position paper (Cuzzolin & Manchingal, May 2025) representing the two most significant recent contributions. **Recommendation**: Adopt Subjective Logic opinion tuples as the ECP confidence model (migration path already designed), close the 4 critical implementation gaps (confidence laundering, compositional propagation, absence-as-evidence, circular accuracy), and integrate the Dual-Process UQ pattern from AUQ into Vinyan's escalation routing.
 
 **Confidence**: High (7 academic papers, 3 existing companion docs, full codebase audit, 20+ source files traced)
 
@@ -124,7 +124,7 @@ ECP Message:
     belief: number
     plausibility: number
   }
-  opinion?: SubjectiveOpinion  // Full SL tuple (ECP v2, planned)
+  opinion?: SubjectiveOpinion  // Full SL tuple (planned)
   type: "known" | "unknown" | "uncertain" | "contradictory"
   evidence_chain: Evidence[]
   temporal_context?: { validUntil, decayModel }
@@ -252,7 +252,7 @@ flowchart LR
 
 ## 6. Data Contracts
 
-### 6.1 SubjectiveOpinion (ECP v2, planned)
+### 6.1 SubjectiveOpinion (planned)
 
 ```typescript
 // src/core/subjective-opinion.ts
@@ -279,7 +279,7 @@ export interface OracleVerdict {
   falsifiableBy?: string;
   temporalContext?: TemporalContext;
   deliberationRequest?: DeliberationRequest;
-  // Planned extensions (ECP v2):
+  // Planned extensions:
   opinion?: SubjectiveOpinion;           // SL opinion tuple
   rawOpinion?: SubjectiveOpinion;        // Unclamped opinion for audit
 }
@@ -427,7 +427,7 @@ export interface PipelineConfidence {
 | R6 | Detect repeated identical failures in escalation loop | Prevents wasted retries |
 | R7 | Integrate verbalized confidence from LLM critic alongside structural confidence | Captures semantic quality that structural oracles miss |
 
-### Tier 3: ECP v2 — Subjective Logic Migration
+### Tier 3: ECP — Subjective Logic Migration
 
 | # | Action | Migration Path |
 |---|--------|---------------|

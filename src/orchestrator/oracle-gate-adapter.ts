@@ -17,7 +17,7 @@ export class OracleGateAdapter implements OracleGate {
     this.workspace = workspace;
   }
 
-  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string, verificationHint?: VerificationHint) {
+  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string, verificationHint?: VerificationHint, routingLevel?: number) {
     // Empty mutations (L0) → trivially pass
     if (mutations.length === 0) {
       return { passed: true as const, verdicts: {} as Record<string, OracleVerdict> };
@@ -51,6 +51,7 @@ export class OracleGateAdapter implements OracleGate {
             workspace: this.workspace,
           },
           verificationHint,
+          routingLevel,
         }).then((gateResult) => ({ mutation, gateResult })),
       ),
     );

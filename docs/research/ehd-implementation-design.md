@@ -434,7 +434,7 @@ No behavioral changes. Pure additions and renames.
 **Dependencies:** Phase 3 (specifically 3.12: oracle opinion enrichment). Steps 4.1-4.7 are pure library code and can start in Phase 0 timeframe.
 **Risk:** High. This replaces the core conflict resolution logic. Requires backtesting against real trace data before deployment (4.8).
 
-### Phase 5: ECP v2 Protocol Evolution (future)
+### Phase 5: ECP Protocol Evolution (future)
 
 | # | Change | File(s) | Depends on |
 |---|--------|---------|------------|

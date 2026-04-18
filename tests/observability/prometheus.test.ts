@@ -15,7 +15,7 @@ function makeMetrics(overrides?: Partial<SystemMetrics>): SystemMetrics {
     skills: { total: 6, active: 3, probation: 2, demoted: 1 },
     patterns: { total: 15, sleepCyclesRun: 3 },
     shadow: { queueDepth: 4 },
-    workers: { total: 5, active: 3, probation: 1, demoted: 1, retired: 0, traceDiversity: 4 },
+    workers: { total: 5, active: 3, probation: 1, demoted: 1, retired: 0, traceDiversity: 4, fleetGini: 0.2 },
     dataGates: {
       sleepCycle: true,
       skillFormation: false,

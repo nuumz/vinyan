@@ -8,6 +8,7 @@
  * K2 adds dynamic, single-use capability tokens.
  */
 import type { AgentContract, Capability } from '../core/agent-contract.ts';
+import { parseMcpToolName } from '../orchestrator/mcp/mcp-tool-adapter.ts';
 import { isReadOnlyCommand } from '../orchestrator/tools/shell-policy.ts';
 
 interface AuthorizationResult {
@@ -33,7 +34,16 @@ export function authorizeToolCall(
 
   for (const cap of contract.capabilities) {
     if (cap.type === required.type) {
-      const capScope = 'paths' in cap ? cap.paths : 'commands' in cap ? cap.commands : 'providers' in cap ? cap.providers : [];
+      const capScope =
+        'paths' in cap
+          ? cap.paths
+          : 'commands' in cap
+            ? cap.commands
+            : 'providers' in cap
+              ? cap.providers
+              : 'servers' in cap
+                ? cap.servers
+                : [];
       if (matchesScope(required.scope, capScope)) {
         return { authorized: true };
       }
@@ -48,6 +58,13 @@ export function authorizeToolCall(
 
 /** Map a tool name + args to the required capability type and scope. */
 export function classifyTool(toolName: string, args: Record<string, unknown>): RequiredCapability {
+  // MCP tools — recognize by the `mcp__{server}__{tool}` namespace.
+  // Scope is the server name so contracts can whitelist individual
+  // servers (e.g. `mcp_call: ['github']`) or grant wildcard `['*']`.
+  const mcpParts = parseMcpToolName(toolName);
+  if (mcpParts) {
+    return { type: 'mcp_call', scope: [mcpParts.serverName] };
+  }
   // File tools — read
   if (['read_file', 'search_file', 'list_dir', 'grep_search'].includes(toolName)) {
     return { type: 'file_read', scope: [String(args.path ?? args.filePath ?? '')] };
@@ -57,7 +74,7 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): R
     return { type: 'file_write', scope: [String(args.path ?? args.filePath ?? '')] };
   }
   // Shell tools — use centralized shell policy for read-only classification
-  if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal') {
+  if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal' || toolName === 'shell_exec') {
     const cmd = String(args.command ?? '');
     const firstWord = cmd.trim().split(/\s+/)[0] ?? '';
     return {

@@ -96,7 +96,7 @@ export function validateLevel3Verdict(verdictJson: string): Level3Check[] {
     });
   }
 
-  // C6 (ECP v2): If tierReliability present, must be in [0, 1]
+  // C6: If tierReliability present, must be in [0, 1]
   const tierReliability = verdict.tierReliability as number | undefined;
   if (tierReliability != null) {
     checks.push({
@@ -108,7 +108,7 @@ export function validateLevel3Verdict(verdictJson: string): Level3Check[] {
     });
   }
 
-  // C7 (ECP v2): If engineCertainty present, must be in [0, 1]
+  // C7: If engineCertainty present, must be in [0, 1]
   const engineCertainty = verdict.engineCertainty as number | undefined;
   if (engineCertainty != null) {
     checks.push({
@@ -120,7 +120,7 @@ export function validateLevel3Verdict(verdictJson: string): Level3Check[] {
     });
   }
 
-  // C8 (ECP v2): confidenceSource must be a valid enum if present
+  // C8: confidenceSource must be a valid enum if present
   const confidenceSource = verdict.confidenceSource as string | undefined;
   if (confidenceSource != null) {
     const validSources = ['evidence-derived', 'self-model-calibrated', 'llm-self-report'];

@@ -9,9 +9,62 @@ import { runPatternsCommand } from './patterns.ts';
 import { runAgentTask } from './run.ts';
 import { runMetricsCommand, runRulesCommand, runSkillsCommand, runStatusCommand } from './status.ts';
 
-const command = process.argv[2];
-const workspacePath = process.argv[3] || process.cwd();
-const force = process.argv.includes('--force');
+const VERSION = '0.1.0';
+
+function printUsage(stream: NodeJS.WritableStream = process.stdout) {
+  stream.write(`Vinyan ${VERSION} — Epistemic Orchestration CLI
+
+Usage: vinyan <command> [options]
+
+Commands:
+  run "task"         Run autonomous agent task (supports --agent <id>)
+  agent <sub>        Manage specialist agents (list|create|inspect|remove)
+  chat               Interactive conversation agent mode
+  serve              Start the API server (auto-restart on crash; --watch for hot reload; --no-supervise to disable)
+  init [path]        Initialize vinyan.json
+  status             Show system status summary
+  doctor             Health check: config, DB, oracles, LLM providers
+
+  config show|validate  View or validate configuration
+  session list|delete|export  Manage conversation sessions
+  logs [--limit N]   Inspect execution traces
+
+  economy [sub]      Economy OS: budget, costs, market, trust
+  metrics            Print full system metrics as JSON
+  rules              List evolutionary rules
+  skills             List cached skills
+  patterns           Export/import patterns for cross-project transfer
+  memory [sub]       Review agent-proposed memory
+
+  gate               Run oracle gate (JSON on stdin)
+  analyze [dir]      Analyze session logs
+  oracle test <name> Test an oracle implementation
+  mcp                Start MCP server over stdio
+  tui [subcommand]   Interactive Terminal UI
+  clean              Database maintenance (VACUUM, purge)
+
+Flags:
+  --version, -v      Show version
+  --help, -h         Show this help
+`);
+}
+
+// Handle --version and --help before command routing
+const args = process.argv.slice(2);
+if (args.includes('--version') || args.includes('-v')) {
+  console.log(VERSION);
+  process.exit(0);
+}
+if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+  printUsage();
+  process.exit(0);
+}
+
+const command = args[0];
+// args[1] is an optional workspace path — but only if it doesn't start with '-'
+// (otherwise it's a flag like --watch or --no-supervise).
+const workspacePath = args[1] && !args[1].startsWith('-') ? args[1] : process.cwd();
+const force = args.includes('--force');
 
 switch (command) {
   case 'init': {
@@ -26,10 +79,7 @@ switch (command) {
   }
 
   case 'gate': {
-    // Read JSON from stdin, run oracle gate, write verdict to stdout
-    const wsOverride = process.argv.includes('--workspace')
-      ? process.argv[process.argv.indexOf('--workspace') + 1]
-      : undefined;
+    const wsOverride = args.includes('--workspace') ? args[args.indexOf('--workspace') + 1] : undefined;
 
     const chunks: Buffer[] = [];
     for await (const chunk of Bun.stdin.stream()) {
@@ -50,21 +100,12 @@ switch (command) {
       process.exit(2);
     }
 
-    // Validate GateRequest format
     if (!request.params) {
       console.error('Error: GateRequest requires "params" object with "file_path" and "workspace"');
-      console.error(
-        'Example: {"tool":"write_file","params":{"file_path":"src/foo.ts","content":"...","workspace":"."}}',
-      );
       process.exit(2);
     }
-    // Allow --workspace flag to override; default to cwd if missing
-    if (wsOverride) {
-      request.params.workspace = wsOverride;
-    }
-    if (!request.params.workspace) {
-      request.params.workspace = process.cwd();
-    }
+    if (wsOverride) request.params.workspace = wsOverride;
+    if (!request.params.workspace) request.params.workspace = process.cwd();
 
     try {
       const verdict = await runGate(request);
@@ -78,26 +119,31 @@ switch (command) {
   }
 
   case 'analyze': {
-    // Analyze session logs and print metrics
-    const analyzeDir = process.argv[3] || join(workspacePath, '.vinyan', 'sessions');
+    const analyzeDir = args[1] || join(workspacePath, '.vinyan', 'sessions');
     const metrics = analyzeSessionDir(analyzeDir);
     console.log(formatMetrics(metrics));
     break;
   }
 
   case 'run': {
-    await runAgentTask(process.argv.slice(2));
+    await runAgentTask(args);
+    break;
+  }
+
+  case 'agent': {
+    const { runAgentCommand } = await import('./agent.ts');
+    await runAgentCommand(args.slice(1), workspacePath);
     break;
   }
 
   case 'chat': {
     const { startChat } = await import('./chat.ts');
-    await startChat(process.argv.slice(3));
+    await startChat(args.slice(1));
     break;
   }
 
   case 'patterns': {
-    await runPatternsCommand(process.argv.slice(3));
+    await runPatternsCommand(args.slice(1));
     break;
   }
 
@@ -122,8 +168,17 @@ switch (command) {
   }
 
   case 'serve': {
-    const { serve } = await import('./serve.ts');
-    await serve(workspacePath);
+    // Supervisor mode: default ON. Parent process respawns the child on
+    // crash so one bad task can never take down the API server permanently.
+    // Disable with --no-supervise (useful for dev/debugging).
+    const supervise = !args.includes('--no-supervise') && process.env.VINYAN_SUPERVISED !== '1';
+    if (supervise) {
+      const { superviseServe } = await import('./supervise.ts');
+      await superviseServe(workspacePath, process.argv);
+    } else {
+      const { serve } = await import('./serve.ts');
+      await serve(workspacePath);
+    }
     break;
   }
 
@@ -135,31 +190,65 @@ switch (command) {
 
   case 'economy': {
     const { runEconomyCommand } = await import('./economy.ts');
-    await runEconomyCommand(process.argv.slice(3));
+    await runEconomyCommand(args.slice(1));
     break;
   }
 
   case 'tui': {
     const { processTUICommand } = await import('../tui/commands.ts');
-    await processTUICommand(process.argv.slice(3), { workspace: workspacePath });
+    await processTUICommand(args.slice(1), { workspace: workspacePath });
     break;
   }
 
   case 'oracle': {
-    const subcommand = process.argv[3];
-    if (subcommand === 'test') {
+    if (args[1] === 'test') {
       const { runOracleTest } = await import('./oracle-test.ts');
-      await runOracleTest(process.argv.slice(4));
+      await runOracleTest(args.slice(2));
     } else {
-      console.error('Usage: vinyan oracle test <oracle-name> [--workspace <path>] [--pattern <pattern>]');
+      console.error('Usage: vinyan oracle test <oracle-name> [--workspace <path>]');
       process.exit(1);
     }
     break;
   }
 
+  case 'memory': {
+    const { runMemoryCommand } = await import('./memory.ts');
+    await runMemoryCommand(args.slice(1));
+    break;
+  }
+
+  case 'doctor': {
+    const { runDoctor } = await import('./doctor.ts');
+    await runDoctor(workspacePath);
+    break;
+  }
+
+  case 'config': {
+    const { runConfigCommand } = await import('./config-cmd.ts');
+    await runConfigCommand(args.slice(1));
+    break;
+  }
+
+  case 'session': {
+    const { runSessionCommand } = await import('./session-cmd.ts');
+    await runSessionCommand(args.slice(1));
+    break;
+  }
+
+  case 'logs': {
+    const { runLogsCommand } = await import('./logs.ts');
+    await runLogsCommand(args.slice(1));
+    break;
+  }
+
+  case 'clean': {
+    const { runCleanCommand } = await import('./clean.ts');
+    await runCleanCommand(args.slice(1));
+    break;
+  }
+
   default:
-    console.error(
-      `Usage: vinyan <command>\n\nCommands:\n  init [path]        Initialize vinyan.json\n  gate               Run oracle gate (JSON on stdin)\n  analyze [dir]      Analyze session logs\n  run "task"         Run autonomous agent task\n  chat               Interactive conversation agent mode\n  patterns           Export/import patterns for cross-project transfer\n  status             Show system status summary\n  metrics            Print full system metrics as JSON\n  rules              List evolutionary rules\n  skills             List cached skills\n  economy [sub]      Economy OS: budget, costs, market, trust, federation\n  serve              Start the API server (Phase 5)\n  mcp                Start MCP server over stdio (Phase 5)\n  oracle test <name> Test an oracle implementation\n  tui [subcommand]   Interactive Terminal UI (default: full dashboard)`,
-    );
+    console.error(`Unknown command: ${command}\n`);
+    printUsage(process.stderr);
     process.exit(1);
 }

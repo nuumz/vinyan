@@ -92,13 +92,17 @@ const ForwardPredictorConfigSchema = z.object({
   enabled: z.boolean().default(true),
   tiers: z
     .object({
-      statistical: z.object({
-        min_traces: z.number().positive().default(100),
-      }).default(() => ({ min_traces: 100 })),
-      causal: z.object({
-        min_traces: z.number().positive().default(100),
-        min_edges: z.number().positive().default(50),
-      }).default(() => ({ min_traces: 100, min_edges: 50 })),
+      statistical: z
+        .object({
+          min_traces: z.number().positive().default(100),
+        })
+        .default(() => ({ min_traces: 100 })),
+      causal: z
+        .object({
+          min_traces: z.number().positive().default(100),
+          min_edges: z.number().positive().default(50),
+        })
+        .default(() => ({ min_traces: 100, min_edges: 50 })),
     })
     .default(() => ({
       statistical: { min_traces: 100 },
@@ -129,24 +133,113 @@ export type ForwardPredictorConfig = z.infer<typeof ForwardPredictorConfigSchema
 
 const ExtensibleThinkingConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  modes: z.array(
-    z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']),
-  ).default(['adaptive']),
+  modes: z
+    .array(z.enum(['adaptive', 'counterfactual', 'multi-hypothesis', 'deliberative', 'debate']))
+    .default(['adaptive']),
   /** Configurable 2D grid boundaries (no hardcoded magic numbers). */
-  thresholds: z.object({
-    riskBoundary: z.number().min(0).max(1).default(0.35),
-    uncertaintyBoundary: z.number().min(0).max(1).default(0.50),
-  }).default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.50 })),
+  thresholds: z
+    .object({
+      riskBoundary: z.number().min(0).max(1).default(0.35),
+      uncertaintyBoundary: z.number().min(0).max(1).default(0.5),
+    })
+    .default(() => ({ riskBoundary: 0.35, uncertaintyBoundary: 0.5 })),
   /** Data gate overrides for thinking feature activation. */
-  data_gate_overrides: z.object({
-    uncertainty_min_traces: z.number().positive().default(200),
-    calibration_min_traces: z.number().positive().default(50),
-  }).optional(),
+  data_gate_overrides: z
+    .object({
+      uncertainty_min_traces: z.number().positive().default(200),
+      calibration_min_traces: z.number().positive().default(50),
+    })
+    .optional(),
   /** Audit sample rate for high-confidence tasks (default: 5%). */
   audit_sample_rate: z.number().min(0).max(1).default(0.05),
 });
 
 export type ExtensibleThinkingConfig = z.infer<typeof ExtensibleThinkingConfigSchema>;
+
+// ─── Wave 1: Goal-Satisfaction Outer Loop ────────────────────────────
+
+const GoalLoopConfigSchema = z.object({
+  /** When enabled, executeTask re-runs until goal evaluator is satisfied or budget exhausted. */
+  enabled: z.boolean().default(false),
+  /** Max outer-loop iterations before honest escalation. */
+  maxOuterIterations: z.number().int().min(1).max(10).default(3),
+  /** Score threshold (0..1) for accepting a completed result as "goal met". */
+  goalSatisfactionThreshold: z.number().min(0).max(1).default(0.75),
+});
+
+export type GoalLoopConfig = z.infer<typeof GoalLoopConfigSchema>;
+
+// ─── Wave 3: Agent-Facing Memory API ─────────────────────────────────
+
+const AgentMemoryConfigSchema = z.object({
+  /** Default on — this is additive and has no behavioral risk. */
+  enabled: z.boolean().default(true),
+});
+
+export type AgentMemoryConfig = z.infer<typeof AgentMemoryConfigSchema>;
+
+// ─── Wave 2: Replan Engine ───────────────────────────────────────────
+
+const ReplanConfigSchema = z.object({
+  /** Gated OFF by default. Requires goalLoop.enabled. */
+  enabled: z.boolean().default(false),
+  /** Max replan attempts before honest escalation. */
+  maxReplans: z.number().int().min(1).max(5).default(2),
+  /** Replan token spend cap as fraction of remaining task budget. */
+  tokenSpendCapFraction: z.number().min(0).max(1).default(0.2),
+  /** Trigram similarity upper bound vs prior failed approaches. */
+  trigramSimilarityMax: z.number().min(0).max(1).default(0.85),
+});
+
+export type ReplanConfig = z.infer<typeof ReplanConfigSchema>;
+
+// ─── Wave 4: Agent-Loop Goal-Driven Termination ─────────────────────
+
+const AgentLoopGoalTerminationConfigSchema = z.object({
+  /** Gated OFF by default. When on, orchestrator runs goal-check before accepting attempt_completion. */
+  enabled: z.boolean().default(false),
+  /** Max continuation turns per session before honest reject. */
+  maxContinuations: z.number().int().min(1).max(5).default(2),
+  /** Fraction of agent's negotiable budget pool reserved for continuations. */
+  continuationBudgetFraction: z.number().min(0).max(1).default(0.25),
+});
+
+export type AgentLoopGoalTerminationConfig = z.infer<typeof AgentLoopGoalTerminationConfigSchema>;
+
+// ─── Wave 5: Reactive Learning + Skill Hints ─────────────────────────
+
+const ReactiveLearningConfigSchema = z.object({
+  /** Gated OFF by default — writes probational rules to RuleStore. */
+  enabled: z.boolean().default(false),
+  /** Rolling window for failure cluster detection. */
+  windowMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .default(60 * 60 * 1000),
+  /** Minimum same-signature failures in window to form a cluster. */
+  minFailures: z.number().int().min(2).max(10).default(2),
+});
+
+export type ReactiveLearningConfig = z.infer<typeof ReactiveLearningConfigSchema>;
+
+const SkillHintsConfigSchema = z.object({
+  /** Default ON — additive, surfaces findSimilar skills in agent system prompts. */
+  enabled: z.boolean().default(true),
+  /** Top-k similar skills to inject per task. */
+  topK: z.number().int().min(1).max(10).default(3),
+});
+
+export type SkillHintsConfig = z.infer<typeof SkillHintsConfigSchema>;
+
+// ─── Wave 6: Workflow Registry ───────────────────────────────────────
+
+const WorkflowRegistryConfigSchema = z.object({
+  /** Default ON — the registry is metadata-only; active dispatch refactor is deferred. */
+  enabled: z.boolean().default(true),
+});
+
+export type WorkflowRegistryConfig = z.infer<typeof WorkflowRegistryConfigSchema>;
 
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
@@ -156,6 +249,22 @@ const OrchestratorConfigSchema = z.object({
   forward_predictor: ForwardPredictorConfigSchema.default(() => defaults(ForwardPredictorConfigSchema)),
   /** Extensible Thinking — 2D routing grid (risk × uncertainty). */
   extensible_thinking: ExtensibleThinkingConfigSchema.default(() => defaults(ExtensibleThinkingConfigSchema)),
+  /** Wave 1: Goal-Satisfaction Outer Loop (gated OFF by default). */
+  goalLoop: GoalLoopConfigSchema.default(() => defaults(GoalLoopConfigSchema)),
+  /** Wave 3: Agent-Facing Memory API (default ON, additive). */
+  agent_memory: AgentMemoryConfigSchema.default(() => defaults(AgentMemoryConfigSchema)),
+  /** Wave 2: Replan Engine (gated OFF by default, requires goalLoop). */
+  replan: ReplanConfigSchema.default(() => defaults(ReplanConfigSchema)),
+  /** Wave 4: Goal-driven agent-loop termination (gated OFF by default). */
+  agentLoopGoalTermination: AgentLoopGoalTerminationConfigSchema.default(() =>
+    defaults(AgentLoopGoalTerminationConfigSchema),
+  ),
+  /** Wave 5: Reactive micro-learning — bypass data gate when failure cluster forms. */
+  reactiveLearning: ReactiveLearningConfigSchema.default(() => defaults(ReactiveLearningConfigSchema)),
+  /** Wave 5: Skill hints — inject findSimilar results into agent prompts. Default ON. */
+  skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
+  /** Wave 6: Workflow registry (metadata surface). Default ON. */
+  workflowRegistry: WorkflowRegistryConfigSchema.default(() => defaults(WorkflowRegistryConfigSchema)),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────
@@ -173,6 +282,76 @@ const FleetConfigSchema = z.object({
   negative_capability_threshold: z.number().min(0).max(1).default(0.6),
   staleness_penalty_per_cycle: z.number().min(0).max(1).default(0.9),
 });
+
+// ─── Agent schema (workspace-level Vinyan Agent identity) ──────────
+
+/**
+ * Workspace-level AgentProfile overrides. Config-first: these values
+ * override DB defaults on every factory boot. When absent, AgentProfileStore
+ * uses built-in defaults (see DEFAULT_AGENT_PREFERENCES).
+ */
+const AgentPreferencesConfigSchema = z.object({
+  approval_mode: z.enum(['strict', 'interactive', 'trusting']).optional(),
+  verbosity: z.enum(['quiet', 'normal', 'verbose']).optional(),
+  default_thinking_level: z.enum(['off', 'low', 'medium', 'high']).optional(),
+  language: z.enum(['en', 'th']).optional(),
+});
+
+const AgentConfigSchema = z.object({
+  display_name: z.string().optional(),
+  description: z.string().optional(),
+  preferences: AgentPreferencesConfigSchema.optional(),
+});
+
+// ─── Specialist agents (fleet of roles: ts-coder, writer, etc.) ────────
+
+/**
+ * Routing hints for specialist agent selection.
+ * Used by the intent resolver to pick an agent based on task characteristics.
+ */
+const AgentRoutingHintsSchema = z.object({
+  /** Minimum routing level this agent should handle. */
+  min_level: z.number().min(0).max(3).optional(),
+  /** Preferred task domains (e.g., 'code-mutation', 'reasoning'). */
+  prefer_domains: z.array(z.string()).optional(),
+  /** Preferred file extensions (e.g., '.ts', '.md'). */
+  prefer_extensions: z.array(z.string()).optional(),
+  /** Preferred frameworks (e.g., 'react', 'express'). */
+  prefer_frameworks: z.array(z.string()).optional(),
+});
+
+/**
+ * AgentSpec — specialist agent configuration. Multiple allowed per workspace.
+ * Each spec has own persona (soul.md), ACL, and routing hints.
+ * Distinct from the workspace singleton AgentProfile (id='local').
+ */
+export const AgentSpecSchema = z.object({
+  /** Unique agent identifier (e.g., 'ts-coder', 'writer', 'ceo'). */
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'agent id must be kebab-case'),
+  /** Human-readable name shown in CLI and prompts. */
+  name: z.string(),
+  /** One-line role description — used by intent resolver for auto-classification. */
+  description: z.string(),
+  /** Path to the agent's soul.md (persona). Defaults to `.vinyan/agents/<id>/soul.md`. */
+  soul_path: z.string().optional(),
+  /** Allowed tool names (intersection with routing level defaults, never widens). */
+  allowed_tools: z.array(z.string()).optional(),
+  /** Capability overrides (e.g., disable read_any) — intersection only. */
+  capability_overrides: z
+    .object({
+      read_any: z.boolean().optional(),
+      write_any: z.boolean().optional(),
+      network: z.boolean().optional(),
+      shell: z.boolean().optional(),
+    })
+    .optional(),
+  /** Routing hints for the intent resolver. */
+  routing_hints: AgentRoutingHintsSchema.optional(),
+  /** True if this is a built-in agent (shipped with Vinyan). */
+  builtin: z.boolean().optional(),
+});
+
+export type AgentSpecConfig = z.infer<typeof AgentSpecSchema>;
 
 // ─── Network schema (multi-instance coordination) ───────────────────
 
@@ -255,6 +434,9 @@ const CoordinationConfigSchema = z.object({
   intent_declaration_enabled: z.boolean().default(false),
   negotiation_enabled: z.boolean().default(false),
   commitment_tracking_enabled: z.boolean().default(false),
+  rooms_enabled: z.boolean().default(false),
+  max_rooms: z.number().positive().default(50),
+  max_message_history: z.number().positive().default(1000),
 });
 
 const TracingConfigSchema = z.object({
@@ -301,30 +483,23 @@ function defaults<T extends z.ZodType>(schema: T): z.output<T> {
   return schema.parse({});
 }
 
-// ─── ECP v2 Feature Flags ────────────────────────────────────────────
-
-export const ECPv2FlagsSchema = z.object({
-  /** Gates B1 (Zod confidence default 0.5) + B2 (zero-oracle quality 0.5). HIGH risk. */
-  ECP_V2_SCHEMA_DEFAULTS: z.boolean().default(false),
-  /** Gates B5-B10 (enrichment, wiring, pipeline split, calibration). MEDIUM risk. */
-  ECP_V2_ENRICHMENT: z.boolean().default(false),
-});
-
-export type ECPv2Flags = z.infer<typeof ECPv2FlagsSchema>;
-
 // ─── Engine Configuration (non-LLM reasoning engines) ──────────────
 
 const EnginesConfigSchema = z.object({
-  z3: z.object({
-    enabled: z.boolean().default(false),
-    /** Path to z3 binary (default: 'z3' from PATH). */
-    path: z.string().default('z3'),
-  }).default(() => ({ enabled: false, path: 'z3' })),
-  human: z.object({
-    enabled: z.boolean().default(false),
-    /** Timeout in ms for human review response (default: 5 minutes). */
-    timeout_ms: z.number().positive().default(300_000),
-  }).default(() => ({ enabled: false, timeout_ms: 300_000 })),
+  z3: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Path to z3 binary (default: 'z3' from PATH). */
+      path: z.string().default('z3'),
+    })
+    .default(() => ({ enabled: false, path: 'z3' })),
+  human: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Timeout in ms for human review response (default: 5 minutes). */
+      timeout_ms: z.number().positive().default(300_000),
+    })
+    .default(() => ({ enabled: false, timeout_ms: 300_000 })),
 });
 
 export type EnginesConfig = z.infer<typeof EnginesConfigSchema>;
@@ -346,14 +521,49 @@ export const VinyanConfigSchema = z.object({
   fleet: FleetConfigSchema.optional(),
   /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
   network: NetworkConfigSchema.optional(),
-  /** ECP v2 feature flags — progressive rollout of epistemic improvements. */
-  ecpV2: ECPv2FlagsSchema.optional(),
   /** Economy Operating System — cost tracking, budgets, market, federation. */
   economy: EconomyConfigSchema.optional(),
   /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */
   hms: HMSConfigSchema.optional(),
   /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
   engines: EnginesConfigSchema.optional(),
+  /** Workspace-level Vinyan Agent identity (name, description, preferences). */
+  agent: AgentConfigSchema.optional(),
+  /**
+   * Agentic-workflow behavior — approval gating and timeouts before dispatch.
+   * Phase E: lets long-form creative workflows surface the plan to the user
+   * before execution instead of running silently.
+   */
+  workflow: z
+    .object({
+      /**
+       * Whether the orchestrator should emit `workflow:plan_ready` and wait
+       * for user approval before running. 'auto' = true for long-form
+       * creative goals (length ≥ 60), false otherwise.
+       */
+      requireUserApproval: z.union([z.boolean(), z.literal('auto')]).default('auto'),
+      /** Auto-abort if the user does not respond within this window. */
+      approvalTimeoutMs: z.number().positive().default(600_000),
+    })
+    .optional(),
+  /**
+   * Realtime streaming (Phase 2). When `assistantDelta: true`, LLM providers
+   * use their native SSE/stream APIs and the orchestrator emits
+   * `agent:text_delta` events on the bus as tokens arrive. Purely
+   * observational — NEVER affects governance decisions (A3). Default false
+   * to keep the legacy non-streaming path the opt-out baseline.
+   */
+  streaming: z
+    .object({
+      assistantDelta: z.boolean().default(false),
+    })
+    .optional(),
+  /**
+   * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
+   * built-in defaults are merged by the loader. CLI `vinyan agent add`
+   * appends here and writes back to vinyan.json.
+   */
+  agents: z.array(AgentSpecSchema).optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

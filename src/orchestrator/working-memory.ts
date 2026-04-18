@@ -16,6 +16,7 @@ export const MAX_FAILED_APPROACHES = 20;
 export const MAX_HYPOTHESES = 10;
 export const MAX_UNCERTAINTIES = 10;
 export const MAX_SCOPED_FACTS = 50;
+export const MAX_PLAN_SIGNATURES = 20;
 
 /** Threshold at which memory pressure is considered high enough to warn. */
 const EVICTION_WARNING_THRESHOLD = 10;
@@ -29,6 +30,11 @@ export class WorkingMemory {
   private unresolvedUncertainties: WorkingMemoryState['unresolvedUncertainties'] = [];
   private scopedFacts: WorkingMemoryState['scopedFacts'] = [];
   private priorAttempts: AgentSessionSummary[] = [];
+  private planSignatures: string[] = [];
+  /** Wave 1 gap fix: track idempotent hydration so prepareExecution can
+   *  safely run on every outer-loop iteration without duplicating entries. */
+  private sessionHydrated = false;
+  private crossTaskLoaded = false;
   private bus?: VinyanBus;
   private taskId?: string;
   private archiver?: FailedApproachArchiver;
@@ -112,6 +118,39 @@ export class WorkingMemory {
     this.priorAttempts.push(summary);
   }
 
+  /** Wave 2: record a plan signature for replan-novelty tracking. FIFO-bounded. */
+  recordPlanSignature(sig: string): void {
+    if (this.planSignatures.length >= MAX_PLAN_SIGNATURES) this.planSignatures.shift();
+    this.planSignatures.push(sig);
+  }
+
+  /** Wave 2: return a copy of prior plan signatures for the outer loop replan gate. */
+  getPriorPlanSignatures(): string[] {
+    return [...this.planSignatures];
+  }
+
+  /** Wave 1 gap fix: idempotent hydration flags. prepareExecution sets
+   *  these once per task to prevent double-hydration across outer-loop
+   *  iterations (which would otherwise duplicate prior approaches + facts). */
+  isSessionHydrated(): boolean {
+    return this.sessionHydrated;
+  }
+  markSessionHydrated(): void {
+    this.sessionHydrated = true;
+  }
+  isCrossTaskLoaded(): boolean {
+    return this.crossTaskLoaded;
+  }
+  markCrossTaskLoaded(): void {
+    this.crossTaskLoaded = true;
+  }
+
+  /** Wave 1: attach an archiver if not already set. Used by goal-loop hand-off where
+   *  WorkingMemory is created outside prepareExecution but still needs archiving. */
+  attachArchiver(archiver: FailedApproachArchiver): void {
+    if (!this.archiver) this.archiver = archiver;
+  }
+
   /** G2: Archive all remaining failed approaches to persistent storage at task end.
    *  Called before WorkingMemory instance is discarded. */
   archiveRemainingApproaches(): void {
@@ -134,6 +173,7 @@ export class WorkingMemory {
         unresolvedUncertainties: this.unresolvedUncertainties,
         scopedFacts: this.scopedFacts,
         ...(this.priorAttempts.length > 0 ? { priorAttempts: this.priorAttempts } : {}),
+        ...(this.planSignatures.length > 0 ? { planSignatures: [...this.planSignatures] } : {}),
       }),
     );
   }

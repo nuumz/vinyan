@@ -58,6 +58,36 @@ export function classifyRequest(method: string, path: string): string {
   if (path.startsWith('/api/v1/facts')) return 'read:facts';
   if (path.startsWith('/api/v1/rules')) return 'read:rules';
 
+  // Agents / skills / patterns (read-only)
+  if (path.startsWith('/api/v1/agents')) return 'read:agents';
+  if (path.startsWith('/api/v1/skills')) return 'read:skills';
+  if (path.startsWith('/api/v1/patterns')) return 'read:patterns';
+
+  // Doctor / MCP (read-only diagnostics)
+  if (path.startsWith('/api/v1/doctor')) return 'read:doctor';
+  if (path.startsWith('/api/v1/mcp')) return 'read:mcp';
+
+  // Oracles (read-only) + Sleep Cycle (read + trigger)
+  if (path.startsWith('/api/v1/oracles')) return 'read:oracles';
+  if (path.startsWith('/api/v1/sleep-cycle')) {
+    return upper === 'GET' ? 'read:sleep-cycle' : 'admin:sleep-cycle';
+  }
+
+  // Week 5-6: shadow / traces / memory / calibration / hms
+  if (path.startsWith('/api/v1/shadow')) return 'read:shadow';
+  if (path.startsWith('/api/v1/traces')) return 'read:traces';
+  if (path.startsWith('/api/v1/memory')) {
+    return upper === 'GET' ? 'read:memory' : 'admin:memory';
+  }
+  if (path.startsWith('/api/v1/predictions')) return 'read:predictions';
+  if (path.startsWith('/api/v1/hms')) return 'read:hms';
+
+  // Tier 3: peers / providers / federation / market
+  if (path.startsWith('/api/v1/peers')) return 'read:peers';
+  if (path.startsWith('/api/v1/providers')) return 'read:providers';
+  if (path.startsWith('/api/v1/federation')) return 'read:federation';
+  if (path.startsWith('/api/v1/market')) return 'read:market';
+
   // Events (SSE stream)
   if (path.startsWith('/api/v1/events')) return 'read:events';
 

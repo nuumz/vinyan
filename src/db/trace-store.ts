@@ -16,7 +16,7 @@ export class TraceStore {
     this.db = db;
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO execution_traces (
-        id, task_id, session_id, worker_id, timestamp, routing_level,
+        id, task_id, session_id, worker_id, agent_id, timestamp, routing_level,
         task_type_signature, approach, approach_description, risk_score,
         quality_composite, quality_arch, quality_efficiency,
         quality_simplification, quality_testmutation,
@@ -30,7 +30,7 @@ export class TraceStore {
         understanding_depth, understanding_intent, resolved_entities,
         understanding_verified, understanding_primary_action
       ) VALUES (
-        $id, $task_id, $session_id, $worker_id, $timestamp, $routing_level,
+        $id, $task_id, $session_id, $worker_id, $agent_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
         $quality_composite, $quality_arch, $quality_efficiency,
         $quality_simplification, $quality_testmutation,
@@ -54,6 +54,7 @@ export class TraceStore {
       $task_id: trace.taskId,
       $session_id: trace.sessionId ?? null,
       $worker_id: trace.workerId ?? null,
+      $agent_id: trace.agentId ?? null,
       $timestamp: trace.timestamp,
       $routing_level: trace.routingLevel,
       $task_type_signature: trace.taskTypeSignature ?? null,
@@ -104,6 +105,19 @@ export class TraceStore {
     const rows = this.db
       .prepare(`SELECT * FROM execution_traces WHERE outcome = ? ORDER BY timestamp DESC LIMIT ?`)
       .all(outcome, limit);
+    return rows.map(rowToTrace);
+  }
+
+  /**
+   * Multi-agent: load traces produced by a specific specialist agent. Used
+   * by AgentEvolution to drive per-agent soul reflection and pattern mining
+   * without cross-contamination from other specialists. Rows with NULL
+   * agent_id are pre-multi-agent and intentionally excluded.
+   */
+  findByAgent(agentId: string, limit = 100): ExecutionTrace[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(agentId, limit);
     return rows.map(rowToTrace);
   }
 
@@ -175,6 +189,52 @@ export class TraceStore {
     return row.cnt;
   }
 
+  /**
+   * Extensible Thinking: success-rate / quality-composite breakdown
+   * keyed by `thinking_mode`. The thinking readiness gate consumes this
+   * to decide when adaptive thinking should be unblocked — see
+   * `evaluateThinkingReadiness`.
+   *
+   * Rows with NULL `thinking_mode` are bucketed under the sentinel
+   * `'(none)'` rather than silently dropped, so "thinking off" runs can be
+   * compared directly against "thinking on" runs.
+   */
+  getSuccessRateByThinkingMode(): Array<{
+    thinkingMode: string;
+    total: number;
+    successes: number;
+    failures: number;
+    successRate: number;
+    avgQualityComposite: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT
+           COALESCE(thinking_mode, '(none)') AS mode,
+           COUNT(*) AS total,
+           SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS successes,
+           SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END) AS failures,
+           AVG(quality_composite) AS avg_quality
+         FROM execution_traces
+         GROUP BY mode`,
+      )
+      .all() as Array<{
+        mode: string;
+        total: number;
+        successes: number;
+        failures: number;
+        avg_quality: number | null;
+      }>;
+    return rows.map((r) => ({
+      thinkingMode: r.mode,
+      total: r.total,
+      successes: r.successes,
+      failures: r.failures,
+      successRate: r.total === 0 ? 0 : r.successes / r.total,
+      avgQualityComposite: r.avg_quality,
+    }));
+  }
+
   /** Update a trace's shadow validation result (called after async shadow processing). */
   updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
     this.db
@@ -199,6 +259,7 @@ function rowToTrace(row: any): ExecutionTrace {
     taskId: row.task_id,
     sessionId: row.session_id ?? undefined,
     workerId: row.worker_id ?? undefined,
+    agentId: row.agent_id ?? undefined,
     timestamp: row.timestamp,
     routingLevel: row.routing_level,
     taskTypeSignature: row.task_type_signature ?? undefined,
@@ -216,7 +277,7 @@ function rowToTrace(row: any): ExecutionTrace {
             composite: row.quality_composite,
             dimensionsAvailable:
               2 + (row.quality_simplification != null ? 1 : 0) + (row.quality_testmutation != null ? 1 : 0),
-            phase: (row.quality_simplification != null ? 'phase1' : 'phase0') as 'phase0' | 'phase1' | 'phase2',
+            phase: (row.quality_simplification != null ? 'extended' : 'basic') as 'basic' | 'extended' | 'full',
           }
         : undefined,
     modelUsed: row.model_used,

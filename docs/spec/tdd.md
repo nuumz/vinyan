@@ -226,8 +226,8 @@ interface QualityScore {
   simplificationGain?: number;      // reduction in cyclomatic complexity (0.0–1.0) [Phase 1]
   testMutationScore?: number;       // % injected faults caught [Phase 1]
   composite: number;                // weighted combination (see §12 computeComposite)
-  dimensions_available: number;     // how many dimensions were actually computed (2 in Phase 0)
-  phase: 'phase0' | 'phase1' | 'phase2';  // which dimensions are trustworthy
+  dimensions_available: number;     // how many dimensions were actually computed (2 in basic)
+  phase: 'basic' | 'extended' | 'full';  // which dimensions are trustworthy
 }
 ```
 

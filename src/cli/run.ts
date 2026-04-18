@@ -3,7 +3,7 @@
  *
  * Syntax: vinyan run "task description" --file src/foo.ts --budget 50000 [--retries 3] [--timeout 60000]
  * Output: TaskResult as JSON to stdout, progress to stderr
- * Exit:   0=completed, 1=failed, 2=escalated, 3=uncertain
+ * Exit:   0=completed, 1=failed, 2=escalated, 3=uncertain, 4=input-required
  *
  * CLI is a bus consumer — it observes the core loop via event listeners
  * without modifying execution behavior (A3 compliance).
@@ -31,10 +31,14 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     console.error('       --summary   Print human-friendly summary to stdout instead of JSON');
     console.error('       --thinking  Enable and show LLM thinking process');
     console.error('       --tool      Enable tool execution (shell, file ops) for non-code tasks');
+    console.error('       --dry-run   Show routing decision without executing');
+    console.error('       --output    Write result JSON to file');
+    console.error('       --agent <id> Force a specific specialist agent (e.g., ts-coder, writer)');
     process.exit(2);
   }
 
   const files = parseArrayFlag(argv, '--file');
+  const agentIdOverride = parseSingleFlag(argv, '--agent');
   const budgetRaw = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
   const retriesRaw = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
   const timeoutRaw = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);
@@ -50,6 +54,8 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   const summaryMode = argv.includes('--summary');
   const showThinking = argv.includes('--thinking');
   const enableTools = argv.includes('--tool');
+  const dryRun = argv.includes('--dry-run');
+  const outputFile = parseSingleFlag(argv, '--output');
 
   const input: TaskInput = {
     id: `task-${Date.now().toString(36)}`,
@@ -57,6 +63,7 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     goal,
     taskType: files.length > 0 ? 'code' : 'reasoning',
     targetFiles: files.length > 0 ? files : undefined,
+    agentId: agentIdOverride,
     budget: {
       maxTokens: budget,
       maxDurationMs: timeout,
@@ -84,10 +91,23 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   }
 
   const traceListenerHandle = attachTraceListener(bus);
-  const orchestrator = createOrchestrator({ workspace, bus, llmProxy: true, commandApprovalGate });
+  const orchestrator = createOrchestrator({
+    workspace,
+    bus,
+    llmProxy: true,
+    commandApprovalGate,
+    // One-shot CLI tasks without target files do not benefit from background
+    // workspace crawling, and chokidar startup can delay direct-tool launch commands.
+    watchWorkspace: files.length > 0,
+  });
 
-  // Graceful shutdown on signals
+  // Graceful shutdown on signals — second signal forces immediate exit
+  let shutdownRequested = false;
   const shutdown = () => {
+    if (shutdownRequested) {
+      process.exit(130);
+    }
+    shutdownRequested = true;
     commandApprovalGate.clear();
     detachProgress?.();
     orchestrator.close();
@@ -97,13 +117,33 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   process.on('SIGINT', shutdown);
 
   try {
+    // Dry-run: show what would happen without executing
+    if (dryRun) {
+      console.log(JSON.stringify({
+        mode: 'dry-run',
+        input: { id: input.id, goal: input.goal, taskType: input.taskType, targetFiles: input.targetFiles },
+        budget: input.budget,
+        workspace,
+      }, null, 2));
+      detachProgress?.();
+      orchestrator.close();
+      process.exit(0);
+    }
+
     const result = await orchestrator.executeTask(input);
     const metrics = traceListenerHandle.getMetrics();
+
+    // Write to file if --output specified
+    if (outputFile) {
+      const { writeFileSync } = await import('fs');
+      writeFileSync(outputFile, JSON.stringify(result, null, 2));
+      if (!quiet) console.error(`[vinyan] Result written to ${outputFile}`);
+    }
 
     // Output
     if (summaryMode) {
       printSummary(result, metrics, process.stdout);
-    } else {
+    } else if (!outputFile) {
       console.log(JSON.stringify(result, null, 2));
     }
 
@@ -129,6 +169,11 @@ export async function runAgentTask(argv: string[]): Promise<void> {
       case 'uncertain':
         process.exit(3);
         break;
+      case 'input-required':
+        // Agent asked the user for clarification. `vinyan run` is a one-shot
+        // command — it has no way to prompt; surface the questions and exit 4.
+        process.exit(4);
+        break;
     }
   } catch (err) {
     detachProgress?.();
@@ -146,7 +191,9 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
         ? 'ESCALATED'
         : result.status === 'uncertain'
           ? 'UNCERTAIN'
-          : 'FAILED';
+          : result.status === 'input-required'
+            ? 'INPUT-REQUIRED'
+            : 'FAILED';
 
   const qs = result.qualityScore && !Number.isNaN(result.qualityScore.composite)
     ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
@@ -160,6 +207,12 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
 
   if (result.answer) {
     output.write(`\n${result.answer}\n`);
+  }
+
+  if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
+    output.write('\n[vinyan] Clarification needed:\n');
+    for (const q of result.clarificationNeeded) output.write(`  - ${q}\n`);
+    output.write('[vinyan] Re-run with `vinyan chat` for interactive follow-up.\n');
   }
 
   if (result.escalationReason) {

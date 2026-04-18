@@ -41,6 +41,8 @@ export interface RoutingDecision {
   thinkingConfig?: ThinkingConfig;
   /** Extensible Thinking: compiled policy from 2D routing grid (risk × uncertainty). */
   thinkingPolicy?: import('./thinking/thinking-policy.ts').ThinkingPolicy;
+  /** True when task was escalated from a lower routing level (suppresses exploration). */
+  isEscalated?: boolean;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -121,6 +123,29 @@ export type ToolRequirement = 'none' | 'tool-needed';
  */
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
+/** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
+export type IntentReasoningSource = 'llm' | 'fallback' | 'cache' | 'deterministic' | 'merged';
+
+/**
+ * Epistemic state of an intent resolution — mirrors VerifiedClaim taxonomy.
+ *
+ * - `known`: deterministic + LLM agree (or one side is high-confidence alone).
+ * - `uncertain`: LLM was low confidence or ambiguity signals triggered — user clarification needed.
+ * - `contradictory`: deterministic and LLM disagreed. A5 tier order decides the surviving
+ *    strategy; the other is recorded for observability and a clarification is surfaced.
+ */
+export type IntentResolutionType = 'known' | 'uncertain' | 'contradictory';
+
+/** Candidate produced by the deterministic (rule-based, tier 0.8) classifier before the LLM runs. */
+export interface IntentDeterministicCandidate {
+  strategy: ExecutionStrategy;
+  confidence: number;
+  /** Which rule produced the candidate (observability). */
+  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed';
+  /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
+  ambiguous: boolean;
+}
+
 /** Result of LLM-powered intent resolution. */
 export interface IntentResolution {
   strategy: ExecutionStrategy;
@@ -134,11 +159,44 @@ export interface IntentResolution {
   confidence: number;
   /** LLM reasoning trace for observability */
   reasoning: string;
+  /** Which classifier produced the decision (llm | heuristic pre-filter | regex fallback). */
+  reasoningSource?: IntentReasoningSource;
+  /**
+   * Multi-agent: selected specialist agent id (e.g., 'ts-coder', 'writer').
+   * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
+   * Overridden by `input.agentId` (CLI --agent flag).
+   */
+  agentId?: string;
+  /** Resolver's reasoning for agent selection (observability). */
+  agentSelectionReason?: string;
+  /**
+   * Epistemic state — `known` when deterministic+LLM agree (or one is confident alone),
+   * `uncertain` for low-confidence / ambiguous inputs, `contradictory` when rule and LLM
+   * disagree. The core-loop dispatches `uncertain`/`contradictory` to the clarification
+   * path instead of executing the strategy.
+   */
+  type?: IntentResolutionType;
+  /** User-facing clarification message when `type` is `uncertain` or `contradictory`. */
+  clarificationRequest?: string;
+  /** Optional structured choices paired with `clarificationRequest`. */
+  clarificationOptions?: string[];
+  /**
+   * Original goal preserved when the core-loop rewrites `input.goal` to `workflowPrompt`
+   * (agentic-workflow). Enables tracing and post-mortem comparison against the rewrite.
+   */
+  originalGoal?: string;
+  /** Rule-based candidate produced before the LLM ran, for observability. */
+  deterministicCandidate?: IntentDeterministicCandidate;
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */
 export const READONLY_TOOLS = new Set([
-  'file_read', 'search_grep', 'directory_list', 'git_status', 'git_diff', 'web_search',
+  'file_read',
+  'search_grep',
+  'directory_list',
+  'git_status',
+  'git_diff',
+  'web_search',
 ]);
 
 /**
@@ -203,10 +261,20 @@ export interface HistoricalProfile {
  *  LLM output is canonicalized to one of these values post-parse.
  *  New values require a code change — intentional friction to avoid unbounded growth. */
 export const PRIMARY_ACTION_VOCAB = [
-  'add-feature', 'bug-fix', 'security-fix', 'performance-optimization',
-  'refactor', 'api-migration', 'dependency-update', 'test-improvement',
-  'documentation', 'configuration', 'investigation', 'flaky-test-diagnosis',
-  'accessibility', 'other',
+  'add-feature',
+  'bug-fix',
+  'security-fix',
+  'performance-optimization',
+  'refactor',
+  'api-migration',
+  'dependency-update',
+  'test-improvement',
+  'documentation',
+  'configuration',
+  'investigation',
+  'flaky-test-diagnosis',
+  'accessibility',
+  'other',
 ] as const;
 export type PrimaryAction = (typeof PRIMARY_ACTION_VOCAB)[number];
 
@@ -313,11 +381,62 @@ export interface TaskInput {
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   /** Conversation session ID — links this task to a multi-turn chat session. */
   sessionId?: string;
+  /**
+   * Phase 7c-1: typed subagent role. Populated when this task was spawned
+   * by a parent via `delegate_task` with an explicit `subagentType`. The
+   * child worker uses it to (a) render a role preamble in its system prompt
+   * and (b) enforce role-specific tool gating in the delegation router.
+   * Absent / root tasks run with the full agent manifest.
+   */
+  subagentType?: 'explore' | 'plan' | 'general-purpose';
+  /**
+   * Specialist agent ID (e.g., 'ts-coder', 'writer'). Set by:
+   *   1. CLI `--agent=<id>` (user override, skips auto-classification)
+   *   2. Intent resolver auto-classification (when not pre-set)
+   *   3. Registry default (fallback)
+   * Flows into prompt (soul/persona), contract (ACL), and skill manager (scope).
+   */
+  agentId?: string;
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
     maxRetries: number; // Default: 3 per routing level
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session Plan (→ Phase 7c-2, Vinyan's equivalent of Claude Code's TodoWrite)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single todo item in the session plan. Stored on the orchestrator side —
+ * the agent writes the whole list via `plan_update` each time it changes, and
+ * the orchestrator renders the current snapshot back into every subsequent
+ * tool result as a `[PLAN]` block so the LLM stays anchored without the list
+ * bloating raw context.
+ *
+ * Invariant enforced by the orchestrator:
+ *   - at most ONE item may carry `status: 'in_progress'` at any time
+ *   - `content` and `activeForm` are non-empty trimmed strings
+ *   - `id` is monotonically assigned on first insertion and remains stable
+ *     across updates keyed by array position
+ */
+export interface PlanTodo {
+  /** Monotonic 1-based identifier assigned when the item is first added. */
+  id: number;
+  /** Imperative phrasing of the task: "Run the test suite". */
+  content: string;
+  /** Present-continuous phrasing: "Running the test suite". */
+  activeForm: string;
+  /** Workflow state — exactly one may be 'in_progress' at a time. */
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** A plan_update call's wire shape — id is not required on the way in. */
+export interface PlanTodoInput {
+  content: string;
+  activeForm: string;
+  status: 'pending' | 'in_progress' | 'completed';
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +457,19 @@ export interface ConversationEntry {
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;
-  status: 'completed' | 'failed' | 'escalated' | 'uncertain';
+  /**
+   * Task outcome status.
+   *
+   * - `completed`: task executed successfully.
+   * - `failed`:    task ran to failure (e.g., tool error, verification rejection).
+   * - `escalated`: higher routing level / human review required.
+   * - `uncertain`: agent reported uncertainty; may retry at higher level.
+   * - `input-required`: agent paused and is asking the user follow-up questions.
+   *   `clarificationNeeded` carries those questions. Distinct from `uncertain`
+   *   because no retry/escalation is attempted — the user must answer in the
+   *   next turn. Lexically aligned with A2A `A2ATaskState` for future bridging.
+   */
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required';
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -351,6 +482,15 @@ export interface TaskResult {
   thinking?: string; // LLM thinking process (when extended thinking is enabled)
   notes?: string[]; // Phase 4: audit notes (e.g., probation-shadow-only, uncertain)
   contradictions?: string[]; // Populated when conflict resolver detects contradictory verdicts
+  /**
+   * Agent Conversation: follow-up questions the agent is asking the user.
+   * Set when `status === 'input-required'`. Each entry is one question.
+   * The next user turn should answer these; chat.ts/api clients should surface
+   * them as user-facing prompts (not errors).
+   */
+  clarificationNeeded?: string[];
+  /** Wave B: plan used for this task — surfaced so outer-loop can pass to replan engine + decomposition learner. */
+  plan?: TaskDAG;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +544,7 @@ export interface PerceptualHierarchy {
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */
+/** Wave 2: Working memory state — now includes plan-signature history for replan novelty. */
 export interface WorkingMemoryState {
   failedApproaches: Array<{
     approach: string;
@@ -442,6 +583,8 @@ export interface WorkingMemoryState {
     hash: string;
   }>;
   priorAttempts?: AgentSessionSummary[];
+  /** Wave 2: SHA-256 signatures of plans attempted in this task. Used by ReplanEngine for novelty. */
+  planSignatures?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -477,16 +620,22 @@ export type ThinkingConfig =
   | { type: 'enabled'; budgetTokens: number; display?: 'omitted' | 'summarized' }
   | { type: 'disabled' }
   // Phase 3+ thinking modes (type-only, provider support not yet implemented — see docs/design §4.1)
-  | { type: 'multi-hypothesis'; branches: 2 | 3 | 4;
+  | {
+      type: 'multi-hypothesis';
+      branches: 2 | 3 | 4;
       diversityConstraint: 'different-patterns' | 'different-resources';
       selectionRule: 'highest-oracle-confidence' | 'first-to-pass' | 'voting-consensus';
       allFailBehavior: 'escalate-level' | 'return-best-effort' | 'refuse';
-      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random'; }
-  | { type: 'counterfactual'; trigger: 'verification_failure';
-      maxRetries: number; constraintSource: 'working-memory'; }
-  | { type: 'deliberative'; checkpoints: number; depthLimit: number; }
-  | { type: 'debate'; participants: string[]; debateTurns: number;
-      arbitrationRule: 'oracle-score' | 'evidence-weight'; };
+      tieBreaker: 'first-branch' | 'lowest-token-cost' | 'random';
+    }
+  | { type: 'counterfactual'; trigger: 'verification_failure'; maxRetries: number; constraintSource: 'working-memory' }
+  | { type: 'deliberative'; checkpoints: number; depthLimit: number }
+  | {
+      type: 'debate';
+      participants: string[];
+      debateTurns: number;
+      arbitrationRule: 'oracle-score' | 'evidence-weight';
+    };
 
 /** Cache control marker for prompt caching — 3-tier strategy.
  *  - static: system prompt (role, oracle manifest, format) — stable across sessions (~1hr effective TTL)
@@ -663,7 +812,7 @@ export interface DataGate {
 /** Pattern extracted by Sleep Cycle analysis */
 export interface ExtractedPattern {
   id: string;
-  type: 'anti-pattern' | 'success-pattern' | 'worker-performance';
+  type: 'anti-pattern' | 'success-pattern' | 'worker-performance' | 'decomposition-pattern';
   description: string;
   frequency: number; // occurrence count in traces
   confidence: number; // Wilson score lower bound
@@ -712,6 +861,12 @@ export interface CachedSkill {
   confidence?: number; // PH3.4: fuzzy match confidence (omitted = exact match)
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
   composedOf?: string[]; // PH5 D2: ordered list of sub-skill task signatures
+  /**
+   * Multi-agent: owning specialist agent id (e.g., 'ts-coder').
+   * NULL/undefined = legacy shared skill (readable by any agent).
+   * New skills are written with the creating agent's id.
+   */
+  agentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +902,9 @@ export interface ExecutionTrace {
   id: string;
   taskId: string;
   sessionId?: string; // Session grouping for multi-step tasks
-  workerId?: string; // Which worker executed this step
+  workerId?: string; // Which worker (oracle/engine) executed this step
+  /** Multi-agent: specialist id (e.g., 'ts-coder') — distinct from workerId (oracle). */
+  agentId?: string;
   timestamp: number;
   routingLevel: RoutingLevel;
   action?: string; // Specific action taken (e.g., 'file_write', 'refactor')
@@ -774,7 +931,7 @@ export interface ExecutionTrace {
   exploration?: boolean; // PH3.6: true if epsilon-greedy exploration was used
   oracleFailurePattern?: string; // WP-5: sorted failed oracle names joined by "+" (e.g., "lint+type")
   frameworkMarkers?: string[]; // PH4: detected framework markers (e.g., 'react', 'express')
-  workerSelectionAudit?: WorkerSelectionResult; // PH4: worker selection audit trail
+  workerSelectionAudit?: EngineSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
   /** Prompt cache metrics for cost analysis. */
@@ -850,6 +1007,43 @@ export interface TaskDAG {
   isFallback?: boolean;
   /** True when the DAG was produced by expanding a composed skill (PH5 D2). */
   isFromComposedSkill?: boolean;
+  /**
+   * Book-integration Wave 5.2: constraint strings the decomposer
+   * wants merged into the parent task's prompt context before the
+   * worker runs. Used by deterministic presets (e.g. research-swarm
+   * report contract) that want to inject a prompt preamble without
+   * mutating the caller's TaskInput.
+   *
+   * Contract:
+   *   - The decomposer sets this field when it needs the worker's
+   *     prompt assembler to see additional constraints.
+   *   - The core-loop's plan phase merges the preamble into a
+   *     *cloned* TaskInput and swaps `ctx.input` for subsequent
+   *     phases so the caller's original input is never mutated.
+   *   - Downstream phases see the merged constraints on
+   *     `ctx.input.constraints`.
+   *
+   * This replaces the earlier pattern where the research-swarm
+   * preset directly mutated `input.constraints` inside the
+   * decomposer (Phase A §7 seam #2, closed in Wave 5 phase 2).
+   */
+  preamble?: string[];
+  /**
+   * ACR (Agent Conversation Room): when set to 'room', the Generate
+   * phase dispatches this DAG through `RoomDispatcher` instead of the
+   * default agentic-loop path. The decomposer only sets this after
+   * validation when `selectRoomContract()` determines the topology
+   * and routing meet the trigger rules. Absent / 'solo' / 'dag'
+   * leaves existing dispatch paths unchanged.
+   */
+  collaborationMode?: 'solo' | 'dag' | 'room';
+  /**
+   * ACR: room contract for the Supervisor FSM. Required when
+   * `collaborationMode === 'room'`. Carries roles, round caps,
+   * convergence threshold, and shared token budget. See
+   * `src/orchestrator/room/types.ts:RoomContract` for the schema.
+   */
+  roomContract?: import('./room/types.ts').RoomContract;
 }
 
 /** 5 machine-checkable criteria for DAG validation */
@@ -884,6 +1078,10 @@ export interface WorkerInput {
   workerId?: string;
   /** Gap 9A: Unified task understanding — carries constraints, criteria, action category to prompt assembly. */
   understanding?: TaskUnderstanding;
+  /** Phase 7a: M1-M4 instruction hierarchy resolved in-process and shipped through IPC. */
+  instructions?: import('./llm/instruction-hierarchy.ts').InstructionMemory;
+  /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
+  environment?: import('./llm/shared-prompt-sections.ts').EnvironmentInfo;
 }
 
 /** Output from a worker process */
@@ -930,6 +1128,9 @@ export interface ToolResult {
 // LLM Generator Engine (→ TDD §17)
 // ---------------------------------------------------------------------------
 
+/** Delta-callback for token-level text streaming (Phase 2 realtime chat). */
+export type OnTextDelta = (delta: { text: string }) => void;
+
 /** LLM provider abstraction */
 export interface LLMProvider {
   id: string;
@@ -938,6 +1139,12 @@ export interface LLMProvider {
   maxContextTokens?: number; // Provider's context window size
   supportsToolUse?: boolean; // Whether provider supports tool_use stop reason
   generate(request: LLMRequest): Promise<LLMResponse>;
+  /**
+   * Optional: token-level streaming. Calls `onDelta` as text chunks arrive.
+   * Must still resolve to a complete LLMResponse identical to generate().
+   * Callers that want a non-streaming path should fall back to generate().
+   */
+  generateStream?(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse>;
 }
 
 /** Request to an LLM provider */
@@ -1077,14 +1284,14 @@ export interface AgentSessionSummary {
 // Worker Profiles — Fleet Governance (→ Phase 4)
 // ---------------------------------------------------------------------------
 
-/** Worker profile status lifecycle: probation → active → demoted → retired */
-export type WorkerProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
+/** Engine profile status lifecycle: probation → active → demoted → retired */
+export type EngineProfileStatus = 'probation' | 'active' | 'demoted' | 'retired';
 
-/** First-class worker identity — pairs config with empirical performance data */
-export interface WorkerProfile {
+/** Engine profile — reasoning engine configuration paired with empirical performance data. */
+export interface EngineProfile {
   id: string; // "worker-{modelBase}-{tempBucket}-{hash(config)}"
-  config: WorkerConfig;
-  status: WorkerProfileStatus;
+  config: EngineConfig;
+  status: EngineProfileStatus;
   createdAt: number;
   promotedAt?: number;
   demotedAt?: number;
@@ -1092,8 +1299,8 @@ export interface WorkerProfile {
   demotionCount: number; // 3 demotions = permanent retirement
 }
 
-/** Worker configuration — identity dimensions */
-export interface WorkerConfig {
+/** Engine configuration — identity dimensions for a reasoning engine. */
+export interface EngineConfig {
   modelId: string; // base model name, e.g., "claude-sonnet"
   modelVersion?: string; // specific version for audit trail
   temperature: number; // quantized to 0.1 increments
@@ -1106,8 +1313,8 @@ export interface WorkerConfig {
   capabilitiesDeclared?: string[];
 }
 
-/** Worker stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
-export interface WorkerStats {
+/** Engine stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
+export interface EngineStats {
   totalTasks: number;
   successRate: number;
   avgQualityScore: number;
@@ -1126,6 +1333,137 @@ export interface WorkerStats {
 }
 
 // ---------------------------------------------------------------------------
+// Agent Profile — workspace-level Vinyan Agent identity (singleton)
+// ---------------------------------------------------------------------------
+
+/** Runtime preferences for THE Vinyan Agent in this workspace. */
+export interface AgentPreferences {
+  /** Approval behavior for high-risk/destructive tasks. Default: 'interactive'. */
+  approvalMode: 'strict' | 'interactive' | 'trusting';
+  /** Verbosity of CLI output and logging. Default: 'normal'. */
+  verbosity: 'quiet' | 'normal' | 'verbose';
+  /** Default thinking depth when not overridden per-task. Default: 'medium'. */
+  defaultThinkingLevel: 'off' | 'low' | 'medium' | 'high';
+  /** Primary interaction language. Default: 'en'. */
+  language: 'en' | 'th';
+}
+
+/** Default preferences when none are specified. */
+export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
+  approvalMode: 'interactive',
+  verbosity: 'normal',
+  defaultThinkingLevel: 'medium',
+  language: 'en',
+};
+
+/**
+ * AgentProfile — workspace-level singleton representing THE Vinyan Agent.
+ *
+ * Exactly ONE per workspace. `id` is always `'local'` (enforced at DB level
+ * via CHECK constraint). Persists across runs. Distinct from:
+ *   - EngineProfile (per-model execution config, N per workspace)
+ *   - Session state (ephemeral, per-task)
+ */
+export interface AgentProfile {
+  /**
+   * Agent id. 'local' = workspace host (Phase 1 singleton, preserved for backward compat).
+   * Phase 2+ allows specialist ids ('ts-coder', 'writer', etc.) from the registry.
+   */
+  id: string;
+  /** A2A instance UUID — reused from `.vinyan/instance-id`. */
+  instanceId: string;
+  /** Human-readable name shown in CLI and A2A card. Default: 'vinyan'. */
+  displayName: string;
+  /** Optional tagline/description for A2A discovery. */
+  description?: string;
+  /** Absolute path of the workspace. */
+  workspacePath: string;
+  /** Epoch ms of first bootstrap. */
+  createdAt: number;
+  /** Epoch ms of last preference/capability update. */
+  updatedAt: number;
+  /** Runtime preferences (config-overridable). */
+  preferences: AgentPreferences;
+  /** Declared capabilities (oracles, engines, MCP servers) advertised to peers. */
+  capabilities: string[];
+  /** Resolved path of VINYAN.md if present (memory link). */
+  vinyanMdPath?: string;
+  /** SHA-256 of VINYAN.md content (freshness tracking). */
+  vinyanMdHash?: string;
+  /** Phase 2: role classification ('host' | 'specialist' | 'custom'). */
+  role?: string;
+  /** Phase 2: comma-separated specialization tags for queryable filtering. */
+  specialization?: string;
+  /** Phase 2: short one-line persona summary (full persona is on filesystem). */
+  persona?: string;
+}
+
+/**
+ * Computed aggregate counters for THE Vinyan Agent.
+ * Not stored in DB — computed on-demand via AgentProfileStore.summarize()
+ * with 60s in-memory cache.
+ */
+export interface AgentProfileSummary {
+  totalTasks: number;
+  distinctTaskTypes: number;
+  successRate: number;
+  activeSkills: number;
+  activeWorkers: number;
+  sleepCyclesRun: number;
+  lastActiveAt: number;
+  lastSleepCycleAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Specialist Agent Fleet — multiple named agents (ts-coder, writer, etc.)
+// Distinct from workspace singleton AgentProfile (id='local').
+// ---------------------------------------------------------------------------
+
+/** Capability overrides for agent ACL intersection (never widens privilege). */
+export interface AgentCapabilityOverrides {
+  readAny?: boolean;
+  writeAny?: boolean;
+  network?: boolean;
+  shell?: boolean;
+}
+
+/** Routing hints — advisory inputs to the intent resolver's agent selection. */
+export interface AgentRoutingHints {
+  minLevel?: number;
+  preferDomains?: string[];
+  preferExtensions?: string[];
+  preferFrameworks?: string[];
+}
+
+/**
+ * AgentSpec — runtime representation of a specialist agent.
+ *
+ * Multiple allowed per workspace. Each has its own persona (soul.md),
+ * ACL (allowed tools + capability overrides), and routing hints.
+ *
+ * Fields:
+ *   - id: kebab-case unique identifier (e.g., 'ts-coder', 'writer')
+ *   - name: human-readable display name
+ *   - description: one-line role summary for intent resolver
+ *   - soul: pre-loaded soul.md content (persona + philosophy + strategies)
+ *   - allowedTools: tool allowlist (intersection with routing defaults)
+ *   - capabilityOverrides: capability restrictions (never widens)
+ *   - routingHints: advisory hints for auto-classification
+ *   - builtin: true if shipped with Vinyan
+ */
+export interface AgentSpec {
+  id: string;
+  name: string;
+  description: string;
+  soul?: string;
+  soulPath?: string;
+  allowedTools?: string[];
+  capabilityOverrides?: AgentCapabilityOverrides;
+  routingHints?: AgentRoutingHints;
+  builtin?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Task Fingerprinting (→ Phase 4.3)
 // ---------------------------------------------------------------------------
 
@@ -1139,11 +1477,11 @@ export interface TaskFingerprint {
 }
 
 // ---------------------------------------------------------------------------
-// Worker Selection (→ Phase 4.4)
+// Engine Selection (→ Phase 4.4)
 // ---------------------------------------------------------------------------
 
-/** Result of capability-based worker selection — audit trail */
-export interface WorkerSelectionResult {
+/** Result of capability-based engine selection — audit trail */
+export interface EngineSelectionResult {
   selectedWorkerId: string;
   reason: 'capability-score' | 'exploration' | 'tier-fallback' | 'assign-worker-rule' | 'uncertain';
   score: number;
@@ -1154,5 +1492,5 @@ export interface WorkerSelectionResult {
   explorationTriggered: boolean;
   dataGateMet: boolean;
   maxCapability?: number; // Phase 4: fleet max capability for this fingerprint
-  isUncertain?: boolean; // Phase 4: true if all workers below capability threshold (A2)
+  isUncertain?: boolean; // Phase 4: true if all engines below capability threshold (A2)
 }

@@ -15,8 +15,23 @@ export {
 } from './openrouter-provider.ts';
 export { type AssembledPrompt, assemblePrompt } from './prompt-assembler.ts';
 export {
+  wrapReminder,
+  hasReminderBlock,
+  REMINDER_PROTOCOL_DESCRIPTION,
+} from './vinyan-reminder.ts';
+export {
   clearInstructionCache,
   type InstructionMemory,
   loadInstructionMemory,
+  loadInstructionMemoryForTask,
 } from './instruction-loader.ts';
+export {
+  type InstructionContext,
+  type InstructionSource,
+  type InstructionTier,
+  type RuleFrontmatter,
+  resolveInstructions,
+  matchesGlob,
+  parseFrontmatter,
+} from './instruction-hierarchy.ts';
 export { LLMProviderRegistry } from './provider-registry.ts';

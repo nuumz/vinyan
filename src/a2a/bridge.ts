@@ -20,6 +20,8 @@ export interface A2ABridgeDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   baseUrl: string;
   a2aManager?: A2AManagerImpl;
+  /** Optional AgentProfile — when present, agent card name/description/capabilities come from here. */
+  agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
 }
 
 export class A2ABridge {
@@ -210,12 +212,21 @@ export class A2ABridge {
 
   /** Serve /.well-known/agent.json */
   getAgentCard(): unknown {
-    return generateAgentCard(this.deps.baseUrl, this.deps.a2aManager?.identity);
+    const agentProfile = this.deps.agentProfileStore?.get() ?? undefined;
+    return generateAgentCard(this.deps.baseUrl, this.deps.a2aManager?.identity, 1, { agentProfile });
   }
 
   /** Map Vinyan TaskResult to A2A Task with artifacts, applying confidence cap */
   private mapResultToA2ATask(taskId: string, result: TaskResult): A2ATask {
-    const state = result.status === 'completed' ? 'completed' : 'failed';
+    // Agent Conversation: Vinyan's `input-required` status is lexically
+    // aligned with A2A's `A2ATaskState` `'input-required'`, so it bridges
+    // directly without translation.
+    const state: A2ATask['status']['state'] =
+      result.status === 'completed'
+        ? 'completed'
+        : result.status === 'input-required'
+          ? 'input-required'
+          : 'failed';
 
     // Build artifacts from mutations — apply I13 confidence cap on verdicts
     const artifacts = result.mutations.map((m) => {
@@ -243,9 +254,48 @@ export class A2ABridge {
       },
     ];
 
+    // Agent Conversation: surface clarification questions in the summary so
+    // A2A peers can see what the agent is asking for.
+    if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
+      summaryParts.push({
+        type: 'text',
+        text: `Clarification needed:\n${result.clarificationNeeded.map((q) => `- ${q}`).join('\n')}`,
+      });
+    }
+
     if (result.escalationReason) {
       summaryParts.push({ type: 'text', text: `Escalation: ${result.escalationReason}` });
     }
+
+    // Agent Conversation §5.6: attach a structured `task_result` data
+    // part so a peer Vinyan instance can recover the full TaskResult on
+    // the round-trip — `mutations`, oracle verdicts, clarification list,
+    // status, and trace correlation — without having to re-parse the
+    // text summary. Generic A2A clients can ignore this artifact and
+    // still get the human-readable summary.
+    const structuredTaskResult = {
+      name: 'task_result',
+      description: 'Vinyan-native TaskResult (Agent Conversation §5.6)',
+      parts: [
+        {
+          type: 'data' as const,
+          data: {
+            id: result.id,
+            status: result.status,
+            mutations: result.mutations,
+            trace: result.trace,
+            qualityScore: result.qualityScore,
+            escalationReason: result.escalationReason,
+            answer: result.answer,
+            notes: result.notes,
+            contradictions: result.contradictions,
+            ...(result.status === 'input-required' && result.clarificationNeeded
+              ? { clarificationNeeded: result.clarificationNeeded }
+              : {}),
+          },
+        },
+      ],
+    };
 
     return {
       id: taskId,
@@ -257,6 +307,7 @@ export class A2ABridge {
         },
       },
       artifacts: [
+        structuredTaskResult,
         {
           name: 'summary',
           description: 'Task execution summary',

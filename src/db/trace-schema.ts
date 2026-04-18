@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   task_id                TEXT NOT NULL,
   session_id             TEXT,
   worker_id              TEXT,
+  agent_id               TEXT,
   timestamp              INTEGER NOT NULL,
   routing_level          INTEGER NOT NULL,
   task_type_signature    TEXT,
@@ -55,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_et_timestamp ON execution_traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_et_quality ON execution_traces(quality_composite);
 CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signature, approach);
 CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
+CREATE INDEX IF NOT EXISTS idx_et_agent_id ON execution_traces(agent_id);
 CREATE INDEX IF NOT EXISTS idx_primary_action ON execution_traces(understanding_primary_action);
 `;
 

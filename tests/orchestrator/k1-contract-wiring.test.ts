@@ -9,11 +9,11 @@
  *   tests/security/tool-authorization.test.ts
  */
 import { describe, expect, test } from 'bun:test';
-import { createContract } from '../../src/core/agent-contract.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/worker/agent-budget.ts';
-import { authorizeToolCall } from '../../src/security/tool-authorization.ts';
 import type { AgentContract } from '../../src/core/agent-contract.ts';
+import { createContract } from '../../src/core/agent-contract.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
+import { authorizeToolCall } from '../../src/security/tool-authorization.ts';
 
 // ── Shared helpers ───────────────────────────────────────────────────
 
@@ -64,28 +64,30 @@ describe('Suite 1: Contract creation from routing', () => {
     expect(contract.immutable).toBe(true);
   });
 
-  test('L1 contract: 2 capabilities (file_read + shell_read), zero tool calls, kill policy, immutable', () => {
+  test('L1 contract: 2 capabilities (file_read + shell_read), 5 tool calls, kill policy, immutable', () => {
     const contract = contractAt(1);
     expect(contract.capabilities).toHaveLength(2);
     const types = contract.capabilities.map((c) => c.type);
     expect(types).toContain('file_read');
     expect(types).toContain('shell_read');
-    expect(contract.maxToolCalls).toBe(0);
+    expect(contract.maxToolCalls).toBe(5);
     expect(contract.onViolation).toBe('kill');
     expect(contract.violationTolerance).toBe(0);
     expect(contract.routingLevel).toBe(1);
     expect(contract.immutable).toBe(true);
   });
 
-  test('L2 contract: 5 capabilities, 20 tool calls, warn_then_kill policy, tolerance 2, immutable', () => {
+  test('L2 contract: 6 capabilities (incl. mcp_call), 20 tool calls, warn_then_kill, tolerance 2, immutable', () => {
     const contract = contractAt(2);
-    expect(contract.capabilities).toHaveLength(5);
+    // Phase 7e added `mcp_call` to the default L2 capability set.
+    expect(contract.capabilities).toHaveLength(6);
     const types = contract.capabilities.map((c) => c.type);
     expect(types).toContain('file_read');
     expect(types).toContain('file_write');
     expect(types).toContain('shell_exec');
     expect(types).toContain('shell_read');
     expect(types).toContain('llm_call');
+    expect(types).toContain('mcp_call');
     expect(contract.maxToolCalls).toBe(20);
     expect(contract.onViolation).toBe('warn_then_kill');
     expect(contract.violationTolerance).toBe(2);
@@ -93,9 +95,11 @@ describe('Suite 1: Contract creation from routing', () => {
     expect(contract.immutable).toBe(true);
   });
 
-  test('L3 contract: 5 capabilities, 50 tool calls, warn_then_kill policy, tolerance 2, immutable', () => {
+  test('L3 contract: 6 capabilities (incl. mcp_call), 50 tool calls, warn_then_kill, tolerance 2, immutable', () => {
     const contract = contractAt(3);
-    expect(contract.capabilities).toHaveLength(5);
+    expect(contract.capabilities).toHaveLength(6);
+    const types = contract.capabilities.map((c) => c.type);
+    expect(types).toContain('mcp_call');
     expect(contract.maxToolCalls).toBe(50);
     expect(contract.onViolation).toBe('warn_then_kill');
     expect(contract.violationTolerance).toBe(2);

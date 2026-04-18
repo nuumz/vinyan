@@ -1,54 +1,44 @@
 /**
- * Instruction Loader — loads project-level instructions from VINYAN.md.
+ * Instruction Loader — loads project-level instructions from VINYAN.md and
+ * the broader instruction hierarchy (user prefs, project rules, learned conventions).
  *
- * Human-authored only (A1: no LLM writes to instruction memory).
- * Falls back gracefully if file not found.
+ * Human-authored only (A1: no LLM writes to user/project/scoped-rule tiers).
+ * The "learned" tier (M4) is agent-proposed but oracle-gated before commit.
+ *
+ * Falls back gracefully if no instruction sources found.
+ *
+ * @see instruction-hierarchy.ts for the multi-tier resolver implementation.
  */
-import { existsSync, readFileSync } from 'fs';
-import { createHash } from 'crypto';
-import { join } from 'path';
+import {
+  resolveInstructions,
+  clearInstructionHierarchyCache,
+  type InstructionMemory as HierarchyMemory,
+  type InstructionContext,
+} from './instruction-hierarchy.ts';
 
-/** Max instruction file size (50KB) — prevents context window blowout. */
-const MAX_INSTRUCTION_SIZE = 50_000;
-
-export interface InstructionMemory {
-  /** Raw content of the instruction file */
-  content: string;
-  /** SHA-256 hash of content for cache invalidation */
-  contentHash: string;
-  /** Absolute path to the file */
-  filePath: string;
-}
-
-/** In-memory cache keyed by content hash */
-let cachedInstructions: InstructionMemory | null = null;
+// Re-export the hierarchy memory type — it's the same shape used throughout the pipeline.
+export type InstructionMemory = HierarchyMemory;
 
 /**
- * Load VINYAN.md from the workspace root. Returns null if not found.
- * Caches by content hash — re-reads only if file content changes.
+ * Load instruction memory for a given workspace.
+ * Backwards-compatible signature: single workspace argument returns project-level instructions
+ * without per-task filtering. Callers that want applyTo-based filtering should call
+ * resolveInstructions() directly with an InstructionContext.
  */
 export function loadInstructionMemory(workspaceRoot: string): InstructionMemory | null {
-  const filePath = join(workspaceRoot, 'VINYAN.md');
-  if (!existsSync(filePath)) return null;
+  return resolveInstructions({ workspace: workspaceRoot });
+}
 
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    if (content.length > MAX_INSTRUCTION_SIZE) return null;
-    const contentHash = createHash('sha256').update(content).digest('hex');
-
-    // Return cached if unchanged
-    if (cachedInstructions?.contentHash === contentHash) {
-      return cachedInstructions;
-    }
-
-    cachedInstructions = { content, contentHash, filePath };
-    return cachedInstructions;
-  } catch {
-    return null;
-  }
+/**
+ * Load instruction memory scoped to a specific task context.
+ * This is the preferred entry point — enables applyTo-based rule filtering so
+ * scoped rules only load when their glob patterns match the task's target files.
+ */
+export function loadInstructionMemoryForTask(ctx: InstructionContext): InstructionMemory | null {
+  return resolveInstructions(ctx);
 }
 
 /** Clear the instruction cache (for testing). */
 export function clearInstructionCache(): void {
-  cachedInstructions = null;
+  clearInstructionHierarchyCache();
 }

@@ -49,36 +49,52 @@ export const EvolutionaryRuleRowSchema = z
     origin: row.origin,
   }));
 
-// ── WorkerProfile row schema ────────────────────────────────────────────
+// ── EngineProfile row schema ────────────────────────────────────────────
 
 const WorkerStatusSchema = z.enum(['probation', 'active', 'demoted', 'retired']);
 
-export const WorkerProfileRowSchema = z.object({
+export const EngineProfileRowSchema = z.object({
   id: z.string(),
   model_id: z.string(),
-  model_version: z.string().nullable().optional(),
-  temperature: z.number(),
-  tool_allowlist: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
-  system_prompt_tpl: z.string().nullable().optional(),
-  max_context_tokens: z.number().nullable().optional(),
   status: WorkerStatusSchema,
   created_at: z.number(),
   promoted_at: z.number().nullable().optional(),
   demoted_at: z.number().nullable().optional(),
   demotion_reason: z.string().nullable().optional(),
   demotion_count: z.number(),
-  // RE-agnostic columns (migration 008)
-  engine_type: z.string().nullable().optional(),
-  capabilities_declared: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => (v ? (JSON.parse(v) as string[]) : undefined)),
-  engine_config: z.string().nullable().optional(),
+  // Authoritative EngineConfig JSON blob. Required column after migration 022.
+  engine_config: z.string().transform((v) => JSON.parse(v) as Record<string, unknown>),
+});
+
+// ── AgentProfile row schema (workspace singleton, migration 023) ────────
+
+export const AgentProfileRowSchema = z.object({
+  id: z.string(),
+  instance_id: z.string(),
+  display_name: z.string(),
+  description: z.string().nullable().optional(),
+  workspace_path: z.string(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  // JSON-encoded AgentPreferences; transformed into plain object for consumers
+  preferences_json: z.string().transform((v) => {
+    try {
+      return JSON.parse(v) as Record<string, unknown>;
+    } catch {
+      return {} as Record<string, unknown>;
+    }
+  }),
+  // JSON-encoded string[] of declared capabilities
+  capabilities_json: z.string().transform((v) => {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [] as string[];
+    }
+  }),
+  vinyan_md_path: z.string().nullable().optional(),
+  vinyan_md_hash: z.string().nullable().optional(),
 });
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────

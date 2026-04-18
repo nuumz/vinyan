@@ -7,29 +7,30 @@
  *
  * Zero overhead when network.instances.enabled = false (default).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import type { VinyanConfig } from '../config/schema.ts';
+import { resolveInstanceId } from './identity.ts';
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import { CalibrationExchange } from './calibration.ts';
+import type { CapabilityUpdate } from './capability-updates.ts';
 import { CapabilityManager } from './capability-updates.ts';
 import { CommitmentTracker } from './commitment.ts';
 import { CostTracker } from './cost-signal.ts';
 import type { ECPDataPart } from './ecp-data-part.ts';
-import { FeedbackManager, type ECPFeedback } from './feedback.ts';
+import { type ECPFeedback, FeedbackManager } from './feedback.ts';
 import { FileInvalidationRelay } from './file-invalidation-relay.ts';
 import { GossipManager } from './gossip.ts';
-import { IntentManager, type ECPIntent } from './intent.ts';
+import { type ECPIntent, IntentManager } from './intent.ts';
 import { KnowledgeExchangeManager } from './knowledge-exchange.ts';
-import { NegotiationManager, type ECPProposal, type ECPAffirm } from './negotiation.ts';
+import { type ECPAffirm, type ECPProposal, NegotiationManager } from './negotiation.ts';
 import { PeerHealthMonitor } from './peer-health.ts';
 import { PeerTrustManager } from './peer-trust.ts';
 import { RemoteBusAdapter } from './remote-bus.ts';
 import { type ECPRetraction, RetractionManager } from './retraction.ts';
+import { type ECPRoomUpdate, RoomManager } from './room.ts';
 import { DistributedTracer } from './trace-context.ts';
-import { TrustAttestationManager, type TrustAttestation } from './trust-attestation.ts';
-import type { CapabilityUpdate } from './capability-updates.ts';
+import { type TrustAttestation, TrustAttestationManager } from './trust-attestation.ts';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ export class A2AManagerImpl {
   readonly commitmentTracker: CommitmentTracker | undefined;
   readonly intentManager: IntentManager | undefined;
   readonly distributedTracer: DistributedTracer | undefined;
+  readonly roomManager: RoomManager | undefined;
 
   private intervals = new Set<ReturnType<typeof setInterval>>();
   private started = false;
@@ -109,9 +111,7 @@ export class A2AManagerImpl {
       provisionalPromotionLB: trust?.promotion_provisional_lb,
       establishedPromotionLB: trust?.promotion_established_lb,
       demotionConsecutiveFailures: trust?.demotion_on_consecutive_failures,
-      inactivityDecayMs: trust?.inactivity_decay_days
-        ? trust.inactivity_decay_days * 86_400_000
-        : undefined,
+      inactivityDecayMs: trust?.inactivity_decay_days ? trust.inactivity_decay_days * 86_400_000 : undefined,
     });
 
     this.costTracker = new CostTracker();
@@ -186,8 +186,7 @@ export class A2AManagerImpl {
         dampeningWindowMs: ks.gossip_dampening_window_ms,
         bus,
         trustManager: this.peerTrustManager,
-        getPeerHealth: (peerId) =>
-          this.peerHealthMonitor?.getState(peerId) ?? 'partitioned',
+        getPeerHealth: (peerId) => this.peerHealthMonitor?.getState(peerId) ?? 'partitioned',
       });
     }
 
@@ -231,6 +230,18 @@ export class A2AManagerImpl {
     if (tracing?.distributed_enabled) {
       this.distributedTracer = new DistributedTracer({ instanceId });
     }
+
+    if (coord?.rooms_enabled && instances?.enabled) {
+      this.roomManager = new RoomManager({
+        instanceId,
+        bus,
+        maxRooms: coord.max_rooms,
+        maxMessageHistory: coord.max_message_history,
+      });
+      if (this.remoteBusAdapter) {
+        this.remoteBusAdapter.setRoomManager(this.roomManager);
+      }
+    }
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -247,17 +258,17 @@ export class A2AManagerImpl {
 
     // Periodic maintenance intervals
     if (this.commitmentTracker) {
-      this.addInterval(() => this.commitmentTracker!.checkDeadlines(), 30_000);
+      this.addInterval(() => this.commitmentTracker?.checkDeadlines(), 30_000);
     }
     if (this.negotiationManager) {
-      this.addInterval(() => this.negotiationManager!.cleanExpired(), 30_000);
+      this.addInterval(() => this.negotiationManager?.cleanExpired(), 30_000);
     }
     if (this.intentManager) {
-      this.addInterval(() => this.intentManager!.cleanExpiredLeases(), 60_000);
+      this.addInterval(() => this.intentManager?.cleanExpiredLeases(), 60_000);
     }
     if (this.gossipManager) {
       const window = this.config.network.knowledge_sharing?.gossip_dampening_window_ms ?? 10_000;
-      this.addInterval(() => this.gossipManager!.cleanExpired(), window);
+      this.addInterval(() => this.gossipManager?.cleanExpired(), window);
     }
     this.addInterval(() => this.retractionManager.cleanExpired(), 300_000);
     this.addInterval(() => this.peerTrustManager.applyInactivityDecay(), 3_600_000);
@@ -335,7 +346,11 @@ export class A2AManagerImpl {
             peerId,
             patternCount: offer.patterns.length,
           });
-          return { handled: true, type: 'knowledge_offer_evaluated', data: acceptance as unknown as Record<string, unknown> };
+          return {
+            handled: true,
+            type: 'knowledge_offer_evaluated',
+            data: acceptance as unknown as Record<string, unknown>,
+          };
         }
         return { handled: true, type: 'knowledge_offer_received' };
 
@@ -350,10 +365,7 @@ export class A2AManagerImpl {
       // ── Trust ──
       case 'trust_attestation': {
         const peerTrust = this.peerTrustManager.getTrustLevel(peerId);
-        this.trustAttestationManager?.integrateAttestation(
-          payload as unknown as TrustAttestation,
-          peerTrust,
-        );
+        this.trustAttestationManager?.integrateAttestation(payload as unknown as TrustAttestation, peerTrust);
         return { handled: true, type: 'attestation_integrated' };
       }
 
@@ -362,8 +374,33 @@ export class A2AManagerImpl {
       case 'partial_verdict':
         return { handled: true, type: 'streaming_event' };
 
+      // ── Cross-instance rooms (R3) ──
+      case 'room_update':
+        if (this.roomManager) {
+          this.roomManager.handleRemoteRoomUpdate(peerId, payload as unknown as ECPRoomUpdate);
+        }
+        // Record room-scoped messages for observability
+        if (ecpPart.room_id && this.roomManager) {
+          this.roomManager.recordMessage(
+            ecpPart.room_id,
+            peerId,
+            ecpPart.message_type,
+            typeof payload.action === 'string' ? `${payload.action}` : 'room_update',
+          );
+        }
+        return { handled: true, type: 'room_update_received' };
+
       // ── Task execution (fall through to bridge) ──
       default:
+        // Record room-scoped non-room_update messages (any ECP type can be room-scoped via room_id)
+        if (ecpPart.room_id && this.roomManager) {
+          this.roomManager.recordMessage(
+            ecpPart.room_id,
+            peerId,
+            ecpPart.message_type,
+            `${ecpPart.message_type} from ${peerId}`,
+          );
+        }
         return { handled: false };
     }
   }
@@ -392,21 +429,4 @@ export class A2AManagerImpl {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
-
-function resolveInstanceId(workspace: string): string {
-  const vinyanDir = join(workspace, '.vinyan');
-  const idPath = join(vinyanDir, 'instance-id');
-
-  if (existsSync(idPath)) {
-    return readFileSync(idPath, 'utf-8').trim();
-  }
-
-  if (!existsSync(vinyanDir)) {
-    mkdirSync(vinyanDir, { recursive: true });
-  }
-
-  const id = crypto.randomUUID();
-  writeFileSync(idPath, id);
-  return id;
-}
+// resolveInstanceId moved to ./identity.ts — shared by A2AManager and factory.ts

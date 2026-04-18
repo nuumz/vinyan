@@ -16,7 +16,7 @@
 | Multi-turn worker IPC protocol (ndjson, 3 OrchestratorTurn + 3 WorkerTurn types) | ECP wire format & epistemic semantics → [ecp-spec.md](../spec/ecp-spec.md) |
 | AgentSession, AgentLoop, AgentBudget (3-pool), SessionOverlay | Full trust degradation matrix → [protocol-architecture.md §6](../architecture/protocol-architecture.md) |
 | DelegationRouter (6 invariants), delegation via ToolContext | A2A inter-instance protocol → [a2a-protocol.md](../spec/a2a-protocol.md) |
-| PerceptionCompressor, context compression recovery | ECP v2 research → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| PerceptionCompressor, context compression recovery | ECP research → [ecp-research.md](../research/ecp-research.md) |
 | Capability matrix (L0-L3 tool authorization) | Protocol stack & transport abstraction → [protocol-architecture.md](../architecture/protocol-architecture.md) |
 | Provider message format normalization (Anthropic/OpenAI) | |
 > - v6 — Deep codebase cross-reference: fix ToolExecutor classification (now MODIFY, not unchanged); fix DelegationRouter R6 + budget calc; fix handleDelegation budget derivation lifecycle; add try/finally + guardrails.scan() to AgentLoop; fix Capability Matrix L0/L1 inconsistencies; rewrite §13 Data Flow with complete pipeline (all paths, post-verify steps, escalation); expand §14 Migration Plan (core-loop dual-path, orphan protection, delegate_task tool impl)

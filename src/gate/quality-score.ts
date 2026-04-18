@@ -59,7 +59,7 @@ export function computeQualityScore(
       efficiency,
       composite: Math.min(0.5, efficiency * 0.4 + 0.5 * 0.1),
       dimensionsAvailable: 1,
-      phase: 'phase0',
+      phase: 'basic',
       unverified: true,
     };
   } else if (oracleTiers) {
@@ -113,16 +113,16 @@ export function computeQualityScore(
   if (dims === 4) {
     composite =
       architecturalCompliance * 0.3 + efficiency * 0.2 + simplificationGain! * 0.25 + testPresenceHeuristic! * 0.25;
-    phase = 'phase1';
+    phase = 'extended';
   } else if (dims === 3 && simplificationGain != null) {
     composite = architecturalCompliance * 0.35 + efficiency * 0.25 + simplificationGain * 0.4;
-    phase = 'phase1';
+    phase = 'extended';
   } else if (dims === 3 && testPresenceHeuristic != null) {
     composite = architecturalCompliance * 0.35 + efficiency * 0.25 + testPresenceHeuristic * 0.4;
-    phase = 'phase1';
+    phase = 'extended';
   } else {
     composite = architecturalCompliance * 0.6 + efficiency * 0.4;
-    phase = 'phase0';
+    phase = 'basic';
   }
 
   return {
@@ -164,7 +164,7 @@ export function buildComplexityContext(
   };
 }
 
-// ── ECP v2: Pipeline-split helpers (DE4) ────────────────────────────
+// ── Pipeline-split helpers (DE4) ────────────────────────────────────
 
 /**
  * Compute architecturalCompliance directly from oracle verdicts.
@@ -175,7 +175,7 @@ export function computeFromVerdicts(
   oracleTiers?: Record<string, string>,
 ): number {
   const entries = Object.entries(oracleResults);
-  if (entries.length === 0) return 0.5; // ECP v2: unknown = maximum uncertainty
+  if (entries.length === 0) return 0.5; // unknown = maximum uncertainty (A2)
 
   if (oracleTiers) {
     let weightedSum = 0;

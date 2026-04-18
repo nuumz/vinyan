@@ -99,6 +99,16 @@ export class ToolExecutor {
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
   }
+
+  /**
+   * Phase 7e: register a tool after construction. Used by the factory
+   * to merge MCP-discovered tools into the executor once the MCP client
+   * pool has finished `initialize()` — MCP connection is async and we
+   * don't want to block orchestrator startup on remote servers.
+   */
+  registerTool(name: string, tool: Tool): void {
+    this.tools.set(name, tool);
+  }
 }
 
 /** Convert a ToolResult to ECP Evidence with content hash (TDD §18.4). */

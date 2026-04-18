@@ -8,7 +8,30 @@ import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 
 // ── View / Navigation ───────────────────────────────────────────────
 
-export type ViewTab = 'tasks' | 'system' | 'peers' | 'events' | 'economy';
+export type ViewTab = 'tasks' | 'system' | 'peers' | 'events' | 'economy' | 'chat';
+
+/**
+ * Chat (PR #11) — read-only conversation entry for the TUI Chat tab.
+ * Mirrors the SessionManager's ConversationEntry shape but kept as a
+ * TUI-local type so the TUI module does not depend on the api layer
+ * directly. The DataSource is responsible for converting between the
+ * two when populating state.
+ */
+export interface ChatMessageEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  /** Optional task id linkage for the "View Task" navigation. */
+  taskId?: string;
+}
+
+export interface ChatSessionSummary {
+  id: string;
+  source: string;
+  status: string;
+  createdAt: number;
+  messageCount: number;
+}
 export type InputMode = 'normal' | 'command' | 'filter';
 
 // ── Notifications & Feedback ────────────────────────────────────────
@@ -94,7 +117,7 @@ export interface TaskDisplayState {
   goal: string;
   source: string;
   routingLevel: number;
-  status: 'running' | 'completed' | 'failed' | 'escalated' | 'uncertain' | 'approval_required';
+  status: 'running' | 'completed' | 'failed' | 'escalated' | 'uncertain' | 'approval_required' | 'input-required';
   startedAt: number;
   completedAt?: number;
   durationMs?: number;
@@ -176,6 +199,34 @@ export interface TUIState {
   // Peers
   peers: Map<string, PeerDisplayState>;
   selectedPeerId: string | null;
+
+  // Chat (PR #11) — Agent Conversation read-only viewer
+  chatActiveSessionId: string | null;
+  chatConversation: ChatMessageEntry[];
+  chatPendingClarifications: string[];
+  /**
+   * Phase D+E: structured clarification questions populated by the
+   * `agent:clarification_requested` bus event. When present, the chat view
+   * renders them as selectable option chips/checkboxes; otherwise the view
+   * falls back to the legacy string list in `chatPendingClarifications`.
+   */
+  chatStructuredClarifications: import('../core/clarification.ts').ClarificationQuestion[];
+  /**
+   * Phase E: workflow plan surfaced by `workflow:plan_ready`. Rendered as a
+   * TODO checklist under the conversation. `null` when no plan is active.
+   */
+  chatWorkflowPlan: {
+    taskId: string;
+    goal: string;
+    steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
+  } | null;
+  /**
+   * Per-step status driven by `workflow:step_start` / `workflow:step_complete`.
+   * Entries missing from the map are considered 'pending'.
+   */
+  chatWorkflowStepStatus: Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>;
+  chatSessions: ChatSessionSummary[];
+  chatScroll: number;
 
   // History (for sparklines)
   successHistory: number[];

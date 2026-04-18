@@ -4,11 +4,12 @@
  * Verifies that verificationHint in GateRequest selectively filters oracles
  * while preserving backwards compatibility and respecting circuit breaker state.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, runGate } from '../../src/gate/index.ts';
+import { clearGateDeps } from '../../src/gate/gate.ts';
 
 let workspace: string;
 
@@ -20,6 +21,10 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(workspace, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  clearGateDeps();
 });
 
 function makeRequest(overrides: Partial<GateRequest> = {}): GateRequest {

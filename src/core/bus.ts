@@ -20,7 +20,7 @@ import type {
   TaskResult,
   ToolResult,
   WorkerOutput,
-  WorkerProfile,
+  EngineProfile,
 } from '../orchestrator/types.ts';
 import type { Fact, OracleVerdict } from './types.ts';
 
@@ -34,6 +34,41 @@ export interface VinyanBusEvents {
   'worker:dispatch': { taskId: string; routing: RoutingDecision };
   'oracle:verdict': { taskId: string; oracleName: string; verdict: OracleVerdict };
   'critic:verdict': { taskId: string; accepted: boolean; confidence: number; reason?: string };
+  // Book-integration Wave 5: emitted by DebateRouterCritic when the
+  // debate path (3-seat advocate/counter/architect) fires, either
+  // because risk score ≥ threshold or because `DEBATE:force` was in
+  // the task constraints. Consumers (Economy OS, dashboards) use this
+  // to track debate spending separately from baseline critic spending.
+  //
+  // `trigger` is either a manual override ('force'/'skip') or
+  // 'risk-threshold' when the router fired based on the risk rule.
+  'critic:debate_fired': {
+    taskId: string;
+    riskScore?: number;
+    routingLevel?: number;
+    trigger: 'force' | 'skip' | 'risk-threshold';
+  };
+  // Book-integration Wave 5.7a: emitted when DebateBudgetGuard denies
+  // a would-be debate fire because the per-task cap was reached. Paired
+  // with `critic:debate_fired` for dashboards — the difference between
+  // the two counts tells operators how often debate was BLOCKED by the
+  // cap vs how often it successfully fired.
+  //
+  // `denyType` is the programmatic discriminator for dashboard filtering:
+  //   - 'max-per-task': per-task cap reached for this task id
+  //   - 'max-per-day':  per-day cap reached across all tasks
+  // `reason` is a short human-readable string; `maxPerTask` /
+  // `maxPerDay` are the configured caps; `taskCount` and `dayCount`
+  // are the current counters at the moment of the deny.
+  'critic:debate_denied': {
+    taskId: string;
+    reason: string;
+    denyType: 'max-per-task' | 'max-per-day';
+    maxPerTask: number;
+    maxPerDay: number | null;
+    taskCount: number;
+    dayCount: number;
+  };
   'trace:record': { trace: ExecutionTrace };
 
   // Worker lifecycle
@@ -93,6 +128,9 @@ export interface VinyanBusEvents {
   'tool:remediation_succeeded': { taskId: string; correctedCommand: string };
   'tool:remediation_failed': { taskId: string; reason: string };
 
+  // User preference learning — behavioral app/tool preference applied
+  'preference:applied': { taskId: string; category: string; preferredApp: string; usageCount: number };
+
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
@@ -116,6 +154,17 @@ export interface VinyanBusEvents {
   'guardrail:injection_detected': { field: string; patterns: string[] };
   'guardrail:bypass_detected': { field: string; patterns: string[] };
   'guardrail:violation': { workerId: string; type: string; details?: string };
+  // Book-integration Wave 1.1: worker-level silence watchdog.
+  // `state` = 'silent' → recoverable warning; 'stalled' → recommend kill.
+  // `silentForMs` is the gap since the last worker turn; `lastEvent`
+  // is the label of the last heartbeat (e.g. "tool_calls", "session_start").
+  'guardrail:silent_agent': {
+    taskId: string;
+    workerId?: string;
+    state: 'silent' | 'stalled';
+    silentForMs: number;
+    lastEvent: string;
+  };
 
   // K1.5: Security violation — input rejected at task entry (block, not strip)
   'security:injection_detected': { taskId: string; detections: string[]; timestamp: number };
@@ -127,7 +176,13 @@ export interface VinyanBusEvents {
   'oracle:contradiction': { taskId: string; passed: string[]; failed: string[] };
 
   // K1.1: Contradiction escalation — auto-escalate routing level on unresolved oracle conflict
-  'verification:contradiction_escalated': { taskId: string; fromLevel: number; toLevel: number; passed: string[]; failed: string[] };
+  'verification:contradiction_escalated': {
+    taskId: string;
+    fromLevel: number;
+    toLevel: number;
+    passed: string[];
+    failed: string[];
+  };
   'verification:contradiction_unresolved': { taskId: string; passed: string[]; failed: string[] };
 
   // ECP §7.3: Engine requests more compute budget (A2: uncertainty is first-class)
@@ -142,11 +197,14 @@ export interface VinyanBusEvents {
   // DAG decomposition fallback (A3: deterministic governance transparency)
   'decomposer:fallback': { taskId: string };
 
-  // Worker lifecycle (Phase 4.2)
-  'worker:registered': { profile: WorkerProfile };
-  'worker:promoted': { workerId: string; afterTasks: number; successRate: number };
-  'worker:demoted': { workerId: string; reason: string; permanent: boolean };
-  'worker:reactivated': { workerId: string; previousDemotionCount: number };
+  // Unified profile lifecycle — kind='worker' | 'oracle-peer' | 'oracle-local'.
+  // Single source of truth for promotion/demotion/retire/reactivate across all
+  // profile kinds. Consumers filter by `kind` when they care about a subset.
+  'profile:registered': { kind: string; id: string };
+  'profile:promoted': { kind: string; id: string; reason: string };
+  'profile:demoted': { kind: string; id: string; reason: string; permanent: boolean };
+  'profile:reactivated': { kind: string; id: string; emergency?: boolean };
+  'profile:retired': { kind: string; id: string; reason: string };
 
   // Worker selection (Phase 4.4)
   'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
@@ -238,38 +296,251 @@ export interface VinyanBusEvents {
 
   // Phase 6.4: Delegation events
   'delegation:done': { parentTaskId: string; childTaskId: string; status: string; tokensUsed: number };
+  // Agent Conversation §5.6: emitted when handleDelegation dispatches a
+  // child task to a peer Vinyan instance instead of a local subprocess.
+  // Distinct from delegation:done so dashboards can audit the local-vs-
+  // remote split without parsing every delegation:done payload.
+  'delegation:remote': { parentTaskId: string; childTaskId: string; peerId: string; status: string };
 
   // Phase 6.5: Agent session observability
-  'agent:session_start': { taskId: string; routingLevel: number; budget: { maxTokens: number; maxTurns: number; contextWindow: number } };
-  'agent:session_end': { taskId: string; outcome: string; tokensConsumed: number; turnsUsed: number; durationMs: number };
+  'agent:session_start': {
+    taskId: string;
+    routingLevel: number;
+    budget: { maxTokens: number; maxTurns: number; contextWindow: number };
+  };
+  'agent:session_end': {
+    taskId: string;
+    outcome: string;
+    tokensConsumed: number;
+    turnsUsed: number;
+    durationMs: number;
+  };
   'agent:turn_complete': { taskId: string; turnId: string; tokensConsumed: number; turnsRemaining: number };
-  'agent:tool_executed': { taskId: string; turnId: string; toolName: string; durationMs: number; isError: boolean };
+  /**
+   * Tool execution started — emitted by agent-loop BEFORE calling executeTool.
+   * UI surfaces this as a "running" tool card for the "full Claude Code feel".
+   * Safety: observational only (A3). If the tool then fails / times out,
+   * `agent:tool_executed` still fires with `isError:true`, so UI state converges.
+   */
+  'agent:tool_started': { taskId: string; turnId: string; toolCallId: string; toolName: string; args?: unknown };
+  'agent:tool_executed': {
+    taskId: string;
+    turnId: string;
+    toolName: string;
+    durationMs: number;
+    isError: boolean;
+    toolCallId?: string;
+  };
+  // Agent Conversation: fires when a task returns status='input-required'
+  // because either the agent OR the orchestrator paused to ask the user
+  // clarifying questions. Consumers (TUI, API streaming, logging) should
+  // surface the questions as a friendly prompt, NOT as an error.
+  //
+  // `source` distinguishes the two paths:
+  //   - 'agent':        the worker LLM self-reported uncertainty via
+  //                     attempt_completion(needsUserInput=true).
+  //   - 'orchestrator': the core loop's Comprehension Check gate fired
+  //                     before generation, based on deterministic
+  //                     heuristics over the TaskUnderstanding.
+  // Field is optional for backward compatibility with listeners that
+  // were written before the orchestrator-driven path existed.
+  'agent:clarification_requested': {
+    taskId: string;
+    sessionId?: string;
+    /** Legacy string-only rendering. Always populated for back-compat. */
+    questions: string[];
+    /**
+     * Structured questions (Phase D). When present, UIs SHOULD prefer this
+     * over `questions` so they can render selectable options. Remains optional
+     * so emitters that haven't migrated yet don't need to change shape.
+     */
+    structuredQuestions?: import('./clarification.ts').ClarificationQuestion[];
+    routingLevel: number;
+    source?: 'agent' | 'orchestrator';
+  };
+  /**
+   * User's response to a structured clarification. Emitted by UIs (TUI / API
+   * WS) so the orchestrator can resume the paused task with the user's
+   * selections + free-text override.
+   */
+  'agent:clarification_response': {
+    taskId: string;
+    sessionId?: string;
+    responses: import('./clarification.ts').ClarificationResponse[];
+  };
+  /** Agent thinking/rationale — what the LLM is reasoning about this turn. */
+  'agent:thinking': { taskId: string; turnId: string; rationale: string };
+  /**
+   * Token-level assistant text delta (Phase 2 realtime chat). Emitted while
+   * an LLM response is being generated, before `agent:turn_complete`. Purely
+   * observational — governance decisions NEVER depend on these events (A3).
+   * Gated by config.streaming.assistantDelta (default false).
+   */
+  'agent:text_delta': { taskId: string; turnId?: string; text: string };
+  /**
+   * Rich LLM stream delta — superset of `agent:text_delta` that carries
+   * structured kinds (content / thinking / tool_use_*). Emitted by the
+   * agent loop on the orchestrator side after the worker forwards a
+   * `stream_delta` NDJSON frame, so A3 stays intact (the bus is emitted
+   * in-orchestrator, not from the subprocess).
+   *
+   * Consumers (ChatStreamRenderer, SSE, VS Code panel) MAY subscribe to
+   * either `agent:text_delta` (text-only legacy) or `llm:stream_delta`
+   * (rich) — both fire during the same turn when both paths are active.
+   */
+  'llm:stream_delta': {
+    taskId: string;
+    turnId?: string;
+    engineId?: string;
+    kind: 'content' | 'thinking' | 'tool_use_start' | 'tool_use_input' | 'tool_use_end';
+    text?: string;
+    toolId?: string;
+    tool?: string;
+    partialJson?: string;
+  };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
   'dag:executed': { taskId: string; nodes: number; parallel: boolean; fileConflicts: number };
 
   // Intent Resolution (pre-pipeline LLM classification)
-  'intent:resolved': { taskId: string; strategy: string; confidence: number; reasoning: string };
+  'intent:resolved': {
+    taskId: string;
+    strategy: string;
+    confidence: number;
+    reasoning: string;
+    /** Epistemic state: `known` | `uncertain` | `contradictory`. */
+    type?: string;
+    /** Origin of the decision: `deterministic`, `llm`, `merged`, `cache`, `fallback`. */
+    source?: string;
+  };
+  /** Deterministic rule and LLM disagreed — A5 tier order selected the winning strategy. */
+  'intent:contradiction': {
+    taskId: string;
+    ruleStrategy: string;
+    llmStrategy: string;
+    ruleConfidence: number;
+    llmConfidence: number;
+    winner: string;
+  };
+  /** Low-confidence or ambiguous resolution — user clarification requested. */
+  'intent:uncertain': {
+    taskId: string;
+    reason: string;
+    clarificationRequest: string;
+  };
+  /** Cache hit — re-used a prior resolution without re-classifying. */
+  'intent:cache_hit': { taskId: string; cacheKey: string };
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };
-  'understanding:layer1_complete': { taskId: string; durationMs: number; entitiesResolved: number; isRecurring: boolean };
+  'understanding:layer1_complete': {
+    taskId: string;
+    durationMs: number;
+    entitiesResolved: number;
+    isRecurring: boolean;
+  };
   'understanding:layer2_complete': { taskId: string; durationMs: number; hasIntent: boolean; depth: number };
-  'understanding:claims_verified': { taskId: string; durationMs: number; totalClaims: number; knownClaims: number; contradictoryClaims: number };
+  'understanding:claims_verified': {
+    taskId: string;
+    durationMs: number;
+    totalClaims: number;
+    knownClaims: number;
+    contradictoryClaims: number;
+  };
   'understanding:calibration': { taskId: string; entityAccuracy: number; categoryMatch: boolean };
 
   // Extensible Thinking events
-  'thinking:policy-compiled': { taskId: string; policy: import('../orchestrator/thinking/thinking-policy.ts').ThinkingPolicy; routingLevel: number };
+  'thinking:policy-compiled': {
+    taskId: string;
+    policy: import('../orchestrator/thinking/thinking-policy.ts').ThinkingPolicy;
+    routingLevel: number;
+  };
   // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
-  'thinking:escalation-path-chosen': { taskId: string; path: 'lateral' | 'vertical' | 'refuse'; fromLevel?: number; toLevel?: number };
+  'thinking:escalation-path-chosen': {
+    taskId: string;
+    path: 'lateral' | 'vertical' | 'refuse';
+    fromLevel?: number;
+    toLevel?: number;
+  };
+  // Emitted by trace-collector after a task completes, pairing the
+  // thinking mode that was used with the measured outcome. Consumed by the
+  // thinking readiness gate (`TraceStore.getSuccessRateByThinkingMode`) to
+  // decide when adaptive thinking is unblocked — requires ≥100 traces total
+  // and a measurable success-rate delta between thinking modes. Payload is
+  // deliberately flat so offline analysis tooling can tail the bus without
+  // loading the full trace.
+  'thinking:policy-evaluated': {
+    taskId: string;
+    thinkingMode: string | null;
+    thinkingTokensUsed: number | null;
+    routingLevel: number;
+    outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+    qualityComposite: number | null;
+    oracleCompositeScore: number | null;
+  };
+
+  // Thinking readiness verdict — emitted by sleep-cycle after evaluating
+  // thinking mode A/B readiness. Consumed by dashboards and adaptive thinking opt-in.
+  'thinking:readiness-evaluated': {
+    status: 'blocked' | 'ready';
+    reason?: string;
+    bestMode?: string;
+    successRateDelta?: number;
+    totalTraces: number;
+  };
+
+  // Monitoring — Self-Improving Autonomy events.
+  // Per-oracle EMA accuracy update — emitted on warm-threshold crossings
+  // and on accuracy moves of ≥ 0.01. Dashboards / sleep-cycle promotion
+  // logic can subscribe to track engine reliability over time.
+  'monitoring:oracle_calibration': {
+    oracleName: string;
+    accuracy: number;
+    observationCount: number;
+    warm: boolean;
+  };
+  // Drift detected between SelfModel prediction and actual trace outcome.
+  // `triggeredDimensions` is the ordered list of dimension names that
+  // crossed their threshold (testResults | blastRadius | duration |
+  // qualityScore). `maxRelDelta` is useful for severity ranking.
+  'monitoring:drift_detected': {
+    taskId: string;
+    triggeredDimensions: string[];
+    maxRelDelta: number;
+  };
+  // Silent regression alert: rolling-window success rate dropped below
+  // baseline for one task type. Cool-down enforced inside RegressionMonitor
+  // so dashboards don't get spammed by persistent regressions.
+  'monitoring:silent_regression': {
+    taskTypeSignature: string;
+    recentSuccessRate: number;
+    baselineSuccessRate: number;
+    drop: number;
+    observations: number;
+  };
 
   // Economy Operating System events (Layer 1)
-  'economy:cost_recorded': { taskId: string; engineId: string; computed_usd: number; cost_tier: 'billing' | 'estimated' };
-  'economy:budget_warning': { window: 'hour' | 'day' | 'month'; utilization_pct: number; spent_usd: number; limit_usd: number };
-  'economy:budget_exceeded': { window: 'hour' | 'day' | 'month'; spent_usd: number; limit_usd: number; enforcement: string };
+  'economy:cost_recorded': {
+    taskId: string;
+    engineId: string;
+    computed_usd: number;
+    cost_tier: 'billing' | 'estimated';
+  };
+  'economy:budget_warning': {
+    window: 'hour' | 'day' | 'month';
+    utilization_pct: number;
+    spent_usd: number;
+    limit_usd: number;
+  };
+  'economy:budget_exceeded': {
+    window: 'hour' | 'day' | 'month';
+    spent_usd: number;
+    limit_usd: number;
+    enforcement: string;
+  };
   'economy:budget_degraded': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'economy:rate_card_miss': { engineId: string; fallback: string };
 
@@ -311,6 +582,178 @@ export interface VinyanBusEvents {
   'market:settlement_accurate': { provider: string; capability?: string; taskId: string };
   'market:settlement_inaccurate': { provider: string; capability?: string; taskId: string };
   'economy:cost_pattern_detected': { patternId: string; type: string; engineId: string; taskType: string };
+
+  // Wave 1: Goal-Satisfaction Outer Loop
+  'goal-loop:iteration-start': { taskId: string; iteration: number };
+  'goal-loop:terminal': { taskId: string; iteration: number; status: TaskResult['status'] };
+  'goal-loop:evaluation': {
+    taskId: string;
+    iteration: number;
+    score: number;
+    basis: string;
+    passedChecks: string[];
+    failedChecks: string[];
+  };
+  'goal-loop:exhausted': { taskId: string; iteration: number };
+  'goal-loop:no-replan': { taskId: string; iteration: number };
+  'goal-loop:budget-exhausted': { taskId: string; iteration: number };
+  'goal-loop:replan-exhausted': { taskId: string; iteration: number };
+  'goal-loop:negative-momentum': {
+    taskId: string;
+    iteration: number;
+    trajectory: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').GoalTrajectory;
+  };
+
+  // Wave C: Content hash verification
+  'gate:content_hash_mismatch': {
+    file: string;
+    oracleName: string;
+    expected: string;
+    actual: string;
+  };
+
+  // Wave 2: Replan Engine observability
+  'replan:accepted': { taskId: string; iteration: number; planSignature: string };
+  'replan:rejected': { taskId: string; iteration: number; reason: string };
+
+  // Wave 5: Reactive micro-learning — failure cluster signal
+  'failure:cluster-detected': { taskSignature: string; failureCount: number; taskIds: string[] };
+  'reactive:rule-generated': {
+    ruleId: string;
+    taskSignature: string;
+    action: string;
+    specificity: number;
+  };
+  'reactive:rule-skipped': { taskSignature: string; reason: string };
+
+  // Wave 4: Agent-loop goal-check observability
+  'agent-loop:goal-check': {
+    taskId: string;
+    score: number;
+    decision: 'accept' | 'continue' | 'reject';
+    reason: string;
+  };
+
+  // Room dispatcher observability — emitted by src/orchestrator/room/room-dispatcher.ts.
+  // Declared here (rather than the parallel room-dispatcher PR) because cross-file
+  // bus event declarations must live in a single shared schema for type safety.
+  'room:opened': {
+    roomId: string;
+    parentTaskId: string;
+    roles: string[];
+    maxRounds: number;
+  };
+  'room:failed': {
+    roomId: string;
+    reason: string;
+    rounds: number;
+  };
+  'room:converged': {
+    roomId: string;
+    rounds: number;
+    mutations: number;
+    confidence: number;
+  };
+  'room:message_committed': {
+    roomId: string;
+    seq: number;
+    author: string;
+    entryType: string;
+  };
+  'room:participant_admitted': {
+    roomId: string;
+    participantId: string;
+    roleName: string;
+    workerModelId: string;
+  };
+  'room:blackboard_updated': {
+    roomId: string;
+    key: string;
+    author: string;
+    version: number;
+  };
+  'room:round_completed': {
+    roomId: string;
+    round: number;
+    participantsActed: number;
+    tokensConsumedThisRound: number;
+    convergence: 'converged' | 'partial' | 'open';
+  };
+
+  // Wave A: Error attribution — A7 learning loop closure
+  'learning:error_attributed': {
+    taskId: string;
+    correctionType: string;
+    detail: string;
+    applied: boolean;
+  };
+  'learning:success_pattern': {
+    taskSignature: string;
+    approach: string;
+    commonOracles: string[];
+    occurrences: number;
+  };
+
+  // A2A cross-instance rooms (R3) — scoped communication channels between peers.
+  'a2a:roomCreated': { roomId: string; name: string; roomType: string; creatorInstanceId: string };
+  'a2a:roomJoined': { roomId: string; instanceId: string; peerUrl: string };
+  'a2a:roomLeft': { roomId: string; instanceId: string };
+  'a2a:roomArchived': { roomId: string };
+  'a2a:roomMessage': { roomId: string; senderId: string; messageType: string; summary: string };
+
+  // Workflow orchestration — self-orchestrating agent workflow planner + executor
+  'workflow:plan_created': { goal: string; stepCount: number; strategies: string[] };
+  /**
+   * Phase E: fires once per task after the plan has been finalized (research
+   * injection applied) and BEFORE any step executes. UIs use this to render a
+   * human-readable TODO checklist and — when `workflow.requireUserApproval`
+   * is on — display an approval prompt.
+   */
+  'workflow:plan_ready': {
+    taskId: string;
+    goal: string;
+    steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
+    /** True when the orchestrator is waiting for the user to approve before executing. */
+    awaitingApproval: boolean;
+  };
+  /** User (via TUI / HTTP / WS) approved a plan that was awaiting approval. */
+  'workflow:plan_approved': { taskId: string; sessionId?: string };
+  /** User rejected a plan or the approval timer expired. */
+  'workflow:plan_rejected': { taskId: string; sessionId?: string; reason?: string };
+  'workflow:step_start': { stepId: string; strategy: string; description: string };
+  'workflow:step_complete': {
+    stepId: string;
+    status: 'completed' | 'failed' | 'skipped';
+    strategy: string;
+    durationMs: number;
+    tokensConsumed: number;
+  };
+  'workflow:step_fallback': { stepId: string; primaryStrategy: string; fallbackStrategy: string };
+  'workflow:research_injected': { goal: string; reason: string };
+  'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
+  'workflow:knowledge_query': { stepId: string; query: string };
+  'workflow:human_input_needed': { stepId: string; question: string };
+  // Agent Context Layer: emitted during sleep cycle when agent identities are refined
+  'agent:evolved': {
+    cycleId: string;
+    agentsEvolved: number;
+    episodesCompacted: number;
+    personasRefined: number;
+    skillsGraduated: number;
+    soulsEvolved: number;
+  };
+  // Living Agent Soul: emitted when an agent's SOUL.md is synthesized
+  'agent:soul-evolved': {
+    agentId: string;
+    version: number;
+  };
+  // Phase 2: AgentRouter decision for specialist selection
+  'agent:routed': {
+    taskId: string;
+    agentId: string;
+    reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
+    score: number;
+  };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

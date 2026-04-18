@@ -12,7 +12,7 @@
 | Transport abstraction & resolution | A2A message types & trust lifecycle → [a2a-protocol.md](../spec/a2a-protocol.md) |
 | Remote oracle pattern (connection, trust degradation, circuit breaker) | Agentic worker IPC & delegation → [agentic-worker-protocol.md](../design/agentic-worker-protocol.md) |
 | MCP/A2A bridge **implementation plans** (tool schemas, wiring, files to modify) | MCP/A2A bridge **translation semantics** → [ecp-spec.md](../spec/ecp-spec.md) §10 |
-| **§6 Trust Degradation Matrix — canonical source** for the full cross-layer trust model | ECP v2 research directions → [ecp-v2-research.md](../research/ecp-v2-research.md) |
+| **§6 Trust Degradation Matrix — canonical source** for the full cross-layer trust model | ECP research directions → [ecp-research.md](../research/ecp-research.md) |
 | Migration path & execution order | |
 
 ---
@@ -498,17 +498,17 @@ Tier 3 — Cross-Language (independent):
 | D5 | Remote oracle registration | Push (engine → orchestrator) | Engine initiates connection, declares capabilities. Orchestrator doesn't need to discover engines. |
 | D6 | MCP expansion | 4 → 8 tools | Cover the most common external integration patterns without overwhelming the tool list. |
 | D7 | A2A verification | New `/a2a/verify` endpoint | Lightweight alternative to full task submission. Same trust degradation. |
-| D8 | Batch verification | Deferred to ECP v2 | Keep v1 simple (one hypothesis per request). Batch adds complexity. |
-| D9 | Confidence model | Scalar [0,1] in v1, belief/plausibility tuple in v2 | DS theory recommends `[Bel, Pl]` intervals but scalar is simpler for initial adoption. See §9.1. |
-| D10 | Multi-oracle combination | Priority-based heuristic (v1); DS combination as v2 research | v1: 5-step deterministic resolution in `conflict-resolver.ts`. v2: Dempster's rule under investigation — see [ecp-v2-research.md §2](../research/ecp-v2-research.md#2-multi-oracle-aggregation-ds-combination). |
-| D11 | LLM confidence policy | Explicit exclusion from governance | LLM self-confidence poorly calibrated (Kadavath 2022, Xiong 2024). Hard policy, not guideline. See [ecp-v2-research.md §3](../research/ecp-v2-research.md#3-llm-confidence-exclusion-policy). |
-| D12 | Evidence integrity | Merkle-chained evidence in v2 | Certificate Transparency pattern for tamper-proof evidence chains. See [ecp-v2-research.md §4](../research/ecp-v2-research.md#4-merkle-chained-evidence). |
+| D8 | Batch verification | Deferred | Keep v1 simple (one hypothesis per request). Batch adds complexity. |
+| D9 | Confidence model | Scalar [0,1] now, belief/plausibility tuple planned | DS theory recommends `[Bel, Pl]` intervals but scalar is simpler for initial adoption. See §9.1. |
+| D10 | Multi-oracle combination | Priority-based heuristic now; DS combination as future research | Current: 5-step deterministic resolution in `conflict-resolver.ts`. Future: Dempster's rule under investigation — see [ecp-research.md §2](../research/ecp-research.md#2-multi-oracle-aggregation-ds-combination). |
+| D11 | LLM confidence policy | Explicit exclusion from governance | LLM self-confidence poorly calibrated (Kadavath 2022, Xiong 2024). Hard policy, not guideline. See [ecp-research.md §3](../research/ecp-research.md#3-llm-confidence-exclusion-policy). |
+| D12 | Evidence integrity | Merkle-chained evidence (planned) | Certificate Transparency pattern for tamper-proof evidence chains. See [ecp-research.md §4](../research/ecp-research.md#4-merkle-chained-evidence). |
 
 ---
 
-## §9 Research Directions (ECP v2)
+## §9 ECP Research Directions
 
-> Full research content extracted to **[ecp-v2-research.md](../research/ecp-v2-research.md)**.
+> Full research content extracted to **[ecp-research.md](../research/ecp-research.md)**.
 >
 > Topics: (1) Belief intervals replacing scalar confidence, (2) Dempster-Shafer multi-oracle combination, (3) LLM confidence exclusion policy, (4) Merkle-chained evidence, (5) Confidence conflation resolution (two-field split).
 >

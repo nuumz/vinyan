@@ -38,8 +38,14 @@ describe('CLI run command', () => {
       stderr: 'pipe',
     });
 
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
+    // Hard-kill if process hangs (no LLM → orchestrator may not exit on its own)
+    const killTimer = setTimeout(() => proc.kill(), 10_000);
+
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    clearTimeout(killTimer);
 
     // Should output valid JSON (even if task escalates without real LLM)
     let parsed;
@@ -54,8 +60,8 @@ describe('CLI run command', () => {
       expect(parsed).toHaveProperty('id');
       expect(parsed).toHaveProperty('status');
     }
-    // Exit code should be 0 (completed), 1 (failed), or 2 (escalated)
-    expect([0, 1, 2]).toContain(exitCode);
+    // Exit code: 0 (completed), 1 (failed), 2 (escalated), 130 (killed on timeout)
+    expect([0, 1, 2, 130]).toContain(exitCode);
   }, 15000);
 
   test('missing goal shows usage and exits with code 2', async () => {

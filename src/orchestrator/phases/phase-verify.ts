@@ -18,11 +18,11 @@ import type {
   SelfModelPrediction,
   TaskDAG,
   VerificationHint,
-  WorkerSelectionResult,
+  EngineSelectionResult,
 } from '../types.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { PhaseContext, VerifyResult, WorkerResult, VerificationResult, PhaseContinue, PhaseReturn, PhaseEscalate } from './types.ts';
 import { Phase } from './types.ts';
 import { buildAgentSessionSummary, mergeForwardAndSelfModel } from './generate-helpers.ts';
@@ -40,10 +40,12 @@ interface VerifyInput {
   predictionConfidence?: number;
   metaPredictionConfidence?: number;
   forwardPrediction?: OutcomePrediction;
-  workerSelection?: WorkerSelectionResult;
-  lastWorkerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
+  lastWorkerSelection?: EngineSelectionResult;
   matchedSkill: import('../types.ts').CachedSkill | null;
   retry: number;
+  /** R2: when generate dispatched via Room, carries the roomId for trace tagging. */
+  roomId?: string;
 }
 
 export async function executeVerifyPhase(
@@ -55,7 +57,7 @@ export async function executeVerifyPhase(
     routing, perception, understanding, plan, workerResult,
     isAgenticResult, lastAgentResult, dagResult,
     prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction,
-    workerSelection, lastWorkerSelection, retry,
+    workerSelection, lastWorkerSelection, retry, roomId,
   } = vi;
   let { matchedSkill } = vi;
 
@@ -86,6 +88,7 @@ export async function executeVerifyPhase(
     workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
     input.targetFiles?.[0] ?? '.',
     activeHint,
+    routing.level,
   );
 
   // ── Emit per-oracle verdicts ──────────────────────────────────
@@ -133,6 +136,7 @@ export async function executeVerifyPhase(
       id: `trace-${input.id}-contradiction`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: routing.level,
       approach: 'contradiction-unresolved',
@@ -217,6 +221,23 @@ export async function executeVerifyPhase(
         risk: hmsResult.risk.score,
         primary_signal: hmsResult.risk.primary_signal,
       });
+
+      // Wave A: HMS blocking gate — when risk exceeds the configurable threshold,
+      // BLOCK verification entirely (not just attenuate). Feeds classified failures
+      // into working memory so the retry sees exactly which claims were hallucinated.
+      const blocking = deps.hmsConfig.blocking;
+      if (blocking?.enabled && hmsResult.risk.score >= blocking.threshold) {
+        verification.passed = false;
+        verification.reason = `HMS blocked: hallucination risk ${hmsResult.risk.score.toFixed(2)} >= ${blocking.threshold} (signal: ${hmsResult.risk.primary_signal})`;
+        if (hmsResult.classifiedFailures?.length) {
+          for (const failure of hmsResult.classifiedFailures) {
+            workingMemory.recordFailedApproach(
+              `[HMS] ${failure.category}: ${failure.message}${failure.file ? ` (${failure.file}:${failure.line ?? 0})` : ''}`,
+              `hms-${failure.category}`,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -237,6 +258,10 @@ export async function executeVerifyPhase(
   const taskTypeSignature = computeSig(input);
   const { detectFrameworkMarkers } = await import('../task-fingerprint.ts');
   const frameworkMarkers = detectFrameworkMarkers(perception);
+  // R2: when the Generate phase used a Room, tag the trace for correlation.
+  if (roomId) {
+    frameworkMarkers.push(`room:${roomId}`);
+  }
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
   const effectiveOutcome: ExecutionTrace['outcome'] =
@@ -248,6 +273,7 @@ export async function executeVerifyPhase(
     id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
     taskId: input.id,
     workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
     timestamp: Date.now(),
     routingLevel: routing.level,
     taskTypeSignature,
@@ -322,6 +348,7 @@ export async function executeVerifyPhase(
           workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
           input.targetFiles?.[0] ?? '.',
           activeHint,
+          routing.level,
         );
         const reVerConfidence = reVerification.aggregateConfidence ?? (reVerification.passed ? 0.85 : 0.3);
         const reVerPipeline = computePipelineConfidence({

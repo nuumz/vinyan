@@ -28,7 +28,7 @@ export const QualityScoreSchema = z.object({
   testMutationScore: z.number().optional(),
   composite: z.number(),
   dimensionsAvailable: z.number().default(2),
-  phase: z.enum(['phase0', 'phase1', 'phase2']).default('phase0'),
+  phase: z.enum(['basic', 'extended', 'full']).default('basic'),
 });
 
 /** Oracle error codes for programmatic handling. */
@@ -72,7 +72,7 @@ export const OracleVerdictSchema = z.object({
   deliberationRequest: DeliberationRequestSchema.optional(),
   temporalContext: TemporalContextSchema.optional(),
 
-  // ── ECP v2 additions (all optional for backward compat) ──
+  // ── SL + tier metadata (all optional for backward compat) ──
   opinion: _SOS.optional(),
   tierReliability: z.number().min(0).max(1).optional(),
   engineCertainty: z.number().min(0).max(1).optional(),

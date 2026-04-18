@@ -48,6 +48,22 @@ const DEFAULT_CONFIG: SleepCycleConfig = {
   decayHalfLifeSessions: 50,
 };
 
+/**
+ * Book-integration Wave 2.3: termination sentinel defaults.
+ *
+ * The sentinel is a rule-based "stop pounding on this" guard — if the sleep
+ * cycle runs N times in a row and produces zero measurable change (no new
+ * patterns, no rules generated or promoted, no skills created), it goes
+ * dormant until an underlying data signal moves. This prevents a permanent
+ * no-op loop from burning wall-clock time on every session interval and
+ * replaces the overview's data-gate-only check (which only guards the
+ * INITIAL run) with a continuous progress check.
+ *
+ * Axiom safety:
+ *   A3 — pure rule-based counter + comparison. No LLM in the termination path.
+ */
+const DEFAULT_SENTINEL_MAX_NOOP_CYCLES = 5;
+
 export interface SleepCycleResult {
   cycleId: string;
   patterns: ExtractedPattern[];
@@ -58,6 +74,15 @@ export interface SleepCycleResult {
   rulesPromoted: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
+  /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
+  thinkingReadinessVerdict?: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict;
+  /**
+   * Wave 2.3: set when the termination sentinel short-circuits the run.
+   * `'sentinel-dormant'` means the cycle was skipped because the previous
+   * run-chain produced no measurable progress. Dashboards / tests use this
+   * to distinguish "skipped because no work" from "skipped by data gate".
+   */
+  skippedBy?: 'data-gate' | 'sentinel-dormant';
 }
 
 export class SleepCycleRunner {
@@ -69,13 +94,41 @@ export class SleepCycleRunner {
   private bus?: VinyanBus;
   private workerStore?: import('../db/worker-store.ts').WorkerStore;
   private workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
+  private localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+  private localOracleLifecycle?: import('../orchestrator/profile/profile-lifecycle.ts').ProfileLifecycle<
+    import('../orchestrator/profile/local-oracle-gates.ts').LocalOracleProfile
+  >;
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
+  private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
   private ineffectiveCycles: Map<string, number> = new Map();
+  /**
+   * Wave 2.3 (book-integration): termination-sentinel state.
+   *
+   * `consecutiveNoopCycles` counts back-to-back runs that produced zero
+   * measurable change. `lastObservedTraceCount` snapshots the trace store
+   * size so the sentinel can wake up whenever new evidence arrives.
+   *
+   * Rationale: before this change, the sleep cycle could run forever on an
+   * empty data set — the data-gate only guards the FIRST run, not the
+   * steady state. A3 (deterministic governance) wants every loop to have
+   * an explicit termination rule; this is it, localized to sleep-cycle
+   * per overview §8 Q4's default scope.
+   */
+  private consecutiveNoopCycles = 0;
+  private lastObservedTraceCount = 0;
+  /**
+   * Wave 5.4: sentinel max-noop-cycles is now a constructor option,
+   * not a class constant. Default is DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+   * tests can pass a smaller number (e.g. 2) to exercise the dormant
+   * path without running 5 full cycles. Read-only after construction
+   * so the sentinel contract stays predictable.
+   */
+  private readonly sentinelMaxNoopCycles: number;
 
   constructor(options: {
     traceStore: TraceStore;
@@ -86,9 +139,24 @@ export class SleepCycleRunner {
     bus?: VinyanBus;
     workerStore?: import('../db/worker-store.ts').WorkerStore;
     workerLifecycle?: import('../orchestrator/fleet/worker-lifecycle.ts').WorkerLifecycle;
+    /** Unified profile: local oracle FSM — part of the AgentProfile ultraplan. */
+    localOracleProfileStore?: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore;
+    localOracleLifecycle?: import('../orchestrator/profile/profile-lifecycle.ts').ProfileLifecycle<
+      import('../orchestrator/profile/local-oracle-gates.ts').LocalOracleProfile
+    >;
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
     costLedger?: CostLedger;
     marketScheduler?: MarketScheduler;
+    /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
+    agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+    /**
+     * Wave 5.4: override the default max no-op cycles before the
+     * termination sentinel goes dormant. Default: 5. Smaller values
+     * surface "dormant" faster in tests; larger values are more
+     * forgiving on real workloads where a single empty-data window
+     * shouldn't suppress the next run.
+     */
+    sentinelMaxNoopCycles?: number;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -98,10 +166,19 @@ export class SleepCycleRunner {
     this.bus = options.bus;
     this.workerStore = options.workerStore;
     this.workerLifecycle = options.workerLifecycle;
+    this.localOracleProfileStore = options.localOracleProfileStore;
+    this.localOracleLifecycle = options.localOracleLifecycle;
     this.knowledgeExchange = options.knowledgeExchange;
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
+    this.agentEvolution = options.agentEvolution;
     this.decayExperiment = createExperimentState();
+    this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+  }
+
+  /** Set agent evolution for post-construction wiring (when capabilityModel is available). */
+  setAgentEvolution(evolution: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution): void {
+    this.agentEvolution = evolution;
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */
@@ -114,7 +191,12 @@ export class SleepCycleRunner {
    * Checks data gate before proceeding.
    */
   async run(): Promise<SleepCycleResult> {
-    const cycleId = `cycle-${Date.now().toString(36)}`;
+    // Book-integration follow-up: add a 4-char random suffix so back-to-
+    // back runs within the same millisecond cannot collide on the
+    // pattern store's PRIMARY KEY. The old `cycle-${Date.now()}` shape
+    // was a latent bug that surfaced in the termination-sentinel test
+    // where six cycles may run inside one event-loop turn.
+    const cycleId = `cycle-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
     // Check data gate
     const stats = this.gatherStats();
@@ -130,6 +212,39 @@ export class SleepCycleRunner {
         rulesPromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
+        skippedBy: 'data-gate',
+      };
+    }
+
+    // Book-integration Wave 2.3: termination sentinel. If the sentinel is
+    // dormant AND the trace store hasn't grown since the last productive
+    // cycle, there is no reason to re-run analysis — the inputs haven't
+    // changed, so the outputs can't change either. The sentinel wakes on
+    // any trace-count delta, which is a coarse-but-reliable "new evidence
+    // available" signal.
+    const currentTraceCount = stats.traceCount;
+    if (this.consecutiveNoopCycles >= this.sentinelMaxNoopCycles && currentTraceCount === this.lastObservedTraceCount) {
+      this.bus?.emit('observability:alert', {
+        detector: 'sleep-cycle-termination-sentinel',
+        severity: 'warning',
+        message: `sleep cycle dormant: ${this.consecutiveNoopCycles} consecutive no-op cycles, trace count stable at ${currentTraceCount}`,
+        metadata: {
+          cycleId,
+          consecutiveNoopCycles: this.consecutiveNoopCycles,
+          traceCount: currentTraceCount,
+        },
+      });
+      return {
+        cycleId,
+        patterns: [],
+        tracesAnalyzed: 0,
+        antiPatterns: 0,
+        successPatterns: 0,
+        decayedPatterns: 0,
+        rulesPromoted: 0,
+        costPatternsFound: 0,
+        marketPhaseEvaluated: false,
+        skippedBy: 'sentinel-dormant',
       };
     }
 
@@ -143,6 +258,15 @@ export class SleepCycleRunner {
     if (!hasEnoughTraces) {
       const rulesPromoted = await this.backtestProbationRules(new Set());
       this.patternStore.recordCycleComplete(cycleId, traces.length, 0);
+      // Wave 2.3: short-trace path is productive only if it still managed
+      // to promote probation rules — otherwise it's a no-op for the
+      // termination sentinel.
+      if (rulesPromoted > 0) {
+        this.consecutiveNoopCycles = 0;
+      } else {
+        this.consecutiveNoopCycles++;
+      }
+      this.lastObservedTraceCount = stats.traceCount;
       return {
         cycleId,
         patterns: [],
@@ -210,7 +334,11 @@ export class SleepCycleRunner {
     for (const pattern of promotablePatterns) {
       this.patternStore.insert(pattern);
 
-      // Phase 2.5: Create skills from success patterns
+      // Phase 2.5: Create skills from success patterns.
+      // Phase 3 note: patterns here are fleet-wide (mined across ALL traces),
+      // so derived skills enter the shared pool (agent_id NULL). Any agent can
+      // fall back to these when they lack an owned match. Agent-scoped patterns
+      // (mined from a single specialist's trace slice) would pass agentId here.
       if (pattern.type === 'success-pattern' && pattern.approach && this.skillManager) {
         const affectedFiles = this.extractAffectedFilesFromPattern(pattern, traces);
         const depConeHashes = this.skillManager.computeCurrentHashes(affectedFiles);
@@ -233,7 +361,7 @@ export class SleepCycleRunner {
     // Phase 2.6 + PH3.3: Backtest probation rules — promote or retire
     // Skip rules generated in this cycle — they need fresh data to validate
     const rulesPromoted = await this.backtestProbationRules(newRuleIds);
-    let _rulesRetired = 0;
+    let rulesRetired = 0;
 
     // PH3.7: Auto-retire active rules with sustained ineffectiveness
     if (this.ruleStore) {
@@ -249,7 +377,7 @@ export class SleepCycleRunner {
           const count = this.trackIneffectiveCycle(rule.id);
           if (count >= 3) {
             this.ruleStore.retire(rule.id);
-            _rulesRetired++;
+            rulesRetired++;
             this.bus?.emit('evolution:ruleRetired', {
               ruleId: rule.id,
               reason: `Auto-retired: ineffective for ${count} consecutive cycles`,
@@ -284,6 +412,37 @@ export class SleepCycleRunner {
 
       // Emergency reactivation safety net
       this.workerLifecycle.emergencyReactivation();
+    }
+
+    // Unified profile: local oracle lifecycle (A7 loop).
+    // Drives promotion/demotion based on retrospective accuracy, emitting
+    // profile:* events. Read-only vs routing at this step — gate.ts does not
+    // yet consult the profile status.
+    if (this.localOracleLifecycle && this.localOracleProfileStore) {
+      for (const probation of this.localOracleProfileStore.findByStatus('probation')) {
+        this.localOracleLifecycle.evaluatePromotion(probation.id);
+      }
+      this.localOracleLifecycle.checkDemotions();
+      this.localOracleLifecycle.reEnrollExpired();
+    }
+
+    // Agent Context Layer + Living Agent Soul: evolve agent identities and souls
+    if (this.agentEvolution) {
+      try {
+        const evolutionResult = await this.agentEvolution.evolveAll();
+        if (evolutionResult.agentsEvolved > 0 || evolutionResult.soulsEvolved > 0) {
+          this.bus?.emit('agent:evolved', {
+            cycleId,
+            agentsEvolved: evolutionResult.agentsEvolved,
+            episodesCompacted: evolutionResult.episodesCompacted,
+            personasRefined: evolutionResult.personasRefined,
+            skillsGraduated: evolutionResult.skillsGraduated,
+            soulsEvolved: evolutionResult.soulsEvolved,
+          });
+        }
+      } catch {
+        /* Agent evolution is best-effort — never disrupts sleep cycle */
+      }
     }
 
     // Economy OS: Cost pattern mining (E2.4 → Sleep Cycle integration)
@@ -369,10 +528,60 @@ export class SleepCycleRunner {
       rulesPromoted,
     });
 
+    // Thinking readiness gate — evaluate A/B measurement readiness.
+    // Pure observational gate: queries thinking-mode stats from TraceStore
+    // and reports whether adaptive thinking selection should be unblocked.
+    // Design: docs/design/extensible-thinking-system-design.md §9.
+    let thinkingReadinessVerdict: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict | undefined;
+    try {
+      const thinkingStats = this.traceStore.getSuccessRateByThinkingMode();
+      if (thinkingStats.length > 0) {
+        const { evaluateThinkingReadiness } = await import('../orchestrator/thinking/thinking-readiness-gate.ts');
+        thinkingReadinessVerdict = evaluateThinkingReadiness(thinkingStats);
+        const totalTraces = thinkingStats.reduce((acc, s) => acc + s.total, 0);
+        this.bus?.emit('thinking:readiness-evaluated', {
+          status: thinkingReadinessVerdict.status,
+          ...(thinkingReadinessVerdict.status === 'blocked' ? { reason: thinkingReadinessVerdict.reason } : {}),
+          ...(thinkingReadinessVerdict.status === 'ready'
+            ? { bestMode: thinkingReadinessVerdict.bestMode, successRateDelta: thinkingReadinessVerdict.successRateDelta }
+            : {}),
+          totalTraces,
+        });
+      }
+    } catch {
+      // Thinking readiness gate is non-critical — swallow errors to avoid disrupting sleep cycle
+    }
+
     // PH5.9: Export high-quality patterns for cross-instance sharing
     if (this.knowledgeExchange && newPatterns.length > 0) {
       this.knowledgeExchange.exportFromStore();
     }
+
+    // Wave 2.3: update the termination sentinel. A cycle is "productive"
+    // when it generates at least one observable signal for downstream
+    // consumers. Rule definition (matching the productivity signals the
+    // sleep cycle can actually emit):
+    //   - new patterns stored, OR
+    //   - rules generated / promoted / retired, OR
+    //   - skills created, OR
+    //   - cost patterns found
+    // Retirement counts because pruning a chronically-ineffective rule
+    // materially changes the rule-store state and routing behavior
+    // downstream — same "measurable change" criterion as promotion.
+    // Decay moves alone don't count — decay is internal housekeeping.
+    const productive =
+      newPatterns.length > 0 ||
+      rulesGenerated > 0 ||
+      rulesPromoted > 0 ||
+      rulesRetired > 0 ||
+      skillsCreated > 0 ||
+      costPatternsFound > 0;
+    if (productive) {
+      this.consecutiveNoopCycles = 0;
+    } else {
+      this.consecutiveNoopCycles++;
+    }
+    this.lastObservedTraceCount = stats.traceCount;
 
     return {
       cycleId,
@@ -384,6 +593,7 @@ export class SleepCycleRunner {
       rulesPromoted,
       costPatternsFound,
       marketPhaseEvaluated,
+      thinkingReadinessVerdict,
     };
   }
 

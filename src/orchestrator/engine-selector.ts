@@ -18,9 +18,9 @@ import type { BidderContext } from '../economy/market/auction-engine.ts';
 import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import type { EngineBid } from '../economy/market/schemas.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
-import type { RoutingLevel } from './types.ts';
-import { selectProvider } from './priority-router.ts';
 import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
+import { selectProvider } from './priority-router.ts';
+import type { RoutingLevel } from './types.ts';
 
 export interface EngineSelection {
   provider: string;
@@ -36,15 +36,59 @@ const TRUST_THRESHOLDS: Record<RoutingLevel, number> = {
   3: 0.7,
 };
 
+/**
+ * Book-integration Wave 4.2: role hint taxonomy (App C Cost Analysis + Ch07).
+ *
+ * The book's explicit cost guidance maps each role to a preferred model
+ * tier. Vinyan's engine selector previously picked purely by routing
+ * level + trust; this hint lets callers express "I'm going to use this
+ * engine for a read — prefer the cheap tier" as a deterministic
+ * preference (not a constraint).
+ *
+ *   'read'      ⇒ prefer 'fast'      (Haiku for research / exploration)
+ *   'implement' ⇒ prefer 'balanced'  (Sonnet for codegen)
+ *   'debate'    ⇒ prefer 'powerful'  (Opus for debates / trade-off)
+ *   'verify'    ⇒ prefer 'balanced' then 'tool-uses'
+ *
+ * When the preferred tier is not available the selector falls back to
+ * the existing Wilson-LB / trust-threshold path — the hint is
+ * *preference*, never *constraint*. This preserves A5 tiered-trust
+ * semantics and A3 determinism.
+ */
+export type RoleHint = 'read' | 'implement' | 'debate' | 'verify';
+
+const ROLE_PREFERRED_TIERS: Record<RoleHint, ReadonlyArray<'fast' | 'balanced' | 'powerful' | 'tool-uses'>> = {
+  read: ['fast'],
+  implement: ['balanced'],
+  debate: ['powerful'],
+  verify: ['balanced', 'tool-uses'],
+};
+
 export interface EngineSelectorConfig {
   trustStore: ProviderTrustStore;
   bus?: VinyanBus;
   marketScheduler?: MarketScheduler;
   costPredictor?: CostPredictor;
+  /**
+   * Wave 4.2: optional callback returning the tier of a given provider
+   * id ('fast' | 'balanced' | 'powerful' | 'tool-uses'). When present
+   * AND a `roleHint` is passed to `select()`, the selector biases its
+   * pick toward the role's preferred tier. When absent or when no
+   * qualified provider matches the preferred tier, selection falls
+   * through to the existing Wilson-LB / trust-threshold path.
+   *
+   * Factory wires this from the LLMProviderRegistry's tier metadata.
+   */
+  getProviderTier?: (providerId: string) => 'fast' | 'balanced' | 'powerful' | 'tool-uses' | undefined;
 }
 
 export interface EngineSelector {
-  select(routingLevel: RoutingLevel, taskType: string, requiredCapabilities?: string[]): EngineSelection;
+  select(
+    routingLevel: RoutingLevel,
+    taskType: string,
+    requiredCapabilities?: string[],
+    roleHint?: RoleHint,
+  ): EngineSelection;
 }
 
 export class DefaultEngineSelector implements EngineSelector {
@@ -52,15 +96,22 @@ export class DefaultEngineSelector implements EngineSelector {
   private bus?: VinyanBus;
   private marketScheduler?: MarketScheduler;
   private costPredictor?: CostPredictor;
+  private getProviderTier?: (providerId: string) => 'fast' | 'balanced' | 'powerful' | 'tool-uses' | undefined;
 
   constructor(config: EngineSelectorConfig) {
     this.trustStore = config.trustStore;
     this.bus = config.bus;
     this.marketScheduler = config.marketScheduler;
     this.costPredictor = config.costPredictor;
+    this.getProviderTier = config.getProviderTier;
   }
 
-  select(routingLevel: RoutingLevel, taskType: string, requiredCapabilities?: string[]): EngineSelection {
+  select(
+    routingLevel: RoutingLevel,
+    taskType: string,
+    requiredCapabilities?: string[],
+    roleHint?: RoleHint,
+  ): EngineSelection {
     const defaultModel = LEVEL_CONFIG[routingLevel].model;
     const minTrust = TRUST_THRESHOLDS[routingLevel];
 
@@ -77,6 +128,43 @@ export class DefaultEngineSelector implements EngineSelector {
       const score = wilsonLowerBound(p.successes, total, 1.96);
       return score >= minTrust;
     });
+
+    // 2b. Wave 4.2: role-hint bias. If the caller asked for a specific
+    // role AND we have a tier-lookup callback AND at least one qualified
+    // provider matches the role's preferred tier, pick the best such
+    // provider by Wilson LB and return early. Otherwise fall through to
+    // the existing auction / priority-router path so the hint never
+    // prevents selection.
+    if (roleHint && this.getProviderTier && qualified.length > 0) {
+      const preferred = ROLE_PREFERRED_TIERS[roleHint];
+      for (const tier of preferred) {
+        const matchingProviders = qualified.filter((p) => this.getProviderTier!(p.provider) === tier);
+        if (matchingProviders.length === 0) continue;
+        // Pick the best-scoring provider within the preferred tier.
+        const scored = matchingProviders.map((p) => {
+          const total = p.successes + p.failures;
+          const score = total > 0 ? wilsonLowerBound(p.successes, total, 1.96) : 0.5;
+          return { provider: p.provider, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        const winner = scored[0]!;
+        const result: EngineSelection = {
+          provider: winner.provider,
+          trustScore: winner.score,
+          selectionReason: `role-hint:${roleHint}→${tier}`,
+        };
+        this.bus?.emit('engine:selected', {
+          taskId: taskType,
+          provider: result.provider,
+          trustScore: result.trustScore,
+          reason: result.selectionReason,
+        });
+        return result;
+      }
+      // None of the preferred tiers had a qualified provider — fall
+      // through to the existing selection path below. The hint is
+      // preference-only; it must not prevent selection.
+    }
 
     // 3. Auto-activate market if sufficient data
     if (this.marketScheduler && !this.marketScheduler.isActive() && qualified.length >= 2) {
@@ -116,9 +204,7 @@ export class DefaultEngineSelector implements EngineSelector {
     const result: EngineSelection = {
       provider: selection.provider,
       trustScore: selection.trustScore,
-      selectionReason: selection.basis === 'cold_start'
-        ? 'cold-start-default'
-        : `wilson-lb:${capability ?? '*'}`,
+      selectionReason: selection.basis === 'cold_start' ? 'cold-start-default' : `wilson-lb:${capability ?? '*'}`,
     };
 
     this.bus?.emit('engine:selected', {

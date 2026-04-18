@@ -8,12 +8,11 @@
 import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { OracleVerdict, QualityScore } from '../../core/types.ts';
-import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { EpistemicGateDecision } from '../../gate/epistemic-decision.ts';
+import type { OrchestratorDeps } from '../core-loop.ts';
+import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { ConfidenceDecision } from '../pipeline-confidence.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
-import type { WorkingMemory } from '../working-memory.ts';
 import type {
   CachedSkill,
   ConversationEntry,
@@ -28,10 +27,11 @@ import type {
   TaskResult,
   ToolCall,
   VerificationHint,
-  WorkerSelectionResult,
+  EngineSelectionResult,
   WorkingMemoryState,
 } from '../types.ts';
-import type { OrchestratorDeps } from '../core-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
+import type { WorkingMemory } from '../working-memory.ts';
 
 // ---------------------------------------------------------------------------
 // Shared phase context
@@ -46,6 +46,13 @@ export interface PhaseContext {
   readonly explorationFlag: boolean;
   /** Conversation history from prior turns (loaded when sessionId present). */
   readonly conversationHistory?: ConversationEntry[];
+  /**
+   * Multi-agent: resolved specialist for this task (ts-coder, writer, etc.).
+   * Set by core-loop after intent resolution. Downstream phases use this for
+   * prompt assembly (persona/soul), contract (ACL), and skill scoping.
+   * Access the raw id via `ctx.input.agentId`.
+   */
+  readonly agentProfile?: import('../types.ts').AgentSpec;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,11 +114,19 @@ export interface PredictResult {
   metaPredictionConfidence?: number;
   forwardPrediction?: OutcomePrediction;
   routing: RoutingDecision;
-  workerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
 }
 
 export interface PlanResult {
   plan?: TaskDAG;
+  /**
+   * Wave 5.2: optional input with the DAG's preamble merged into
+   * `constraints`. Present only when `plan.preamble` was non-empty.
+   * The core-loop swaps `ctx.input` for this enhanced clone so the
+   * caller's original TaskInput is never mutated. When absent, the
+   * existing `ctx.input` is used unchanged.
+   */
+  enhancedInput?: TaskInput;
 }
 
 export interface GenerateResult {
@@ -121,6 +136,10 @@ export interface GenerateResult {
   dagResult: DAGExecutionResult | null;
   mutatingToolCalls: ToolCall[];
   totalTokensConsumed: number;
+  /** R2: when the task was dispatched through a Room, carries the roomId for
+   *  trace enrichment. Phase-verify appends `'room:{roomId}'` to the trace's
+   *  frameworkMarkers so Sleep Cycle and dashboards can correlate. */
+  roomId?: string;
 }
 
 export interface VerifyResult {
@@ -162,6 +181,12 @@ export interface WorkerResult {
   durationMs: number;
   proposedContent?: string;
   nonRetryableError?: string;
+  /**
+   * Agent Conversation: propagated from WorkerLoopResult when the agent
+   * called attempt_completion with needsUserInput=true. The core loop reads
+   * this flag to short-circuit into a TaskResult with status='input-required'.
+   */
+  needsUserInput?: boolean;
 }
 
 export interface VerificationResult {

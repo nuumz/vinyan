@@ -11,7 +11,7 @@ import type {
   RoutingLevel,
   SemanticTaskUnderstanding,
   TaskResult,
-  WorkerSelectionResult,
+  EngineSelectionResult,
 } from '../types.ts';
 import { applyPredictionEscalation } from '../../gate/risk-router.ts';
 import type { PhaseContext, PredictResult, PhaseContinue, PhaseReturn } from './types.ts';
@@ -115,7 +115,7 @@ export async function executePredictPhase(
   }
 
   // ── Step 2½: SELECT WORKER (Phase 4) ──────────────────────────
-  let workerSelection: WorkerSelectionResult | undefined;
+  let workerSelection: EngineSelectionResult | undefined;
   if (deps.workerSelector && !routing.workerId) {
     const { computeFingerprint } = await import('../task-fingerprint.ts');
     const fingerprint = computeFingerprint(input, perception, {
@@ -127,6 +127,7 @@ export async function executePredictPhase(
       { maxTokens: input.budget.maxTokens, timeoutMs: input.budget.maxDurationMs },
       undefined,
       input.id,
+      routing.isEscalated,
     );
     workerSelection = selection;
 

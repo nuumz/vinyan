@@ -12,6 +12,7 @@ const DEFAULT_CONFIG: HMSConfig = {
   overconfidence: { enabled: true, threshold: 0.6 },
   cross_validation: { enabled: false, max_probes_per_claim: 3, max_claims: 5, probe_budget_tokens: 1000 },
   risk_weights: { grounding: 0.35, overconfidence: 0.15, structural: 0.25, critic: 0.15, cross_validation: 0.1 },
+  blocking: { enabled: false, threshold: 0.75 },
 };
 
 describe('refutedClaimToFailure', () => {

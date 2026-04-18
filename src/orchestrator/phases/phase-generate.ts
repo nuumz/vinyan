@@ -18,9 +18,9 @@ import type {
   TaskInput,
   TaskResult,
   ToolCall,
-  WorkerSelectionResult,
+  EngineSelectionResult,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { PhaseContext, GenerateResult, WorkerResult, PhaseContinue, PhaseReturn, PhaseRetry, PhaseThrow } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -31,8 +31,8 @@ interface GenerateInput {
   plan: TaskDAG | undefined;
   totalTokensConsumed: number;
   budgetCapMultiplier: number;
-  workerSelection?: WorkerSelectionResult;
-  lastWorkerSelection?: WorkerSelectionResult;
+  workerSelection?: EngineSelectionResult;
+  lastWorkerSelection?: EngineSelectionResult;
   retry: number;
 }
 
@@ -46,7 +46,13 @@ export async function executeGeneratePhase(
   const conversationHistory = ctx.conversationHistory;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
-  const contract = createContract(input, routing);
+  // Phase 2: intersect agent's ACL overlay with routing-level capabilities.
+  // Never widens — `writer` denied `shell_exec` at L2, `ts-coder` still gets it.
+  const agent = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) : undefined;
+  const agentAcl = agent
+    ? { allowedTools: agent.allowedTools, capabilityOverrides: agent.capabilityOverrides }
+    : undefined;
+  const contract = createContract(input, routing, agentAcl);
 
   // Crash Recovery: persist checkpoint before dispatch
   try {
@@ -62,15 +68,50 @@ export async function executeGeneratePhase(
     // Checkpoint failure is non-fatal — proceed without crash protection
   }
 
+  // A6: Approval gate — require human approval for high-risk tasks before dispatch
+  const riskThreshold = 0.7;
+  if (deps.approvalGate && routing.riskScore !== undefined && routing.riskScore >= riskThreshold) {
+    const reason = `Risk score ${routing.riskScore.toFixed(2)} exceeds threshold ${riskThreshold} (L${routing.level})`;
+    const decision = await deps.approvalGate.requestApproval(input.id, routing.riskScore, reason);
+    if (decision === 'rejected') {
+      const rejectedResult: TaskResult = {
+        id: input.id,
+        status: 'failed',
+        mutations: [],
+        trace: {
+          id: `trace-${input.id}-approval-rejected`,
+          taskId: input.id,
+          routingLevel: routing.level,
+          approach: 'approval-gate',
+          outcome: 'failure',
+          oracleVerdicts: {},
+          tokensConsumed: 0,
+          durationMs: 0,
+          affectedFiles: [],
+          timestamp: Date.now(),
+          modelUsed: 'none',
+        },
+        escalationReason: `Task rejected by approval gate: ${reason}`,
+      };
+      deps.bus?.emit('task:complete', { result: rejectedResult });
+      return Phase.return(rejectedResult);
+    }
+  }
+
   deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
   const dispatchStart = Date.now();
-  let workerResult: WorkerResult;
+  let workerResult!: WorkerResult;
   let isAgenticResult = false;
   let lastAgentResult: WorkerLoopResult | null = null;
   let dagResult: DAGExecutionResult | null = null;
+  let roomId: string | undefined;
 
   try {
-    if (routing.level <= 1 || !deps.workerPool.getAgentLoopDeps?.()) {
+    const hasAgentDeps = !!deps.workerPool.getAgentLoopDeps?.();
+    if (routing.level >= 2 && !hasAgentDeps) {
+      console.warn('[vinyan] L2+ task but agentLoopDeps unavailable — degraded to single-shot dispatch');
+    }
+    if (routing.level <= 1 || !hasAgentDeps) {
       // L0-L1 or no agent deps: single-shot or DAG dispatch
       if (plan && !plan.isFallback && plan.nodes.length > 1) {
         // EO #1+#4: Multi-node plan → DAG executor with parallel dispatch
@@ -124,44 +165,119 @@ export async function executeGeneratePhase(
         );
       }
     } else {
-      // L2+: agentic loop (multi-turn with tools)
+      // L2+: agentic loop (multi-turn with tools) OR Agent Conversation Room
       const agentLoopDeps = deps.workerPool.getAgentLoopDeps!()!;
-      const { runAgentLoop } = await import('../worker/agent-loop.ts');
-      lastAgentResult = await runAgentLoop(
-        input,
-        perception,
-        workingMemory.getSnapshot(),
-        plan,
-        routing,
-        agentLoopDeps,
-        understanding,
-        contract,
-        conversationHistory,
-      );
-      isAgenticResult = true;
-      workerResult = {
-        mutations: lastAgentResult.mutations
-          .filter((m) => m.content !== null)
-          .map((m) => ({
-            file: m.file,
-            content: m.content ?? '',
-            diff: m.diff,
-            explanation: m.explanation,
-          })),
-        proposedToolCalls: lastAgentResult.proposedToolCalls,
-        uncertainties: lastAgentResult.uncertainties,
-        tokensConsumed: lastAgentResult.tokensConsumed,
-        cacheReadTokens: (lastAgentResult as any).cacheReadTokens,
-        cacheCreationTokens: (lastAgentResult as any).cacheCreationTokens,
-        durationMs: lastAgentResult.durationMs,
-        proposedContent: lastAgentResult.proposedContent,
-        nonRetryableError: lastAgentResult.nonRetryableError,
-      };
+      const { runAgentLoop } = await import('../agent/agent-loop.ts');
 
-      if (lastAgentResult.isUncertain) {
-        const { buildAgentSessionSummary } = await import('./generate-helpers.ts');
-        const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
-        workingMemory.addPriorAttempt(summary);
+      // ── ACR (Agent Conversation Room) branch ───────────────────────
+      // When the decomposer emitted `collaborationMode: 'room'` AND a
+      // RoomDispatcher is wired, route the task through a role-scoped
+      // supervisor FSM (drafter → critic → integrator with shared ledger
+      // + blackboard). On admission failure or any other room error, we
+      // fall through to the existing agentic-loop branch as a safe
+      // degrade — the room is strictly additive.
+      let roomHandled = false;
+      if (plan?.collaborationMode === 'room' && plan.roomContract && deps.roomDispatcher) {
+        try {
+          const dispatchOutcome = await deps.roomDispatcher.execute({
+            parentInput: input,
+            perception,
+            memory: workingMemory.getSnapshot(),
+            plan,
+            routing,
+            parentContract: contract,
+            agentLoopDeps,
+            understanding,
+            conversationHistory,
+            contract: plan.roomContract,
+          });
+          workerResult = {
+            mutations: dispatchOutcome.mutations
+              .filter((m) => m.content !== null)
+              .map((m) => ({
+                file: m.file,
+                content: m.content ?? '',
+                diff: m.diff,
+                explanation: m.explanation,
+              })),
+            proposedToolCalls: [],
+            uncertainties: dispatchOutcome.uncertainties,
+            tokensConsumed: dispatchOutcome.tokensConsumed,
+            cacheReadTokens: dispatchOutcome.cacheReadTokens,
+            cacheCreationTokens: dispatchOutcome.cacheCreationTokens,
+            durationMs: dispatchOutcome.durationMs,
+            needsUserInput: dispatchOutcome.needsUserInput,
+          };
+          isAgenticResult = true;
+          roomHandled = true;
+          roomId = plan.roomContract!.roomId;
+        } catch (roomErr) {
+          console.warn(`[vinyan] Room dispatch failed, falling back to agentic-loop: ${String(roomErr)}`);
+        }
+      }
+
+      if (!roomHandled) {
+        try {
+          lastAgentResult = await runAgentLoop(
+            input,
+            perception,
+            workingMemory.getSnapshot(),
+            plan,
+            routing,
+            agentLoopDeps,
+            understanding,
+            contract,
+            conversationHistory,
+          );
+        } catch (agentLoopErr) {
+          // Fallback: subprocess agent loop failed — degrade to single-shot in-process dispatch
+          console.warn(`[vinyan] Agent loop failed, falling back to single-shot dispatch: ${String(agentLoopErr)}`);
+          workerResult = await deps.workerPool.dispatch(
+            input,
+            perception,
+            workingMemory.getSnapshot(),
+            plan,
+            routing,
+            understanding,
+            contract,
+            conversationHistory,
+          );
+          // Skip agentic result mapping — use single-shot result directly
+          lastAgentResult = null;
+        }
+      }
+
+      if (!roomHandled && lastAgentResult) {
+        isAgenticResult = true;
+        workerResult = {
+          mutations: lastAgentResult.mutations
+            .filter((m) => m.content !== null)
+            .map((m) => ({
+              file: m.file,
+              content: m.content ?? '',
+              diff: m.diff,
+              explanation: m.explanation,
+            })),
+          proposedToolCalls: lastAgentResult.proposedToolCalls,
+          uncertainties: lastAgentResult.uncertainties,
+          tokensConsumed: lastAgentResult.tokensConsumed,
+          cacheReadTokens: lastAgentResult.cacheReadTokens,
+          cacheCreationTokens: lastAgentResult.cacheCreationTokens,
+          durationMs: lastAgentResult.durationMs,
+          proposedContent: lastAgentResult.proposedContent,
+          nonRetryableError: lastAgentResult.nonRetryableError,
+          needsUserInput: lastAgentResult.needsUserInput,
+        };
+
+        // Agent Conversation: when the agent paused to ask the user, do NOT
+        // record a prior-attempt. A user clarification is not a failed approach —
+        // it's a collaborative request. Recording it would pollute WorkingMemory
+        // and bias future retries against the (not yet answered) approach.
+        if (lastAgentResult.isUncertain && !lastAgentResult.needsUserInput) {
+          const { buildAgentSessionSummary } = await import('./generate-helpers.ts');
+          const summary = buildAgentSessionSummary(lastAgentResult, retry, 'uncertain');
+          workingMemory.addPriorAttempt(summary);
+        }
       }
     }
     deps.bus?.emit('worker:complete', {
@@ -177,6 +293,7 @@ export async function executeGeneratePhase(
         id: `trace-${input.id}-non-retryable`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'non-retryable-error',
@@ -263,6 +380,7 @@ export async function executeGeneratePhase(
         id: `trace-${input.id}-budget-exceeded`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'global-budget-exceeded',
@@ -301,6 +419,7 @@ export async function executeGeneratePhase(
       id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
+    agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: routing.level,
       approach: 'dispatch-error',
@@ -344,5 +463,6 @@ export async function executeGeneratePhase(
     dagResult,
     mutatingToolCalls,
     totalTokensConsumed,
+    roomId,
   });
 }

@@ -1,0 +1,72 @@
+{
+  "oracles": {
+    "ast": { "enabled": true, "languages": ["typescript"], "tier": "deterministic" },
+    "type": { "enabled": true, "command": "tsc --noEmit", "tier": "deterministic" },
+    "dep": { "enabled": true, "tier": "heuristic" },
+    "test": { "enabled": true, "timeout_ms": 5000, "tier": "deterministic", "timeout_behavior": "warn" },
+    "lint": { "enabled": true, "timeout_ms": 1000, "tier": "deterministic", "timeout_behavior": "warn" }
+  },
+  "streaming": {
+    "assistantDelta": true
+  },
+  "orchestrator": {
+    "evolution": {
+      "enabled": true
+    },
+    "forward_predictor": {
+      "enabled": true
+    },
+    "extensible_thinking": {
+      "enabled": true,
+      "modes": ["adaptive", "counterfactual", "multi-hypothesis"]
+    },
+    "goalLoop": {
+      "enabled": true
+    },
+    "replan": {
+      "enabled": true
+    },
+    "agentLoopGoalTermination": {
+      "enabled": true
+    },
+    "reactiveLearning": {
+      "enabled": true
+    },
+    "agent_memory": {
+      "enabled": true
+    },
+    "skillHints": {
+      "enabled": true
+    },
+    "workflowRegistry": {
+      "enabled": true
+    }
+  },
+  "economy": {
+    "enabled": true,
+    "budgets": {
+      "hourly_usd": 1.00,
+      "daily_usd": 10.00,
+      "monthly_usd": 100.00,
+      "enforcement": "warn"
+    },
+    "market": {
+      "enabled": true
+    }
+  },
+  "hms": {
+    "enabled": true,
+    "cross_validation": {
+      "enabled": true
+    },
+    "blocking": {
+      "enabled": true
+    }
+  },
+  "network": {
+    "api": {
+      "enabled": true,
+      "port": 3927
+    }
+  }
+}

@@ -41,6 +41,21 @@ describe('classifyDirectTool', () => {
   });
 
   // ── English app launch ──
+  // ── Bare app name (no verb) ──
+  test('Thai: "แอพ notes" → app_launch (implied open)', () => {
+    const result = classifyDirectTool('แอพ notes');
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('app_launch');
+    expect(result!.target).toBe('notes');
+  });
+
+  test('Thai: "แอป chrome" → app_launch', () => {
+    const result = classifyDirectTool('แอป chrome');
+    expect(result).not.toBeNull();
+    expect(result!.target).toBe('chrome');
+  });
+
+  // ── English app launch ──
   test('English: "open google chrome" → app_launch', () => {
     const result = classifyDirectTool('open google chrome');
     expect(result).not.toBeNull();

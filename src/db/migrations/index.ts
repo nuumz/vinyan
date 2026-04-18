@@ -22,7 +22,49 @@ import { migration012 } from './012_add_economy_tables.ts';
 import { migration013 } from './013_add_market_tables.ts';
 import { migration014 } from './014_add_federation_economy.ts';
 import { migration015 } from './015_add_session_messages.ts';
+import { migration016 } from './016_add_room_tables.ts';
+import { migration017 } from './017_add_decomposition_pattern_type.ts';
+import { migration018 } from './018_add_agent_contexts.ts';
+import { migration019 } from './019_add_soul_columns.ts';
+import { migration020 } from './020_add_local_oracle_profiles.ts';
+import { migration021 } from './021_drop_dead_worker_columns.ts';
+import { migration022 } from './022_drop_legacy_worker_config_columns.ts';
+import { migration023 } from './023_add_agent_profile.ts';
+import { migration024 } from './024_cleanup_null_engine_config.ts';
+import { migration025 } from './025_add_agent_id_to_skills.ts';
+import { migration026 } from './026_relax_agent_profile_singleton.ts';
+import { migration027 } from './027_add_agent_profile_role_columns.ts';
+import { migration028 } from './028_add_agent_id_to_traces.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015];
+export const ALL_MIGRATIONS: Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+  migration004,
+  migration005,
+  migration006,
+  migration007,
+  migration008,
+  migration009,
+  migration010,
+  migration011,
+  migration012,
+  migration013,
+  migration014,
+  migration015,
+  migration016,
+  migration017,
+  migration018,
+  migration019,
+  migration020,
+  migration021,
+  migration022,
+  migration023,
+  migration024,
+  migration025,
+  migration026,
+  migration027,
+  migration028,
+];

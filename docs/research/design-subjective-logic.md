@@ -1,4 +1,4 @@
-# Subjective Logic Integration Design for ECP v2
+# Subjective Logic Integration Design for ECP
 
 > **Date:** 2026-04-01 | **Status:** Design | **Audience:** Protocol designers, implementers
 > **Prerequisite reading:** `docs/research/formal-uncertainty-frameworks.md`, `docs/spec/ecp-spec.md` ss4
@@ -17,7 +17,7 @@ The scalar also cannot express how much of a verdict's uncertainty stems from la
 
 Subjective Logic (Josang, 2016) resolves these problems with an opinion tuple `omega = (b, d, u, a)` that explicitly separates belief, disbelief, and uncertainty mass. The projected probability `P = b + a*u` maintains backward compatibility with the scalar model while exposing the richer epistemic structure needed for principled oracle composition.
 
-This document specifies the concrete integration of Subjective Logic into ECP v2, covering type definitions, migration path, fusion operators, clamping semantics, and wire format.
+This document specifies the concrete integration of Subjective Logic into ECP, covering type definitions, migration path, fusion operators, clamping semantics, and wire format.
 
 ---
 
@@ -89,7 +89,7 @@ export interface OracleVerdict {
   // ... existing fields unchanged ...
   confidence: number;  // ALWAYS present — backward compat
 
-  /** Subjective Logic opinion (ECP v2). When absent, derive from confidence. */
+  /** Subjective Logic opinion (ECP). When absent, derive from confidence. */
   opinion?: SubjectiveOpinion;
 }
 ```
@@ -715,7 +715,7 @@ export const ECPDataPartSchema = z.object({
   epistemic_type: EpistemicType,
   confidence: z.number().min(0).max(1),         // ALWAYS present
   confidence_reported: z.boolean(),
-  opinion: SubjectiveOpinionSchema.optional(),   // NEW — ECP v2 extension
+  opinion: SubjectiveOpinionSchema.optional(),   // NEW — ECP extension
   evidence: z.array(EvidencePartSchema).optional(),
   falsifiable_by: z.string().optional(),
   temporal_context: TemporalContextSchema.optional(),

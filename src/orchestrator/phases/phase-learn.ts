@@ -7,7 +7,7 @@
 
 import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, SelfModelPrediction } from '../types.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { WorkerLoopResult } from '../worker/agent-loop.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { VerificationResult } from './types.ts';
 import type { PhaseContext, LearnResult } from './types.ts';
 import { mapTraceToFPOutcome } from './generate-helpers.ts';
@@ -46,12 +46,60 @@ export async function executeLearnPhase(
       );
       if (predictionError) {
         trace.predictionError = predictionError;
+        // Wave A: route significant prediction errors through the error attribution bus
+        if (deps.errorAttributionBus && Math.abs(predictionError.error.composite) > 0.3) {
+          try {
+            deps.errorAttributionBus.attributeError(predictionError, trace);
+          } catch { /* attribution is best-effort */ }
+        }
       }
     } catch (calibErr) {
       deps.bus?.emit('selfmodel:calibration_error', {
         taskId: input.id,
         error: calibErr instanceof Error ? calibErr.message : String(calibErr),
       });
+    }
+  }
+
+  // ── Phase 7: per-engine EMA calibration + drift detection ──
+  // Both are best-effort. They never block the trace from being recorded
+  // and never throw — Phase 7 is observational by design (see §12).
+  if (deps.oracleEMACalibrator) {
+    try {
+      // ExecutionTrace stores oracle verdicts as `Record<string, boolean>`.
+      // The richer OracleVerdict shape with engineCertainty only lives on
+      // verification.verdicts. We feed both: the boolean drives the
+      // verdict→outcome agreement EMA, the engineCertainty is reserved
+      // for a future "calibration error" loop (Phase 7.2) that needs the
+      // continuous signal — for now we just use the boolean.
+      deps.oracleEMACalibrator.recordTrace(trace.oracleVerdicts, trace.outcome === 'success');
+    } catch {
+      /* Best-effort — never block trace recording. */
+    }
+  }
+  if (prediction) {
+    try {
+      const { detectDrift } = await import('../monitoring/drift-detector.ts');
+      const driftReport = detectDrift(prediction, trace);
+      if (driftReport.drift) {
+        deps.bus?.emit('monitoring:drift_detected', {
+          taskId: input.id,
+          triggeredDimensions: driftReport.triggeredDimensions,
+          maxRelDelta: driftReport.maxRelDelta,
+        });
+      }
+    } catch {
+      /* Best-effort — never block trace recording. */
+    }
+  }
+  if (deps.regressionMonitor && trace.taskTypeSignature) {
+    try {
+      deps.regressionMonitor.record({
+        taskTypeSignature: trace.taskTypeSignature,
+        succeeded: trace.outcome === 'success',
+      });
+    } catch {
+      /* Best-effort — never block trace recording. */
     }
   }
 
@@ -154,6 +202,18 @@ export async function executeLearnPhase(
       ? understanding.verifiedClaims.every((c) => c.type === 'known') ? 1 : 0
       : undefined;
   trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
+
+  // ── Agent Context Layer: update persistent agent identity/memory/skills ──
+  // Phase 2: key by specialist agent id (ts-coder/writer/...), NOT engine workerId.
+  // Falls back to registry default, then finally to workerId for legacy callers.
+  const aclAgentId = input.agentId ?? deps.agentRegistry?.defaultAgent().id ?? routing.workerId;
+  if (deps.agentContextUpdater && aclAgentId) {
+    try {
+      deps.agentContextUpdater.updateAfterTask(aclAgentId, trace);
+    } catch {
+      /* Agent context update is best-effort — never blocks trace recording */
+    }
+  }
 
   await deps.traceCollector.record(trace);
   deps.bus?.emit('trace:record', { trace });

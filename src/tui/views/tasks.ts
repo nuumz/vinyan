@@ -36,6 +36,10 @@ function statusIcon(status: TaskDisplayState['status']): string {
       return color('?', ANSI.yellow);
     case 'approval_required':
       return color('⚠', ANSI.bold, ANSI.yellow);
+    case 'input-required':
+      // Agent paused to ask the user — similar to approval_required in that
+      // it's awaiting human input, but specific to the conversational flow.
+      return color('⁇', ANSI.bold, ANSI.yellow);
   }
 }
 
@@ -43,6 +47,7 @@ function statusIcon(status: TaskDisplayState['status']): string {
 
 const STATUS_PRIORITY: Record<string, number> = {
   approval_required: 0,
+  'input-required': 0,
   running: 1,
   uncertain: 2,
   completed: 3,

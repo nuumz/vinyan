@@ -74,21 +74,45 @@ async function processTask(
   }
 
   const { systemPrompt, userPrompt } = assemblePrompt(
-    input.goal, input.perception, input.workingMemory, input.plan, input.taskType ?? 'code',
-    undefined, // instructions (loaded by in-process path; subprocess doesn't have workspace access)
+    input.goal,
+    input.perception,
+    input.workingMemory,
+    input.plan,
+    input.taskType ?? 'code',
+    input.instructions ?? null, // Phase 7a: M1-M4 hierarchy resolved in-process, shipped via WorkerInput
     input.understanding, // Gap 9A: TaskUnderstanding for enriched prompt
     input.routingLevel, // R2 (§5): gate tool descriptions out of L0-L1 prompts
+    undefined, // conversationHistory (structured subprocess path is single-shot)
+    input.environment ?? null, // Phase 7a: OS/cwd/git snapshot
+    // Multi-agent: specialist fields shipped through WorkerInput (empty on
+    // the legacy workspace-singleton path — assemblePrompt tolerates nulls).
+    input.agentContext,
+    input.soulContent ?? undefined,
+    input.agentProfile,
   );
 
   const startTime = performance.now();
   // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision
   const temperature = (input.taskType ?? 'code') === 'reasoning' ? 0.3 : 0.2;
-  const response = await provider.generate({
+  const llmRequest = {
     systemPrompt,
     userPrompt,
     maxTokens: input.budget.maxTokens,
     temperature,
-  });
+  };
+  const response =
+    input.stream && provider.generateStream
+      ? await provider.generateStream(llmRequest, ({ text }) => {
+          // Emit delta line to stdout; parent worker-pool pumps these to bus.
+          // Newline is the framing delimiter — `text` may contain any chars
+          // including newlines, so we JSON-encode the whole envelope.
+          try {
+            process.stdout.write(`${JSON.stringify({ type: 'delta', taskId: input.taskId, text })}\n`);
+          } catch {
+            /* broken pipe — parent gone; ignore */
+          }
+        })
+      : await provider.generate(llmRequest);
   const durationMs = Math.round(performance.now() - startTime);
   const tokens = response.tokensUsed.input + response.tokensUsed.output;
 

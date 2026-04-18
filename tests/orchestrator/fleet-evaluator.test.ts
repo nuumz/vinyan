@@ -5,7 +5,7 @@ import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
 import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
 import { evaluateFleet, giniCoefficient } from '../../src/orchestrator/fleet/fleet-evaluator.ts';
-import type { WorkerProfile } from '../../src/orchestrator/types.ts';
+import type { EngineProfile } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');
@@ -14,7 +14,7 @@ function createDb(): Database {
   return db;
 }
 
-function makeProfile(id: string, status: WorkerProfile['status'] = 'active'): WorkerProfile {
+function makeProfile(id: string, status: EngineProfile['status'] = 'active'): EngineProfile {
   return {
     id,
     config: { modelId: `model-${id}`, temperature: 0.7, systemPromptTemplate: 'default' },

@@ -4,7 +4,7 @@ import {
   estimateTurnTokens,
   isEvidenceTurn,
   partitionTranscript,
-} from '../../../src/orchestrator/worker/transcript-compactor.ts';
+} from '../../../src/orchestrator/agent/transcript-compactor.ts';
 
 describe('EO #5: Transcript Compactor', () => {
   // ── isEvidenceTurn ───────────────────────────────────────────────

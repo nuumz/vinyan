@@ -50,6 +50,15 @@ export function attachComprehensionTraceListener(
 ): ComprehensionTraceListenerHandle {
   const { bus, traceCollector, calibrator } = opts;
 
+  // GAP#3 — transition-only dedup for miscalibration emission.
+  // Without this, an engine that stays above threshold for N turns
+  // emits N miscalibrated events — bus noise, trace spam, and
+  // consumers can't tell repeated-state from new-state. Track per-
+  // engine whether we're CURRENTLY above threshold; only emit on
+  // below→above transitions. (Above→below recovery is silent — add an
+  // explicit recovery event later if needed.)
+  const miscalibratedAbove = new Map<string, boolean>();
+
   const offCalibrated = bus.on('comprehension:calibrated', (payload) => {
     void traceCollector
       .record({
@@ -83,7 +92,12 @@ export function attachComprehensionTraceListener(
     if (!calibrator) return;
     const b = calibrator.brierScore(payload.engineId);
     if (b.insufficient || b.brier == null) return;
-    if (b.brier <= MISCALIBRATION_BRIER_THRESHOLD) return;
+    const nowAbove = b.brier > MISCALIBRATION_BRIER_THRESHOLD;
+    const wasAbove = miscalibratedAbove.get(payload.engineId) ?? false;
+    // Record the current state for the next turn's comparison.
+    miscalibratedAbove.set(payload.engineId, nowAbove);
+    // Emit ONLY on below→above transition. Repeated above-state is silent.
+    if (!nowAbove || wasAbove) return;
     bus.emit('comprehension:miscalibrated', {
       taskId: payload.taskId,
       engineId: payload.engineId,

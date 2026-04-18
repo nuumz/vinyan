@@ -22,6 +22,7 @@ import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
+import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
@@ -658,6 +659,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         })),
         taskResolver: () => null, // populated at dispatch time by core-loop
         engineRoster: () => effectiveEngineRegistry.listEngines(),
+        reconcileIntervalMs: ecosystemConfig.reconcile_interval_ms,
       });
 
       // Seed runtime FSM for every engine already in the registry so the
@@ -1133,6 +1135,30 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       })
     : undefined;
 
+  // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine
+  // BEFORE `deps` construction so both can be injected.
+  // Without these, the P2.C hybrid pipeline in core-loop is unreachable
+  // (deps.llmComprehensionEngine stays undefined → stage 2 never runs).
+  const comprehensionCalibrator = comprehensionStore
+    ? new ComprehensionCalibrator(comprehensionStore)
+    : undefined;
+  let llmComprehensionEngine: import('./comprehension/types.ts').ComprehensionEngine | undefined;
+  try {
+    const llmProvider =
+      registry.selectByTier('balanced') ??
+      registry.selectByTier('fast') ??
+      registry.selectByTier('powerful');
+    if (llmProvider && comprehensionCalibrator) {
+      llmComprehensionEngine = newLlmComprehender({
+        provider: llmProvider,
+        calibrator: comprehensionCalibrator,
+        bus,
+      });
+    }
+  } catch {
+    // Any failure leaves stage 2 unregistered; stage 1 keeps working.
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -1166,6 +1192,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     rejectedApproachStore,
     // A7 learning loop — comprehension calibration persistence
     comprehensionStore,
+    // P2.C stage-2 engine — hybrid pipeline only activates when present
+    llmComprehensionEngine,
     // STU: historical profiler for enrichUnderstanding()
     traceStore,
     // STU Layer 2: semantic intent extraction
@@ -1557,20 +1585,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
-  // P3.B.2 — records adaptive-behavior comprehension events
-  // (calibrated, calibration_diverged, ceiling_adjusted) into
-  // ExecutionTrace. AXM#7 wiring: when a ComprehensionStore is
-  // available, also attach a ComprehensionCalibrator so the listener
-  // can compute Brier on every calibrated event and surface
-  // `comprehension:miscalibrated` when quality drops.
-  const comprehensionCalibrator = comprehensionStore
-    ? new ComprehensionCalibrator(comprehensionStore)
-    : undefined;
+  // P3.B — records adaptive-behavior comprehension events
+  // (calibrated, calibration_diverged, ceiling_adjusted) + AXM#7 Brier
+  // miscalibration emission. Uses the calibrator wired above.
   const comprehensionTraceHandle = attachComprehensionTraceListener({
     bus,
     traceCollector,
     calibrator: comprehensionCalibrator,
   });
+
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
 

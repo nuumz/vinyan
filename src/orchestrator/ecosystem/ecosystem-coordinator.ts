@@ -45,6 +45,17 @@ import {
 
 // ── Config ───────────────────────────────────────────────────────────
 
+/**
+ * Minimal timer abstraction so tests can swap real setTimeout/clearTimeout
+ * for a controllable fake. A single pair of calls is enough — the
+ * scheduler uses chained setTimeout (not setInterval) so the handle type
+ * is whatever the injected `setTimer` returns.
+ */
+export interface CoordinatorTimerImpl {
+  setTimer(fn: () => void, ms: number): unknown;
+  clearTimer(handle: unknown): void;
+}
+
 export interface EcosystemCoordinatorConfig {
   readonly bus: VinyanBus;
   readonly runtime: RuntimeStateManager;
@@ -58,6 +69,17 @@ export interface EcosystemCoordinatorConfig {
   /** Produce the current engine roster (for department refresh). */
   readonly engineRoster: () => readonly Pick<ReasoningEngine, 'id' | 'capabilities'>[];
   readonly now?: () => number;
+  /**
+   * Reconcile cadence in ms. 0 / undefined disables the scheduler — callers
+   * must then invoke `reconcile()` manually. Default is off so tests and
+   * legacy paths don't leak timers.
+   */
+  readonly reconcileIntervalMs?: number;
+  /**
+   * Optional timer injection. Defaults to the global setTimeout /
+   * clearTimeout — tests use a fake clock to drive deterministic ticks.
+   */
+  readonly timer?: CoordinatorTimerImpl;
 }
 
 // ── Reconciliation ───────────────────────────────────────────────────
@@ -90,6 +112,10 @@ export class EcosystemCoordinator {
   private readonly engineRoster: () => readonly Pick<ReasoningEngine, 'id' | 'capabilities'>[];
   private readonly now: () => number;
   private readonly commitmentBridge: CommitmentBridge;
+  private readonly reconcileIntervalMs: number;
+  private readonly timer: CoordinatorTimerImpl;
+  private reconcileHandle: unknown = null;
+  private reconcileInFlight = false;
   private started = false;
 
   constructor(config: EcosystemCoordinatorConfig) {
@@ -103,6 +129,11 @@ export class EcosystemCoordinator {
     this.resolveTask = config.taskResolver;
     this.engineRoster = config.engineRoster;
     this.now = config.now ?? (() => Date.now());
+    this.reconcileIntervalMs = config.reconcileIntervalMs ?? 0;
+    this.timer = config.timer ?? {
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    };
     this.commitmentBridge = new CommitmentBridge({
       ledger: this.commitments,
       bus: this.bus,
@@ -121,13 +152,71 @@ export class EcosystemCoordinator {
     // Build the department index from the current roster.
     this.departments.refresh(this.engineRoster());
     this.started = true;
+    this.scheduleNextReconcile();
   }
 
   stop(): void {
     if (!this.started) return;
     this.commitmentBridge.stop();
     this.helpfulness.stop();
+    if (this.reconcileHandle !== null) {
+      this.timer.clearTimer(this.reconcileHandle);
+      this.reconcileHandle = null;
+    }
     this.started = false;
+  }
+
+  // ── Scheduled reconcile (chained setTimeout — avoids pile-up) ────
+
+  private scheduleNextReconcile(): void {
+    if (!this.started || this.reconcileIntervalMs <= 0) return;
+    this.reconcileHandle = this.timer.setTimer(
+      () => this.runScheduledReconcile(),
+      this.reconcileIntervalMs,
+    );
+  }
+
+  private runScheduledReconcile(): void {
+    this.reconcileHandle = null;
+    if (!this.started) return;
+    // Reentrancy guard: if a previous sweep is still running (shouldn't
+    // happen with chained setTimeout, but defensive), skip this tick.
+    if (this.reconcileInFlight) {
+      this.scheduleNextReconcile();
+      return;
+    }
+    this.reconcileInFlight = true;
+    const startedAt = this.now();
+    let violationCount = 0;
+    let departmentsRefreshed = 0;
+    let errorMessage: string | undefined;
+    try {
+      const report = this.reconcile();
+      violationCount = report.violations.length;
+      departmentsRefreshed = report.departmentsRefreshed;
+      // Emit per-violation events so dashboards can aggregate/alert.
+      for (const v of report.violations) {
+        this.bus.emit('ecosystem:invariant_violation', {
+          id: v.id,
+          subject: v.subject,
+          detail: v.detail,
+          checkedAt: report.checkedAt,
+        });
+      }
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      console.error('[vinyan] ecosystem: reconcile error:', errorMessage);
+    } finally {
+      this.reconcileInFlight = false;
+      this.bus.emit('ecosystem:reconcile_tick', {
+        checkedAt: startedAt,
+        violationCount,
+        departmentsRefreshed,
+        durationMs: this.now() - startedAt,
+        ...(errorMessage ? { error: errorMessage } : {}),
+      });
+      this.scheduleNextReconcile();
+    }
   }
 
   // ── Subsystem accessors ──────────────────────────────────────────
@@ -214,7 +303,15 @@ export class EcosystemCoordinator {
 
     // 4. Pure selection — no persistence side effects.
     const verdict = selectVolunteer(candidates);
-    if (!verdict.winner) return null;
+    if (!verdict.winner) {
+      // All candidates scored zero. Decline every offer so the row is not
+      // left in an indeterminate (accepted_at=NULL, declined_reason=NULL)
+      // state forever. Delegate to finalize() with a sentinel commitmentId
+      // — since there is no winner, finalize's accept branch is skipped
+      // and all offers land in declineOffer with `verdict.reason`.
+      this.volunteers.finalize(params.taskId, candidates, '__no-winner__');
+      return null;
+    }
 
     // 5. Open the real commitment with the winner bound, then finalize to
     //    link winner's offer → commitmentId and decline the rest.

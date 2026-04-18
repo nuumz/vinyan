@@ -46,6 +46,7 @@ export { HelpfulnessTracker } from './helpfulness-tracker.ts';
 
 export {
   EcosystemCoordinator,
+  type CoordinatorTimerImpl,
   type EcosystemCoordinatorConfig,
   type InvariantId,
   type InvariantViolation,

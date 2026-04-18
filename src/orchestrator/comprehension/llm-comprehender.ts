@@ -50,6 +50,14 @@ const LLM_MAX_SELF_CONFIDENCE = 0.7;
 /** Conservative fallback when calibrator has no data (A2 `unknown` explicit handling). */
 const LLM_UNKNOWN_DATA_CEILING = 0.3;
 const CIRCUIT_KEY = 'llm-comprehender';
+/**
+ * GAP#2 — Brier score above this threshold means the engine's
+ * confidence outputs are systematically misleading (worse than a coin
+ * flip). When detected, the engine SELF-RECUSES for that turn and
+ * returns `type: 'unknown'` so downstream routing falls back to stage 1.
+ * Matches `MISCALIBRATION_BRIER_THRESHOLD` in the trace listener.
+ */
+const SELF_RECUSAL_BRIER_THRESHOLD = 0.25;
 
 // ── Response schema — the LLM's narrow output contract ─────────────────
 
@@ -212,6 +220,29 @@ class LlmComprehender implements ComprehensionEngine {
         asOf: started,
         reason: 'circuit-breaker-open',
       });
+    }
+
+    // GAP#2 — Brier-based self-recusal. If the engine's recent calibration
+    // quality (per the calibrator) has crossed the miscalibration
+    // threshold, the LLM's confidence outputs can no longer be trusted.
+    // Refuse this turn, let stage 1 stand alone. Same pattern as the
+    // circuit-breaker path — honest `unknown` instead of polluting the
+    // merge with miscalibrated data.
+    //
+    // `brierScore` is an optional method on the calibrator interface —
+    // older or mock calibrators may only implement `confidenceCeiling`
+    // / `effectiveCeiling`. Gracefully skip the recusal check when the
+    // method isn't available.
+    if (this.opts.calibrator && typeof (this.opts.calibrator as { brierScore?: unknown }).brierScore === 'function') {
+      const b = this.opts.calibrator.brierScore(this.id);
+      if (!b.insufficient && b.brier != null && b.brier > SELF_RECUSAL_BRIER_THRESHOLD) {
+        return this.unknownEnvelope({
+          inputHash,
+          rootGoal: input.rootGoal,
+          asOf: started,
+          reason: `self-recused-miscalibrated-brier=${b.brier.toFixed(3)}`,
+        });
+      }
     }
 
     // Build prompt + race against timeout.

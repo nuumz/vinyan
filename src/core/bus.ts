@@ -258,6 +258,38 @@ export interface VinyanBusEvents {
     offerCount: number;
   };
 
+  // Ecosystem reconcile — emitted once per violation found by a scheduled
+  // invariant sweep. Subjects are engineId (I-E1) or commitmentId (I-E2).
+  // I-E3 (department ↔ capability mismatch) self-heals and does not emit.
+  'ecosystem:invariant_violation': {
+    id: 'I-E1' | 'I-E2' | 'I-E3';
+    subject: string;
+    detail: string;
+    checkedAt: number;
+  };
+
+  // Ecosystem reconcile — emitted once per scheduled sweep (success or error).
+  // Dashboards can use this to track whether the sweep is actually firing.
+  'ecosystem:reconcile_tick': {
+    checkedAt: number;
+    violationCount: number;
+    departmentsRefreshed: number;
+    durationMs: number;
+    error?: string;
+  };
+
+  // Ecosystem engine registry — emitted when a ReasoningEngine is added to
+  // the registry. EcosystemCoordinator listens to upsert department
+  // membership and auto-register the engine into the runtime FSM.
+  'engine:registered': {
+    engineId: string;
+    capabilities: readonly string[];
+    engineType: string;
+  };
+  'engine:deregistered': {
+    engineId: string;
+  };
+
   // Worker selection (Phase 4.4)
   'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
   'worker:exploration': { taskId: string; selectedWorkerId: string; defaultWorkerId: string };

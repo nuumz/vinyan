@@ -19,7 +19,7 @@ import type { ReasoningEngine } from '../types.ts';
 
 import { CommitmentLedger } from './commitment-ledger.ts';
 import { DepartmentIndex, type DepartmentSeed } from './department.ts';
-import { EcosystemCoordinator } from './ecosystem-coordinator.ts';
+import { EcosystemCoordinator, type CoordinatorTimerImpl } from './ecosystem-coordinator.ts';
 import { HelpfulnessTracker } from './helpfulness-tracker.ts';
 import { RuntimeStateManager } from './runtime-state.ts';
 import { TeamManager } from './team.ts';
@@ -33,6 +33,8 @@ export interface BuildEcosystemConfig {
   readonly taskResolver: (taskId: string) => TaskFacts | null;
   readonly engineRoster: () => readonly Pick<ReasoningEngine, 'id' | 'capabilities'>[];
   readonly now?: () => number;
+  readonly reconcileIntervalMs?: number;
+  readonly timer?: CoordinatorTimerImpl;
 }
 
 export interface EcosystemBundle {
@@ -91,6 +93,10 @@ export function buildEcosystem(config: BuildEcosystemConfig): EcosystemBundle {
     taskResolver: config.taskResolver,
     engineRoster: config.engineRoster,
     now,
+    ...(config.reconcileIntervalMs !== undefined
+      ? { reconcileIntervalMs: config.reconcileIntervalMs }
+      : {}),
+    ...(config.timer ? { timer: config.timer } : {}),
   });
 
   return {

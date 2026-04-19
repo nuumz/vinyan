@@ -29,6 +29,11 @@ import {
   resolveSelectedAgent,
 } from './intent/formatters.ts';
 import {
+  composeDeterministicCandidate,
+  fallbackStrategy,
+  mapUnderstandingToStrategy,
+} from './intent/strategy.ts';
+import {
   containsShellFallbackChain,
   IntentResponseSchema,
   normalizeDirectToolCall,
@@ -256,195 +261,10 @@ export function intentResolverCacheSize(): number {
 // Fallback: map existing regex-based classification to ExecutionStrategy
 // ---------------------------------------------------------------------------
 
-export function fallbackStrategy(
-  taskDomain: string,
-  taskIntent: string,
-  toolRequirement: string,
-  /**
-   * Oracle-verified comprehension (optional). When present AND marks this
-   * turn as a clarification answer, the fallback PRESERVES the workflow
-   * path (agentic-workflow) even if the literal reply text ("โรแมนติก")
-   * would otherwise read as conversational/inquire. Without this, LLM
-   * outage + clarification-answer would silently re-route the user's
-   * creative task to a chat reply.
-   */
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
-): ExecutionStrategy {
-  if (comprehension?.params.type === 'comprehension' && comprehension.params.data?.state.isClarificationAnswer) {
-    // Stay in whichever workflow the prior task was already in. Without
-    // richer state we default to agentic-workflow (the only strategy that
-    // currently honors a multi-step creative/exploratory thread).
-    return 'agentic-workflow';
-  }
-  if (taskDomain === 'conversational') return 'conversational';
-  if (taskDomain === 'general-reasoning' && taskIntent === 'inquire') return 'conversational';
-  if (taskIntent === 'execute' && toolRequirement === 'tool-needed' && taskDomain !== 'code-mutation') return 'direct-tool';
-  // Creative/generative tasks (execute + no tools + general-reasoning) need agentic-workflow, not full-pipeline
-  if (taskIntent === 'execute' && toolRequirement === 'none' && taskDomain === 'general-reasoning') return 'agentic-workflow';
-  return 'full-pipeline';
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic candidate — primary path (tier 0.8, A5).
-// Produces a candidate BEFORE any LLM call. When confidence is high and the
-// signal is unambiguous, the LLM call is skipped entirely.
-// ---------------------------------------------------------------------------
-
-const FILE_TOKEN_REGEX = /\b[\w.\-/]+\.[A-Za-z0-9]{1,6}\b/;
-
-/**
- * Rule-based strategy candidate from STU signals. Higher-tier than
- * fallbackStrategy because it includes confidence + ambiguity detection.
- */
-export function mapUnderstandingToStrategy(
-  understanding: SemanticTaskUnderstanding,
-): { strategy: ExecutionStrategy; confidence: number; ambiguous: boolean } {
-  const { taskDomain, taskIntent, toolRequirement, rawGoal, resolvedEntities, targetSymbol } =
-    understanding;
-  const strategy = fallbackStrategy(taskDomain, taskIntent, toolRequirement);
-
-  // --- Ambiguity heuristics ---
-  // Goal looks like it references a file but entity resolver found nothing.
-  const hasFileToken = FILE_TOKEN_REGEX.test(rawGoal);
-  const hasResolvedPaths = resolvedEntities.some((e) => e.resolvedPaths.length > 0);
-  const missingReferent = hasFileToken && !hasResolvedPaths && !targetSymbol;
-
-  // "execute" intent on non-code domain with no clear tool signal — could be
-  // creative generation OR a direct action OR a research workflow.
-  const creativeAmbiguity =
-    taskDomain === 'general-reasoning' && taskIntent === 'execute' && toolRequirement === 'none';
-
-  // code-reasoning + inquire could be either "explain this code" (conversational)
-  // or "analyze blame for bug" (full-pipeline with tools).
-  const codeInquiryAmbiguity = taskDomain === 'code-reasoning' && taskIntent === 'inquire';
-
-  const ambiguous = missingReferent || creativeAmbiguity || codeInquiryAmbiguity;
-
-  // --- Confidence tiers (A5 heuristic ≈ 0.8, lowered for ambiguity) ---
-  let confidence: number;
-  if (ambiguous) {
-    confidence = 0.55;
-  } else if (taskDomain === 'conversational') {
-    confidence = 0.95; // unambiguous greeting
-  } else if (taskDomain === 'code-mutation' && (understanding.targetSymbol || resolvedEntities.length > 0)) {
-    confidence = 0.9; // code change with concrete target
-  } else if (strategy === 'direct-tool') {
-    confidence = 0.8; // tool-needed + non-code; needs tool resolution to fully form
-  } else {
-    confidence = 0.8;
-  }
-
-  return { strategy, confidence, ambiguous };
-}
-
-/**
- * Compose a deterministic candidate from STU + rule-based tool classifier.
- * Returns an `IntentResolution` skeleton with `reasoningSource='deterministic'`.
- *
- * When both classifyDirectTool and mapUnderstandingToStrategy agree on
- * direct-tool, the result carries a fully-formed `directToolCall` (resolved
- * via platform-aware resolveCommand).
- */
-/**
- * Inspection/report verbs — tasks that need a TEXTUAL answer derived from
- * tool output, never fire-and-forget. Examples:
- *   - "ตรวจสอบการทำงานของ X" → report on X's status
- *   - "check git status"       → summarize working tree
- *   - "verify foo.ts compiles" → tell me the outcome
- *
- * These trigger `execute + tool-needed` in STU (the verb is imperative,
- * the task DOES need tools) but the intent is inquiry-with-tools. Route
- * them to `full-pipeline` so the oracle gate + DAG planner can marshal
- * multiple tools and produce a report.
- */
-const INSPECTION_VERB_PATTERN =
-  /(?:ตรวจสอบ|เช็ค|ดูสถานะ|ดูการทำงาน|รายงาน|สรุปสถานะ)|\b(?:check|inspect|verify|audit|diagnose|review|status|report)\b/i;
-
-export function composeDeterministicCandidate(
-  input: TaskInput,
-  understanding: SemanticTaskUnderstanding,
-): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
-  const ruleStrategy = mapUnderstandingToStrategy(understanding);
-  const directClass = classifyDirectTool(input.goal);
-  const isInspection = INSPECTION_VERB_PATTERN.test(input.goal);
-
-  // When the direct-tool rule fires with high confidence AND the rule-mapper
-  // agrees the goal needs a tool, produce a composed candidate with a resolved
-  // shell command. This is the highest-confidence deterministic path.
-  //
-  // Inspection verbs ("check", "ตรวจสอบ", "verify") are excluded: they read
-  // as execute+tool-needed but want a textual report, not a side-effect.
-  if (
-    directClass &&
-    directClass.confidence >= 0.85 &&
-    !isInspection &&
-    (ruleStrategy.strategy === 'direct-tool' || understanding.toolRequirement === 'tool-needed')
-  ) {
-    const command = resolveCommand(directClass, process.platform);
-    if (command) {
-      return {
-        strategy: 'direct-tool',
-        refinedGoal: input.goal,
-        directToolCall: { tool: 'shell_exec', parameters: { command } },
-        confidence: Math.min(directClass.confidence, ruleStrategy.ambiguous ? 0.75 : 0.9),
-        reasoning: `Deterministic: classifyDirectTool matched (${directClass.type}, conf=${directClass.confidence}).`,
-        reasoningSource: 'deterministic',
-        type: 'known',
-        deterministicCandidate: {
-          strategy: 'direct-tool',
-          confidence: Math.min(directClass.confidence, 0.9),
-          source: 'composed',
-          ambiguous: false,
-        },
-      };
-    }
-  }
-
-  // Demotion path: rule said direct-tool but we could NOT resolve a concrete
-  // shell command (classifyDirectTool missed, or resolveCommand returned
-  // null). A direct-tool strategy without a directToolCall is semantically
-  // invalid — there is nothing to execute. Route to full-pipeline instead,
-  // flagged ambiguous so the LLM merge layer becomes the tiebreaker.
-  //
-  // This also catches inspection verbs that slipped through STU as
-  // execute+tool-needed: "ตรวจสอบ X" wants a report, not fire-and-forget.
-  if (ruleStrategy.strategy === 'direct-tool' || isInspection) {
-    const reason = isInspection
-      ? `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} + inspection verb → full-pipeline (report expected, not fire-and-forget).`
-      : `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → direct-tool rule fired but no shell command resolved; demoted to full-pipeline.`;
-    return {
-      strategy: 'full-pipeline',
-      refinedGoal: input.goal,
-      confidence: 0.55,
-      reasoning: `Deterministic: ${reason}`,
-      reasoningSource: 'deterministic',
-      type: 'uncertain',
-      deterministicCandidate: {
-        strategy: 'full-pipeline',
-        confidence: 0.55,
-        source: 'mapUnderstandingToStrategy',
-        ambiguous: true,
-      },
-    };
-  }
-
-  // Otherwise emit a skeleton from the rule-mapper alone. No directToolCall
-  // or workflowPrompt yet — the LLM layer fills those in when invoked.
-  return {
-    strategy: ruleStrategy.strategy,
-    refinedGoal: input.goal,
-    confidence: ruleStrategy.confidence,
-    reasoning: `Deterministic: STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → ${ruleStrategy.strategy}${ruleStrategy.ambiguous ? ' (ambiguous)' : ''}.`,
-    reasoningSource: 'deterministic',
-    type: ruleStrategy.ambiguous ? 'uncertain' : 'known',
-    deterministicCandidate: {
-      strategy: ruleStrategy.strategy,
-      confidence: ruleStrategy.confidence,
-      source: 'mapUnderstandingToStrategy',
-      ambiguous: ruleStrategy.ambiguous,
-    },
-  };
-}
+// Commit D5: fallbackStrategy / mapUnderstandingToStrategy /
+// composeDeterministicCandidate moved to `src/orchestrator/intent/strategy.ts`
+// and imported at the top of this file. Re-exported for backward compat.
+export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStrategy };
 
 // Commit D4: buildClarificationRequest / formatConversationContext /
 // formatAgentCatalog / resolveSelectedAgent moved to

@@ -89,13 +89,54 @@ export interface PromptSection {
   id: string;
   /** Which prompt this section belongs to. */
   target: 'system' | 'user';
-  /** Cache tier hint for the section content. */
+  /** @deprecated B5 will remove this — use `volatility`. Legacy cache tier hint. */
   cache: CacheControl['type'];
-  /** Lower priority = earlier in prompt (10, 20, 30...). */
+  /**
+   * Plan commit B: cache volatility tier.
+   *
+   * - `frozen`: content never changes within session lifetime (role, output
+   *   contract, static tool schemas). Eligible for the 1h ephemeral cache.
+   * - `session`: content stable per session (VINYAN.md, agent persona, soul,
+   *   agent memory/skills). Eligible for the 5m ephemeral cache.
+   * - `turn`: content changes every turn (goal, perception, conversation
+   *   tail). NOT cached.
+   *
+   * Core invariant: within a `target`, sorted by `priority`, volatility must
+   * be monotonically non-decreasing (frozen < session < turn). The registry
+   * throws on violation — see `validateVolatilityOrdering`.
+   */
+  volatility: 'frozen' | 'session' | 'turn';
+  /** Lower priority = earlier in prompt. Use 10-99 for frozen, 100-199 for session, 200-299 for turn. */
   priority: number;
   /** Render the section. Return null to skip. */
   render: (ctx: SectionContext) => string | null;
 }
+
+/** Ordinal for volatility comparison. */
+const VOLATILITY_ORDER = { frozen: 0, session: 1, turn: 2 } as const;
+
+/** Character offsets in a rendered prompt where tier boundaries fall. */
+export interface TierOffsets {
+  /** Number of characters that belong to the frozen tier (incl. trailing `\n\n` joiner). */
+  frozenEnd: number;
+  /** Number of characters that belong to frozen + session tiers combined. */
+  sessionEnd: number;
+  /** Total length of the rendered target (= frozen + session + turn). */
+  totalEnd: number;
+}
+
+/** Per-tier segments emitted by `renderTargetByTier`. */
+export interface RenderedTiers {
+  frozen: string;
+  session: string;
+  turn: string;
+  /** Concatenation of all three tiers (legacy single-string consumers). */
+  joined: string;
+  /** Character offsets identifying tier boundaries in `joined`. */
+  offsets: TierOffsets;
+}
+
+const TIER_SEPARATOR = '\n\n';
 
 export class PromptSectionRegistry {
   private sections: PromptSection[] = [];
@@ -104,14 +145,86 @@ export class PromptSectionRegistry {
     this.sections.push(section);
   }
 
+  /**
+   * Validate that sections within each target are ordered by volatility
+   * (frozen < session < turn) when sorted by priority. Throws on violation
+   * — the invariant exists so the Anthropic provider can place cache markers
+   * at tier boundaries without stranding volatile content behind a stable
+   * cache prefix.
+   */
+  validateVolatilityOrdering(): void {
+    for (const target of ['system', 'user'] as const) {
+      const sorted = this.sections
+        .filter((s) => s.target === target)
+        .sort((a, b) => a.priority - b.priority);
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1]!;
+        const curr = sorted[i]!;
+        if (VOLATILITY_ORDER[prev.volatility] > VOLATILITY_ORDER[curr.volatility]) {
+          throw new Error(
+            `PromptSectionRegistry: volatility violation in '${target}' target — ` +
+              `section '${prev.id}' (${prev.volatility}, priority=${prev.priority}) appears before ` +
+              `'${curr.id}' (${curr.volatility}, priority=${curr.priority}). ` +
+              `Required order: frozen < session < turn. Adjust priorities so lower-volatility ` +
+              `sections come first.`,
+          );
+        }
+      }
+    }
+  }
+
   /** Render all sections for a given target, sorted by priority. */
   renderTarget(target: 'system' | 'user', ctx: SectionContext): string {
-    return this.sections
+    return this.renderTargetByTier(target, ctx).joined;
+  }
+
+  /**
+   * Plan commit B: render sections split by volatility tier. The caller
+   * (assembler + provider) uses `offsets` to place Anthropic cache_control
+   * markers at tier boundaries so the frozen prefix + session prefix stay
+   * cached while only the turn-volatile suffix is re-processed each request.
+   */
+  renderTargetByTier(target: 'system' | 'user', ctx: SectionContext): RenderedTiers {
+    const sorted = this.sections
       .filter((s) => s.target === target)
-      .sort((a, b) => a.priority - b.priority)
-      .map((s) => s.render(ctx))
-      .filter((s): s is string => s != null)
-      .join('\n\n');
+      .sort((a, b) => a.priority - b.priority);
+
+    const byTier: Record<'frozen' | 'session' | 'turn', string[]> = {
+      frozen: [],
+      session: [],
+      turn: [],
+    };
+    for (const section of sorted) {
+      const rendered = section.render(ctx);
+      if (rendered == null) continue;
+      byTier[section.volatility].push(rendered);
+    }
+
+    const frozen = byTier.frozen.join(TIER_SEPARATOR);
+    const session = byTier.session.join(TIER_SEPARATOR);
+    const turn = byTier.turn.join(TIER_SEPARATOR);
+
+    // Compose joined string. Insert the tier separator between non-empty tiers.
+    const pieces: string[] = [];
+    if (frozen.length > 0) pieces.push(frozen);
+    if (session.length > 0) pieces.push(session);
+    if (turn.length > 0) pieces.push(turn);
+    const joined = pieces.join(TIER_SEPARATOR);
+
+    // Compute offsets. `frozenEnd` includes the separator that follows the
+    // frozen tier (so cache marker can be placed cleanly at that offset).
+    const frozenEnd =
+      frozen.length === 0
+        ? 0
+        : frozen.length + (pieces.length > 1 ? TIER_SEPARATOR.length : 0);
+    const sessionLen = session.length;
+    const sessionEnd =
+      sessionLen === 0
+        ? frozenEnd
+        : frozenEnd + sessionLen + (turn.length > 0 ? TIER_SEPARATOR.length : 0);
+    const totalEnd = joined.length;
+
+    return { frozen, session, turn, joined, offsets: { frozenEnd, sessionEnd, totalEnd } };
   }
 
   /** Get all registered section IDs. */
@@ -155,6 +268,7 @@ export function createDefaultRegistry(): PromptSectionRegistry {
     id: 'role',
     target: 'system',
     cache: 'static',
+    volatility: 'frozen',
     priority: 10,
     render: () =>
       `[ROLE]
@@ -170,7 +284,8 @@ Do NOT apologize or narrate your process. Produce the code change directly.`,
     id: 'environment',
     target: 'system',
     cache: 'ephemeral',
-    priority: 15,
+    volatility: 'session',
+    priority: 110,
     render: (ctx) => renderEnvironmentSection(ctx.environment),
   });
 
@@ -178,6 +293,7 @@ Do NOT apologize or narrate your process. Produce the code change directly.`,
     id: 'output-format',
     target: 'system',
     cache: 'static',
+    volatility: 'frozen',
     priority: 20,
     render: () =>
       `[OUTPUT FORMAT]
@@ -195,7 +311,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'behavioral-rules',
     target: 'system',
     cache: 'ephemeral',
-    priority: 30,
+    volatility: 'session',
+    priority: 130,
     render: (ctx) => {
       const rules = [
         // Anti-hallucination (proactive)
@@ -237,7 +354,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'tools',
     target: 'system',
     cache: 'static',
-    priority: 40,
+    volatility: 'session',
+    priority: 150,
     render: (ctx) => {
       // Phase 0 W3: tool list is shown at every routing level. Modern fast
       // models (Haiku/Sonnet-class) follow tool schemas reliably; hiding the
@@ -276,7 +394,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'oracle-manifest',
     target: 'system',
     cache: 'static',
-    priority: 50,
+    volatility: 'frozen',
+    priority: 30,
     render: () => buildOracleManifest(),
   });
 
@@ -287,7 +406,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'model-tuning',
     target: 'system',
     cache: 'ephemeral',
-    priority: 35,
+    volatility: 'session',
+    priority: 140,
     render: (ctx) => {
       if (ctx.routingLevel == null) return null;
       const lines: string[] = [];
@@ -327,7 +447,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'instructions',
     target: 'user',
     cache: 'session',
-    priority: 10,
+    volatility: 'session',
+    priority: 110,
     render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
@@ -335,7 +456,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'task',
     target: 'user',
     cache: 'ephemeral',
-    priority: 20,
+    volatility: 'turn',
+    priority: 200,
     render: (ctx) => {
       const lines = ['[TASK]'];
       // Gap 4B: Prepend task fingerprint metadata for LLM orientation
@@ -356,7 +478,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'semantic-context',
     target: 'user',
     cache: 'ephemeral',
-    priority: 22,
+    volatility: 'turn',
+    priority: 210,
     render: (ctx) => {
       const u = ctx.understanding;
       // Only render if we have Layer 1+ data (resolvedEntities or semanticIntent)
@@ -468,7 +591,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'acceptance-criteria',
     target: 'user',
     cache: 'ephemeral',
-    priority: 25,
+    volatility: 'turn',
+    priority: 220,
     render: (ctx) => {
       const criteria = ctx.understanding?.acceptanceCriteria ?? [];
       if (criteria.length === 0) return null;
@@ -484,7 +608,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'perception',
     target: 'user',
     cache: 'ephemeral',
-    priority: 30,
+    volatility: 'turn',
+    priority: 230,
     render: (ctx) => {
       const target = ctx.perception.taskTarget;
       const cone = ctx.perception.dependencyCone;
@@ -533,7 +658,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'file-contents',
     target: 'user',
     cache: 'ephemeral',
-    priority: 35,
+    volatility: 'turn',
+    priority: 240,
     render: (ctx) => {
       if (!ctx.perception.fileContents?.length) return null;
       const sections = ctx.perception.fileContents.map((fc) => {
@@ -548,7 +674,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'known-facts',
     target: 'user',
     cache: 'ephemeral',
-    priority: 40,
+    volatility: 'turn',
+    priority: 250,
     render: (ctx) => {
       if (ctx.perception.verifiedFacts.length === 0) return null;
       const facts = ctx.perception.verifiedFacts
@@ -567,7 +694,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'user-constraints',
     target: 'user',
     cache: 'ephemeral',
-    priority: 45,
+    volatility: 'turn',
+    priority: 260,
     render: (ctx) => {
       const userConstraints = ctx.understanding?.constraints ?? [];
       if (userConstraints.length === 0) return null;
@@ -580,7 +708,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'constraints',
     target: 'user',
     cache: 'ephemeral',
-    priority: 50,
+    volatility: 'turn',
+    priority: 270,
     render: (ctx) => {
       if (ctx.memory.failedApproaches.length === 0) return null;
       const lines = ctx.memory.failedApproaches.map((f, idx) => {
@@ -617,7 +746,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'hypotheses',
     target: 'user',
     cache: 'ephemeral',
-    priority: 60,
+    volatility: 'turn',
+    priority: 280,
     render: (ctx) => {
       const parts: string[] = [];
 
@@ -643,7 +773,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     id: 'plan',
     target: 'user',
     cache: 'ephemeral',
-    priority: 70,
+    volatility: 'turn',
+    priority: 290,
     render: (ctx) => {
       if (!ctx.plan || ctx.plan.nodes.length === 0) return null;
       const steps = ctx.plan.nodes
@@ -656,6 +787,10 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
   registerConversationHistorySection(registry);
   registerAgentContextSections(registry);
   registerSpecialistAgentSections(registry);
+
+  // Plan commit B: fail fast on volatility ordering violations so a
+  // misclassified section cannot silently burn cache at runtime.
+  registry.validateVolatilityOrdering();
 
   return registry;
 }
@@ -671,6 +806,7 @@ export function createReasoningRegistry(): PromptSectionRegistry {
     id: 'reasoning-role',
     target: 'system',
     cache: 'static',
+    volatility: 'frozen',
     priority: 10,
     render: (ctx) => {
       const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
@@ -727,7 +863,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-tools',
     target: 'system',
     cache: 'static',
-    priority: 20,
+    volatility: 'session',
+    priority: 120,
     render: (ctx) => {
       // Phase 0 W3: tool list exposed at all routing levels. See rationale
       // on the code-section `tools` block above.
@@ -773,7 +910,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-environment',
     target: 'system',
     cache: 'ephemeral',
-    priority: 25,
+    volatility: 'session',
+    priority: 110,
     render: (ctx) => {
       const shared = renderEnvironmentSection(ctx.environment);
       if (shared) return shared;
@@ -798,7 +936,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-model-tuning',
     target: 'system',
     cache: 'ephemeral',
-    priority: 30,
+    volatility: 'session',
+    priority: 130,
     render: (ctx) => {
       if (ctx.routingLevel == null) return null;
 
@@ -819,7 +958,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-instructions',
     target: 'user',
     cache: 'session',
-    priority: 10,
+    volatility: 'session',
+    priority: 110,
     render: (ctx) => renderInstructionHierarchy(ctx.instructions),
   });
 
@@ -827,7 +967,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-task',
     target: 'user',
     cache: 'ephemeral',
-    priority: 20,
+    volatility: 'turn',
+    priority: 200,
     render: (ctx) => {
       const stu = ctx.understanding as SemanticTaskUnderstanding | undefined;
       const domain = stu?.taskDomain;
@@ -864,7 +1005,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-perception',
     target: 'user',
     cache: 'ephemeral',
-    priority: 30,
+    volatility: 'turn',
+    priority: 210,
     render: (ctx) => {
       // Non-code domains don't need codebase context
       const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
@@ -897,7 +1039,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-file-contents',
     target: 'user',
     cache: 'ephemeral',
-    priority: 35,
+    volatility: 'turn',
+    priority: 220,
     render: (ctx) => {
       // Non-code domains don't need file contents
       const domain = (ctx.understanding as SemanticTaskUnderstanding)?.taskDomain;
@@ -916,7 +1059,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-facts',
     target: 'user',
     cache: 'ephemeral',
-    priority: 40,
+    volatility: 'turn',
+    priority: 230,
     render: (ctx) => {
       if (ctx.perception.verifiedFacts.length === 0) return null;
       const facts = ctx.perception.verifiedFacts
@@ -935,7 +1079,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-user-constraints',
     target: 'user',
     cache: 'ephemeral',
-    priority: 45,
+    volatility: 'turn',
+    priority: 240,
     render: (ctx) => {
       const userConstraints = ctx.understanding?.constraints ?? [];
       if (userConstraints.length === 0) return null;
@@ -949,7 +1094,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     id: 'reasoning-failed',
     target: 'user',
     cache: 'ephemeral',
-    priority: 50,
+    volatility: 'turn',
+    priority: 250,
     render: (ctx) => {
       if (ctx.memory.failedApproaches.length === 0) return null;
       const lines = ctx.memory.failedApproaches.map((f, idx) => {
@@ -973,6 +1119,9 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
   registerConversationHistorySection(registry);
   registerAgentContextSections(registry);
   registerSpecialistAgentSections(registry);
+
+  // Plan commit B: fail fast on volatility ordering violations.
+  registry.validateVolatilityOrdering();
 
   return registry;
 }
@@ -1051,7 +1200,8 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
     id: 'conversation-history',
     target: 'user',
     cache: 'ephemeral',
-    priority: 15, // early in user prompt, before task/perception/plan
+    volatility: 'turn',
+    priority: 215, // after task, before perception — conversation-history bounds the task context
     render: (ctx) => {
       // Prefer Turn-model history (plan commit A) when available.
       if (ctx.turns?.length) return renderTurnsSection(ctx.turns);
@@ -1109,7 +1259,8 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
     id: 'agent-soul',
     target: 'system',
     cache: 'session',
-    priority: 16,
+    volatility: 'session',
+    priority: 120,
     render: (ctx) => {
       // Prefer soul content (deep, LLM-derived) over ACL identity (shallow, statistical)
       if (ctx.soulContent) {
@@ -1140,7 +1291,8 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
     id: 'agent-memory',
     target: 'user',
     cache: 'ephemeral',
-    priority: 21,
+    volatility: 'session',
+    priority: 120,
     render: (ctx) => {
       const ac = ctx.agentContext;
       if (!ac) return null;
@@ -1173,7 +1325,8 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
     id: 'agent-skills',
     target: 'user',
     cache: 'ephemeral',
-    priority: 21.5,
+    volatility: 'session',
+    priority: 130,
     render: (ctx) => {
       const ac = ctx.agentContext;
       if (!ac) return null;
@@ -1231,7 +1384,8 @@ function registerSpecialistAgentSections(registry: PromptSectionRegistry): void 
     id: 'agent-persona',
     target: 'system',
     cache: 'session',
-    priority: 15,
+    volatility: 'session',
+    priority: 115,
     render: (ctx) => {
       const agent = ctx.agentProfile;
       if (!agent) return null;
@@ -1251,7 +1405,8 @@ function registerSpecialistAgentSections(registry: PromptSectionRegistry): void 
     id: 'agent-peers',
     target: 'system',
     cache: 'static',
-    priority: 55,
+    volatility: 'session',
+    priority: 160,
     render: (ctx) => {
       const peers = (ctx.peerAgents ?? []).filter((a) => a.id !== ctx.agentProfile?.id);
       if (peers.length === 0) return null;

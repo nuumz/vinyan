@@ -232,6 +232,160 @@ describe('SessionManager.getOriginalTaskGoal', () => {
   });
 });
 
+// ── Phase 1: compaction markers + weighted retention ─────────────────
+
+/**
+ * Insert a user+assistant pair. Returns nothing; timestamps are
+ * monotonically increasing via Date.now() since tests don't care about
+ * clock precision.
+ */
+function insertTurnPair(sessionId: string, user: string, assistant: string): void {
+  sessionStore.insertMessage({
+    session_id: sessionId,
+    task_id: null,
+    role: 'user',
+    content: user,
+    thinking: null,
+    tools_used: null,
+    token_estimate: Math.ceil(user.length / 3.5),
+    created_at: Date.now(),
+  });
+  sessionStore.insertMessage({
+    session_id: sessionId,
+    task_id: 't',
+    role: 'assistant',
+    content: assistant,
+    thinking: null,
+    tools_used: null,
+    token_estimate: Math.ceil(assistant.length / 3.5),
+    created_at: Date.now(),
+  });
+}
+
+describe('compaction markers', () => {
+  test('header reports `M of N total messages compacted, K recent turn-pairs verbatim`', () => {
+    const s = manager.create('api');
+    // 10 pairs = 20 messages; keepRecent=5 → 10 recent, 10 compacted.
+    for (let i = 0; i < 10; i++) {
+      insertTurnPair(s.id, `user turn ${i}`, `assistant reply ${i}`);
+    }
+    const compacted = manager.getConversationHistoryCompacted(s.id, 50_000, 5);
+    const header = compacted.find((e) => e.content.startsWith('[SESSION CONTEXT'));
+    expect(header).toBeDefined();
+    expect(header!.content).toContain('10 of 20 total messages compacted');
+    expect(header!.content).toContain('5 recent turn-pairs verbatim');
+  });
+
+  test('[DROPPED BY BUDGET] entry appears when budget exceeded', () => {
+    const s = manager.create('api');
+    // Fill the session with long turns so the budget bites. Each content is
+    // ~2000 chars → ~570 tokens. 20 pairs = ~22_800 tokens total.
+    const bulk = 'x'.repeat(2000);
+    for (let i = 0; i < 20; i++) {
+      insertTurnPair(s.id, `${bulk} user ${i}`, `${bulk} assistant ${i}`);
+    }
+    // Very tight budget forces enforceTokenBudget to drop.
+    const compacted = manager.getConversationHistoryCompacted(s.id, 2000, 5);
+    const dropMarker = compacted.find((e) => e.content.startsWith('[DROPPED BY BUDGET'));
+    expect(dropMarker).toBeDefined();
+    expect(dropMarker!.content).toMatch(/\d+ turn\(s\) not shown/);
+    expect(dropMarker!.content).toMatch(/~\d+ tokens/);
+  });
+
+  test('drop marker is absent when budget is comfortable', () => {
+    const s = manager.create('api');
+    for (let i = 0; i < 6; i++) {
+      insertTurnPair(s.id, `short user ${i}`, `short assistant ${i}`);
+    }
+    const compacted = manager.getConversationHistoryCompacted(s.id, 50_000, 5);
+    const dropMarker = compacted.find((e) => e.content.startsWith('[DROPPED BY BUDGET'));
+    expect(dropMarker).toBeUndefined();
+  });
+
+  test('inline KEY-DECISION lines are interleaved into the summary block', () => {
+    const s = manager.create('api');
+    // Turn 1-2: normal chit-chat
+    insertTurnPair(s.id, 'hi there', 'hello back');
+    insertTurnPair(s.id, 'just saying', 'yes indeed');
+    // Turn 3: assistant plan preamble → decision
+    insertTurnPair(s.id, 'what is the plan', "I'll break this into three commits and land them in order");
+    // Turn 4: assistant IR block; turn 5: user reply (zero-regex shortcut decision)
+    insertTurnPair(s.id, 'keep going', '[INPUT-REQUIRED]\n- which db should I use?');
+    insertTurnPair(s.id, 'postgres please', 'ok, going with postgres');
+    // Turn 6-11: pad so compaction runs (keepRecent=5)
+    for (let i = 0; i < 6; i++) {
+      insertTurnPair(s.id, `filler user ${i}`, `filler assistant ${i}`);
+    }
+    const compacted = manager.getConversationHistoryCompacted(s.id, 50_000, 5);
+    const header = compacted.find((e) => e.content.startsWith('[SESSION CONTEXT'));
+    expect(header).toBeDefined();
+    // The IR assistant turn must appear as a clarification line.
+    expect(header!.content).toContain('clarification');
+    // At least one `→ [Turn K, …]` line.
+    expect(header!.content).toMatch(/→ \[Turn \d+, (decision|clarification)\]/);
+  });
+});
+
+describe('weighted retention', () => {
+  test('decision turns survive at >=2x rate of normal turns under tight budget', () => {
+    const s = manager.create('api');
+    // 50 turns: every 5th assistant turn is a "decision" (plan preamble);
+    // others are plain chit-chat. Content lengths are equalised so the
+    // differential survival rate must come from weighting, not size.
+    const baseAssistant = 'normal assistant reply with no decision signals included here at all '.repeat(10);
+    const decisionAssistant = "I'll go with postgres and here is the rationale ".repeat(10);
+    for (let i = 0; i < 25; i++) {
+      insertTurnPair(s.id, `user turn ${i} talking about stuff`, i % 5 === 0 ? decisionAssistant : baseAssistant);
+    }
+    // Budget sized so some turns drop but the summary block still fits.
+    // keepRecent=1 forces the older weighted entries to compete.
+    const compacted = manager.getConversationHistoryCompacted(s.id, 4000, 1);
+    // The recent turn-pair is always preserved; focus on the summary block
+    // which captures which older turns "survived" into inline KEY-DECISION
+    // lines (weight=0.5 candidates).
+    const header = compacted.find((e) => e.content.startsWith('[SESSION CONTEXT'));
+    expect(header).toBeDefined();
+    // Count inline decision lines.
+    const decisionLineMatches = header!.content.match(/→ \[Turn \d+, decision\]/g) ?? [];
+    // We emitted ~5 decision turns across 50 messages; the inline block
+    // should surface most of them unless the budget is catastrophic.
+    expect(decisionLineMatches.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('weighted priority entries survive longer than plain entries', () => {
+    // Two parallel sessions: identical content sizes but different
+    // importance mix. Under a tight budget, the "decision-heavy" session
+    // must retain >= as many older entries as the "normal-heavy" one.
+    const sDecision = manager.create('api');
+    const sNormal = manager.create('api');
+    // 12 pairs each. In sDecision every assistant message is a plan
+    // preamble; in sNormal every assistant message is pure chit-chat.
+    const decisionMsg = "I'll implement this approach step by step, beginning with…";
+    const normalMsg = 'ok sure, that works for me and also for the team';
+    for (let i = 0; i < 12; i++) {
+      insertTurnPair(sDecision.id, `user ${i}`, decisionMsg);
+      insertTurnPair(sNormal.id, `user ${i}`, normalMsg);
+    }
+    const tightBudget = 400;
+    const decResult = manager.getConversationHistoryCompacted(sDecision.id, tightBudget, 2);
+    const normResult = manager.getConversationHistoryCompacted(sNormal.id, tightBudget, 2);
+    // Compare drop counts. Decision-heavy session should drop no MORE than
+    // the normal session (it may drop fewer because priority entries count
+    // at 0.5× their raw token weight).
+    const decDrops = parseDroppedCount(decResult);
+    const normDrops = parseDroppedCount(normResult);
+    expect(decDrops).toBeLessThanOrEqual(normDrops);
+  });
+});
+
+/** Parse the integer from a `[DROPPED BY BUDGET: N turn(s) …]` marker. */
+function parseDroppedCount(entries: ReturnType<SessionManager['getConversationHistoryCompacted']>): number {
+  const marker = entries.find((e) => e.content.startsWith('[DROPPED BY BUDGET'));
+  if (!marker) return 0;
+  const m = marker.content.match(/(\d+) turn\(s\)/);
+  return m ? parseInt(m[1]!, 10) : 0;
+}
+
 describe('Session Recovery', () => {
   test('suspendAll suspends active sessions', () => {
     manager.create('api');

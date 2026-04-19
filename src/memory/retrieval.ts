@@ -344,6 +344,10 @@ function mergeSummaryWithDropped(
       ...summary.resolvedClarifications,
       ...extra.resolvedClarifications,
     ],
+    // Phase 1 port: concatenate KEY-DECISION lines; order is
+    // summary-first then dropped-batch since summary was built from the
+    // older span. No re-ranking across the boundary.
+    decisionLines: [...summary.decisionLines, ...extra.decisionLines],
   };
 }
 

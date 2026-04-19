@@ -164,6 +164,43 @@ describe('maybeEmitCreativeClarificationGate — skips when not applicable', () 
     expect(events.some((e) => e.name === 'agent:clarification_requested')).toBe(true);
   });
 
+  test('skips when the current user turn has already been recorded but no older history exists', async () => {
+    // Mirrors production flow: server.ts / chat.ts record the user turn
+    // BEFORE dispatching executeTask, so by the time the gate runs the
+    // session has exactly one turn — the in-flight request. The gate must
+    // still fire on a fresh creative task, not treat the just-recorded turn
+    // as "prior history".
+    const current = [makeEntry('user', 'อยากเขียนนิยาย')];
+    const { deps, events } = makeDeps(current);
+    const result = await maybeEmitCreativeClarificationGate(
+      makeInput('อยากเขียนนิยาย', { sessionId: 's1' }),
+      makeRouting(),
+      deps,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('input-required');
+    expect(events.some((e) => e.name === 'agent:clarification_requested')).toBe(true);
+  });
+
+  test('skips when the task is a CLARIFICATION_BATCH reply to an earlier gate round', async () => {
+    // Without this guard a user answering "write a novel" with
+    // "genre=fantasy, audience=teen" would re-trigger the same gate and the
+    // reply would be dropped.
+    const { deps, events } = makeDeps([]);
+    const result = await maybeEmitCreativeClarificationGate(
+      makeInput('อยากเขียนนิยาย', {
+        sessionId: 's1',
+        constraints: [
+          `CLARIFICATION_BATCH:${JSON.stringify({ questions: ['ประเภท?'], reply: 'fantasy' })}`,
+        ],
+      }),
+      makeRouting(),
+      deps,
+    );
+    expect(result).toBeNull();
+    expect(events).toHaveLength(0);
+  });
+
   test('swallows errors from sessionManager and still fires for creative goals', async () => {
     const { recordedTraces } = makeDeps([]);
     const throwingDeps = {

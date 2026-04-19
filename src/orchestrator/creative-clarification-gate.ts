@@ -45,6 +45,13 @@ export async function maybeEmitCreativeClarificationGate(
   const creativeDomain = inferCreativeDomain(input.goal);
   if (creativeDomain === 'generic') return null;
 
+  // Defense against the gate re-interrogating the user on every turn: when
+  // the API handler (server.ts / chat.ts) has packed the prior questions +
+  // user reply into a CLARIFICATION_BATCH constraint, this task IS the
+  // clarification answer. Re-firing the gate would drop the reply and
+  // re-send the same questions.
+  if (input.constraints?.some((c) => c.startsWith('CLARIFICATION_BATCH:'))) return null;
+
   if (hasPriorSessionTurns(input.sessionId, deps.sessionManager)) return null;
 
   const structuredQuestions = buildClarificationSet({ creativeDomain });
@@ -96,8 +103,12 @@ function hasPriorSessionTurns(
 ): boolean {
   if (!sessionId || !sessionManager) return false;
   try {
-    const turns = sessionManager.getTurnsHistory(sessionId, 1);
-    return turns.length > 0;
+    // The API handler records the current user turn BEFORE dispatching, so
+    // by the time this gate runs the session already has ≥1 turn from the
+    // in-flight request. "Prior" means strictly older than that — we need at
+    // least one additional turn to treat the session as having history.
+    const turns = sessionManager.getTurnsHistory(sessionId, 2);
+    return turns.length > 1;
   } catch {
     return false;
   }

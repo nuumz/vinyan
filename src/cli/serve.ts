@@ -178,8 +178,18 @@ export async function serve(workspace: string): Promise<void> {
     (watchdog as { unref?: () => void }).unref?.();
   }
 
+  // ── Session store wiring ────────────────────────────────────────
+  // Must exist before createOrchestrator so core-loop deps.sessionManager
+  // is populated; without it the creative-clarification gate, pending-
+  // clarification lookup, root-goal walk-back, and working-memory hydrate
+  // paths all silently no-op and treat every POST /messages as a fresh
+  // session (re-asking the same clarifications forever).
+  const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
+  const sessionStore = new SessionStore(db.getDb());
+  const sessionManager = new SessionManager(sessionStore);
+
   // ── Orchestrator + server wiring ────────────────────────────────
-  const orchestrator = createOrchestrator({ workspace });
+  const orchestrator = createOrchestrator({ workspace, sessionManager });
 
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });
@@ -196,11 +206,6 @@ export async function serve(workspace: string): Promise<void> {
       network,
     });
   }
-
-  // Set up session store
-  const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
-  const sessionStore = new SessionStore(db.getDb());
-  const sessionManager = new SessionManager(sessionStore);
 
   const port = network?.api?.port ?? 3927;
   const bind = network?.api?.bind ?? '127.0.0.1';

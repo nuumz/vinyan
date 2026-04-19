@@ -30,7 +30,7 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { RoomStore } from '../../db/room-store.ts';
 import type {
-  ConversationEntry,
+  Turn,
   PerceptualHierarchy,
   RoutingDecision,
   SemanticTaskUnderstanding,
@@ -63,7 +63,8 @@ export type RunAgentLoopFn = (
   deps: AgentLoopDeps,
   understanding?: SemanticTaskUnderstanding,
   contract?: AgentContract,
-  conversationHistory?: ConversationEntry[],
+  /** A6: Turn-model history replaces the legacy ConversationEntry[] param. */
+  turns?: Turn[],
 ) => Promise<WorkerLoopResult>;
 
 /** Inject point for participant resolution. Returns null when no distinct
@@ -107,7 +108,8 @@ export interface RoomExecuteInput {
   parentContract: AgentContract;
   agentLoopDeps: AgentLoopDeps;
   understanding?: SemanticTaskUnderstanding;
-  conversationHistory?: ConversationEntry[];
+  /** A6: Turn-model history replaces the legacy ConversationEntry[] field. */
+  turns?: Turn[];
   contract: RoomContract;
 }
 
@@ -497,7 +499,7 @@ export class RoomDispatcher {
       input.agentLoopDeps,
       input.understanding,
       roleContract,
-      input.conversationHistory,
+      input.turns,
     );
   }
 

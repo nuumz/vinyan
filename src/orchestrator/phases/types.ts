@@ -15,7 +15,6 @@ import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { ConfidenceDecision } from '../pipeline-confidence.ts';
 import type {
   CachedSkill,
-  ConversationEntry,
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
@@ -44,12 +43,10 @@ export interface PhaseContext {
   readonly startTime: number;
   readonly workingMemory: WorkingMemory;
   readonly explorationFlag: boolean;
-  /** Conversation history from prior turns (loaded when sessionId present). */
-  readonly conversationHistory?: ConversationEntry[];
   /**
-   * Plan commit A: Turn-model conversation history. Preserves tool_use /
-   * tool_result blocks verbatim for lossless multi-turn resume. When present,
-   * downstream phases prefer this over `conversationHistory`.
+   * Turn-model conversation history. A6: the legacy
+   * `conversationHistory: ConversationEntry[]` sibling was removed — turns
+   * is the only path. Sourced from core-loop.perceive via ContextRetriever.
    */
   readonly turns?: import('../types.ts').Turn[];
   /**

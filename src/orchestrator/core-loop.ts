@@ -107,8 +107,7 @@ export interface WorkerPool {
     routing: RoutingDecision,
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
-    conversationHistory?: import('./types.ts').ConversationEntry[],
-    /** Plan commit A: Turn-model history with tool_use / tool_result blocks. */
+    /** A6: Turn-model history. Legacy ConversationEntry[] parameter removed. */
     turns?: import('./types.ts').Turn[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
@@ -857,11 +856,20 @@ async function prepareExecution(
   if (needsIntentResolution && deps.llmRegistry) {
     try {
       const { resolveIntent } = await import('./intent-resolver.ts');
-      // Load conversation history for multi-turn intent classification
-      let conversationCtx: import('./types.ts').ConversationEntry[] | undefined;
+      // A6: Turn-model history for multi-turn intent classification. Sourced
+      // from SessionManager's getTurnsHistory (recency) — the retriever would
+      // be overkill for a single classifier call and would also duplicate
+      // the perceive-phase bundle.
+      let intentTurns: import('./types.ts').Turn[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          conversationCtx = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 2000);
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const ts = mgr.getTurnsHistory(input.sessionId, 20);
+            if (ts.length > 0) intentTurns = ts;
+          }
         } catch { /* non-fatal */ }
       }
       intentResolution = await resolveIntent(input, {
@@ -869,7 +877,7 @@ async function prepareExecution(
         availableTools: deps.toolExecutor?.getToolNames(),
         bus: deps.bus,
         userPreferences: deps.userPreferenceStore?.formatForPrompt(),
-        conversationHistory: conversationCtx,
+        turns: intentTurns,
         agents: deps.agentRegistry?.listAgents(),
         defaultAgentId: deps.agentRegistry?.defaultAgent().id,
         userInterestMiner: deps.userInterestMiner,
@@ -1865,24 +1873,15 @@ async function executeTaskCore(
     //
     // A3: none of these paths run an LLM. Rule-based compaction keeps
     // governance deterministic.
-    let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
+    // A6: conversationHistory loader removed. Turns come from the retriever
+    // or the getTurnsHistory fallback. A7 drops the legacy SessionManager
+    // methods (getConversationHistoryCompacted / getConversationHistory).
     let sessionTurns: import('./types.ts').Turn[] | undefined;
     let retrievalBundle:
       | import('../memory/retrieval.ts').ContextBundle
       | undefined;
 
     if (input.sessionId && deps.sessionManager) {
-      // Legacy path — A7 removes.
-      try {
-        const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(
-          input.sessionId,
-          historyBudget,
-        );
-      } catch {
-        /* non-fatal */
-      }
-
       // E5: retriever-based hybrid context when available.
       const mgr = deps.sessionManager as unknown as {
         getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
@@ -1988,11 +1987,8 @@ async function executeTaskCore(
       startTime,
       workingMemory,
       explorationFlag,
-      conversationHistory,
-      // Plan commit A (A5): Turn-model history sourced from SessionManager's
-      // new session_turns table. Workers and the section-registry prefer this
-      // over `conversationHistory` when both are present so tool_use /
-      // tool_result blocks survive multi-turn resume.
+      // A6: Turn-model is the only conversation path in PhaseContext. Sourced
+      // from the ContextRetriever (E5) with recency/turn-store fallback.
       turns: sessionTurns,
       agentProfile,
     };

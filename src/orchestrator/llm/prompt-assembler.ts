@@ -14,7 +14,6 @@ import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import type { AgentContext } from '../agent-context/types.ts';
 import type {
   AgentSpec,
-  ConversationEntry,
   PerceptualHierarchy,
   TaskDAG,
   TaskType,
@@ -88,8 +87,12 @@ export function assemblePrompt(
   understanding?: TaskUnderstanding,
   /** R2 (§5): routing level gates tool descriptions out of L0-L1 prompts. */
   routingLevel?: number,
-  /** Conversation history from prior turns in the same session. */
-  conversationHistory?: ConversationEntry[],
+  /**
+   * Turn-model conversation history. A6: ConversationEntry[] was removed —
+   * callers that previously passed that shape now pass Turn[] sourced from
+   * core-loop's ContextRetriever (E5) or SessionManager.getTurnsHistory.
+   */
+  turns?: Turn[],
   /** Phase 7a: OS/cwd/date/git snapshot for the [ENVIRONMENT] block. */
   environment?: EnvironmentInfo | null,
   /** Agent Context Layer: persistent identity, memory, and skills for the dispatched agent. */
@@ -100,12 +103,6 @@ export function assemblePrompt(
   agentProfile?: AgentSpec,
   /** Multi-agent: consultable peer agents (for agent-peers section). */
   peerAgents?: AgentSpec[],
-  /**
-   * Turn-model conversation history (plan commit A). When present, the
-   * conversation-history section prefers this over `conversationHistory`
-   * so tool_use / tool_result blocks survive multi-turn resume.
-   */
-  turns?: Turn[],
 ): AssembledPrompt {
   const ctx: SectionContext = {
     goal,
@@ -115,7 +112,6 @@ export function assemblePrompt(
     instructions,
     understanding,
     routingLevel,
-    conversationHistory,
     turns,
     environment,
     agentContext,

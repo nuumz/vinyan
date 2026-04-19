@@ -13,7 +13,6 @@ import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
   ContentBlock,
-  ConversationEntry,
   PerceptualHierarchy,
   SemanticTaskUnderstanding,
   TaskDAG,
@@ -63,13 +62,14 @@ export interface SectionContext {
   understanding?: SemanticTaskUnderstanding | TaskUnderstanding;
   /** R2 (§5): Routing level — used to gate tool descriptions out of L0-L1 prompts. */
   routingLevel?: number;
-  /** Conversation history from prior turns in the same session. */
-  conversationHistory?: ConversationEntry[];
   /**
-   * Turn-model conversation history (plan commit A). When present, the
-   * conversation-history section prefers this over `conversationHistory`
-   * because it preserves tool_use / tool_result blocks verbatim so the
-   * agent does not re-derive tool parameters on resume.
+   * Turn-model conversation history. Preserves tool_use / tool_result blocks
+   * verbatim so the agent does not re-derive tool parameters on resume.
+   *
+   * A6: this is the ONLY conversation path — the legacy `conversationHistory`
+   * (ConversationEntry[]) flow-through parameter was removed. Historical
+   * turns come from core-loop.perceive via ContextRetriever (E5) or the
+   * getTurnsHistory fallback.
    */
   turns?: Turn[];
   /** Phase 7a: OS/cwd/date/git snapshot — shown in [ENVIRONMENT] system block. */
@@ -1203,41 +1203,9 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
     volatility: 'turn',
     priority: 215, // after task, before perception — conversation-history bounds the task context
     render: (ctx) => {
-      // Prefer Turn-model history (plan commit A) when available.
-      if (ctx.turns?.length) return renderTurnsSection(ctx.turns);
-
-      if (!ctx.conversationHistory?.length) return null;
-
-      // Keep only the most recent turns to save tokens
-      const entries =
-        ctx.conversationHistory.length > CONVERSATION_MAX_TURNS
-          ? ctx.conversationHistory.slice(-CONVERSATION_MAX_TURNS)
-          : ctx.conversationHistory;
-
-      const skippedCount = ctx.conversationHistory.length - entries.length;
-
-      const lines: string[] = [];
-      if (skippedCount > 0) {
-        lines.push(`(${skippedCount} earlier turns omitted)`);
-      }
-
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i]!;
-        const turnNum = skippedCount + i + 1;
-        const role = entry.role === 'user' ? 'User' : 'Assistant';
-        // Smart truncation: keep start and end for context
-        let content: string;
-        if (entry.content.length > CONVERSATION_ENTRY_MAX_CHARS) {
-          const keepStart = Math.floor(CONVERSATION_ENTRY_MAX_CHARS * 0.7);
-          const keepEnd = CONVERSATION_ENTRY_MAX_CHARS - keepStart;
-          content = `${entry.content.slice(0, keepStart)}... [truncated] ...${entry.content.slice(-keepEnd)}`;
-        } else {
-          content = entry.content;
-        }
-        lines.push(`[Turn ${turnNum}] ${role}: ${clean(content)}`);
-      }
-
-      return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
+      // A6: Turn-model is the only path. The legacy ConversationEntry[]
+      // fallback was removed when every caller migrated to pass `turns`.
+      return ctx.turns?.length ? renderTurnsSection(ctx.turns) : null;
     },
   });
 }

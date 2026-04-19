@@ -907,10 +907,10 @@ export async function runAgentLoop(
   deps: AgentLoopDeps,
   understanding?: import('../types.ts').TaskUnderstanding,
   contract?: AgentContract,
-  conversationHistory?: import('../types.ts').ConversationEntry[],
   /**
-   * Plan commit A: Turn-model history. Shipped across the subprocess boundary
-   * via OrchestratorTurn.init.turns so the agent resumes with full tool context.
+   * A6: Turn-model history is the only conversation path. Shipped across
+   * the subprocess boundary via OrchestratorTurn.init.turns so the agent
+   * resumes with full tool_use / tool_result context.
    */
   turns?: import('../types.ts').Turn[],
 ): Promise<WorkerLoopResult> {
@@ -1130,7 +1130,6 @@ export async function runAgentLoop(
       ...(memory.failedApproaches?.length ? { failedApproaches: memory.failedApproaches } : {}),
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
       ...(initUnderstanding ? { understanding: initUnderstanding } : {}),
-      ...(conversationHistory?.length ? { conversationHistory } : {}),
       ...(turns?.length ? { turns } : {}),
       ...(instructions ? { instructions } : {}),
       environment,

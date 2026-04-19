@@ -60,7 +60,6 @@ import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
-  ConversationEntry,
   ExecutionStrategy,
   IntentDeterministicCandidate,
   IntentResolution,

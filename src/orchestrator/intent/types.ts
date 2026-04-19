@@ -11,11 +11,7 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { UserInterestMiner } from '../user-context/user-interest-miner.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
-import type {
-  AgentSpec,
-  ConversationEntry,
-  SemanticTaskUnderstanding,
-} from '../types.ts';
+import type { AgentSpec, SemanticTaskUnderstanding, Turn } from '../types.ts';
 
 export interface IntentResolverDeps {
   registry: LLMProviderRegistry;
@@ -23,8 +19,11 @@ export interface IntentResolverDeps {
   bus?: VinyanBus;
   /** Formatted user preferences string for prompt injection (from UserPreferenceStore). */
   userPreferences?: string;
-  /** Recent conversation history for multi-turn context. */
-  conversationHistory?: ConversationEntry[];
+  /**
+   * Turn-model conversation history for multi-turn context. A6 renamed
+   * from `conversationHistory: ConversationEntry[]`.
+   */
+  turns?: Turn[];
   /**
    * Multi-agent: roster of specialist agents. When provided, resolver picks
    * the best-fit agentId based on goal + task characteristics.

@@ -824,7 +824,15 @@ export function buildInitUserMessage(
   } else if (conversationHistory && conversationHistory.length > 0) {
     const turnLines = conversationHistory.map((entry, i) => {
       const role = entry.role === 'user' ? 'User' : 'Assistant';
-      const content = entry.content.length > 2000 ? `${entry.content.slice(0, 2000)}... (truncated)` : entry.content;
+      // belt-and-suspenders: session-manager already budgets; this is a
+      // last-line defense in case callers bypass it. Uses the Phase 0
+      // `… [+N chars]` marker so the LLM sees that content was dropped
+      // and can ask for it if needed, rather than treating a silent
+      // "... (truncated)" as authoritative.
+      const content =
+        entry.content.length > 2000
+          ? `${entry.content.slice(0, 2000)} … [+${entry.content.length - 2000} chars]`
+          : entry.content;
       return `[Turn ${i + 1}] ${role}: ${content}`;
     });
     sections.push(`## Conversation History\n${turnLines.join('\n')}`);
@@ -1248,8 +1256,11 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
         if (verdictMatch) {
           oracleVerdicts.push(verdictMatch[0].slice(0, 200));
         }
+        // Phase 1 C2: raise tool-result snippet from 150 → 500 chars so
+        // `npm test` / compiler output survives in-task compression. The
+        // error branch above already keeps 400; this is the success path.
         summaries.push(
-          `[result] ${content.slice(0, 150)}${content.length > 150 ? ` … [+${content.length - 150} chars]` : ''}`,
+          `[result] ${content.slice(0, 500)}${content.length > 500 ? ` … [+${content.length - 500} chars]` : ''}`,
         );
       }
     } else if (turn.role === 'assistant') {

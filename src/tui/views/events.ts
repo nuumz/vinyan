@@ -101,10 +101,21 @@ function getCachedFilteredEvents(
 
 // ── Event List (Left) ───────────────────────────────────────────────
 
-function renderEventList(state: TUIState, events: EventLogEntry[], width: number, height: number, focused: boolean): string {
+function renderEventList(
+  state: TUIState,
+  events: EventLogEntry[],
+  width: number,
+  height: number,
+  focused: boolean,
+): string {
   const visibleRows = height - 3;
   const sortConfig = state.sort.events;
-  const filtered = getCachedFilteredEvents(events, state.filterQuery, sortConfig?.field ?? '', sortConfig?.direction ?? '');
+  const filtered = getCachedFilteredEvents(
+    events,
+    state.filterQuery,
+    sortConfig?.field ?? '',
+    sortConfig?.direction ?? '',
+  );
 
   const startIdx = Math.max(0, filtered.length - visibleRows - state.eventLogScroll);
   const slice = filtered.slice(startIdx, startIdx + visibleRows);
@@ -165,6 +176,27 @@ function renderEventDetail(state: TUIState, width: number, height: number, focus
   if (detail.length > 0) {
     for (const line of detail) {
       lines.push(truncate(line, innerW));
+    }
+    lines.push('');
+  }
+
+  // Phase 0 W4: surface guardrail detections + perception-compressor notes
+  // when the event payload carries them. Indented bullet list under the
+  // structured detail block.
+  const payload = entry.payload as Record<string, unknown> | undefined;
+  const detections = payload?.detections as string[] | undefined;
+  if (Array.isArray(detections) && detections.length > 0) {
+    lines.push(bold('Detections:'));
+    for (const d of detections) {
+      lines.push(truncate(`  • ${d}`, innerW));
+    }
+    lines.push('');
+  }
+  const compressionNotes = payload?.compressionNotes as string[] | undefined;
+  if (Array.isArray(compressionNotes) && compressionNotes.length > 0) {
+    lines.push(bold('Compression Notes:'));
+    for (const n of compressionNotes) {
+      lines.push(truncate(`  • ${n}`, innerW));
     }
     lines.push('');
   }

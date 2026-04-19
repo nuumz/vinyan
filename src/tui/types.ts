@@ -130,6 +130,13 @@ export interface TaskDisplayState {
     riskScore: number;
     reason: string;
   };
+  /**
+   * Phase 0 W4: notes from the perception compressor describing what was
+   * dropped (e.g. "lintWarnings: dropped 47 entries"). Populated best-effort
+   * from the trace/output when the worker surfaces it; rendered as a
+   * `[PERCEPTION TRUNCATED]` block in the task detail pane.
+   */
+  compressionNotes?: string[];
 }
 
 // ── Peer Display ────────────────────────────────────────────────────
@@ -227,6 +234,13 @@ export interface TUIState {
   chatWorkflowStepStatus: Map<string, 'pending' | 'in-progress' | 'completed' | 'failed'>;
   chatSessions: ChatSessionSummary[];
   chatScroll: number;
+  /**
+   * Phase 0.5: per-conversation live tool status. Mirrors the cli chat-stream
+   * renderer "⚙ preparing" line. Keys are tool-call ids; values are the
+   * running tool's display label. Populated by `agent:tool_started`, cleared
+   * by `agent:tool_executed`. Rendered inline under the active conversation.
+   */
+  chatRunningTools: Map<string, { tool: string; startedAt: number }>;
 
   // History (for sparklines)
   successHistory: number[];

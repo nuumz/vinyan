@@ -8,7 +8,7 @@
  * Source of truth: docs/design/memory-prompt-architecture-system-design.md
  */
 
-import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
@@ -28,9 +28,13 @@ import {
   renderInstructionHierarchy,
 } from './shared-prompt-sections.ts';
 
-/** Sanitize a string for safe prompt inclusion. */
+/**
+ * Prompt-path pass-through: returns the original text unchanged. Injection
+ * detection still runs (detections are reported via the bus elsewhere), but
+ * user intent is not mangled with [REDACTED: ...] before the LLM sees it.
+ */
 function clean(s: string): string {
-  return sanitizeForPrompt(s).cleaned;
+  return sanitizeForPromptPassthrough(s).cleaned;
 }
 
 /** Check if the task domain requires code-centric prompt context. */
@@ -226,9 +230,11 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     cache: 'static',
     priority: 40,
     render: (ctx) => {
-      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
-      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
-
+      // Phase 0 W3: tool list is shown at every routing level. Modern fast
+      // models (Haiku/Sonnet-class) follow tool schemas reliably; hiding the
+      // list from L0/L1 forced those workers to apologise on trivial file
+      // reads. Tool-name validation still happens in tool-executor.ts and
+      // descriptor-level minRoutingLevel remains the last guard.
       const allTools = [...ctx.perception.runtime.availableTools].sort();
       if (!allTools.length) return null;
 
@@ -500,6 +506,15 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
         lines.push('', `[DIAGNOSTICS]`, errors);
       }
 
+      // Phase 0 W4: surface compressor-dropped fields explicitly so the worker
+      // knows what was trimmed rather than silently seeing empty arrays.
+      if (ctx.perception.compressionNotes?.length) {
+        lines.push('', '[PERCEPTION TRUNCATED]');
+        for (const note of ctx.perception.compressionNotes) {
+          lines.push(`- ${note}`);
+        }
+      }
+
       return lines.join('\n');
     },
   });
@@ -705,9 +720,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     cache: 'static',
     priority: 20,
     render: (ctx) => {
-      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
-      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
-
+      // Phase 0 W3: tool list exposed at all routing levels. See rationale
+      // on the code-section `tools` block above.
       let tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
 

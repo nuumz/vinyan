@@ -29,8 +29,9 @@
 
 import { z } from 'zod';
 import type { VinyanBus } from '../../core/bus.ts';
+import { sanitizeForPrompt, sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import { OracleCircuitBreaker } from '../../oracle/circuit-breaker.ts';
-import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import type { LLMProvider } from '../types.ts';
 import type { ComprehensionCalibrator } from './learning/calibrator.ts';
 import type {
   ComprehendedTaskMessage,
@@ -39,7 +40,6 @@ import type {
   ComprehensionInput,
 } from './types.ts';
 import { computeInputHash } from './types.ts';
-import type { LLMProvider } from '../types.ts';
 
 // ── Hard limits ─────────────────────────────────────────────────────────
 
@@ -104,13 +104,17 @@ HARD RULES (violations → your output is rejected):
 // ── User prompt construction ────────────────────────────────────────────
 
 function buildUserPrompt(input: ComprehensionInput): string {
-  const literal = sanitizeForPrompt(input.input.goal ?? '').cleaned;
-  const root = input.rootGoal ? sanitizeForPrompt(input.rootGoal).cleaned : null;
-  const pending = input.pendingQuestions.map((q) => sanitizeForPrompt(q).cleaned);
+  // Phase 0 W4: user intent reaches the LLM unchanged — the prompt-path uses
+  // the pass-through sanitizer (detections still run, just no replacement).
+  // The LLM-output write boundary below still calls sanitizeForPrompt so any
+  // injection in the model's response is redacted before being persisted.
+  const literal = sanitizeForPromptPassthrough(input.input.goal ?? '').cleaned;
+  const root = input.rootGoal ? sanitizeForPromptPassthrough(input.rootGoal).cleaned : null;
+  const pending = input.pendingQuestions.map((q) => sanitizeForPromptPassthrough(q).cleaned);
 
   // Last 6 turns only — stage 2 is a short, targeted LLM call.
   const recent = input.history.slice(-6).map((h) => {
-    const content = sanitizeForPrompt(h.content).cleaned;
+    const content = sanitizeForPromptPassthrough(h.content).cleaned;
     const clipped = content.length > 400 ? `${content.slice(0, 397)}...` : content;
     return `${h.role === 'user' ? 'User' : 'Assistant'}: ${clipped}`;
   });
@@ -119,9 +123,7 @@ function buildUserPrompt(input: ComprehensionInput): string {
   parts.push(`User's latest message: "${literal}"`);
   if (root) parts.push(`Root task (from prior turns): "${root}"`);
   if (pending.length > 0) {
-    parts.push(
-      `Assistant had pending clarification questions: ${pending.map((q) => `"${q}"`).join(', ')}`,
-    );
+    parts.push(`Assistant had pending clarification questions: ${pending.map((q) => `"${q}"`).join(', ')}`);
   }
   if (recent.length > 0) {
     parts.push(`Recent conversation:\n${recent.join('\n')}`);
@@ -191,10 +193,7 @@ export interface LlmComprehenderOptions {
 class LlmComprehender implements ComprehensionEngine {
   readonly id = 'llm-comprehender';
   readonly engineType = 'llm' as const;
-  readonly capabilities = [
-    'comprehend.conversation',
-    'comprehend.probabilistic',
-  ] as const;
+  readonly capabilities = ['comprehend.conversation', 'comprehend.probabilistic'] as const;
   /** Advisory tier — oracle enforces the real ceiling independently (A5). */
   readonly tier = 'probabilistic' as const;
 
@@ -306,11 +305,7 @@ class LlmComprehender implements ComprehensionEngine {
         ceiling = eff.value;
         // P3.A.4: surface the adjustment when divergence actually
         // tightened the ceiling. Silent no-op when eff == base.
-        if (
-          this.opts.bus &&
-          base.kind === 'known' &&
-          eff.value < base.value - 1e-9
-        ) {
+        if (this.opts.bus && base.kind === 'known' && eff.value < base.value - 1e-9) {
           this.opts.bus.emit('comprehension:ceiling_adjusted', {
             taskId: this.opts.taskId ?? 'unknown',
             engineId: this.id,
@@ -357,10 +352,7 @@ class LlmComprehender implements ComprehensionEngine {
         confidence: finalConfidence,
         tier: 'probabilistic',
         evidence_chain: evidence,
-        falsifiable_by: [
-          'user-corrects-resolved-goal-in-next-turn',
-          'oracle-groundedness-check',
-        ],
+        falsifiable_by: ['user-corrects-resolved-goal-in-next-turn', 'oracle-groundedness-check'],
         temporal_context: {
           as_of: asOf,
           valid_until: asOf + 5 * 60 * 1000,
@@ -399,9 +391,7 @@ class LlmComprehender implements ComprehensionEngine {
         type: 'unknown',
         confidence: 0,
         tier: 'unknown',
-        evidence_chain: [
-          { source: `llm:failure:${args.reason}`, claim: args.reason, confidence: 1 },
-        ],
+        evidence_chain: [{ source: `llm:failure:${args.reason}`, claim: args.reason, confidence: 1 }],
         falsifiable_by: ['user-next-turn'],
         temporal_context: { as_of: args.asOf },
         inputHash: args.inputHash,

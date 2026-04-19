@@ -15,7 +15,7 @@
 
 import type { PerceptualHierarchy } from '../types.ts';
 
-const BUDGET_RATIO = 0.30;
+const BUDGET_RATIO = 0.3;
 const CHARS_PER_TOKEN = 3.5;
 
 export function estimateTokens(obj: unknown): number {
@@ -26,10 +26,7 @@ function isTargetFile(file: string, target: string): boolean {
   return file === target || file.endsWith('/' + target);
 }
 
-export function compressPerception(
-  perception: PerceptualHierarchy,
-  contextWindow: number,
-): PerceptualHierarchy {
+export function compressPerception(perception: PerceptualHierarchy, contextWindow: number): PerceptualHierarchy {
   const budgetTokens = Math.floor(contextWindow * BUDGET_RATIO);
 
   // Under budget — return as-is (no copy needed)
@@ -40,33 +37,56 @@ export function compressPerception(
   // Deep clone to avoid mutating input
   const result: PerceptualHierarchy = JSON.parse(JSON.stringify(perception));
   const targetFile = result.taskTarget.file;
+  const notes: string[] = [];
+  const finalize = () => {
+    if (notes.length) result.compressionNotes = notes;
+    return result;
+  };
 
   // Step A (priority 7): Drop lintWarnings
+  const lintDropped = result.diagnostics.lintWarnings.length;
+  if (lintDropped > 0) notes.push(`lintWarnings: dropped ${lintDropped} entries (budget)`);
   result.diagnostics.lintWarnings = [];
-  if (estimateTokens(result) <= budgetTokens) return result;
+  if (estimateTokens(result) <= budgetTokens) return finalize();
 
   // Step B (priority 6): Drop transitiveImporters + affectedTestFiles
+  const transitiveDropped = result.dependencyCone.transitiveImporters?.length ?? 0;
+  const affectedDropped = result.dependencyCone.affectedTestFiles?.length ?? 0;
+  if (transitiveDropped > 0)
+    notes.push(`dependencyCone.transitiveImporters: dropped ${transitiveDropped} entries (budget)`);
+  if (affectedDropped > 0) notes.push(`dependencyCone.affectedTestFiles: dropped ${affectedDropped} entries (budget)`);
   result.dependencyCone.transitiveImporters = [];
   result.dependencyCone.affectedTestFiles = [];
-  if (estimateTokens(result) <= budgetTokens) return result;
+  if (estimateTokens(result) <= budgetTokens) return finalize();
 
   // Step C (priority 5): Truncate non-target verifiedFacts to top 10 by verified_at desc
-  const targetFacts = result.verifiedFacts.filter(f => isTargetFile(f.target, targetFile));
+  const originalFacts = result.verifiedFacts.length;
+  const targetFacts = result.verifiedFacts.filter((f) => isTargetFile(f.target, targetFile));
   const nonTargetFacts = result.verifiedFacts
-    .filter(f => !isTargetFile(f.target, targetFile))
+    .filter((f) => !isTargetFile(f.target, targetFile))
     .sort((a, b) => b.verified_at - a.verified_at)
     .slice(0, 10);
   result.verifiedFacts = [...targetFacts, ...nonTargetFacts];
-  if (estimateTokens(result) <= budgetTokens) return result;
+  const factsDropped = originalFacts - result.verifiedFacts.length;
+  if (factsDropped > 0) notes.push(`verifiedFacts: dropped ${factsDropped} non-target entries (kept 10 most recent)`);
+  if (estimateTokens(result) <= budgetTokens) return finalize();
 
   // Step D (priority 3): Truncate directImporters to top 20
+  const originalImporters = result.dependencyCone.directImporters.length;
   result.dependencyCone.directImporters = result.dependencyCone.directImporters.slice(0, 20);
-  if (estimateTokens(result) <= budgetTokens) return result;
+  const importersDropped = originalImporters - result.dependencyCone.directImporters.length;
+  if (importersDropped > 0)
+    notes.push(`dependencyCone.directImporters: dropped ${importersDropped} entries (kept first 20)`);
+  if (estimateTokens(result) <= budgetTokens) return finalize();
 
   // Step E (priority 2): Truncate typeErrors — keep target-file errors first, then top 10 total
-  const targetErrors = result.diagnostics.typeErrors.filter(e => isTargetFile(e.file, targetFile));
-  const otherErrors = result.diagnostics.typeErrors.filter(e => !isTargetFile(e.file, targetFile));
+  const originalErrors = result.diagnostics.typeErrors.length;
+  const targetErrors = result.diagnostics.typeErrors.filter((e) => isTargetFile(e.file, targetFile));
+  const otherErrors = result.diagnostics.typeErrors.filter((e) => !isTargetFile(e.file, targetFile));
   result.diagnostics.typeErrors = [...targetErrors, ...otherErrors].slice(0, 10);
+  const errorsDropped = originalErrors - result.diagnostics.typeErrors.length;
+  if (errorsDropped > 0)
+    notes.push(`diagnostics.typeErrors: dropped ${errorsDropped} entries (kept 10 total, target-first)`);
 
-  return result;
+  return finalize();
 }

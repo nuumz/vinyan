@@ -10,8 +10,10 @@
  * Source of truth: spec/tdd.md §17.2
  */
 
-import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
+import type { AgentContext } from '../agent-context/types.ts';
 import type {
+  AgentSpec,
   CacheControl,
   ConversationEntry,
   PerceptualHierarchy,
@@ -20,16 +22,18 @@ import type {
   TaskUnderstanding,
   WorkingMemoryState,
 } from '../types.ts';
-import type { AgentContext } from '../agent-context/types.ts';
-import type { AgentSpec } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
 import type { SectionContext } from './prompt-section-registry.ts';
 import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
 import type { EnvironmentInfo } from './shared-prompt-sections.ts';
 
-/** Sanitize a string for safe prompt inclusion. */
+/**
+ * Prompt-path pass-through: injection detection runs but the text reaches
+ * the LLM unchanged. See guardrails/index.ts#sanitizeForPromptPassthrough
+ * for the rationale. Storage-path callers must keep using sanitizeForPrompt.
+ */
 function clean(s: string): string {
-  return sanitizeForPrompt(s).cleaned;
+  return sanitizeForPromptPassthrough(s).cleaned;
 }
 
 export interface AssembledPrompt {

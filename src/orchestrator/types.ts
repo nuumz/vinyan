@@ -541,6 +541,14 @@ export interface PerceptualHierarchy {
     content: string;
     truncated: boolean;
   }>;
+  /**
+   * Phase 0 W4: explicit record of what the perception compressor dropped so
+   * the worker can see "lintWarnings: dropped 47 entries" instead of
+   * silently receiving an empty array. Populated by compressPerception;
+   * rendered by the perception prompt section as a [PERCEPTION TRUNCATED]
+   * block.
+   */
+  compressionNotes?: string[];
 }
 
 /** Per-task working memory — tracks failed approaches and uncertainties */

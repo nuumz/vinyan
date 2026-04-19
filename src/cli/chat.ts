@@ -10,12 +10,14 @@
  *   vinyan chat --resume <sessionId>     Resume a previous conversation
  *   vinyan chat --list                   List available sessions
  *   vinyan chat --thinking               Show LLM thinking process
+ *   vinyan chat --verbose                Stream bus progress (tool calls, oracle verdicts) to stderr
  *   vinyan chat --workspace <path>       Override workspace
  */
 
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { SessionManager } from '../api/session-manager.ts';
+import { attachCLIProgressListener } from '../bus/cli-progress-listener.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { expandSlashCommand } from '../orchestrator/commands/command-expander.ts';
@@ -41,6 +43,7 @@ export async function startChat(argv: string[]): Promise<void> {
   const resumeId = parseSingleFlag(argv, '--resume');
   const listMode = argv.includes('--list');
   let showThinking = argv.includes('--thinking');
+  const verbose = argv.includes('--verbose');
 
   // DB + SessionManager
   const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
@@ -66,6 +69,14 @@ export async function startChat(argv: string[]): Promise<void> {
 
   // Create orchestrator with session manager for cross-turn context
   const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager });
+
+  // Phase 0 W5: when --verbose is set, attach the bus progress listener so
+  // tool calls, oracle verdicts, and escalations stream to stderr while
+  // stdout stays reserved for the assistant response. Claude-Code-style
+  // rolling status — pure observer, no state mutation (A3 compliant).
+  const detachProgress = verbose
+    ? attachCLIProgressListener(orchestrator.bus, { verbose: true, color: process.stderr.isTTY ?? false })
+    : null;
 
   // Track the currently-active per-turn stream renderer so /thinking can
   // toggle it live without waiting for the next task to start.
@@ -356,6 +367,7 @@ export async function startChat(argv: string[]): Promise<void> {
   rl.on('close', () => {
     console.log('\n\x1b[2mSession saved.\x1b[0m');
     activeRenderer?.detach();
+    detachProgress?.();
     orchestrator.close();
     db.close();
     process.exit(0);
@@ -370,6 +382,7 @@ export async function startChat(argv: string[]): Promise<void> {
     shutdownRequested = true;
     console.log('\n\x1b[2mSession saved.\x1b[0m');
     activeRenderer?.detach();
+    detachProgress?.();
     orchestrator.close();
     db.close();
     process.exit(0);

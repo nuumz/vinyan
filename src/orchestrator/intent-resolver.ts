@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
+import { LRUTTLCache } from './intent/cache.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
@@ -295,15 +296,17 @@ function renderStructuralFeatures(f: StructuralFeatures): string {
 // ---------------------------------------------------------------------------
 
 const INTENT_CACHE_TTL_MS = 30_000;
-/**
- * Pruning threshold — eviction of expired entries runs only when the cache
- * reaches this size. Keeps the common (small-cache) path zero-overhead while
- * preventing unbounded growth in long-running processes.
- */
 const INTENT_CACHE_PRUNE_THRESHOLD = 64;
-/** Hard cap — when live entries exceed this after pruning, drop oldest first. */
 const INTENT_CACHE_MAX_SIZE = 256;
-const intentCache = new Map<string, { result: IntentResolution; expiresAt: number }>();
+
+// Commit D1: extracted LRU+TTL cache (src/orchestrator/intent/cache.ts) —
+// same semantics as the prior inline Map + pruneIntentCache, now reusable
+// and independently unit-tested.
+const intentCache = new LRUTTLCache<IntentResolution>({
+  ttlMs: INTENT_CACHE_TTL_MS,
+  pruneThreshold: INTENT_CACHE_PRUNE_THRESHOLD,
+  maxSize: INTENT_CACHE_MAX_SIZE,
+});
 
 function buildCacheKey(
   goal: string,
@@ -328,25 +331,6 @@ function buildCacheKey(
     return `fp::${understanding.understandingFingerprint}`;
   }
   return `${sessionId ?? '__nosess__'}::${goal.trim().toLowerCase()}`;
-}
-
-/** Evict expired entries and enforce the hard size cap. */
-function pruneIntentCache(now: number): void {
-  if (intentCache.size < INTENT_CACHE_PRUNE_THRESHOLD) return;
-  for (const [key, entry] of intentCache) {
-    if (entry.expiresAt <= now) intentCache.delete(key);
-  }
-  // If every remaining entry is still live AND we blew past the hard cap,
-  // drop the oldest (insertion-ordered) until we're back under the limit.
-  if (intentCache.size > INTENT_CACHE_MAX_SIZE) {
-    const overflow = intentCache.size - INTENT_CACHE_MAX_SIZE;
-    let dropped = 0;
-    for (const key of intentCache.keys()) {
-      if (dropped >= overflow) break;
-      intentCache.delete(key);
-      dropped++;
-    }
-  }
 }
 
 /** Test-only: reset the module-level cache so each test starts clean. */
@@ -909,8 +893,8 @@ function finalizeDeterministicSkip(
     agentSelectionReason,
     type: 'known',
   };
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,
@@ -949,8 +933,8 @@ function finalizeDeterministicOnly(
     clarificationRequest: clarif?.request,
     clarificationOptions: clarif?.options,
   };
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,
@@ -1081,10 +1065,10 @@ export async function resolveIntent(
     understanding,
     deps.comprehension,
   );
-  const cached = intentCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
+  const cached = intentCache.get(cacheKey, now);
+  if (cached) {
     deps.bus?.emit('intent:cache_hit', { taskId: input.id, cacheKey });
-    return { ...cached.result, reasoningSource: 'cache' };
+    return { ...cached, reasoningSource: 'cache' };
   }
 
   // [B] Deterministic candidate (tier 0.8). Null when caller supplied no STU.
@@ -1178,8 +1162,8 @@ export async function resolveIntent(
   };
 
   // [E] Cache write + bus emit.
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,

@@ -29,10 +29,15 @@ import {
   resolveSelectedAgent,
 } from './intent/formatters.ts';
 import {
+  buildClassifierUserPrompt,
+  buildComprehensionBlock,
+} from './intent/prompt.ts';
+import {
   composeDeterministicCandidate,
   fallbackStrategy,
   mapUnderstandingToStrategy,
 } from './intent/strategy.ts';
+import type { IntentResolverDeps } from './intent/types.ts';
 import {
   containsShellFallbackChain,
   IntentResponseSchema,
@@ -274,51 +279,9 @@ export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStra
 // Main resolver
 // ---------------------------------------------------------------------------
 
-export interface IntentResolverDeps {
-  registry: LLMProviderRegistry;
-  availableTools?: string[];
-  bus?: VinyanBus;
-  /** Formatted user preferences string for prompt injection (from UserPreferenceStore). */
-  userPreferences?: string;
-  /** Recent conversation history for multi-turn context. */
-  conversationHistory?: ConversationEntry[];
-  /**
-   * Multi-agent: roster of specialist agents. When provided, resolver picks
-   * the best-fit agentId based on goal + task characteristics.
-   */
-  agents?: AgentSpec[];
-  /** Default agent id used when resolver cannot confidently pick one. */
-  defaultAgentId?: string;
-  /**
-   * Mines user interests / recent topics from TraceStore + SessionStore. When
-   * provided, the resolver includes a "User context" block so the classifier
-   * can reason about ambiguous goals against real past activity.
-   */
-  userInterestMiner?: UserInterestMiner;
-  /** Session id for user-context mining (keyword extraction scoped to session). */
-  sessionId?: string;
-  /** Test hook for deterministic clock (cache TTL). */
-  now?: () => number;
-  /**
-   * Pre-computed SemanticTaskUnderstanding. When supplied, the deterministic
-   * path runs BEFORE the LLM (tier 0.8 candidate + ambiguity detection). When
-   * absent, the resolver falls back to the pure-LLM path for backwards compat.
-   */
-  understanding?: SemanticTaskUnderstanding;
-  /**
-   * Oracle-verified conversation comprehension (pre-routing). When present:
-   *  - `state.isClarificationAnswer=true` → resolver preserves the prior
-   *    workflow (suppresses re-classification to conversational/direct-tool)
-   *    by blending the signal into the cache key and the LLM user prompt.
-   *  - `state.rootGoal` / `data.resolvedGoal` → appended to the prompt as
-   *    grounding; classifier sees the user's real intent, not just the
-   *    short reply text.
-   *  - `state.hasAmbiguousReferents=true` without a resolved rootGoal →
-   *    forces the resolver to treat the literal message as provisional
-   *    (LLM advisory path even if deterministic would skip).
-   */
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
-}
+// Commit D6: IntentResolverDeps moved to `src/orchestrator/intent/types.ts`
+// and imported at the top. Re-exported for legacy call sites.
+export type { IntentResolverDeps };
 
 const INTENT_TIMEOUT_MS = 8000;
 
@@ -586,87 +549,8 @@ function finalizeDeterministicOnly(
   return result;
 }
 
-/** Build the user prompt injected into the classifier LLM. */
-function buildClassifierUserPrompt(
-  input: TaskInput,
-  deps: IntentResolverDeps,
-  deterministic: ReturnType<typeof composeDeterministicCandidate> | null,
-): string {
-  const toolList =
-    deps.availableTools?.join(', ') ??
-    'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
-  const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
-  const conversationBlock = formatConversationContext(deps.conversationHistory);
-  const userContextBlock = deps.userInterestMiner
-    ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
-    : '';
-  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
-  const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
-  const structuralBlock = `\n${renderStructuralFeatures(
-    computeStructuralFeatures(input.goal, deps.conversationHistory),
-  )}`;
-  const deterministicBlock = deterministic
-    ? `\nRule-based candidate (tier 0.8 — treat as grounding; override only with strong evidence): strategy=${deterministic.strategy}, confidence=${deterministic.confidence.toFixed(2)}${deterministic.deterministicCandidate.ambiguous ? ', AMBIGUOUS' : ''}. If the rule is already correct, confirm it — do not fabricate complexity.`
-    : '';
-  const comprehensionBlock = buildComprehensionBlock(deps.comprehension);
-
-  // Strip orchestrator-internal prefixes — the intent classifier sees only
-  // user intent, not JSON payloads / routing metadata that belong to other
-  // pipeline stages.
-  const userCs = userConstraintsOnly(input.constraints);
-
-  return `User goal: "${input.goal}"
-Task type: ${input.taskType}
-Target files: ${input.targetFiles?.join(', ') || 'none'}
-Constraints: ${userCs.length > 0 ? userCs.join(', ') : 'none'}
-Current platform: ${process.platform}
-Available tools: ${toolList}${structuralBlock}${deterministicBlock}${comprehensionBlock}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
-}
-
-/**
- * Render the oracle-verified conversation comprehension as a prompt block
- * the classifier can reason over. Keep it short and structured — the LLM
- * parses fields, not prose.
- *
- * The critical signal is `isClarificationAnswer=true`: when the user's
- * message is an answer to a pending question, the classifier MUST preserve
- * the prior workflow (do not re-route to conversational / direct-tool)
- * unless the user explicitly asks for a topic change.
- */
-function buildComprehensionBlock(
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
-): string {
-  if (!comprehension || comprehension.params.type !== 'comprehension') return '';
-  const data = comprehension.params.data;
-  if (!data) return '';
-  const s = data.state;
-  const lines: string[] = [];
-  lines.push('\nConversation comprehension (oracle-verified, tier='
-    + comprehension.params.tier + '):');
-  lines.push(`- isNewTopic: ${s.isNewTopic}`);
-  lines.push(`- isClarificationAnswer: ${s.isClarificationAnswer}`);
-  lines.push(`- isFollowUp: ${s.isFollowUp}`);
-  lines.push(`- hasAmbiguousReferents: ${s.hasAmbiguousReferents}`);
-  if (s.rootGoal) {
-    const root = s.rootGoal.length > 160 ? `${s.rootGoal.slice(0, 157)}...` : s.rootGoal;
-    lines.push(`- rootGoal: "${root}"`);
-  }
-  if (s.pendingQuestions.length > 0) {
-    lines.push(`- pendingQuestions (${s.pendingQuestions.length}):`);
-    for (const q of s.pendingQuestions.slice(0, 5)) lines.push(`    - ${q}`);
-  }
-  if (data.resolvedGoal && data.resolvedGoal !== data.literalGoal) {
-    const resolved = data.resolvedGoal.length > 160
-      ? `${data.resolvedGoal.slice(0, 157)}...` : data.resolvedGoal;
-    lines.push(`- resolvedGoal (prefer over literal): "${resolved}"`);
-  }
-  if (s.isClarificationAnswer) {
-    lines.push(
-      '- ROUTING RULE: the user is answering a prior clarification. Preserve the existing workflow (stay in agentic-workflow / do NOT reclassify as conversational or direct-tool) unless the user explicitly asks to change topic.',
-    );
-  }
-  return lines.join('\n');
-}
+// Commit D6: buildClassifierUserPrompt / buildComprehensionBlock moved to
+// `src/orchestrator/intent/prompt.ts` and imported at the top of this file.
 
 /** Primary + alternate-tier classification call. */
 async function classifyWithFallback(

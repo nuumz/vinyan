@@ -77,7 +77,7 @@ describe('fallbackStrategy', () => {
 describe('mapUnderstandingToStrategy', () => {
   it('marks conversational as high confidence and unambiguous', () => {
     const r = mapUnderstandingToStrategy(
-      stu({ taskDomain: 'conversational', taskIntent: 'chat', toolRequirement: 'none' }),
+      stu({ taskDomain: 'conversational', taskIntent: 'converse', toolRequirement: 'none' }),
     );
     expect(r.strategy).toBe('conversational');
     expect(r.confidence).toBeGreaterThanOrEqual(0.9);
@@ -135,7 +135,7 @@ describe('composeDeterministicCandidate', () => {
   it('returns deterministic reasoningSource + deterministicCandidate payload', () => {
     const result = composeDeterministicCandidate(
       input('say hi'),
-      stu({ taskDomain: 'conversational', taskIntent: 'chat', toolRequirement: 'none' }),
+      stu({ taskDomain: 'conversational', taskIntent: 'converse', toolRequirement: 'none' }),
     );
     expect(result.reasoningSource).toBe('deterministic');
     expect(result.deterministicCandidate).toBeDefined();

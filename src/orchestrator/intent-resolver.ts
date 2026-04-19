@@ -22,6 +22,14 @@ import {
   renderStructuralFeatures,
   type StructuralFeatures,
 } from './intent/features.ts';
+import {
+  containsShellFallbackChain,
+  IntentResponseSchema,
+  normalizeDirectToolCall,
+  parseIntentResponse,
+  stripJsonFences,
+  withTimeout,
+} from './intent/parser.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
@@ -45,20 +53,8 @@ import {
 // Zod schema for LLM response parsing
 // ---------------------------------------------------------------------------
 
-const IntentResponseSchema = z.object({
-  strategy: z.enum(['full-pipeline', 'direct-tool', 'conversational', 'agentic-workflow']),
-  refinedGoal: z.string(),
-  reasoning: z.string(),
-  directToolCall: z.object({
-    tool: z.string(),
-    parameters: z.record(z.string(), z.unknown()),
-  }).optional(),
-  workflowPrompt: z.string().optional(),
-  confidence: z.number().min(0).max(1).optional(),
-  /** Multi-agent: id of specialist best-fit for this task. */
-  agentId: z.string().optional(),
-  agentSelectionReason: z.string().optional(),
-});
+// Commit D3: IntentResponseSchema moved to `src/orchestrator/intent/parser.ts`
+// and re-imported above. Kept as a pure-type alias for legacy call sites.
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -179,80 +175,9 @@ IMPORTANT: For opening apps, running system commands, or any OS interaction, use
 
 Respond ONLY with valid JSON, no markdown fences.`;
 
-function stripJsonFences(content: string): string {
-  return content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-}
-
-function parseIntentResponse(content: string): z.infer<typeof IntentResponseSchema> {
-  const parsed = IntentResponseSchema.parse(JSON.parse(stripJsonFences(content)));
-  if (parsed.strategy === 'direct-tool' && !parsed.directToolCall) {
-    throw new Error('Direct-tool strategy missing directToolCall');
-  }
-  return parsed;
-}
-
-function containsShellFallbackChain(command: string): boolean {
-  return /\|\||&&|;|\r|\n|(?<!\|)\|(?!\|)/.test(command);
-}
-
-function normalizeDirectToolCall(
-  strategy: z.infer<typeof IntentResponseSchema>['strategy'],
-  directToolCall: z.infer<typeof IntentResponseSchema>['directToolCall'],
-): z.infer<typeof IntentResponseSchema>['directToolCall'] {
-  if (!directToolCall || strategy !== 'direct-tool') {
-    return directToolCall;
-  }
-
-  const KNOWN_TOOLS = new Set([
-    'shell_exec', 'file_read', 'file_write', 'file_edit',
-    'directory_list', 'search_grep', 'git_status', 'git_diff',
-    'search_semantic', 'http_get',
-  ]);
-
-  let normalizedCall = directToolCall;
-  if (!KNOWN_TOOLS.has(normalizedCall.tool)) {
-    const command = (normalizedCall.parameters.command as string)
-      ?? normalizedCall.tool.replace(/_/g, ' ');
-    normalizedCall = {
-      tool: 'shell_exec',
-      parameters: { ...normalizedCall.parameters, command },
-    };
-  }
-
-  if (normalizedCall.tool !== 'shell_exec') {
-    return normalizedCall;
-  }
-
-  const command = normalizedCall.parameters.command;
-  if (typeof command !== 'string' || !command.trim()) {
-    throw new Error('Direct-tool shell_exec command missing');
-  }
-  if (containsShellFallbackChain(command)) {
-    throw new Error('Direct-tool shell_exec command must be a single platform-specific command');
-  }
-
-  return {
-    ...normalizedCall,
-    parameters: {
-      ...normalizedCall.parameters,
-      command: command.trim(),
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Timeout helper
-// ---------------------------------------------------------------------------
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Intent resolution timeout')), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
+// Commit D3: stripJsonFences / parseIntentResponse / containsShellFallbackChain
+// / normalizeDirectToolCall / withTimeout moved to
+// `src/orchestrator/intent/parser.ts` and imported at the top of this file.
 
 // ---------------------------------------------------------------------------
 // Structural features — deterministic metadata fed into the classifier prompt.

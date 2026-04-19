@@ -1237,8 +1237,11 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
         if (verdictMatch) {
           oracleVerdicts.push(verdictMatch[0].slice(0, 200));
         }
+        // Phase 1 C2: raise tool-result snippet from 150 → 500 chars so
+        // `npm test` / compiler output survives in-task compression. The
+        // error branch above already keeps 400; this is the success path.
         summaries.push(
-          `[result] ${content.slice(0, 150)}${content.length > 150 ? ` … [+${content.length - 150} chars]` : ''}`,
+          `[result] ${content.slice(0, 500)}${content.length > 500 ? ` … [+${content.length - 500} chars]` : ''}`,
         );
       }
     } else if (turn.role === 'assistant') {

@@ -325,6 +325,39 @@ describe('ComprehensionStore', () => {
     expect(byHash.l1!.engine_type).toBe('llm');
   });
 
+  // ── BUG#1 regression: composite PK (input_hash, engine_id) ────────
+  // Before migration 037, PK was input_hash alone, so stage-1 and
+  // stage-2 engines sharing the same hash silently dropped stage 2.
+  test('same inputHash with different engineId BOTH persist (stage 1 + stage 2)', () => {
+    const env = envelope({ inputHash: 'hybrid-turn' });
+    const stage1 = store.record({
+      envelope: env,
+      taskId: 't',
+      sessionId: 's',
+      engineId: 'rule-comprehender',
+      engineType: 'rule',
+      verdictPass: true,
+    });
+    const stage2 = store.record({
+      envelope: env,
+      taskId: 't',
+      sessionId: 's',
+      engineId: 'llm-comprehender',
+      engineType: 'llm',
+      verdictPass: true,
+    });
+    expect(stage1).toBe(true);
+    expect(stage2).toBe(true);
+    expect(store.count()).toBe(2);
+
+    // markOutcome by hash updates BOTH rows — outcome is a property of
+    // the user's turn, not an engine. Calibration for each engine then
+    // reads its own row via recentByEngine.
+    store.markOutcome('hybrid-turn', { outcome: 'confirmed', evidence: {} });
+    expect(store.recentByEngine('rule-comprehender', 10, 'rule')).toHaveLength(1);
+    expect(store.recentByEngine('llm-comprehender', 10, 'llm')).toHaveLength(1);
+  });
+
   test('envelope_json round-trips back to a parseable message', () => {
     const original = envelope({
       inputHash: 'round-trip',

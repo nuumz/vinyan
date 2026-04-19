@@ -96,9 +96,10 @@ export class ComprehensionStore {
   private readonly countStmt: Statement;
 
   constructor(private readonly db: Database) {
-    // INSERT OR IGNORE: a duplicate inputHash (same session state →
-    // same hash) is a no-op. This makes `record()` idempotent for
-    // retries and cache-replay scenarios.
+    // INSERT OR IGNORE: a duplicate (inputHash, engineId) is a no-op
+    // (PK = composite per migration 037). This makes `record()`
+    // idempotent for retries, while still allowing stage-1 and stage-2
+    // engines to BOTH persist for the same turn.
     this.insertStmt = db.prepare(`
       INSERT OR IGNORE INTO comprehension_records (
         input_hash, task_id, session_id, engine_id, engine_type, tier, type, confidence,

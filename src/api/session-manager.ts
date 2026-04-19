@@ -16,6 +16,11 @@ import type {
   Turn,
   TurnTokenCount,
 } from '../orchestrator/types.ts';
+// Merge note: `classifyTurn` / `TurnImportance` from `./turn-importance.ts`
+// were consumed by the Phase 1 priority-weighted compaction. A7 moved
+// compaction to `src/memory/summary-ladder.ts`, so these imports are
+// dropped here. The classifier itself remains available for future
+// summary-ladder upgrades.
 
 export interface Session {
   id: string;
@@ -123,14 +128,8 @@ export class SessionManager {
     // carries status='input-required' in result_json for downstream readers).
     // The session_tasks CHECK constraint does not allow 'input-required', so
     // we map at this boundary.
-    const dbStatus =
-      result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
-    this.sessionStore.updateTaskStatus(
-      sessionId,
-      taskId,
-      dbStatus,
-      JSON.stringify(result),
-    );
+    const dbStatus = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+    this.sessionStore.updateTaskStatus(sessionId, taskId, dbStatus, JSON.stringify(result));
   }
 
   /**
@@ -194,20 +193,26 @@ export class SessionManager {
   }
 
   /** List recent tasks across all sessions (newest first). */
-  listAllTasks(limit = 100): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
+  listAllTasks(
+    limit = 100,
+  ): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
     const rows = this.sessionStore.listRecentTasks(limit);
     return rows.map((row) => {
       let goal: string | undefined;
       try {
         const input = JSON.parse(row.task_input_json);
         goal = input.goal;
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       let result: TaskResult | undefined;
       if (row.result_json) {
         try {
           result = JSON.parse(row.result_json);
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
 
       return {
@@ -295,11 +300,7 @@ export class SessionManager {
     // questions in a structured [INPUT-REQUIRED] block so compaction and
     // next-turn grounding can parse them with pure text matching (A3).
     let content: string;
-    if (
-      result.status === 'input-required'
-      && result.clarificationNeeded
-      && result.clarificationNeeded.length > 0
-    ) {
+    if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
       const questionLines = result.clarificationNeeded.map((q) => `- ${q}`).join('\n');
       const preamble = result.answer ? `${result.answer}\n\n` : '';
       content = `${preamble}[INPUT-REQUIRED]\n${questionLines}`;
@@ -476,6 +477,14 @@ export class SessionManager {
    * `{role, content, taskId, timestamp}[]` shape. tool_use / tool_result
    * blocks are dropped — callers needing structural data should consume
    * `getTurnsHistory` directly and walk `Turn.blocks`.
+   *
+   * Merge note: the Phase 1 long-session compaction
+   * (`getConversationHistoryCompacted` + priority-weighted budget +
+   * inline KEY-DECISION lines + `[DROPPED BY BUDGET]` marker) is now the
+   * responsibility of `src/memory/summary-ladder.ts` via
+   * `ContextRetriever.retrieve`. The Phase 1 priority-weight and
+   * drop-marker ideas can be ported onto that module in a follow-up
+   * without re-introducing a ConversationEntry dependency here.
    */
   getConversationHistoryText(sessionId: string, maxTurns = 1000): Array<{
     role: 'user' | 'assistant';

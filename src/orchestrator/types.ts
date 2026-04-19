@@ -444,8 +444,14 @@ export interface PlanTodoInput {
 // ---------------------------------------------------------------------------
 
 // A7: ConversationEntry definition removed. The Turn model (ContentBlock[])
-// below is the only conversation representation. Migration 037 drops the
+// below is the only conversation representation. Migration 038 drops the
 // session_messages table that backed ConversationEntry.
+//
+// Merge note: feature/main's Phase 1 turn-importance classifier
+// (`src/api/turn-importance.ts::classifyTurn`) duck-types its input as
+// `{role, content, toolsUsed?, thinking?}` — that shape is declared inline
+// in that module as `ClassifiableTurn` and no longer depends on the
+// removed `ConversationEntry` interface.
 
 // ---------------------------------------------------------------------------
 // Turn Model (Anthropic-native ContentBlock[]) — the sole conversation path

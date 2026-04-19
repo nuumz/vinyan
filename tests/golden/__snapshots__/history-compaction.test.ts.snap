@@ -1,0 +1,15 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`Golden: history compaction summary 30-turn fixture summary shape 1`] = `
+"[SESSION CONTEXT: 20 of 30 total messages compacted, 5 recent turn-pairs verbatim]
+Topics: help me design a session-memory system; what files are involved; go ahead; any issues?; 40% cap, yes to drop marker; sounds good; ใช้ postgres for store persistence please; not redis — use postgres everywhere; thanks; what about tests/api/session-manager.test.ts
+Files discussed: src/api/session-manager.ts, src/db/session-store.ts, session-manager.ts, tests/api/session-manager.test.ts
+Resolved clarifications: Q: should priority cap be 30% or 40% of maxTokens? → A: 40% cap, yes to drop marker; Q: do we need a separate drop marker? → A: 40% cap, yes to drop marker
+→ [Turn 2, decision] assistant: I'll draft a 4-layer compression plan starting with the DB layer
+→ [Turn 8, clarification] assistant: [INPUT-REQUIRED]
+→ [Turn 9, decision] user: 40% cap, yes to drop marker
+→ [Turn 10, decision] assistant: Plan: 40% priority cap, inline drop marker, done
+→ [Turn 14, decision] assistant: Going to switch the store backend to postgres and update tests accordingly
+→ [Turn 15, decision] user: not redis — use postgres everywhere
+→ [Turn 16, decision] assistant: Let me audit each adapter and flip them"
+`;

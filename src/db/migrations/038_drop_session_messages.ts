@@ -1,5 +1,5 @@
 /**
- * Migration 037 — Drop the legacy session_messages table (plan commit A7).
+ * Migration 038 — Drop the legacy session_messages table (plan commit A7).
  *
  * session_messages was the original flat-string conversation store that
  * backed the ConversationEntry type. A1-A6 migrated every prompt-assembly,
@@ -13,12 +13,15 @@
  * disappear. That's intentional — the Turn model has already indexed
  * everything worth keeping via SessionManager.recordUserTurn /
  * recordAssistantTurn since Commit A.
+ *
+ * Merge note: bumped from 037 → 038 when reconciling with
+ * `037_comprehension_composite_pk.ts` that landed on feature/main first.
  */
 import type { Database } from 'bun:sqlite';
 import type { Migration } from './migration-runner.ts';
 
-export const migration037: Migration = {
-  version: 37,
+export const migration038: Migration = {
+  version: 38,
   description: 'Drop legacy session_messages table (Turn model is now the only conversation path)',
   up(db: Database) {
     db.exec(`

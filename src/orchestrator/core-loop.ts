@@ -463,10 +463,16 @@ async function prepareExecution(
             currentIsNewTopic: thisTurnIsNewTopic,
           });
           if (verdict) {
-            deps.comprehensionStore.markOutcome(priorRecord.input_hash, {
-              outcome: verdict.outcome,
-              evidence: verdict.evidence,
-            });
+            // Scope outcome marking to the engine whose row we actually
+            // judged (priorRecord is that engine's row). In hybrid turns
+            // the sibling engine's row may share this input_hash — leave
+            // it NULL so we don't cross-contaminate calibration with an
+            // outcome that tested a different engine's resolvedGoal.
+            deps.comprehensionStore.markOutcome(
+              priorRecord.input_hash,
+              { outcome: verdict.outcome, evidence: verdict.evidence },
+              priorRecord.engine_id,
+            );
             deps.bus?.emit('comprehension:calibrated', {
               taskId: input.id,
               priorInputHash: priorRecord.input_hash,
@@ -485,7 +491,13 @@ async function prepareExecution(
                 './comprehension/learning/calibrator.ts'
               );
               const calib = new ComprehensionCalibrator(deps.comprehensionStore);
-              const signal = calib.detectDivergence(priorRecord.engine_id);
+              // Pass engineType so an engine_id collision cannot
+              // contaminate the divergence signal (AXM#4 / GAP#5).
+              const signal = calib.detectDivergence(
+                priorRecord.engine_id,
+                undefined,
+                priorRecord.engine_type ?? undefined,
+              );
               if (signal && signal.diverged) {
                 deps.bus?.emit('comprehension:calibration_diverged', {
                   taskId: input.id,

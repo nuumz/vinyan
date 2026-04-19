@@ -652,6 +652,24 @@ export interface VinyanBusEvents {
     sampleSize: number;
     threshold: number;
   };
+  /**
+   * Sleep Cycle comprehension miner result (B1–B3). Fired once per
+   * `SleepCycleRunner.run()` when mining completes (even when no
+   * insights were produced — consumers dedupe on `minedAt`). Payload
+   * mirrors the miner's `MiningResult` shape so dashboards can tail
+   * the bus without importing miner types at runtime.
+   */
+  'comprehension:mining_completed': {
+    /** Sleep-cycle id that triggered this mining pass (for correlation
+     *  with `sleep:cycleComplete`, `agent:evolved`, etc.). */
+    cycleId: string;
+    minedAt: number;
+    windowSinceMs: number;
+    rowsScanned: number;
+    insights: ReadonlyArray<
+      import('../orchestrator/comprehension/learning/miner.ts').ComprehensionInsight
+    >;
+  };
 
   // Extensible Thinking events
   'thinking:policy-compiled': {

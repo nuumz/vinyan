@@ -89,11 +89,13 @@ export interface OutcomeInput {
 export class ComprehensionStore {
   private readonly insertStmt: Statement;
   private readonly updateOutcomeStmt: Statement;
+  private readonly updateOutcomeByEngineStmt: Statement;
   private readonly recentBySessionStmt: Statement;
   private readonly recentByEngineStmt: Statement;
   private readonly recentByEngineTypedStmt: Statement;
   private readonly staleSweepStmt: Statement;
   private readonly countStmt: Statement;
+  private readonly outcomedInWindowStmt: Statement;
 
   constructor(private readonly db: Database) {
     // INSERT OR IGNORE: a duplicate (inputHash, engineId) is a no-op
@@ -110,6 +112,15 @@ export class ComprehensionStore {
       UPDATE comprehension_records
          SET outcome = ?, outcome_evidence = ?, outcome_at = ?
        WHERE input_hash = ? AND outcome IS NULL
+    `);
+    // Engine-scoped update — used when the caller knows which engine's
+    // resolvedGoal actually reached the user (merge-winner). Only that
+    // row is marked; sibling rows from the hybrid pipeline stay NULL to
+    // avoid cross-engine calibration contamination.
+    this.updateOutcomeByEngineStmt = db.prepare(`
+      UPDATE comprehension_records
+         SET outcome = ?, outcome_evidence = ?, outcome_at = ?
+       WHERE input_hash = ? AND engine_id = ? AND outcome IS NULL
     `);
     this.recentBySessionStmt = db.prepare(`
       SELECT * FROM comprehension_records
@@ -142,6 +153,14 @@ export class ComprehensionStore {
     this.countStmt = db.prepare(`
       SELECT COUNT(*) AS c FROM comprehension_records
     `);
+    // Sleep Cycle comprehension miner — needs ALL outcomed records in a
+    // time window (not just per-engine). Limited by `limit` for safety.
+    this.outcomedInWindowStmt = db.prepare(`
+      SELECT * FROM comprehension_records
+       WHERE outcome IS NOT NULL AND created_at >= ?
+       ORDER BY created_at DESC
+       LIMIT ?
+    `);
   }
 
   /**
@@ -172,14 +191,19 @@ export class ComprehensionStore {
    * Fill in the outcome on a previously-recorded comprehension. Returns
    * `true` when a row was actually updated (false when the record is
    * missing or already has an outcome — idempotent).
+   *
+   * When `engineId` is provided, scopes the update to that engine only.
+   * Use this in the hybrid pipeline (rule + llm): only the engine whose
+   * resolvedGoal actually reached the user should receive the outcome
+   * label. Omitting `engineId` updates ALL rows sharing the inputHash —
+   * correct for single-engine flows; BIASED for hybrid flows.
    */
-  markOutcome(inputHash: string, outcome: OutcomeInput): boolean {
-    const info = this.updateOutcomeStmt.run(
-      outcome.outcome,
-      JSON.stringify(outcome.evidence),
-      outcome.markedAt ?? Date.now(),
-      inputHash,
-    );
+  markOutcome(inputHash: string, outcome: OutcomeInput, engineId?: string): boolean {
+    const markedAt = outcome.markedAt ?? Date.now();
+    const evidenceJson = JSON.stringify(outcome.evidence);
+    const info = engineId
+      ? this.updateOutcomeByEngineStmt.run(outcome.outcome, evidenceJson, markedAt, inputHash, engineId)
+      : this.updateOutcomeStmt.run(outcome.outcome, evidenceJson, markedAt, inputHash);
     return info.changes > 0;
   }
 
@@ -229,6 +253,16 @@ export class ComprehensionStore {
   count(): number {
     const row = this.countStmt.get() as { c: number } | undefined;
     return row?.c ?? 0;
+  }
+
+  /**
+   * All outcomed records since `sinceMs`, newest first. Used by the
+   * Sleep Cycle comprehension miner (B1–B3) to compute cross-engine
+   * analyses: engine-fit by session, stage-1 vs stage-2 agreement, and
+   * divergence attribution. Caller provides `limit` as a safety cap.
+   */
+  outcomedInWindow(sinceMs: number, limit = 2000): ComprehensionRecordRow[] {
+    return this.outcomedInWindowStmt.all(sinceMs, limit) as ComprehensionRecordRow[];
   }
 
 }

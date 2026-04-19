@@ -350,12 +350,56 @@ describe('ComprehensionStore', () => {
     expect(stage2).toBe(true);
     expect(store.count()).toBe(2);
 
-    // markOutcome by hash updates BOTH rows — outcome is a property of
-    // the user's turn, not an engine. Calibration for each engine then
-    // reads its own row via recentByEngine.
+    // markOutcome without engineId updates ALL rows sharing the hash —
+    // backward-compat for single-engine flows where every row for a
+    // given turn was written by the same engine.
     store.markOutcome('hybrid-turn', { outcome: 'confirmed', evidence: {} });
     expect(store.recentByEngine('rule-comprehender', 10, 'rule')).toHaveLength(1);
     expect(store.recentByEngine('llm-comprehender', 10, 'llm')).toHaveLength(1);
+  });
+
+  // Engine-scoped markOutcome — hybrid pipeline correctness. Only the
+  // engine whose resolvedGoal actually reached the user should get a
+  // calibration label for that turn.
+  test('markOutcome(hash, outcome, engineId) scopes update to one engine', () => {
+    const env = envelope({ inputHash: 'scoped-hybrid' });
+    store.record({
+      envelope: env,
+      taskId: 't',
+      sessionId: 's',
+      engineId: 'rule-comprehender',
+      engineType: 'rule',
+      verdictPass: true,
+    });
+    store.record({
+      envelope: env,
+      taskId: 't',
+      sessionId: 's',
+      engineId: 'llm-comprehender',
+      engineType: 'llm',
+      verdictPass: true,
+    });
+
+    const changed = store.markOutcome(
+      'scoped-hybrid',
+      { outcome: 'corrected', evidence: { reason: 'engine-specific' } },
+      'rule-comprehender',
+    );
+    expect(changed).toBe(true);
+
+    // Rule row has the outcome; LLM row still NULL (not swept here).
+    const ruleRows = store.mostRecentForSession('s', 10).filter(
+      (r) => r.engine_id === 'rule-comprehender',
+    );
+    const llmRows = store.mostRecentForSession('s', 10).filter(
+      (r) => r.engine_id === 'llm-comprehender',
+    );
+    expect(ruleRows[0]!.outcome).toBe('corrected');
+    expect(llmRows[0]!.outcome).toBeNull();
+
+    // recentByEngine should surface rule (has outcome) but NOT llm.
+    expect(store.recentByEngine('rule-comprehender', 10, 'rule')).toHaveLength(1);
+    expect(store.recentByEngine('llm-comprehender', 10, 'llm')).toHaveLength(0);
   });
 
   test('envelope_json round-trips back to a parseable message', () => {

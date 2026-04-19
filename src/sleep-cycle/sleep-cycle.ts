@@ -18,6 +18,7 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import { simpleGlobMatch } from '../core/glob.ts';
+import type { ComprehensionStore } from '../db/comprehension-store.ts';
 import type { PatternStore } from '../db/pattern-store.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
@@ -26,6 +27,8 @@ import { CostPatternMiner } from '../economy/cost-pattern-miner.ts';
 import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
 import { generateRule } from '../evolution/rule-generator.ts';
+import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
+import { mineComprehension } from '../orchestrator/comprehension/learning/miner.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
 import type { SkillManager } from '../orchestrator/skill-manager.ts';
 import type { EvolutionaryRule, ExecutionTrace, ExtractedPattern, SleepCycleConfig } from '../orchestrator/types.ts';
@@ -102,6 +105,10 @@ export class SleepCycleRunner {
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+  /** Optional comprehension substrate — when both present, the cycle
+   *  emits `comprehension:mining_completed` with B1–B3 insights. */
+  private comprehensionStore?: ComprehensionStore;
+  private comprehensionCalibrator?: ComprehensionCalibrator;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -149,6 +156,10 @@ export class SleepCycleRunner {
     marketScheduler?: MarketScheduler;
     /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+    /** Comprehension substrate — pass BOTH to enable mining. Optional: if
+     *  either is missing the mining step silently no-ops. */
+    comprehensionStore?: ComprehensionStore;
+    comprehensionCalibrator?: ComprehensionCalibrator;
     /**
      * Wave 5.4: override the default max no-op cycles before the
      * termination sentinel goes dormant. Default: 5. Smaller values
@@ -172,6 +183,8 @@ export class SleepCycleRunner {
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
+    this.comprehensionStore = options.comprehensionStore;
+    this.comprehensionCalibrator = options.comprehensionCalibrator;
     this.decayExperiment = createExperimentState();
     this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
   }
@@ -179,6 +192,20 @@ export class SleepCycleRunner {
   /** Set agent evolution for post-construction wiring (when capabilityModel is available). */
   setAgentEvolution(evolution: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution): void {
     this.agentEvolution = evolution;
+  }
+
+  /**
+   * Post-construction wiring for the comprehension substrate. Factory
+   * creates `ComprehensionCalibrator` after `SleepCycleRunner` (GAP#1
+   * ordering), so this lets us attach the substrate without
+   * reorganizing the whole factory.
+   */
+  setComprehensionSubstrate(
+    store: ComprehensionStore,
+    calibrator: ComprehensionCalibrator,
+  ): void {
+    this.comprehensionStore = store;
+    this.comprehensionCalibrator = calibrator;
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */
@@ -550,6 +577,30 @@ export class SleepCycleRunner {
       }
     } catch {
       // Thinking readiness gate is non-critical — swallow errors to avoid disrupting sleep cycle
+    }
+
+    // Comprehension mining (B1 engine-fit + label-drift, B2 stage-agreement,
+    // B3 divergence attribution). Best-effort: a failure here MUST NOT
+    // disrupt the cycle because A7 (prediction error as learning) is a
+    // feedback substrate, not a dependency for decomposition/planning.
+    // The mining step reads from ComprehensionStore + Calibrator only —
+    // no mutation — and emits a single bus event that dashboards tail.
+    if (this.comprehensionStore && this.comprehensionCalibrator) {
+      try {
+        const result = mineComprehension({
+          store: this.comprehensionStore,
+          calibrator: this.comprehensionCalibrator,
+        });
+        this.bus?.emit('comprehension:mining_completed', {
+          cycleId,
+          minedAt: result.minedAt,
+          windowSinceMs: result.windowSinceMs,
+          rowsScanned: result.rowsScanned,
+          insights: result.insights,
+        });
+      } catch {
+        /* Comprehension mining is best-effort — never disrupts sleep cycle */
+      }
     }
 
     // PH5.9: Export high-quality patterns for cross-instance sharing

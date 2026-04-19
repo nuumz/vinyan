@@ -1158,6 +1158,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const comprehensionCalibrator = comprehensionStore
     ? new ComprehensionCalibrator(comprehensionStore)
     : undefined;
+  // Wire comprehension substrate into SleepCycleRunner for offline mining
+  // (B1 engine-fit + label-drift, B2 stage-agreement, B3 attribution).
+  // Substrate is optional — if either piece is missing, the mining step
+  // in the cycle silently no-ops.
+  if (sleepCycleRunner && comprehensionStore && comprehensionCalibrator) {
+    sleepCycleRunner.setComprehensionSubstrate(comprehensionStore, comprehensionCalibrator);
+  }
   let llmComprehensionEngine: import('./comprehension/types.ts').ComprehensionEngine | undefined;
   try {
     const llmProvider =

@@ -24,7 +24,7 @@ import type {
   WorkingMemoryState,
 } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
-import type { SectionContext } from './prompt-section-registry.ts';
+import type { RenderedTiers, SectionContext, TierOffsets } from './prompt-section-registry.ts';
 import { createDefaultRegistry, createReasoningRegistry } from './prompt-section-registry.ts';
 import type { EnvironmentInfo } from './shared-prompt-sections.ts';
 
@@ -37,16 +37,34 @@ function clean(s: string): string {
   return sanitizeForPromptPassthrough(s).cleaned;
 }
 
+/**
+ * Plan commit B: Character offsets within the rendered system and user
+ * prompts identifying tier boundaries (frozen → session → turn). The
+ * Anthropic provider uses these to place `cache_control` markers so the
+ * frozen prefix lives in the 1h cache, the session prefix in the 5m cache,
+ * and the turn-volatile suffix is not cached.
+ */
+export interface PromptCacheTiers {
+  system: TierOffsets;
+  user: TierOffsets;
+}
+
 export interface AssembledPrompt {
   systemPrompt: string;
   userPrompt: string;
-  /** Cache control for system prompt — static content gets long-lived cache */
+  /**
+   * Plan commit B: tier boundaries for prompt-caching. Providers that support
+   * multi-segment caching (Anthropic) split the system and user prompts into
+   * blocks at these offsets and attach cache_control with appropriate TTLs.
+   */
+  tiers: PromptCacheTiers;
+  /** @deprecated B5 will remove — use `tiers` instead. Cache control for the system prompt. */
   systemCacheControl?: CacheControl;
-  /** Cache control for user-message instruction block (VINYAN.md) — session-stable */
+  /** @deprecated B5 will remove — use `tiers` instead. Cache control for [PROJECT INSTRUCTIONS] block. */
   instructionCacheControl?: CacheControl;
   /** Estimated token counts for cost instrumentation */
   estimatedTokens?: { system: number; user: number; total: number };
-  /** @deprecated Use systemCacheControl instead */
+  /** @deprecated B5 will remove. Legacy single cache-control field. */
   cacheControl?: CacheControl;
 }
 
@@ -96,39 +114,6 @@ export function assemblePrompt(
    */
   turns?: Turn[],
 ): AssembledPrompt {
-  // Gap 4A: Reasoning tasks now use composable section registry
-  if (taskType === 'reasoning') {
-    const ctx: SectionContext = {
-      goal,
-      perception,
-      memory,
-      plan,
-      instructions,
-      understanding,
-      routingLevel,
-      conversationHistory,
-      turns,
-      environment,
-      agentContext,
-      soulContent,
-      agentProfile,
-      peerAgents,
-    };
-    const systemPrompt = reasoningRegistry.renderTarget('system', ctx);
-    const userPrompt = reasoningRegistry.renderTarget('user', ctx);
-    const sysTokens = estimateTokens(systemPrompt);
-    const usrTokens = estimateTokens(userPrompt);
-    return {
-      systemPrompt,
-      userPrompt,
-      systemCacheControl: { type: 'static' },
-      instructionCacheControl: instructions ? { type: 'session' } : undefined,
-      cacheControl: { type: 'ephemeral' },
-      estimatedTokens: { system: sysTokens, user: usrTokens, total: sysTokens + usrTokens },
-    };
-  }
-
-  // Code tasks: use section registry for composable assembly
   const ctx: SectionContext = {
     goal,
     perception,
@@ -145,13 +130,23 @@ export function assemblePrompt(
     agentProfile,
     peerAgents,
   };
-  const systemPrompt = defaultRegistry.renderTarget('system', ctx);
-  const userPrompt = defaultRegistry.renderTarget('user', ctx);
-  const sysTokens = estimateTokens(systemPrompt);
-  const usrTokens = estimateTokens(userPrompt);
+
+  // Gap 4A: Reasoning tasks now use composable section registry
+  const registry = taskType === 'reasoning' ? reasoningRegistry : defaultRegistry;
+
+  // Plan commit B: render per tier so the provider can split the prompt
+  // into cached + uncached segments. `joined` preserves the legacy
+  // single-string view for callers that have not migrated yet.
+  const systemTiers: RenderedTiers = registry.renderTargetByTier('system', ctx);
+  const userTiers: RenderedTiers = registry.renderTargetByTier('user', ctx);
+
+  const sysTokens = estimateTokens(systemTiers.joined);
+  const usrTokens = estimateTokens(userTiers.joined);
+
   return {
-    systemPrompt,
-    userPrompt,
+    systemPrompt: systemTiers.joined,
+    userPrompt: userTiers.joined,
+    tiers: { system: systemTiers.offsets, user: userTiers.offsets },
     systemCacheControl: { type: 'static' },
     instructionCacheControl: instructions ? { type: 'session' } : undefined,
     cacheControl: { type: 'ephemeral' },

@@ -10,6 +10,7 @@
  */
 import type { VinyanBus } from '../../core/bus.ts';
 import type { CacheControl, LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
+import type { PromptCacheTiers } from './prompt-assembler.ts';
 import type { LLMProviderRegistry } from './provider-registry.ts';
 
 /** Default capabilities for LLM-class REs that don't declare their own. */
@@ -55,6 +56,9 @@ export class LLMReasoningEngine implements ReasoningEngine {
       tools: req.tools,
       messages: req.messages,
       thinking: opts.thinking as ThinkingConfig | undefined,
+      // Plan commit B: tier offsets reach the provider so multi-breakpoint
+      // caching works at the frozen and session boundaries.
+      tiers: opts.tiers as PromptCacheTiers | undefined,
       cacheControl: opts.cacheControl as CacheControl | undefined,
       instructionCacheControl: opts.instructionCacheControl as CacheControl | undefined,
     };

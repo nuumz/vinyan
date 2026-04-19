@@ -17,6 +17,11 @@
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
 import { LRUTTLCache } from './intent/cache.ts';
+import {
+  computeStructuralFeatures,
+  renderStructuralFeatures,
+  type StructuralFeatures,
+} from './intent/features.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
@@ -256,38 +261,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // The classifier uses these alongside the goal text itself.
 // ---------------------------------------------------------------------------
 
-export interface StructuralFeatures {
-  /** Goal length in characters after trim. */
-  lengthChars: number;
-  /** True when the goal ends with a punctuation or particle that marks it as a question. */
-  endsWithQuestion: boolean;
-  /** Number of the current turn in the session (1-indexed). */
-  turnNumber: number;
-}
-
-const THAI_QUESTION_PARTICLE_REGEX = /(ไหม|มั้ย|หรือเปล่า|หรอ|รึเปล่า|หรือไม่)[\s.?？]*$/u;
-
-export function computeStructuralFeatures(
-  goal: string,
-  history?: ConversationEntry[],
-): StructuralFeatures {
-  const trimmed = goal.trim();
-  // Accept ASCII '?' and full-width '？' (U+FF1F, common in Thai/CJK IME input)
-  // plus trailing Thai interrogative particles.
-  const endsWithQuestion =
-    trimmed.endsWith('?') ||
-    trimmed.endsWith('？') ||
-    THAI_QUESTION_PARTICLE_REGEX.test(trimmed);
-  return {
-    lengthChars: trimmed.length,
-    endsWithQuestion,
-    turnNumber: Math.floor((history?.length ?? 0) / 2) + 1,
-  };
-}
-
-function renderStructuralFeatures(f: StructuralFeatures): string {
-  return `Goal metadata (deterministic): length=${f.lengthChars} chars; ends with question marker: ${f.endsWithQuestion ? 'yes' : 'no'}; session turn: #${f.turnNumber}`;
-}
+// Commit D2: StructuralFeatures + computeStructuralFeatures +
+// renderStructuralFeatures moved to `src/orchestrator/intent/features.ts`
+// — re-exported here to preserve the public surface area while call sites
+// migrate.
+export { computeStructuralFeatures, type StructuralFeatures };
 
 // ---------------------------------------------------------------------------
 // Session cache — skip re-classifying identical goals within a short TTL.

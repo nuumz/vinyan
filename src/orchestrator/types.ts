@@ -1228,9 +1228,18 @@ export interface LLMRequest {
   messages?: HistoryMessage[];
   /** Thinking configuration — controls extended thinking behavior per routing level. */
   thinking?: ThinkingConfig;
-  /** Cache control — enables prompt caching on system/tool blocks. */
+  /**
+   * Plan commit B: tier boundaries for prompt caching. When present, the
+   * provider splits systemPrompt + userPrompt into Anthropic-native content
+   * blocks at frozen→session and session→turn offsets and attaches
+   * `cache_control: { type: 'ephemeral' }` at those boundaries so the
+   * frozen + session prefixes live in the ephemeral cache while only the
+   * turn-volatile suffix is re-processed each request.
+   */
+  tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
+  /** @deprecated B5 will remove — use `tiers` instead. */
   cacheControl?: CacheControl;
-  /** Cache control for instruction block (VINYAN.md) — session-stable content. */
+  /** @deprecated B5 will remove — use `tiers` instead. */
   instructionCacheControl?: CacheControl;
 }
 

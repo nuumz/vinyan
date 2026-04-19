@@ -30,13 +30,79 @@ const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
 
 const INSTRUCTION_HEADER = '[PROJECT INSTRUCTIONS]';
 
+/** Anthropic content block with optional cache marker — used for both system and user paths. */
+export type AnthropicTextBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
+
 /**
- * Build user messages with optional instruction cache block splitting.
- * When instructionCacheControl is set and the user prompt contains a
- * [PROJECT INSTRUCTIONS] section, split into two content blocks so
- * Anthropic can cache the instruction prefix separately (session-stable).
+ * Plan commit B: split a rendered prompt into Anthropic content blocks at
+ * tier boundaries. Attaches `cache_control: { type: 'ephemeral' }` at the
+ * frozen boundary and session boundary so the stable prefix stays cached
+ * while the turn-volatile suffix is sent fresh every request.
+ *
+ * Behaviour:
+ *   - Empty text → empty block array (caller handles "no messages").
+ *   - frozen-only  → one block, cache marker at the end.
+ *   - frozen + session → two blocks, each with a cache marker.
+ *   - frozen + session + turn → three blocks; markers on the first two.
+ *   - session-only / turn-only variants degrade symmetrically.
+ *
+ * Invariant: blocks are joined in order to reproduce the original text, and
+ * there are at most 2 cache markers per prompt (well within Anthropic's
+ * 4-breakpoint limit per request across system + messages).
+ *
+ * Exported for unit-testing without spinning up the Anthropic SDK.
  */
-function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
+export function splitAtTiers(
+  text: string,
+  offsets?: { frozenEnd: number; sessionEnd: number; totalEnd: number },
+): AnthropicTextBlock[] {
+  if (text.length === 0) return [];
+  if (!offsets) return [{ type: 'text', text }];
+
+  const { frozenEnd, sessionEnd, totalEnd } = offsets;
+  const blocks: AnthropicTextBlock[] = [];
+
+  const frozenText = text.slice(0, frozenEnd);
+  const sessionText = text.slice(frozenEnd, sessionEnd);
+  const turnText = text.slice(sessionEnd, totalEnd);
+
+  if (frozenText.length > 0) {
+    blocks.push({
+      type: 'text',
+      text: frozenText,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+  if (sessionText.length > 0) {
+    blocks.push({
+      type: 'text',
+      text: sessionText,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+  if (turnText.length > 0) {
+    blocks.push({ type: 'text', text: turnText });
+  }
+
+  return blocks;
+}
+
+/**
+ * Build user messages. Plan commit B: when `request.tiers.user` is set the
+ * user prompt is split at tier boundaries (see splitAtTiers). Otherwise
+ * falls back to the legacy [PROJECT INSTRUCTIONS] single-breakpoint path so
+ * callers that have not migrated still get session-cache on their VINYAN.md.
+ *
+ * Exported for unit tests.
+ */
+export function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
+  const userTiers = request.tiers?.user;
+  if (userTiers && request.userPrompt.length > 0) {
+    const blocks = splitAtTiers(request.userPrompt, userTiers);
+    return [{ role: 'user', content: blocks.length > 0 ? blocks : [{ type: 'text', text: request.userPrompt }] }];
+  }
+
+  // Legacy path: single [PROJECT INSTRUCTIONS] breakpoint via heuristic.
   const icc = request.instructionCacheControl;
   if (icc && shouldCache(icc)) {
     const idx = request.userPrompt.indexOf(INSTRUCTION_HEADER);
@@ -46,7 +112,7 @@ function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
       const instructionEnd = nextHeader > -1 ? nextHeader : request.userPrompt.length;
       const instructionBlock = request.userPrompt.slice(0, instructionEnd);
       const taskBlock = request.userPrompt.slice(instructionEnd);
-      const blocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
+      const blocks: AnthropicTextBlock[] = [
         { type: 'text', text: instructionBlock, cache_control: { type: 'ephemeral' } },
       ];
       if (taskBlock.trim()) {
@@ -56,6 +122,31 @@ function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
     }
   }
   return [{ role: 'user', content: request.userPrompt }];
+}
+
+/**
+ * Build system content blocks. Plan commit B: when `request.tiers.system` is
+ * set, split the system prompt into frozen / session / turn segments and
+ * place cache markers at tier boundaries. Legacy path (single marker on
+ * whole system prompt when `cacheControl` is set) is preserved for callers
+ * that have not migrated.
+ *
+ * Exported for unit tests.
+ */
+export function buildSystemBlocks(request: LLMRequest): AnthropicTextBlock[] {
+  const systemTiers = request.tiers?.system;
+  if (systemTiers && request.systemPrompt.length > 0) {
+    const blocks = splitAtTiers(request.systemPrompt, systemTiers);
+    if (blocks.length > 0) return blocks;
+  }
+
+  return [
+    {
+      type: 'text',
+      text: request.systemPrompt,
+      ...(shouldCache(request.cacheControl) ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    },
+  ];
 }
 
 export interface AnthropicProviderConfig {
@@ -100,13 +191,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
       return retryWithBackoff(
         async (signal) => {
           const thinkingEnabled = isThinkingEnabled(request.thinking);
-          const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
-            {
-              type: 'text' as const,
-              text: request.systemPrompt,
-              ...(shouldCache(request.cacheControl) ? { cache_control: { type: 'ephemeral' as const } } : {}),
-            },
-          ];
+          const systemBlocks = buildSystemBlocks(request);
 
           const response = await client.messages.create({
             model,
@@ -195,13 +280,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
         ? (normalizeMessages(request.messages, 'anthropic') as AnthropicMessage[])
         : buildUserMessages(request);
       const thinkingEnabled = isThinkingEnabled(request.thinking);
-      const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
-        {
-          type: 'text' as const,
-          text: request.systemPrompt,
-          ...(shouldCache(request.cacheControl) ? { cache_control: { type: 'ephemeral' as const } } : {}),
-        },
-      ];
+      const systemBlocks = buildSystemBlocks(request);
 
       try {
         const stream = await client.messages.stream({

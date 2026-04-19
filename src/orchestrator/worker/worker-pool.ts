@@ -451,6 +451,12 @@ export class WorkerPoolImpl implements WorkerPool {
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
     contract?: import('../../core/agent-contract.ts').AgentContract,
     conversationHistory?: import('../types.ts').ConversationEntry[],
+    /**
+     * Plan commit A: Turn-model history. When present, subprocess workers
+     * receive it via WorkerInput.turns and the in-process assembler prefers
+     * it over `conversationHistory` — preserves tool_use / tool_result blocks.
+     */
+    turns?: import('../types.ts').Turn[],
   ) {
     const startTime = performance.now();
 
@@ -470,7 +476,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const releaseRuntime = this.acquireRuntimeSlot(routing.workerId, input.id);
 
     try {
-      const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding);
+      const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
       // Carry conversation history for prompt assembly (not serialized into WorkerInput)
       const ConversationHistory = conversationHistory;
 
@@ -517,7 +523,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
       const output = useSubprocessForTask
         ? await this.dispatchSubprocess(workerInput, routing)
-        : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents);
+        : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents, turns);
 
       return this.toWorkerResult(output, startTime);
     } finally {
@@ -543,6 +549,7 @@ export class WorkerPoolImpl implements WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
     understanding?: import('../types.ts').TaskUnderstanding,
+    turns?: import('../types.ts').Turn[],
   ): WorkerInput {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
@@ -609,6 +616,9 @@ export class WorkerPoolImpl implements WorkerPool {
       ...(agentProfile ? { agentProfile } : {}),
       ...(soulContent ? { soulContent } : {}),
       ...(agentContext ? { agentContext } : {}),
+      // Plan commit A: Turn-model history. Subprocess workers prefer this over
+      // any legacy conversationHistory shipped separately — blocks are verbatim.
+      ...(turns && turns.length > 0 ? { turns } : {}),
     };
   }
 
@@ -620,6 +630,7 @@ export class WorkerPoolImpl implements WorkerPool {
     conversationHistory?: import('../types.ts').ConversationEntry[],
     agentProfile?: import('../types.ts').AgentSpec,
     peerAgents?: import('../types.ts').AgentSpec[],
+    turns?: import('../types.ts').Turn[],
   ): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select engine if available, fallback to tier-based
     const engine = routing.workerId
@@ -663,6 +674,7 @@ export class WorkerPoolImpl implements WorkerPool {
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
       agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
+      turns, // Plan commit A: Turn-model history with tool_use/tool_result preserved
     );
 
     const startTime = performance.now();

@@ -12,11 +12,13 @@ import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
+  ContentBlock,
   ConversationEntry,
   PerceptualHierarchy,
   SemanticTaskUnderstanding,
   TaskDAG,
   TaskDomain,
+  Turn,
   TaskUnderstanding,
   WorkingMemoryState,
 } from '../types.ts';
@@ -63,6 +65,13 @@ export interface SectionContext {
   routingLevel?: number;
   /** Conversation history from prior turns in the same session. */
   conversationHistory?: ConversationEntry[];
+  /**
+   * Turn-model conversation history (plan commit A). When present, the
+   * conversation-history section prefers this over `conversationHistory`
+   * because it preserves tool_use / tool_result blocks verbatim so the
+   * agent does not re-derive tool parameters on resume.
+   */
+  turns?: Turn[];
   /** Phase 7a: OS/cwd/date/git snapshot — shown in [ENVIRONMENT] system block. */
   environment?: EnvironmentInfo | null;
   /** Agent Context Layer: persistent identity, memory, and skills for the dispatched agent. */
@@ -975,6 +984,67 @@ const CONVERSATION_ENTRY_MAX_CHARS = 1500;
 /** Max total turns to include — older turns are dropped to save tokens. */
 const CONVERSATION_MAX_TURNS = 10;
 
+/**
+ * Flatten a Turn's ContentBlock[] into a single readable string while keeping
+ * tool_use / tool_result markers so the LLM can reason about prior tool calls
+ * on resume. Preserves the structure that the flat `ConversationEntry.content`
+ * path previously lost.
+ */
+function renderTurnBlocks(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        if (block.text.trim().length > 0) parts.push(block.text);
+        break;
+      case 'thinking':
+        if (block.thinking.trim().length > 0) parts.push(`[thinking] ${block.thinking}`);
+        break;
+      case 'tool_use': {
+        const args = JSON.stringify(block.input);
+        parts.push(`[tool_use:${block.name} id=${block.id}] ${args}`);
+        break;
+      }
+      case 'tool_result':
+        parts.push(
+          `[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`,
+        );
+        break;
+    }
+  }
+  return parts.join('\n');
+}
+
+/** Render Turn-model history (plan commit A). Separate path so A6 can delete legacy cleanly. */
+function renderTurnsSection(turns: readonly Turn[]): string | null {
+  if (!turns.length) return null;
+
+  const entries =
+    turns.length > CONVERSATION_MAX_TURNS ? turns.slice(-CONVERSATION_MAX_TURNS) : turns;
+  const skippedCount = turns.length - entries.length;
+
+  const lines: string[] = [];
+  if (skippedCount > 0) lines.push(`(${skippedCount} earlier turns omitted)`);
+
+  for (let i = 0; i < entries.length; i++) {
+    const turn = entries[i]!;
+    const turnNum = skippedCount + i + 1;
+    const role = turn.role === 'user' ? 'User' : 'Assistant';
+    const cancelledTag = turn.cancelledAt ? ' [USER CANCELLED]' : '';
+
+    let content = renderTurnBlocks(turn.blocks);
+    if (content.length > CONVERSATION_ENTRY_MAX_CHARS) {
+      const keepStart = Math.floor(CONVERSATION_ENTRY_MAX_CHARS * 0.7);
+      const keepEnd = CONVERSATION_ENTRY_MAX_CHARS - keepStart;
+      content = `${content.slice(0, keepStart)}... [truncated] ...${content.slice(-keepEnd)}`;
+    }
+
+    lines.push(`[Turn ${turnNum}] ${role}${cancelledTag}: ${clean(content)}`);
+  }
+
+  return `[CONVERSATION HISTORY]\nThis is a multi-turn conversation. Prior turns for context:\n${lines.join('\n')}`;
+}
+
 /** Register the conversation-history prompt section (shared between code and reasoning registries). */
 function registerConversationHistorySection(registry: PromptSectionRegistry): void {
   registry.register({
@@ -983,6 +1053,9 @@ function registerConversationHistorySection(registry: PromptSectionRegistry): vo
     cache: 'ephemeral',
     priority: 15, // early in user prompt, before task/perception/plan
     render: (ctx) => {
+      // Prefer Turn-model history (plan commit A) when available.
+      if (ctx.turns?.length) return renderTurnsSection(ctx.turns);
+
       if (!ctx.conversationHistory?.length) return null;
 
       // Keep only the most recent turns to save tokens

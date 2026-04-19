@@ -5,6 +5,7 @@
  * Source of truth: spec/tdd.md §22.5
  */
 import type { Database } from 'bun:sqlite';
+import type { ContentBlock, Turn, TurnTokenCount } from '../orchestrator/types.ts';
 
 export interface SessionRow {
   id: string;
@@ -34,6 +35,19 @@ export interface SessionMessageRow {
   thinking: string | null;
   tools_used: string | null;
   token_estimate: number;
+  created_at: number;
+}
+
+/** Raw SQLite row shape for session_turns — blocks/token_count are JSON strings. */
+export interface SessionTurnRow {
+  id: string;
+  session_id: string;
+  seq: number;
+  role: 'user' | 'assistant';
+  blocks_json: string;
+  cancelled_at: number | null;
+  token_count_json: string;
+  task_id: string | null;
   created_at: number;
 }
 
@@ -186,4 +200,131 @@ export class SessionStore {
     }
     return result.reverse(); // chronological order
   }
+
+  // ── Session Turns (Turn model — plan commit A) ──────────
+
+  /**
+   * Append a turn to the session. `seq` is computed from current row count so
+   * callers do not need to track ordinals.
+   *
+   * Note: this does not enforce in-flight uniqueness under concurrent writes
+   * within a single session. The current orchestrator model is single-writer
+   * per session (one active task at a time), so the UNIQUE(session_id, seq)
+   * index is sufficient.
+   */
+  appendTurn(turn: Omit<Turn, 'seq'> & { seq?: number }): Turn {
+    const seq =
+      turn.seq ??
+      ((this.db
+        .query('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM session_turns WHERE session_id = ?')
+        .get(turn.sessionId) as { next: number }).next);
+
+    const row: SessionTurnRow = {
+      id: turn.id,
+      session_id: turn.sessionId,
+      seq,
+      role: turn.role,
+      blocks_json: JSON.stringify(turn.blocks),
+      cancelled_at: turn.cancelledAt ?? null,
+      token_count_json: JSON.stringify(turn.tokenCount),
+      task_id: turn.taskId ?? null,
+      created_at: turn.createdAt,
+    };
+
+    this.db.run(
+      `INSERT INTO session_turns (id, session_id, seq, role, blocks_json, cancelled_at, token_count_json, task_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.session_id,
+        row.seq,
+        row.role,
+        row.blocks_json,
+        row.cancelled_at,
+        row.token_count_json,
+        row.task_id,
+        row.created_at,
+      ],
+    );
+
+    return { ...turn, seq };
+  }
+
+  getTurns(sessionId: string, limit?: number): Turn[] {
+    const rows =
+      limit != null
+        ? (this.db
+            .query('SELECT * FROM session_turns WHERE session_id = ? ORDER BY seq ASC LIMIT ?')
+            .all(sessionId, limit) as SessionTurnRow[])
+        : (this.db
+            .query('SELECT * FROM session_turns WHERE session_id = ? ORDER BY seq ASC')
+            .all(sessionId) as SessionTurnRow[]);
+    return rows.map(rowToTurn);
+  }
+
+  /** Tail window — newest N turns in chronological order. */
+  getRecentTurns(sessionId: string, limit: number): Turn[] {
+    const rows = this.db
+      .query('SELECT * FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT ?')
+      .all(sessionId, limit) as SessionTurnRow[];
+    return rows.reverse().map(rowToTurn);
+  }
+
+  countTurns(sessionId: string): number {
+    const row = this.db
+      .query('SELECT COUNT(*) as count FROM session_turns WHERE session_id = ?')
+      .get(sessionId) as { count: number };
+    return row.count;
+  }
+
+  getTurn(turnId: string): Turn | undefined {
+    const row = this.db.query('SELECT * FROM session_turns WHERE id = ?').get(turnId) as
+      | SessionTurnRow
+      | undefined;
+    return row ? rowToTurn(row) : undefined;
+  }
+
+  /**
+   * Mark a turn as cancelled by the user (plan commit C). Persists the partial
+   * blocks that were streamed before cancel so the next turn can reference the
+   * aborted state. Safe to call on an already-cancelled turn (no-op beyond
+   * overwriting the timestamp).
+   */
+  markCancelled(turnId: string, cancelledAt: number, partialBlocks?: ContentBlock[]): void {
+    if (partialBlocks != null) {
+      this.db.run('UPDATE session_turns SET cancelled_at = ?, blocks_json = ? WHERE id = ?', [
+        cancelledAt,
+        JSON.stringify(partialBlocks),
+        turnId,
+      ]);
+    } else {
+      this.db.run('UPDATE session_turns SET cancelled_at = ? WHERE id = ?', [cancelledAt, turnId]);
+    }
+  }
+
+  /**
+   * Update token accounting for a turn after the LLM response arrives. Split
+   * from `appendTurn` because input turns are persisted before the response
+   * resolves cacheRead / cacheCreation counts.
+   */
+  updateTurnTokenCount(turnId: string, tokenCount: TurnTokenCount): void {
+    this.db.run('UPDATE session_turns SET token_count_json = ? WHERE id = ?', [
+      JSON.stringify(tokenCount),
+      turnId,
+    ]);
+  }
+}
+
+function rowToTurn(row: SessionTurnRow): Turn {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    seq: row.seq,
+    role: row.role,
+    blocks: JSON.parse(row.blocks_json) as ContentBlock[],
+    cancelledAt: row.cancelled_at ?? undefined,
+    tokenCount: JSON.parse(row.token_count_json) as TurnTokenCount,
+    taskId: row.task_id ?? undefined,
+    createdAt: row.created_at,
+  };
 }

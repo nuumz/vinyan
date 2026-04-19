@@ -908,6 +908,11 @@ export async function runAgentLoop(
   understanding?: import('../types.ts').TaskUnderstanding,
   contract?: AgentContract,
   conversationHistory?: import('../types.ts').ConversationEntry[],
+  /**
+   * Plan commit A: Turn-model history. Shipped across the subprocess boundary
+   * via OrchestratorTurn.init.turns so the agent resumes with full tool context.
+   */
+  turns?: import('../types.ts').Turn[],
 ): Promise<WorkerLoopResult> {
   const startTime = performance.now();
   // K1.2: Use contract-based budget when available (A3: immutable contract governs execution)
@@ -1126,6 +1131,7 @@ export async function runAgentLoop(
       ...(input.acceptanceCriteria?.length ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
       ...(initUnderstanding ? { understanding: initUnderstanding } : {}),
       ...(conversationHistory?.length ? { conversationHistory } : {}),
+      ...(turns?.length ? { turns } : {}),
       ...(instructions ? { instructions } : {}),
       environment,
       // Multi-agent: specialist identity crosses subprocess boundary via

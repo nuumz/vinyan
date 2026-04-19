@@ -8,7 +8,14 @@
  */
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
-import type { ConversationEntry, TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type {
+  ContentBlock,
+  ConversationEntry,
+  TaskInput,
+  TaskResult,
+  Turn,
+  TurnTokenCount,
+} from '../orchestrator/types.ts';
 
 export interface Session {
   id: string;
@@ -230,8 +237,15 @@ export class SessionManager {
 
   // ── Conversation Methods (Conversation Agent Mode) ──────
 
-  /** Record a user message in the conversation history. */
+  /**
+   * Record a user message in the conversation history.
+   *
+   * Plan commit A (A5): dual-writes to both `session_messages` (legacy flat
+   * path, consumed by ConversationEntry readers) and `session_turns`
+   * (Anthropic-native ContentBlock[] path). A7 will drop the legacy write.
+   */
   recordUserTurn(sessionId: string, content: string): void {
+    const now = Date.now();
     this.sessionStore.insertMessage({
       session_id: sessionId,
       task_id: null,
@@ -240,7 +254,17 @@ export class SessionManager {
       thinking: null,
       tools_used: null,
       token_estimate: estimateTokens(content),
-      created_at: Date.now(),
+      created_at: now,
+    });
+    // A5: mirror to session_turns as a single text block. No tool_use blocks
+    // from pure user input — user turns arrive as text regardless of LLM shape.
+    this.sessionStore.appendTurn({
+      id: crypto.randomUUID(),
+      sessionId,
+      role: 'user',
+      blocks: [{ type: 'text', text: content }],
+      tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      createdAt: now,
     });
   }
 
@@ -276,6 +300,7 @@ export class SessionManager {
       content = result.answer ?? (mutationSummary || fallback);
     }
     const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
+    const now = Date.now();
 
     this.sessionStore.insertMessage({
       session_id: sessionId,
@@ -285,7 +310,42 @@ export class SessionManager {
       thinking: result.thinking ?? null,
       tools_used: toolsUsed ? JSON.stringify(toolsUsed) : null,
       token_estimate: estimateTokens(content) + estimateTokens(result.thinking ?? ''),
-      created_at: Date.now(),
+      created_at: now,
+    });
+
+    // A5: mirror to session_turns. Each mutation becomes a tool_use block so
+    // the Turn-model consumer preserves the structural information that the
+    // legacy flat content string discards. Text content + thinking are kept
+    // as distinct blocks (Anthropic-native order: thinking → text).
+    const blocks: ContentBlock[] = [];
+    if (result.thinking && result.thinking.trim().length > 0) {
+      blocks.push({ type: 'thinking', thinking: result.thinking });
+    }
+    if (content.trim().length > 0) {
+      blocks.push({ type: 'text', text: content });
+    }
+    for (const mutation of result.mutations) {
+      blocks.push({
+        type: 'tool_use',
+        id: `mut-${taskId}-${mutation.file}`,
+        name: 'write_file',
+        input: { path: mutation.file, diff: mutation.diff },
+      });
+    }
+    const tokenCount: TurnTokenCount = {
+      input: 0,
+      output: result.trace?.tokensConsumed ?? 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+    };
+    this.sessionStore.appendTurn({
+      id: crypto.randomUUID(),
+      sessionId,
+      role: 'assistant',
+      blocks: blocks.length > 0 ? blocks : [{ type: 'text', text: content }],
+      tokenCount,
+      taskId,
+      createdAt: now,
     });
   }
 
@@ -369,6 +429,17 @@ export class SessionManager {
   /** Get the number of conversation messages in a session. */
   getMessageCount(sessionId: string): number {
     return this.sessionStore.countMessages(sessionId);
+  }
+
+  /**
+   * Plan commit A (A5): Turn-model history for core-loop + workers.
+   *
+   * Returns the newest-N turns from `session_turns` in chronological order,
+   * trimmed by a token-like budget (uses block text length as proxy since
+   * Turn rows carry cache-tier counts, not prompt-token estimates).
+   */
+  getTurnsHistory(sessionId: string, maxTurns = 20): Turn[] {
+    return this.sessionStore.getRecentTurns(sessionId, maxTurns);
   }
 
   /** Load working memory JSON from a session (for cross-turn learning). */

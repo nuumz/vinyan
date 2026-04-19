@@ -454,6 +454,58 @@ export interface ConversationEntry {
   tokenEstimate: number;
 }
 
+// ---------------------------------------------------------------------------
+// Turn Model (Anthropic-native ContentBlock[]) — replaces ConversationEntry
+// for loss-free multi-turn tool-use persistence. See plan commit A.
+// ---------------------------------------------------------------------------
+
+/**
+ * A single block within a Turn. Mirrors Anthropic's content block shape so
+ * multi-turn tool-use loops can resume without re-deriving tool parameters
+ * from stringified history.
+ */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string; signature?: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: string;
+      is_error?: boolean;
+    };
+
+/** Token accounting per turn — split by cache tier for instrumentation. */
+export interface TurnTokenCount {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+/**
+ * A single conversation turn — user input or assistant response — stored as
+ * an ordered sequence of Anthropic-native content blocks.
+ *
+ * `cancelledAt` is set by the cancel protocol (plan commit C) when the user
+ * aborts mid-stream; the partial blocks emitted up to that point are still
+ * persisted so the next turn can reference them without losing context.
+ */
+export interface Turn {
+  id: string;
+  sessionId: string;
+  /** Zero-based ordinal within the session; monotonically increasing. */
+  seq: number;
+  role: 'user' | 'assistant';
+  blocks: ContentBlock[];
+  /** Unix millis when the user cancelled this turn (0/undefined = not cancelled). */
+  cancelledAt?: number;
+  tokenCount: TurnTokenCount;
+  createdAt: number;
+  /** Optional link to the orchestrator task this turn belongs to (assistant turns). */
+  taskId?: string;
+}
+
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;

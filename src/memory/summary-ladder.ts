@@ -15,7 +15,9 @@ export interface LadderSummary {
   resolvedClarifications: Array<{ question: string; answer: string }>;
 }
 
-const FILE_PATH_REGEX = /[\w\-./]+\.(?:ts|js|py|java|tsx|jsx|md|json|yaml|yml|go|rs|cpp|h|hpp|c|rb|php|swift|kt)/g;
+// Alternation ordering: LONGER extensions first so `config.json` doesn't
+// truncate to `config.js`. Regex alternation is non-greedy by default.
+const FILE_PATH_REGEX = /[\w\-./]+\.(?:swift|hpp|json|jsx|tsx|yaml|java|cpp|yml|md|rs|ts|js|py|go|rb|kt|php|h|c)\b/g;
 const INPUT_REQUIRED_TAG = '[INPUT-REQUIRED]';
 
 function flattenVisibleText(blocks: readonly ContentBlock[]): string {

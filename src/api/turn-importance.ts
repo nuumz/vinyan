@@ -63,13 +63,14 @@ const USE_CASE_GUARD = /\buse\s+case(s)?\b/i;
 
 // Negation + alternative (EN + TH). Captures "not use X" / "ไม่ใช่ X แต่ใช้ Y".
 //
-// JS regex word boundaries (`\b`) only work around ASCII word characters;
-// Thai characters aren't word characters, so wrapping the alternative in
-// `\b` would reject TH matches (e.g. "not redis, ใช้ postgres"). We keep
-// the left-side boundary to suppress partial-word matches like "cannot"
-// (EN) but allow the right-hand verb to land anywhere (EN verbs still
-// have their own guard in DECISION_VERB_EN).
-const NEGATION_ALT = /\b(not|ไม่ใช่|ไม่เอา)\b.{0,30}(use|do|ใช้|เอา)/i;
+// Implementation note: JS regex word boundaries (`\b`) don't work around
+// Thai characters — `\b` matches only at ASCII word-boundary transitions,
+// so a pure-Thai "ไม่ใช่" at position 0 of the input never matches `\bไม่ใช่`
+// (the first char isn't a word char, so there's no boundary to satisfy).
+// We apply `\b` only to the English alternatives and match the Thai
+// alternatives as plain substrings. Combined in one regex so callers see a
+// single boolean result.
+const NEGATION_ALT = /(\bnot\b|ไม่ใช่|ไม่เอา).{0,30}(\buse\b|\bdo\b|ใช้|เอา)/i;
 
 // Assistant plan preamble. Only meaningful when role=assistant.
 //

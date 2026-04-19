@@ -486,8 +486,11 @@ export class SessionManager {
     // Count turns (a turn = one user + one assistant message pair)
     const turnPairs = Math.ceil(entries.length / 2);
     if (turnPairs <= keepRecentTurns) {
-      // Short enough — return as-is with token budget enforcement
-      const budgeted = this.enforceTokenBudget(entries, maxTokens);
+      // Short enough — return as-is with token budget enforcement. Priority
+      // weights still apply so a single decision turn survives longer than
+      // a chit-chat turn of equal size when the budget is tight.
+      const weights = this.buildRecentWeights(entries);
+      const budgeted = this.enforceTokenBudget(entries, maxTokens, weights);
       return this.prependDropMarker(budgeted.entries, budgeted.dropped, budgeted.droppedTokens);
     }
 
@@ -510,8 +513,6 @@ export class SessionManager {
     // mark user replies to IR blocks as decisions without re-running regex.
     type DecisionLine = { turnIdx: number; importance: TurnImportance; role: string; excerpt: string };
     const decisionLines: DecisionLine[] = [];
-    // Per-entry weights for enforceTokenBudget (priority → 0.5×).
-    const weights = new Map<ConversationEntry, number>();
     let precededByIR = false;
 
     for (let i = 0; i < olderEntries.length; i++) {
@@ -545,12 +546,14 @@ export class SessionManager {
         }
       }
 
-      // Classify the turn for inline interleave + weight assignment.
+      // Classify the older turn for inline summary emission only. We do NOT
+      // set a budget weight on older entries here because they are compacted
+      // away into `compactEntry` before `enforceTokenBudget` runs — any
+      // weight on the raw older entry would be a dead reference.
       const importance = classifyTurn(entry, { precededByInputRequired: precededByIR });
       if (importance === 'decision' || importance === 'clarification') {
         const excerpt = firstLineSnippet(entry.content, 200);
         decisionLines.push({ turnIdx: i, importance, role: entry.role, excerpt });
-        weights.set(entry, 0.5);
       }
 
       // Carry the hint forward: the *next* entry only sees it when the
@@ -602,8 +605,41 @@ export class SessionManager {
       tokenEstimate: estimateTokens(compactContent),
     };
 
-    const budgeted = this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens, weights);
+    // Priority weights for budget enforcement — apply to recent entries
+    // (the only entries that actually survive into the budgeted list).
+    // `precededByIR` at this point reflects whether the LAST older entry
+    // was an IR assistant, so a user reply at the head of recentEntries
+    // inherits the hint correctly.
+    const recentWeights = this.buildRecentWeights(recentEntries, precededByIR);
+
+    const budgeted = this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens, recentWeights);
     return this.prependDropMarker(budgeted.entries, budgeted.dropped, budgeted.droppedTokens);
+  }
+
+  /**
+   * Classify each entry and build a weight map for `enforceTokenBudget`.
+   * Priority turns (decision / clarification) count at 0.5× their raw
+   * tokenEstimate, so they survive tight budgets longer than chit-chat.
+   *
+   * `initialPrecededByIR` lets the caller chain the `[INPUT-REQUIRED]`
+   * hint across a boundary (e.g., from the older-entries loop into the
+   * recent-entries weighting pass) without re-running the regex.
+   */
+  private buildRecentWeights(
+    entries: ConversationEntry[],
+    initialPrecededByIR = false,
+  ): Map<ConversationEntry, number> {
+    const weights = new Map<ConversationEntry, number>();
+    let precededByIR = initialPrecededByIR;
+    for (const entry of entries) {
+      const importance = classifyTurn(entry, { precededByInputRequired: precededByIR });
+      if (importance === 'decision' || importance === 'clarification') {
+        weights.set(entry, 0.5);
+      }
+      precededByIR =
+        entry.role === 'assistant' && parseInputRequiredBlock(entry.content).length > 0;
+    }
+    return weights;
   }
 
   /**

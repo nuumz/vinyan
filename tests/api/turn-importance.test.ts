@@ -120,11 +120,24 @@ describe('classifyTurn — TH decision signals', () => {
   });
 
   test("TH verb 'ใช้' with EN 'not' negation earns 2 points → decision", () => {
-    // `\b` in JS regex has no word boundary between Thai characters
-    // (requires the `u` flag + Unicode property escapes), so TH-only negation
-    // can't be scored. Pairing with an EN 'not' + EN verb keeps the combined
-    // negation axis reachable while exercising the TH verb axis.
+    // Mixed-language negation is the most common real-world case and must
+    // score. NEGATION_ALT's regex has `\bnot\b` on the EN alternative, and
+    // allows the Thai verb to land anywhere in the 30-char tail.
     expect(classifyTurn(user('not redis, ใช้ postgres แทน'))).toBe('decision');
+  });
+
+  test("pure-TH 'ไม่ใช่ X ใช้ Y' negation+alternative → decision", () => {
+    // Regression guard for the Thai word-boundary bug — pre-fix, `\b(ไม่ใช่)`
+    // failed because Thai chars aren't JS word chars, so pure-TH negations
+    // never scored. Post-fix, Thai alternatives are matched without leading
+    // `\b` and the TH verb closes the pattern.
+    expect(classifyTurn(user('ไม่ใช่ redis ใช้ postgres'))).toBe('decision');
+  });
+
+  test("pure-TH 'ไม่เอา X เอา Y' negation+alternative → decision", () => {
+    // Same regression guard with the 'เอา' verb, to make sure the fix
+    // applies uniformly to the Thai alternative set.
+    expect(classifyTurn(user('ไม่เอา mysql เอา postgres แทน'))).toBe('decision');
   });
 
   test("TH 'เปลี่ยนเป็น' alone is 1 point → normal", () => {

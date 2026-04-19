@@ -376,6 +376,53 @@ describe('weighted retention', () => {
     const normDrops = parseDroppedCount(normResult);
     expect(decDrops).toBeLessThanOrEqual(normDrops);
   });
+
+  test('priority weighting applies to recent entries, not just older entries', () => {
+    // Regression guard for the dead-weights bug — pre-fix the weights map
+    // was keyed on olderEntries (compacted away before budget enforcement),
+    // so weights.has() always returned false and priority weighting was a
+    // no-op. This test contrasts two sessions whose ONLY meaningful
+    // difference is the importance of their recent turns.
+    const sDecisionRecent = manager.create('api');
+    const sNormalRecent = manager.create('api');
+    // Large, identical older history so both sessions' summaries are
+    // equal-sized. Then only recent content differs: decision vs normal.
+    const olderUser = 'what about this approach';
+    const olderAssistant = 'proceeding with standard flow';
+    // Recent assistant messages are meaty enough that the tail-sum exceeds
+    // the budget at full weight but fits at half weight. The leading clause
+    // of each message drives classification ("I'll …" → decision preamble;
+    // plain prose → normal) while the long body inflates the token cost.
+    const decisionRecent =
+      "I'll split the PR into two commits and land the API shim first. " +
+      'We will ship the SQLite backend behind the feature flag, migrate ' +
+      'existing sessions in a background job, and retire the legacy path ' +
+      'once the p99 latency holds for 48 hours under production load.';
+    const normalRecent =
+      'ok sounds good, please proceed on your own time and let me know ' +
+      'once the initial slice is ready for review so we can sync up. ' +
+      'Take your time and drop any concerns in the thread — happy to ' +
+      'context-switch if anything blocks the rest of the work.';
+    for (let i = 0; i < 20; i++) {
+      insertTurnPair(sDecisionRecent.id, olderUser, olderAssistant);
+      insertTurnPair(sNormalRecent.id, olderUser, olderAssistant);
+    }
+    // Append 3 recent pairs — the tail that enforceTokenBudget actually sees.
+    for (let i = 0; i < 3; i++) {
+      insertTurnPair(sDecisionRecent.id, `follow-up ${i}`, decisionRecent);
+      insertTurnPair(sNormalRecent.id, `follow-up ${i}`, normalRecent);
+    }
+    // Budget tight enough that a full-weight tail overflows but a
+    // half-weighted tail doesn't, so the weighting is decisive.
+    const budget = 200;
+    const decResult = manager.getConversationHistoryCompacted(sDecisionRecent.id, budget, 3);
+    const normResult = manager.getConversationHistoryCompacted(sNormalRecent.id, budget, 3);
+    const decDrops = parseDroppedCount(decResult);
+    const normDrops = parseDroppedCount(normResult);
+    // Decision-heavy recent tail must retain strictly more entries under the
+    // same budget — if this assertion fails we're back to the dead-weights bug.
+    expect(decDrops).toBeLessThan(normDrops);
+  });
 });
 
 /** Parse the integer from a `[DROPPED BY BUDGET: N turn(s) …]` marker. */

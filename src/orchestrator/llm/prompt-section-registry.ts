@@ -226,9 +226,11 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     cache: 'static',
     priority: 40,
     render: (ctx) => {
-      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
-      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
-
+      // Phase 0 W3: tool list is shown at every routing level. Modern fast
+      // models (Haiku/Sonnet-class) follow tool schemas reliably; hiding the
+      // list from L0/L1 forced those workers to apologise on trivial file
+      // reads. Tool-name validation still happens in tool-executor.ts and
+      // descriptor-level minRoutingLevel remains the last guard.
       const allTools = [...ctx.perception.runtime.availableTools].sort();
       if (!allTools.length) return null;
 
@@ -705,9 +707,8 @@ Do NOT use JSON, code blocks for your answer, or LaTeX formatting.`;
     cache: 'static',
     priority: 20,
     render: (ctx) => {
-      // R2 (§5): L0-L1 must NOT receive tool descriptions — prevents hallucinated tool calls.
-      if (ctx.routingLevel != null && ctx.routingLevel < 2) return null;
-
+      // Phase 0 W3: tool list exposed at all routing levels. See rationale
+      // on the code-section `tools` block above.
       let tools = ctx.perception.runtime.availableTools;
       if (!tools.length) return null;
 

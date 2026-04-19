@@ -4,12 +4,19 @@
 
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeEvidence, makeResult, TOOL_TIMEOUT_MS } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const searchGrep: Tool = {
   name: 'search_grep',
-  description: 'Search file contents with grep',
+  description: `Search file contents by regex pattern across the workspace.
+
+Usage:
+- pattern is a POSIX regex (grep -E style). Anchors, character classes, and alternation work; Perl features like lookaround do NOT.
+- path is optional and defaults to the workspace root. Paths escaping the workspace are rejected.
+- Output is one "file:line:match" per line. Count lines yourself from the output — do not assume ranking.
+- Times out after 30s. If you hit the timeout narrow the pattern or the path first before retrying.
+- Use search_grep for text / error-message hunts. Use search_semantic when you need the declaration of a TypeScript symbol.`,
   minIsolationLevel: 0,
   category: 'search',
   sideEffect: false,
@@ -74,7 +81,14 @@ export const searchGrep: Tool = {
 
 export const searchSemantic: Tool = {
   name: 'search_semantic',
-  description: 'AST-based symbol search — find symbols by name in a file using TypeScript compiler API',
+  description: `Find a TypeScript symbol declaration by name in a single file, via the TS compiler AST.
+
+Usage:
+- file_path must be a .ts/.tsx file (other languages are not parsed).
+- symbol is matched as a substring against identifier names of function/class/interface/type/enum/method/variable declarations.
+- Output is "file:line: snippet" per match. Use this before file_edit to locate the exact line to change.
+- If you need to search across many files, use search_grep first to find candidate files, then search_semantic to locate the declaration in each.
+- Returns "No symbol matching ..." when nothing matches — that is not an error, just a negative result.`,
   minIsolationLevel: 0,
   category: 'search',
   sideEffect: false,

@@ -4,12 +4,19 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeEvidence, makeResult } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const fileRead: Tool = {
   name: 'file_read',
-  description: 'Read file contents',
+  description: `Read the full contents of a file.
+
+Usage:
+- file_path is resolved against the workspace root. Forward-slash separators work on every OS.
+- Returns the raw UTF-8 contents. There are no line numbers prepended — if you quote a range back to the user, count lines yourself (first line is 1).
+- Reads go through the copy-on-write overlay when one is active: edits you made earlier in the task are visible; deletions return "File ... has been deleted".
+- Missing files, permission errors, and binary-decode failures come back as status='error' with a concrete message. Do NOT retry blindly — read the error first.
+- Prefer file_read over shell_exec('cat ...') so the evidence ledger records what you read.`,
   minIsolationLevel: 0,
   category: 'file_read',
   sideEffect: false,
@@ -64,7 +71,14 @@ export const fileRead: Tool = {
 
 export const fileWrite: Tool = {
   name: 'file_write',
-  description: 'Write content to a file',
+  description: `Write the full contents of a file, replacing whatever was there.
+
+Usage:
+- Provide the ENTIRE file content — this is a replace, not an append. Truncating the payload truncates the file.
+- Parent directories are created automatically.
+- In overlay mode writes go to the overlay only; the orchestrator promotes the overlay to the workspace once oracles pass.
+- Prefer file_edit for targeted changes inside an existing file — file_write is for new files or wholesale rewrites.
+- Do NOT use file_write to make small edits to large files; it replaces the whole content and wastes tokens.`,
   minIsolationLevel: 1,
   category: 'file_write',
   sideEffect: true,
@@ -122,7 +136,14 @@ export const fileWrite: Tool = {
 
 export const fileEdit: Tool = {
   name: 'file_edit',
-  description: 'Apply an edit to a file (read, modify, write)',
+  description: `Replace one substring inside a file with another.
+
+Usage:
+- You SHOULD file_read the file in the same task before editing so you know the exact substring to match. Guessing old_string leads to "not found" errors.
+- old_string must occur at least once. EVERY occurrence is replaced (this is a replaceAll, not a single-match edit) — include enough surrounding context in old_string to keep it unique when that matters.
+- Whitespace and indentation must match byte-for-byte, including tabs vs spaces.
+- Returns status='error' with "old_string not found" if no match — fix the match, don't keep retrying the same string.
+- For adding/removing whole files use file_write or a tombstone via the shell; file_edit cannot create a new file.`,
   minIsolationLevel: 1,
   category: 'file_write',
   sideEffect: true,

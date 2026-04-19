@@ -9,15 +9,15 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { createScriptedMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { runAgentWorkerLoop, type WorkerIO } from '../../src/orchestrator/agent/agent-worker-entry.ts';
+import { createScriptedMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import type { WorkerTurn } from '../../src/orchestrator/protocol.ts';
 
 const FIXTURE_DIR = join(import.meta.dir, 'fixtures', 'tiny-repo');
 const FIXTURE_FILE = 'hello.txt';
 const FIXTURE_CONTENT = readFileSync(join(FIXTURE_DIR, FIXTURE_FILE), 'utf-8');
 
-function scriptedIO(inputs: string[]): { io: WorkerIO; outputs: string[] } {
+function scriptedIo(inputs: string[]): { io: WorkerIO; outputs: string[] } {
   const queue = [...inputs];
   const outputs: string[] = [];
   return {
@@ -105,14 +105,12 @@ describe('Golden: file-read flow', () => {
       },
     ]);
 
-    const { io, outputs } = scriptedIO([
+    const { io, outputs } = scriptedIo([
       makeInit(),
       JSON.stringify({
         type: 'tool_results',
         turnId: 't1',
-        results: [
-          { callId: 'tc1', tool: 'file_read', output: FIXTURE_CONTENT, status: 'success', durationMs: 1 },
-        ],
+        results: [{ callId: 'tc1', tool: 'file_read', output: FIXTURE_CONTENT, status: 'success', durationMs: 1 }],
       }),
     ]);
 

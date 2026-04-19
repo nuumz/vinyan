@@ -108,15 +108,15 @@ async function processTask(
     input.instructions ?? null, // Phase 7a: M1-M4 hierarchy resolved in-process, shipped via WorkerInput
     input.understanding, // Gap 9A: TaskUnderstanding for enriched prompt
     input.routingLevel, // R2 (§5): gate tool descriptions out of L0-L1 prompts
-    undefined, // conversationHistory (plan commit A: Turn-model flow uses `turns` below)
+    input.turns, // A6: Turn-model history with tool_use / tool_result preserved
     input.environment ?? null, // Phase 7a: OS/cwd/git snapshot
     // Multi-agent: specialist fields shipped through WorkerInput (empty on
     // the legacy workspace-singleton path — assemblePrompt tolerates nulls).
     input.agentContext,
     input.soulContent ?? undefined,
     input.agentProfile,
-    undefined, // peerAgents — subprocess path does not ship peer list
-    input.turns, // Plan commit A: ContentBlock[] history with tool_use / tool_result preserved
+    // peerAgents — subprocess path does not ship peer list
+    undefined,
   );
 
   const startTime = performance.now();

@@ -1937,7 +1937,7 @@ export class VinyanAPIServer {
     // Use a generous token budget so we return entries verbatim, not the
     // compacted summary. Clients that want compaction should call the
     // separate POST /api/v1/sessions/:id/compact endpoint.
-    const history = this.deps.sessionManager.getConversationHistory(sessionId, 1_000_000);
+    const history = this.deps.sessionManager.getConversationHistoryText(sessionId, 1_000_000);
     const messages = limit !== undefined ? history.slice(-limit) : history;
     const pendingClarifications = this.deps.sessionManager.getPendingClarifications(sessionId);
 

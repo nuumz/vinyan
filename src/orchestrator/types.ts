@@ -443,26 +443,18 @@ export interface PlanTodoInput {
 // Conversation History (→ Conversation Agent Mode)
 // ---------------------------------------------------------------------------
 
-/**
- * A single entry in the conversation history — user message or assistant response.
- *
- * Phase 1 (long-session memory): also consumed by the duck-typed
- * `classifyTurn` helper in `src/api/turn-importance.ts`, which reads
- * `{role, content, toolsUsed?, thinking?}` off any compatible shape —
- * keep those four fields stable when evolving this type.
- */
-export interface ConversationEntry {
-  role: 'user' | 'assistant';
-  content: string;
-  taskId: string;
-  timestamp: number;
-  thinking?: string;
-  toolsUsed?: string[];
-  tokenEstimate: number;
-}
+// A7: ConversationEntry definition removed. The Turn model (ContentBlock[])
+// below is the only conversation representation. Migration 038 drops the
+// session_messages table that backed ConversationEntry.
+//
+// Merge note: feature/main's Phase 1 turn-importance classifier
+// (`src/api/turn-importance.ts::classifyTurn`) duck-types its input as
+// `{role, content, toolsUsed?, thinking?}` — that shape is declared inline
+// in that module as `ClassifiableTurn` and no longer depends on the
+// removed `ConversationEntry` interface.
 
 // ---------------------------------------------------------------------------
-// Turn Model (Anthropic-native ContentBlock[]) — replaces ConversationEntry
+// Turn Model (Anthropic-native ContentBlock[]) — the sole conversation path
 // for loss-free multi-turn tool-use persistence. See plan commit A.
 // ---------------------------------------------------------------------------
 
@@ -1244,10 +1236,6 @@ export interface LLMRequest {
    * turn-volatile suffix is re-processed each request.
    */
   tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  cacheControl?: CacheControl;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  instructionCacheControl?: CacheControl;
 }
 
 /** Response from an LLM provider */

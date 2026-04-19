@@ -107,8 +107,7 @@ export interface WorkerPool {
     routing: RoutingDecision,
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
-    conversationHistory?: import('./types.ts').ConversationEntry[],
-    /** Plan commit A: Turn-model history with tool_use / tool_result blocks. */
+    /** A6: Turn-model history. Legacy ConversationEntry[] parameter removed. */
     turns?: import('./types.ts').Turn[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
@@ -440,10 +439,20 @@ async function prepareExecution(
           // so we use the session manager's raw history count.
           let thisTurnIsNewTopic = false;
           try {
-            const histAll = deps.sessionManager?.getConversationHistory(input.sessionId, 2000) ?? [];
-            const priorUserCount = histAll.filter(
-              (h) => h.role === 'user' && h.content !== input.goal,
-            ).length;
+            // A7: Turn-model — count prior user turns whose flattened text
+            // isn't the current goal (new-topic heuristic).
+            const mgr = deps.sessionManager as unknown as {
+              getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+            } | undefined;
+            const turns = mgr?.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 50) : [];
+            const priorUserCount = turns.filter((t) => {
+              if (t.role !== 'user') return false;
+              const text = t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join(' ');
+              return text !== input.goal;
+            }).length;
             thisTurnIsNewTopic = priorUserCount === 0;
           } catch { /* best-effort */ }
 
@@ -496,12 +505,18 @@ async function prepareExecution(
     }
 
     // Build input from session + pending clarifications.
-    let history: import('./types.ts').ConversationEntry[] = [];
+    // A7: Turn-model history — ConversationEntry[] was retired.
+    let history: import('./types.ts').Turn[] = [];
     let pendingQuestions: string[] = [];
     let rootGoal: string | null = null;
     if (input.sessionId && deps.sessionManager) {
       try {
-        history = deps.sessionManager.getConversationHistory(input.sessionId, 4000);
+        const mgr = deps.sessionManager as unknown as {
+          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        };
+        if (typeof mgr.getTurnsHistory === 'function') {
+          history = mgr.getTurnsHistory(input.sessionId, 20);
+        }
       } catch { /* best-effort */ }
       try {
         pendingQuestions = deps.sessionManager.getPendingClarifications(input.sessionId);
@@ -857,11 +872,20 @@ async function prepareExecution(
   if (needsIntentResolution && deps.llmRegistry) {
     try {
       const { resolveIntent } = await import('./intent-resolver.ts');
-      // Load conversation history for multi-turn intent classification
-      let conversationCtx: import('./types.ts').ConversationEntry[] | undefined;
+      // A6: Turn-model history for multi-turn intent classification. Sourced
+      // from SessionManager's getTurnsHistory (recency) — the retriever would
+      // be overkill for a single classifier call and would also duplicate
+      // the perceive-phase bundle.
+      let intentTurns: import('./types.ts').Turn[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          conversationCtx = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 2000);
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const ts = mgr.getTurnsHistory(input.sessionId, 20);
+            if (ts.length > 0) intentTurns = ts;
+          }
         } catch { /* non-fatal */ }
       }
       intentResolution = await resolveIntent(input, {
@@ -869,7 +893,7 @@ async function prepareExecution(
         availableTools: deps.toolExecutor?.getToolNames(),
         bus: deps.bus,
         userPreferences: deps.userPreferenceStore?.formatForPrompt(),
-        conversationHistory: conversationCtx,
+        turns: intentTurns,
         agents: deps.agentRegistry?.listAgents(),
         defaultAgentId: deps.agentRegistry?.defaultAgent().id,
         userInterestMiner: deps.userInterestMiner,
@@ -1218,15 +1242,24 @@ async function buildConversationalResult(
 
   if (provider) {
     try {
-      // Load session history for multi-turn conversation continuity
+      // A7: Load Turn-model history for multi-turn conversation continuity.
+      // Flatten each Turn's text blocks into a single string for the
+      // Anthropic HistoryMessage shape (tool_use is dropped here — this is
+      // the conversational persona path, not the tool-loop path).
       let messages: import('./types.ts').HistoryMessage[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          const history = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 4000);
-          if (history.length > 0) {
-            messages = history.map((e) => ({
-              role: e.role as 'user' | 'assistant',
-              content: e.content,
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          const turns = mgr.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 20) : [];
+          if (turns.length > 0) {
+            messages = turns.map((t) => ({
+              role: t.role,
+              content: t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join('\n'),
             }));
           }
         } catch { /* non-fatal */ }
@@ -1852,31 +1885,90 @@ async function executeTaskCore(
     }
     const startTime = Date.now();
 
-    // Conversation Agent Mode: load conversation history if session context present
-    // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
-    let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
-    // Plan commit A (A5): Turn-model history loaded alongside ConversationEntry
-    // so downstream phases and workers can prefer the richer blocks when both
-    // are present. A7 drops the legacy ConversationEntry path once all readers
-    // have migrated.
+    // Conversation Agent Mode + Plan commit E5: load conversation context.
+    //
+    // Preference order:
+    //   1. ContextRetriever.retrieve(sessionId, goal) — hybrid recency +
+    //      semantic + pins + summary ladder. Returns a ContextBundle; we
+    //      flatten it to a Turn[] for PhaseContext downstream consumers.
+    //   2. SessionManager.getTurnsHistory(sessionId, 20) — recency-only
+    //      fallback when no retriever is wired.
+    //   3. SessionManager.getConversationHistoryCompacted — legacy
+    //      ConversationEntry path, kept until A6/A7 land.
+    //
+    // A3: none of these paths run an LLM. Rule-based compaction keeps
+    // governance deterministic.
+    // A6: conversationHistory loader removed. Turns come from the retriever
+    // or the getTurnsHistory fallback. A7 drops the legacy SessionManager
+    // methods (getConversationHistoryCompacted / getConversationHistory).
     let sessionTurns: import('./types.ts').Turn[] | undefined;
+    let retrievalBundle:
+      | import('../memory/retrieval.ts').ContextBundle
+      | undefined;
+
     if (input.sessionId && deps.sessionManager) {
-      try {
-        const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
-      } catch {
-        // Non-fatal: proceed without conversation history
-      }
-      try {
-        const mgr = deps.sessionManager as unknown as {
-          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
-        };
-        if (typeof mgr.getTurnsHistory === 'function') {
-          const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
-          if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+      // E5: retriever-based hybrid context when available.
+      const mgr = deps.sessionManager as unknown as {
+        getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        getContextRetriever?: () =>
+          | import('../memory/retrieval.ts').ContextRetriever
+          | undefined;
+      };
+      const retriever =
+        typeof mgr.getContextRetriever === 'function'
+          ? mgr.getContextRetriever()
+          : undefined;
+
+      if (retriever) {
+        try {
+          retrievalBundle = await retriever.retrieve(input.sessionId, input.goal);
+          // Flatten bundle into Turn[] (dedup by id): recent → semantic → pins.
+          // Summary (when present) is injected as a synthetic assistant turn
+          // so downstream workers see it in-context.
+          const flat: import('./types.ts').Turn[] = [];
+          const seen = new Set<string>();
+          for (const group of [
+            retrievalBundle.recent,
+            retrievalBundle.semantic,
+            retrievalBundle.pins,
+          ]) {
+            for (const t of group) {
+              if (seen.has(t.id)) continue;
+              seen.add(t.id);
+              flat.push(t);
+            }
+          }
+          if (retrievalBundle.summary && retrievalBundle.summary.text.length > 0) {
+            flat.unshift({
+              id: `ctx-summary-${input.sessionId}`,
+              sessionId: input.sessionId,
+              seq: -1,
+              role: 'assistant',
+              blocks: [{ type: 'text', text: retrievalBundle.summary.text }],
+              tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+              createdAt: Date.now(),
+            });
+          }
+          if (flat.length > 0) sessionTurns = flat;
+          // Retrieval events are not yet registered in the bus event map.
+          // A follow-up commit can add retrieval:bundle / retrieval:error
+          // once the schema is agreed. For now, the metadata is reachable
+          // via the retriever's internal warn-once log.
+        } catch (_err) {
+          // Non-fatal: fall through to recency-only below.
         }
-      } catch {
-        // Non-fatal: Turn-model history is additive; falling back to legacy path is safe.
+      }
+
+      // Fallback: recency-only when retriever missing OR retrieve() threw.
+      if (!sessionTurns) {
+        try {
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
+            if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+          }
+        } catch {
+          /* non-fatal — A7 drops legacy path entirely */
+        }
       }
     }
 
@@ -1920,11 +2012,8 @@ async function executeTaskCore(
       startTime,
       workingMemory,
       explorationFlag,
-      conversationHistory,
-      // Plan commit A (A5): Turn-model history sourced from SessionManager's
-      // new session_turns table. Workers and the section-registry prefer this
-      // over `conversationHistory` when both are present so tool_use /
-      // tool_result blocks survive multi-turn resume.
+      // A6: Turn-model is the only conversation path in PhaseContext. Sourced
+      // from the ContextRetriever (E5) with recency/turn-store fallback.
       turns: sessionTurns,
       agentProfile,
     };

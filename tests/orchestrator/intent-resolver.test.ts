@@ -379,8 +379,24 @@ describe('resolveIntent (structural features)', () => {
     expect(computeStructuralFeatures('hi').turnNumber).toBe(1);
     expect(
       computeStructuralFeatures('hi', [
-        { role: 'user', content: 'a', taskId: 't1', timestamp: 0, tokenEstimate: 1 },
-        { role: 'assistant', content: 'b', taskId: 't1', timestamp: 1, tokenEstimate: 1 },
+        {
+          id: 'u1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'a' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 0,
+        },
+        {
+          id: 'a1',
+          sessionId: 's',
+          seq: 1,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'b' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ]).turnNumber,
     ).toBe(2);
   });

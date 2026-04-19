@@ -10,13 +10,21 @@ import {
 } from '../../../src/orchestrator/intent/formatters.ts';
 import type {
   AgentSpec,
-  ConversationEntry,
   SemanticTaskUnderstanding,
   TaskInput,
+  Turn,
 } from '../../../src/orchestrator/types.ts';
 
-function entry(role: 'user' | 'assistant', content: string): ConversationEntry {
-  return { role, content, taskId: 't', timestamp: 0, tokenEstimate: 0 };
+function entry(role: 'user' | 'assistant', content: string): Turn {
+  return {
+    id: `t-${content}`,
+    sessionId: 's',
+    seq: 0,
+    role,
+    blocks: [{ type: 'text', text: content }],
+    tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    createdAt: 0,
+  };
 }
 
 function input(goal: string, agentId?: string): TaskInput {
@@ -46,7 +54,7 @@ describe('formatConversationContext', () => {
   });
 
   it('includes the last 10 entries only', () => {
-    const history: ConversationEntry[] = [];
+    const history: Turn[] = [];
     for (let i = 0; i < 15; i++) history.push(entry('user', `msg ${i}`));
     const rendered = formatConversationContext(history);
     expect(rendered).toContain('Recent conversation:');

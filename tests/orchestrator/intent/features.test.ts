@@ -7,10 +7,18 @@ import {
   computeStructuralFeatures,
   renderStructuralFeatures,
 } from '../../../src/orchestrator/intent/features.ts';
-import type { ConversationEntry } from '../../../src/orchestrator/types.ts';
+import type { Turn } from '../../../src/orchestrator/types.ts';
 
-function entry(role: 'user' | 'assistant', content: string): ConversationEntry {
-  return { role, content, taskId: 't', timestamp: 0, tokenEstimate: 0 };
+function entry(role: 'user' | 'assistant', content: string): Turn {
+  return {
+    id: `t-${content}`,
+    sessionId: 's',
+    seq: 0,
+    role,
+    blocks: [{ type: 'text', text: content }],
+    tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    createdAt: 0,
+  };
 }
 
 describe('computeStructuralFeatures', () => {
@@ -23,7 +31,7 @@ describe('computeStructuralFeatures', () => {
   });
 
   it('computes turnNumber from paired user/assistant history', () => {
-    const history: ConversationEntry[] = [
+    const history: Turn[] = [
       entry('user', 'q1'),
       entry('assistant', 'a1'),
       entry('user', 'q2'),

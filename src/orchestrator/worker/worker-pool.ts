@@ -450,11 +450,12 @@ export class WorkerPoolImpl implements WorkerPool {
     routing: RoutingDecision,
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
     contract?: import('../../core/agent-contract.ts').AgentContract,
-    conversationHistory?: import('../types.ts').ConversationEntry[],
     /**
-     * Plan commit A: Turn-model history. When present, subprocess workers
-     * receive it via WorkerInput.turns and the in-process assembler prefers
-     * it over `conversationHistory` — preserves tool_use / tool_result blocks.
+     * Turn-model conversation history. A6: replaces the prior
+     * `conversationHistory: ConversationEntry[]` flow-through parameter.
+     * Subprocess workers receive it via WorkerInput.turns; the in-process
+     * assembler renders it via renderTurnsSection, preserving tool_use /
+     * tool_result blocks verbatim.
      */
     turns?: import('../types.ts').Turn[],
   ) {
@@ -477,8 +478,6 @@ export class WorkerPoolImpl implements WorkerPool {
 
     try {
       const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
-      // Carry conversation history for prompt assembly (not serialized into WorkerInput)
-      const ConversationHistory = conversationHistory;
 
       // L2/L3: container dispatch when isolation level = 2
       // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -523,7 +522,7 @@ export class WorkerPoolImpl implements WorkerPool {
 
       const output = useSubprocessForTask
         ? await this.dispatchSubprocess(workerInput, routing)
-        : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents, turns);
+        : await this.dispatchInProcess(workerInput, routing, agentProfile, peerAgents, turns);
 
       return this.toWorkerResult(output, startTime);
     } finally {
@@ -627,7 +626,6 @@ export class WorkerPoolImpl implements WorkerPool {
   private async dispatchInProcess(
     workerInput: WorkerInput,
     routing: RoutingDecision,
-    conversationHistory?: import('../types.ts').ConversationEntry[],
     agentProfile?: import('../types.ts').AgentSpec,
     peerAgents?: import('../types.ts').AgentSpec[],
     turns?: import('../types.ts').Turn[],
@@ -659,7 +657,7 @@ export class WorkerPoolImpl implements WorkerPool {
       ? this.soulStore.loadSoulRaw(aclKey)
       : undefined;
 
-    const { systemPrompt, userPrompt, tiers, systemCacheControl, instructionCacheControl } = assemblePrompt(
+    const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
@@ -668,13 +666,12 @@ export class WorkerPoolImpl implements WorkerPool {
       instructions,
       workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
       routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
-      conversationHistory,
+      turns, // A6: Turn-model history replaces legacy ConversationEntry[]
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
       agentContext, // Agent Context Layer: persistent agent identity/memory/skills
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
       agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
-      turns, // Plan commit A: Turn-model history with tool_use/tool_result preserved
     );
 
     const startTime = performance.now();
@@ -694,11 +691,7 @@ export class WorkerPoolImpl implements WorkerPool {
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
           // Plan commit B: tier offsets drive multi-breakpoint cache markers.
-          // Legacy cacheControl / instructionCacheControl are kept until B5
-          // as a safety net for non-Anthropic providers that ignore `tiers`.
           tiers,
-          cacheControl: systemCacheControl ?? { type: 'ephemeral' as const },
-          ...(instructionCacheControl ? { instructionCacheControl } : {}),
         },
       })
       .catch((err): 'error' => {

@@ -24,6 +24,15 @@ import type {
 } from './types.ts';
 import { computeInputHash } from './types.ts';
 import type { AutoMemory, AutoMemoryEntry } from '../../memory/auto-memory-loader.ts';
+import type { Turn } from '../types.ts';
+
+/** A7: flatten a Turn's visible text blocks for grounding/text comparison. */
+function turnText(t: Turn): string {
+  return t.blocks
+    .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+}
 
 /**
  * Short acknowledgement / anaphoric referent tokens — Thai + English.
@@ -123,7 +132,7 @@ function summarizePriorContext(history: ComprehensionInput['history'], rootGoal:
   // answer, etc.) without leaking the raw INPUT-REQUIRED marker.
   const lastAssistant = [...history].reverse().find((h) => h.role === 'assistant');
   if (lastAssistant) {
-    const clean = lastAssistant.content.replace(/\[INPUT-REQUIRED\][\s\S]*$/, '').trim();
+    const clean = turnText(lastAssistant).replace(/\[INPUT-REQUIRED\][\s\S]*$/, '').trim();
     if (clean.length > 0) {
       const clipped = clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
       parts.push(`Last response started with: "${clipped}"`);
@@ -277,7 +286,7 @@ class RuleComprehender implements ComprehensionEngine {
 
     // 2. New-topic detection: no prior user turn at all.
     const priorUserTurns = input.history.filter((h) => h.role === 'user').length;
-    const literalAlreadyRecorded = input.history.some((h) => h.role === 'user' && h.content === literalGoal);
+    const literalAlreadyRecorded = input.history.some((h) => h.role === 'user' && turnText(h) === literalGoal);
     const priorExcludingCurrent = literalAlreadyRecorded ? priorUserTurns - 1 : priorUserTurns;
     const isNewTopic = priorExcludingCurrent <= 0;
     evidence.push({
@@ -400,7 +409,7 @@ class RuleComprehender implements ComprehensionEngine {
             // (recency-weighted; older turns carry less signal).
             `${resolvedGoal}\n${literalGoal}\n${input.history
               .slice(-3)
-              .map((h) => h.content)
+              .map((h) => turnText(h))
               .join('\n')}`,
           ),
         },

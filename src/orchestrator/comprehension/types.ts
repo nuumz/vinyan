@@ -24,7 +24,7 @@
  */
 
 import { z } from 'zod';
-import type { ConversationEntry, TaskInput } from '../types.ts';
+import type { TaskInput, Turn } from '../types.ts';
 
 // ── Trust tier + message envelope ──────────────────────────────────────
 
@@ -176,7 +176,8 @@ export interface ComprehensionInput {
    * MUST NOT assume either ordering and should derive "prior turns" by
    * excluding the entry matching `input.goal`.
    */
-  history: ConversationEntry[];
+  /** A7: Turn-model history replaces legacy ConversationEntry[]. */
+  history: Turn[];
   /** Pending clarification questions from the last assistant turn (if any). */
   pendingQuestions: string[];
   /**
@@ -328,10 +329,14 @@ export async function computeInputHash(input: ComprehensionInput): Promise<strin
     rootGoal: input.rootGoal ?? '',
     pending: input.pendingQuestions,
     // Hash only the last 10 turns — older context is compacted upstream.
+    // A7: Turn-model shape — flatten text blocks for the hash.
     historyTail: input.history.slice(-10).map((h) => ({
       role: h.role,
-      content: h.content,
-      ts: h.timestamp,
+      content: h.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n'),
+      ts: h.createdAt,
     })),
   });
   // Bun exposes Web Crypto — no extra dependency.

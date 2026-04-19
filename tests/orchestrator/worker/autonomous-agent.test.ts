@@ -585,7 +585,6 @@ describe('buildInitUserMessage', () => {
       {},
       undefined, // priorAttempts
       undefined, // understanding
-      undefined, // conversationHistory
       undefined, // failedApproaches
       ['All tests pass', 'No type errors', 'Function exported'],
     );
@@ -601,7 +600,6 @@ describe('buildInitUserMessage', () => {
       {},
       undefined, // priorAttempts
       undefined, // understanding
-      undefined, // conversationHistory
       [
         { approach: 'Used regex to parse HTML', oracleVerdict: 'AST oracle: invalid parse tree' },
         { approach: 'Monkey-patched the module', oracleVerdict: 'Type oracle: type mismatch' },

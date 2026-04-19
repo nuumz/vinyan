@@ -542,24 +542,10 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     environment: EnvironmentInfoSchema.optional(),
     /** Phase 7c-1: typed subagent role when this worker was spawned via delegate_task. */
     subagentType: SubagentTypeSchema.optional(),
-    conversationHistory: z
-      .array(
-        z.object({
-          role: z.enum(['user', 'assistant']),
-          content: z.string(),
-          taskId: z.string(),
-          timestamp: z.number(),
-          thinking: z.string().optional(),
-          toolsUsed: z.array(z.string()).optional(),
-          tokenEstimate: z.number(),
-        }),
-      )
-      .optional(),
     /**
-     * Turn-model conversation history (plan commit A). When set, the agent
-     * worker MUST prefer this over `conversationHistory` because it preserves
-     * tool_use / tool_result blocks verbatim. The legacy field stays for
-     * one more sub-commit to keep readers compiling.
+     * Turn-model conversation history (plan commit A). A6 removed the
+     * legacy `conversationHistory: ConversationEntry[]` sibling — turns is
+     * now the only path. Preserves tool_use / tool_result blocks verbatim.
      */
     turns: z.array(TurnSchema).optional(),
     /**

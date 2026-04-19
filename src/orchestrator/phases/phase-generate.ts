@@ -43,7 +43,6 @@ export async function executeGeneratePhase(
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
   const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry } = gi;
   let { totalTokensConsumed } = gi;
-  const conversationHistory = ctx.conversationHistory;
   const turns = ctx.turns;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
@@ -124,7 +123,7 @@ export async function executeGeneratePhase(
             targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
             goal: node.description || input.goal,
           };
-          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, conversationHistory, turns);
+          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, turns);
           return {
             nodeId,
             mutations: result.mutations,
@@ -162,7 +161,6 @@ export async function executeGeneratePhase(
           routing,
           understanding,
           contract,
-          conversationHistory,
           turns,
         );
       }
@@ -190,7 +188,7 @@ export async function executeGeneratePhase(
             parentContract: contract,
             agentLoopDeps,
             understanding,
-            conversationHistory,
+            turns,
             contract: plan.roomContract,
           });
           workerResult = {
@@ -229,7 +227,6 @@ export async function executeGeneratePhase(
             agentLoopDeps,
             understanding,
             contract,
-            conversationHistory,
             turns,
           );
         } catch (agentLoopErr) {
@@ -243,7 +240,6 @@ export async function executeGeneratePhase(
             routing,
             understanding,
             contract,
-            conversationHistory,
             turns,
           );
           // Skip agentic result mapping — use single-shot result directly

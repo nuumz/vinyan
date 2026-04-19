@@ -80,7 +80,7 @@ export function buildClassifierUserPrompt(
 ): string {
   const toolList = deps.availableTools?.join(', ') ?? DEFAULT_TOOL_LIST;
   const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
-  const conversationBlock = formatConversationContext(deps.conversationHistory);
+  const conversationBlock = formatConversationContext(deps.turns);
   const userContextBlock = deps.userInterestMiner
     ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
     : '';
@@ -89,7 +89,7 @@ export function buildClassifierUserPrompt(
   );
   const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
   const structuralBlock = `\n${renderStructuralFeatures(
-    computeStructuralFeatures(input.goal, deps.conversationHistory),
+    computeStructuralFeatures(input.goal, deps.turns),
   )}`;
   const deterministicBlock = deterministic
     ? `\nRule-based candidate (tier 0.8 — treat as grounding; override only with strong evidence): strategy=${deterministic.strategy}, confidence=${(deterministic.confidence ?? 0).toFixed(2)}${

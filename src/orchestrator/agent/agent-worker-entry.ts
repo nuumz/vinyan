@@ -127,11 +127,9 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         compressedPerception,
         init.priorAttempts,
         (init as any).understanding,
-        init.conversationHistory,
         (init as any).failedApproaches,
         (init as any).acceptanceCriteria,
-        // Plan commit A: Turn-model history with tool_use / tool_result blocks.
-        // When present, buildInitUserMessage prefers this over conversationHistory.
+        // A6: Turn-model history with tool_use / tool_result blocks.
         init.turns,
       ),
     },
@@ -802,16 +800,14 @@ export function buildInitUserMessage(
   perception: unknown,
   priorAttempts?: unknown[],
   understanding?: unknown,
-  conversationHistory?: Array<{ role: string; content: string; taskId: string; timestamp: number }>,
   failedApproaches?: Array<{ approach: string; oracleVerdict: string }>,
   acceptanceCriteria?: string[],
-  /** Plan commit A: Turn-model history (prefers over conversationHistory when present). */
+  /** A6: Turn-model history is the only conversation path. */
   turns?: Turn[],
 ): string {
   const sections: string[] = [];
 
-  // Conversation history (multi-turn context)
-  // Prefer Turn-model history over flat ConversationEntry — preserves tool_use blocks.
+  // Conversation history — Turn-model only after A6.
   if (turns && turns.length > 0) {
     const rendered = turns.map((turn, i) => {
       const role = turn.role === 'user' ? 'User' : 'Assistant';
@@ -821,21 +817,6 @@ export function buildInitUserMessage(
       return `[Turn ${i + 1}] ${role}${cancelledTag}: ${content}`;
     });
     sections.push(`## Conversation History\n${rendered.join('\n')}`);
-  } else if (conversationHistory && conversationHistory.length > 0) {
-    const turnLines = conversationHistory.map((entry, i) => {
-      const role = entry.role === 'user' ? 'User' : 'Assistant';
-      // belt-and-suspenders: session-manager already budgets; this is a
-      // last-line defense in case callers bypass it. Uses the Phase 0
-      // `… [+N chars]` marker so the LLM sees that content was dropped
-      // and can ask for it if needed, rather than treating a silent
-      // "... (truncated)" as authoritative.
-      const content =
-        entry.content.length > 2000
-          ? `${entry.content.slice(0, 2000)} … [+${entry.content.length - 2000} chars]`
-          : entry.content;
-      return `[Turn ${i + 1}] ${role}: ${content}`;
-    });
-    sections.push(`## Conversation History\n${turnLines.join('\n')}`);
   }
 
   // Goal — clear and prominent

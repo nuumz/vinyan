@@ -7,19 +7,10 @@
  * Source of truth: spec/tdd.md §17.1
  */
 import { PromptTooLargeError } from '../types.ts';
-import type { CacheControl, LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig, ToolCall } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig, ToolCall } from '../types.ts';
 import { normalizeMessages } from './provider-format.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
-
-/**
- * Map CacheControl tier to Anthropic cache_control decision.
- * static/session → cache_control: { type: 'ephemeral' } (Anthropic's only cache type — content stability drives hits)
- * ephemeral → NO cache_control (dynamic per-task content, don't pollute cache)
- */
-function shouldCache(cc?: CacheControl): boolean {
-  return cc?.type === 'static' || cc?.type === 'session';
-}
 
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 30_000,
@@ -27,8 +18,6 @@ const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   powerful: 60_000,
   'tool-uses': 30_000,
 };
-
-const INSTRUCTION_HEADER = '[PROJECT INSTRUCTIONS]';
 
 /** Anthropic content block with optional cache marker — used for both system and user paths. */
 export type AnthropicTextBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
@@ -89,9 +78,9 @@ export function splitAtTiers(
 
 /**
  * Build user messages. Plan commit B: when `request.tiers.user` is set the
- * user prompt is split at tier boundaries (see splitAtTiers). Otherwise
- * falls back to the legacy [PROJECT INSTRUCTIONS] single-breakpoint path so
- * callers that have not migrated still get session-cache on their VINYAN.md.
+ * user prompt is split at tier boundaries (see splitAtTiers). Otherwise a
+ * single unsplit block is returned (no cache markers — caller didn't
+ * supply tier offsets).
  *
  * Exported for unit tests.
  */
@@ -99,27 +88,12 @@ export function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
   const userTiers = request.tiers?.user;
   if (userTiers && request.userPrompt.length > 0) {
     const blocks = splitAtTiers(request.userPrompt, userTiers);
-    return [{ role: 'user', content: blocks.length > 0 ? blocks : [{ type: 'text', text: request.userPrompt }] }];
-  }
-
-  // Legacy path: single [PROJECT INSTRUCTIONS] breakpoint via heuristic.
-  const icc = request.instructionCacheControl;
-  if (icc && shouldCache(icc)) {
-    const idx = request.userPrompt.indexOf(INSTRUCTION_HEADER);
-    if (idx > -1) {
-      // Find end of instruction block — next section header or end of prompt
-      const nextHeader = request.userPrompt.indexOf('\n[', idx + INSTRUCTION_HEADER.length);
-      const instructionEnd = nextHeader > -1 ? nextHeader : request.userPrompt.length;
-      const instructionBlock = request.userPrompt.slice(0, instructionEnd);
-      const taskBlock = request.userPrompt.slice(instructionEnd);
-      const blocks: AnthropicTextBlock[] = [
-        { type: 'text', text: instructionBlock, cache_control: { type: 'ephemeral' } },
-      ];
-      if (taskBlock.trim()) {
-        blocks.push({ type: 'text', text: taskBlock });
-      }
-      return [{ role: 'user', content: blocks }];
-    }
+    return [
+      {
+        role: 'user',
+        content: blocks.length > 0 ? blocks : [{ type: 'text', text: request.userPrompt }],
+      },
+    ];
   }
   return [{ role: 'user', content: request.userPrompt }];
 }
@@ -127,9 +101,8 @@ export function buildUserMessages(request: LLMRequest): AnthropicMessage[] {
 /**
  * Build system content blocks. Plan commit B: when `request.tiers.system` is
  * set, split the system prompt into frozen / session / turn segments and
- * place cache markers at tier boundaries. Legacy path (single marker on
- * whole system prompt when `cacheControl` is set) is preserved for callers
- * that have not migrated.
+ * place cache markers at tier boundaries. Without tiers, a single unsplit
+ * block with no cache marker is returned.
  *
  * Exported for unit tests.
  */
@@ -140,13 +113,7 @@ export function buildSystemBlocks(request: LLMRequest): AnthropicTextBlock[] {
     if (blocks.length > 0) return blocks;
   }
 
-  return [
-    {
-      type: 'text',
-      text: request.systemPrompt,
-      ...(shouldCache(request.cacheControl) ? { cache_control: { type: 'ephemeral' as const } } : {}),
-    },
-  ];
+  return [{ type: 'text', text: request.systemPrompt }];
 }
 
 export interface AnthropicProviderConfig {

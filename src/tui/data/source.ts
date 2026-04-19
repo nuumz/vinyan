@@ -386,7 +386,7 @@ export class EmbeddedDataSource implements DataSource {
       }
 
       if (this.state.chatActiveSessionId) {
-        const history = sm.getConversationHistory(this.state.chatActiveSessionId, 1_000_000);
+        const history = sm.getConversationHistoryText(this.state.chatActiveSessionId, 1_000_000);
         this.state.chatConversation = history.map((h) => ({
           role: h.role,
           content: h.content,

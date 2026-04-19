@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
-import type { ConversationEntry, Turn } from '../../../src/orchestrator/types.ts';
+import type { Turn } from '../../../src/orchestrator/types.ts';
 
 function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
   return {
@@ -83,40 +83,17 @@ describe('conversation-history section — Turn-model rendering', () => {
     expect(rendered).toContain('partial output');
   });
 
-  it('prefers `turns` over `conversationHistory` when both are set', () => {
+  // A6: the ConversationEntry[] fallback path was removed. `turns` is now
+  // the only conversation source. Legacy comparison tests below are kept as
+  // no-op placeholders to document the migration.
+
+  it('Turn-model is the only source (post-A6)', () => {
     const registry = createDefaultRegistry();
-    const legacy: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'LEGACY-ENTRY-SHOULD-NOT-APPEAR',
-        taskId: 'x',
-        timestamp: 0,
-        tokenEstimate: 0,
-      },
-    ];
     const ctx = makeContext({
-      conversationHistory: legacy,
       turns: [turn('user', [{ type: 'text', text: 'NEW-TURN-CONTENT' }], { seq: 0 })],
     });
     const rendered = registry.renderTarget('user', ctx);
     expect(rendered).toContain('NEW-TURN-CONTENT');
-    expect(rendered).not.toContain('LEGACY-ENTRY-SHOULD-NOT-APPEAR');
-  });
-
-  it('falls back to conversationHistory when turns is undefined', () => {
-    const registry = createDefaultRegistry();
-    const legacy: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'LEGACY-VISIBLE',
-        taskId: 'x',
-        timestamp: 0,
-        tokenEstimate: 0,
-      },
-    ];
-    const ctx = makeContext({ conversationHistory: legacy });
-    const rendered = registry.renderTarget('user', ctx);
-    expect(rendered).toContain('LEGACY-VISIBLE');
   });
 
   it('omits the section entirely when no history is present', () => {

@@ -8,6 +8,7 @@
  */
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import type { ContextRetriever } from '../memory/retrieval.ts';
 import type {
   ContentBlock,
   ConversationEntry,
@@ -40,14 +41,27 @@ export interface CompactionResult {
 }
 
 export class SessionManager {
+  /**
+   * Plan commit E4: optional ContextRetriever. When wired, every appended
+   * Turn is indexed into sqlite-vec so core-loop.perceive (E5) can surface
+   * semantic matches in addition to recency + pins. Fire-and-forget: the
+   * retriever's indexTurn logs warnings but never raises, so a failing
+   * embedding call cannot cascade into a lost conversation turn.
+   */
   constructor(
     private sessionStore: SessionStore,
     _traceStore?: TraceStore,
+    private retriever?: ContextRetriever,
   ) {}
 
   /** Accessor for direct DB queries (e.g. keyword extraction for user-context mining). */
   getSessionStore(): SessionStore {
     return this.sessionStore;
+  }
+
+  /** Plan commit E4: accessor so core-loop can pull the retriever without re-plumbing. */
+  getContextRetriever(): ContextRetriever | undefined {
+    return this.retriever;
   }
 
   create(source: string): Session {
@@ -258,7 +272,7 @@ export class SessionManager {
     });
     // A5: mirror to session_turns as a single text block. No tool_use blocks
     // from pure user input — user turns arrive as text regardless of LLM shape.
-    this.sessionStore.appendTurn({
+    const persisted = this.sessionStore.appendTurn({
       id: crypto.randomUUID(),
       sessionId,
       role: 'user',
@@ -266,6 +280,28 @@ export class SessionManager {
       tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
       createdAt: now,
     });
+    // E4: fire-and-forget semantic index. Retriever.indexTurn is best-effort —
+    // it logs on failure (dimension mismatch, sqlite-vec unavailable, network
+    // error from embedding provider) but does NOT raise. A failed index
+    // degrades to recency-only retrieval; the conversation turn itself is
+    // already persisted above.
+    this.indexTurnAsync(persisted);
+  }
+
+  /**
+   * E4 helper: index a turn into the retriever in the background. Extracted
+   * so both record* paths share a single error-handling site and unit tests
+   * can assert "exactly one indexTurn call per record call".
+   */
+  private indexTurnAsync(turn: Turn): void {
+    const retriever = this.retriever;
+    if (!retriever) return;
+    // Detach: Promise chain runs after the current event-loop tick.
+    Promise.resolve()
+      .then(() => retriever.indexTurn(turn))
+      .catch((err) => {
+        console.warn(`[vinyan] SessionManager.indexTurnAsync failed: ${String(err)}`);
+      });
   }
 
   /** Record an assistant response from a TaskResult. */
@@ -338,7 +374,7 @@ export class SessionManager {
       cacheRead: 0,
       cacheCreation: 0,
     };
-    this.sessionStore.appendTurn({
+    const persisted = this.sessionStore.appendTurn({
       id: crypto.randomUUID(),
       sessionId,
       role: 'assistant',
@@ -347,6 +383,8 @@ export class SessionManager {
       taskId,
       createdAt: now,
     });
+    // E4: semantic index. Same fire-and-forget contract as recordUserTurn.
+    this.indexTurnAsync(persisted);
   }
 
   /**

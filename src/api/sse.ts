@@ -33,6 +33,7 @@ const SSE_EVENTS: BusEventName[] = [
   'trace:record',
   // Worker / oracle
   'worker:dispatch',
+  'worker:selected',
   'worker:complete',
   'worker:error',
   'oracle:verdict',
@@ -48,6 +49,9 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:tool_started',
   'agent:tool_executed',
   'agent:text_delta',
+  'agent:thinking',
+  'agent:contract_violation',
+  'agent:plan_update',
   'llm:stream_delta',
   'agent:clarification_requested',
 ];
@@ -55,6 +59,20 @@ const SSE_EVENTS: BusEventName[] = [
 interface SSEStreamOptions {
   /** Send heartbeat comments at this interval to keep connection alive. 0 = no heartbeat. */
   heartbeatIntervalMs?: number;
+  /**
+   * Safety-net cleanup after this many ms. Cleared when the stream
+   * cancels normally (client disconnect) or auto-closes on
+   * task:complete, so a healthy stream never leaves the timer
+   * scheduled. 0 / undefined = no safety-net.
+   */
+  safetyTimeoutMs?: number;
+  /**
+   * Fired exactly once when the stream closes for any reason (client
+   * cancel, auto-close on task:complete, safety-net, or external
+   * cleanup()). Lets the API layer track open streams so it can
+   * detach bus listeners deterministically during shutdown.
+   */
+  onClose?: () => void;
 }
 
 /**
@@ -70,9 +88,34 @@ export function createSSEStream(
   const unsubscribers: Array<() => void> = [];
   let controller: ReadableStreamDefaultController | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyTimer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
   const encoder = new TextEncoder();
   const isGlobal = !taskId;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+    for (const unsub of unsubscribers) unsub();
+    try {
+      controller?.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      options?.onClose?.();
+    } catch {
+      /* never propagate user-callback errors into stream teardown */
+    }
+  };
 
   const stream = new ReadableStream({
     start(ctrl) {
@@ -92,6 +135,9 @@ export function createSSEStream(
             controller?.enqueue(encoder.encode(`:heartbeat ${Date.now()}\n\n`));
           } catch { /* closed */ }
         }, hbMs);
+        // Heartbeats must not keep the Node event loop alive on their own —
+        // when the server shuts down, we want the process to be free to exit.
+        (heartbeatTimer as { unref?: () => void }).unref?.();
       }
 
       for (const eventName of SSE_EVENTS) {
@@ -115,11 +161,10 @@ export function createSSEStream(
               controller?.enqueue(encoder.encode(`event: ${eventName}\ndata: ${data}\n\n`));
             }
 
-            // Auto-close only for per-task streams
+            // Auto-close only for per-task streams. Funnel through
+            // cleanup() so onClose fires and bus listeners detach.
             if (eventName === 'task:complete' && taskId) {
-              closed = true;
-              if (heartbeatTimer) clearInterval(heartbeatTimer);
-              controller?.close();
+              cleanup();
             }
           } catch {
             // Stream may be closed — ignore
@@ -127,24 +172,26 @@ export function createSSEStream(
         });
         unsubscribers.push(unsub);
       }
+
+      // Safety-net: if neither task:complete nor client cancel arrives,
+      // force cleanup after the configured bound. Cleared on cancel /
+      // auto-close / explicit cleanup() so a healthy stream never leaves
+      // the timer scheduled.
+      const safetyMs = options?.safetyTimeoutMs;
+      if (safetyMs && safetyMs > 0) {
+        safetyTimer = setTimeout(() => {
+          safetyTimer = null;
+          cleanup();
+        }, safetyMs);
+        (safetyTimer as { unref?: () => void }).unref?.();
+      }
     },
     cancel() {
-      closed = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      for (const unsub of unsubscribers) unsub();
+      // Bun fires cancel() on client disconnect — route through cleanup
+      // so bus listeners detach and onClose fires.
+      cleanup();
     },
   });
-
-  const cleanup = () => {
-    closed = true;
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    for (const unsub of unsubscribers) unsub();
-    try {
-      controller?.close();
-    } catch {
-      /* already closed */
-    }
-  };
 
   return { stream, cleanup };
 }
@@ -160,6 +207,19 @@ export interface SessionSSEOptions {
    * on the client.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * Safety-net cleanup after this many ms. Cleared on stream cancel so
+   * a healthy long-lived connection does not leave the timer scheduled.
+   */
+  safetyTimeoutMs?: number;
+  /**
+   * Maximum membership-set size. Long-lived session streams accumulate
+   * task ids over time; capping with FIFO eviction prevents unbounded
+   * growth. Default: 5000 (≈ months of normal session activity).
+   */
+  maxTrackedTaskIds?: number;
+  /** See `SSEStreamOptions.onClose`. */
+  onClose?: () => void;
 }
 
 /**
@@ -194,10 +254,12 @@ export function createSessionSSEStream(
   options: SessionSSEOptions = {},
 ): { stream: ReadableStream; cleanup: () => void } {
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
+  const maxTrackedTaskIds = options.maxTrackedTaskIds ?? 5000;
   const sessionTaskIds = new Set<string>();
   const unsubscribers: Array<() => void> = [];
   let controller: ReadableStreamDefaultController | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyTimer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
 
   const encoder = new TextEncoder();
@@ -208,6 +270,31 @@ export function createSessionSSEStream(
       controller?.enqueue(encoder.encode(`event: ${eventName}\ndata: ${data}\n\n`));
     } catch {
       // Stream may be closed — ignore
+    }
+  };
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    for (const unsub of unsubscribers) unsub();
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+    sessionTaskIds.clear();
+    try {
+      controller?.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      options.onClose?.();
+    } catch {
+      /* never propagate user-callback errors into stream teardown */
     }
   };
 
@@ -225,6 +312,13 @@ export function createSessionSSEStream(
         const incomingSessionId = inputObj?.sessionId as string | undefined;
         if (!taskId || incomingSessionId !== sessionId) return;
         sessionTaskIds.add(taskId);
+        // FIFO eviction — Set preserves insertion order; drop oldest
+        // when we exceed the bound. Late events for evicted task ids
+        // will simply be filtered out by the membership check.
+        if (sessionTaskIds.size > maxTrackedTaskIds) {
+          const oldest = sessionTaskIds.values().next().value;
+          if (oldest !== undefined) sessionTaskIds.delete(oldest);
+        }
         emit('task:start', payload);
       });
       unsubscribers.push(unsubStart);
@@ -256,6 +350,7 @@ export function createSessionSSEStream(
         'agent:text_delta',
         'llm:stream_delta',
         'agent:clarification_requested',
+        'agent:plan_update',
       ];
 
       for (const eventName of membershipFilteredEvents) {
@@ -293,6 +388,8 @@ export function createSessionSSEStream(
           }
         }
       }, heartbeatIntervalMs);
+      // Heartbeats must not keep the Node event loop alive on their own.
+      (heartbeatTimer as { unref?: () => void }).unref?.();
 
       // Emit an initial `session:stream_open` event so clients know
       // the subscription is live before any task events arrive.
@@ -309,30 +406,24 @@ export function createSessionSSEStream(
       } catch {
         /* ignore */
       }
-    },
-    cancel() {
-      closed = true;
-      for (const unsub of unsubscribers) unsub();
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
+
+      // Safety-net cleanup. Cleared on cancel so a normal client
+      // disconnect does not leave the timer scheduled.
+      const safetyMs = options.safetyTimeoutMs;
+      if (safetyMs && safetyMs > 0) {
+        safetyTimer = setTimeout(() => {
+          safetyTimer = null;
+          cleanup();
+        }, safetyMs);
+        (safetyTimer as { unref?: () => void }).unref?.();
       }
     },
+    cancel() {
+      // Bun fires cancel() on client disconnect — route through cleanup
+      // so bus listeners detach and onClose fires for the API tracker.
+      cleanup();
+    },
   });
-
-  const cleanup = () => {
-    closed = true;
-    for (const unsub of unsubscribers) unsub();
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-    try {
-      controller?.close();
-    } catch {
-      /* already closed */
-    }
-  };
 
   return { stream, cleanup };
 }

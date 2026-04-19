@@ -107,4 +107,56 @@ describe('PromptAssembler', () => {
     expect(systemPrompt).toContain('verificationHint');
     expect(systemPrompt).toContain('skipTestWhen');
   });
+
+  // Cache-boundary markers — anthropic-provider maps `type: 'static' | 'session'`
+  // to `cache_control: { type: 'ephemeral' }` on the API call so the prefix is
+  // cacheable. Without these flags, every turn writes new cache entries and
+  // burns the 90% prefix-cache discount. These regressions lock the invariant
+  // (debate doc P0 unanimous).
+  describe('cache-boundary markers (A5 + cost discipline)', () => {
+    test('code task emits static systemCacheControl (stable prefix)', () => {
+      const result = assemblePrompt('Fix bug', makePerception(), makeMemory());
+      expect(result.systemCacheControl).toEqual({ type: 'static' });
+    });
+
+    test('reasoning task also emits static systemCacheControl', () => {
+      const result = assemblePrompt(
+        'explain recursion',
+        makePerception(),
+        makeMemory(),
+        undefined,
+        'reasoning',
+      );
+      expect(result.systemCacheControl).toEqual({ type: 'static' });
+    });
+
+    test('instructionCacheControl is session tier only when instructions are provided', () => {
+      const withInstructions = assemblePrompt(
+        'Fix bug',
+        makePerception(),
+        makeMemory(),
+        undefined,
+        'code',
+        // InstructionMemory shape: content + contentHash + filePath + sources.
+        {
+          content: 'always use strict mode',
+          contentHash: 'abc123',
+          filePath: '/test/VINYAN.md',
+          sources: [],
+        },
+      );
+      expect(withInstructions.instructionCacheControl).toEqual({ type: 'session' });
+
+      const withoutInstructions = assemblePrompt('Fix bug', makePerception(), makeMemory());
+      expect(withoutInstructions.instructionCacheControl).toBeUndefined();
+    });
+
+    test('estimatedTokens populated for cost instrumentation', () => {
+      const { estimatedTokens } = assemblePrompt('Fix bug', makePerception(), makeMemory());
+      expect(estimatedTokens).toBeDefined();
+      expect(estimatedTokens!.system).toBeGreaterThan(0);
+      expect(estimatedTokens!.user).toBeGreaterThan(0);
+      expect(estimatedTokens!.total).toBe(estimatedTokens!.system + estimatedTokens!.user);
+    });
+  });
 });

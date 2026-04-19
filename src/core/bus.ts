@@ -206,6 +206,90 @@ export interface VinyanBusEvents {
   'profile:reactivated': { kind: string; id: string; emergency?: boolean };
   'profile:retired': { kind: string; id: string; reason: string };
 
+  // Ecosystem runtime-state FSM (dormant/awakening/standby/working).
+  // Orthogonal to profile:* (career-state). Emitted by RuntimeStateManager on
+  // every legal transition.
+  'ecosystem:runtime_transition': {
+    agentId: string;
+    from: 'dormant' | 'awakening' | 'standby' | 'working';
+    to: 'dormant' | 'awakening' | 'standby' | 'working';
+    reason: string;
+    taskId?: string;
+    activeTaskCount: number;
+    at: number;
+  };
+
+  // Ecosystem commitment ledger (O2): "engine X owes deliverable Y by deadline Z".
+  // Created at bid-accept, resolved at oracle-verdict. Resolution outcome feeds
+  // the A7 prediction-error signal.
+  'commitment:created': {
+    commitmentId: string;
+    engineId: string;
+    taskId: string;
+    deliverableHash: string;
+    deadlineAt: number;
+    acceptedAt: number;
+  };
+  'commitment:resolved': {
+    commitmentId: string;
+    engineId: string;
+    taskId: string;
+    kind: 'delivered' | 'failed' | 'transferred';
+    evidence: string;
+    resolvedAt: number;
+    latencyMs: number;
+  };
+
+  // Ecosystem volunteer protocol (O4): "I can help" offer when the auction
+  // has no winning bid. `ecosystem:volunteer_offered` fires per offer,
+  // `ecosystem:volunteer_selected` fires once at window close.
+  'ecosystem:volunteer_offered': {
+    offerId: string;
+    engineId: string;
+    taskId: string;
+    offeredAt: number;
+    declaredConfidence?: number;
+  };
+  'ecosystem:volunteer_selected': {
+    taskId: string;
+    winnerEngineId: string;
+    commitmentId: string;
+    score: number;
+    offerCount: number;
+  };
+
+  // Ecosystem reconcile — emitted once per violation found by a scheduled
+  // invariant sweep. Subjects are engineId (I-E1) or commitmentId (I-E2).
+  // I-E3 (department ↔ capability mismatch) self-heals and does not emit.
+  'ecosystem:invariant_violation': {
+    id: 'I-E1' | 'I-E2' | 'I-E3';
+    subject: string;
+    detail: string;
+    checkedAt: number;
+  };
+
+  // Ecosystem reconcile — emitted once per scheduled sweep (success or error).
+  // Dashboards can use this to track whether the sweep is actually firing.
+  'ecosystem:reconcile_tick': {
+    checkedAt: number;
+    violationCount: number;
+    departmentsRefreshed: number;
+    durationMs: number;
+    error?: string;
+  };
+
+  // Ecosystem engine registry — emitted when a ReasoningEngine is added to
+  // the registry. EcosystemCoordinator listens to upsert department
+  // membership and auto-register the engine into the runtime FSM.
+  'engine:registered': {
+    engineId: string;
+    capabilities: readonly string[];
+    engineType: string;
+  };
+  'engine:deregistered': {
+    engineId: string;
+  };
+
   // Worker selection (Phase 4.4)
   'worker:selected': { taskId: string; workerId: string; reason: string; score: number; alternatives: number };
   'worker:exploration': { taskId: string; selectedWorkerId: string; defaultWorkerId: string };
@@ -331,6 +415,21 @@ export interface VinyanBusEvents {
     isError: boolean;
     toolCallId?: string;
   };
+  /**
+   * Plan / DAG snapshot — emitted by the planning phase after task decomposition
+   * and after each subtask transitions state. Surfaced in the UI as a Claude Code
+   * "session setup" checklist so the user sees the agent's intent at a glance.
+   * Safety: observational only (A3). Steps are derived from the validated DAG;
+   * UI never sends this back.
+   */
+  'agent:plan_update': {
+    taskId: string;
+    steps: Array<{
+      id: string;
+      label: string;
+      status: 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+    }>;
+  };
   // Agent Conversation: fires when a task returns status='input-required'
   // because either the agent OR the orchestrator paused to ask the user
   // clarifying questions. Consumers (TUI, API streaming, logging) should
@@ -450,6 +549,110 @@ export interface VinyanBusEvents {
   };
   'understanding:calibration': { taskId: string; entityAccuracy: number; categoryMatch: boolean };
 
+  // Conversation Comprehension (pre-routing) — A1: engine proposes, oracle verifies,
+  // orchestrator commits. Consumers (dashboards, TraceCollector, SelfModel) subscribe
+  // to the triad to reconstruct the full decision trail for a turn.
+  'comprehension:generated': {
+    taskId: string;
+    engineId: string;
+    tier: string;
+    type: 'comprehension' | 'unknown';
+    confidence: number;
+    inputHash: string;
+    durationMs: number;
+  };
+  'comprehension:verified': {
+    taskId: string;
+    verified: boolean;
+    verdictType: 'known' | 'unknown' | 'uncertain' | 'contradictory';
+    tier: string;
+    rejectReason?: string;
+    durationMs: number;
+  };
+  'comprehension:committed': {
+    taskId: string;
+    /** Final resolvedGoal the orchestrator will route on. */
+    resolvedGoal: string;
+    /** True when oracle accepted the engine's envelope and the payload was usable. */
+    used: boolean;
+    /** Short reason when `used` is false (fell back to literal goal). */
+    fallbackReason?: string;
+  };
+  /**
+   * A7 learning loop (P2.A): fires when the CorrectionDetector labels
+   * the prior turn's comprehension record with an outcome. Calibration
+   * consumers (SelfModel, dashboards) subscribe to integrate accuracy
+   * over time; per-engine EMA lives in ComprehensionCalibrator.
+   */
+  'comprehension:calibrated': {
+    taskId: string;
+    priorInputHash: string;
+    engineId: string;
+    outcome: 'confirmed' | 'corrected' | 'abandoned';
+    evidence: Record<string, unknown>;
+  };
+  /**
+   * AXM#3 (A7 observability): fires when an engine's recent-window
+   * accuracy has dropped materially vs its historical-window. The
+   * orchestrator treats this as an early warning — downstream
+   * consumers (oracle tier-clamp, dashboards) react without requiring
+   * human intervention.
+   */
+  'comprehension:calibration_diverged': {
+    taskId: string;
+    engineId: string;
+    engineType: string;
+    recentAccuracy: number;
+    historicalAccuracy: number;
+    delta: number;
+    recentSamples: number;
+    historicalSamples: number;
+  };
+  /**
+   * P3.A — fires when `effectiveCeiling` has tightened an engine's
+   * confidence relative to its base `confidenceCeiling`. The LLM
+   * comprehender's self-reported confidence is then clamped to this
+   * tighter value. Observability + sanity — operators can watch the
+   * system auto-damping a degraded engine.
+   */
+  'comprehension:ceiling_adjusted': {
+    taskId: string;
+    engineId: string;
+    /** Ceiling before divergence adjustment. */
+    baseCeiling: number;
+    /** Effective ceiling after divergence adjustment. */
+    effectiveCeiling: number;
+    /** `baseCeiling - effectiveCeiling` — how much got tightened. */
+    tightening: number;
+  };
+  /**
+   * AXM#7 wiring: fires when an engine's Brier score exceeds the
+   * miscalibration threshold (> 0.25 = worse than a coin flip) — the
+   * engine's confidence outputs are systematically misleading. A7
+   * signal; consumers (tier-clamp, dashboards) can tighten further.
+   */
+  'comprehension:miscalibrated': {
+    taskId: string;
+    engineId: string;
+    brier: number;
+    sampleSize: number;
+    threshold: number;
+  };
+  /**
+   * GAP#6 — paired recovery event. Fires when an engine that was
+   * previously miscalibrated (Brier > threshold) has now dropped back
+   * below threshold. Operators use this to see engines come back
+   * online; LlmComprehender's self-recusal stops firing after the next
+   * calibrated call when Brier is good.
+   */
+  'comprehension:recalibrated': {
+    taskId: string;
+    engineId: string;
+    brier: number;
+    sampleSize: number;
+    threshold: number;
+  };
+
   // Extensible Thinking events
   'thinking:policy-compiled': {
     taskId: string;
@@ -551,7 +754,7 @@ export interface VinyanBusEvents {
 
   // Economy Layer 3: Market events
   'market:auction_started': { auctionId: string; taskId: string; eligibleBidders: number };
-  'market:auction_completed': { auctionId: string; winnerId: string; score: number; bidderCount: number };
+  'market:auction_completed': { auctionId: string; taskId: string; winnerId: string; score: number; bidderCount: number };
   'market:fallback_to_selector': { taskId: string; reason: string };
   'market:settlement_recorded': { settlementId: string; bidAccuracy: number; penaltyType: string | null };
   'market:collusion_suspected': { auctionId: string; bidSpread: number; consecutiveCount: number };

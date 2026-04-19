@@ -93,6 +93,13 @@ export interface WorkerPoolConfig {
    * Default false — the legacy non-streaming path is the opt-out baseline.
    */
   streaming?: boolean;
+  /**
+   * Ecosystem runtime-state manager. When provided, dispatch transitions the
+   * selected worker Standby→Working on entry and Working→Standby on return.
+   * Optional for backward compat: the pool works without it, but without the
+   * manager there is no ecosystem visibility of runtime occupancy.
+   */
+  runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -222,7 +229,12 @@ export class WarmWorkerPool {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'pipe',
-        env: this.env,
+        // Pass our PID so the worker's parent-death watchdog can self-
+        // terminate if we get SIGKILL'd before calling shutdown(). Without
+        // this, warm workers orphan into zombies on any non-graceful exit
+        // of the API server process (SIGKILL, OOM, terminal SIGHUP before
+        // the supervisor escalates, etc.).
+        env: { ...this.env, VINYAN_PARENT_PID: String(process.pid) },
       });
 
       const reader = new LineReader(proc.stdout as ReadableStream<Uint8Array>);
@@ -340,6 +352,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
   private streamingEnabled: boolean;
+  private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -368,6 +381,38 @@ export class WorkerPoolImpl implements WorkerPool {
     };
     this.agentContextBuilder = config.agentContextBuilder;
     this.soulStore = config.soulStore;
+    this.runtimeStateManager = config.runtimeStateManager;
+  }
+
+  /**
+   * Transition the dispatched worker's runtime state Standby → Working (or
+   * Working → Working for multi-assignment). Returns a disposer that flips it
+   * back to Standby. Silent no-op when the manager is not wired or the agent
+   * is not registered (e.g. L0 / non-fleet dispatch).
+   */
+  private acquireRuntimeSlot(workerId: string | undefined, taskId: string): () => void {
+    const mgr = this.runtimeStateManager;
+    if (!mgr || !workerId) return () => {};
+    if (!mgr.get(workerId)) return () => {};
+    try {
+      mgr.markWorking(workerId, taskId);
+    } catch (err) {
+      // Capacity or illegal-transition errors are dispatch-blocking — but the
+      // pool treats them as soft warnings until capacity-gated selection ships
+      // in O4. Log and continue so the legacy path is not destabilized.
+      console.warn(`[vinyan] runtime-state: markWorking failed for ${workerId}:`, (err as Error).message);
+      return () => {};
+    }
+    return () => {
+      try {
+        mgr.markTaskComplete(workerId, taskId);
+      } catch (err) {
+        console.warn(
+          `[vinyan] runtime-state: markTaskComplete failed for ${workerId}:`,
+          (err as Error).message,
+        );
+      }
+    };
   }
 
   /** Set agent context builder after construction (when capabilityModel is available). */
@@ -406,6 +451,12 @@ export class WorkerPoolImpl implements WorkerPool {
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
     contract?: import('../../core/agent-contract.ts').AgentContract,
     conversationHistory?: import('../types.ts').ConversationEntry[],
+    /**
+     * Plan commit A: Turn-model history. When present, subprocess workers
+     * receive it via WorkerInput.turns and the in-process assembler prefers
+     * it over `conversationHistory` — preserves tool_use / tool_result blocks.
+     */
+    turns?: import('../types.ts').Turn[],
   ) {
     const startTime = performance.now();
 
@@ -419,56 +470,65 @@ export class WorkerPoolImpl implements WorkerPool {
       };
     }
 
-    const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding);
-    // Carry conversation history for prompt assembly (not serialized into WorkerInput)
-    const ConversationHistory = conversationHistory;
+    // Ecosystem: flip the selected worker to Working for the lifetime of the
+    // dispatch. `releaseRuntime` must fire on every exit path (success OR
+    // throw), so everything below is wrapped in try/finally.
+    const releaseRuntime = this.acquireRuntimeSlot(routing.workerId, input.id);
 
-    // L2/L3: container dispatch when isolation level = 2
-    // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
-    if (workerInput.isolationLevel === 2 && this.useSubprocess) {
-      // Pre-flight: check Docker availability (cached after first check)
-      if (this.dockerAvailable === null) {
-        this.dockerAvailable = this.checkDockerAvailable();
+    try {
+      const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
+      // Carry conversation history for prompt assembly (not serialized into WorkerInput)
+      const ConversationHistory = conversationHistory;
+
+      // L2/L3: container dispatch when isolation level = 2
+      // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
+      if (workerInput.isolationLevel === 2 && this.useSubprocess) {
+        // Pre-flight: check Docker availability (cached after first check)
+        if (this.dockerAvailable === null) {
+          this.dockerAvailable = this.checkDockerAvailable();
+        }
+        if (!this.dockerAvailable) {
+          console.warn(
+            '[vinyan] A6 WARNING: Docker unavailable — falling back to subprocess isolation. L2/L3 container isolation degraded.',
+          );
+          // Fall through to subprocess dispatch below
+        } else {
+          const output = await this.dispatchContainer(workerInput, routing);
+          return this.toWorkerResult(output, startTime);
+        }
       }
-      if (!this.dockerAvailable) {
+
+      // L1 single-shot: in-process always (subprocess overhead > 500ms defeats < 2s budget)
+      // L2+ subprocess: isolation for file-mutating tasks.
+      // DESIGN CONSTRAINT: subprocess path is LLM-only — worker-entry.ts reconstructs an
+      // LLMProviderRegistry from env vars and cannot serialize/deserialize custom RE types.
+      // If the selected engine is non-LLM, fall back to in-process dispatch with a warning.
+      const selectedEngine = routing.workerId
+        ? this.engineRegistry.selectById(routing.workerId)
+        : this.engineRegistry.selectForRoutingLevel(routing.level);
+      const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
+      // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
+      // is only needed when the worker writes to disk. This avoids LLM proxy overhead
+      // for reasoning/agentic tasks that only read + reason.
+      const hasFileMutations = input.targetFiles && input.targetFiles.length > 0;
+      const useSubprocessForTask = this.useSubprocess && routing.level >= 2 && isLLMEngine && hasFileMutations;
+      if (!isLLMEngine && routing.level >= 2) {
         console.warn(
-          '[vinyan] A6 WARNING: Docker unavailable — falling back to subprocess isolation. L2/L3 container isolation degraded.',
+          `[vinyan] RE dispatch: engine '${selectedEngine?.id}' (type: ${selectedEngine?.engineType}) is non-LLM — subprocess isolation unavailable. Dispatching in-process (isolation degraded).`,
         );
-        // Fall through to subprocess dispatch below
-      } else {
-        const output = await this.dispatchContainer(workerInput, routing);
-        return this.toWorkerResult(output, startTime);
       }
+      // Multi-agent: resolve specialist profile + peers from registry (prompt injection)
+      const agentProfile = input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      const peerAgents = this.agentRegistry?.listAgents();
+
+      const output = useSubprocessForTask
+        ? await this.dispatchSubprocess(workerInput, routing)
+        : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents, turns);
+
+      return this.toWorkerResult(output, startTime);
+    } finally {
+      releaseRuntime();
     }
-
-    // L1 single-shot: in-process always (subprocess overhead > 500ms defeats < 2s budget)
-    // L2+ subprocess: isolation for file-mutating tasks.
-    // DESIGN CONSTRAINT: subprocess path is LLM-only — worker-entry.ts reconstructs an
-    // LLMProviderRegistry from env vars and cannot serialize/deserialize custom RE types.
-    // If the selected engine is non-LLM, fall back to in-process dispatch with a warning.
-    const selectedEngine = routing.workerId
-      ? this.engineRegistry.selectById(routing.workerId)
-      : this.engineRegistry.selectForRoutingLevel(routing.level);
-    const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
-    // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
-    // is only needed when the worker writes to disk. This avoids LLM proxy overhead
-    // for reasoning/agentic tasks that only read + reason.
-    const hasFileMutations = input.targetFiles && input.targetFiles.length > 0;
-    const useSubprocessForTask = this.useSubprocess && routing.level >= 2 && isLLMEngine && hasFileMutations;
-    if (!isLLMEngine && routing.level >= 2) {
-      console.warn(
-        `[vinyan] RE dispatch: engine '${selectedEngine?.id}' (type: ${selectedEngine?.engineType}) is non-LLM — subprocess isolation unavailable. Dispatching in-process (isolation degraded).`,
-      );
-    }
-    // Multi-agent: resolve specialist profile + peers from registry (prompt injection)
-    const agentProfile = input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
-    const peerAgents = this.agentRegistry?.listAgents();
-
-    const output = useSubprocessForTask
-      ? await this.dispatchSubprocess(workerInput, routing)
-      : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents);
-
-    return this.toWorkerResult(output, startTime);
   }
 
   async withSessionLimit<T>(level: number, fn: () => Promise<T>): Promise<T> {
@@ -489,6 +549,7 @@ export class WorkerPoolImpl implements WorkerPool {
     plan: TaskDAG | undefined,
     routing: RoutingDecision,
     understanding?: import('../types.ts').TaskUnderstanding,
+    turns?: import('../types.ts').Turn[],
   ): WorkerInput {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
@@ -555,6 +616,9 @@ export class WorkerPoolImpl implements WorkerPool {
       ...(agentProfile ? { agentProfile } : {}),
       ...(soulContent ? { soulContent } : {}),
       ...(agentContext ? { agentContext } : {}),
+      // Plan commit A: Turn-model history. Subprocess workers prefer this over
+      // any legacy conversationHistory shipped separately — blocks are verbatim.
+      ...(turns && turns.length > 0 ? { turns } : {}),
     };
   }
 
@@ -566,6 +630,7 @@ export class WorkerPoolImpl implements WorkerPool {
     conversationHistory?: import('../types.ts').ConversationEntry[],
     agentProfile?: import('../types.ts').AgentSpec,
     peerAgents?: import('../types.ts').AgentSpec[],
+    turns?: import('../types.ts').Turn[],
   ): Promise<WorkerOutput> {
     // PH4.4: Use workerId to select engine if available, fallback to tier-based
     const engine = routing.workerId
@@ -594,7 +659,7 @@ export class WorkerPoolImpl implements WorkerPool {
       ? this.soulStore.loadSoulRaw(aclKey)
       : undefined;
 
-    const { systemPrompt, userPrompt, systemCacheControl, instructionCacheControl } = assemblePrompt(
+    const { systemPrompt, userPrompt, tiers, systemCacheControl, instructionCacheControl } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
@@ -609,6 +674,7 @@ export class WorkerPoolImpl implements WorkerPool {
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
       agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
+      turns, // Plan commit A: Turn-model history with tool_use/tool_result preserved
     );
 
     const startTime = performance.now();
@@ -627,6 +693,10 @@ export class WorkerPoolImpl implements WorkerPool {
         temperature,
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
+          // Plan commit B: tier offsets drive multi-breakpoint cache markers.
+          // Legacy cacheControl / instructionCacheControl are kept until B5
+          // as a safety net for non-Anthropic providers that ignore `tiers`.
+          tiers,
           cacheControl: systemCacheControl ?? { type: 'ephemeral' as const },
           ...(instructionCacheControl ? { instructionCacheControl } : {}),
         },

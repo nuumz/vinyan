@@ -425,7 +425,11 @@ export class A2AManagerImpl {
   }
 
   private addInterval(fn: () => void, ms: number): void {
-    this.intervals.add(setInterval(fn, ms));
+    const timer = setInterval(fn, ms);
+    // Defensive unref — if stop() is skipped, background A2A housekeeping
+    // should not keep the process alive.
+    (timer as { unref?: () => void }).unref?.();
+    this.intervals.add(timer);
   }
 }
 

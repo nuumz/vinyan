@@ -4,12 +4,18 @@
 
 import { existsSync, readdirSync } from 'fs';
 import { resolve } from 'path';
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeResult } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const directoryList: Tool = {
   name: 'directory_list',
-  description: 'List directory contents',
+  description: `List the immediate entries of a directory.
+
+Usage:
+- path defaults to the workspace root ('.'). Paths are resolved against the workspace — relative is fine.
+- Output is one entry per line. In direct mode entries are prefixed with 'd' (directory) or 'f' (file); in overlay mode the prefix is dropped and hidden files are included. Do NOT assume a fixed format — just scan the names.
+- NOT recursive. For deep listings, combine with search_grep / file_read rather than calling directory_list on every subdirectory.
+- Use this before file_read when you are not sure the file exists — cheaper than a failing read.`,
   minIsolationLevel: 0,
   category: 'file_read',
   sideEffect: false,

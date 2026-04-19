@@ -30,6 +30,13 @@ export interface WorkerLifecycleConfig {
   demotionWindowTasks: number; // default: 30
   demotionMaxReentries: number; // default: 3
   reentryCooldownSessions: number; // default: 50 traces since demotion
+  /**
+   * Ecosystem O4 — callback returning the delivered-volunteer count for a
+   * worker. When provided, `WorkerGates` uses it as a tiebreaker on the
+   * Wilson-LB promotion check (see `WorkerGatesConfig.helpfulnessCount`).
+   * Optional so tests / legacy callers are unaffected.
+   */
+  helpfulnessCount?: (workerId: string) => number;
 }
 
 export interface PromotionResult {
@@ -64,6 +71,7 @@ export class WorkerLifecycle {
       probationMinTasks: config.probationMinTasks,
       demotionWindowTasks: config.demotionWindowTasks,
       safetyViolationCount: (id) => this.safety.count(id),
+      ...(config.helpfulnessCount ? { helpfulnessCount: config.helpfulnessCount } : {}),
     });
 
     this.lifecycle = new ProfileLifecycle<EngineProfile>({

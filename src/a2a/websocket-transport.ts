@@ -289,6 +289,8 @@ export class WebSocketTransport implements ECPTransport {
         this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: 'heartbeat', method: 'ecp/heartbeat' }));
       }
     }, this.config.heartbeatIntervalMs);
+    // Defensive unref — heartbeat alone must not hold the process alive.
+    (this.heartbeatTimer as { unref?: () => void }).unref?.();
   }
 
   private stopHeartbeat(): void {
@@ -311,6 +313,9 @@ export class WebSocketTransport implements ECPTransport {
       this.reconnectTimer = null;
       this.doConnect();
     }, delay);
+    // Reconnect is best-effort — must not hold the process alive if
+    // the peer is permanently gone.
+    (this.reconnectTimer as { unref?: () => void }).unref?.();
   }
 
   private waitForConnection(timeoutMs: number): Promise<void> {

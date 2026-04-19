@@ -2,12 +2,16 @@
  * Git tools — git_status, git_diff.
  */
 
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeResult } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const gitStatus: Tool = {
   name: 'git_status',
-  description: 'Show git working tree status',
+  description: `Show the porcelain git status of the workspace.
+
+Usage:
+- Output is one line per changed path in machine-readable porcelain format (first column = index state, second = working-tree state). Empty output means the tree is clean.
+- Read-only: does not stage, commit, or modify anything. Use it before file_edit to check what the user already has in flight.`,
   minIsolationLevel: 0,
   category: 'vcs',
   sideEffect: false,
@@ -43,7 +47,12 @@ export const gitStatus: Tool = {
 
 export const gitDiff: Tool = {
   name: 'git_diff',
-  description: 'Show git diff',
+  description: `Show the current unstaged diff, optionally scoped to one path.
+
+Usage:
+- With no file_path: diff of the whole working tree vs HEAD (unstaged changes only — staged changes are not shown).
+- With file_path: diff restricted to that file or directory.
+- Read-only; does not touch the index. Use this to confirm what your own file_write/file_edit calls changed before calling attempt_completion.`,
   minIsolationLevel: 0,
   category: 'vcs',
   sideEffect: false,

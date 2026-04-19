@@ -7,6 +7,7 @@
  * Source of truth: spec/tdd.md §10, arch D7
  */
 
+import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type { SkillStore } from '../db/skill-store.ts';
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
@@ -207,9 +208,15 @@ Target files: ${(input.targetFiles ?? []).join(', ') || 'not specified'}
 Direct importees: ${perception.dependencyCone.directImportees.join(', ') || 'none'}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`;
 
-    // Gap 1A: Surface user constraints in decomposition (not just generation)
+    // Gap 1A: Surface user constraints in decomposition (not just generation).
+    // Filter out orchestrator-internal prefixes (COMPREHENSION_SUMMARY:, CLARIFIED:,
+    // MIN_ROUTING_LEVEL:, etc.) — those are parsed by their own consumers and
+    // only clutter the decomposer's LLM prompt when rendered as bullets.
     if (input.constraints?.length) {
-      userPrompt += `\n\nConstraints:\n${input.constraints.map((c) => `- ${c}`).join('\n')}`;
+      const userCs = userConstraintsOnly(input.constraints);
+      if (userCs.length > 0) {
+        userPrompt += `\n\nConstraints:\n${userCs.map((c) => `- ${c}`).join('\n')}`;
+      }
     }
 
     // Gap 1B: Surface acceptance criteria in decomposition

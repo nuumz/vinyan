@@ -527,6 +527,40 @@ export const VinyanConfigSchema = z.object({
   hms: HMSConfigSchema.optional(),
   /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
   engines: EnginesConfigSchema.optional(),
+  /**
+   * Ecosystem layer (runtime FSM + commitments + departments + teams +
+   * volunteer). See docs/design/vinyan-os-ecosystem-plan.md.
+   * Disabled by default — opt in via `ecosystem.enabled: true`.
+   */
+  ecosystem: z
+    .object({
+      enabled: z.boolean().default(false),
+      departments: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            anchor_capabilities: z.array(z.string().min(1)).min(1),
+            min_match_count: z.number().int().positive().default(1),
+          }),
+        )
+        .default([]),
+      /** Reconciliation sweep cadence. Default 5 min; 0 disables. */
+      reconcile_interval_ms: z.number().int().nonnegative().default(300_000),
+      /**
+       * When true, engine-selector excludes workers whose runtime state is
+       * dormant/awakening before scoring. Default true — safe when no manager
+       * is wired (no-op filter).
+       */
+      runtime_gate_selection: z.boolean().default(true),
+      /**
+       * Deadline (ms from now) stamped on commitments opened via the
+       * volunteer-fallback path in EngineSelector. The normal bid flow
+       * derives its deadline from task facts; the fallback has no task
+       * object in scope, so this value acts as a backstop. Default 10 min.
+       */
+      volunteer_fallback_deadline_ms: z.number().int().positive().default(600_000),
+    })
+    .optional(),
   /** Workspace-level Vinyan Agent identity (name, description, preferences). */
   agent: AgentConfigSchema.optional(),
   /**

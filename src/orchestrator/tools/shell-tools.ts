@@ -10,7 +10,14 @@ const FIRE_AND_FORGET_GRACE_MS = 300;
 
 export const shellExec: Tool = {
   name: 'shell_exec',
-  description: 'Execute a shell command (allowlisted commands only)',
+  description: `Run a shell command inside the workspace.
+
+Usage:
+- Prefer the dedicated tools when one applies: file_read over \`cat\`, search_grep over \`grep\`/\`rg\`, directory_list over \`ls\`, file_edit over \`sed\`/\`awk\`. shell_exec should be the last resort, not the default.
+- In overlay (agentic) mode only read-only commands are permitted: grep, find, cat, head, tail, ls, wc, and git log/diff/status/show/blame. Anything else returns [BLOCKED] — switch to the dedicated tool or rethink the approach.
+- cwd is resolved against the workspace and may not escape it. Leave it unset to run at workspace root.
+- fireAndForget=true returns after launch instead of waiting for exit; use only for dev servers / long-running processes, never for commands whose output you need.
+- Times out after 30s. Redirect noisy commands (>/dev/null) or narrow the scope — do not raise the timeout by re-running.`,
   minIsolationLevel: 1,
   category: 'shell',
   sideEffect: true,
@@ -79,17 +86,9 @@ export const shellExec: Tool = {
     try {
       if (fireAndForget) {
         if (isLaunchStyleCommand(command)) {
-          return await executeLaunchStyleFireAndForget(
-            command,
-            effectiveCwd,
-            (params.callId as string) ?? '',
-          );
+          return await executeLaunchStyleFireAndForget(command, effectiveCwd, (params.callId as string) ?? '');
         }
-        return await executeGenericFireAndForget(
-          command,
-          effectiveCwd,
-          (params.callId as string) ?? '',
-        );
+        return await executeGenericFireAndForget(command, effectiveCwd, (params.callId as string) ?? '');
       }
 
       const proc = Bun.spawn(['sh', '-c', command], {
@@ -154,13 +153,9 @@ async function executeGenericFireAndForget(command: string, cwd: string, callId:
     detached: true,
   });
 
-  const outcome = await Promise.race<
-    { type: 'exit'; exitCode: number } | { type: 'launched' }
-  >([
-    proc.exited.then((exitCode) => ({ type: 'exit', exitCode } as const)),
-    new Promise((resolve) =>
-      setTimeout(() => resolve({ type: 'launched' } as const), FIRE_AND_FORGET_GRACE_MS),
-    ),
+  const outcome = await Promise.race<{ type: 'exit'; exitCode: number } | { type: 'launched' }>([
+    proc.exited.then((exitCode) => ({ type: 'exit', exitCode }) as const),
+    new Promise((resolve) => setTimeout(() => resolve({ type: 'launched' } as const), FIRE_AND_FORGET_GRACE_MS)),
   ]);
 
   if (outcome.type === 'launched') {

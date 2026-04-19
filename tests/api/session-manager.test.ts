@@ -145,6 +145,93 @@ describe('Session Compaction', () => {
   });
 });
 
+// Helper: write an assistant [INPUT-REQUIRED] turn directly to the session
+// store so tests can construct arbitrary clarification histories without
+// needing a full TaskResult round-trip.
+function insertInputRequiredAssistant(sessionId: string, questions: string[]): void {
+  const body = questions.map((q) => `- ${q}`).join('\n');
+  sessionStore.insertMessage({
+    session_id: sessionId,
+    task_id: 'test-ir',
+    role: 'assistant',
+    content: `[INPUT-REQUIRED]\n${body}`,
+    thinking: null,
+    tools_used: null,
+    token_estimate: 10,
+    created_at: Date.now(),
+  });
+}
+
+describe('SessionManager.getOriginalTaskGoal', () => {
+  test('returns null for empty session', () => {
+    const s = manager.create('api');
+    expect(manager.getOriginalTaskGoal(s.id)).toBeNull();
+  });
+
+  test('returns the only user message when history has just one turn', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'write me a bedtime story');
+    expect(manager.getOriginalTaskGoal(s.id)).toBe('write me a bedtime story');
+  });
+
+  test('returns the user message that triggered an open clarification', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'write me a bedtime story');
+    insertInputRequiredAssistant(s.id, ['Genre?', 'Length?']);
+    // Pending clarification is active; root goal is the user message before it.
+    expect(manager.getOriginalTaskGoal(s.id)).toBe('write me a bedtime story');
+  });
+
+  test('skips clarification reply pairs to find the root goal across re-clarification', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'write me a bedtime story');
+    insertInputRequiredAssistant(s.id, ['Genre?']);
+    manager.recordUserTurn(s.id, 'romance');
+    insertInputRequiredAssistant(s.id, ['Length?']);
+    // Two clarification rounds layered on the same root task.
+    expect(manager.getOriginalTaskGoal(s.id)).toBe('write me a bedtime story');
+  });
+
+  test('returns the MOST RECENT root task when prior tasks already completed', () => {
+    const s = manager.create('api');
+    // Turn 1: completed normally (not an IR).
+    manager.recordUserTurn(s.id, 'first task done');
+    sessionStore.insertMessage({
+      session_id: s.id,
+      task_id: 't1',
+      role: 'assistant',
+      content: 'ok, done',
+      thinking: null,
+      tools_used: null,
+      token_estimate: 5,
+      created_at: Date.now(),
+    });
+    // Turn 2: new task, assistant asks for clarification.
+    manager.recordUserTurn(s.id, 'now write a poem');
+    insertInputRequiredAssistant(s.id, ['Style?']);
+
+    expect(manager.getOriginalTaskGoal(s.id)).toBe('now write a poem');
+  });
+
+  test('returns the most recent user message when no clarification is pending', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'hello');
+    sessionStore.insertMessage({
+      session_id: s.id,
+      task_id: 't1',
+      role: 'assistant',
+      content: 'hi back',
+      thinking: null,
+      tools_used: null,
+      token_estimate: 3,
+      created_at: Date.now(),
+    });
+    manager.recordUserTurn(s.id, 'latest goal');
+    // No [INPUT-REQUIRED] in play — latest user message wins.
+    expect(manager.getOriginalTaskGoal(s.id)).toBe('latest goal');
+  });
+});
+
 describe('Session Recovery', () => {
   test('suspendAll suspends active sessions', () => {
     manager.create('api');

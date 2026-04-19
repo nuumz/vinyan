@@ -33,6 +33,21 @@ export async function executePlanPhase(
     if (plan.isFallback) {
       deps.bus?.emit('decomposer:fallback', { taskId: input.id });
     }
+    // UI surface: emit a plan snapshot so chat clients can render a
+    // Claude Code-style "session setup" checklist. Skip fallback DAGs
+    // because they contain a single node that just echoes the user's
+    // request — rendering that as a checklist is noise, not signal.
+    // Observational only — never used for routing decisions.
+    if (plan && !plan.isFallback && plan.nodes.length > 1) {
+      deps.bus?.emit('agent:plan_update', {
+        taskId: input.id,
+        steps: plan.nodes.map((n) => ({
+          id: n.id,
+          label: n.description,
+          status: 'pending' as const,
+        })),
+      });
+    }
   }
 
   // Wave 5.2 (Phase A §7 seam #2 closure): if the decomposer emitted a

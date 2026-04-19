@@ -10,6 +10,7 @@ import { z } from 'zod/v4';
 import { EvidenceSchema } from '../oracle/protocol.ts';
 import type { InstructionMemory } from './llm/instruction-hierarchy.ts';
 import type { EnvironmentInfo } from './llm/shared-prompt-sections.ts';
+import type { Turn } from './types.ts';
 
 // ── Routing enums ────────────────────────────────────────────────────
 
@@ -318,6 +319,45 @@ export const AgentContextSchema = z.object({
 
 export type AgentContextIPC = z.infer<typeof AgentContextSchema>;
 
+// ── Turn (Anthropic-native ContentBlock[]) ───────────────────────────
+//
+// Validated at the subprocess boundary so worker-entry / agent-worker-entry
+// can feed Turn[] into the prompt assembler without re-deriving tool-use
+// parameters from a stringified history. `z.custom<Turn>` preserves the
+// exact structural type rather than collapsing unions — ContentBlock's
+// discriminated union would otherwise lose precision through z.object.
+
+const ContentBlockSchema = z.custom<Turn['blocks'][number]>(
+  (value) => {
+    if (value == null || typeof value !== 'object') return false;
+    const v = value as { type?: unknown };
+    return (
+      v.type === 'text' ||
+      v.type === 'thinking' ||
+      v.type === 'tool_use' ||
+      v.type === 'tool_result'
+    );
+  },
+  { message: 'Expected Anthropic-native ContentBlock' },
+);
+
+export const TurnSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  seq: z.number().int().nonnegative(),
+  role: z.enum(['user', 'assistant']),
+  blocks: z.array(ContentBlockSchema),
+  cancelledAt: z.number().optional(),
+  tokenCount: z.object({
+    input: z.number().nonnegative(),
+    output: z.number().nonnegative(),
+    cacheRead: z.number().nonnegative(),
+    cacheCreation: z.number().nonnegative(),
+  }),
+  createdAt: z.number(),
+  taskId: z.string().optional(),
+});
+
 // ── WorkerInput (stdin → worker) ─────────────────────────────────────
 
 const WorkerBudgetSchema = z.object({
@@ -356,6 +396,13 @@ export const WorkerInputSchema = z.object({
   soulContent: z.string().optional(),
   /** Multi-agent: pre-resolved episodic context (identity + episodes + skills). */
   agentContext: AgentContextSchema.optional(),
+  /**
+   * Turn-model conversation history (plan commit A). Replaces the flat
+   * ConversationEntry path for subprocess workers. When present, the worker
+   * MUST prefer this over any legacy field because it preserves tool_use /
+   * tool_result blocks verbatim.
+   */
+  turns: z.array(TurnSchema).optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────
@@ -508,6 +555,13 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
         }),
       )
       .optional(),
+    /**
+     * Turn-model conversation history (plan commit A). When set, the agent
+     * worker MUST prefer this over `conversationHistory` because it preserves
+     * tool_use / tool_result blocks verbatim. The legacy field stays for
+     * one more sub-commit to keep readers compiling.
+     */
+    turns: z.array(TurnSchema).optional(),
     /**
      * Phase 2 realtime streaming. When true, the worker should use
      * `provider.generateStream` on each LLM call and emit

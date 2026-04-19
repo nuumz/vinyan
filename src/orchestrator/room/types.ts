@@ -47,6 +47,21 @@ export const RoomContractSchema = z.object({
   convergenceThreshold: z.number().min(0).max(1),
   /** Token budget shared across all participants. */
   tokenBudget: z.number().int().positive(),
+  /**
+   * Ecosystem O3 — when set, the room is scoped to an existing team.
+   * At open, the Supervisor imports `teamSharedKeys` from the team's
+   * persistent blackboard into the room blackboard under author role
+   * `team-bridge`. At close with status='converged', keys modified
+   * during the room are written back. Partial / failed / awaiting-user
+   * closes do NOT persist — dirty room state must not pollute durable
+   * team state.
+   */
+  teamId: z.string().optional(),
+  /**
+   * Keys to import from team blackboard at open AND export back at
+   * converged close. Keys NOT in this list are room-scoped only.
+   */
+  teamSharedKeys: z.array(z.string()).optional(),
 });
 
 export type RoomContract = z.infer<typeof RoomContractSchema>;

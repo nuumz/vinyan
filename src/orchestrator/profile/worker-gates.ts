@@ -28,6 +28,19 @@ export interface WorkerGatesConfig {
   demotionWindowTasks: number;
   /** Counts safety violations per worker (driven by guardrail:violation events). */
   safetyViolationCount?: (workerId: string) => number;
+  /**
+   * Ecosystem O4 — count of delivered volunteer commitments for this engine.
+   * Used as a *tiebreaker* on the Wilson-LB promotion gate only: when the
+   * Wilson LB sits within `helpfulnessTolerance` of the active median, a
+   * worker that has delivered ≥ `helpfulnessMinDeliveries` volunteer
+   * commitments is promoted anyway. NEVER participates in bid scoring
+   * (docs/design/vinyan-os-ecosystem-plan.md §3.3).
+   */
+  helpfulnessCount?: (workerId: string) => number;
+  /** Wilson-LB margin tolerance (default 0.05) for the helpfulness tiebreaker. */
+  helpfulnessTolerance?: number;
+  /** Minimum delivered-volunteer count required for the tiebreaker (default 3). */
+  helpfulnessMinDeliveries?: number;
 }
 
 export class WorkerGates implements LifecycleGates<EngineProfile> {
@@ -46,10 +59,21 @@ export class WorkerGates implements LifecycleGates<EngineProfile> {
     const successCount = Math.round(stats.successRate * stats.totalTasks);
     const wilsonLB = wilsonLowerBound(successCount, stats.totalTasks);
     if (wilsonLB <= activeMedian) {
-      return {
-        promote: false,
-        reason: `Wilson LB ${wilsonLB.toFixed(3)} <= active median ${activeMedian.toFixed(3)}`,
-      };
+      // Ecosystem O4 — helpfulness tiebreaker. When the worker sits just
+      // below median but has a track record of *delivered* volunteer
+      // commitments, let them through. Helpfulness is never a bid input,
+      // only a promotion sideband.
+      const tolerance = this.config.helpfulnessTolerance ?? 0.05;
+      const minDeliveries = this.config.helpfulnessMinDeliveries ?? 3;
+      const deliveries = this.config.helpfulnessCount?.(profile.id) ?? 0;
+      if (deliveries < minDeliveries || activeMedian - wilsonLB > tolerance) {
+        return {
+          promote: false,
+          reason: `Wilson LB ${wilsonLB.toFixed(3)} <= active median ${activeMedian.toFixed(3)}`,
+        };
+      }
+      // Otherwise fall through — the tiebreaker only neutralizes this one
+      // check; quality + safety gates still run below.
     }
 
     const baselineQuality = baselineQualityScore(this.config.store, fleet);

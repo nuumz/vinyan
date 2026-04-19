@@ -19,6 +19,8 @@ import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import type { EngineBid } from '../economy/market/schemas.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
+import type { DepartmentIndex } from './ecosystem/department.ts';
+import type { RuntimeStateManager } from './ecosystem/runtime-state.ts';
 import { selectProvider } from './priority-router.ts';
 import type { RoutingLevel } from './types.ts';
 
@@ -80,7 +82,43 @@ export interface EngineSelectorConfig {
    * Factory wires this from the LLMProviderRegistry's tier metadata.
    */
   getProviderTier?: (providerId: string) => 'fast' | 'balanced' | 'powerful' | 'tool-uses' | undefined;
+  /**
+   * Ecosystem O1: when provided, the selector excludes providers whose
+   * runtime state is dormant/awakening. Working engines pass through
+   * (capacity is checked downstream at dispatch). No-op for providers the
+   * manager doesn't know about — backward compatible.
+   */
+  runtimeStateManager?: RuntimeStateManager;
+  /**
+   * Ecosystem O3: when provided AND the caller passes a `departmentId`,
+   * the candidate pool is narrowed to that department's members first.
+   * Falls back to the full pool when the department has no members.
+   */
+  departmentIndex?: DepartmentIndex;
+  /**
+   * Ecosystem O4: fallback callback invoked when the market and wilson-LB
+   * paths both fail to produce a trusted pick. Usually wired to
+   * `EcosystemCoordinator.attemptVolunteerFallback`.
+   */
+  volunteerFallback?: VolunteerFallback;
 }
+
+export interface SelectOptions {
+  /** Narrow candidates to this department when the index has members. */
+  departmentId?: string;
+}
+
+/**
+ * Ecosystem O4 hook — invoked when the market + wilson-LB paths can't
+ * produce a trusted pick. Returns the engineId chosen by the volunteer
+ * protocol, or null when no eligible engine volunteered. Supplied by the
+ * factory when the ecosystem is enabled.
+ */
+export type VolunteerFallback = (params: {
+  taskId: string;
+  routingLevel: RoutingLevel;
+  departmentId?: string;
+}) => string | null;
 
 export interface EngineSelector {
   select(
@@ -88,6 +126,7 @@ export interface EngineSelector {
     taskType: string,
     requiredCapabilities?: string[],
     roleHint?: RoleHint,
+    options?: SelectOptions,
   ): EngineSelection;
 }
 
@@ -97,6 +136,9 @@ export class DefaultEngineSelector implements EngineSelector {
   private marketScheduler?: MarketScheduler;
   private costPredictor?: CostPredictor;
   private getProviderTier?: (providerId: string) => 'fast' | 'balanced' | 'powerful' | 'tool-uses' | undefined;
+  private runtimeStateManager?: RuntimeStateManager;
+  private departmentIndex?: DepartmentIndex;
+  private volunteerFallback?: VolunteerFallback;
 
   constructor(config: EngineSelectorConfig) {
     this.trustStore = config.trustStore;
@@ -104,6 +146,9 @@ export class DefaultEngineSelector implements EngineSelector {
     this.marketScheduler = config.marketScheduler;
     this.costPredictor = config.costPredictor;
     this.getProviderTier = config.getProviderTier;
+    this.runtimeStateManager = config.runtimeStateManager;
+    this.departmentIndex = config.departmentIndex;
+    this.volunteerFallback = config.volunteerFallback;
   }
 
   select(
@@ -111,15 +156,39 @@ export class DefaultEngineSelector implements EngineSelector {
     taskType: string,
     requiredCapabilities?: string[],
     roleHint?: RoleHint,
+    options?: SelectOptions,
   ): EngineSelection {
     const defaultModel = LEVEL_CONFIG[routingLevel].model;
     const minTrust = TRUST_THRESHOLDS[routingLevel];
 
     // 1. Get all providers, optionally filtered by capability
     const capability = requiredCapabilities?.[0];
-    const providers = capability
+    let providers = capability
       ? this.trustStore.getProvidersByCapability(capability)
       : this.trustStore.getAllProviders();
+
+    // 1a. Ecosystem O1 — drop providers whose runtime state is dormant/awakening.
+    //     Unknown providers pass through (the manager only knows engines it
+    //     has registered; cold-start / test paths shouldn't be blocked).
+    if (this.runtimeStateManager) {
+      const mgr = this.runtimeStateManager;
+      providers = providers.filter((p) => {
+        const snap = mgr.get(p.provider);
+        if (!snap) return true;
+        return snap.state === 'standby' || snap.state === 'working';
+      });
+    }
+
+    // 1b. Ecosystem O3 — when the caller asks for a department and the
+    //     department has members, intersect. Fall back to the full pool
+    //     when intersection is empty so we never hard-block.
+    if (options?.departmentId && this.departmentIndex) {
+      const members = new Set(this.departmentIndex.getEnginesInDepartment(options.departmentId));
+      if (members.size > 0) {
+        const scoped = providers.filter((p) => members.has(p.provider));
+        if (scoped.length > 0) providers = scoped;
+      }
+    }
 
     // 2. Filter by minimum trust threshold
     const qualified = providers.filter((p) => {
@@ -193,6 +262,29 @@ export class DefaultEngineSelector implements EngineSelector {
 
     // 5. Check if selected provider meets minimum trust for this level
     if (selection.trustScore < minTrust && selection.basis === 'wilson_lb') {
+      // 5a. Ecosystem O4 — market + wilson-LB both failed. Try the volunteer
+      //     fallback before giving up to the default cold-start model.
+      if (this.volunteerFallback) {
+        const winner = this.volunteerFallback({
+          taskId: taskType,
+          routingLevel,
+          ...(options?.departmentId ? { departmentId: options.departmentId } : {}),
+        });
+        if (winner) {
+          const result: EngineSelection = {
+            provider: winner,
+            trustScore: 0.5,
+            selectionReason: 'volunteer-fallback',
+          };
+          this.bus?.emit('engine:selected', {
+            taskId: taskType,
+            provider: result.provider,
+            trustScore: result.trustScore,
+            reason: result.selectionReason,
+          });
+          return result;
+        }
+      }
       // Selected provider doesn't meet threshold — use default
       return {
         provider: defaultModel ?? 'unknown',

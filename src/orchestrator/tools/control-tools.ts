@@ -87,7 +87,13 @@ export const attemptCompletion: Tool = {
 
 export const requestBudgetExtension: Tool = {
   name: 'request_budget_extension',
-  description: 'Request additional tokens from the orchestrator when budget is running low.',
+  description: `Ask the orchestrator for additional tokens when the existing budget will not cover the remaining work.
+
+Usage:
+- Call this BEFORE you hit [BUDGET WARNING], not after. Include what has been done, what remains, and why more tokens are actually required — the orchestrator uses reason to decide.
+- The tokens argument is a hint; the actual grant may be lower, zero, or denied. Keep working with whatever you end up with.
+- There is a maxExtensionRequests cap per task. Do NOT spam — one well-justified request is far more likely to be granted than three vague ones.
+- If the extension is denied, call attempt_completion with what you have rather than thrashing.`,
   minIsolationLevel: 0,
   category: 'control',
   sideEffect: false,
@@ -172,11 +178,13 @@ export const consultPeer: Tool = {
         error: 'Peer consultation not available in this context',
       });
     }
-    return context.onConsult(params as unknown as {
-      question: string;
-      context?: string;
-      requestedTokens?: number;
-    });
+    return context.onConsult(
+      params as unknown as {
+        question: string;
+        context?: string;
+        requestedTokens?: number;
+      },
+    );
   },
 };
 

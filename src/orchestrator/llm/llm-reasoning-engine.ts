@@ -9,7 +9,7 @@
  * values so the Orchestrator never depends on vendor vocabulary.
  */
 import type { VinyanBus } from '../../core/bus.ts';
-import type { CacheControl, LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
+import type { LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
 import type { PromptCacheTiers } from './prompt-assembler.ts';
 import type { LLMProviderRegistry } from './provider-registry.ts';
 
@@ -59,8 +59,6 @@ export class LLMReasoningEngine implements ReasoningEngine {
       // Plan commit B: tier offsets reach the provider so multi-breakpoint
       // caching works at the frozen and session boundaries.
       tiers: opts.tiers as PromptCacheTiers | undefined,
-      cacheControl: opts.cacheControl as CacheControl | undefined,
-      instructionCacheControl: opts.instructionCacheControl as CacheControl | undefined,
     };
 
     const res = await this.provider.generate(llmReq);

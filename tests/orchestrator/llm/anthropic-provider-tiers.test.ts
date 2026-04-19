@@ -120,15 +120,8 @@ describe('buildSystemBlocks — request → Anthropic system[] content', () => {
     expect(blocks[2]?.cache_control).toBeUndefined();
   });
 
-  it('falls back to single cache marker when only legacy cacheControl is set', () => {
-    const blocks = buildSystemBlocks(
-      baseRequest({ cacheControl: { type: 'static' } }),
-    );
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral' });
-  });
-
-  it('emits a single block with no cache marker when neither tiers nor cacheControl are set', () => {
+  it('emits a single block with no cache marker when tiers are absent', () => {
+    // Post-B5: without tiers, the provider emits a plain unsplit system block.
     const blocks = buildSystemBlocks(baseRequest());
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.cache_control).toBeUndefined();
@@ -165,27 +158,16 @@ describe('buildUserMessages — user prompt → Anthropic messages[]', () => {
     expect(withMarker).toHaveLength(1);
   });
 
-  it('legacy path: INSTRUCTION_HEADER split when tiers missing but instructionCacheControl set', () => {
+  it('no tiers → single plain user message (no cache marker)', () => {
+    // Post-B5: the legacy [PROJECT INSTRUCTIONS] heuristic path is gone.
+    // Without tiers the user prompt is shipped as a single plain message.
     const userPrompt = '[PROJECT INSTRUCTIONS]\nsome rules\n[TASK]\ndo a thing';
-    const messages = buildUserMessages(
-      baseRequest({
-        userPrompt,
-        instructionCacheControl: { type: 'session' },
-      }),
-    );
-    const content = messages[0]!.content as Array<{
-      type: string;
-      text: string;
-      cache_control?: unknown;
-    }>;
-    expect(content).toHaveLength(2);
-    expect(content[0]?.cache_control).toEqual({ type: 'ephemeral' });
-    expect(content[0]?.text).toContain('[PROJECT INSTRUCTIONS]');
-    expect(content[1]?.text).toContain('[TASK]');
-    expect(content[1]?.cache_control).toBeUndefined();
+    const messages = buildUserMessages(baseRequest({ userPrompt }));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toBe(userPrompt);
   });
 
-  it('single string content when neither tiers nor instruction header present', () => {
+  it('single string content when tiers are not set', () => {
     const messages = buildUserMessages(baseRequest({ userPrompt: 'just a task' }));
     expect(messages[0]?.content).toBe('just a task');
   });

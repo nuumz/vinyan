@@ -659,7 +659,7 @@ export class WorkerPoolImpl implements WorkerPool {
       ? this.soulStore.loadSoulRaw(aclKey)
       : undefined;
 
-    const { systemPrompt, userPrompt, tiers, systemCacheControl, instructionCacheControl } = assemblePrompt(
+    const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
@@ -694,11 +694,7 @@ export class WorkerPoolImpl implements WorkerPool {
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
           // Plan commit B: tier offsets drive multi-breakpoint cache markers.
-          // Legacy cacheControl / instructionCacheControl are kept until B5
-          // as a safety net for non-Anthropic providers that ignore `tiers`.
           tiers,
-          cacheControl: systemCacheControl ?? { type: 'ephemeral' as const },
-          ...(instructionCacheControl ? { instructionCacheControl } : {}),
         },
       })
       .catch((err): 'error' => {

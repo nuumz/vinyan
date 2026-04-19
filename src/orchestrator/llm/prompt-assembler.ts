@@ -14,7 +14,6 @@ import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import type { AgentContext } from '../agent-context/types.ts';
 import type {
   AgentSpec,
-  CacheControl,
   ConversationEntry,
   PerceptualHierarchy,
   TaskDAG,
@@ -58,14 +57,8 @@ export interface AssembledPrompt {
    * blocks at these offsets and attach cache_control with appropriate TTLs.
    */
   tiers: PromptCacheTiers;
-  /** @deprecated B5 will remove — use `tiers` instead. Cache control for the system prompt. */
-  systemCacheControl?: CacheControl;
-  /** @deprecated B5 will remove — use `tiers` instead. Cache control for [PROJECT INSTRUCTIONS] block. */
-  instructionCacheControl?: CacheControl;
   /** Estimated token counts for cost instrumentation */
   estimatedTokens?: { system: number; user: number; total: number };
-  /** @deprecated B5 will remove. Legacy single cache-control field. */
-  cacheControl?: CacheControl;
 }
 
 /** G1: Map tier_reliability score to human-readable label for prompt rendering. */
@@ -147,9 +140,6 @@ export function assemblePrompt(
     systemPrompt: systemTiers.joined,
     userPrompt: userTiers.joined,
     tiers: { system: systemTiers.offsets, user: userTiers.offsets },
-    systemCacheControl: { type: 'static' },
-    instructionCacheControl: instructions ? { type: 'session' } : undefined,
-    cacheControl: { type: 'ephemeral' },
     estimatedTokens: { system: sysTokens, user: usrTokens, total: sysTokens + usrTokens },
   };
 }

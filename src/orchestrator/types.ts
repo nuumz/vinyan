@@ -1237,10 +1237,6 @@ export interface LLMRequest {
    * turn-volatile suffix is re-processed each request.
    */
   tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  cacheControl?: CacheControl;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  instructionCacheControl?: CacheControl;
 }
 
 /** Response from an LLM provider */

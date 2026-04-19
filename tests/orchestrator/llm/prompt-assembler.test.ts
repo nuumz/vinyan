@@ -114,12 +114,21 @@ describe('PromptAssembler', () => {
   // burns the 90% prefix-cache discount. These regressions lock the invariant
   // (debate doc P0 unanimous).
   describe('cache-boundary markers (A5 + cost discipline)', () => {
-    test('code task emits static systemCacheControl (stable prefix)', () => {
+    // Post-B5: `systemCacheControl`, `instructionCacheControl`, and the
+    // legacy `cacheControl` single-field have been removed. Caching is
+    // now driven exclusively by `tiers` offsets (frozen / session / turn)
+    // on the AssembledPrompt. The Anthropic provider splits the prompt
+    // at those offsets and attaches `cache_control: { type: 'ephemeral' }`
+    // at tier boundaries. See tests/orchestrator/llm/anthropic-provider-tiers
+    // + volatility-ordering for the post-B5 behaviour.
+
+    test('code task emits tiers with non-zero frozen boundary for cache marker placement', () => {
       const result = assemblePrompt('Fix bug', makePerception(), makeMemory());
-      expect(result.systemCacheControl).toEqual({ type: 'static' });
+      expect(result.tiers).toBeDefined();
+      expect(result.tiers.system.frozenEnd).toBeGreaterThan(0);
     });
 
-    test('reasoning task also emits static systemCacheControl', () => {
+    test('reasoning task also emits tier offsets', () => {
       const result = assemblePrompt(
         'explain recursion',
         makePerception(),
@@ -127,28 +136,8 @@ describe('PromptAssembler', () => {
         undefined,
         'reasoning',
       );
-      expect(result.systemCacheControl).toEqual({ type: 'static' });
-    });
-
-    test('instructionCacheControl is session tier only when instructions are provided', () => {
-      const withInstructions = assemblePrompt(
-        'Fix bug',
-        makePerception(),
-        makeMemory(),
-        undefined,
-        'code',
-        // InstructionMemory shape: content + contentHash + filePath + sources.
-        {
-          content: 'always use strict mode',
-          contentHash: 'abc123',
-          filePath: '/test/VINYAN.md',
-          sources: [],
-        },
-      );
-      expect(withInstructions.instructionCacheControl).toEqual({ type: 'session' });
-
-      const withoutInstructions = assemblePrompt('Fix bug', makePerception(), makeMemory());
-      expect(withoutInstructions.instructionCacheControl).toBeUndefined();
+      expect(result.tiers).toBeDefined();
+      expect(result.tiers.system.frozenEnd).toBeGreaterThan(0);
     });
 
     test('estimatedTokens populated for cost instrumentation', () => {

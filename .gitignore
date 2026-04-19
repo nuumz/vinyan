@@ -63,3 +63,6 @@ tmp/
 
 # Vinyan runtime data
 .vinyan/
+
+# Claude Code / Agent SDK internal state (worktrees, session caches)
+.claude/

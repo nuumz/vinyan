@@ -70,6 +70,9 @@ export class PeerHealthMonitor {
     this.interval = setInterval(() => {
       void this.runHeartbeatCycle();
     }, this.config.heartbeatIntervalMs);
+    // Defensive unref — if stop() is skipped on a broken shutdown path,
+    // the heartbeat alone will not hold the process alive.
+    (this.interval as { unref?: () => void }).unref?.();
   }
 
   /** Stop periodic heartbeat. */

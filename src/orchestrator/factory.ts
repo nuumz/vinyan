@@ -9,6 +9,7 @@ import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { attachAuditListener } from '../bus/audit-listener.ts';
 import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
+import { attachComprehensionTraceListener } from '../bus/comprehension-trace-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
@@ -17,8 +18,11 @@ import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
+import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
+import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
+import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
@@ -89,6 +93,7 @@ import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mo
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
 import { DelegationRouter } from './delegation-router.ts';
+import { buildEcosystem, type EcosystemBundle } from './ecosystem/builder.ts';
 import { DefaultEngineSelector } from './engine-selector.ts';
 import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
@@ -255,7 +260,33 @@ export interface Orchestrator {
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
   getSessionCount(): number;
-  close(): void;
+  /**
+   * Release all resources held by the orchestrator. Awaits truly async
+   * teardown (chokidar file-watcher, MCP subprocess pool) so callers
+   * can guarantee process exit is not blocked on leftover fds / pipes.
+   * Legacy callers that do not await get fire-and-forget behavior —
+   * equivalent to the old sync signature.
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * Await `p`, but give up after `ms` and resolve anyway. The timer is
+ * unref'd so it never holds the event loop alive on its own. Used for
+ * shutdown steps where we want best-effort cleanup but cannot let a
+ * misbehaving resource block process exit.
+ */
+async function raceTimeout<T>(p: Promise<T>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const to = new Promise<void>((resolve) => {
+    timer = setTimeout(() => resolve(), ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    await Promise.race([p.then(() => undefined), to]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200_000): number {
@@ -308,6 +339,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
+  let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
   let agentProfileStore: AgentProfileStore | undefined;
@@ -320,6 +352,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
+    comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
 
@@ -542,6 +575,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (!engineRegistry) {
         engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
       }
+      // Wire bus so the ecosystem coordinator (built below) can observe
+      // engine:registered / engine:deregistered without touching the hot path.
+      engineRegistry.setBus(bus);
       if (enginesConfig.z3?.enabled) {
         engineRegistry.register(new Z3ReasoningEngine({ z3Path: enginesConfig.z3.path }));
         console.log('[vinyan] Z3 Constraint Solver engine registered');
@@ -603,7 +639,64 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // everywhere it matters.
   const mcpToolMap = new Map<string, Tool>();
 
-  // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance
+  // Ecosystem layer — runtime FSM + commitment ledger + department/team +
+  // volunteer protocol + coordinator. Opt-in via `ecosystem.enabled` in
+  // vinyan.json. Built before WorkerLifecycle so the helpfulness tiebreaker
+  // (O4) can be wired into the promotion gate.
+  //
+  // Source of truth: docs/design/vinyan-os-ecosystem-plan.md
+  let ecosystemBundle: EcosystemBundle | undefined;
+  let ecosystemConfig: import('../config/schema.ts').VinyanConfig['ecosystem'] | undefined;
+  try {
+    const vinyanConfigForEco = loadConfig(workspace);
+    ecosystemConfig = vinyanConfigForEco.ecosystem;
+    const effectiveEngineRegistry = engineRegistry ?? config.engineRegistry;
+    if (db && ecosystemConfig?.enabled && effectiveEngineRegistry) {
+      ecosystemBundle = buildEcosystem({
+        db: db.getDb(),
+        bus,
+        departments: (ecosystemConfig.departments ?? []).map((d) => ({
+          id: d.id,
+          anchorCapabilities: d.anchor_capabilities,
+          minMatchCount: d.min_match_count,
+        })),
+        taskResolver: () => null, // populated at dispatch time by core-loop
+        engineRoster: () => effectiveEngineRegistry.listEngines(),
+        reconcileIntervalMs: ecosystemConfig.reconcile_interval_ms,
+      });
+
+      // Seed runtime FSM for every engine already in the registry so the
+      // bridge + reconcile loop have something to observe. Guarded so
+      // repeated factory calls (tests, re-init after crash recovery) do
+      // not throw — crash-recovery flips Working→Standby at coordinator.start
+      // above, so an engine that survived a restart reaches this block
+      // already in `standby`.
+      for (const eng of effectiveEngineRegistry.listEngines()) {
+        const existing = ecosystemBundle.runtime.get(eng.id);
+        if (!existing) {
+          ecosystemBundle.runtime.register(eng.id);
+        }
+        const snap = ecosystemBundle.runtime.get(eng.id)!;
+        if (snap.state === 'dormant') {
+          ecosystemBundle.runtime.awaken(eng.id, 'boot');
+          ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+        } else if (snap.state === 'awakening') {
+          ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+        }
+        // else: already standby/working — leave as-is.
+      }
+
+      ecosystemBundle.coordinator.start();
+      console.log(
+        `[vinyan] ecosystem: ${effectiveEngineRegistry.listEngines().length} engine(s) registered; ${ecosystemBundle.departments.listDepartments().length} department(s) seeded`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[vinyan] ecosystem wiring skipped: ${(err as Error).message}`);
+  }
+
+  // Phase 4.2: Worker Lifecycle — deterministic state machine for worker governance.
+  // Wired after the ecosystem so O4 helpfulness can feed the promotion gate.
   let workerLifecycle: WorkerLifecycle | undefined;
   if (workerStore) {
     workerLifecycle = new WorkerLifecycle({
@@ -613,6 +706,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       demotionWindowTasks: fleetConfig?.demotion_window_tasks ?? 30,
       demotionMaxReentries: fleetConfig?.demotion_max_reentries ?? 3,
       reentryCooldownSessions: fleetConfig?.reentry_cooldown_sessions ?? 50,
+      ...(ecosystemBundle
+        ? {
+            helpfulnessCount: (workerId: string) =>
+              ecosystemBundle!.helpfulness.get(workerId)?.deliveriesCompleted ?? 0,
+          }
+        : {}),
     });
   }
 
@@ -732,6 +831,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     proxySocketPath: llmProxy?.socketPath,
     bus,
     streaming: streamingAssistantDelta,
+    runtimeStateManager: ecosystemBundle?.runtime,
   });
   const oracleGate = config.oracleGate ?? new OracleGateAdapter(workspace);
   const traceCollector = new TraceCollectorImpl(worldGraph, traceStore, bus);
@@ -1051,6 +1151,30 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       })
     : undefined;
 
+  // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine
+  // BEFORE `deps` construction so both can be injected.
+  // Without these, the P2.C hybrid pipeline in core-loop is unreachable
+  // (deps.llmComprehensionEngine stays undefined → stage 2 never runs).
+  const comprehensionCalibrator = comprehensionStore
+    ? new ComprehensionCalibrator(comprehensionStore)
+    : undefined;
+  let llmComprehensionEngine: import('./comprehension/types.ts').ComprehensionEngine | undefined;
+  try {
+    const llmProvider =
+      registry.selectByTier('balanced') ??
+      registry.selectByTier('fast') ??
+      registry.selectByTier('powerful');
+    if (llmProvider && comprehensionCalibrator) {
+      llmComprehensionEngine = newLlmComprehender({
+        provider: llmProvider,
+        calibrator: comprehensionCalibrator,
+        bus,
+      });
+    }
+  } catch {
+    // Any failure leaves stage 2 unregistered; stage 1 keeps working.
+  }
+
   const deps: OrchestratorDeps = {
     perception,
     riskRouter,
@@ -1082,6 +1206,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     forwardPredictor,
     // Cross-task learning: eviction archiving + prior-approach loading
     rejectedApproachStore,
+    // A7 learning loop — comprehension calibration persistence
+    comprehensionStore,
+    // P2.C stage-2 engine — hybrid pipeline only activates when present
+    llmComprehensionEngine,
     // STU: historical profiler for enrichUnderstanding()
     traceStore,
     // STU Layer 2: semantic intent extraction
@@ -1136,6 +1264,38 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             }
             return undefined;
           },
+          // Ecosystem O1 + O3 — when the ecosystem is enabled, the selector
+          // pre-filters by runtime state and department membership.
+          runtimeStateManager:
+            ecosystemConfig?.runtime_gate_selection !== false ? ecosystemBundle?.runtime : undefined,
+          departmentIndex: ecosystemBundle?.departments,
+          // Ecosystem O4 — volunteer fallback invoked only when market + wilson-LB
+          // fail to produce a trusted pick. Scoring context comes from the trust
+          // store (trust), runtime FSM (load), and a default capability baseline.
+          volunteerFallback:
+            ecosystemBundle && providerTrustStore
+              ? ({ taskId, departmentId }) => {
+                  const bundle = ecosystemBundle!;
+                  const ts = providerTrustStore!;
+                  const ctx = (id: string) => {
+                    const rec = ts.getProvider(id);
+                    const total = (rec?.successes ?? 0) + (rec?.failures ?? 0);
+                    const trust = total > 0 ? rec!.successes / total : 0.5;
+                    const load = bundle.runtime.get(id)?.activeTaskCount ?? 0;
+                    return { capability: 0.5, trust, currentLoad: load };
+                  };
+                  const deadlineMs =
+                    ecosystemConfig?.volunteer_fallback_deadline_ms ?? 600_000;
+                  const res = bundle.coordinator.attemptVolunteerFallback({
+                    taskId,
+                    goal: `fallback:${taskId}`,
+                    deadlineAt: Date.now() + deadlineMs,
+                    ...(departmentId ? { departmentId } : {}),
+                    contextProvider: ctx,
+                  });
+                  return res?.engineId ?? null;
+                }
+              : undefined,
         })
       : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
@@ -1177,6 +1337,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentProfileStore,
     // Specialist agent registry — ts-coder, writer, secretary, etc.
     agentRegistry,
+    // Multi-agent: SOUL.md store — used by conversational short-circuit
+    // to inject the same evolved persona that worker-pool injects in
+    // full-pipeline. Optional; falls back to inline `agent.soul` when absent.
+    soulStore,
     // Phase 2: rule-first specialist router (skips LLM when rule-match fires)
     agentRouter,
     // Phase 2: gate for token-level `agent:text_delta` emission in the
@@ -1212,6 +1376,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     bus,
     goalVerifier: goalAlignmentVerify,
     roomStore,
+    // Ecosystem O3 — rooms with `contract.teamId` round-trip their shared
+    // keys through the team's persistent blackboard. Enabled automatically
+    // when the ecosystem is wired; rooms without a teamId are unaffected.
+    ...(ecosystemBundle ? { teamManager: ecosystemBundle.teams } : {}),
   });
 
   // Wave A: Error Attribution Bus — consumes orphaned learning signals and
@@ -1439,6 +1607,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
+  // P3.B — records adaptive-behavior comprehension events
+  // (calibrated, calibration_diverged, ceiling_adjusted) + AXM#7 Brier
+  // miscalibration emission. Uses the calibrator wired above.
+  const comprehensionTraceHandle = attachComprehensionTraceListener({
+    bus,
+    traceCollector,
+    calibrator: comprehensionCalibrator,
+  });
+
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
 
@@ -1506,6 +1683,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         /* best-effort background processing */
       }
     }, 10_000);
+    // unref() so this timer alone does not hold the process alive when
+    // the API server shuts down. close() also clears it explicitly.
+    (shadowInterval as { unref?: () => void }).unref?.();
   }
 
   return {
@@ -1562,19 +1742,58 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     costLedger,
     budgetEnforcer,
     getSessionCount: () => sessionCount,
-    close: () => {
+    close: async () => {
+      // Order matters:
+      //   1. Stop event sources (interval, bus listeners) so new work
+      //      cannot arrive while we tear down stores.
+      //   2. Kill subprocesses (warm workers, MCP) to release their
+      //      stdin/stdout fds before anything that depends on stable
+      //      file descriptors.
+      //   3. Await file-watcher close (chokidar holds fs.watch fds)
+      //      BEFORE db.close() — otherwise chokidar can fire events
+      //      into a closed DB and the chokidar worker thread may
+      //      briefly outlive us.
+      //   4. Close LLM proxy, world graph, DB — in increasing order
+      //      of "holds file locks for long time".
       if (shadowInterval) clearInterval(shadowInterval);
-      fileWatcher?.stop();
       detachGapH();
       detachMetrics();
       traceListenerHandle.detach();
+      comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
       approvalGate.clear();
-      mcpClientPool?.shutdown().catch(() => {});
-      llmProxy?.close();
-      worldGraph?.close();
-      db?.close();
+
+      // Kill warm worker subprocesses FIRST — without this, their stdin
+      // pipes hold file descriptors that keep the parent event loop
+      // alive past shutdown, and the subprocesses themselves can
+      // outlive the parent in some shells.
+      try {
+        workerPool.shutdown();
+      } catch {
+        /* best-effort */
+      }
+      // MCP client pool — subprocess-based. shutdown() is async but we
+      // bound the wait so a misbehaving MCP server cannot strand us.
+      if (mcpClientPool) {
+        try {
+          await raceTimeout(mcpClientPool.shutdown(), 2_000);
+        } catch {
+          /* best-effort */
+        }
+      }
+      // Chokidar file watcher — releases fs.watch fds. Await so these
+      // fds are closed before the event loop tries to exit.
+      if (fileWatcher) {
+        try {
+          await raceTimeout(fileWatcher.stop(), 1_000);
+        } catch {
+          /* best-effort */
+        }
+      }
+      try { llmProxy?.close(); } catch { /* best-effort */ }
+      try { worldGraph?.close(); } catch { /* best-effort */ }
+      try { db?.close(); } catch { /* best-effort */ }
     },
   };
 }

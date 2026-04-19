@@ -23,13 +23,41 @@ export class FileWatcher {
 
   /** Start watching the workspace for file changes. */
   start(): void {
-    const ignored = this.options.ignored ?? ['**/node_modules/**', '**/.git/**', '**/.vinyan/**'];
+    // Defaults: framework dirs + every path segment named `.vinyan` or
+    // `.test-workspace*` (test-runner sandboxes that may appear and
+    // disappear mid-watch). Using a predicate function is more reliable
+    // than glob patterns in chokidar v5, which resolves ignored lazily
+    // per-path and can miss deep nested matches under `**/...`.
+    const userIgnored = this.options.ignored;
+    const ignored = userIgnored
+      ? userIgnored
+      : (path: string) => {
+          if (/\/(node_modules|\.git|\.vinyan|dist|\.next|\.turbo)(\/|$)/.test(path)) return true;
+          if (/\/\.test-workspace[^/]*(\/|$)/.test(path)) return true;
+          return false;
+        };
     const debounceMs = this.options.debounceMs ?? 100;
 
     this.watcher = watch(this.workspacePath, {
       ignored,
       persistent: true,
       ignoreInitial: true,
+      // Survive transient filesystem errors on individual paths. Without
+      // ignorePermissionErrors, chokidar emits EACCES on files we can't
+      // stat. atomicDir → coalesce rename-then-rewrite editor patterns.
+      ignorePermissionErrors: true,
+    });
+
+    // CRITICAL: chokidar emits 'error' for per-file fs failures (EINVAL
+    // on broken symlinks or disappeared test workspaces, ENOENT on
+    // races, EMFILE on fd exhaustion). Without this handler the error
+    // propagates as an unhandledRejection. File watching is advisory —
+    // we log and continue rather than taking down the server.
+    this.watcher.on('error', (err) => {
+      const e = err as { code?: string; message?: string; path?: string };
+      console.warn(
+        `[file-watcher] ${e.code ?? 'error'} on ${e.path ?? '<unknown>'}: ${e.message ?? String(err)} (continuing)`,
+      );
     });
 
     const handleChange = (filePath: string) => {

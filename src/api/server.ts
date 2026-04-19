@@ -90,12 +90,29 @@ export class VinyanAPIServer {
   private rateLimiter: RateLimiter;
   private inFlightTasks = new Map<string, { promise: Promise<TaskResult>; cancel?: () => void }>();
   private asyncResults = new Map<string, TaskResult>();
+  /** Per-entry TTL eviction timers for asyncResults. Cleared on shutdown. */
+  private asyncResultsEviction = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Periodic sweeper for idle rate-limit buckets. */
+  private rateLimiterPruneInterval: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Cleanups for currently-open SSE streams. Bun normally fires
+   * ReadableStream.cancel on client disconnect, but during graceful
+   * shutdown we need a way to detach bus listeners deterministically
+   * before the server is torn down — otherwise listeners outlive the
+   * process and can keep it alive.
+   */
+  private openSSECleanups = new Set<() => void>();
   private shuttingDown = false;
   private a2aBridge: A2ABridge;
   private defaultSessionId: string | null = null;
   private wsClients = new Set<{ ws: unknown; authenticated: boolean }>();
   /** Dedup map: key = "sessionId:content" → timestamp of last submission. */
   private recentMessageDedup = new Map<string, number>();
+  /** Async result retention before eviction. Long enough for clients to poll, bounded for memory. */
+  private static readonly ASYNC_RESULT_TTL_MS = 3_600_000; // 1 hour
+  /** Rate-limit bucket idle window — buckets idle longer than this are evicted. */
+  private static readonly RATE_LIMIT_IDLE_TTL_MS = 3_600_000; // 1 hour
+  private static readonly RATE_LIMIT_PRUNE_INTERVAL_MS = 5 * 60_000; // every 5 minutes
 
   constructor(
     private config: APIServerConfig,
@@ -150,7 +167,31 @@ export class VinyanAPIServer {
       },
     });
 
+    // Periodic eviction of idle rate-limit buckets so the per-key map
+    // does not grow unbounded across long server uptimes.
+    this.rateLimiterPruneInterval = setInterval(
+      () => this.rateLimiter.prune(VinyanAPIServer.RATE_LIMIT_IDLE_TTL_MS),
+      VinyanAPIServer.RATE_LIMIT_PRUNE_INTERVAL_MS,
+    );
+    (this.rateLimiterPruneInterval as { unref?: () => void }).unref?.();
+
     console.log(`[vinyan-api] Listening on ${this.config.bind}:${this.config.port}`);
+  }
+
+  /**
+   * Schedule TTL-based eviction for a completed async task result. Without
+   * this, `asyncResults` grows unbounded (one TaskResult per async submission)
+   * and eventually causes heap pressure → GC pauses → API "hangs".
+   */
+  private scheduleAsyncResultEviction(taskId: string): void {
+    const prev = this.asyncResultsEviction.get(taskId);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(() => {
+      this.asyncResults.delete(taskId);
+      this.asyncResultsEviction.delete(taskId);
+    }, VinyanAPIServer.ASYNC_RESULT_TTL_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.asyncResultsEviction.set(taskId, timer);
   }
 
   async handleRequest(req: Request): Promise<Response> {
@@ -714,6 +755,7 @@ export class VinyanAPIServer {
       .then((result) => {
         this.deps.sessionManager.completeTask(session.id, input.id, result);
         this.asyncResults.set(input.id, result);
+        this.scheduleAsyncResultEviction(input.id);
         this.inFlightTasks.delete(input.id);
       })
       .catch(() => {
@@ -724,13 +766,51 @@ export class VinyanAPIServer {
   }
 
   private handleListTasks(): Response {
-    const tasks: Array<{ taskId: string; status: string; result?: unknown }> = [];
+    // Merge in-memory async results with session-persisted tasks.
+    // Session store is the source of truth for session-based tasks (Chat).
+    const allSessionTasks = this.deps.sessionManager.listAllTasks(200);
+    const seenIds = new Set<string>();
+
+    const tasks: Array<{
+      taskId: string;
+      sessionId?: string;
+      status: string;
+      goal?: string;
+      result?: unknown;
+    }> = [];
+
+    // In-flight tasks (running right now)
+    for (const [id] of this.inFlightTasks) {
+      seenIds.add(id);
+      const sessionTask = allSessionTasks.find((t) => t.taskId === id);
+      tasks.push({
+        taskId: id,
+        sessionId: sessionTask?.sessionId,
+        status: 'running',
+        goal: sessionTask?.goal,
+      });
+    }
+
+    // Async API results (not from session)
     for (const [id, result] of this.asyncResults) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
       tasks.push({ taskId: id, status: 'completed', result });
     }
-    for (const [id] of this.inFlightTasks) {
-      tasks.push({ taskId: id, status: 'running' });
+
+    // Session-persisted tasks (from Chat)
+    for (const st of allSessionTasks) {
+      if (seenIds.has(st.taskId)) continue;
+      seenIds.add(st.taskId);
+      tasks.push({
+        taskId: st.taskId,
+        sessionId: st.sessionId,
+        status: st.status,
+        goal: st.goal,
+        result: st.result,
+      });
     }
+
     return jsonResponse({ tasks });
   }
 
@@ -740,12 +820,20 @@ export class VinyanAPIServer {
   }
 
   private handleGlobalSSE(): Response {
+    // Safety-net cleanup after 60 minutes is registered inside createSSEStream
+    // so it is cleared when the client disconnects (cancel) — the previous
+    // external setTimeout would fire 60 min later even on healthy disconnect,
+    // leaking a timer handle per connection.
+    let trackerSlot: (() => void) | null = null;
     const { stream, cleanup } = createSSEStream(this.deps.bus, undefined, {
       heartbeatIntervalMs: 30_000,
+      safetyTimeoutMs: 3_600_000,
+      onClose: () => {
+        if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
+      },
     });
-
-    // Safety-net cleanup after 60 minutes (client will auto-reconnect)
-    setTimeout(cleanup, 3_600_000);
+    trackerSlot = cleanup;
+    this.openSSECleanups.add(cleanup);
 
     return new Response(stream, {
       headers: {
@@ -759,7 +847,7 @@ export class VinyanAPIServer {
   // Dashboard removed — migrated to vinyan-ui (separate React project).
 
   private handleGetTask(taskId: string): Response {
-    // Check completed results
+    // Check completed results (async API tasks)
     const result = this.asyncResults.get(taskId);
     if (result) {
       return jsonResponse({ taskId, status: 'completed', result });
@@ -768,6 +856,19 @@ export class VinyanAPIServer {
     // Check in-flight
     if (this.inFlightTasks.has(taskId)) {
       return jsonResponse({ taskId, status: 'running' });
+    }
+
+    // Check session-persisted tasks (Chat-originated)
+    const allTasks = this.deps.sessionManager.listAllTasks(500);
+    const sessionTask = allTasks.find((t) => t.taskId === taskId);
+    if (sessionTask) {
+      return jsonResponse({
+        taskId: sessionTask.taskId,
+        sessionId: sessionTask.sessionId,
+        status: sessionTask.status,
+        goal: sessionTask.goal,
+        result: sessionTask.result,
+      });
     }
 
     return jsonResponse({ error: 'Task not found' }, 404);
@@ -1528,10 +1629,17 @@ export class VinyanAPIServer {
   }
 
   private handleSSE(taskId: string): Response {
-    const { stream, cleanup } = createSSEStream(this.deps.bus, taskId);
-
-    // Auto-cleanup after 5 minutes
-    setTimeout(cleanup, 300_000);
+    // Safety-net (5 min) registered inside the stream so a normal client
+    // disconnect clears the timer instead of leaking it.
+    let trackerSlot: (() => void) | null = null;
+    const { stream, cleanup } = createSSEStream(this.deps.bus, taskId, {
+      safetyTimeoutMs: 300_000,
+      onClose: () => {
+        if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
+      },
+    });
+    trackerSlot = cleanup;
+    this.openSSECleanups.add(cleanup);
 
     return new Response(stream, {
       headers: {
@@ -1586,10 +1694,12 @@ export class VinyanAPIServer {
    * Mirrors chat.ts's rl.on('line') handler:
    *   1. Validate body + resolve session (404 if missing).
    *   2. Query getPendingClarifications(). If non-empty, the current
-   *      message is treated as a clarification answer — each open question
-   *      is wrapped into a `CLARIFIED:<q>=><answer>` constraint so the
-   *      understanding pipeline sees the user's answer as first-class
-   *      grounding (not a fresh intent).
+   *      message is treated as a clarification answer — the open questions
+   *      and the user's free-form reply are packed into a single
+   *      `CLARIFICATION_BATCH:<JSON>` constraint so the understanding
+   *      pipeline sees the user's answer as first-class grounding (not a
+   *      fresh intent), and the task's goal stays anchored to the original
+   *      user request rather than being overwritten by the reply text.
    *   3. Record the user turn, dispatch executeTask, record the assistant
    *      turn, and return a structured response with both the TaskResult
    *      and the updated session state (including any NEW pending
@@ -1639,12 +1749,27 @@ export class VinyanAPIServer {
 
     // Auto-detect clarification follow-up: if the last assistant message
     // was an [INPUT-REQUIRED] block and the user has not yet answered, this
-    // new user message IS the answer. Wrap each open question as a
-    // CLARIFIED:<q>=><answer> constraint so agent-worker-entry's
-    // buildInitUserMessage renders them in the "## User Clarifications"
-    // section of the next task's init prompt.
+    // new user message IS the answer. Pack the open questions + the user's
+    // free-form reply into a single CLARIFICATION_BATCH constraint so
+    // agent-worker-entry's buildInitUserMessage renders them in the
+    // "## User Clarifications" section of the next task's init prompt —
+    // and anchor the task goal to the original user request (walking back
+    // through any prior clarification rounds) rather than overwriting it
+    // with the short reply text.
     const pendingBefore = this.deps.sessionManager.getPendingClarifications(sessionId);
-    const clarificationConstraints = pendingBefore.map((q) => `CLARIFIED:${q}=>${content}`);
+    const originalGoal =
+      pendingBefore.length > 0
+        ? this.deps.sessionManager.getOriginalTaskGoal(sessionId)
+        : null;
+    const clarificationConstraints =
+      pendingBefore.length > 0
+        ? [
+            `CLARIFICATION_BATCH:${JSON.stringify({
+              questions: pendingBefore,
+              reply: content,
+            })}`,
+          ]
+        : [];
 
     // Record the user turn BEFORE dispatching the task so the
     // conversation history (loaded by core-loop.ts via sessionManager)
@@ -1664,7 +1789,7 @@ export class VinyanAPIServer {
     const input: TaskInput = {
       id: crypto.randomUUID(),
       source: 'api',
-      goal: content,
+      goal: originalGoal ?? content,
       taskType: inferredType,
       sessionId,
       ...(targetFiles?.length ? { targetFiles } : {}),
@@ -1694,12 +1819,19 @@ export class VinyanAPIServer {
     // is safe — events emitted during the pipeline will be captured
     // and delivered to the client.
     if (stream === true) {
-      const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id);
-      // Safety-net cleanup after 10 minutes in case task:complete never
-      // fires (e.g., hung LLM call without timeout). Matches the existing
-      // handleSSE convention with a looser bound for the longer budget
-      // of chat-style tasks.
-      const cleanupTimer = setTimeout(cleanup, 600_000);
+      // Safety-net (10 min) for chat-style tasks managed inside the
+      // stream itself; the manual cleanupTimer below is for the .then/
+      // .catch fast-path so we don't wait 10 minutes when executeTask
+      // returns early.
+      let trackerSlot: (() => void) | null = null;
+      const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id, {
+        safetyTimeoutMs: 600_000,
+        onClose: () => {
+          if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
+        },
+      });
+      trackerSlot = cleanup;
+      this.openSSECleanups.add(cleanup);
 
       // Kick off executeTask WITHOUT awaiting so we can return the stream
       // Response immediately. The .then handler records the assistant
@@ -1713,7 +1845,6 @@ export class VinyanAPIServer {
         .then((result) => {
           this.deps.sessionManager.completeTask(sessionId, input.id, result);
           this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
-          clearTimeout(cleanupTimer);
         })
         .catch((err) => {
           const failedResult: TaskResult = {
@@ -1747,7 +1878,6 @@ export class VinyanAPIServer {
           // task:complete seen for this task id, so no risk of a double
           // close if the real pipeline had already emitted one.
           this.deps.bus.emit('task:complete', { result: failedResult });
-          clearTimeout(cleanupTimer);
         });
 
       return new Response(sseStream, {
@@ -1846,12 +1976,17 @@ export class VinyanAPIServer {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session) return jsonResponse({ error: 'Session not found' }, 404);
 
-    const { stream, cleanup } = createSessionSSEStream(this.deps.bus, sessionId);
-
-    // 60-minute safety-net cleanup. Real clients should re-subscribe
-    // before hitting this bound; the limit exists so a forgotten
-    // connection doesn't leak bus subscribers indefinitely.
-    setTimeout(cleanup, 3_600_000);
+    // 60-minute safety-net registered inside the stream — cleared on
+    // client disconnect so a healthy connection does not leak the timer.
+    let trackerSlot: (() => void) | null = null;
+    const { stream, cleanup } = createSessionSSEStream(this.deps.bus, sessionId, {
+      safetyTimeoutMs: 3_600_000,
+      onClose: () => {
+        if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
+      },
+    });
+    trackerSlot = cleanup;
+    this.openSSECleanups.add(cleanup);
 
     return new Response(stream, {
       headers: {
@@ -1896,8 +2031,51 @@ export class VinyanAPIServer {
       console.log(`[vinyan-api] Suspended ${suspended} active sessions`);
     }
 
-    // 4. Close server
-    this.server?.stop();
+    // 4. Stop background sweepers and clear pending eviction timers so
+    //    the process can exit cleanly under graceful shutdown.
+    if (this.rateLimiterPruneInterval) {
+      clearInterval(this.rateLimiterPruneInterval);
+      this.rateLimiterPruneInterval = null;
+    }
+    for (const timer of this.asyncResultsEviction.values()) clearTimeout(timer);
+    this.asyncResultsEviction.clear();
+
+    // 5. Detach all open SSE bus subscribers BEFORE closing the server.
+    //    Without this, listeners outlive the connection because Bun's
+    //    forced socket close does not always fire ReadableStream.cancel
+    //    synchronously, leaving handlers attached to the bus and
+    //    keeping the event loop alive.
+    if (this.openSSECleanups.size > 0) {
+      console.log(`[vinyan-api] Closing ${this.openSSECleanups.size} open SSE stream(s)...`);
+      const cleanups = [...this.openSSECleanups];
+      this.openSSECleanups.clear();
+      for (const cleanup of cleanups) {
+        try {
+          cleanup();
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+
+    // 6. Close any still-open WebSocket clients.
+    if (this.wsClients.size > 0) {
+      console.log(`[vinyan-api] Closing ${this.wsClients.size} WebSocket client(s)...`);
+      for (const client of this.wsClients) {
+        try {
+          (client.ws as { close?: () => void }).close?.();
+        } catch {
+          /* best-effort */
+        }
+      }
+      this.wsClients.clear();
+    }
+
+    // 7. Force-close any remaining TCP connections. Without `true`,
+    //    Bun.serve.stop() waits indefinitely for long-lived SSE/WS to
+    //    drain — which they never do on their own — so Ctrl+C appears
+    //    to "do nothing".
+    this.server?.stop(true);
     this.server = null;
 
     console.log('[vinyan-api] Shutdown complete');

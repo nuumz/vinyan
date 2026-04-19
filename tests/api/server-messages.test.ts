@@ -284,12 +284,14 @@ describe('API Server — Agent Conversation messages', () => {
 
   // ── Clarification round-trip ─────────────────────────────
 
-  test('input-required round-trip: first call pauses, second call injects CLARIFIED constraint', async () => {
+  test('input-required round-trip: second call batches reply and preserves original goal', async () => {
     const sessionId = await createSession();
     const questions = [
       'Which helper did you mean — auth or utils?',
       'Should the old one stay as an alias?',
     ];
+    const originalGoal = 'refactor the helper';
+    const replyContent = 'the auth one; no, remove it entirely';
 
     // Turn 1: the agent pauses with two questions.
     mockBehavior = (input) => inputRequiredResult(input, questions);
@@ -297,7 +299,7 @@ describe('API Server — Agent Conversation messages', () => {
       req(`/api/v1/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ content: 'refactor the helper' }),
+        body: JSON.stringify({ content: originalGoal }),
       }),
     );
 
@@ -312,14 +314,16 @@ describe('API Server — Agent Conversation messages', () => {
     expect(firstData.session.pendingClarifications).toEqual(questions);
 
     // Turn 2: the user answers. The server must auto-detect that the
-    // previous turn was input-required and inject CLARIFIED:<q>=><answer>
-    // constraints into the next TaskInput.
+    // previous turn was input-required and (a) pack the open questions +
+    // reply into a single CLARIFICATION_BATCH constraint, (b) anchor the
+    // task's goal to the original user request rather than overwriting it
+    // with the reply text.
     mockBehavior = (input) => completedResult(input, 'applied');
     const secondRes = await server.handleRequest(
       req(`/api/v1/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ content: 'the auth one; no, remove it entirely' }),
+        body: JSON.stringify({ content: replyContent }),
       }),
     );
 
@@ -332,20 +336,27 @@ describe('API Server — Agent Conversation messages', () => {
     // After completion, no more pending clarifications.
     expect(secondData.session.pendingClarifications).toEqual([]);
 
-    // Critically: the SECOND captured TaskInput should carry the
-    // CLARIFIED: constraints for BOTH questions so
-    // buildInitUserMessage renders them in the init prompt.
+    // Critically: the SECOND captured TaskInput should carry exactly ONE
+    // CLARIFICATION_BATCH constraint (not N fan-out CLARIFIED entries) and
+    // its goal should be the ORIGINAL user request — the reply text only
+    // appears inside the batch payload.
     expect(capturedInputs).toHaveLength(2);
     const secondInput = capturedInputs[1]!;
-    const constraints = secondInput.constraints ?? [];
-    expect(constraints).toContain(
-      `CLARIFIED:${questions[0]}=>the auth one; no, remove it entirely`,
-    );
-    expect(constraints).toContain(
-      `CLARIFIED:${questions[1]}=>the auth one; no, remove it entirely`,
-    );
-    // And the sessionId is still set so core-loop can load history.
+    expect(secondInput.goal).toBe(originalGoal);
     expect(secondInput.sessionId).toBe(sessionId);
+
+    const constraints = secondInput.constraints ?? [];
+    const batches = constraints.filter((c) => c.startsWith('CLARIFICATION_BATCH:'));
+    expect(batches).toHaveLength(1);
+    const batch = JSON.parse(batches[0]!.slice('CLARIFICATION_BATCH:'.length)) as {
+      questions: string[];
+      reply: string;
+    };
+    expect(batch.questions).toEqual(questions);
+    expect(batch.reply).toBe(replyContent);
+
+    // And no legacy fan-out CLARIFIED:<q>=><a> entries leak in.
+    expect(constraints.some((c) => c.startsWith('CLARIFIED:'))).toBe(false);
   });
 
   test('clarifications are one-shot: a third call does NOT reinject them', async () => {
@@ -371,7 +382,7 @@ describe('API Server — Agent Conversation messages', () => {
       }),
     );
     const turn2Constraints = capturedInputs[1]!.constraints ?? [];
-    expect(turn2Constraints.some((c) => c.startsWith('CLARIFIED:'))).toBe(true);
+    expect(turn2Constraints.some((c) => c.startsWith('CLARIFICATION_BATCH:'))).toBe(true);
 
     // Turn 3: a fresh intent — clarifications should NOT be re-injected
     // because the previous assistant turn was a plain completion, not
@@ -385,7 +396,72 @@ describe('API Server — Agent Conversation messages', () => {
     );
     expect(capturedInputs).toHaveLength(3);
     const turn3Constraints = capturedInputs[2]!.constraints ?? [];
+    expect(turn3Constraints.some((c) => c.startsWith('CLARIFICATION_BATCH:'))).toBe(false);
     expect(turn3Constraints.some((c) => c.startsWith('CLARIFIED:'))).toBe(false);
+    // Turn 3's goal is the fresh intent, not any prior text.
+    expect(capturedInputs[2]!.goal).toBe('now do something else');
+  });
+
+  test('re-clarification chain keeps the root goal across multiple rounds', async () => {
+    const sessionId = await createSession();
+    const rootGoal = 'ช่วยแต่งนิยายก่อนนอนให้สักเรื่อง';
+
+    // Turn 1: user asks, agent needs clarification.
+    mockBehavior = (input) => inputRequiredResult(input, ['แนวอะไรดี?']);
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: rootGoal }),
+      }),
+    );
+
+    // Turn 2: user answers partially, agent asks a second clarification.
+    mockBehavior = (input) => inputRequiredResult(input, ['ยาวแค่ไหน?']);
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'โรแมนติก' }),
+      }),
+    );
+
+    // Turn 3: user answers the second clarification; agent finishes.
+    mockBehavior = (input) => completedResult(input, 'เขียนเสร็จแล้ว');
+    await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'สั้นๆ 500 คำ' }),
+      }),
+    );
+
+    expect(capturedInputs).toHaveLength(3);
+    // Every turn in the clarification chain must resolve to the same root
+    // goal, not to the intermediate reply text.
+    expect(capturedInputs[1]!.goal).toBe(rootGoal);
+    expect(capturedInputs[2]!.goal).toBe(rootGoal);
+
+    // Each follow-up turn carries its own CLARIFICATION_BATCH with the
+    // NEW question being answered (not the full accumulated history).
+    const batch2 = (capturedInputs[1]!.constraints ?? []).find((c) =>
+      c.startsWith('CLARIFICATION_BATCH:'),
+    )!;
+    const batch3 = (capturedInputs[2]!.constraints ?? []).find((c) =>
+      c.startsWith('CLARIFICATION_BATCH:'),
+    )!;
+    const parsed2 = JSON.parse(batch2.slice('CLARIFICATION_BATCH:'.length)) as {
+      questions: string[];
+      reply: string;
+    };
+    const parsed3 = JSON.parse(batch3.slice('CLARIFICATION_BATCH:'.length)) as {
+      questions: string[];
+      reply: string;
+    };
+    expect(parsed2.questions).toEqual(['แนวอะไรดี?']);
+    expect(parsed2.reply).toBe('โรแมนติก');
+    expect(parsed3.questions).toEqual(['ยาวแค่ไหน?']);
+    expect(parsed3.reply).toBe('สั้นๆ 500 คำ');
   });
 
   // ── GET /api/v1/sessions/:id/messages ───────────────────
@@ -612,9 +688,11 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
     expect(completePayload.result.clarificationNeeded).toEqual(questions);
   });
 
-  test('streamed clarification follow-up carries CLARIFIED: constraint on the next turn', async () => {
+  test('streamed clarification follow-up batches reply and preserves original goal', async () => {
     const sessionId = await createSession();
     const questions = ['Which file?'];
+    const originalGoal = 'do it';
+    const reply = 'src/auth.ts';
 
     // Turn 1 (stream): input-required
     mockBehavior = (input) => inputRequiredResult(input, questions);
@@ -622,19 +700,20 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
       req(`/api/v1/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ content: 'do it', stream: true }),
+        body: JSON.stringify({ content: originalGoal, stream: true }),
       }),
     );
     await firstRes.text();
     await flushMicrotasks();
 
-    // Turn 2 (stream): user answers — server auto-wraps as CLARIFIED: constraint
+    // Turn 2 (stream): user answers — server packs questions + reply into a
+    // single CLARIFICATION_BATCH constraint and keeps the original goal.
     mockBehavior = (input) => completedResult(input, 'done');
     const secondRes = await server.handleRequest(
       req(`/api/v1/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ content: 'src/auth.ts', stream: true }),
+        body: JSON.stringify({ content: reply, stream: true }),
       }),
     );
     await secondRes.text();
@@ -642,7 +721,16 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
 
     expect(capturedInputs).toHaveLength(2);
     const secondInput = capturedInputs[1]!;
-    expect(secondInput.constraints).toContain(`CLARIFIED:${questions[0]}=>src/auth.ts`);
+    expect(secondInput.goal).toBe(originalGoal);
+    const constraints = secondInput.constraints ?? [];
+    const batches = constraints.filter((c) => c.startsWith('CLARIFICATION_BATCH:'));
+    expect(batches).toHaveLength(1);
+    const parsed = JSON.parse(batches[0]!.slice('CLARIFICATION_BATCH:'.length)) as {
+      questions: string[];
+      reply: string;
+    };
+    expect(parsed.questions).toEqual(questions);
+    expect(parsed.reply).toBe(reply);
   });
 
   test('stream:true with unknown session returns JSON 404 (not SSE)', async () => {

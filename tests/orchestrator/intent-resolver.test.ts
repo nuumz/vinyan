@@ -734,6 +734,52 @@ describe('composeDeterministicCandidate', () => {
     expect(candidate.directToolCall).toBeUndefined();
     expect(candidate.type).toBe('uncertain');
   });
+
+  test('inspection verb (Thai ตรวจสอบ) with tool-needed → full-pipeline, NOT direct-tool', () => {
+    // Regression for session e8ab15a7: "ช่วยตรวจสอบการทำงานของ Vinyan" was
+    // incorrectly routed to direct-tool (no resolvable command) causing an
+    // A5 contradiction with the LLM. Inspection verbs want a textual report.
+    const input = makeInput('ช่วยตรวจสอบการทำงานของ Vinyan');
+    const u = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+    });
+    const candidate = composeDeterministicCandidate(input, u);
+    expect(candidate.strategy).toBe('full-pipeline');
+    expect(candidate.directToolCall).toBeUndefined();
+    expect(candidate.deterministicCandidate.ambiguous).toBe(true);
+  });
+
+  test('inspection verb (English check) with tool-needed → full-pipeline', () => {
+    const input = makeInput('check git status and summarize');
+    const u = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+    });
+    const candidate = composeDeterministicCandidate(input, u);
+    expect(candidate.strategy).toBe('full-pipeline');
+    expect(candidate.directToolCall).toBeUndefined();
+  });
+
+  test('unresolvable direct-tool rule is demoted to full-pipeline (no hollow direct-tool)', () => {
+    // STU says execute + tool-needed but the goal carries no recognizable
+    // app/launch idiom, so classifyDirectTool returns null. The old code
+    // would still emit strategy='direct-tool' with no directToolCall — an
+    // empty artifact that then fights the LLM. Demote instead.
+    const input = makeInput('ทำตามคำสั่งให้หน่อย');
+    const u = makeUnderstanding(input, {
+      taskDomain: 'general-reasoning',
+      taskIntent: 'execute',
+      toolRequirement: 'tool-needed',
+    });
+    const candidate = composeDeterministicCandidate(input, u);
+    // Rule-mapper emits direct-tool, composer demotes to full-pipeline.
+    expect(candidate.strategy).toBe('full-pipeline');
+    expect(candidate.directToolCall).toBeUndefined();
+    expect(candidate.type).toBe('uncertain');
+  });
 });
 
 describe('resolveIntent (deterministic pipeline)', () => {

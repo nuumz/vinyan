@@ -5,6 +5,7 @@
  * A1: the prompt only shapes candidate generation — acceptance/rejection is
  * performed by the rule-based ReplanEngine gates, not by the LLM itself.
  */
+import { userConstraintsOnly } from '../constraints/pipeline-constraints.ts';
 import type { ClassifiedFailure } from '../failure-classifier.ts';
 import type { GoalSatisfaction } from '../goal-satisfaction/goal-evaluator.ts';
 import type { PerceptualHierarchy, TaskInput, WorkingMemoryState } from '../types.ts';
@@ -78,7 +79,14 @@ Previous plan: ${failure.previousPlanDescription}`;
   }
 
   if (input.constraints?.length) {
-    userPrompt += `\n\nConstraints:\n${input.constraints.map((c) => `- ${c}`).join('\n')}`;
+    // Only surface user intent to the replanner LLM. Orchestrator-internal
+    // prefixes (COMPREHENSION_SUMMARY:, CLARIFIED:, MIN_ROUTING_LEVEL:, etc.)
+    // are parsed elsewhere; dumping them here as JSON bullets only pollutes
+    // the prompt and can confuse the model into preserving the metadata.
+    const userCs = userConstraintsOnly(input.constraints);
+    if (userCs.length > 0) {
+      userPrompt += `\n\nConstraints:\n${userCs.map((c) => `- ${c}`).join('\n')}`;
+    }
   }
 
   if (input.acceptanceCriteria?.length) {

@@ -61,7 +61,7 @@ describe('compressPerception', () => {
       },
     });
 
-    const budgetTokens = Math.floor(4000 * 0.30);
+    const budgetTokens = Math.floor(4000 * 0.3);
     const result = compressPerception(p, 4000);
     expect(estimateTokens(result)).toBeLessThanOrEqual(budgetTokens);
   });
@@ -88,7 +88,7 @@ describe('compressPerception', () => {
     const result = compressPerception(p, 2000);
 
     // All target facts present
-    const resultTargetFacts = result.verifiedFacts.filter(f => f.target === 'src/main.ts');
+    const resultTargetFacts = result.verifiedFacts.filter((f) => f.target === 'src/main.ts');
     expect(resultTargetFacts).toHaveLength(5);
     for (const tf of targetFacts) {
       expect(resultTargetFacts).toContainEqual(tf);
@@ -176,5 +176,28 @@ describe('compressPerception', () => {
     const snapshot = JSON.parse(JSON.stringify(p));
     compressPerception(p, 1500);
     expect(p).toEqual(snapshot);
+  });
+
+  it('compressionNotes records what was dropped', () => {
+    const p = makePerception({
+      diagnostics: {
+        lintWarnings: Array.from({ length: 47 }, (_, i) => ({
+          file: `src/w-${i}.ts`,
+          line: i,
+          message: `Lint ${'x'.repeat(60)}`,
+        })),
+        typeErrors: [],
+        failingTests: [],
+      },
+    });
+
+    const result = compressPerception(p, 1200);
+    expect(result.compressionNotes).toBeDefined();
+    expect(result.compressionNotes!.some((n) => n.startsWith('lintWarnings: dropped 47'))).toBe(true);
+  });
+
+  it('compressionNotes absent when nothing was dropped', () => {
+    const result = compressPerception(makePerception(), 128_000);
+    expect(result.compressionNotes).toBeUndefined();
   });
 });

@@ -51,6 +51,9 @@ export class WriteQueue<T> {
   start(): void {
     if (this.timer !== null) return;
     this.timer = setInterval(() => void this.flushOnce(), this.flushIntervalMs);
+    // Periodic write-behind flusher must not keep the event loop alive
+    // on its own — graceful shutdown should flush via flush() + stop().
+    (this.timer as { unref?: () => void }).unref?.();
   }
 
   /** Stop the periodic flush timer. Does NOT flush remaining items — call flush() first. */

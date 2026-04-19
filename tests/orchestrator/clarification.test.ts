@@ -960,4 +960,155 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
     expect(message).toContain('## User Constraints');
     expect(message).toContain(malformed);
   });
+
+  it('renders CLARIFICATION_BATCH as questions + single free-form reply', () => {
+    const payload = {
+      questions: [
+        'อยากได้แนวเรื่องแบบไหน?',
+        'กลุ่มผู้อ่านเป็นใคร?',
+        'ความยาวเท่าไหร่?',
+      ],
+      reply: 'แนวโรแมนติก, วัยรุ่น, สั้นๆ 500 คำ',
+    };
+    const message = buildInitUserMessage(
+      'ช่วยแต่งนิยายก่อนนอนให้สักเรื่อง',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([`CLARIFICATION_BATCH:${JSON.stringify(payload)}`]),
+    );
+
+    expect(message).toContain('## User Clarifications');
+    // All questions appear as a bulleted list
+    for (const q of payload.questions) expect(message).toContain(q);
+    // The user's single free-form reply is quoted in full (no fan-out)
+    expect(message).toContain(payload.reply);
+    // The LLM is told to infer the Q→A mapping from the reply
+    expect(message).toMatch(/infer the mapping/i);
+    // The raw CLARIFICATION_BATCH prefix must NOT leak into the prompt
+    expect(message).not.toContain('CLARIFICATION_BATCH:');
+    // The task goal (not the reply) is the rendered goal
+    expect(message).toContain('## Goal\nช่วยแต่งนิยายก่อนนอนให้สักเรื่อง');
+  });
+
+  it('degrades a malformed CLARIFICATION_BATCH (non-JSON) to a plain constraint', () => {
+    const malformed = 'CLARIFICATION_BATCH:not-valid-json{';
+    const message = buildInitUserMessage(
+      'test',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([malformed]),
+    );
+
+    expect(message).not.toContain('## User Clarifications');
+    expect(message).toContain('## User Constraints');
+    expect(message).toContain(malformed);
+  });
+
+  it('degrades a CLARIFICATION_BATCH with empty questions to a plain constraint', () => {
+    const empty = `CLARIFICATION_BATCH:${JSON.stringify({ questions: [], reply: 'ok' })}`;
+    const message = buildInitUserMessage(
+      'test',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([empty]),
+    );
+
+    expect(message).not.toContain('## User Clarifications');
+    expect(message).toContain('## User Constraints');
+  });
+
+  it('coexists: CLARIFIED and CLARIFICATION_BATCH render in the same section', () => {
+    const message = buildInitUserMessage(
+      'task',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([
+        'CLARIFIED:Which file?=>src/auth.ts',
+        `CLARIFICATION_BATCH:${JSON.stringify({
+          questions: ['Audience?', 'Length?'],
+          reply: 'teens, 500 words',
+        })}`,
+      ]),
+    );
+
+    // Both formats surface under a single User Clarifications heading.
+    expect(message).toContain('## User Clarifications');
+    expect(message).toContain('src/auth.ts');
+    expect(message).toContain('Audience?');
+    expect(message).toContain('Length?');
+    expect(message).toContain('teens, 500 words');
+  });
+
+  it('renders MEMORY_CONTEXT entries as a Relevant User Memory section with trust tag', () => {
+    const payload = {
+      entries: [
+        {
+          ref: 'user_role.md',
+          type: 'user',
+          description: 'Backend engineer',
+          trustTier: 'probabilistic',
+          content: 'Deep Go + TS expertise; prefers functional style.',
+        },
+        {
+          ref: 'feedback_testing.md',
+          type: 'feedback',
+          description: 'prefer integration over mocks',
+          trustTier: 'probabilistic',
+          content: 'Mock abuse has bitten us; real DB integration beats mocks.',
+        },
+      ],
+    };
+    const message = buildInitUserMessage(
+      'refactor the auth layer',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([`MEMORY_CONTEXT:${JSON.stringify(payload)}`]),
+    );
+
+    expect(message).toContain('## Relevant User Memory');
+    // Section is XML-tagged so the LLM parses trust as a structured
+    // attribute, not prose — matches Claude Code <system-reminder> pattern.
+    expect(message).toContain('<user-memory');
+    expect(message).toContain('aggregate-trust="probabilistic"');
+    expect(message).toContain('trust="probabilistic"');
+    // Entry refs + descriptions surface as attributes / child elements.
+    expect(message).toContain('ref="user_role.md"');
+    expect(message).toContain('ref="feedback_testing.md"');
+    expect(message).toContain('Backend engineer');
+    expect(message).toContain('prefer integration over mocks');
+    // Content is present.
+    expect(message).toContain('Mock abuse has bitten us');
+    // Explicit weak-preference framing — protects against imperative
+    // instructions smuggled into memory files.
+    expect(message).toMatch(/WEAK PREFERENCE HINT/);
+    // Raw MEMORY_CONTEXT prefix must NOT leak into the prompt.
+    expect(message).not.toContain('MEMORY_CONTEXT:');
+  });
+
+  it('degrades a malformed MEMORY_CONTEXT (non-JSON) to a plain constraint', () => {
+    const malformed = 'MEMORY_CONTEXT:not-valid{';
+    const message = buildInitUserMessage(
+      'task',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([malformed]),
+    );
+    // No memory section created when payload is malformed.
+    expect(message).not.toContain('## Relevant User Memory');
+    // Falls through to User Constraints so nothing is silently lost.
+    expect(message).toContain('## User Constraints');
+    expect(message).toContain(malformed);
+  });
+
+  it('drops MEMORY_CONTEXT entries with missing required fields', () => {
+    const payload = { entries: [{ ref: 'user.md' /* missing everything else */ }] };
+    const message = buildInitUserMessage(
+      'task',
+      emptyPerception,
+      undefined,
+      makeUnderstanding([`MEMORY_CONTEXT:${JSON.stringify(payload)}`]),
+    );
+    // All entries dropped → no memory section.
+    expect(message).not.toContain('## Relevant User Memory');
+  });
 });

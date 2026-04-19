@@ -13,6 +13,7 @@
     "test:integration": "bun test tests/gate tests/oracle tests/orchestrator tests/world-graph tests/integration",
     "test:benchmark": "bun test tests/orchestrator/e2e-benchmark.test.ts",
     "test:smoke": "bun test tests/smoke/ --timeout 120000",
+    "test:golden": "bun test tests/golden/ --timeout 60000",
     "build:worker": "bun build src/orchestrator/worker/worker-entry.ts --outfile dist/worker-entry.js --target bun",
     "test:slow": "bun test load-tests/ --timeout 120000",
     "test:all": "bun run test && bun run test:integration"
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "chokidar": "^5.0.0",
+    "sqlite-vec": "^0.1.9",
     "zod": "^4.3.6"
   }
 }

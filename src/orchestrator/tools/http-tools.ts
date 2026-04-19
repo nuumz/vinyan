@@ -2,15 +2,21 @@
  * HTTP tools — http_get.
  */
 
-import type { Tool, ToolDescriptor } from './tool-interface.ts';
 import { makeResult } from './built-in-tools.ts';
+import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 const HTTP_GET_TIMEOUT_MS = 10_000;
 const HTTP_GET_MAX_BYTES = 50 * 1024; // 50KB
 
 export const httpGet: Tool = {
   name: 'http_get',
-  description: 'HTTP GET with 10s timeout and 50KB response limit (no auth headers)',
+  description: `Fetch a URL with HTTP GET and return the response body as text.
+
+Usage:
+- 10s timeout, 50KB cap on the response body (responses over the cap are truncated with a "[truncated at ...]" marker).
+- No custom headers, no auth, no cookies, no redirects beyond what the runtime allows. If a fetch needs credentials, say so in uncertainties instead of attempting it.
+- Non-2xx responses come back with status='error' plus the status line in the error field; the body is still in output so you can inspect the error page.
+- Reserve for pulling docs, public JSON APIs, or reference material. Do NOT use it as a file mirror for local workspace content — use file_read.`,
   minIsolationLevel: 1,
   category: 'shell',
   sideEffect: false,

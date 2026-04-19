@@ -141,7 +141,7 @@ describe('SessionManager — retriever.indexTurn hook (E4)', () => {
   });
 
   it('getContextRetriever returns the wired retriever', () => {
-    expect(manager.getContextRetriever()).toBe(stub);
+    expect(manager.getContextRetriever()).toBe(stub as unknown as ContextRetriever);
   });
 
   it('getContextRetriever returns undefined when no retriever wired', () => {

@@ -1852,31 +1852,99 @@ async function executeTaskCore(
     }
     const startTime = Date.now();
 
-    // Conversation Agent Mode: load conversation history if session context present
-    // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
+    // Conversation Agent Mode + Plan commit E5: load conversation context.
+    //
+    // Preference order:
+    //   1. ContextRetriever.retrieve(sessionId, goal) — hybrid recency +
+    //      semantic + pins + summary ladder. Returns a ContextBundle; we
+    //      flatten it to a Turn[] for PhaseContext downstream consumers.
+    //   2. SessionManager.getTurnsHistory(sessionId, 20) — recency-only
+    //      fallback when no retriever is wired.
+    //   3. SessionManager.getConversationHistoryCompacted — legacy
+    //      ConversationEntry path, kept until A6/A7 land.
+    //
+    // A3: none of these paths run an LLM. Rule-based compaction keeps
+    // governance deterministic.
     let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
-    // Plan commit A (A5): Turn-model history loaded alongside ConversationEntry
-    // so downstream phases and workers can prefer the richer blocks when both
-    // are present. A7 drops the legacy ConversationEntry path once all readers
-    // have migrated.
     let sessionTurns: import('./types.ts').Turn[] | undefined;
+    let retrievalBundle:
+      | import('../memory/retrieval.ts').ContextBundle
+      | undefined;
+
     if (input.sessionId && deps.sessionManager) {
+      // Legacy path — A7 removes.
       try {
         const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
+        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(
+          input.sessionId,
+          historyBudget,
+        );
       } catch {
-        // Non-fatal: proceed without conversation history
+        /* non-fatal */
       }
-      try {
-        const mgr = deps.sessionManager as unknown as {
-          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
-        };
-        if (typeof mgr.getTurnsHistory === 'function') {
-          const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
-          if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+
+      // E5: retriever-based hybrid context when available.
+      const mgr = deps.sessionManager as unknown as {
+        getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        getContextRetriever?: () =>
+          | import('../memory/retrieval.ts').ContextRetriever
+          | undefined;
+      };
+      const retriever =
+        typeof mgr.getContextRetriever === 'function'
+          ? mgr.getContextRetriever()
+          : undefined;
+
+      if (retriever) {
+        try {
+          retrievalBundle = await retriever.retrieve(input.sessionId, input.goal);
+          // Flatten bundle into Turn[] (dedup by id): recent → semantic → pins.
+          // Summary (when present) is injected as a synthetic assistant turn
+          // so downstream workers see it in-context.
+          const flat: import('./types.ts').Turn[] = [];
+          const seen = new Set<string>();
+          for (const group of [
+            retrievalBundle.recent,
+            retrievalBundle.semantic,
+            retrievalBundle.pins,
+          ]) {
+            for (const t of group) {
+              if (seen.has(t.id)) continue;
+              seen.add(t.id);
+              flat.push(t);
+            }
+          }
+          if (retrievalBundle.summary && retrievalBundle.summary.text.length > 0) {
+            flat.unshift({
+              id: `ctx-summary-${input.sessionId}`,
+              sessionId: input.sessionId,
+              seq: -1,
+              role: 'assistant',
+              blocks: [{ type: 'text', text: retrievalBundle.summary.text }],
+              tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+              createdAt: Date.now(),
+            });
+          }
+          if (flat.length > 0) sessionTurns = flat;
+          // Retrieval events are not yet registered in the bus event map.
+          // A follow-up commit can add retrieval:bundle / retrieval:error
+          // once the schema is agreed. For now, the metadata is reachable
+          // via the retriever's internal warn-once log.
+        } catch (_err) {
+          // Non-fatal: fall through to recency-only below.
         }
-      } catch {
-        // Non-fatal: Turn-model history is additive; falling back to legacy path is safe.
+      }
+
+      // Fallback: recency-only when retriever missing OR retrieve() threw.
+      if (!sessionTurns) {
+        try {
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
+            if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+          }
+        } catch {
+          /* non-fatal — A7 drops legacy path entirely */
+        }
       }
     }
 

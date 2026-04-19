@@ -20,7 +20,6 @@ import { isDefaultVisible, mapBusEvent } from './event-mapper.ts';
 const LOG_ONLY_EVENTS: BusEventName[] = [
   'task:timeout',
   'task:explore',
-  'worker:complete',
   'worker:error',
   'profile:registered',
   'profile:promoted',
@@ -227,6 +226,12 @@ export class EmbeddedDataSource implements DataSource {
       ['agent:session_end', (p) => this.onAgentSessionEnd(p)],
       ['agent:turn_complete', (p) => this.onAgentTurnComplete(p)],
       ['agent:tool_executed', (p) => this.onAgentToolExecuted(p)],
+      // Phase 0.5: per-conversation live tool status (chat view "preparing" line).
+      ['agent:tool_started', (p) => this.onAgentToolStarted(p)],
+      // Phase 0 W4: capture perception-compressor notes from worker output so
+      // the Tasks pane can render a [PERCEPTION TRUNCATED] block. Best-effort —
+      // worker:complete also stays in LOG_ONLY_EVENTS for the event log itself.
+      ['worker:complete', (p) => this.onWorkerComplete(p)],
       // Phase D: structured clarifications (renders as selectable options).
       ['agent:clarification_requested', (p) => this.onClarificationRequested(p)],
       // Phase E: workflow plan + per-step progress (TODO checklist).
@@ -314,6 +319,13 @@ export class EmbeddedDataSource implements DataSource {
     task.durationMs = task.completedAt - task.startedAt;
     const qs = result.qualityScore as Record<string, unknown> | undefined;
     task.qualityScore = qs?.composite as number | undefined;
+    // Phase 0 W4: surface perception-compressor notes if the result/trace
+    // carries them. Best-effort — silently no-op when the field is absent.
+    const trace = result.trace as Record<string, unknown> | undefined;
+    const notes = (trace?.compressionNotes ?? result.compressionNotes) as string[] | undefined;
+    if (Array.isArray(notes) && notes.length > 0) {
+      task.compressionNotes = notes;
+    }
     // Mark all pipeline steps as done
     for (const step of Object.keys(task.pipeline) as Array<keyof typeof task.pipeline>) {
       task.pipeline[step] = 'done';
@@ -381,9 +393,7 @@ export class EmbeddedDataSource implements DataSource {
           timestamp: h.timestamp,
           taskId: h.taskId || undefined,
         }));
-        this.state.chatPendingClarifications = sm.getPendingClarifications(
-          this.state.chatActiveSessionId,
-        );
+        this.state.chatPendingClarifications = sm.getPendingClarifications(this.state.chatActiveSessionId);
       }
       this.state.dirty = true;
     } catch {
@@ -604,11 +614,43 @@ export class EmbeddedDataSource implements DataSource {
 
   private onAgentToolExecuted(p: Record<string, unknown>): void {
     const taskId = String(p.taskId ?? '');
+    // Phase 0.5: clear the chat-view "running" entry for this tool call.
+    const callId = p.toolCallId as string | undefined;
+    if (callId) this.state.chatRunningTools.delete(callId);
     const session = this.state.activeSessions.get(taskId);
-    if (!session) return;
+    if (!session) {
+      // Still bump dirty so the chat view re-renders the cleared entry.
+      if (callId) this.state.dirty = true;
+      return;
+    }
     session.currentTool = String(p.toolName ?? '');
     session.lastToolAt = Date.now();
     this.state.dirty = true;
+  }
+
+  private onAgentToolStarted(p: Record<string, unknown>): void {
+    // Mirrors src/cli/chat-stream-renderer.ts:224 — populate the
+    // per-conversation "running tools" map so the chat view can show
+    // "⚙ preparing <tool>…" until the matching agent:tool_executed
+    // arrives. Best-effort: synthesizes a callId when missing.
+    const toolName = String(p.toolName ?? '?');
+    const callId = (p.toolCallId as string | undefined) ?? `${toolName}-${Date.now()}`;
+    this.state.chatRunningTools.set(callId, { tool: toolName, startedAt: Date.now() });
+    this.state.dirty = true;
+  }
+
+  private onWorkerComplete(p: Record<string, unknown>): void {
+    const taskId = String(p.taskId ?? '');
+    const task = this.state.tasks.get(taskId);
+    if (!task) return;
+    // Phase 0 W4: WorkerOutput may carry perception-compressor notes.
+    // Field is optional; silently skip when absent.
+    const output = p.output as Record<string, unknown> | undefined;
+    const notes = output?.compressionNotes as string[] | undefined;
+    if (Array.isArray(notes) && notes.length > 0) {
+      task.compressionNotes = notes;
+      this.state.dirty = true;
+    }
   }
 
   // ── Phase D: structured clarifications ──────────────────────────

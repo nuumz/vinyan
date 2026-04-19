@@ -41,30 +41,15 @@ export function renderChat(state: TUIState): string {
   const rightWidth = termWidth - leftWidth - 1;
   const panelHeight = termHeight - 4; // header + tab bar + spacing + hints
 
-  const sessionsPanel = renderSessionList(
-    state,
-    leftWidth,
-    panelHeight,
-    state.focusedPanel === 0,
-  );
-  const conversationPanel = renderConversation(
-    state,
-    rightWidth,
-    panelHeight,
-    state.focusedPanel === 1,
-  );
+  const sessionsPanel = renderSessionList(state, leftWidth, panelHeight, state.focusedPanel === 0);
+  const conversationPanel = renderConversation(state, rightWidth, panelHeight, state.focusedPanel === 1);
 
   return sideBySide(sessionsPanel, conversationPanel);
 }
 
 // ── Left pane: session list ─────────────────────────────────────────
 
-function renderSessionList(
-  state: TUIState,
-  width: number,
-  height: number,
-  focused: boolean,
-): string {
+function renderSessionList(state: TUIState, width: number, height: number, focused: boolean): string {
   const innerW = width - 2;
   const visibleRows = height - 3;
   const lines: string[] = [];
@@ -98,11 +83,7 @@ function formatSessionRow(session: ChatSessionSummary, innerW: number, active: b
   const idDisplay = active ? color(shortId, ANSI.bold, ANSI.cyan) : color(shortId, ANSI.bold);
   // Status badge color
   const statusColor =
-    session.status === 'active'
-      ? ANSI.green
-      : session.status === 'suspended'
-        ? ANSI.yellow
-        : ANSI.gray;
+    session.status === 'active' ? ANSI.green : session.status === 'suspended' ? ANSI.yellow : ANSI.gray;
   const status = color(session.status.padEnd(9), statusColor);
   // Message count (badge-like)
   const countLabel = `${session.messageCount}msg`;
@@ -126,12 +107,7 @@ function formatRelativeAge(ms: number): string {
 
 // ── Right pane: conversation messages ───────────────────────────────
 
-function renderConversation(
-  state: TUIState,
-  width: number,
-  height: number,
-  focused: boolean,
-): string {
+function renderConversation(state: TUIState, width: number, height: number, focused: boolean): string {
   const innerW = width - 2;
   const lines: string[] = [];
 
@@ -147,6 +123,15 @@ function renderConversation(
 
   const headerSessionShort = state.chatActiveSessionId.slice(0, 8);
   lines.push(dim(`  Session: ${headerSessionShort}`));
+
+  // Phase 0.5: live "running tools" inline status — mirrors the cli
+  // chat-stream-renderer "⚙ preparing <tool>…" line. Cleared when
+  // agent:tool_executed fires for the same tool-call id.
+  if (state.chatRunningTools.size > 0) {
+    for (const { tool } of state.chatRunningTools.values()) {
+      lines.push(truncate(`  ${color('⚙', ANSI.yellow)} ${dim('preparing')} ${tool}…`, innerW));
+    }
+  }
 
   // Pending clarifications banner — fired when either:
   //   (a) the most recent assistant turn was an [INPUT-REQUIRED] block
@@ -175,11 +160,7 @@ function renderConversation(
 
   // Phase E: workflow TODO checklist (fired by `workflow:plan_ready`).
   if (state.chatWorkflowPlan && state.chatWorkflowPlan.steps.length > 0) {
-    for (const block of renderWorkflowPlan(
-      state.chatWorkflowPlan.steps,
-      state.chatWorkflowStepStatus,
-      innerW,
-    )) {
+    for (const block of renderWorkflowPlan(state.chatWorkflowPlan.steps, state.chatWorkflowStepStatus, innerW)) {
       lines.push(block);
     }
     lines.push('');
@@ -250,10 +231,7 @@ export function renderMessageBlock(
  *     <content>...    ← indented, wrapped to innerW-4
  */
 function formatMessage(msg: ChatMessageEntry, innerW: number): string[] {
-  const roleLabel =
-    msg.role === 'user'
-      ? color('You', ANSI.bold, ANSI.yellow)
-      : color('Vinyan', ANSI.bold, ANSI.green);
+  const roleLabel = msg.role === 'user' ? color('You', ANSI.bold, ANSI.yellow) : color('Vinyan', ANSI.bold, ANSI.green);
   const time = formatRelativeAge(Date.now() - msg.timestamp);
   const header = `  ${roleLabel} ${dim(`(${time} ago)`)}`;
 
@@ -320,10 +298,7 @@ export function wrapText(text: string, width: number): string[] {
  *
  * Free-text override is ALWAYS available; callers surface a hint line.
  */
-export function renderStructuredClarifications(
-  questions: ClarificationQuestion[],
-  innerW: number,
-): string[] {
+export function renderStructuredClarifications(questions: ClarificationQuestion[], innerW: number): string[] {
   const out: string[] = [];
   questions.forEach((q, idx) => {
     const prefix = questions.length > 1 ? `  Q${idx + 1}. ` : '  ';
@@ -333,19 +308,12 @@ export function renderStructuredClarifications(
       return;
     }
     q.options.forEach((opt, i) => {
-      const bracket = q.kind === 'multi'
-        ? color('[ ]', ANSI.yellow)
-        : color(`(${i + 1})`, ANSI.yellow);
+      const bracket = q.kind === 'multi' ? color('[ ]', ANSI.yellow) : color(`(${i + 1})`, ANSI.yellow);
       const hint = opt.hint ? dim(` — ${opt.hint}`) : '';
       out.push(truncate(`    ${bracket} ${opt.label}${hint}`, innerW));
     });
     if (q.kind === 'multi' && q.maxSelections) {
-      out.push(
-        truncate(
-          `    ${dim(`(เลือกได้สูงสุด ${q.maxSelections} ข้อ — พิมพ์หมายเลขคั่นด้วย comma)`)}`,
-          innerW,
-        ),
-      );
+      out.push(truncate(`    ${dim(`(เลือกได้สูงสุด ${q.maxSelections} ข้อ — พิมพ์หมายเลขคั่นด้วย comma)`)}`, innerW));
     }
   });
   return out;
@@ -376,11 +344,8 @@ export function renderWorkflowPlan(
           : status === 'failed'
             ? color('✗', ANSI.red)
             : color('○', ANSI.dim);
-    const label =
-      status === 'completed' ? dim(step.description) : step.description;
-    out.push(
-      truncate(`    ${glyph} ${label} ${dim(`[${step.strategy}]`)}`, innerW),
-    );
+    const label = status === 'completed' ? dim(step.description) : step.description;
+    out.push(truncate(`    ${glyph} ${label} ${dim(`[${step.strategy}]`)}`, innerW));
   }
   return out;
 }

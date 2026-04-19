@@ -3,7 +3,19 @@
  * Two-pane left-right layout with compact pipeline notation.
  */
 
-import { ANSI, bold, color, compactPipeline, confidenceGauge, dim, formatDuration, padEnd, panel, sideBySide, truncate } from '../renderer.ts';
+import {
+  ANSI,
+  bold,
+  color,
+  compactPipeline,
+  confidenceGauge,
+  dim,
+  formatDuration,
+  padEnd,
+  panel,
+  sideBySide,
+  truncate,
+} from '../renderer.ts';
 import type { PipelineStep, PipelineStepStatus, SortField, TaskDisplayState, TUIState } from '../types.ts';
 
 export function renderTasks(state: TUIState): string {
@@ -107,11 +119,23 @@ function getCachedTasks(state: TUIState): TaskDisplayState[] {
 
   const allTasks = [...state.tasks.values()];
   const filtered = state.filterQuery
-    ? allTasks.filter((t) => t.id.includes(state.filterQuery) || t.goal.includes(state.filterQuery) || t.status.includes(state.filterQuery))
+    ? allTasks.filter(
+        (t) =>
+          t.id.includes(state.filterQuery) ||
+          t.goal.includes(state.filterQuery) ||
+          t.status.includes(state.filterQuery),
+      )
     : allTasks;
   const result = sortTasks(filtered, state);
 
-  _taskCache = { size: state.tasks.size, generation: state.stateGeneration, filterQuery: state.filterQuery, sortField: field, sortDir: dir, result };
+  _taskCache = {
+    size: state.tasks.size,
+    generation: state.stateGeneration,
+    filterQuery: state.filterQuery,
+    sortField: field,
+    sortDir: dir,
+    result,
+  };
   return result;
 }
 
@@ -156,7 +180,9 @@ function renderTaskList(state: TUIState, width: number, height: number, focused:
         : task.status === 'running'
           ? formatDuration(Date.now() - task.startedAt)
           : '';
-      lines.push(truncate(`  ${icon} ${level}  ${riskOrQuality}${' '.repeat(Math.max(1, innerW - 30))}${duration}`, innerW));
+      lines.push(
+        truncate(`  ${icon} ${level}  ${riskOrQuality}${' '.repeat(Math.max(1, innerW - 30))}${duration}`, innerW),
+      );
     }
   }
 
@@ -180,12 +206,17 @@ function renderTaskDetail(state: TUIState, width: number, height: number, focuse
   const innerW = width - 4;
 
   lines.push(`${bold('Goal:')} ${truncate(task.goal, innerW - 6).trim()}`);
-  lines.push(
-    `${bold('Source:')} ${task.source}  ${bold('Worker:')} ${task.workerId ?? '-'}`,
-  );
-  lines.push(
-    `${bold('Risk:')} ${task.riskScore?.toFixed(2) ?? '-'}  ${bold('Level:')} L${task.routingLevel}`,
-  );
+  lines.push(`${bold('Source:')} ${task.source}  ${bold('Worker:')} ${task.workerId ?? '-'}`);
+  lines.push(`${bold('Risk:')} ${task.riskScore?.toFixed(2) ?? '-'}  ${bold('Level:')} L${task.routingLevel}`);
+
+  // Phase 0 W4: surface what the perception compressor dropped (e.g.
+  // "lintWarnings: dropped 47 entries"). Rendered only when present.
+  if (task.compressionNotes && task.compressionNotes.length > 0) {
+    lines.push(color('[PERCEPTION TRUNCATED]', ANSI.yellow));
+    for (const note of task.compressionNotes) {
+      lines.push(truncate(`  • ${note}`, innerW));
+    }
+  }
   lines.push('');
 
   // Pipeline 2×3 grid

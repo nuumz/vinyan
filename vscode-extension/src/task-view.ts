@@ -13,6 +13,12 @@ interface TrackedTask {
   routingLevel?: number;
   startTime: number;
   durationMs?: number;
+  /**
+   * Phase 0 W4: notes from the perception compressor describing what was
+   * dropped (e.g. "lintWarnings: dropped 47 entries"). Surfaced in the
+   * tree-item tooltip so users see redactions without opening the task panel.
+   */
+  compressionNotes?: string[];
 }
 
 export class TaskTreeProvider implements vscode.TreeDataProvider<TaskItem> {
@@ -57,6 +63,25 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskItem> {
           const success = result?.success as boolean ?? true;
           existing.status = success ? 'completed' : 'failed';
           existing.durationMs = Date.now() - existing.startTime;
+          // Phase 0 W4: copy compressionNotes through if the result/trace
+          // surfaces them. Best-effort — silently skip when absent.
+          const trace = result?.trace as Record<string, unknown> | undefined;
+          const notes = (trace?.compressionNotes ?? result?.compressionNotes) as string[] | undefined;
+          if (Array.isArray(notes) && notes.length > 0) {
+            existing.compressionNotes = notes;
+          }
+        }
+        break;
+      }
+      case 'worker:complete': {
+        const existing = this.tasks.get(taskId);
+        if (existing) {
+          // Phase 0 W4: WorkerOutput may carry compressionNotes too.
+          const output = payload.output as Record<string, unknown> | undefined;
+          const notes = output?.compressionNotes as string[] | undefined;
+          if (Array.isArray(notes) && notes.length > 0) {
+            existing.compressionNotes = notes;
+          }
         }
         break;
       }
@@ -143,7 +168,12 @@ class TaskItem extends vscode.TreeItem {
       parts.push(TaskItem.formatDuration(Date.now() - task.startTime));
     }
     this.description = parts.join(' · ');
-    this.tooltip = `${task.goal}\nID: ${task.id}\nStatus: ${task.status}`;
+    // Phase 0 W4: single-line summary of perception-compressor redactions
+    // when present (e.g. "compressed: 3 notes"). Keeps the tooltip terse.
+    const compressedHint = task.compressionNotes && task.compressionNotes.length > 0
+      ? `\nCompressed: ${task.compressionNotes.length} notes`
+      : '';
+    this.tooltip = `${task.goal}\nID: ${task.id}\nStatus: ${task.status}${compressedHint}`;
   }
 
   private static statusIcon(status: TaskStatus): vscode.ThemeIcon {

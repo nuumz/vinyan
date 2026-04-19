@@ -100,16 +100,20 @@ export class VinyanDiagnosticsProvider implements vscode.Disposable {
 
   private formatMessage(verdict: OracleVerdict, oracleName: string, evidence: Evidence): string {
     const prefix = `[${oracleName}]`;
+    // Phase 0 W4: history-compressor adds a "… [+N chars]" suffix to long
+    // snippets. Preserve it verbatim so the diagnostic message tells the
+    // user the evidence was truncated rather than silently dropping bytes.
+    const snippet = preserveCompressionMarker(evidence.snippet);
     if (verdict.reason) {
-      return `${prefix} ${verdict.reason} — ${evidence.snippet}`;
+      return `${prefix} ${verdict.reason} — ${snippet}`;
     }
     if (!verdict.verified) {
-      return `${prefix} Verification failed — ${evidence.snippet}`;
+      return `${prefix} Verification failed — ${snippet}`;
     }
     if (verdict.type === 'uncertain') {
-      return `${prefix} Uncertain (confidence: ${(verdict.confidence * 100).toFixed(0)}%) — ${evidence.snippet}`;
+      return `${prefix} Uncertain (confidence: ${(verdict.confidence * 100).toFixed(0)}%) — ${snippet}`;
     }
-    return `${prefix} ${evidence.snippet}`;
+    return `${prefix} ${snippet}`;
   }
 
   private clearStaleForUri(uri: vscode.Uri): void {
@@ -129,4 +133,21 @@ export class VinyanDiagnosticsProvider implements vscode.Disposable {
     this.collection.dispose();
     for (const d of this.disposables) d.dispose();
   }
+}
+
+/**
+ * Phase 0 W4: keep the `… [+N chars]` history-compression marker (added by
+ * the perception-compressor when truncating long snippets) intact in the
+ * rendered diagnostic. The marker ends with `]` and contains a `[+`
+ * substring; if present, the original snippet is returned verbatim so the
+ * user sees that bytes were dropped rather than getting a silently
+ * shortened message.
+ */
+function preserveCompressionMarker(snippet: string): string {
+  if (!snippet) return snippet;
+  // Marker shape (e.g. "… [+47 chars]") — anchored to the snippet's end.
+  if (snippet.endsWith(']') && snippet.lastIndexOf('[+') > -1) {
+    return snippet;
+  }
+  return snippet;
 }

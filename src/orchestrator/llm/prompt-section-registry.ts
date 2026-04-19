@@ -8,7 +8,7 @@
  * Source of truth: docs/design/memory-prompt-architecture-system-design.md
  */
 
-import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
@@ -28,9 +28,13 @@ import {
   renderInstructionHierarchy,
 } from './shared-prompt-sections.ts';
 
-/** Sanitize a string for safe prompt inclusion. */
+/**
+ * Prompt-path pass-through: returns the original text unchanged. Injection
+ * detection still runs (detections are reported via the bus elsewhere), but
+ * user intent is not mangled with [REDACTED: ...] before the LLM sees it.
+ */
 function clean(s: string): string {
-  return sanitizeForPrompt(s).cleaned;
+  return sanitizeForPromptPassthrough(s).cleaned;
 }
 
 /** Check if the task domain requires code-centric prompt context. */
@@ -500,6 +504,15 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
           .map((e) => `  ${e.file}:${e.line}: ${clean(e.message)}`)
           .join('\n');
         lines.push('', `[DIAGNOSTICS]`, errors);
+      }
+
+      // Phase 0 W4: surface compressor-dropped fields explicitly so the worker
+      // knows what was trimmed rather than silently seeing empty arrays.
+      if (ctx.perception.compressionNotes?.length) {
+        lines.push('', '[PERCEPTION TRUNCATED]');
+        for (const note of ctx.perception.compressionNotes) {
+          lines.push(`- ${note}`);
+        }
       }
 
       return lines.join('\n');

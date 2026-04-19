@@ -57,12 +57,33 @@ export interface SanitizeResult {
 }
 
 /**
+ * Run injection + bypass detection on text WITHOUT replacing anything.
+ * Returns the original text unchanged plus the list of detection labels.
+ *
+ * Use this on first-party user intent (chat goals, conversation turns) and
+ * for prompt-path content derived from the user — redacting legitimate
+ * phrases like "act as reviewer" or file paths mangles intent before the
+ * LLM sees it. Detections are still reported so the bus/audit layer can
+ * surface a warning.
+ */
+export function sanitizeForPromptPassthrough(text: string): SanitizeResult {
+  const normalized = normalizeForScan(text);
+  const injection = detectPromptInjection(normalized);
+  const bypass = containsBypassAttempt(normalized);
+  const detections = [...injection.patterns, ...bypass.patterns];
+  return { cleaned: text, detections };
+}
+
+/**
  * Sanitize a string for safe inclusion in LLM prompts.
  * Runs injection + bypass detection on Unicode-normalized text.
  * Replaces detected patterns with [REDACTED: <label>].
  *
- * @deprecated Use validateInput() as the primary input gate.
- * This function is retained for defense-in-depth at the storage/prompt layer.
+ * @deprecated Use validateInput() as the primary input gate, and
+ * sanitizeForPromptPassthrough() for prompt-path content that should not be
+ * mangled. This function is retained for storage/trust-boundary defense
+ * (auto-memory loader, working-memory archive) where untrusted disk content
+ * crosses into prompt context.
  */
 export function sanitizeForPrompt(text: string): SanitizeResult {
   const normalized = normalizeForScan(text);

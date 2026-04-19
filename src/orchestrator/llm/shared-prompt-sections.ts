@@ -13,12 +13,12 @@
  * subprocess worker.
  */
 import { execSync } from 'child_process';
-import { sanitizeForPrompt } from '../../guardrails/index.ts';
+import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
 import type { InstructionMemory, InstructionSource, InstructionTier } from './instruction-hierarchy.ts';
 
-/** Sanitize a string for safe prompt inclusion. */
+/** Prompt-path pass-through — returns input unchanged, detections still run. */
 function clean(s: string): string {
-  return sanitizeForPrompt(s).cleaned;
+  return sanitizeForPromptPassthrough(s).cleaned;
 }
 
 // ── Tier metadata (shared across renderers) ─────────────────────────

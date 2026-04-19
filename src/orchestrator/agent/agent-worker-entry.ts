@@ -1198,21 +1198,27 @@ export function compressHistory(history: HistoryMessage[]): HistoryMessage[] {
         // LANDMARK: Errors are critical context — keep more detail
         const errorSnippet = content.slice(0, 400);
         errors.push(errorSnippet);
-        summaries.push(`[ERROR] ${errorSnippet}${content.length > 400 ? '...' : ''}`);
+        summaries.push(`[ERROR] ${errorSnippet}${content.length > 400 ? ` … [+${content.length - 400} chars]` : ''}`);
       } else {
         // Extract oracle verdicts if present
         const verdictMatch = content.match(/(?:oracle|verdict|verification).*?(?:pass|fail|error|warning)[^\n]*/i);
         if (verdictMatch) {
           oracleVerdicts.push(verdictMatch[0].slice(0, 200));
         }
-        summaries.push(`[result] ${content.slice(0, 150)}${content.length > 150 ? '...' : ''}`);
+        summaries.push(
+          `[result] ${content.slice(0, 150)}${content.length > 150 ? ` … [+${content.length - 150} chars]` : ''}`,
+        );
       }
     } else if (turn.role === 'assistant') {
       const content = (turn as Message).content ?? '';
       const firstSentence = content.match(/^[^.!?\n]{10,200}[.!?]/)?.[0] ?? content.slice(0, 120);
-      summaries.push(`[assistant] ${firstSentence}${content.length > firstSentence.length ? '...' : ''}`);
+      const dropped = content.length - firstSentence.length;
+      summaries.push(`[assistant] ${firstSentence}${dropped > 0 ? ` … [+${dropped} chars]` : ''}`);
     } else if (turn.role === 'user') {
-      summaries.push(`[user] ${((turn as Message).content ?? '').slice(0, 120)}`);
+      const content = (turn as Message).content ?? '';
+      summaries.push(
+        `[user] ${content.slice(0, 120)}${content.length > 120 ? ` … [+${content.length - 120} chars]` : ''}`,
+      );
     }
   }
 

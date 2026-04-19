@@ -47,6 +47,12 @@ export interface PhaseContext {
   /** Conversation history from prior turns (loaded when sessionId present). */
   readonly conversationHistory?: ConversationEntry[];
   /**
+   * Plan commit A: Turn-model conversation history. Preserves tool_use /
+   * tool_result blocks verbatim for lossless multi-turn resume. When present,
+   * downstream phases prefer this over `conversationHistory`.
+   */
+  readonly turns?: import('../types.ts').Turn[];
+  /**
    * Multi-agent: resolved specialist for this task (ts-coder, writer, etc.).
    * Set by core-loop after intent resolution. Downstream phases use this for
    * prompt assembly (persona/soul), contract (ACL), and skill scoping.

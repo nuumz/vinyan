@@ -20,6 +20,7 @@ import type {
   TaskDAG,
   TaskType,
   TaskUnderstanding,
+  Turn,
   WorkingMemoryState,
 } from '../types.ts';
 import type { InstructionMemory } from './instruction-loader.ts';
@@ -88,6 +89,12 @@ export function assemblePrompt(
   agentProfile?: AgentSpec,
   /** Multi-agent: consultable peer agents (for agent-peers section). */
   peerAgents?: AgentSpec[],
+  /**
+   * Turn-model conversation history (plan commit A). When present, the
+   * conversation-history section prefers this over `conversationHistory`
+   * so tool_use / tool_result blocks survive multi-turn resume.
+   */
+  turns?: Turn[],
 ): AssembledPrompt {
   // Gap 4A: Reasoning tasks now use composable section registry
   if (taskType === 'reasoning') {
@@ -100,6 +107,7 @@ export function assemblePrompt(
       understanding,
       routingLevel,
       conversationHistory,
+      turns,
       environment,
       agentContext,
       soulContent,
@@ -130,6 +138,7 @@ export function assemblePrompt(
     understanding,
     routingLevel,
     conversationHistory,
+    turns,
     environment,
     agentContext,
     soulContent,

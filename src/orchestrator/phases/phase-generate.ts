@@ -44,6 +44,7 @@ export async function executeGeneratePhase(
   const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry } = gi;
   let { totalTokensConsumed } = gi;
   const conversationHistory = ctx.conversationHistory;
+  const turns = ctx.turns;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
   // Phase 2: intersect agent's ACL overlay with routing-level capabilities.
@@ -123,7 +124,7 @@ export async function executeGeneratePhase(
             targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
             goal: node.description || input.goal,
           };
-          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, conversationHistory);
+          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, conversationHistory, turns);
           return {
             nodeId,
             mutations: result.mutations,
@@ -162,6 +163,7 @@ export async function executeGeneratePhase(
           understanding,
           contract,
           conversationHistory,
+          turns,
         );
       }
     } else {
@@ -228,6 +230,7 @@ export async function executeGeneratePhase(
             understanding,
             contract,
             conversationHistory,
+            turns,
           );
         } catch (agentLoopErr) {
           // Fallback: subprocess agent loop failed — degrade to single-shot in-process dispatch
@@ -241,6 +244,7 @@ export async function executeGeneratePhase(
             understanding,
             contract,
             conversationHistory,
+            turns,
           );
           // Skip agentic result mapping — use single-shot result directly
           lastAgentResult = null;

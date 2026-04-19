@@ -108,6 +108,8 @@ export interface WorkerPool {
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
     conversationHistory?: import('./types.ts').ConversationEntry[],
+    /** Plan commit A: Turn-model history with tool_use / tool_result blocks. */
+    turns?: import('./types.ts').Turn[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
   getAgentLoopDeps?(): import('./agent/agent-loop.ts').AgentLoopDeps | null;
@@ -1903,6 +1905,10 @@ async function executeTaskCore(
       workingMemory,
       explorationFlag,
       conversationHistory,
+      // Plan commit A: Turn-model history is wired in sub-commit A5 once
+      // SessionManager produces it; leaving undefined here keeps the legacy
+      // ConversationEntry path active without changing current behaviour.
+      turns: undefined,
       agentProfile,
     };
 

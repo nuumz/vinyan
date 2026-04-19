@@ -21,7 +21,7 @@ import {
 } from '../llm/shared-prompt-sections.ts';
 import { REMINDER_PROTOCOL_DESCRIPTION } from '../llm/vinyan-reminder.ts';
 import { type AgentContextIPC, type AgentSpecIPC, OrchestratorTurnSchema, type WorkerTurn } from '../protocol.ts';
-import type { HistoryMessage, LLMProvider, Message, ToolResultMessage } from '../types.ts';
+import type { ContentBlock, HistoryMessage, LLMProvider, Message, ToolResultMessage, Turn } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -130,6 +130,9 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         init.conversationHistory,
         (init as any).failedApproaches,
         (init as any).acceptanceCriteria,
+        // Plan commit A: Turn-model history with tool_use / tool_result blocks.
+        // When present, buildInitUserMessage prefers this over conversationHistory.
+        init.turns,
       ),
     },
   ];
@@ -766,6 +769,34 @@ function escapeXmlAttr(s: string): string {
   return escapeXmlText(s).replace(/"/g, '&quot;');
 }
 
+/**
+ * Flatten a Turn's ContentBlock[] into a readable string for inclusion in the
+ * agent init user message. Preserves tool_use / tool_result markers so the
+ * agent does not re-derive tool parameters across turns.
+ */
+function renderTurnBlocksForAgent(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        if (block.text.trim()) parts.push(block.text);
+        break;
+      case 'thinking':
+        if (block.thinking.trim()) parts.push(`[thinking] ${block.thinking}`);
+        break;
+      case 'tool_use':
+        parts.push(`[tool_use:${block.name} id=${block.id}] ${JSON.stringify(block.input)}`);
+        break;
+      case 'tool_result':
+        parts.push(
+          `[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`,
+        );
+        break;
+    }
+  }
+  return parts.join('\n');
+}
+
 export function buildInitUserMessage(
   goal: string,
   perception: unknown,
@@ -774,17 +805,29 @@ export function buildInitUserMessage(
   conversationHistory?: Array<{ role: string; content: string; taskId: string; timestamp: number }>,
   failedApproaches?: Array<{ approach: string; oracleVerdict: string }>,
   acceptanceCriteria?: string[],
+  /** Plan commit A: Turn-model history (prefers over conversationHistory when present). */
+  turns?: Turn[],
 ): string {
   const sections: string[] = [];
 
   // Conversation history (multi-turn context)
-  if (conversationHistory && conversationHistory.length > 0) {
-    const turns = conversationHistory.map((entry, i) => {
+  // Prefer Turn-model history over flat ConversationEntry — preserves tool_use blocks.
+  if (turns && turns.length > 0) {
+    const rendered = turns.map((turn, i) => {
+      const role = turn.role === 'user' ? 'User' : 'Assistant';
+      const cancelledTag = turn.cancelledAt ? ' [USER CANCELLED]' : '';
+      let content = renderTurnBlocksForAgent(turn.blocks);
+      if (content.length > 2000) content = `${content.slice(0, 2000)}... (truncated)`;
+      return `[Turn ${i + 1}] ${role}${cancelledTag}: ${content}`;
+    });
+    sections.push(`## Conversation History\n${rendered.join('\n')}`);
+  } else if (conversationHistory && conversationHistory.length > 0) {
+    const turnLines = conversationHistory.map((entry, i) => {
       const role = entry.role === 'user' ? 'User' : 'Assistant';
       const content = entry.content.length > 2000 ? `${entry.content.slice(0, 2000)}... (truncated)` : entry.content;
       return `[Turn ${i + 1}] ${role}: ${content}`;
     });
-    sections.push(`## Conversation History\n${turns.join('\n')}`);
+    sections.push(`## Conversation History\n${turnLines.join('\n')}`);
   }
 
   // Goal — clear and prominent

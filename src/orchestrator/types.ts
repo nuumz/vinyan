@@ -1142,6 +1142,13 @@ export interface WorkerInput {
   instructions?: import('./llm/instruction-hierarchy.ts').InstructionMemory;
   /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
   environment?: import('./llm/shared-prompt-sections.ts').EnvironmentInfo;
+  /**
+   * Plan commit A: Turn-model conversation history. Subprocess workers prefer
+   * this over the legacy flat ConversationEntry path — preserves tool_use /
+   * tool_result blocks so multi-turn tool loops resume without hallucinating
+   * prior parameters.
+   */
+  turns?: Turn[];
 }
 
 /** Output from a worker process */

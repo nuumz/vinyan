@@ -9,6 +9,7 @@
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { ConversationEntry, TaskInput, TaskResult } from '../orchestrator/types.ts';
+import { classifyTurn, type TurnImportance } from './turn-importance.ts';
 
 export interface Session {
   id: string;
@@ -103,14 +104,8 @@ export class SessionManager {
     // carries status='input-required' in result_json for downstream readers).
     // The session_tasks CHECK constraint does not allow 'input-required', so
     // we map at this boundary.
-    const dbStatus =
-      result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
-    this.sessionStore.updateTaskStatus(
-      sessionId,
-      taskId,
-      dbStatus,
-      JSON.stringify(result),
-    );
+    const dbStatus = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+    this.sessionStore.updateTaskStatus(sessionId, taskId, dbStatus, JSON.stringify(result));
   }
 
   /**
@@ -174,20 +169,26 @@ export class SessionManager {
   }
 
   /** List recent tasks across all sessions (newest first). */
-  listAllTasks(limit = 100): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
+  listAllTasks(
+    limit = 100,
+  ): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
     const rows = this.sessionStore.listRecentTasks(limit);
     return rows.map((row) => {
       let goal: string | undefined;
       try {
         const input = JSON.parse(row.task_input_json);
         goal = input.goal;
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       let result: TaskResult | undefined;
       if (row.result_json) {
         try {
           result = JSON.parse(row.result_json);
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
 
       return {
@@ -250,11 +251,7 @@ export class SessionManager {
     // questions in a structured [INPUT-REQUIRED] block so compaction and
     // next-turn grounding can parse them with pure text matching (A3).
     let content: string;
-    if (
-      result.status === 'input-required'
-      && result.clarificationNeeded
-      && result.clarificationNeeded.length > 0
-    ) {
+    if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
       const questionLines = result.clarificationNeeded.map((q) => `- ${q}`).join('\n');
       const preamble = result.answer ? `${result.answer}\n\n` : '';
       content = `${preamble}[INPUT-REQUIRED]\n${questionLines}`;
@@ -338,8 +335,7 @@ export class SessionManager {
       const m = messages[i]!;
       if (m.role === 'user') {
         const prev = i > 0 ? messages[i - 1] : null;
-        const isClarificationReply =
-          prev?.role === 'assistant' && prev.content.includes('[INPUT-REQUIRED]');
+        const isClarificationReply = prev?.role === 'assistant' && prev.content.includes('[INPUT-REQUIRED]');
         if (!isClarificationReply) return m.content;
         // skip this reply and the clarification that triggered it
         i -= 2;
@@ -354,8 +350,8 @@ export class SessionManager {
   getConversationHistory(sessionId: string, maxTokens = 8000): ConversationEntry[] {
     const rows = this.sessionStore.getRecentMessages(sessionId, maxTokens);
     return rows
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
+      .filter((r) => r.role === 'user' || r.role === 'assistant')
+      .map((r) => ({
         role: r.role as 'user' | 'assistant',
         content: r.content,
         taskId: r.task_id ?? '',
@@ -386,18 +382,27 @@ export class SessionManager {
    * Get conversation history with compaction for long conversations.
    * Keeps last `keepRecentTurns` turns verbatim, summarizes older turns
    * into a structured compact block (rule-based, A3-compliant — no LLM).
+   *
+   * Phase 1 (long-session memory):
+   *  - Header includes `M of N messages compacted, K recent turn-pairs
+   *    verbatim` so the agent knows exactly how much was summarised.
+   *  - Older `decision|clarification` turns are interleaved verbatim as
+   *    `→ [Turn K, importance] role: firstLine(content, 200)` lines,
+   *    classified by the duck-typed `classifyTurn` helper.
+   *  - `enforceTokenBudget` runs with per-entry weights (priority turns
+   *    count at 0.5×, capped at 40% of maxTokens) so high-signal turns
+   *    survive longer under tight budgets.
+   *  - When entries are dropped, a small synthetic `[DROPPED BY BUDGET]`
+   *    entry is inserted at the front (after the summary, before recent)
+   *    so the agent sees the gap instead of silently losing turns.
    */
-  getConversationHistoryCompacted(
-    sessionId: string,
-    maxTokens = 8000,
-    keepRecentTurns = 5,
-  ): ConversationEntry[] {
+  getConversationHistoryCompacted(sessionId: string, maxTokens = 8000, keepRecentTurns = 5): ConversationEntry[] {
     const allMessages = this.sessionStore.getMessages(sessionId);
     if (allMessages.length === 0) return [];
 
     const entries: ConversationEntry[] = allMessages
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
+      .filter((r) => r.role === 'user' || r.role === 'assistant')
+      .map((r) => ({
         role: r.role as 'user' | 'assistant',
         content: r.content,
         taskId: r.task_id ?? '',
@@ -411,7 +416,8 @@ export class SessionManager {
     const turnPairs = Math.ceil(entries.length / 2);
     if (turnPairs <= keepRecentTurns) {
       // Short enough — return as-is with token budget enforcement
-      return this.enforceTokenBudget(entries, maxTokens);
+      const budgeted = this.enforceTokenBudget(entries, maxTokens);
+      return this.prependDropMarker(budgeted.entries, budgeted.dropped, budgeted.droppedTokens);
     }
 
     // Compact older turns into a structured summary
@@ -428,6 +434,15 @@ export class SessionManager {
     const openClarifications: string[] = [];
     const resolvedClarifications: Array<{ question: string; answer: string }> = [];
 
+    // Phase 1: collect inline key-decision / clarification lines while
+    // walking older entries. `precededByInputRequired` lets the classifier
+    // mark user replies to IR blocks as decisions without re-running regex.
+    type DecisionLine = { turnIdx: number; importance: TurnImportance; role: string; excerpt: string };
+    const decisionLines: DecisionLine[] = [];
+    // Per-entry weights for enforceTokenBudget (priority → 0.5×).
+    const weights = new Map<ConversationEntry, number>();
+    let precededByIR = false;
+
     for (let i = 0; i < olderEntries.length; i++) {
       const entry = olderEntries[i]!;
       // Extract file references (common patterns)
@@ -442,9 +457,11 @@ export class SessionManager {
         topics.set(topic, (topics.get(topic) ?? 0) + 1);
       }
       // Detect [INPUT-REQUIRED] blocks and pair them with any following user turn
+      let isIRAssistant = false;
       if (entry.role === 'assistant') {
         const questions = parseInputRequiredBlock(entry.content);
         if (questions.length > 0) {
+          isIRAssistant = true;
           const next = olderEntries[i + 1];
           if (next && next.role === 'user') {
             const answer = next.content.split('\n')[0]?.slice(0, 120) ?? '';
@@ -456,32 +473,55 @@ export class SessionManager {
           }
         }
       }
+
+      // Classify the turn for inline interleave + weight assignment.
+      const importance = classifyTurn(entry, { precededByInputRequired: precededByIR });
+      if (importance === 'decision' || importance === 'clarification') {
+        const excerpt = firstLineSnippet(entry.content, 200);
+        decisionLines.push({ turnIdx: i, importance, role: entry.role, excerpt });
+        weights.set(entry, 0.5);
+      }
+
+      // Carry the hint forward: the *next* entry only sees it when the
+      // current entry is an assistant [INPUT-REQUIRED] block. Decision /
+      // clarification hints don't chain beyond one turn.
+      precededByIR = isIRAssistant;
     }
 
     const topicSummary = [...topics.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
+      .slice(0, 15)
       .map(([topic, count]) => `${count > 1 ? `${count}x ` : ''}${topic}`)
       .join('; ');
 
     const clarificationLines: string[] = [];
     if (resolvedClarifications.length > 0) {
       const sample = resolvedClarifications
-        .slice(0, 5)
+        .slice(0, 10)
         .map((r) => `Q: ${r.question} → A: ${r.answer}`)
         .join('; ');
       clarificationLines.push(`Resolved clarifications: ${sample}`);
     }
     if (openClarifications.length > 0) {
-      clarificationLines.push(`Open clarifications (awaiting user): ${openClarifications.slice(0, 5).join('; ')}`);
+      clarificationLines.push(`Open clarifications (awaiting user): ${openClarifications.slice(0, 10).join('; ')}`);
     }
 
+    // Inline key-decision block — ordered by original turn index.
+    const inlineDecisionLines = decisionLines
+      .sort((a, b) => a.turnIdx - b.turnIdx)
+      .map((d) => `→ [Turn ${d.turnIdx + 1}, ${d.importance}] ${d.role}: ${d.excerpt}`);
+
+    const totalMessages = entries.length;
+    const compactedMessages = olderEntries.length;
     const compactContent = [
-      `[SESSION CONTEXT: ${olderEntries.length} prior messages, ${turnPairs - keepRecentTurns} turns compacted]`,
+      `[SESSION CONTEXT: ${compactedMessages} of ${totalMessages} total messages compacted, ${keepRecentTurns} recent turn-pairs verbatim]`,
       topicSummary ? `Topics: ${topicSummary}` : null,
-      filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 10).join(', ')}` : null,
+      filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 25).join(', ')}` : null,
       ...clarificationLines,
-    ].filter(Boolean).join('\n');
+      ...inlineDecisionLines,
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const compactEntry: ConversationEntry = {
       role: 'assistant',
@@ -491,24 +531,119 @@ export class SessionManager {
       tokenEstimate: estimateTokens(compactContent),
     };
 
-    return this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens);
+    const budgeted = this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens, weights);
+    return this.prependDropMarker(budgeted.entries, budgeted.dropped, budgeted.droppedTokens);
   }
 
-  /** Trim entries to fit within token budget, removing oldest first. */
-  private enforceTokenBudget(entries: ConversationEntry[], maxTokens: number): ConversationEntry[] {
-    let totalTokens = entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
-    const result = [...entries];
-    while (totalTokens > maxTokens && result.length > 1) {
-      const removed = result.shift()!;
-      totalTokens -= removed.tokenEstimate;
+  /**
+   * Build a small `[DROPPED BY BUDGET]` synthetic entry and insert it just
+   * after the summary (if one is present) so the agent sees the gap.
+   * Idempotent no-op when `dropped === 0`.
+   *
+   * Return type stays `ConversationEntry[]` per plan: callers don't care
+   * that a marker was injected — it's just another entry with tiny token
+   * weight that survives reliably.
+   */
+  private prependDropMarker(entries: ConversationEntry[], dropped: number, droppedTokens: number): ConversationEntry[] {
+    if (dropped <= 0) return entries;
+    const marker: ConversationEntry = {
+      role: 'assistant',
+      content: `[DROPPED BY BUDGET: ${dropped} turn(s) not shown (oldest first, ~${droppedTokens} tokens)]`,
+      taskId: 'compaction',
+      timestamp: entries[0]?.timestamp ?? Date.now(),
+      tokenEstimate: 30,
+    };
+    // If the first entry is the session-context summary (taskId === 'compaction'
+    // and content starts with `[SESSION CONTEXT`), drop the marker *after* it
+    // so ordering is: summary → drop-marker → recent verbatim.
+    const first = entries[0];
+    if (first && first.taskId === 'compaction' && first.content.startsWith('[SESSION CONTEXT')) {
+      return [first, marker, ...entries.slice(1)];
     }
-    return result;
+    return [marker, ...entries];
+  }
+
+  /**
+   * Trim entries to fit within token budget, removing oldest first.
+   *
+   * Phase 1: supports per-entry weights so priority turns (decisions,
+   * clarifications) count fractionally against the budget and thus survive
+   * longer. Priority-entry raw token sum is capped at 40% of `maxTokens`;
+   * if exceeded, the priority weights are scaled pro-rata back toward 1.0
+   * so heavy priority turns don't crowd out normal context.
+   *
+   * Returns the surviving entries plus accounting for a drop marker.
+   */
+  private enforceTokenBudget(
+    entries: ConversationEntry[],
+    maxTokens: number,
+    weights?: Map<ConversationEntry, number>,
+  ): { entries: ConversationEntry[]; dropped: number; droppedTokens: number } {
+    const PRIORITY_CAP_FRACTION = 0.4;
+    const priorityCap = maxTokens * PRIORITY_CAP_FRACTION;
+
+    // Per-entry weight resolver — default 1.0, priority entries 0.5, but
+    // scaled pro-rata toward 1.0 if priority raw sum exceeds the cap.
+    let priorityScale = 1;
+    if (weights && weights.size > 0) {
+      let prioRaw = 0;
+      for (const e of entries) {
+        if (weights.has(e)) prioRaw += e.tokenEstimate;
+      }
+      if (prioRaw > priorityCap) {
+        // Pro-rata scaling: choose w' in [0.5, 1] so that
+        //   prioRaw * w' === priorityCap.
+        // Clamped to [0.5, 1] — we never inflate priority weight above
+        // baseline, never compress below the 0.5 baseline discount.
+        const target = priorityCap / prioRaw;
+        priorityScale = Math.min(1, Math.max(0.5, target * 2));
+      }
+    }
+    const weightOf = (e: ConversationEntry): number => {
+      const base = weights?.get(e);
+      if (base === undefined) return 1;
+      // priorityScale rescales the *discount* from 0.5 toward 1.0 when the
+      // priority cap would otherwise be blown out.
+      return base + (1 - base) * (1 - priorityScale);
+    };
+
+    let weightedTokens = entries.reduce((sum, e) => sum + e.tokenEstimate * weightOf(e), 0);
+    const result = [...entries];
+    let dropped = 0;
+    let droppedTokens = 0;
+    while (weightedTokens > maxTokens && result.length > 1) {
+      const removed = result.shift()!;
+      weightedTokens -= removed.tokenEstimate * weightOf(removed);
+      dropped++;
+      droppedTokens += removed.tokenEstimate;
+    }
+    return { entries: result, dropped, droppedTokens };
   }
 }
 
 /** Rough token estimation: ~3.5 chars per token for mixed content. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5);
+}
+
+/**
+ * Phase 1: extract the first non-empty line of `content`, truncated to at
+ * most `maxChars` characters with a `…` suffix when clipped. Used by the
+ * session-manager inline KEY-DECISION interleave so a verbatim excerpt
+ * survives without swelling the summary block.
+ */
+function firstLineSnippet(content: string, maxChars: number): string {
+  const lines = content.split('\n');
+  let line = '';
+  for (const l of lines) {
+    const trimmed = l.trim();
+    if (trimmed.length > 0) {
+      line = trimmed;
+      break;
+    }
+  }
+  if (line.length <= maxChars) return line;
+  return `${line.slice(0, maxChars)}…`;
 }
 
 /**

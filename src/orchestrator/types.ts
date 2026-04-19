@@ -443,7 +443,14 @@ export interface PlanTodoInput {
 // Conversation History (→ Conversation Agent Mode)
 // ---------------------------------------------------------------------------
 
-/** A single entry in the conversation history — user message or assistant response. */
+/**
+ * A single entry in the conversation history — user message or assistant response.
+ *
+ * Phase 1 (long-session memory): also consumed by the duck-typed
+ * `classifyTurn` helper in `src/api/turn-importance.ts`, which reads
+ * `{role, content, toolsUsed?, thinking?}` off any compatible shape —
+ * keep those four fields stable when evolving this type.
+ */
 export interface ConversationEntry {
   role: 'user' | 'assistant';
   content: string;

@@ -29,6 +29,11 @@ import {
   resolveSelectedAgent,
 } from './intent/formatters.ts';
 import {
+  isLLMRefinement,
+  LLM_UNCERTAIN_THRESHOLD,
+  mergeDeterministicAndLLM,
+} from './intent/merge.ts';
+import {
   buildClassifierUserPrompt,
   buildComprehensionBlock,
 } from './intent/prompt.ts';
@@ -340,133 +345,16 @@ async function classifyOnce(
  */
 const DETERMINISTIC_SKIP_THRESHOLD = 0.85;
 
-/** Low-confidence watermark from the LLM — below this we flag the resolution uncertain. */
-const LLM_UNCERTAIN_THRESHOLD = 0.5;
-
 /**
  * Strategy pairs where rule vs. LLM disagreement is merely refinement (not
  * contradiction). Rule says X, LLM says Y — we accept Y because it carries
  * strictly more information (e.g. full-pipeline vs agentic-workflow with a
  * concrete workflowPrompt).
  */
-function isLLMRefinement(rule: ExecutionStrategy, llm: ExecutionStrategy): boolean {
-  if (rule === llm) return true;
-  if (rule === 'full-pipeline' && llm === 'agentic-workflow') return true; // wider scope = richer
-  if (rule === 'agentic-workflow' && llm === 'full-pipeline') return true; // narrower scope = focused
-  if (rule === 'conversational' && llm === 'agentic-workflow') return true; // deliverable upgrade
-  return false;
-}
-
-/**
- * A5-safe merge — deterministic (tier 0.8) wins over LLM (tier 0.4) on true
- * contradictions; refinements are accepted; agreements are recorded as known.
- */
-function mergeDeterministicAndLLM(
-  input: TaskInput,
-  understanding: SemanticTaskUnderstanding,
-  det: IntentResolution & { deterministicCandidate: IntentDeterministicCandidate },
-  llm: z.infer<typeof IntentResponseSchema>,
-  bus: VinyanBus | undefined,
-  taskId: string,
-): { resolution: IntentResolution; type: IntentResolutionType } {
-  const llmConfidence = llm.confidence ?? 0.8;
-
-  // Case 1: LLM is low-confidence → uncertain. Keep deterministic strategy.
-  if (llmConfidence < LLM_UNCERTAIN_THRESHOLD) {
-    const { request, options } = buildClarificationRequest(input, understanding, det.strategy);
-    bus?.emit('intent:uncertain', {
-      taskId,
-      reason: `LLM confidence ${llmConfidence.toFixed(2)} below threshold ${LLM_UNCERTAIN_THRESHOLD}`,
-      clarificationRequest: request,
-    });
-    return {
-      resolution: {
-        ...det,
-        reasoning: `${det.reasoning} LLM uncertain (${llmConfidence.toFixed(2)}).`,
-        reasoningSource: 'merged',
-        clarificationRequest: request,
-        clarificationOptions: options,
-      },
-      type: 'uncertain',
-    };
-  }
-
-  // A5 carve-out: when rule said 'direct-tool' but never resolved a concrete
-  // `directToolCall`, the rule has NO artifact — just an opinion. A5's
-  // tier-0.8 trust applies to deterministic FACTS, not unresolved hunches.
-  // Treat LLM disagreement as refinement (LLM fills the gap) instead of
-  // contradiction. Prevents the user from being asked to tiebreak between
-  // a hollow rule and an informed LLM pick.
-  if (
-    det.strategy === 'direct-tool' &&
-    !det.directToolCall &&
-    llm.strategy !== 'direct-tool'
-  ) {
-    const mergedStrategy = llm.strategy;
-    const mergedConfidence = Math.max(det.confidence, llmConfidence);
-    return {
-      resolution: {
-        strategy: mergedStrategy,
-        refinedGoal: llm.refinedGoal,
-        directToolCall: llm.directToolCall,
-        workflowPrompt: llm.workflowPrompt,
-        confidence: mergedConfidence,
-        reasoning: `A5 carve-out: rule=direct-tool had no resolved command (hollow); LLM=${llm.strategy} accepted as refinement. ${llm.reasoning}`,
-        reasoningSource: 'merged',
-        deterministicCandidate: det.deterministicCandidate,
-      },
-      type: 'known',
-    };
-  }
-
-  // Case 2: Contradiction — rule and LLM disagree and LLM isn't a pure refinement.
-  // A5: rule wins (tier 0.8 > tier 0.4). Emit event, surface clarification.
-  if (!isLLMRefinement(det.strategy, llm.strategy)) {
-    const { request, options } = buildClarificationRequest(
-      input,
-      understanding,
-      det.strategy,
-      llm.strategy,
-    );
-    bus?.emit('intent:contradiction', {
-      taskId,
-      ruleStrategy: det.strategy,
-      llmStrategy: llm.strategy,
-      ruleConfidence: det.confidence,
-      llmConfidence,
-      winner: det.strategy,
-    });
-    return {
-      resolution: {
-        ...det,
-        // A5: rule strategy survives, but we still carry LLM reasoning for audit.
-        reasoning: `A5 contradiction: rule=${det.strategy} (${det.confidence.toFixed(2)}) vs llm=${llm.strategy} (${llmConfidence.toFixed(2)}). Rule wins.`,
-        reasoningSource: 'merged',
-        clarificationRequest: request,
-        clarificationOptions: options,
-      },
-      type: 'contradictory',
-    };
-  }
-
-  // Case 3: Agreement or LLM refinement — accept LLM's richer payload.
-  // Confidence = max of the two (they agree), but never below the deterministic floor.
-  const mergedStrategy = llm.strategy;
-  const mergedConfidence = Math.max(det.confidence, llmConfidence);
-  return {
-    resolution: {
-      strategy: mergedStrategy,
-      refinedGoal: llm.refinedGoal,
-      directToolCall: llm.directToolCall ?? det.directToolCall,
-      workflowPrompt: llm.workflowPrompt,
-      confidence: mergedConfidence,
-      reasoning: llm.reasoning,
-      reasoningSource: 'merged',
-      deterministicCandidate: det.deterministicCandidate,
-    },
-    type: 'known',
-  };
-}
+// Commit D7: isLLMRefinement / mergeDeterministicAndLLM /
+// LLM_UNCERTAIN_THRESHOLD moved to `src/orchestrator/intent/merge.ts` and
+// imported at the top. The finalize* helpers stay here — they mutate the
+// module-level intentCache and emit orchestrator-scoped bus events.
 
 /** [B.skip] Finalize + emit a pure-deterministic resolution (no LLM consulted). */
 function finalizeDeterministicSkip(

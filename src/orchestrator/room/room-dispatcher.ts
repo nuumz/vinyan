@@ -40,6 +40,7 @@ import type {
 } from '../types.ts';
 import type { AgentLoopDeps, WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { ProposedMutation } from '../agent/session-overlay.ts';
+import type { TeamManager } from '../ecosystem/team.ts';
 import { RoomBlackboard } from './room-blackboard.ts';
 import { RoomLedger } from './room-ledger.ts';
 import { type GoalVerifier, type ParticipantResult, RoomSupervisor } from './room-supervisor.ts';
@@ -87,6 +88,14 @@ export interface RoomDispatcherDeps {
    *  every lifecycle event to the DB BEFORE emitting the corresponding bus event
    *  (crash-safety invariant). When absent, the room is purely in-memory (R1). */
   roomStore?: RoomStore;
+  /**
+   * Ecosystem O3: team blackboard bridge. When a room contract carries
+   * `teamId` + `teamSharedKeys`, the dispatcher imports from and exports
+   * to the team's persistent blackboard. Writes back ONLY on status
+   * `converged` — partial / failed / awaiting-user closes leave team
+   * state untouched. Omitting this dep disables the bridge silently.
+   */
+  teamManager?: TeamManager;
 }
 
 export interface RoomExecuteInput {
@@ -145,6 +154,25 @@ export class RoomDispatcher {
     const ledger = new RoomLedger(this.clock);
     const blackboard = new RoomBlackboard(this.clock);
     const state = supervisor.open(input.contract);
+
+    // Ecosystem O3 — import team blackboard state. The seeded values are
+    // tracked so we only write keys back that actually changed during the
+    // room. Pre-admission so participants start with the full context.
+    const teamBridgeBaselineVersions = new Map<string, number>();
+    if (
+      this.deps.teamManager &&
+      input.contract.teamId &&
+      input.contract.teamSharedKeys &&
+      input.contract.teamSharedKeys.length > 0
+    ) {
+      for (const key of input.contract.teamSharedKeys) {
+        const teamValue = this.deps.teamManager.getState(input.contract.teamId, key);
+        if (teamValue !== undefined) {
+          const entry = blackboard.systemSeed(key, teamValue, 'team-bridge');
+          teamBridgeBaselineVersions.set(key, entry.version);
+        }
+      }
+    }
 
     // R2: persist session BEFORE bus emit (crash-safety invariant)
     this.persistSafe(() =>
@@ -320,6 +348,37 @@ export class RoomDispatcher {
         state.closedAt ?? null,
       ),
     );
+
+    // Ecosystem O3 — export room blackboard changes back to the team's
+    // persistent blackboard. ONLY on status='converged'. Partial / failed /
+    // awaiting-user rooms leave team state untouched so dirty or uncommitted
+    // work never pollutes durable shared state.
+    if (
+      state.status === 'converged' &&
+      this.deps.teamManager &&
+      input.contract.teamId &&
+      input.contract.teamSharedKeys &&
+      input.contract.teamSharedKeys.length > 0
+    ) {
+      const sharedSet = new Set(input.contract.teamSharedKeys);
+      const changed = blackboard.entriesChangedSince(teamBridgeBaselineVersions);
+      for (const entry of changed) {
+        if (!sharedSet.has(entry.key)) continue;
+        try {
+          this.deps.teamManager.setState(
+            input.contract.teamId,
+            entry.key,
+            entry.value,
+            `room:${input.contract.roomId}`,
+          );
+        } catch (err) {
+          // Team write failure should not flip the room's status; just log.
+          console.warn(
+            `[vinyan] room-team bridge: setState('${entry.key}') failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
 
     const durationMs = this.clock() - startTime;
     const result = supervisor.finalize(state, ledger, durationMs);

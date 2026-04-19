@@ -552,6 +552,13 @@ export const VinyanConfigSchema = z.object({
        * is wired (no-op filter).
        */
       runtime_gate_selection: z.boolean().default(true),
+      /**
+       * Deadline (ms from now) stamped on commitments opened via the
+       * volunteer-fallback path in EngineSelector. The normal bid flow
+       * derives its deadline from task facts; the fallback has no task
+       * object in scope, so this value acts as a backstop. Default 10 min.
+       */
+      volunteer_fallback_deadline_ms: z.number().int().positive().default(600_000),
     })
     .optional(),
   /** Workspace-level Vinyan Agent identity (name, description, preferences). */

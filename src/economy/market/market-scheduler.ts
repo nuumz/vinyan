@@ -98,6 +98,7 @@ export class MarketScheduler {
     this.phaseState.auctionCount++;
     this.bus?.emit('market:auction_completed', {
       auctionId,
+      taskId,
       winnerId: result.winnerId,
       score: result.winnerScore,
       bidderCount: result.bidderCount,

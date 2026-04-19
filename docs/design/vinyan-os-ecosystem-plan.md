@@ -248,19 +248,102 @@ ledger, no department index). With it on:
 | Crash recovery | `coordinator.start()` calls `recoverFromCrash()` on every boot | ecosystem-coordinator.ts |
 | Reconcile invariants (I-E1/I-E2/I-E3) | `coordinator.reconcile()` — manual call, schedule via config `reconcile_interval_ms` (TODO: scheduler wire) | ecosystem-coordinator.ts |
 
-### Intentional gaps (not part of O1-O5)
+### Shipped follow-ups (2026-04-19)
 
-1. **Room ↔ Team blackboard bridge** — rooms still use their own blackboard.
-   Teams can hold long-running state, but `RoomDispatcher` does not yet merge
-   a shared team blackboard into its role context. A follow-up integration.
-2. **Reconciliation scheduler** — `reconcile_interval_ms` config exists; a
-   timer that calls `coordinator.reconcile()` on that cadence is not yet
-   wired. Invariant checks are manual for now.
-3. **Department membership auto-recompute on engine register** — the index
-   is built on `coordinator.start()` but does not subscribe to new engines
-   being added at runtime. Manual `departments.refresh(roster)` required.
-4. **Market-driven volunteer phase** — the volunteer protocol fires through
-   `EngineSelector.volunteerFallback` when the selector can't find a
-   trusted pick. There is no separate `volunteering` phase emitted by
-   `MarketScheduler` itself; the fallback is in the selector path so it
-   integrates with the existing trust-weighted flow.
+1. ✅ **Reconcile scheduler** — `EcosystemCoordinator` now runs chained
+   `setTimeout` at `reconcile_interval_ms` cadence. Violations emitted as
+   `ecosystem:invariant_violation`; every sweep emits
+   `ecosystem:reconcile_tick`. Errors caught; scheduler continues.
+   Test-injectable timer for deterministic driving.
+2. ✅ **Engine auto-refresh on register** — `ReasoningEngineRegistry.setBus()`
+   wires `engine:registered` / `engine:deregistered` events. The coordinator
+   subscribes and upserts department membership + auto-registers into the
+   runtime FSM (awaken → standby) the moment a new engine joins at
+   runtime. Deregister flips runtime to dormant so the selector drops it.
+3. ✅ **Room ↔ Team blackboard bridge** — `RoomContract` gains optional
+   `teamId` + `teamSharedKeys`. Dispatcher imports team state at open via
+   `RoomBlackboard.systemSeed()` (Supervisor-privileged — does NOT violate
+   A6 role-scoping). Writes back to `TeamManager` **only** on
+   `status=converged`; partial / failed / awaiting-user closes leave team
+   state untouched. Only keys modified during the room are exported (version
+   diff vs. baseline).
+4. ✅ **Volunteer no-winner cleanup** — `attemptVolunteerFallback` now
+   declines offers when `selectVolunteer` returns no winner (previously left
+   rows in an indeterminate state).
+
+### Remaining gap
+
+- **Cross-instance federation** — blocked on A2A R3 (cross-instance rooms +
+  consensus). See §9 for the federation-readiness audit.
+
+---
+
+## 9. Federation-Readiness Audit
+
+Cross-instance ecosystem (federation of ecosystems) is out of scope for O1-O5
+because it depends on the A2A R3 transport layer (cross-instance rooms +
+partition-tolerant consensus), which is design-only. The audit below confirms
+the existing ecosystem API surface can accommodate a `peerId` dimension without
+breaking changes — no refactor lock-in today.
+
+| Primitive | Federation-impact | Extension path |
+|---|---|---|
+| `RuntimeStateManager` | `listByState()` returns local only | Add `listRemoteByState(peerId)` method; existing string `agentId` can encode `peer:agentId` if needed. No breaking change. |
+| `CommitmentLedger` | `engineId` is a string | Same encoding strategy; commitments opened by remote peers carry `peer:engineId`. Storage schema unchanged. |
+| `DepartmentIndex` | Local-only engines | Add optional `source: 'local' \| peerId` to membership. `getEnginesInDepartment` can union local + remote without API change by mixing ids. |
+| `VolunteerRegistry` | Offers are local-declared | Add `declareRemoteOffer(offerId, peerId, ...)` — the storage schema already has `engine_id` which can encode remote ids. |
+| `EcosystemCoordinator.attemptVolunteerFallback` | Queries local standby only | Add an async `remoteOfferProbe?` callback; when present, the coordinator awaits A2A peer offers before scoring. Non-breaking (optional). |
+| `HelpfulnessTracker` | Counts local deliveries | Remote deliveries fire `commitment:resolved` via `remote-bus.ts` if A2A relays it. Tracker already listens to bus; no change. |
+| `TeamManager` | Team roster is local engine ids | Members can be `peer:engineId`. No schema change. |
+| `CommitmentBridge` | Subscribes to local `market:auction_completed` | A2A can relay the event through `remote-bus.ts`; bridge code unchanged. |
+
+**Verdict:** ecosystem is federation-ready. When A2A R3 ships, the
+federation layer is additive — new code paths for remote offers /
+remote state, no refactor of what's already shipped.
+
+**Explicit non-goals (still):**
+- Cross-instance consensus on shared commitment (requires A2A R3's
+  partition-tolerant consensus algorithm).
+- Remote runtime FSM view (needs peer-healthy gossip — A2A already has
+  `peer-health.ts` but it doesn't feed the ecosystem today).
+- Federation economy — `src/economy/federation-cost-relay.ts` exists but
+  doesn't close the accountability loop with remote commitments yet.
+
+---
+
+## 10. Activation recipe
+
+Minimum `vinyan.json` to turn on the full ecosystem:
+
+```json
+{
+  "ecosystem": {
+    "enabled": true,
+    "departments": [
+      {
+        "id": "code",
+        "anchor_capabilities": ["code-generation", "tool-use"],
+        "min_match_count": 2
+      },
+      {
+        "id": "research",
+        "anchor_capabilities": ["reasoning", "text-generation"],
+        "min_match_count": 1
+      }
+    ],
+    "reconcile_interval_ms": 300000,
+    "runtime_gate_selection": true
+  }
+}
+```
+
+With this set:
+- Every engine registration auto-creates a runtime-FSM row and a
+  department-index entry
+- Worker dispatch transitions Standby → Working → Standby
+- Commitments open/close automatically via market+trace bus events
+- Invariants audited every 5 minutes; violations surface on the bus
+- Volunteer fallback kicks in when market + Wilson-LB both fail
+- Helpfulness sideband feeds promotion (never bid scoring)
+- Rooms can opt into team-persisted state via `contract.teamId` +
+  `teamSharedKeys`

@@ -96,6 +96,8 @@ export interface ReconcileReport {
   readonly checkedAt: number;
   readonly violations: readonly InvariantViolation[];
   readonly departmentsRefreshed: number;
+  /** Count of commitments past their deadline that were force-closed as `failed`. */
+  readonly expiredCommitmentsReaped: number;
 }
 
 // ── Coordinator ──────────────────────────────────────────────────────
@@ -116,6 +118,8 @@ export class EcosystemCoordinator {
   private readonly timer: CoordinatorTimerImpl;
   private reconcileHandle: unknown = null;
   private reconcileInFlight = false;
+  private unsubEngineRegistered: (() => void) | null = null;
+  private unsubEngineDeregistered: (() => void) | null = null;
   private started = false;
 
   constructor(config: EcosystemCoordinatorConfig) {
@@ -149,16 +153,67 @@ export class EcosystemCoordinator {
     this.helpfulness.start();
     // Crash recovery: any engine stuck in working/awakening resets to standby.
     this.runtime.recoverFromCrash();
-    // Build the department index from the current roster.
-    this.departments.refresh(this.engineRoster());
+    // Build the department index from the current roster. Defensive try/catch
+    // mirrors the scheduled-reconcile behavior so a flaky roster provider
+    // cannot brick the coordinator at startup.
+    try {
+      this.departments.refresh(this.engineRoster());
+    } catch (err) {
+      console.error(
+        '[vinyan] ecosystem: initial department refresh failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     this.started = true;
     this.scheduleNextReconcile();
+
+    // Subscribe to engine registry events so department membership stays
+    // fresh and newly-registered engines are auto-registered into the
+    // runtime FSM (otherwise they remain unknown and the selector filters
+    // them out).
+    this.unsubEngineRegistered = this.bus.on('engine:registered', (payload) => {
+      try {
+        this.departments.upsertEngine({
+          id: payload.engineId,
+          capabilities: [...payload.capabilities],
+        });
+        if (!this.runtime.get(payload.engineId)) {
+          this.runtime.register(payload.engineId);
+          this.runtime.awaken(payload.engineId, 'engine-registered');
+          this.runtime.markReady(payload.engineId, 'engine-registered');
+        }
+      } catch (err) {
+        console.error(
+          '[vinyan] ecosystem: engine:registered handler failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    });
+    this.unsubEngineDeregistered = this.bus.on('engine:deregistered', (payload) => {
+      try {
+        this.departments.removeEngine(payload.engineId);
+        // Keep the runtime row (audit log stays valid); just force dormant
+        // so selector pre-filter drops it.
+        if (this.runtime.get(payload.engineId)) {
+          this.runtime.markDormant(payload.engineId, 'engine-deregistered');
+        }
+      } catch (err) {
+        console.error(
+          '[vinyan] ecosystem: engine:deregistered handler failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    });
   }
 
   stop(): void {
     if (!this.started) return;
     this.commitmentBridge.stop();
     this.helpfulness.stop();
+    this.unsubEngineRegistered?.();
+    this.unsubEngineRegistered = null;
+    this.unsubEngineDeregistered?.();
+    this.unsubEngineDeregistered = null;
     if (this.reconcileHandle !== null) {
       this.timer.clearTimer(this.reconcileHandle);
       this.reconcileHandle = null;
@@ -337,6 +392,12 @@ export class EcosystemCoordinator {
     const checkedAt = this.now();
     const violations: InvariantViolation[] = [];
 
+    // Expired-commitment reaper — closes commitments whose deadline has
+    // passed as `failed` with evidence "deadline exceeded". Runs first so
+    // the subsequent I-E1/I-E2 checks don't flag commitments that the
+    // reaper is about to close anyway.
+    const expiredCommitmentsReaped = this.commitments.reapExpired(checkedAt);
+
     // I-E3: rebuild department index from the live roster. This is the
     // cheap self-heal path — any capability changes since last refresh
     // get picked up.
@@ -385,6 +446,7 @@ export class EcosystemCoordinator {
       checkedAt,
       violations,
       departmentsRefreshed: roster.length,
+      expiredCommitmentsReaped,
     };
   }
 }

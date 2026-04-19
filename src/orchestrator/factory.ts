@@ -575,6 +575,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (!engineRegistry) {
         engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
       }
+      // Wire bus so the ecosystem coordinator (built below) can observe
+      // engine:registered / engine:deregistered without touching the hot path.
+      engineRegistry.setBus(bus);
       if (enginesConfig.z3?.enabled) {
         engineRegistry.register(new Z3ReasoningEngine({ z3Path: enginesConfig.z3.path }));
         console.log('[vinyan] Z3 Constraint Solver engine registered');
@@ -663,11 +666,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       });
 
       // Seed runtime FSM for every engine already in the registry so the
-      // bridge + reconcile loop have something to observe.
+      // bridge + reconcile loop have something to observe. Guarded so
+      // repeated factory calls (tests, re-init after crash recovery) do
+      // not throw — crash-recovery flips Working→Standby at coordinator.start
+      // above, so an engine that survived a restart reaches this block
+      // already in `standby`.
       for (const eng of effectiveEngineRegistry.listEngines()) {
-        ecosystemBundle.runtime.register(eng.id);
-        ecosystemBundle.runtime.awaken(eng.id, 'boot');
-        ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+        const existing = ecosystemBundle.runtime.get(eng.id);
+        if (!existing) {
+          ecosystemBundle.runtime.register(eng.id);
+        }
+        const snap = ecosystemBundle.runtime.get(eng.id)!;
+        if (snap.state === 'dormant') {
+          ecosystemBundle.runtime.awaken(eng.id, 'boot');
+          ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+        } else if (snap.state === 'awakening') {
+          ecosystemBundle.runtime.markReady(eng.id, 'factory-init');
+        }
+        // else: already standby/working — leave as-is.
       }
 
       ecosystemBundle.coordinator.start();
@@ -1268,10 +1284,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
                     const load = bundle.runtime.get(id)?.activeTaskCount ?? 0;
                     return { capability: 0.5, trust, currentLoad: load };
                   };
+                  const deadlineMs =
+                    ecosystemConfig?.volunteer_fallback_deadline_ms ?? 600_000;
                   const res = bundle.coordinator.attemptVolunteerFallback({
                     taskId,
-                    goal: taskId,
-                    deadlineAt: Date.now() + 60_000,
+                    goal: `fallback:${taskId}`,
+                    deadlineAt: Date.now() + deadlineMs,
                     ...(departmentId ? { departmentId } : {}),
                     contextProvider: ctx,
                   });
@@ -1358,6 +1376,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     bus,
     goalVerifier: goalAlignmentVerify,
     roomStore,
+    // Ecosystem O3 — rooms with `contract.teamId` round-trip their shared
+    // keys through the team's persistent blackboard. Enabled automatically
+    // when the ecosystem is wired; rooms without a teamId are unaffected.
+    ...(ecosystemBundle ? { teamManager: ecosystemBundle.teams } : {}),
   });
 
   // Wave A: Error Attribution Bus — consumes orphaned learning signals and

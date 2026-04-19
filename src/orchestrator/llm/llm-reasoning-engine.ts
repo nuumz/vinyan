@@ -8,6 +8,7 @@
  * Axiom A3: The adapter maps provider-specific stop reasons to generic terminationReason
  * values so the Orchestrator never depends on vendor vocabulary.
  */
+import type { VinyanBus } from '../../core/bus.ts';
 import type { CacheControl, LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
 import type { LLMProviderRegistry } from './provider-registry.ts';
 
@@ -92,9 +93,32 @@ function mapStopReason(r: 'end_turn' | 'tool_use' | 'max_tokens'): REResponse['t
  */
 export class ReasoningEngineRegistry {
   private engines = new Map<string, ReasoningEngine>();
+  private bus?: VinyanBus;
+
+  /**
+   * Wire a bus so registration/deregistration events are emitted. Optional
+   * — default construction stays bus-less for backward compat. Called by
+   * the factory when the ecosystem layer needs to observe runtime roster
+   * changes (O3/O4).
+   */
+  setBus(bus: VinyanBus): void {
+    this.bus = bus;
+  }
 
   register(engine: ReasoningEngine): void {
     this.engines.set(engine.id, engine);
+    this.bus?.emit('engine:registered', {
+      engineId: engine.id,
+      capabilities: engine.capabilities,
+      engineType: engine.engineType,
+    });
+  }
+
+  /** Remove an engine. Emits `engine:deregistered` when the bus is wired. */
+  deregister(id: string): boolean {
+    const had = this.engines.delete(id);
+    if (had) this.bus?.emit('engine:deregistered', { engineId: id });
+    return had;
   }
 
   /** Select by routing level — tier-based fallback for backward compat. */

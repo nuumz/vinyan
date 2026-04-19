@@ -259,7 +259,21 @@ export class SessionManager {
       const preamble = result.answer ? `${result.answer}\n\n` : '';
       content = `${preamble}[INPUT-REQUIRED]\n${questionLines}`;
     } else {
-      content = result.answer ?? (result.mutations.map(m => `Modified ${m.file}`).join('\n') || '(no response)');
+      // Fallback chain for the bubble body:
+      //   1. agent-provided answer (reasoning/Q&A output, timeout explanation, …)
+      //   2. mutation summary (file-change tasks)
+      //   3. trace-derived synopsis for failures that carry neither
+      //   4. last-resort placeholder — only reached when we have nothing at all
+      const mutationSummary = result.mutations.map((m) => `Modified ${m.file}`).join('\n');
+      let fallback = '(no response)';
+      if (result.status === 'failed' || result.status === 'escalated') {
+        const reason = result.trace?.failureReason ?? result.escalationReason;
+        const approach = result.trace?.approach;
+        if (reason || approach) {
+          fallback = `Task did not complete (${result.status}${approach ? `, ${approach}` : ''})${reason ? `: ${reason}` : '.'}`;
+        }
+      }
+      content = result.answer ?? (mutationSummary || fallback);
     }
     const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
 

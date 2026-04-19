@@ -90,42 +90,81 @@ export function attachComprehensionTraceListener(
     // Deferred behind calibrator injection so the listener still works
     // without persistence (unit tests, degraded mode).
     if (!calibrator) return;
+    // GAP#5 wiring: we don't have the engineType on the calibrated
+    // payload (bus event carries only engineId + outcome). The
+    // calibrator accepts an optional type for AXM#4 integrity. Omit
+    // here — the listener's Brier signal is advisory and an id-only
+    // query is acceptable for observability. Engine-side consumers
+    // (LlmComprehender) pass their own engineType explicitly.
     const b = calibrator.brierScore(payload.engineId);
     if (b.insufficient || b.brier == null) return;
     const nowAbove = b.brier > MISCALIBRATION_BRIER_THRESHOLD;
     const wasAbove = miscalibratedAbove.get(payload.engineId) ?? false;
     // Record the current state for the next turn's comparison.
     miscalibratedAbove.set(payload.engineId, nowAbove);
-    // Emit ONLY on below→above transition. Repeated above-state is silent.
-    if (!nowAbove || wasAbove) return;
-    bus.emit('comprehension:miscalibrated', {
-      taskId: payload.taskId,
-      engineId: payload.engineId,
-      brier: b.brier,
-      sampleSize: b.sampleSize,
-      threshold: MISCALIBRATION_BRIER_THRESHOLD,
-    });
-    void traceCollector
-      .record({
-        id: `trace-${payload.taskId}-comprehension-miscalibrated-${payload.engineId}`,
+
+    // GAP#6 — transition-only emits. Same-state = silent (no bus noise).
+    if (nowAbove && !wasAbove) {
+      // Below → above. Miscalibration begins.
+      bus.emit('comprehension:miscalibrated', {
         taskId: payload.taskId,
-        workerId: 'comprehension-phase',
-        timestamp: Date.now(),
-        routingLevel: 0,
-        approach: 'comprehension-miscalibrated',
-        approachDescription:
-          `engine=${payload.engineId} brier=${b.brier.toFixed(3)} ` +
-          `n=${b.sampleSize} threshold=${MISCALIBRATION_BRIER_THRESHOLD}`,
-        oracleVerdicts: {},
-        modelUsed: payload.engineId,
         engineId: payload.engineId,
-        tokensConsumed: 0,
-        durationMs: 0,
-        outcome: 'failure',
-        failureReason: `Brier ${b.brier.toFixed(3)} > ${MISCALIBRATION_BRIER_THRESHOLD}`,
-        affectedFiles: [],
-      })
-      .catch(() => { /* best-effort */ });
+        brier: b.brier,
+        sampleSize: b.sampleSize,
+        threshold: MISCALIBRATION_BRIER_THRESHOLD,
+      });
+      void traceCollector
+        .record({
+          id: `trace-${payload.taskId}-comprehension-miscalibrated-${payload.engineId}`,
+          taskId: payload.taskId,
+          workerId: 'comprehension-phase',
+          timestamp: Date.now(),
+          routingLevel: 0,
+          approach: 'comprehension-miscalibrated',
+          approachDescription:
+            `engine=${payload.engineId} brier=${b.brier.toFixed(3)} ` +
+            `n=${b.sampleSize} threshold=${MISCALIBRATION_BRIER_THRESHOLD}`,
+          oracleVerdicts: {},
+          modelUsed: payload.engineId,
+          engineId: payload.engineId,
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'failure',
+          failureReason: `Brier ${b.brier.toFixed(3)} > ${MISCALIBRATION_BRIER_THRESHOLD}`,
+          affectedFiles: [],
+        })
+        .catch(() => { /* best-effort */ });
+    } else if (!nowAbove && wasAbove) {
+      // Above → below. Engine recovered.
+      bus.emit('comprehension:recalibrated', {
+        taskId: payload.taskId,
+        engineId: payload.engineId,
+        brier: b.brier,
+        sampleSize: b.sampleSize,
+        threshold: MISCALIBRATION_BRIER_THRESHOLD,
+      });
+      void traceCollector
+        .record({
+          id: `trace-${payload.taskId}-comprehension-recalibrated-${payload.engineId}`,
+          taskId: payload.taskId,
+          workerId: 'comprehension-phase',
+          timestamp: Date.now(),
+          routingLevel: 0,
+          approach: 'comprehension-recalibrated',
+          approachDescription:
+            `engine=${payload.engineId} brier=${b.brier.toFixed(3)} ` +
+            `n=${b.sampleSize} threshold=${MISCALIBRATION_BRIER_THRESHOLD}`,
+          oracleVerdicts: {},
+          modelUsed: payload.engineId,
+          engineId: payload.engineId,
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'success',
+          affectedFiles: [],
+        })
+        .catch(() => { /* best-effort */ });
+    }
+    // Same-state branches fall through silently.
   });
 
   const offDiverged = bus.on('comprehension:calibration_diverged', (payload) => {

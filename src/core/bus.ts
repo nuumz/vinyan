@@ -638,6 +638,20 @@ export interface VinyanBusEvents {
     sampleSize: number;
     threshold: number;
   };
+  /**
+   * GAP#6 — paired recovery event. Fires when an engine that was
+   * previously miscalibrated (Brier > threshold) has now dropped back
+   * below threshold. Operators use this to see engines come back
+   * online; LlmComprehender's self-recusal stops firing after the next
+   * calibrated call when Brier is good.
+   */
+  'comprehension:recalibrated': {
+    taskId: string;
+    engineId: string;
+    brier: number;
+    sampleSize: number;
+    threshold: number;
+  };
 
   // Extensible Thinking events
   'thinking:policy-compiled': {
@@ -740,7 +754,7 @@ export interface VinyanBusEvents {
 
   // Economy Layer 3: Market events
   'market:auction_started': { auctionId: string; taskId: string; eligibleBidders: number };
-  'market:auction_completed': { auctionId: string; winnerId: string; score: number; bidderCount: number };
+  'market:auction_completed': { auctionId: string; taskId: string; winnerId: string; score: number; bidderCount: number };
   'market:fallback_to_selector': { taskId: string; reason: string };
   'market:settlement_recorded': { settlementId: string; bidAccuracy: number; penaltyType: string | null };
   'market:collusion_suspected': { auctionId: string; bidSpread: number; consecutiveCount: number };

@@ -21,6 +21,7 @@
  */
 
 import type { ComprehensionOutcome, ComprehensionRecordRow } from '../../../db/comprehension-store.ts';
+import type { ComprehensionEngineType } from '../types.ts';
 
 export const DEFAULT_EMA_ALPHA = 0.1;
 export const DATA_GATE_MIN = 20;
@@ -38,8 +39,22 @@ export interface EngineAccuracy {
   ema: number | null;
   /** Raw pass/total ratio over the full sampled window (confirm / all). */
   rawAccuracy: number | null;
+  /**
+   * GAP#4 — weighted raw accuracy using `evidence.confidence` from
+   * AXM#5's CorrectionDetector. A "continuation-default" (weight 0.5)
+   * contributes half a sample; an "explicit-token" (weight 1.0)
+   * contributes a full sample. Null when sampleSize < DATA_GATE_MIN
+   * OR when no record carries a weight.
+   *
+   * Read this INSTEAD of `rawAccuracy` when label-uncertainty matters
+   * (P2.C's tier-clamp, Sleep Cycle mining). Additive — existing
+   * consumers keep using `rawAccuracy`.
+   */
+  weightedAccuracy: number | null;
   /** Total records with an outcome (the denominator of rawAccuracy). */
   sampleSize: number;
+  /** Sum of label weights — the "effective" sample size for weightedAccuracy. */
+  effectiveSampleSize: number;
   /** Wilson 95% CI on the raw pass rate. Null when sampleSize is 0. */
   wilson95: { lower: number; upper: number } | null;
   /**
@@ -58,6 +73,24 @@ export interface CalibratorOptions {
   sampleWindow?: number;
   /** Clock for testing. */
   now?: () => number;
+}
+
+/**
+ * GAP#4 — extract the CorrectionDetector's `evidence.confidence` from
+ * the stored outcome_evidence JSON. Returns null when absent or
+ * malformed — callers fall back to unit weight (1.0).
+ */
+function labelWeight(outcomeEvidenceJson: string | null): number | null {
+  if (!outcomeEvidenceJson) return null;
+  try {
+    const parsed = JSON.parse(outcomeEvidenceJson) as { confidence?: unknown };
+    if (typeof parsed.confidence === 'number' && parsed.confidence >= 0 && parsed.confidence <= 1) {
+      return parsed.confidence;
+    }
+  } catch {
+    /* malformed JSON — ignore */
+  }
+  return null;
 }
 
 /**
@@ -87,7 +120,13 @@ export class ComprehensionCalibrator {
   private readonly now: () => number;
 
   constructor(
-    private readonly loader: { recentByEngine: (engineId: string, limit?: number) => ComprehensionRecordRow[] },
+    private readonly loader: {
+      recentByEngine: (
+        engineId: string,
+        limit?: number,
+        engineType?: ComprehensionEngineType,
+      ) => ComprehensionRecordRow[];
+    },
     opts: CalibratorOptions = {},
   ) {
     this.alpha = opts.alpha ?? DEFAULT_EMA_ALPHA;
@@ -101,15 +140,17 @@ export class ComprehensionCalibrator {
    * in REVERSE so older samples weigh less under EMA (i.e. the EMA's
    * "current" value reflects recent performance more).
    */
-  getEngineAccuracy(engineId: string): EngineAccuracy {
-    const rows = this.loader.recentByEngine(engineId, this.sampleWindow);
+  getEngineAccuracy(engineId: string, engineType?: ComprehensionEngineType): EngineAccuracy {
+    const rows = this.loader.recentByEngine(engineId, this.sampleWindow, engineType);
     const sampleSize = rows.length;
     if (sampleSize === 0) {
       return {
         engineId,
         ema: null,
         rawAccuracy: null,
+        weightedAccuracy: null,
         sampleSize: 0,
+        effectiveSampleSize: 0,
         wilson95: null,
         insufficient: true,
         computedAt: this.now(),
@@ -117,10 +158,24 @@ export class ComprehensionCalibrator {
     }
 
     let positives = 0;
+    // GAP#4 — weighted pass + denominator (AXM#5 label confidence).
+    let weightedPositives = 0;
+    let totalWeight = 0;
+    let anyWeighted = false;
     for (const r of rows) {
-      if (r.outcome && OUTCOME_IS_CORRECT[r.outcome] === 1) positives++;
+      if (!r.outcome) continue;
+      if (OUTCOME_IS_CORRECT[r.outcome] === 1) positives++;
+      const w = labelWeight(r.outcome_evidence);
+      if (w != null) anyWeighted = true;
+      const effectiveW = w ?? 1;
+      totalWeight += effectiveW;
+      if (OUTCOME_IS_CORRECT[r.outcome] === 1) weightedPositives += effectiveW;
     }
     const rawAccuracy = positives / sampleSize;
+    // weightedAccuracy null when no records carried a weight field (pre-
+    // AXM#5 data) — consumer treats as "same as rawAccuracy" in that case.
+    const weightedAccuracy =
+      anyWeighted && totalWeight > 0 ? weightedPositives / totalWeight : null;
 
     // Fold oldest → newest so recent outcomes dominate the EMA.
     let ema = rawAccuracy; // seed with raw to avoid cold-start distortion
@@ -136,7 +191,9 @@ export class ComprehensionCalibrator {
       engineId,
       ema: insufficient ? null : ema,
       rawAccuracy,
+      weightedAccuracy: insufficient ? null : weightedAccuracy,
       sampleSize,
+      effectiveSampleSize: totalWeight,
       wilson95: wilson95(positives, sampleSize),
       insufficient,
       computedAt: this.now(),
@@ -153,12 +210,16 @@ export class ComprehensionCalibrator {
    * Pure function over store.recentByEngine — safe to call on every
    * markOutcome. Caller emits the bus event when diverged=true.
    */
-  detectDivergence(engineId: string, opts: DivergenceOptions = {}): DivergenceSignal | null {
+  detectDivergence(
+    engineId: string,
+    opts: DivergenceOptions = {},
+    engineType?: ComprehensionEngineType,
+  ): DivergenceSignal | null {
     const recentWindow = opts.recentWindow ?? DEFAULT_DIVERGENCE_RECENT;
     const threshold = opts.deltaThreshold ?? DEFAULT_DIVERGENCE_DELTA;
     const minHistorical = opts.minSamplesPerWindow ?? DATA_GATE_MIN;
 
-    const all = this.loader.recentByEngine(engineId, this.sampleWindow);
+    const all = this.loader.recentByEngine(engineId, this.sampleWindow, engineType);
     if (all.length < recentWindow + minHistorical) return null;
 
     const recent = all.slice(0, recentWindow);
@@ -219,10 +280,14 @@ export class ComprehensionCalibrator {
    *
    * A5 conservative: `effectiveCeiling` is always ≤ `confidenceCeiling`.
    */
-  effectiveCeiling(engineId: string, opts: DivergenceOptions = {}): ConfidenceCeiling {
-    const base = this.confidenceCeiling(engineId);
+  effectiveCeiling(
+    engineId: string,
+    opts: DivergenceOptions = {},
+    engineType?: ComprehensionEngineType,
+  ): ConfidenceCeiling {
+    const base = this.confidenceCeiling(engineId, engineType);
     if (base.kind === 'unknown') return base;
-    const sig = this.detectDivergence(engineId, opts);
+    const sig = this.detectDivergence(engineId, opts, engineType);
     if (!sig || !sig.diverged) return base;
     // AXM#6: use Wilson 95% LOWER bound on recent-window accuracy
     // instead of the raw point estimate. On small samples a point
@@ -248,26 +313,57 @@ export class ComprehensionCalibrator {
    * Returns `insufficient` when fewer than DATA_GATE_MIN records — same
    * A2 honesty pattern as `confidenceCeiling`. Caller decides fallback.
    */
-  brierScore(engineId: string): {
+  brierScore(engineId: string, engineType?: ComprehensionEngineType): {
     readonly brier: number | null;
+    /**
+     * GAP#4 — weighted Brier using AXM#5 label confidence. Null when no
+     * records carry a label weight. Weighted denominator reduces the
+     * influence of low-confidence "continuation-default" labels on the
+     * final score.
+     */
+    readonly weightedBrier: number | null;
     readonly sampleSize: number;
+    readonly effectiveSampleSize: number;
     readonly insufficient: boolean;
   } {
-    const rows = this.loader.recentByEngine(engineId, this.sampleWindow);
+    const rows = this.loader.recentByEngine(engineId, this.sampleWindow, engineType);
     const n = rows.length;
-    if (n === 0) return { brier: null, sampleSize: 0, insufficient: true };
+    if (n === 0) {
+      return {
+        brier: null,
+        weightedBrier: null,
+        sampleSize: 0,
+        effectiveSampleSize: 0,
+        insufficient: true,
+      };
+    }
     let sumSquaredError = 0;
+    let weightedSumSquaredError = 0;
+    let totalWeight = 0;
+    let anyWeighted = false;
+    let labeled = 0;
     for (const r of rows) {
-      if (!r.outcome) continue; // only rows with outcomes contribute
-      const predicted = r.confidence; // engine's self-reported confidence
-      const actual = OUTCOME_IS_CORRECT[r.outcome]; // 0 or 1
+      if (!r.outcome) continue;
+      labeled++;
+      const predicted = r.confidence;
+      const actual = OUTCOME_IS_CORRECT[r.outcome];
       const diff = predicted - actual;
-      sumSquaredError += diff * diff;
+      const sq = diff * diff;
+      sumSquaredError += sq;
+      const w = labelWeight(r.outcome_evidence);
+      if (w != null) anyWeighted = true;
+      const effectiveW = w ?? 1;
+      totalWeight += effectiveW;
+      weightedSumSquaredError += effectiveW * sq;
     }
     const insufficient = n < DATA_GATE_MIN;
+    const weighted =
+      anyWeighted && totalWeight > 0 ? weightedSumSquaredError / totalWeight : null;
     return {
-      brier: insufficient ? null : sumSquaredError / n,
+      brier: insufficient ? null : labeled > 0 ? sumSquaredError / labeled : null,
+      weightedBrier: insufficient ? null : weighted,
       sampleSize: n,
+      effectiveSampleSize: totalWeight,
       insufficient,
     };
   }
@@ -280,8 +376,8 @@ export class ComprehensionCalibrator {
    * let a fresh engine masquerade as half-trusted. Callers decide the
    * fallback policy; the calibrator refuses to lie.
    */
-  confidenceCeiling(engineId: string): ConfidenceCeiling {
-    const acc = this.getEngineAccuracy(engineId);
+  confidenceCeiling(engineId: string, engineType?: ComprehensionEngineType): ConfidenceCeiling {
+    const acc = this.getEngineAccuracy(engineId, engineType);
     if (acc.sampleSize === 0) {
       return { kind: 'unknown', reason: 'engine-not-seen' };
     }

@@ -452,19 +452,39 @@ export function mapUnderstandingToStrategy(
  * direct-tool, the result carries a fully-formed `directToolCall` (resolved
  * via platform-aware resolveCommand).
  */
+/**
+ * Inspection/report verbs — tasks that need a TEXTUAL answer derived from
+ * tool output, never fire-and-forget. Examples:
+ *   - "ตรวจสอบการทำงานของ X" → report on X's status
+ *   - "check git status"       → summarize working tree
+ *   - "verify foo.ts compiles" → tell me the outcome
+ *
+ * These trigger `execute + tool-needed` in STU (the verb is imperative,
+ * the task DOES need tools) but the intent is inquiry-with-tools. Route
+ * them to `full-pipeline` so the oracle gate + DAG planner can marshal
+ * multiple tools and produce a report.
+ */
+const INSPECTION_VERB_PATTERN =
+  /(?:ตรวจสอบ|เช็ค|ดูสถานะ|ดูการทำงาน|รายงาน|สรุปสถานะ)|\b(?:check|inspect|verify|audit|diagnose|review|status|report)\b/i;
+
 export function composeDeterministicCandidate(
   input: TaskInput,
   understanding: SemanticTaskUnderstanding,
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
   const ruleStrategy = mapUnderstandingToStrategy(understanding);
   const directClass = classifyDirectTool(input.goal);
+  const isInspection = INSPECTION_VERB_PATTERN.test(input.goal);
 
   // When the direct-tool rule fires with high confidence AND the rule-mapper
   // agrees the goal needs a tool, produce a composed candidate with a resolved
   // shell command. This is the highest-confidence deterministic path.
+  //
+  // Inspection verbs ("check", "ตรวจสอบ", "verify") are excluded: they read
+  // as execute+tool-needed but want a textual report, not a side-effect.
   if (
     directClass &&
     directClass.confidence >= 0.85 &&
+    !isInspection &&
     (ruleStrategy.strategy === 'direct-tool' || understanding.toolRequirement === 'tool-needed')
   ) {
     const command = resolveCommand(directClass, process.platform);
@@ -485,6 +505,34 @@ export function composeDeterministicCandidate(
         },
       };
     }
+  }
+
+  // Demotion path: rule said direct-tool but we could NOT resolve a concrete
+  // shell command (classifyDirectTool missed, or resolveCommand returned
+  // null). A direct-tool strategy without a directToolCall is semantically
+  // invalid — there is nothing to execute. Route to full-pipeline instead,
+  // flagged ambiguous so the LLM merge layer becomes the tiebreaker.
+  //
+  // This also catches inspection verbs that slipped through STU as
+  // execute+tool-needed: "ตรวจสอบ X" wants a report, not fire-and-forget.
+  if (ruleStrategy.strategy === 'direct-tool' || isInspection) {
+    const reason = isInspection
+      ? `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} + inspection verb → full-pipeline (report expected, not fire-and-forget).`
+      : `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → direct-tool rule fired but no shell command resolved; demoted to full-pipeline.`;
+    return {
+      strategy: 'full-pipeline',
+      refinedGoal: input.goal,
+      confidence: 0.55,
+      reasoning: `Deterministic: ${reason}`,
+      reasoningSource: 'deterministic',
+      type: 'uncertain',
+      deterministicCandidate: {
+        strategy: 'full-pipeline',
+        confidence: 0.55,
+        source: 'mapUnderstandingToStrategy',
+        ambiguous: true,
+      },
+    };
   }
 
   // Otherwise emit a skeleton from the rule-mapper alone. No directToolCall
@@ -760,6 +808,34 @@ function mergeDeterministicAndLLM(
         clarificationOptions: options,
       },
       type: 'uncertain',
+    };
+  }
+
+  // A5 carve-out: when rule said 'direct-tool' but never resolved a concrete
+  // `directToolCall`, the rule has NO artifact — just an opinion. A5's
+  // tier-0.8 trust applies to deterministic FACTS, not unresolved hunches.
+  // Treat LLM disagreement as refinement (LLM fills the gap) instead of
+  // contradiction. Prevents the user from being asked to tiebreak between
+  // a hollow rule and an informed LLM pick.
+  if (
+    det.strategy === 'direct-tool' &&
+    !det.directToolCall &&
+    llm.strategy !== 'direct-tool'
+  ) {
+    const mergedStrategy = llm.strategy;
+    const mergedConfidence = Math.max(det.confidence, llmConfidence);
+    return {
+      resolution: {
+        strategy: mergedStrategy,
+        refinedGoal: llm.refinedGoal,
+        directToolCall: llm.directToolCall,
+        workflowPrompt: llm.workflowPrompt,
+        confidence: mergedConfidence,
+        reasoning: `A5 carve-out: rule=direct-tool had no resolved command (hollow); LLM=${llm.strategy} accepted as refinement. ${llm.reasoning}`,
+        reasoningSource: 'merged',
+        deterministicCandidate: det.deterministicCandidate,
+      },
+      type: 'known',
     };
   }
 

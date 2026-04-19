@@ -227,7 +227,7 @@ describe('CommitmentBridge', () => {
     bridge.start();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1',
+      auctionId: 't-1', taskId: 't-1',
       winnerId: 'eng-winner',
       score: 0.8,
       bidderCount: 3,
@@ -252,7 +252,7 @@ describe('CommitmentBridge', () => {
     bridge.start();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1',
+      auctionId: 't-1', taskId: 't-1',
       winnerId: 'eng-1',
       score: 0.5,
       bidderCount: 2,
@@ -278,7 +278,7 @@ describe('CommitmentBridge', () => {
 
     for (const t of ['t-fail', 't-esc']) {
       bus.emit('market:auction_completed', {
-        auctionId: t,
+        auctionId: t, taskId: t,
         winnerId: 'eng-1',
         score: 0.5,
         bidderCount: 1,
@@ -305,7 +305,7 @@ describe('CommitmentBridge', () => {
     bridge.stop();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1',
+      auctionId: 't-1', taskId: 't-1',
       winnerId: 'eng-1',
       score: 0.5,
       bidderCount: 1,

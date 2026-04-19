@@ -52,15 +52,21 @@ export class CommitmentBridge {
     if (this.unsubAuction || this.unsubTrace) return; // already running
 
     this.unsubAuction = this.bus.on('market:auction_completed', (payload) => {
-      const facts = this.resolveTask(payload.auctionId);
-      // auction events are keyed by auctionId; task facts may be indexed by taskId.
-      // Callers in production register auctions with `auctionId === taskId`, so
-      // this single lookup is correct. Tests can map either way.
+      // Keyed by the REAL taskId (auctionId has format "auc-<taskId>-<ts>"
+      // and is NOT interchangeable). The bridge uses payload.taskId so the
+      // commitment it opens can be resolved by the `trace:record` handler,
+      // which sees trace.taskId (never auctionId).
+      const taskId = payload.taskId;
+      const facts = this.resolveTask(taskId);
       if (!facts) return;
+      // Idempotency: a single task may trigger multiple auctions (escalation,
+      // retry). Opening a second commitment for the same taskId would make
+      // both resolve on the first trace:record, double-crediting the winner.
+      if (this.ledger.openByTask(taskId).length > 0) return;
       try {
         this.ledger.open({
           engineId: payload.winnerId,
-          taskId: payload.auctionId,
+          taskId,
           goal: facts.goal,
           targetFiles: facts.targetFiles ?? [],
           deadlineAt: facts.deadlineAt,

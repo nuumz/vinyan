@@ -87,4 +87,42 @@ export class RoomBlackboard {
   size(): number {
     return this.cells.size;
   }
+
+  /**
+   * Supervisor-privileged write: bypass role scope checks so the dispatcher
+   * can seed initial state (e.g. Team blackboard import) before any
+   * participant takes a turn. `authorRole` is an opaque string used only
+   * for the audit field — participants see this as a normal BlackboardEntry.
+   *
+   * ONLY the Supervisor / Dispatcher should call this. Never expose it to
+   * participant code paths — that would break A6 role-scoped writes.
+   */
+  systemSeed(key: string, value: unknown, authorRole: string): BlackboardEntry {
+    const previous = this.cells.get(key);
+    const version = (previous?.version ?? -1) + 1;
+    const entry: BlackboardEntry = {
+      key,
+      value,
+      authorRole,
+      version,
+      timestamp: this.clock(),
+    };
+    this.cells.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Return entries whose version > `sinceVersion`. Used by the team-bridge
+   * export step to detect which keys were actually mutated during the room
+   * (key present at open with version V → if final > V, it changed).
+   */
+  entriesChangedSince(initial: ReadonlyMap<string, number>): BlackboardEntry[] {
+    const changed: BlackboardEntry[] = [];
+    for (const [key, entry] of this.cells) {
+      const baseline = initial.get(key);
+      // New key, or version advanced past the seeded version
+      if (baseline === undefined || entry.version > baseline) changed.push(entry);
+    }
+    return changed;
+  }
 }

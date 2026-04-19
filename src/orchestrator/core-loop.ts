@@ -1939,7 +1939,19 @@ async function executeTaskCore(
             elapsedMs: Date.now() - startTime,
             budgetMs: input.budget.maxDurationMs,
           });
-          const timeoutResult: TaskResult = { id: input.id, status: 'failed', mutations: [], trace: timeoutTrace };
+          const timeoutResult: TaskResult = {
+            id: input.id,
+            status: 'failed',
+            mutations: [],
+            trace: timeoutTrace,
+            // Surface a user-facing explanation so chat UIs don't render an
+            // empty "(no response)" bubble. The trace carries the full detail;
+            // this field is the TL;DR for clients that don't inspect traces.
+            answer:
+              `Task timed out after ${Math.round((Date.now() - startTime) / 1000)}s ` +
+              `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}. ` +
+              `Try narrowing the request, or raise --max-duration if the task legitimately needs more time.`,
+          };
           deps.bus?.emit('task:complete', { result: timeoutResult });
           return timeoutResult;
         }

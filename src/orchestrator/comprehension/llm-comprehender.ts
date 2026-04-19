@@ -234,7 +234,7 @@ class LlmComprehender implements ComprehensionEngine {
     // / `effectiveCeiling`. Gracefully skip the recusal check when the
     // method isn't available.
     if (this.opts.calibrator && typeof (this.opts.calibrator as { brierScore?: unknown }).brierScore === 'function') {
-      const b = this.opts.calibrator.brierScore(this.id);
+      const b = this.opts.calibrator.brierScore(this.id, this.engineType);
       if (!b.insufficient && b.brier != null && b.brier > SELF_RECUSAL_BRIER_THRESHOLD) {
         return this.unknownEnvelope({
           inputHash,
@@ -300,8 +300,8 @@ class LlmComprehender implements ComprehensionEngine {
     const selfConfidence = Math.min(parsed.confidence, LLM_MAX_SELF_CONFIDENCE);
     let ceiling = LLM_UNKNOWN_DATA_CEILING;
     if (this.opts.calibrator) {
-      const base = this.opts.calibrator.confidenceCeiling(this.id);
-      const eff = this.opts.calibrator.effectiveCeiling(this.id);
+      const base = this.opts.calibrator.confidenceCeiling(this.id, this.engineType);
+      const eff = this.opts.calibrator.effectiveCeiling(this.id, undefined, this.engineType);
       if (eff.kind === 'known') {
         ceiling = eff.value;
         // P3.A.4: surface the adjustment when divergence actually

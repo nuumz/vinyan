@@ -91,6 +91,7 @@ export class ComprehensionStore {
   private readonly updateOutcomeStmt: Statement;
   private readonly recentBySessionStmt: Statement;
   private readonly recentByEngineStmt: Statement;
+  private readonly recentByEngineTypedStmt: Statement;
   private readonly staleSweepStmt: Statement;
   private readonly countStmt: Statement;
 
@@ -118,6 +119,17 @@ export class ComprehensionStore {
     this.recentByEngineStmt = db.prepare(`
       SELECT * FROM comprehension_records
        WHERE engine_id = ? AND outcome IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT ?
+    `);
+    // GAP#5 — engine-type filter variant. Calibration integrity depends
+    // on correctly attributing outcomes to the right (engine_id, type).
+    // An ID collision (bug or rogue) would corrupt calibration for that
+    // ID unless consumers pass the expected type too. AXM#4 added the
+    // column; this query uses it.
+    this.recentByEngineTypedStmt = db.prepare(`
+      SELECT * FROM comprehension_records
+       WHERE engine_id = ? AND engine_type = ? AND outcome IS NOT NULL
        ORDER BY created_at DESC
        LIMIT ?
     `);
@@ -179,8 +191,26 @@ export class ComprehensionStore {
     return this.recentBySessionStmt.all(sessionId, limit) as ComprehensionRecordRow[];
   }
 
-  /** Per-engine outcomes — calibration input. */
-  recentByEngine(engineId: string, limit = 200): ComprehensionRecordRow[] {
+  /**
+   * Per-engine outcomes — calibration input.
+   *
+   * When `engineType` is provided (GAP#5), additionally filters by the
+   * AXM#4 engine_type column so an engine_id collision cannot silently
+   * contaminate calibration for the legitimate owner. Callers that know
+   * their engine's type SHOULD always pass it.
+   */
+  recentByEngine(
+    engineId: string,
+    limit = 200,
+    engineType?: ComprehensionEngineType,
+  ): ComprehensionRecordRow[] {
+    if (engineType) {
+      return this.recentByEngineTypedStmt.all(
+        engineId,
+        engineType,
+        limit,
+      ) as ComprehensionRecordRow[];
+    }
     return this.recentByEngineStmt.all(engineId, limit) as ComprehensionRecordRow[];
   }
 

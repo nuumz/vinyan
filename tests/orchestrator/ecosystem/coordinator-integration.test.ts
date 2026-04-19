@@ -49,7 +49,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
     tasks.set('t-1', {
       goal: 'refactor auth module',
       targetFiles: ['src/auth.ts'],
-      deadlineAt: 9_999_999_999,
+      deadlineAt: Date.now() + 3_600_000,
     });
 
     const engines: Array<ReturnType<typeof makeEngine>> = [
@@ -81,7 +81,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
 
     // Simulate an auction win — this opens a commitment automatically via the bridge
     bus.emit('market:auction_completed', {
-      auctionId: 't-1',
+      auctionId: 't-1', taskId: 't-1',
       winnerId: 'eng-a',
       score: 0.85,
       bidderCount: 2,
@@ -92,7 +92,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
     expect(commitments.openByEngine('eng-a')).toHaveLength(1);
     expect(runtime.get('eng-a')!.state).toBe('working');
 
-    // Reconcile while working — no violations
+    // Reconcile while working — no violations.
     const mid = coordinator.reconcile();
     expect(mid.violations).toHaveLength(0);
 
@@ -141,7 +141,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
     const bus = createBus();
 
     const tasks = new Map<string, TaskFacts>();
-    tasks.set('t-orphan', { goal: 'g', targetFiles: [], deadlineAt: 9_999_999_999 });
+    tasks.set('t-orphan', { goal: 'g', targetFiles: [], deadlineAt: Date.now() + 3_600_000 });
 
     const { coordinator, runtime, commitments } = buildEcosystem({
       db,
@@ -160,7 +160,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
       engineId: 'lazy',
       taskId: 't-orphan',
       goal: 'g',
-      deadlineAt: 9_999_999_999,
+      deadlineAt: Date.now() + 3_600_000,
     });
 
     const report = coordinator.reconcile();
@@ -199,7 +199,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
       taskId: 't-fallback',
       goal: 'handle this',
       targetFiles: [],
-      deadlineAt: 9_999_999_999,
+      deadlineAt: Date.now() + 3_600_000,
       contextProvider: (id) => ctx[id] ?? { capability: 0.1, trust: 0.1, currentLoad: 0 },
     });
 
@@ -234,7 +234,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
     const result = coordinator.attemptVolunteerFallback({
       taskId: 't-empty',
       goal: 'g',
-      deadlineAt: 9_999_999_999,
+      deadlineAt: Date.now() + 3_600_000,
       contextProvider: () => ({ capability: 1, trust: 1, currentLoad: 0 }),
     });
     expect(result).toBeNull();
@@ -272,7 +272,7 @@ describe('EcosystemCoordinator — integration smoke', () => {
     const result = coordinator.attemptVolunteerFallback({
       taskId: 't-scoped',
       goal: 'write code',
-      deadlineAt: 9_999_999_999,
+      deadlineAt: Date.now() + 3_600_000,
       departmentId: 'code',
       contextProvider: () => ({ capability: 0.5, trust: 0.5, currentLoad: 0 }),
     });

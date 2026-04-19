@@ -439,10 +439,20 @@ async function prepareExecution(
           // so we use the session manager's raw history count.
           let thisTurnIsNewTopic = false;
           try {
-            const histAll = deps.sessionManager?.getConversationHistory(input.sessionId, 2000) ?? [];
-            const priorUserCount = histAll.filter(
-              (h) => h.role === 'user' && h.content !== input.goal,
-            ).length;
+            // A7: Turn-model — count prior user turns whose flattened text
+            // isn't the current goal (new-topic heuristic).
+            const mgr = deps.sessionManager as unknown as {
+              getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+            } | undefined;
+            const turns = mgr?.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 50) : [];
+            const priorUserCount = turns.filter((t) => {
+              if (t.role !== 'user') return false;
+              const text = t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join(' ');
+              return text !== input.goal;
+            }).length;
             thisTurnIsNewTopic = priorUserCount === 0;
           } catch { /* best-effort */ }
 
@@ -495,12 +505,18 @@ async function prepareExecution(
     }
 
     // Build input from session + pending clarifications.
-    let history: import('./types.ts').ConversationEntry[] = [];
+    // A7: Turn-model history — ConversationEntry[] was retired.
+    let history: import('./types.ts').Turn[] = [];
     let pendingQuestions: string[] = [];
     let rootGoal: string | null = null;
     if (input.sessionId && deps.sessionManager) {
       try {
-        history = deps.sessionManager.getConversationHistory(input.sessionId, 4000);
+        const mgr = deps.sessionManager as unknown as {
+          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        };
+        if (typeof mgr.getTurnsHistory === 'function') {
+          history = mgr.getTurnsHistory(input.sessionId, 20);
+        }
       } catch { /* best-effort */ }
       try {
         pendingQuestions = deps.sessionManager.getPendingClarifications(input.sessionId);
@@ -1226,15 +1242,24 @@ async function buildConversationalResult(
 
   if (provider) {
     try {
-      // Load session history for multi-turn conversation continuity
+      // A7: Load Turn-model history for multi-turn conversation continuity.
+      // Flatten each Turn's text blocks into a single string for the
+      // Anthropic HistoryMessage shape (tool_use is dropped here — this is
+      // the conversational persona path, not the tool-loop path).
       let messages: import('./types.ts').HistoryMessage[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          const history = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 4000);
-          if (history.length > 0) {
-            messages = history.map((e) => ({
-              role: e.role as 'user' | 'assistant',
-              content: e.content,
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          const turns = mgr.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 20) : [];
+          if (turns.length > 0) {
+            messages = turns.map((t) => ({
+              role: t.role,
+              content: t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join('\n'),
             }));
           }
         } catch { /* non-fatal */ }

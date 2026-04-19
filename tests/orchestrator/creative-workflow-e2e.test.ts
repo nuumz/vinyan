@@ -34,7 +34,7 @@ import {
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import { executeWorkflow } from '../../src/orchestrator/workflow/workflow-executor.ts';
 import type {
-  ConversationEntry,
+  Turn,
   ExecutionTrace,
   LLMProvider,
   LLMRequest,
@@ -145,7 +145,7 @@ describe('creative-workflow E2E — turn 1 (fresh session)', () => {
       makeRouting(),
       {
         bus,
-        sessionManager: { getConversationHistoryCompacted: () => [] },
+        sessionManager: { getTurnsHistory: () => [] },
         traceCollector: collector,
       },
     );
@@ -188,9 +188,9 @@ describe('creative-workflow E2E — turn 2 (with history) → executor approval 
     const { bus, events } = instrumentBus();
     const { collector } = makeTraceCollector();
 
-    const prior: ConversationEntry[] = [
-      { role: 'user', content: 'อยากเขียนนิยาย', taskId: 't0', timestamp: 1, tokenEstimate: 4 },
-      { role: 'assistant', content: 'ตอบคำถามตามตัวเลือก...', taskId: 't0', timestamp: 2, tokenEstimate: 8 },
+    const prior: Turn[] = [
+      { id: `${'t0'}-1`, sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'อยากเขียนนิยาย' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: `${'t0'}-2`, sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'ตอบคำถามตามตัวเลือก...' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
 
     // Gate must skip (session has history).
@@ -199,7 +199,7 @@ describe('creative-workflow E2E — turn 2 (with history) → executor approval 
       makeRouting(),
       {
         bus,
-        sessionManager: { getConversationHistoryCompacted: () => prior },
+        sessionManager: { getTurnsHistory: () => prior },
         traceCollector: collector,
       },
     );

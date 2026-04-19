@@ -96,20 +96,8 @@ describe('A7 learning loop — 3-turn sequence', () => {
     await runTurn({
       input: t2,
       history: [
-        {
-          role: 'user',
-          content: 'Write a short poem',
-          taskId: t1.id,
-          timestamp: 1,
-          tokenEstimate: 4,
-        },
-        {
-          role: 'assistant',
-          content: 'Here is a poem...',
-          taskId: t1.id,
-          timestamp: 2,
-          tokenEstimate: 5,
-        },
+        { id: `${t1.id}-1`, sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'Write a short poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        { id: `${t1.id}-2`, sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Here is a poem...' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
       ],
       pendingQuestions: [],
       rootGoal: null,

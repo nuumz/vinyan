@@ -345,7 +345,7 @@ describe('SessionManager — input-required recording', () => {
     const questions = ['Which auth flow did you mean?', 'Should the old endpoint stay alive?'];
     manager.recordAssistantTurn(session.id, 'task-A', makeInputRequiredResult(questions));
 
-    const history = manager.getConversationHistory(session.id);
+    const history = manager.getConversationHistoryText(session.id);
     expect(history).toHaveLength(1);
     const content = history[0]!.content;
     expect(content).toContain('[INPUT-REQUIRED]');
@@ -432,11 +432,14 @@ describe('SessionManager — input-required recording', () => {
       }
     }
 
-    const compacted = manager.getConversationHistoryCompacted(session.id, 50_000, 3);
-    const compactBlock = compacted.find((e) => e.content.includes('[SESSION CONTEXT'));
-    expect(compactBlock).toBeDefined();
-    expect(compactBlock!.content).toContain('Resolved clarifications');
-    expect(compactBlock!.content).toContain('Pick config A or B?');
+    // A7: getConversationHistoryCompacted was replaced by ContextRetriever's
+    // summary ladder. The compaction test used to verify the [SESSION CONTEXT]
+    // framing here; that belongs to tests/memory/summary-ladder.test.ts now.
+    // We keep the seed data + assert the session_turns rowcount is non-trivial
+    // so this test still catches silent regression of the recordUserTurn /
+    // recordAssistantTurn dual-write path.
+    const turns = manager.getTurnsHistory(session.id, 100);
+    expect(turns.length).toBeGreaterThanOrEqual(8);
   });
 });
 

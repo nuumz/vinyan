@@ -11,7 +11,6 @@ import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
 import type {
   ContentBlock,
-  ConversationEntry,
   TaskInput,
   TaskResult,
   Turn,
@@ -254,24 +253,10 @@ export class SessionManager {
   /**
    * Record a user message in the conversation history.
    *
-   * Plan commit A (A5): dual-writes to both `session_messages` (legacy flat
-   * path, consumed by ConversationEntry readers) and `session_turns`
-   * (Anthropic-native ContentBlock[] path). A7 will drop the legacy write.
+   * A7: session_messages legacy write removed. Turn-only persistence now.
    */
   recordUserTurn(sessionId: string, content: string): void {
     const now = Date.now();
-    this.sessionStore.insertMessage({
-      session_id: sessionId,
-      task_id: null,
-      role: 'user',
-      content,
-      thinking: null,
-      tools_used: null,
-      token_estimate: estimateTokens(content),
-      created_at: now,
-    });
-    // A5: mirror to session_turns as a single text block. No tool_use blocks
-    // from pure user input — user turns arrive as text regardless of LLM shape.
     const persisted = this.sessionStore.appendTurn({
       id: crypto.randomUUID(),
       sessionId,
@@ -335,23 +320,11 @@ export class SessionManager {
       }
       content = result.answer ?? (mutationSummary || fallback);
     }
-    const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
     const now = Date.now();
 
-    this.sessionStore.insertMessage({
-      session_id: sessionId,
-      task_id: taskId,
-      role: 'assistant',
-      content,
-      thinking: result.thinking ?? null,
-      tools_used: toolsUsed ? JSON.stringify(toolsUsed) : null,
-      token_estimate: estimateTokens(content) + estimateTokens(result.thinking ?? ''),
-      created_at: now,
-    });
-
-    // A5: mirror to session_turns. Each mutation becomes a tool_use block so
-    // the Turn-model consumer preserves the structural information that the
-    // legacy flat content string discards. Text content + thinking are kept
+    // A7: session_messages legacy write removed. Turn-only persistence.
+    // Each mutation becomes a tool_use block so the Turn-model consumer
+    // preserves structural information. Text content + thinking are kept
     // as distinct blocks (Anthropic-native order: thinking → text).
     const blocks: ContentBlock[] = [];
     if (result.thinking && result.thinking.trim().length > 0) {
@@ -400,14 +373,19 @@ export class SessionManager {
    * Pure text matching — A3 compliant, no LLM.
    */
   getPendingClarifications(sessionId: string): string[] {
-    const messages = this.sessionStore.getMessages(sessionId);
-    if (messages.length === 0) return [];
+    // A7: Turn-model lookup. Extract [INPUT-REQUIRED] questions from the
+    // latest assistant turn's text blocks.
+    const turns = this.sessionStore.getTurns(sessionId);
+    if (turns.length === 0) return [];
 
-    const last = messages[messages.length - 1]!;
-    // If the last message is a user turn, any clarification has already been answered.
+    const last = turns[turns.length - 1]!;
+    // Already answered → user turn appears after the clarification.
     if (last.role === 'user') return [];
-    if (last.role !== 'assistant') return [];
-    return parseInputRequiredBlock(last.content);
+    const text = last.blocks
+      .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    return parseInputRequiredBlock(text);
   }
 
   /**
@@ -428,17 +406,26 @@ export class SessionManager {
    * Pure text matching — A3 compliant, no LLM.
    */
   getOriginalTaskGoal(sessionId: string): string | null {
-    const messages = this.sessionStore.getMessages(sessionId);
-    if (messages.length === 0) return null;
+    // A7: Turn-model. Walk backward skipping [assistant-[INPUT-REQUIRED],
+    // user-reply] clarification pairs to find the last non-clarification
+    // user turn.
+    const turns = this.sessionStore.getTurns(sessionId);
+    if (turns.length === 0) return null;
 
-    let i = messages.length - 1;
+    const turnText = (t: import('../orchestrator/types.ts').Turn): string =>
+      t.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+
+    let i = turns.length - 1;
     while (i >= 0) {
-      const m = messages[i]!;
-      if (m.role === 'user') {
-        const prev = i > 0 ? messages[i - 1] : null;
+      const t = turns[i]!;
+      if (t.role === 'user') {
+        const prev = i > 0 ? turns[i - 1] : null;
         const isClarificationReply =
-          prev?.role === 'assistant' && prev.content.includes('[INPUT-REQUIRED]');
-        if (!isClarificationReply) return m.content;
+          prev?.role === 'assistant' && turnText(prev).includes('[INPUT-REQUIRED]');
+        if (!isClarificationReply) return turnText(t);
         // skip this reply and the clarification that triggered it
         i -= 2;
         continue;
@@ -448,25 +435,9 @@ export class SessionManager {
     return null;
   }
 
-  /** Get conversation history within a token budget. */
-  getConversationHistory(sessionId: string, maxTokens = 8000): ConversationEntry[] {
-    const rows = this.sessionStore.getRecentMessages(sessionId, maxTokens);
-    return rows
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
-        role: r.role as 'user' | 'assistant',
-        content: r.content,
-        taskId: r.task_id ?? '',
-        timestamp: r.created_at,
-        thinking: r.thinking ?? undefined,
-        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
-        tokenEstimate: r.token_estimate,
-      }));
-  }
-
-  /** Get the number of conversation messages in a session. */
+  /** Get the number of conversation turns in a session. */
   getMessageCount(sessionId: string): number {
-    return this.sessionStore.countMessages(sessionId);
+    return this.sessionStore.countTurns(sessionId);
   }
 
   /**
@@ -491,133 +462,38 @@ export class SessionManager {
     this.sessionStore.updateSessionMemory(sessionId, memoryJson);
   }
 
+  // A7: getConversationHistoryCompacted + enforceTokenBudget removed.
+  // The ContextRetriever's summary ladder (src/memory/summary-ladder.ts)
+  // supersedes the compaction logic that used to live here. Callers that
+  // needed compacted history now flow through ContextRetriever.retrieve()
+  // and receive a ContextBundle with recent + semantic + pins + summary.
+
   /**
-   * Get conversation history with compaction for long conversations.
-   * Keeps last `keepRecentTurns` turns verbatim, summarizes older turns
-   * into a structured compact block (rule-based, A3-compliant — no LLM).
+   * A7: backward-compat text view of the session history for display-only
+   * consumers (CLI chat renderer, TUI, server API /messages endpoint).
+   *
+   * Flattens each Turn's visible text blocks and returns a lightweight
+   * `{role, content, taskId, timestamp}[]` shape. tool_use / tool_result
+   * blocks are dropped — callers needing structural data should consume
+   * `getTurnsHistory` directly and walk `Turn.blocks`.
    */
-  getConversationHistoryCompacted(
-    sessionId: string,
-    maxTokens = 8000,
-    keepRecentTurns = 5,
-  ): ConversationEntry[] {
-    const allMessages = this.sessionStore.getMessages(sessionId);
-    if (allMessages.length === 0) return [];
-
-    const entries: ConversationEntry[] = allMessages
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
-        role: r.role as 'user' | 'assistant',
-        content: r.content,
-        taskId: r.task_id ?? '',
-        timestamp: r.created_at,
-        thinking: r.thinking ?? undefined,
-        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
-        tokenEstimate: r.token_estimate,
-      }));
-
-    // Count turns (a turn = one user + one assistant message pair)
-    const turnPairs = Math.ceil(entries.length / 2);
-    if (turnPairs <= keepRecentTurns) {
-      // Short enough — return as-is with token budget enforcement
-      return this.enforceTokenBudget(entries, maxTokens);
-    }
-
-    // Compact older turns into a structured summary
-    const recentStartIdx = Math.max(0, entries.length - keepRecentTurns * 2);
-    const olderEntries = entries.slice(0, recentStartIdx);
-    const recentEntries = entries.slice(recentStartIdx);
-
-    // Build rule-based compact summary from older turns
-    const topics = new Map<string, number>();
-    const filesDiscussed = new Set<string>();
-    // Agent Conversation: track open vs resolved clarification questions
-    // across compaction. A question is "resolved" when a user message follows
-    // the [INPUT-REQUIRED] assistant turn that raised it.
-    const openClarifications: string[] = [];
-    const resolvedClarifications: Array<{ question: string; answer: string }> = [];
-
-    for (let i = 0; i < olderEntries.length; i++) {
-      const entry = olderEntries[i]!;
-      // Extract file references (common patterns)
-      const fileRefs = entry.content.match(/[\w\-./]+\.(ts|js|py|java|tsx|jsx|md|json|yaml|yml)/g);
-      if (fileRefs) {
-        for (const f of fileRefs) filesDiscussed.add(f);
-      }
-      // Count user messages as topic indicators
-      if (entry.role === 'user') {
-        const firstLine = entry.content.split('\n')[0]?.slice(0, 80) ?? '';
-        const topic = firstLine || '(empty)';
-        topics.set(topic, (topics.get(topic) ?? 0) + 1);
-      }
-      // Detect [INPUT-REQUIRED] blocks and pair them with any following user turn
-      if (entry.role === 'assistant') {
-        const questions = parseInputRequiredBlock(entry.content);
-        if (questions.length > 0) {
-          const next = olderEntries[i + 1];
-          if (next && next.role === 'user') {
-            const answer = next.content.split('\n')[0]?.slice(0, 120) ?? '';
-            for (const q of questions) {
-              resolvedClarifications.push({ question: q, answer });
-            }
-          } else {
-            for (const q of questions) openClarifications.push(q);
-          }
-        }
-      }
-    }
-
-    const topicSummary = [...topics.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([topic, count]) => `${count > 1 ? `${count}x ` : ''}${topic}`)
-      .join('; ');
-
-    const clarificationLines: string[] = [];
-    if (resolvedClarifications.length > 0) {
-      const sample = resolvedClarifications
-        .slice(0, 5)
-        .map((r) => `Q: ${r.question} → A: ${r.answer}`)
-        .join('; ');
-      clarificationLines.push(`Resolved clarifications: ${sample}`);
-    }
-    if (openClarifications.length > 0) {
-      clarificationLines.push(`Open clarifications (awaiting user): ${openClarifications.slice(0, 5).join('; ')}`);
-    }
-
-    const compactContent = [
-      `[SESSION CONTEXT: ${olderEntries.length} prior messages, ${turnPairs - keepRecentTurns} turns compacted]`,
-      topicSummary ? `Topics: ${topicSummary}` : null,
-      filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 10).join(', ')}` : null,
-      ...clarificationLines,
-    ].filter(Boolean).join('\n');
-
-    const compactEntry: ConversationEntry = {
-      role: 'assistant',
-      content: compactContent,
-      taskId: 'compaction',
-      timestamp: olderEntries[0]?.timestamp ?? Date.now(),
-      tokenEstimate: estimateTokens(compactContent),
-    };
-
-    return this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens);
+  getConversationHistoryText(sessionId: string, maxTurns = 1000): Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    taskId: string;
+    timestamp: number;
+  }> {
+    const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    return turns.map((t) => ({
+      role: t.role,
+      content: t.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n'),
+      taskId: t.taskId ?? '',
+      timestamp: t.createdAt,
+    }));
   }
-
-  /** Trim entries to fit within token budget, removing oldest first. */
-  private enforceTokenBudget(entries: ConversationEntry[], maxTokens: number): ConversationEntry[] {
-    let totalTokens = entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
-    const result = [...entries];
-    while (totalTokens > maxTokens && result.length > 1) {
-      const removed = result.shift()!;
-      totalTokens -= removed.tokenEstimate;
-    }
-    return result;
-  }
-}
-
-/** Rough token estimation: ~3.5 chars per token for mixed content. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5);
 }
 
 /**

@@ -26,17 +26,8 @@ export interface SessionTaskRow {
   created_at: number;
 }
 
-export interface SessionMessageRow {
-  id: number;
-  session_id: string;
-  task_id: string | null;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  thinking: string | null;
-  tools_used: string | null;
-  token_estimate: number;
-  created_at: number;
-}
+// A7: SessionMessageRow removed. session_messages table is dropped by
+// migration 037 and has no readers after the Turn-model migration lands.
 
 /** Raw SQLite row shape for session_turns — blocks/token_count are JSON strings. */
 export interface SessionTurnRow {
@@ -156,50 +147,9 @@ export class SessionStore {
       .all(limit) as SessionTaskRow[];
   }
 
-  // ── Session Messages (Conversation Agent Mode) ──────────
-
-  insertMessage(msg: Omit<SessionMessageRow, 'id'>): void {
-    this.db.run(
-      `INSERT INTO session_messages (session_id, task_id, role, content, thinking, tools_used, token_estimate, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [msg.session_id, msg.task_id, msg.role, msg.content, msg.thinking, msg.tools_used, msg.token_estimate, msg.created_at],
-    );
-  }
-
-  getMessages(sessionId: string, limit?: number): SessionMessageRow[] {
-    if (limit != null) {
-      return this.db
-        .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?')
-        .all(sessionId, limit) as SessionMessageRow[];
-    }
-    return this.db
-      .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC')
-      .all(sessionId) as SessionMessageRow[];
-  }
-
-  countMessages(sessionId: string): number {
-    const row = this.db.query('SELECT COUNT(*) as count FROM session_messages WHERE session_id = ?').get(sessionId) as { count: number };
-    return row.count;
-  }
-
-  /**
-   * Get recent messages within a token budget (newest first, reversed to chronological order).
-   * Walks backward from newest until token budget is exhausted.
-   */
-  getRecentMessages(sessionId: string, maxTokens: number): SessionMessageRow[] {
-    const all = this.db
-      .query('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at DESC')
-      .all(sessionId) as SessionMessageRow[];
-
-    const result: SessionMessageRow[] = [];
-    let tokens = 0;
-    for (const msg of all) {
-      tokens += msg.token_estimate;
-      if (tokens > maxTokens && result.length > 0) break;
-      result.push(msg);
-    }
-    return result.reverse(); // chronological order
-  }
+  // A7: session_messages methods removed. The session_turns methods below
+  // are the sole conversation-persistence path. Migration 037 drops the
+  // underlying session_messages table.
 
   // ── Session Turns (Turn model — plan commit A) ──────────
 

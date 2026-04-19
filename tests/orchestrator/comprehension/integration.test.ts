@@ -17,11 +17,11 @@ import type {
 } from '../../../src/orchestrator/comprehension/types.ts';
 import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
 import { fallbackStrategy } from '../../../src/orchestrator/intent-resolver.ts';
-import type { ConversationEntry, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
-  history?: ConversationEntry[];
+  history?: Turn[];
   pendingQuestions?: string[];
   rootGoal?: string | null;
 }): ComprehensionInput {
@@ -59,21 +59,9 @@ describe('Comprehension triad integration', () => {
 
   test('clarification-answer flow preserves root goal through triad', async () => {
     const engine = newRuleComprehender();
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'write me a bedtime story',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 5,
-      },
-      {
-        role: 'assistant',
-        content: '[INPUT-REQUIRED]\n- what genre?\n- how long?',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 7,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write me a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what genre?\n- how long?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const args = makeInput({
       goal: 'romance, short',
@@ -208,20 +196,8 @@ describe('Comprehension triad integration', () => {
         pendingQuestions: ['genre?', 'length?'],
         rootGoal: 'write a bedtime story',
         history: [
-          {
-            role: 'user',
-            content: 'write a bedtime story',
-            taskId: 't-0',
-            timestamp: 1,
-            tokenEstimate: 4,
-          },
-          {
-            role: 'assistant',
-            content: '[INPUT-REQUIRED]\n- genre?\n- length?',
-            taskId: 't-0',
-            timestamp: 2,
-            tokenEstimate: 6,
-          },
+          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?\n- length?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
         ],
       }),
     );
@@ -246,13 +222,7 @@ describe('Comprehension triad integration', () => {
       makeInput({
         goal: 'do it',
         history: [
-          {
-            role: 'user',
-            content: 'write a poem',
-            taskId: 't-0',
-            timestamp: 1,
-            tokenEstimate: 4,
-          },
+          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
         ],
       }),
     );

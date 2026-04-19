@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
-import type { ConversationEntry, Turn } from '../../../src/orchestrator/types.ts';
+import type { Turn } from '../../../src/orchestrator/types.ts';
 
 function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
   return {

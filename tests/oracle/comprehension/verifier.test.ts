@@ -10,11 +10,11 @@ import type {
   ComprehensionInput,
 } from '../../../src/orchestrator/comprehension/types.ts';
 import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
-import type { ConversationEntry, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
-  history?: ConversationEntry[];
+  history?: Turn[];
   pendingQuestions?: string[];
   rootGoal?: string | null;
 }): ComprehensionInput {
@@ -63,21 +63,9 @@ describe('ComprehensionOracle', () => {
   });
 
   test('accepts a clarification answer with root-goal anchoring', async () => {
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'write a poem',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 2,
-      },
-      {
-        role: 'assistant',
-        content: '[INPUT-REQUIRED]\n- what style?',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 4,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const { verdict } = await comprehendAndVerify(
       makeInput({
@@ -97,13 +85,7 @@ describe('ComprehensionOracle', () => {
     const args = makeInput({
       goal: 'simple task',
       history: [
-        {
-          role: 'user',
-          content: 'simple task',
-          taskId: 't-0',
-          timestamp: 1,
-          tokenEstimate: 3,
-        },
+        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'simple task' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
       ],
     });
     const good = await eng.comprehend(args);

@@ -61,13 +61,7 @@ describe('hybrid pipeline — stage 1 + stage 2 merge', () => {
     const input = makeInput({
       goal: 'ok',
       history: [
-        {
-          role: 'user',
-          content: 'write a bedtime story',
-          taskId: 't-0',
-          timestamp: 1,
-          tokenEstimate: 4,
-        },
+        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
       ],
     });
     const s1 = await s1Engine.comprehend(input);
@@ -133,13 +127,7 @@ describe('hybrid pipeline — stage 1 + stage 2 merge', () => {
     const input = makeInput({
       goal: 'ok',
       history: [
-        {
-          role: 'user',
-          content: 'please write a bedtime story for my niece',
-          taskId: 't-0',
-          timestamp: 1,
-          tokenEstimate: 7,
-        },
+        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'please write a bedtime story for my niece' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
       ],
     });
     // LLM returns a grounded resolvedGoal (appears in history).

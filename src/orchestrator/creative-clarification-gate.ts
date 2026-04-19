@@ -28,7 +28,7 @@ import {
  */
 export interface CreativeClarificationGateDeps {
   bus?: VinyanBus;
-  sessionManager?: Pick<SessionManager, 'getConversationHistoryCompacted'>;
+  sessionManager?: Pick<SessionManager, 'getTurnsHistory'>;
   traceCollector: Pick<TraceCollector, 'record'>;
 }
 
@@ -96,8 +96,8 @@ function hasPriorSessionTurns(
 ): boolean {
   if (!sessionId || !sessionManager) return false;
   try {
-    const history = sessionManager.getConversationHistoryCompacted(sessionId, 2000);
-    return Array.isArray(history) && history.length > 0;
+    const turns = sessionManager.getTurnsHistory(sessionId, 1);
+    return turns.length > 0;
   } catch {
     return false;
   }

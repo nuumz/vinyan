@@ -100,7 +100,7 @@ export async function startChat(argv: string[]): Promise<void> {
     } else {
       session = existing;
     }
-    const history = sessionManager.getConversationHistory(session.id);
+    const history = sessionManager.getConversationHistoryText(session.id);
     if (history.length > 0) {
       console.log(`\x1b[2mResuming session ${session.id.slice(0, 8)} (${history.length} messages)\x1b[0m`);
       // Show last 3 turns as context recap
@@ -423,7 +423,7 @@ function tryBuiltinCommand(
       return true;
 
     case '/history': {
-      const history = sessionManager.getConversationHistory(session.id);
+      const history = sessionManager.getConversationHistoryText(session.id);
       if (history.length === 0) {
         console.log('  (no conversation history)');
       } else {

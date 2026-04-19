@@ -182,16 +182,18 @@ export class UserInterestMiner {
     minLen: number,
   ): KeywordFrequency[] {
     if (!sessionId || !this.deps.sessionStore) return [];
-    const messages = this.deps.sessionStore.getRecentMessages(
-      sessionId,
-      DEFAULTS.sessionMessageTokenBudget,
-    );
-    const userMessages = messages.filter((m) => m.role === 'user');
-    if (userMessages.length === 0) return [];
+    // A7: Turn-model — flatten text blocks from recent user turns.
+    const turns = this.deps.sessionStore.getRecentTurns(sessionId, 200);
+    const userTurns = turns.filter((t) => t.role === 'user');
+    if (userTurns.length === 0) return [];
 
     const freq = new Map<string, number>();
-    for (const msg of userMessages) {
-      for (const token of tokenize(msg.content)) {
+    for (const turn of userTurns) {
+      const text = turn.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+      for (const token of tokenize(text)) {
         if (token.length < minLen) continue;
         if (isStopWord(token)) continue;
         freq.set(token, (freq.get(token) ?? 0) + 1);

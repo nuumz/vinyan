@@ -6,7 +6,7 @@
  * and skips entirely for non-creative domains.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ConversationEntry, RoutingDecision, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import type { Turn, RoutingDecision, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 import { maybeEmitCreativeClarificationGate } from '../../src/orchestrator/creative-clarification-gate.ts';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
@@ -32,8 +32,16 @@ function makeRouting(level: 0 | 1 | 2 | 3 = 2): RoutingDecision {
   };
 }
 
-function makeEntry(role: 'user' | 'assistant', content: string): ConversationEntry {
-  return { role, content, taskId: 't', timestamp: 0, tokenEstimate: 1 };
+function makeEntry(role: 'user' | 'assistant', content: string): Turn {
+  return {
+    id: `t-${role}-${content.slice(0, 6)}`,
+    sessionId: 's',
+    seq: 0,
+    role,
+    blocks: [{ type: 'text', text: content }],
+    tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    createdAt: 0,
+  };
 }
 
 interface RecordedEvent {
@@ -41,7 +49,7 @@ interface RecordedEvent {
   payload: unknown;
 }
 
-function makeDeps(history: ConversationEntry[] | undefined = undefined) {
+function makeDeps(history: Turn[] | undefined = undefined) {
   const events: RecordedEvent[] = [];
   const recordedTraces: unknown[] = [];
   const deps = {
@@ -51,7 +59,7 @@ function makeDeps(history: ConversationEntry[] | undefined = undefined) {
       },
     } as never,
     sessionManager: history === undefined ? undefined : {
-      getConversationHistoryCompacted: () => history,
+      getTurnsHistory: () => history,
     },
     traceCollector: {
       record: async (trace: unknown) => {
@@ -161,7 +169,7 @@ describe('maybeEmitCreativeClarificationGate — skips when not applicable', () 
     const throwingDeps = {
       bus: { emit: () => {} } as never,
       sessionManager: {
-        getConversationHistoryCompacted: () => {
+        getTurnsHistory: () => {
           throw new Error('db down');
         },
       },

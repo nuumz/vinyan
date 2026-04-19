@@ -208,7 +208,7 @@ describe('API Server — Agent Conversation messages', () => {
     expect(data.session.pendingClarifications).toEqual([]);
 
     // Both turns persisted
-    const history = sessionManager.getConversationHistory(sessionId);
+    const history = sessionManager.getConversationHistoryText(sessionId);
     expect(history).toHaveLength(2);
     expect(history[0]!.role).toBe('user');
     expect(history[0]!.content).toBe('what is 2 + 2?');
@@ -641,7 +641,7 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
     // Flush microtasks so recordAssistantTurn .then handler runs.
     await flushMicrotasks();
 
-    const history = sessionManager.getConversationHistory(sessionId);
+    const history = sessionManager.getConversationHistoryText(sessionId);
     expect(history).toHaveLength(2);
     expect(history[0]!.role).toBe('user');
     expect(history[0]!.content).toBe('streamed user input');

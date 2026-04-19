@@ -443,19 +443,12 @@ export interface PlanTodoInput {
 // Conversation History (→ Conversation Agent Mode)
 // ---------------------------------------------------------------------------
 
-/** A single entry in the conversation history — user message or assistant response. */
-export interface ConversationEntry {
-  role: 'user' | 'assistant';
-  content: string;
-  taskId: string;
-  timestamp: number;
-  thinking?: string;
-  toolsUsed?: string[];
-  tokenEstimate: number;
-}
+// A7: ConversationEntry definition removed. The Turn model (ContentBlock[])
+// below is the only conversation representation. Migration 037 drops the
+// session_messages table that backed ConversationEntry.
 
 // ---------------------------------------------------------------------------
-// Turn Model (Anthropic-native ContentBlock[]) — replaces ConversationEntry
+// Turn Model (Anthropic-native ContentBlock[]) — the sole conversation path
 // for loss-free multi-turn tool-use persistence. See plan commit A.
 // ---------------------------------------------------------------------------
 

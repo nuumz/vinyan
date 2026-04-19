@@ -17,7 +17,7 @@ import { loadAutoMemory } from '../../../src/memory/auto-memory-loader.ts';
 import { buildInitUserMessage } from '../../../src/orchestrator/agent/agent-worker-entry.ts';
 import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
 import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
-import type { ConversationEntry, PerceptualHierarchy, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { Turn, PerceptualHierarchy, TaskInput } from '../../../src/orchestrator/types.ts';
 
 let workDir: string;
 let memoryDir: string;

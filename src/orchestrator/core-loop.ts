@@ -108,6 +108,8 @@ export interface WorkerPool {
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
     conversationHistory?: import('./types.ts').ConversationEntry[],
+    /** Plan commit A: Turn-model history with tool_use / tool_result blocks. */
+    turns?: import('./types.ts').Turn[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
   getAgentLoopDeps?(): import('./agent/agent-loop.ts').AgentLoopDeps | null;
@@ -1853,12 +1855,28 @@ async function executeTaskCore(
     // Conversation Agent Mode: load conversation history if session context present
     // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
     let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
+    // Plan commit A (A5): Turn-model history loaded alongside ConversationEntry
+    // so downstream phases and workers can prefer the richer blocks when both
+    // are present. A7 drops the legacy ConversationEntry path once all readers
+    // have migrated.
+    let sessionTurns: import('./types.ts').Turn[] | undefined;
     if (input.sessionId && deps.sessionManager) {
       try {
         const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
         conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
       } catch {
         // Non-fatal: proceed without conversation history
+      }
+      try {
+        const mgr = deps.sessionManager as unknown as {
+          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        };
+        if (typeof mgr.getTurnsHistory === 'function') {
+          const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
+          if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+        }
+      } catch {
+        // Non-fatal: Turn-model history is additive; falling back to legacy path is safe.
       }
     }
 
@@ -1903,6 +1921,11 @@ async function executeTaskCore(
       workingMemory,
       explorationFlag,
       conversationHistory,
+      // Plan commit A (A5): Turn-model history sourced from SessionManager's
+      // new session_turns table. Workers and the section-registry prefer this
+      // over `conversationHistory` when both are present so tool_use /
+      // tool_result blocks survive multi-turn resume.
+      turns: sessionTurns,
       agentProfile,
     };
 

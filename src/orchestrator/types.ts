@@ -461,6 +461,58 @@ export interface ConversationEntry {
   tokenEstimate: number;
 }
 
+// ---------------------------------------------------------------------------
+// Turn Model (Anthropic-native ContentBlock[]) — replaces ConversationEntry
+// for loss-free multi-turn tool-use persistence. See plan commit A.
+// ---------------------------------------------------------------------------
+
+/**
+ * A single block within a Turn. Mirrors Anthropic's content block shape so
+ * multi-turn tool-use loops can resume without re-deriving tool parameters
+ * from stringified history.
+ */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string; signature?: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: string;
+      is_error?: boolean;
+    };
+
+/** Token accounting per turn — split by cache tier for instrumentation. */
+export interface TurnTokenCount {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+/**
+ * A single conversation turn — user input or assistant response — stored as
+ * an ordered sequence of Anthropic-native content blocks.
+ *
+ * `cancelledAt` is set by the cancel protocol (plan commit C) when the user
+ * aborts mid-stream; the partial blocks emitted up to that point are still
+ * persisted so the next turn can reference them without losing context.
+ */
+export interface Turn {
+  id: string;
+  sessionId: string;
+  /** Zero-based ordinal within the session; monotonically increasing. */
+  seq: number;
+  role: 'user' | 'assistant';
+  blocks: ContentBlock[];
+  /** Unix millis when the user cancelled this turn (0/undefined = not cancelled). */
+  cancelledAt?: number;
+  tokenCount: TurnTokenCount;
+  createdAt: number;
+  /** Optional link to the orchestrator task this turn belongs to (assistant turns). */
+  taskId?: string;
+}
+
 /** Output of the Orchestrator core loop */
 export interface TaskResult {
   id: string;
@@ -1097,6 +1149,13 @@ export interface WorkerInput {
   instructions?: import('./llm/instruction-hierarchy.ts').InstructionMemory;
   /** Phase 7a: OS/cwd/date/git snapshot gathered in-process and forwarded to the worker. */
   environment?: import('./llm/shared-prompt-sections.ts').EnvironmentInfo;
+  /**
+   * Plan commit A: Turn-model conversation history. Subprocess workers prefer
+   * this over the legacy flat ConversationEntry path — preserves tool_use /
+   * tool_result blocks so multi-turn tool loops resume without hallucinating
+   * prior parameters.
+   */
+  turns?: Turn[];
 }
 
 /** Output from a worker process */
@@ -1176,9 +1235,18 @@ export interface LLMRequest {
   messages?: HistoryMessage[];
   /** Thinking configuration — controls extended thinking behavior per routing level. */
   thinking?: ThinkingConfig;
-  /** Cache control — enables prompt caching on system/tool blocks. */
+  /**
+   * Plan commit B: tier boundaries for prompt caching. When present, the
+   * provider splits systemPrompt + userPrompt into Anthropic-native content
+   * blocks at frozen→session and session→turn offsets and attaches
+   * `cache_control: { type: 'ephemeral' }` at those boundaries so the
+   * frozen + session prefixes live in the ephemeral cache while only the
+   * turn-volatile suffix is re-processed each request.
+   */
+  tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
+  /** @deprecated B5 will remove — use `tiers` instead. */
   cacheControl?: CacheControl;
-  /** Cache control for instruction block (VINYAN.md) — session-stable content. */
+  /** @deprecated B5 will remove — use `tiers` instead. */
   instructionCacheControl?: CacheControl;
 }
 

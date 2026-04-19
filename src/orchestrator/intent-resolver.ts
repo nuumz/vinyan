@@ -16,6 +16,31 @@
 
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
+import { LRUTTLCache } from './intent/cache.ts';
+import {
+  computeStructuralFeatures,
+  renderStructuralFeatures,
+  type StructuralFeatures,
+} from './intent/features.ts';
+import {
+  buildClarificationRequest,
+  formatAgentCatalog,
+  formatConversationContext,
+  resolveSelectedAgent,
+} from './intent/formatters.ts';
+import {
+  composeDeterministicCandidate,
+  fallbackStrategy,
+  mapUnderstandingToStrategy,
+} from './intent/strategy.ts';
+import {
+  containsShellFallbackChain,
+  IntentResponseSchema,
+  normalizeDirectToolCall,
+  parseIntentResponse,
+  stripJsonFences,
+  withTimeout,
+} from './intent/parser.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
@@ -39,20 +64,8 @@ import {
 // Zod schema for LLM response parsing
 // ---------------------------------------------------------------------------
 
-const IntentResponseSchema = z.object({
-  strategy: z.enum(['full-pipeline', 'direct-tool', 'conversational', 'agentic-workflow']),
-  refinedGoal: z.string(),
-  reasoning: z.string(),
-  directToolCall: z.object({
-    tool: z.string(),
-    parameters: z.record(z.string(), z.unknown()),
-  }).optional(),
-  workflowPrompt: z.string().optional(),
-  confidence: z.number().min(0).max(1).optional(),
-  /** Multi-agent: id of specialist best-fit for this task. */
-  agentId: z.string().optional(),
-  agentSelectionReason: z.string().optional(),
-});
+// Commit D3: IntentResponseSchema moved to `src/orchestrator/intent/parser.ts`
+// and re-imported above. Kept as a pure-type alias for legacy call sites.
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -173,80 +186,9 @@ IMPORTANT: For opening apps, running system commands, or any OS interaction, use
 
 Respond ONLY with valid JSON, no markdown fences.`;
 
-function stripJsonFences(content: string): string {
-  return content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-}
-
-function parseIntentResponse(content: string): z.infer<typeof IntentResponseSchema> {
-  const parsed = IntentResponseSchema.parse(JSON.parse(stripJsonFences(content)));
-  if (parsed.strategy === 'direct-tool' && !parsed.directToolCall) {
-    throw new Error('Direct-tool strategy missing directToolCall');
-  }
-  return parsed;
-}
-
-function containsShellFallbackChain(command: string): boolean {
-  return /\|\||&&|;|\r|\n|(?<!\|)\|(?!\|)/.test(command);
-}
-
-function normalizeDirectToolCall(
-  strategy: z.infer<typeof IntentResponseSchema>['strategy'],
-  directToolCall: z.infer<typeof IntentResponseSchema>['directToolCall'],
-): z.infer<typeof IntentResponseSchema>['directToolCall'] {
-  if (!directToolCall || strategy !== 'direct-tool') {
-    return directToolCall;
-  }
-
-  const KNOWN_TOOLS = new Set([
-    'shell_exec', 'file_read', 'file_write', 'file_edit',
-    'directory_list', 'search_grep', 'git_status', 'git_diff',
-    'search_semantic', 'http_get',
-  ]);
-
-  let normalizedCall = directToolCall;
-  if (!KNOWN_TOOLS.has(normalizedCall.tool)) {
-    const command = (normalizedCall.parameters.command as string)
-      ?? normalizedCall.tool.replace(/_/g, ' ');
-    normalizedCall = {
-      tool: 'shell_exec',
-      parameters: { ...normalizedCall.parameters, command },
-    };
-  }
-
-  if (normalizedCall.tool !== 'shell_exec') {
-    return normalizedCall;
-  }
-
-  const command = normalizedCall.parameters.command;
-  if (typeof command !== 'string' || !command.trim()) {
-    throw new Error('Direct-tool shell_exec command missing');
-  }
-  if (containsShellFallbackChain(command)) {
-    throw new Error('Direct-tool shell_exec command must be a single platform-specific command');
-  }
-
-  return {
-    ...normalizedCall,
-    parameters: {
-      ...normalizedCall.parameters,
-      command: command.trim(),
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Timeout helper
-// ---------------------------------------------------------------------------
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Intent resolution timeout')), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
+// Commit D3: stripJsonFences / parseIntentResponse / containsShellFallbackChain
+// / normalizeDirectToolCall / withTimeout moved to
+// `src/orchestrator/intent/parser.ts` and imported at the top of this file.
 
 // ---------------------------------------------------------------------------
 // Structural features — deterministic metadata fed into the classifier prompt.
@@ -255,38 +197,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // The classifier uses these alongside the goal text itself.
 // ---------------------------------------------------------------------------
 
-export interface StructuralFeatures {
-  /** Goal length in characters after trim. */
-  lengthChars: number;
-  /** True when the goal ends with a punctuation or particle that marks it as a question. */
-  endsWithQuestion: boolean;
-  /** Number of the current turn in the session (1-indexed). */
-  turnNumber: number;
-}
-
-const THAI_QUESTION_PARTICLE_REGEX = /(ไหม|มั้ย|หรือเปล่า|หรอ|รึเปล่า|หรือไม่)[\s.?？]*$/u;
-
-export function computeStructuralFeatures(
-  goal: string,
-  history?: ConversationEntry[],
-): StructuralFeatures {
-  const trimmed = goal.trim();
-  // Accept ASCII '?' and full-width '？' (U+FF1F, common in Thai/CJK IME input)
-  // plus trailing Thai interrogative particles.
-  const endsWithQuestion =
-    trimmed.endsWith('?') ||
-    trimmed.endsWith('？') ||
-    THAI_QUESTION_PARTICLE_REGEX.test(trimmed);
-  return {
-    lengthChars: trimmed.length,
-    endsWithQuestion,
-    turnNumber: Math.floor((history?.length ?? 0) / 2) + 1,
-  };
-}
-
-function renderStructuralFeatures(f: StructuralFeatures): string {
-  return `Goal metadata (deterministic): length=${f.lengthChars} chars; ends with question marker: ${f.endsWithQuestion ? 'yes' : 'no'}; session turn: #${f.turnNumber}`;
-}
+// Commit D2: StructuralFeatures + computeStructuralFeatures +
+// renderStructuralFeatures moved to `src/orchestrator/intent/features.ts`
+// — re-exported here to preserve the public surface area while call sites
+// migrate.
+export { computeStructuralFeatures, type StructuralFeatures };
 
 // ---------------------------------------------------------------------------
 // Session cache — skip re-classifying identical goals within a short TTL.
@@ -295,15 +210,17 @@ function renderStructuralFeatures(f: StructuralFeatures): string {
 // ---------------------------------------------------------------------------
 
 const INTENT_CACHE_TTL_MS = 30_000;
-/**
- * Pruning threshold — eviction of expired entries runs only when the cache
- * reaches this size. Keeps the common (small-cache) path zero-overhead while
- * preventing unbounded growth in long-running processes.
- */
 const INTENT_CACHE_PRUNE_THRESHOLD = 64;
-/** Hard cap — when live entries exceed this after pruning, drop oldest first. */
 const INTENT_CACHE_MAX_SIZE = 256;
-const intentCache = new Map<string, { result: IntentResolution; expiresAt: number }>();
+
+// Commit D1: extracted LRU+TTL cache (src/orchestrator/intent/cache.ts) —
+// same semantics as the prior inline Map + pruneIntentCache, now reusable
+// and independently unit-tested.
+const intentCache = new LRUTTLCache<IntentResolution>({
+  ttlMs: INTENT_CACHE_TTL_MS,
+  pruneThreshold: INTENT_CACHE_PRUNE_THRESHOLD,
+  maxSize: INTENT_CACHE_MAX_SIZE,
+});
 
 function buildCacheKey(
   goal: string,
@@ -330,25 +247,6 @@ function buildCacheKey(
   return `${sessionId ?? '__nosess__'}::${goal.trim().toLowerCase()}`;
 }
 
-/** Evict expired entries and enforce the hard size cap. */
-function pruneIntentCache(now: number): void {
-  if (intentCache.size < INTENT_CACHE_PRUNE_THRESHOLD) return;
-  for (const [key, entry] of intentCache) {
-    if (entry.expiresAt <= now) intentCache.delete(key);
-  }
-  // If every remaining entry is still live AND we blew past the hard cap,
-  // drop the oldest (insertion-ordered) until we're back under the limit.
-  if (intentCache.size > INTENT_CACHE_MAX_SIZE) {
-    const overflow = intentCache.size - INTENT_CACHE_MAX_SIZE;
-    let dropped = 0;
-    for (const key of intentCache.keys()) {
-      if (dropped >= overflow) break;
-      intentCache.delete(key);
-      dropped++;
-    }
-  }
-}
-
 /** Test-only: reset the module-level cache so each test starts clean. */
 export function clearIntentResolverCache(): void {
   intentCache.clear();
@@ -363,295 +261,14 @@ export function intentResolverCacheSize(): number {
 // Fallback: map existing regex-based classification to ExecutionStrategy
 // ---------------------------------------------------------------------------
 
-export function fallbackStrategy(
-  taskDomain: string,
-  taskIntent: string,
-  toolRequirement: string,
-  /**
-   * Oracle-verified comprehension (optional). When present AND marks this
-   * turn as a clarification answer, the fallback PRESERVES the workflow
-   * path (agentic-workflow) even if the literal reply text ("โรแมนติก")
-   * would otherwise read as conversational/inquire. Without this, LLM
-   * outage + clarification-answer would silently re-route the user's
-   * creative task to a chat reply.
-   */
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
-): ExecutionStrategy {
-  if (comprehension?.params.type === 'comprehension' && comprehension.params.data?.state.isClarificationAnswer) {
-    // Stay in whichever workflow the prior task was already in. Without
-    // richer state we default to agentic-workflow (the only strategy that
-    // currently honors a multi-step creative/exploratory thread).
-    return 'agentic-workflow';
-  }
-  if (taskDomain === 'conversational') return 'conversational';
-  if (taskDomain === 'general-reasoning' && taskIntent === 'inquire') return 'conversational';
-  if (taskIntent === 'execute' && toolRequirement === 'tool-needed' && taskDomain !== 'code-mutation') return 'direct-tool';
-  // Creative/generative tasks (execute + no tools + general-reasoning) need agentic-workflow, not full-pipeline
-  if (taskIntent === 'execute' && toolRequirement === 'none' && taskDomain === 'general-reasoning') return 'agentic-workflow';
-  return 'full-pipeline';
-}
+// Commit D5: fallbackStrategy / mapUnderstandingToStrategy /
+// composeDeterministicCandidate moved to `src/orchestrator/intent/strategy.ts`
+// and imported at the top of this file. Re-exported for backward compat.
+export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStrategy };
 
-// ---------------------------------------------------------------------------
-// Deterministic candidate — primary path (tier 0.8, A5).
-// Produces a candidate BEFORE any LLM call. When confidence is high and the
-// signal is unambiguous, the LLM call is skipped entirely.
-// ---------------------------------------------------------------------------
-
-const FILE_TOKEN_REGEX = /\b[\w.\-/]+\.[A-Za-z0-9]{1,6}\b/;
-
-/**
- * Rule-based strategy candidate from STU signals. Higher-tier than
- * fallbackStrategy because it includes confidence + ambiguity detection.
- */
-export function mapUnderstandingToStrategy(
-  understanding: SemanticTaskUnderstanding,
-): { strategy: ExecutionStrategy; confidence: number; ambiguous: boolean } {
-  const { taskDomain, taskIntent, toolRequirement, rawGoal, resolvedEntities, targetSymbol } =
-    understanding;
-  const strategy = fallbackStrategy(taskDomain, taskIntent, toolRequirement);
-
-  // --- Ambiguity heuristics ---
-  // Goal looks like it references a file but entity resolver found nothing.
-  const hasFileToken = FILE_TOKEN_REGEX.test(rawGoal);
-  const hasResolvedPaths = resolvedEntities.some((e) => e.resolvedPaths.length > 0);
-  const missingReferent = hasFileToken && !hasResolvedPaths && !targetSymbol;
-
-  // "execute" intent on non-code domain with no clear tool signal — could be
-  // creative generation OR a direct action OR a research workflow.
-  const creativeAmbiguity =
-    taskDomain === 'general-reasoning' && taskIntent === 'execute' && toolRequirement === 'none';
-
-  // code-reasoning + inquire could be either "explain this code" (conversational)
-  // or "analyze blame for bug" (full-pipeline with tools).
-  const codeInquiryAmbiguity = taskDomain === 'code-reasoning' && taskIntent === 'inquire';
-
-  const ambiguous = missingReferent || creativeAmbiguity || codeInquiryAmbiguity;
-
-  // --- Confidence tiers (A5 heuristic ≈ 0.8, lowered for ambiguity) ---
-  let confidence: number;
-  if (ambiguous) {
-    confidence = 0.55;
-  } else if (taskDomain === 'conversational') {
-    confidence = 0.95; // unambiguous greeting
-  } else if (taskDomain === 'code-mutation' && (understanding.targetSymbol || resolvedEntities.length > 0)) {
-    confidence = 0.9; // code change with concrete target
-  } else if (strategy === 'direct-tool') {
-    confidence = 0.8; // tool-needed + non-code; needs tool resolution to fully form
-  } else {
-    confidence = 0.8;
-  }
-
-  return { strategy, confidence, ambiguous };
-}
-
-/**
- * Compose a deterministic candidate from STU + rule-based tool classifier.
- * Returns an `IntentResolution` skeleton with `reasoningSource='deterministic'`.
- *
- * When both classifyDirectTool and mapUnderstandingToStrategy agree on
- * direct-tool, the result carries a fully-formed `directToolCall` (resolved
- * via platform-aware resolveCommand).
- */
-/**
- * Inspection/report verbs — tasks that need a TEXTUAL answer derived from
- * tool output, never fire-and-forget. Examples:
- *   - "ตรวจสอบการทำงานของ X" → report on X's status
- *   - "check git status"       → summarize working tree
- *   - "verify foo.ts compiles" → tell me the outcome
- *
- * These trigger `execute + tool-needed` in STU (the verb is imperative,
- * the task DOES need tools) but the intent is inquiry-with-tools. Route
- * them to `full-pipeline` so the oracle gate + DAG planner can marshal
- * multiple tools and produce a report.
- */
-const INSPECTION_VERB_PATTERN =
-  /(?:ตรวจสอบ|เช็ค|ดูสถานะ|ดูการทำงาน|รายงาน|สรุปสถานะ)|\b(?:check|inspect|verify|audit|diagnose|review|status|report)\b/i;
-
-export function composeDeterministicCandidate(
-  input: TaskInput,
-  understanding: SemanticTaskUnderstanding,
-): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
-  const ruleStrategy = mapUnderstandingToStrategy(understanding);
-  const directClass = classifyDirectTool(input.goal);
-  const isInspection = INSPECTION_VERB_PATTERN.test(input.goal);
-
-  // When the direct-tool rule fires with high confidence AND the rule-mapper
-  // agrees the goal needs a tool, produce a composed candidate with a resolved
-  // shell command. This is the highest-confidence deterministic path.
-  //
-  // Inspection verbs ("check", "ตรวจสอบ", "verify") are excluded: they read
-  // as execute+tool-needed but want a textual report, not a side-effect.
-  if (
-    directClass &&
-    directClass.confidence >= 0.85 &&
-    !isInspection &&
-    (ruleStrategy.strategy === 'direct-tool' || understanding.toolRequirement === 'tool-needed')
-  ) {
-    const command = resolveCommand(directClass, process.platform);
-    if (command) {
-      return {
-        strategy: 'direct-tool',
-        refinedGoal: input.goal,
-        directToolCall: { tool: 'shell_exec', parameters: { command } },
-        confidence: Math.min(directClass.confidence, ruleStrategy.ambiguous ? 0.75 : 0.9),
-        reasoning: `Deterministic: classifyDirectTool matched (${directClass.type}, conf=${directClass.confidence}).`,
-        reasoningSource: 'deterministic',
-        type: 'known',
-        deterministicCandidate: {
-          strategy: 'direct-tool',
-          confidence: Math.min(directClass.confidence, 0.9),
-          source: 'composed',
-          ambiguous: false,
-        },
-      };
-    }
-  }
-
-  // Demotion path: rule said direct-tool but we could NOT resolve a concrete
-  // shell command (classifyDirectTool missed, or resolveCommand returned
-  // null). A direct-tool strategy without a directToolCall is semantically
-  // invalid — there is nothing to execute. Route to full-pipeline instead,
-  // flagged ambiguous so the LLM merge layer becomes the tiebreaker.
-  //
-  // This also catches inspection verbs that slipped through STU as
-  // execute+tool-needed: "ตรวจสอบ X" wants a report, not fire-and-forget.
-  if (ruleStrategy.strategy === 'direct-tool' || isInspection) {
-    const reason = isInspection
-      ? `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} + inspection verb → full-pipeline (report expected, not fire-and-forget).`
-      : `STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → direct-tool rule fired but no shell command resolved; demoted to full-pipeline.`;
-    return {
-      strategy: 'full-pipeline',
-      refinedGoal: input.goal,
-      confidence: 0.55,
-      reasoning: `Deterministic: ${reason}`,
-      reasoningSource: 'deterministic',
-      type: 'uncertain',
-      deterministicCandidate: {
-        strategy: 'full-pipeline',
-        confidence: 0.55,
-        source: 'mapUnderstandingToStrategy',
-        ambiguous: true,
-      },
-    };
-  }
-
-  // Otherwise emit a skeleton from the rule-mapper alone. No directToolCall
-  // or workflowPrompt yet — the LLM layer fills those in when invoked.
-  return {
-    strategy: ruleStrategy.strategy,
-    refinedGoal: input.goal,
-    confidence: ruleStrategy.confidence,
-    reasoning: `Deterministic: STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → ${ruleStrategy.strategy}${ruleStrategy.ambiguous ? ' (ambiguous)' : ''}.`,
-    reasoningSource: 'deterministic',
-    type: ruleStrategy.ambiguous ? 'uncertain' : 'known',
-    deterministicCandidate: {
-      strategy: ruleStrategy.strategy,
-      confidence: ruleStrategy.confidence,
-      source: 'mapUnderstandingToStrategy',
-      ambiguous: ruleStrategy.ambiguous,
-    },
-  };
-}
-
-/**
- * Format a clarification request from uncertainty / contradiction signals.
- * Thai + English bilingual — matches the user's input language when detectable.
- */
-function buildClarificationRequest(
-  input: TaskInput,
-  understanding: SemanticTaskUnderstanding,
-  ruleStrategy: ExecutionStrategy,
-  llmStrategy?: ExecutionStrategy,
-): { request: string; options?: string[] } {
-  const isThai = /[\u0E00-\u0E7F]/.test(input.goal);
-  if (llmStrategy && llmStrategy !== ruleStrategy) {
-    const request = isThai
-      ? `Vinyan ยังตีความไม่ชัดเจน: กฎบอกว่าเป็น "${ruleStrategy}" แต่การวิเคราะห์ภาษาเห็นว่าน่าจะเป็น "${llmStrategy}" ช่วยอธิบายเพิ่มหน่อยได้ไหมว่าต้องการให้ทำอะไร`
-      : `Vinyan is uncertain — rule-based routing says "${ruleStrategy}" but semantic analysis suggests "${llmStrategy}". Could you clarify what outcome you expect?`;
-    return {
-      request,
-      options: [
-        isThai ? `ดำเนินการแบบ ${ruleStrategy}` : `Proceed as ${ruleStrategy}`,
-        isThai ? `ดำเนินการแบบ ${llmStrategy}` : `Proceed as ${llmStrategy}`,
-      ],
-    };
-  }
-  // Pure ambiguity — no LLM override, just a low-confidence rule.
-  const domainHint = understanding.taskDomain;
-  const request = isThai
-    ? `ช่วยให้รายละเอียดเพิ่มเติมหน่อยได้ไหม — goal ของคุณตีความได้หลายแบบ (${domainHint})`
-    : `Could you add more detail? The goal is ambiguous (${domainHint}).`;
-  return { request };
-}
-
-// ---------------------------------------------------------------------------
-// Conversation context formatter
-// ---------------------------------------------------------------------------
-
-function formatConversationContext(history?: ConversationEntry[]): string {
-  if (!history?.length) return '';
-  // Keep last 5 turns for context (enough for intent classification without bloating prompt)
-  const recent = history.slice(-10); // 10 entries ≈ 5 user+assistant pairs
-  const lines = recent.map(
-    (e) => `[${e.role}]: ${e.content.length > 200 ? `${e.content.slice(0, 200)}...` : e.content}`,
-  );
-  return `\nRecent conversation:\n${lines.join('\n')}`;
-}
-
-/**
- * Render the specialist agent catalog for the classifier prompt.
- * When override is active, signal the LLM to keep that id.
- */
-function formatAgentCatalog(
-  agents: AgentSpec[] | undefined,
-  overrideActive: boolean,
-  overrideId?: string,
-): string {
-  if (!agents || agents.length === 0) return '';
-
-  if (overrideActive && overrideId) {
-    return `\nAgent override active: the user selected '${overrideId}'. Return that id in your response agentId field unchanged.`;
-  }
-
-  const lines: string[] = [];
-  lines.push('Available specialist agents (pick the best-fit for this task):');
-  for (const a of agents) {
-    const hints: string[] = [];
-    if (a.routingHints?.preferDomains) hints.push(`domains: ${a.routingHints.preferDomains.join(',')}`);
-    if (a.routingHints?.preferExtensions) hints.push(`ext: ${a.routingHints.preferExtensions.join(',')}`);
-    if (a.routingHints?.preferFrameworks) hints.push(`frameworks: ${a.routingHints.preferFrameworks.join(',')}`);
-    const hintsStr = hints.length > 0 ? ` [${hints.join(' | ')}]` : '';
-    lines.push(`  - ${a.id}: ${a.description}${hintsStr}`);
-  }
-  lines.push('Return the chosen agent id in the response `agentId` field, with a brief `agentSelectionReason`.');
-  return `\n${lines.join('\n')}`;
-}
-
-// ---------------------------------------------------------------------------
-// Agent-id resolution (shared between LLM path and heuristic short-circuit)
-// ---------------------------------------------------------------------------
-
-function resolveSelectedAgent(
-  input: TaskInput,
-  agents: AgentSpec[] | undefined,
-  defaultAgentId: string | undefined,
-  parsedAgent?: { agentId?: string; agentSelectionReason?: string },
-  fallbackReason = 'registry default (no confident pick)',
-): { agentId?: string; agentSelectionReason?: string } {
-  if (!agents || agents.length === 0) return {};
-  const known = new Set(agents.map((a) => a.id));
-  if (input.agentId && known.has(input.agentId)) {
-    return { agentId: input.agentId, agentSelectionReason: 'user override via --agent flag' };
-  }
-  if (parsedAgent?.agentId && known.has(parsedAgent.agentId)) {
-    return {
-      agentId: parsedAgent.agentId,
-      agentSelectionReason: parsedAgent.agentSelectionReason ?? 'classifier selection',
-    };
-  }
-  const fallback = defaultAgentId && known.has(defaultAgentId) ? defaultAgentId : agents[0]?.id;
-  return { agentId: fallback, agentSelectionReason: fallbackReason };
-}
+// Commit D4: buildClarificationRequest / formatConversationContext /
+// formatAgentCatalog / resolveSelectedAgent moved to
+// `src/orchestrator/intent/formatters.ts` and imported at the top.
 
 // ---------------------------------------------------------------------------
 // Main resolver
@@ -909,8 +526,8 @@ function finalizeDeterministicSkip(
     agentSelectionReason,
     type: 'known',
   };
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,
@@ -949,8 +566,8 @@ function finalizeDeterministicOnly(
     clarificationRequest: clarif?.request,
     clarificationOptions: clarif?.options,
   };
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,
@@ -1081,10 +698,10 @@ export async function resolveIntent(
     understanding,
     deps.comprehension,
   );
-  const cached = intentCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
+  const cached = intentCache.get(cacheKey, now);
+  if (cached) {
     deps.bus?.emit('intent:cache_hit', { taskId: input.id, cacheKey });
-    return { ...cached.result, reasoningSource: 'cache' };
+    return { ...cached, reasoningSource: 'cache' };
   }
 
   // [B] Deterministic candidate (tier 0.8). Null when caller supplied no STU.
@@ -1178,8 +795,8 @@ export async function resolveIntent(
   };
 
   // [E] Cache write + bus emit.
-  pruneIntentCache(now);
-  intentCache.set(cacheKey, { result, expiresAt: now + INTENT_CACHE_TTL_MS });
+  intentCache.set(cacheKey, result, now);
+  intentCache.prune(now);
   deps.bus?.emit('intent:resolved', {
     taskId: input.id,
     strategy: result.strategy,

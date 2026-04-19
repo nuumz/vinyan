@@ -42,6 +42,7 @@ import { migration032 } from './032_add_commitments.ts';
 import { migration033 } from './033_add_teams.ts';
 import { migration034 } from './034_add_volunteer.ts';
 import { migration035 } from './035_add_session_turns.ts';
+import { migration036 } from './036_add_turn_embeddings.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -81,4 +82,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration033,
   migration034,
   migration035,
+  migration036,
 ];

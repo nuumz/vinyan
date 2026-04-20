@@ -45,7 +45,9 @@ export async function startChat(argv: string[]): Promise<void> {
   let showThinking = argv.includes('--thinking');
   const verbose = argv.includes('--verbose');
 
-  // DB + SessionManager
+  // DB + SessionManager. The same VinyanDB handle is injected into
+  // createOrchestrator below (via `db`) so the factory reuses it instead
+  // of opening a second bun:sqlite connection on the same WAL file.
   const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
@@ -67,8 +69,9 @@ export async function startChat(argv: string[]): Promise<void> {
     return;
   }
 
-  // Create orchestrator with session manager for cross-turn context
-  const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager });
+  // Create orchestrator with session manager for cross-turn context.
+  // Pass the existing `db` so factory does not double-open the WAL file.
+  const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager, db });
 
   // Phase 0 W5: when --verbose is set, attach the bus progress listener so
   // tool calls, oracle verdicts, and escalations stream to stderr while

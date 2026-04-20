@@ -1,15 +1,18 @@
 /**
- * TeamStore — SQLite persistence for teams + membership + blackboards.
+ * TeamStore — SQLite persistence for teams + membership.
  *
- * Schema from migration 033. Blackboard row shape intentionally mirrors
- * `room_blackboard` (migration 016) so tooling that walks versioned KV
- * state can operate on either.
+ * As of docs/plans/sqlite-joyful-lynx.md §Phase 4, the blackboard
+ * portion of team state lives ENTIRELY on the filesystem (via
+ * `TeamBlackboardFs`). Migration 040 dropped the DB `team_blackboard`
+ * table. The blackboard methods on this class require `fsBlackboard`
+ * to be wired via `TeamStoreConfig`; they throw when it is missing.
  *
- * Restart-safe: all state is in SQLite, so long-running teams pick up
- * where they left off after a process restart.
+ * Teams + members stay in SQLite — they're relational and query-heavy,
+ * which markdown cannot serve efficiently.
  */
 
 import type { Database, Statement } from 'bun:sqlite';
+import type { TeamBlackboardFs } from '../orchestrator/ecosystem/team-blackboard-fs.ts';
 
 export interface TeamRecord {
   readonly teamId: string;
@@ -52,16 +55,17 @@ interface MemberRow {
   left_at: number | null;
 }
 
-interface BlackboardRow {
-  team_id: string;
-  key: string;
-  version: number;
-  value_json: string;
-  author_id: string;
-  updated_at: number;
+export interface TeamStoreConfig {
+  /**
+   * Filesystem-backed blackboard. Required for blackboard operations
+   * (setState/getState/listKeys/delete). Team/member ops work without it.
+   */
+  fsBlackboard?: TeamBlackboardFs;
 }
 
 export class TeamStore {
+  private readonly fsBlackboard?: TeamBlackboardFs;
+
   private readonly sInsertTeam: Statement;
   private readonly sGetTeam: Statement;
   private readonly sListActiveTeams: Statement;
@@ -71,13 +75,8 @@ export class TeamStore {
   private readonly sListMembers: Statement;
   private readonly sLeaveMember: Statement;
 
-  private readonly sUpsertBlackboard: Statement;
-  private readonly sGetBlackboard: Statement;
-  private readonly sListBlackboardKeys: Statement;
-  private readonly sDeleteBlackboard: Statement;
-  private readonly sMaxVersion: Statement;
-
-  constructor(db: Database) {
+  constructor(db: Database, config: TeamStoreConfig = {}) {
+    this.fsBlackboard = config.fsBlackboard;
     this.sInsertTeam = db.prepare(`
       INSERT INTO teams (team_id, name, department_id, created_at) VALUES (?, ?, ?, ?)
     `);
@@ -103,26 +102,16 @@ export class TeamStore {
           SET left_at = ?
         WHERE team_id = ? AND engine_id = ? AND left_at IS NULL`,
     );
+  }
 
-    this.sUpsertBlackboard = db.prepare(`
-      INSERT INTO team_blackboard (team_id, key, version, value_json, author_id, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    this.sGetBlackboard = db.prepare(`
-      SELECT * FROM team_blackboard
-       WHERE team_id = ? AND key = ?
-       ORDER BY version DESC
-       LIMIT 1
-    `);
-    this.sListBlackboardKeys = db.prepare(`
-      SELECT DISTINCT key FROM team_blackboard WHERE team_id = ? ORDER BY key
-    `);
-    this.sDeleteBlackboard = db.prepare(
-      'DELETE FROM team_blackboard WHERE team_id = ? AND key = ?',
-    );
-    this.sMaxVersion = db.prepare(
-      'SELECT MAX(version) as v FROM team_blackboard WHERE team_id = ? AND key = ?',
-    );
+  private requireFs(): TeamBlackboardFs {
+    if (!this.fsBlackboard) {
+      throw new Error(
+        'team-store: fsBlackboard not wired — team blackboard requires a workspace after migration 040. ' +
+          'Pass `fsBlackboard` to TeamStore or `workspace` to buildEcosystem.',
+      );
+    }
+    return this.fsBlackboard;
   }
 
   // ── Teams ────────────────────────────────────────────────────────
@@ -180,12 +169,8 @@ export class TeamStore {
     return r.changes > 0;
   }
 
-  // ── Blackboard ───────────────────────────────────────────────────
+  // ── Blackboard (filesystem-only after migration 040) ─────────────
 
-  /**
-   * Append a new version for (teamId, key). Version auto-increments from the
-   * current MAX(version)+1. Returns the assigned version.
-   */
   writeBlackboard(params: {
     teamId: string;
     key: string;
@@ -193,35 +178,35 @@ export class TeamStore {
     authorId: string;
     updatedAt: number;
   }): number {
-    const maxRow = this.sMaxVersion.get(params.teamId, params.key) as { v: number | null };
-    const next = (maxRow.v ?? 0) + 1;
-    this.sUpsertBlackboard.run(
-      params.teamId,
-      params.key,
-      next,
-      JSON.stringify(params.value),
-      params.authorId,
-      params.updatedAt,
-    );
-    return next;
+    const entry = this.requireFs().write({
+      teamId: params.teamId,
+      key: params.key,
+      value: params.value,
+      authorId: params.authorId,
+      updatedAt: params.updatedAt,
+    });
+    return entry.version;
   }
 
-  /** Latest version for (teamId, key), or null if the key has never been written. */
   readBlackboard(teamId: string, key: string): TeamBlackboardEntry | null {
-    const row = this.sGetBlackboard.get(teamId, key) as BlackboardRow | null;
-    if (!row) return null;
-    return mapBlackboard(row);
+    const entry = this.requireFs().read(teamId, key);
+    if (!entry) return null;
+    return {
+      teamId: entry.teamId,
+      key: entry.key,
+      version: entry.version,
+      value: entry.value,
+      authorId: entry.authorId,
+      updatedAt: entry.updatedAt,
+    };
   }
 
   listBlackboardKeys(teamId: string): readonly string[] {
-    const rows = this.sListBlackboardKeys.all(teamId) as Array<{ key: string }>;
-    return rows.map((r) => r.key);
+    return this.requireFs().listKeys(teamId);
   }
 
-  /** Delete every version for (teamId, key). */
   deleteBlackboardKey(teamId: string, key: string): number {
-    const r = this.sDeleteBlackboard.run(teamId, key) as { changes: number };
-    return r.changes;
+    return this.requireFs().delete(teamId, key);
   }
 }
 
@@ -242,16 +227,5 @@ function mapMember(row: MemberRow): TeamMemberRecord {
     role: row.role,
     joinedAt: row.joined_at,
     leftAt: row.left_at,
-  };
-}
-
-function mapBlackboard(row: BlackboardRow): TeamBlackboardEntry {
-  return {
-    teamId: row.team_id,
-    key: row.key,
-    version: row.version,
-    value: JSON.parse(row.value_json),
-    authorId: row.author_id,
-    updatedAt: row.updated_at,
   };
 }

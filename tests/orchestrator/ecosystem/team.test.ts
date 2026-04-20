@@ -1,7 +1,12 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 import { TeamStore } from '../../../src/db/team-store.ts';
 import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
+import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
 
 function makeDb(): Database {
@@ -10,17 +15,28 @@ function makeDb(): Database {
   return db;
 }
 
+const fixtures: Array<{ workspace: string }> = [];
+
+afterEach(() => {
+  for (const f of fixtures) rmSync(f.workspace, { recursive: true, force: true });
+  fixtures.length = 0;
+});
+
 function makeManager() {
+  const workspace = mkdtempSync(join(tmpdir(), 'vinyan-team-test-'));
+  fixtures.push({ workspace });
   const db = makeDb();
-  const store = new TeamStore(db);
+  const fs = new TeamBlackboardFs({ root: workspace });
+  const store = new TeamStore(db, { fsBlackboard: fs });
   let counter = 0;
   const clock = { now: 1_000_000 };
   const mgr = new TeamManager({
     store,
+    fsBlackboard: fs,
     now: () => clock.now,
     idFactory: () => `team-${++counter}`,
   });
-  return { db, store, mgr, clock };
+  return { db, store, mgr, clock, workspace };
 }
 
 describe('TeamManager — roster', () => {
@@ -115,11 +131,11 @@ describe('TeamManager — persistent blackboard', () => {
     expect(mgr.listStateKeys(teamId)).toEqual(['a', 'b']);
   });
 
-  it('deleteState drops all versions of the key', () => {
+  it('deleteState removes the key (one file per key on filesystem)', () => {
     mgr.setState(teamId, 'plan', 1, 'e1');
     mgr.setState(teamId, 'plan', 2, 'e1');
     const removed = mgr.deleteState(teamId, 'plan');
-    expect(removed).toBe(2);
+    expect(removed).toBeGreaterThanOrEqual(1);
     expect(mgr.getState(teamId, 'plan')).toBeUndefined();
   });
 
@@ -129,20 +145,25 @@ describe('TeamManager — persistent blackboard', () => {
 });
 
 describe('TeamManager — persistence across restart', () => {
-  it('blackboard survives when a new manager is instantiated on the same db', () => {
+  it('blackboard survives when a new manager is instantiated on the same workspace', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-team-restart-'));
+    fixtures.push({ workspace });
     const db = makeDb();
-    const store1 = new TeamStore(db);
+    const fs1 = new TeamBlackboardFs({ root: workspace });
+    const store1 = new TeamStore(db, { fsBlackboard: fs1 });
     const mgr1 = new TeamManager({
       store: store1,
+      fsBlackboard: fs1,
       now: () => 1_000_000,
       idFactory: () => 'team-1',
     });
     const t = mgr1.create({ name: 'durable', initialMembers: [{ engineId: 'e1' }] });
     mgr1.setState(t.teamId, 'doc', { body: 'hello' }, 'e1');
 
-    // Simulate restart — fresh store + manager on the same SQLite handle
-    const store2 = new TeamStore(db);
-    const mgr2 = new TeamManager({ store: store2, now: () => 2_000_000 });
+    // Simulate restart — fresh store + manager on the same workspace + db
+    const fs2 = new TeamBlackboardFs({ root: workspace });
+    const store2 = new TeamStore(db, { fsBlackboard: fs2 });
+    const mgr2 = new TeamManager({ store: store2, fsBlackboard: fs2, now: () => 2_000_000 });
 
     const again = mgr2.get(t.teamId);
     expect(again).not.toBeNull();

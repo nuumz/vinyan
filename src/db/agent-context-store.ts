@@ -157,10 +157,4 @@ export class AgentContextStore {
       .run(agentId);
   }
 
-  /** Update the soul_md cache and version in the DB. */
-  updateSoulMd(agentId: string, soulMd: string, version: number): void {
-    this.db
-      .prepare(`UPDATE agent_contexts SET soul_md = ?, soul_version = ? WHERE agent_id = ?`)
-      .run(soulMd, version, agentId);
-  }
 }

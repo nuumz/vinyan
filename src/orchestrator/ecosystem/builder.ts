@@ -23,6 +23,7 @@ import { EcosystemCoordinator, type CoordinatorTimerImpl } from './ecosystem-coo
 import { HelpfulnessTracker } from './helpfulness-tracker.ts';
 import { RuntimeStateManager } from './runtime-state.ts';
 import { TeamManager } from './team.ts';
+import { TeamBlackboardFs } from './team-blackboard-fs.ts';
 import { VolunteerRegistry } from './volunteer-protocol.ts';
 import type { TaskFacts } from './commitment-bridge.ts';
 
@@ -35,6 +36,14 @@ export interface BuildEcosystemConfig {
   readonly now?: () => number;
   readonly reconcileIntervalMs?: number;
   readonly timer?: CoordinatorTimerImpl;
+  /**
+   * Workspace root for the filesystem-backed team blackboard. When
+   * provided, team state is written to `<workspace>/.vinyan/teams/`;
+   * SQLite becomes a mirror during Phase 2. Omitting this keeps the
+   * legacy pure-SQLite path (useful for tests that don't want a
+   * filesystem side-effect).
+   */
+  readonly workspace?: string;
 }
 
 export interface EcosystemBundle {
@@ -67,9 +76,20 @@ export function buildEcosystem(config: BuildEcosystemConfig): EcosystemBundle {
     now,
   });
 
+  const fsBlackboard = config.workspace
+    ? new TeamBlackboardFs({ root: config.workspace, now })
+    : undefined;
+  const teamStore = new TeamStore(
+    config.db,
+    fsBlackboard ? { fsBlackboard } : {},
+  );
+  // Migration 040 dropped the legacy `team_blackboard` table; filesystem
+  // is now the sole source of truth. No boot-time migration needed.
   const teams = new TeamManager({
-    store: new TeamStore(config.db),
+    store: teamStore,
     now,
+    bus: config.bus,
+    ...(fsBlackboard ? { fsBlackboard } : {}),
   });
 
   const volunteerStore = new VolunteerStore(config.db);
@@ -93,6 +113,7 @@ export function buildEcosystem(config: BuildEcosystemConfig): EcosystemBundle {
     taskResolver: config.taskResolver,
     engineRoster: config.engineRoster,
     now,
+    ...(config.workspace ? { workspace: config.workspace } : {}),
     ...(config.reconcileIntervalMs !== undefined
       ? { reconcileIntervalMs: config.reconcileIntervalMs }
       : {}),

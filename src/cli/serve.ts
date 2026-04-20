@@ -178,18 +178,24 @@ export async function serve(workspace: string): Promise<void> {
     (watchdog as { unref?: () => void }).unref?.();
   }
 
-  // ── Session store wiring ────────────────────────────────────────
+  // ── Shared DB + session store wiring ────────────────────────────
   // Must exist before createOrchestrator so core-loop deps.sessionManager
   // is populated; without it the creative-clarification gate, pending-
   // clarification lookup, root-goal walk-back, and working-memory hydrate
   // paths all silently no-op and treat every POST /messages as a fresh
   // session (re-asking the same clarifications forever).
+  //
+  // The same VinyanDB handle is injected into createOrchestrator so the
+  // factory reuses it instead of opening a second bun:sqlite connection on
+  // the same WAL file. Double-open doubled migration passes and left each
+  // connection with its own cache/journal snapshot — transient SQLITE_BUSY
+  // would hit ALWAYS_FATAL_CODES here and crash the server.
   const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
 
   // ── Orchestrator + server wiring ────────────────────────────────
-  const orchestrator = createOrchestrator({ workspace, sessionManager });
+  const orchestrator = createOrchestrator({ workspace, sessionManager, db });
 
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });

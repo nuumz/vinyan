@@ -258,6 +258,20 @@ export interface VinyanBusEvents {
     offerCount: number;
   };
 
+  // Team blackboard (FS-backed) — emitted whenever `.vinyan/teams/<id>/<key>.md`
+  // is written, either by internal orchestrator code (source='internal') or
+  // by an external editor / git pull (source='external'). A4 consumers
+  // subscribe to invalidate dependent facts. Tests can drive this event
+  // manually to simulate concurrent external edits.
+  'team:blackboard_updated': {
+    teamId: string;
+    key: string;
+    version: number;
+    author: string;
+    source: 'internal' | 'external';
+    path: string;
+  };
+
   // Ecosystem reconcile — emitted once per violation found by a scheduled
   // invariant sweep. Subjects are engineId (I-E1) or commitmentId (I-E2).
   // I-E3 (department ↔ capability mismatch) self-heals and does not emit.

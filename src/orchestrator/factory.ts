@@ -179,6 +179,16 @@ export interface OrchestratorConfig {
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
   sessionManager?: import('../api/session-manager.ts').SessionManager;
   /**
+   * Shared VinyanDB handle. Callers that also need the same database outside
+   * the orchestrator (e.g. serve.ts constructs SessionStore + SessionManager
+   * from it) MUST inject the handle here so we don't open a second bun:sqlite
+   * connection on the same WAL file — that duplicates migration passes, gives
+   * each connection its own cache/journal snapshot, and risks SQLITE_BUSY.
+   * When provided, the orchestrator will NOT close this handle on teardown —
+   * lifecycle stays with the caller.
+   */
+  db?: import('../db/vinyan-db.ts').VinyanDB;
+  /**
    * Allowlist of engine ID prefixes for auto-registration into worker_profiles.
    * Defaults to the legacy LLM vendor list. Pass [] to disable allowlist filtering
    * (useful when using a custom engineRegistry with non-LLM REs).
@@ -319,12 +329,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Set up LLM provider registry
   const registry = config.registry ?? createDefaultRegistry();
 
-  // Set up persistent database
-  let db: VinyanDB | undefined;
+  // Set up persistent database. When the caller injected a handle, reuse it
+  // so we don't open a second bun:sqlite connection on the same WAL file.
+  // `ownsDb` controls whether close() also closes the handle — injected
+  // handles belong to the caller.
+  const injectedDb = config.db;
+  let db: VinyanDB | undefined = injectedDb;
+  const ownsDb = !injectedDb;
   let traceStore: TraceStore | undefined;
   let oracleAccuracyStore: OracleAccuracyStore | undefined;
   try {
-    db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
+    if (!db) {
+      db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
+    }
     traceStore = new TraceStore(db.getDb());
     oracleAccuracyStore = new OracleAccuracyStore(db.getDb());
   } catch {
@@ -655,6 +672,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       ecosystemBundle = buildEcosystem({
         db: db.getDb(),
         bus,
+        workspace, // enables filesystem-backed team blackboard at <workspace>/.vinyan/teams
         departments: (ecosystemConfig.departments ?? []).map((d) => ({
           id: d.id,
           anchorCapabilities: d.anchor_capabilities,
@@ -1800,7 +1818,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       try { llmProxy?.close(); } catch { /* best-effort */ }
       try { worldGraph?.close(); } catch { /* best-effort */ }
-      try { db?.close(); } catch { /* best-effort */ }
+      // Only close the db if we opened it. Injected handles belong to the caller
+      // and may still be in use (e.g. serve.ts's sessionManager needs it for
+      // suspendAll() after orchestrator.close()).
+      if (ownsDb) {
+        try { db?.close(); } catch { /* best-effort */ }
+      }
     },
   };
 }

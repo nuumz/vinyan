@@ -70,7 +70,12 @@ describe('AgentContextUpdater', () => {
     expect(ctx.memory.episodes.length).toBeLessThanOrEqual(MAX_EPISODES);
   });
 
-  test('records preferred approach on success', () => {
+  // NOTE post-migration-041: preferredApproaches / antiPatterns no longer
+  // persist through AgentContextStore — soul.md is the authoritative home.
+  // These tests assert the DB-level machine slice; narrative updates flow
+  // via the soul-reflector path (covered in soul-reflector.test.ts).
+
+  test('persists episode + proficiency on success (machine slice)', () => {
     updater.updateAfterTask('worker-1', makeTrace({
       outcome: 'success',
       approach: 'extract-method',
@@ -78,10 +83,11 @@ describe('AgentContextUpdater', () => {
     }));
 
     const ctx = store.findById('worker-1')!;
-    expect(ctx.skills.preferredApproaches['code:refactor:medium']).toBe('extract-method');
+    expect(ctx.memory.episodes.length).toBeGreaterThan(0);
+    expect(ctx.skills.proficiencies['code:refactor:medium']).toBeDefined();
   });
 
-  test('records anti-pattern on failure', () => {
+  test('persists episode on failure (machine slice)', () => {
     updater.updateAfterTask('worker-1', makeTrace({
       outcome: 'failure',
       approach: 'inline-everything',
@@ -89,8 +95,8 @@ describe('AgentContextUpdater', () => {
     }));
 
     const ctx = store.findById('worker-1')!;
-    expect(ctx.skills.antiPatterns.length).toBeGreaterThan(0);
-    expect(ctx.skills.antiPatterns[0]).toContain('inline-everything');
+    expect(ctx.memory.episodes.length).toBeGreaterThan(0);
+    expect(ctx.memory.episodes[0]!.outcome).toBe('failed');
   });
 
   test('updates skill proficiency from trace outcomes', () => {

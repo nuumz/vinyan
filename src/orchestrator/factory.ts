@@ -1018,15 +1018,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let agentContextBuilder: AgentContextBuilder | undefined;
   let soulStore: SoulStore | undefined;
   if (agentContextStore) {
+    // Create the soul store FIRST so context-builder can read from it.
+    // Narrative sections (persona, antiPatterns, etc.) are sourced from
+    // soul.md after migration 041 — soul is the authoritative home.
+    soulStore = new SoulStore(workspace);
+
     agentContextBuilder = new AgentContextBuilder({
       agentContextStore,
       capabilityModel,
       db: db?.getDb(),
+      soulStore,
     });
     workerPool.setAgentContextBuilder(agentContextBuilder);
-
-    // Living Agent Soul: create soul store and reflector
-    soulStore = new SoulStore(workspace);
     workerPool.setSoulStore(soulStore);
 
     // Soul reflector uses tool-uses tier (cheap: haiku ~$0.001/call) for reflection

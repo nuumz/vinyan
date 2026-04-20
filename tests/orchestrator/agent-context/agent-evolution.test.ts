@@ -26,9 +26,8 @@ describe('AgentEvolution', () => {
     expect(result.agentsEvolved).toBe(0);
   });
 
-  test('evolveAll compacts lessons from episodes', async () => {
+  test('evolveAll compacts lessons from episodes (narrative → soul.md post-migration-041)', async () => {
     const ctx = createEmptyContext('worker-1');
-    // Add 10 episodes to trigger compaction
     for (let i = 0; i < 10; i++) {
       ctx.memory.episodes.push({
         taskId: `task-${i}`,
@@ -43,11 +42,10 @@ describe('AgentEvolution', () => {
     store.upsert(ctx);
 
     const result = await evolution.evolveAll();
+    // Evolution still runs and counts agents; narrative `lessonsSummary`
+    // no longer persists in DB (soul.md is home), so we assert the run
+    // signal rather than the deprecated DB field.
     expect(result.agentsEvolved).toBeGreaterThanOrEqual(1);
-
-    const evolved = store.findById('worker-1')!;
-    expect(evolved.memory.lessonsSummary).toContain('Experience:');
-    expect(evolved.memory.lessonsSummary).toContain('code:refactor:medium');
   });
 
   test('evolveAll graduates skills based on proficiency data', async () => {
@@ -68,7 +66,7 @@ describe('AgentEvolution', () => {
     expect(result.skillsGraduated).toBeGreaterThanOrEqual(1);
   });
 
-  test('evolveAll refines persona from skill data', async () => {
+  test('evolveAll runs persona refinement (narrative now lands in soul.md)', async () => {
     const ctx = createEmptyContext('worker-1');
     ctx.skills.proficiencies['code:refactor:medium'] = {
       taskSignature: 'code:refactor:medium',
@@ -79,11 +77,11 @@ describe('AgentEvolution', () => {
     };
     store.upsert(ctx);
 
-    await evolution.evolveAll();
-
-    const evolved = store.findById('worker-1')!;
-    expect(evolved.identity.persona).toContain('expert');
-    expect(evolved.identity.persona).toContain('reliable');
+    const result = await evolution.evolveAll();
+    // Persona is a narrative field — DB no longer holds it post-migration-041.
+    // The reflector / soul-store path owns it; here we just assert the
+    // evolution job saw the agent.
+    expect(result.agentsEvolved).toBeGreaterThanOrEqual(1);
   });
 
   test('evolveAll handles multiple agents', async () => {

@@ -1,20 +1,24 @@
 /**
- * AgentContextStore — CRUD persistence for agent contexts in SQLite.
+ * AgentContextStore — CRUD persistence for the *machine* side of an
+ * agent's context.
  *
- * Follows the same pattern as WorkerStore / PatternStore:
- *   - Constructor receives Database instance from VinyanDB
- *   - Prepared statements for hot-path operations
- *   - JSON serialization for compound fields
+ * As of migration 041, narrative sections (persona, strengths, weaknesses,
+ * approach style, lessons summary, preferred approaches, anti-patterns)
+ * live in `.vinyan/souls/{agentId}.soul.md` (read via `SoulStore`). This
+ * store keeps only the non-narrative state:
  *
- * Source of truth: ultraplan — Agent Contextual Redesign, Phase 1
+ *   - proficiencies      → numeric skill stats per task signature
+ *   - episodes           → bounded audit log of recent task outcomes
+ *   - pending_insights   → per-task queue awaiting sleep-cycle synthesis
+ *   - updated_at         → staleness clock
+ *
+ * `AgentContextBuilder` hydrates the full `AgentContext` shape by merging
+ * this machine state with soul-sourced narrative at build time.
  */
 import type { Database } from 'bun:sqlite';
 import type {
   AgentContext,
   AgentEpisode,
-  AgentIdentity,
-  EpisodicMemory,
-  LearnedSkills,
   SkillProficiency,
 } from '../orchestrator/agent-context/types.ts';
 import { createEmptyContext } from '../orchestrator/agent-context/types.ts';
@@ -22,39 +26,29 @@ import type { PendingInsight } from '../orchestrator/agent-context/soul-schema.t
 
 interface AgentContextRow {
   agent_id: string;
-  persona: string;
-  strengths: string;
-  weaknesses: string;
-  approach_style: string;
   episodes: string;
-  lessons_summary: string;
   proficiencies: string;
-  preferred_approaches: string;
-  anti_patterns: string;
   updated_at: number;
 }
 
 function rowToContext(row: AgentContextRow): AgentContext {
-  const identity: AgentIdentity = {
-    agentId: row.agent_id,
-    persona: row.persona,
-    strengths: JSON.parse(row.strengths) as string[],
-    weaknesses: JSON.parse(row.weaknesses) as string[],
-    approachStyle: row.approach_style,
+  // Narrative sections are intentionally left empty here; the builder
+  // merges them from SoulStore. `createEmptyContext` seeds the
+  // non-narrative defaults (e.g. empty strengths list).
+  const base = createEmptyContext(row.agent_id);
+  return {
+    identity: base.identity,
+    memory: {
+      episodes: JSON.parse(row.episodes) as AgentEpisode[],
+      lessonsSummary: base.memory.lessonsSummary, // filled by builder from soul
+    },
+    skills: {
+      proficiencies: JSON.parse(row.proficiencies) as Record<string, SkillProficiency>,
+      preferredApproaches: base.skills.preferredApproaches, // filled by builder
+      antiPatterns: base.skills.antiPatterns, // filled by builder
+    },
+    lastUpdated: row.updated_at,
   };
-
-  const memory: EpisodicMemory = {
-    episodes: JSON.parse(row.episodes) as AgentEpisode[],
-    lessonsSummary: row.lessons_summary,
-  };
-
-  const skills: LearnedSkills = {
-    proficiencies: JSON.parse(row.proficiencies) as Record<string, SkillProficiency>,
-    preferredApproaches: JSON.parse(row.preferred_approaches) as Record<string, string>,
-    antiPatterns: JSON.parse(row.anti_patterns) as string[],
-  };
-
-  return { identity, memory, skills, lastUpdated: row.updated_at };
 }
 
 export class AgentContextStore {
@@ -67,42 +61,29 @@ export class AgentContextStore {
 
     this.upsertStmt = db.prepare(`
       INSERT INTO agent_contexts (
-        agent_id, persona, strengths, weaknesses, approach_style,
-        episodes, lessons_summary, proficiencies, preferred_approaches,
-        anti_patterns, updated_at
+        agent_id, episodes, proficiencies, updated_at
       ) VALUES (
-        $agent_id, $persona, $strengths, $weaknesses, $approach_style,
-        $episodes, $lessons_summary, $proficiencies, $preferred_approaches,
-        $anti_patterns, $updated_at
+        $agent_id, $episodes, $proficiencies, $updated_at
       )
       ON CONFLICT(agent_id) DO UPDATE SET
-        persona = excluded.persona,
-        strengths = excluded.strengths,
-        weaknesses = excluded.weaknesses,
-        approach_style = excluded.approach_style,
         episodes = excluded.episodes,
-        lessons_summary = excluded.lessons_summary,
         proficiencies = excluded.proficiencies,
-        preferred_approaches = excluded.preferred_approaches,
-        anti_patterns = excluded.anti_patterns,
         updated_at = excluded.updated_at
     `);
 
     this.findStmt = db.prepare(`SELECT * FROM agent_contexts WHERE agent_id = ?`);
   }
 
+  /**
+   * Persist the machine-state slice of an AgentContext. Narrative fields
+   * on the argument (persona, strengths, etc.) are IGNORED — they belong
+   * to soul.md, not the DB row.
+   */
   upsert(context: AgentContext): void {
     this.upsertStmt.run({
       $agent_id: context.identity.agentId,
-      $persona: context.identity.persona,
-      $strengths: JSON.stringify(context.identity.strengths),
-      $weaknesses: JSON.stringify(context.identity.weaknesses),
-      $approach_style: context.identity.approachStyle,
       $episodes: JSON.stringify(context.memory.episodes),
-      $lessons_summary: context.memory.lessonsSummary,
       $proficiencies: JSON.stringify(context.skills.proficiencies),
-      $preferred_approaches: JSON.stringify(context.skills.preferredApproaches),
-      $anti_patterns: JSON.stringify(context.skills.antiPatterns),
       $updated_at: context.lastUpdated,
     });
   }
@@ -118,7 +99,9 @@ export class AgentContextStore {
   }
 
   findAll(): AgentContext[] {
-    const rows = this.db.prepare(`SELECT * FROM agent_contexts ORDER BY updated_at DESC`).all() as AgentContextRow[];
+    const rows = this.db
+      .prepare(`SELECT * FROM agent_contexts ORDER BY updated_at DESC`)
+      .all() as AgentContextRow[];
     return rows.map(rowToContext);
   }
 
@@ -132,6 +115,16 @@ export class AgentContextStore {
   appendPendingInsight(agentId: string, insight: PendingInsight): void {
     const existing = this.getPendingInsights(agentId);
     existing.push(insight);
+    // Ensure the row exists first — pending_insights is a column that
+    // was added in migration 019; if the agent has no context row yet,
+    // insert a seed so the UPDATE has something to land on.
+    this.db
+      .prepare(
+        `INSERT INTO agent_contexts (agent_id, episodes, proficiencies, updated_at)
+         VALUES (?, '[]', '{}', ?)
+         ON CONFLICT(agent_id) DO NOTHING`,
+      )
+      .run(agentId, Date.now());
     this.db
       .prepare(`UPDATE agent_contexts SET pending_insights = ? WHERE agent_id = ?`)
       .run(JSON.stringify(existing), agentId);
@@ -156,5 +149,4 @@ export class AgentContextStore {
       .prepare(`UPDATE agent_contexts SET pending_insights = '[]' WHERE agent_id = ?`)
       .run(agentId);
   }
-
 }

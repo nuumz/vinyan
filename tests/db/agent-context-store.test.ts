@@ -31,40 +31,37 @@ describe('AgentContextStore', () => {
     expect(ctx.skills.proficiencies).toEqual({});
   });
 
-  test('upsert inserts new context', () => {
+  test('upsert inserts new context (machine slice only — narrative lives in soul.md)', () => {
     const ctx = createEmptyContext('worker-1');
-    ctx.identity.persona = 'reliable TypeScript specialist';
-    ctx.identity.strengths = ['refactoring', 'test-gen'];
-    ctx.identity.weaknesses = ['python'];
-    ctx.identity.approachStyle = 'reads thoroughly before editing';
+    // Narrative fields are set BUT the store intentionally ignores them
+    // post-migration-041. SoulStore owns the narrative.
+    ctx.identity.persona = 'this will not persist';
+    ctx.identity.strengths = ['will not persist'];
     ctx.lastUpdated = 1000;
 
     store.upsert(ctx);
 
     const loaded = store.findById('worker-1');
     expect(loaded).not.toBeNull();
-    expect(loaded!.identity.persona).toBe('reliable TypeScript specialist');
-    expect(loaded!.identity.strengths).toEqual(['refactoring', 'test-gen']);
-    expect(loaded!.identity.weaknesses).toEqual(['python']);
-    expect(loaded!.identity.approachStyle).toBe('reads thoroughly before editing');
+    expect(loaded!.identity.agentId).toBe('worker-1');
+    // Narrative comes back empty — not persisted by the store.
+    expect(loaded!.identity.persona).toBe('');
+    expect(loaded!.identity.strengths).toEqual([]);
     expect(loaded!.lastUpdated).toBe(1000);
   });
 
-  test('upsert updates existing context', () => {
+  test('upsert updates updated_at on re-write', () => {
     const ctx = createEmptyContext('worker-1');
-    ctx.identity.persona = 'original';
     store.upsert(ctx);
 
-    ctx.identity.persona = 'updated persona';
     ctx.lastUpdated = 2000;
     store.upsert(ctx);
 
     const loaded = store.findById('worker-1');
-    expect(loaded!.identity.persona).toBe('updated persona');
     expect(loaded!.lastUpdated).toBe(2000);
   });
 
-  test('upsert persists episodes and skills', () => {
+  test('upsert persists the machine slice: episodes + proficiencies', () => {
     const ctx = createEmptyContext('worker-1');
     ctx.memory.episodes = [
       {
@@ -77,7 +74,6 @@ describe('AgentContextStore', () => {
         timestamp: 1000,
       },
     ];
-    ctx.memory.lessonsSummary = 'Strong at refactoring.';
     ctx.skills.proficiencies = {
       'code:refactor:medium': {
         taskSignature: 'code:refactor:medium',
@@ -87,18 +83,21 @@ describe('AgentContextStore', () => {
         lastAttempt: 1000,
       },
     };
-    ctx.skills.preferredApproaches = { 'code:refactor:medium': 'extract method' };
-    ctx.skills.antiPatterns = ['never inline without tests'];
+    // Narrative fields populated but ignored by upsert.
+    ctx.memory.lessonsSummary = 'ignored';
+    ctx.skills.preferredApproaches = { 'code:refactor:medium': 'ignored' };
+    ctx.skills.antiPatterns = ['ignored'];
 
     store.upsert(ctx);
 
     const loaded = store.findById('worker-1')!;
     expect(loaded.memory.episodes).toHaveLength(1);
     expect(loaded.memory.episodes[0]!.taskId).toBe('task-1');
-    expect(loaded.memory.lessonsSummary).toBe('Strong at refactoring.');
     expect(loaded.skills.proficiencies['code:refactor:medium']!.level).toBe('expert');
-    expect(loaded.skills.preferredApproaches['code:refactor:medium']).toBe('extract method');
-    expect(loaded.skills.antiPatterns).toEqual(['never inline without tests']);
+    // Narrative comes back empty from the DB-only path.
+    expect(loaded.memory.lessonsSummary).toBe('');
+    expect(loaded.skills.preferredApproaches).toEqual({});
+    expect(loaded.skills.antiPatterns).toEqual([]);
   });
 
   test('findAll returns all contexts', () => {

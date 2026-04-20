@@ -47,6 +47,7 @@ import { migration037 } from './037_comprehension_composite_pk.ts';
 import { migration038 } from './038_drop_session_messages.ts';
 import { migration039 } from './039_drop_soul_cache.ts';
 import { migration040 } from './040_drop_team_blackboard.ts';
+import { migration041 } from './041_drop_agent_context_narrative.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -91,4 +92,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration038,
   migration039,
   migration040,
+  migration041,
 ];

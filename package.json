@@ -19,12 +19,12 @@
     "test:all": "bun run test && bun run test:integration"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.10",
+    "@biomejs/biome": "^2.4.12",
     "@types/bun": "latest",
-    "fast-check": "^4.6.0"
+    "fast-check": "^4.7.0"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "chokidar": "^5.0.0",

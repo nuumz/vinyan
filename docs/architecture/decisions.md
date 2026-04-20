@@ -1183,6 +1183,118 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 ---
 
+### Decision 20: SKILL.md as ECP-Verified Capability Package `[Wave 1–4]`
+
+> **Axioms: A1, A5, A7** — Epistemic Separation (skills are generated; Oracle Gate + Critic verify) + Tiered Trust (imported skills enter at `speculative`, promote on evidence) + Prediction Error as Learning Signal (autonomous skill creation fires on sustained PredictionError reduction, not success streaks)
+
+**Context.** The agentic ecosystem is converging on `SKILL.md`-style portable capability artifacts (Hermes, Claude Code Skills, `agentskills.io`). The current Vinyan `CachedSkill` lifecycle is internal-only and keyed on trace similarity — it cannot import a third-party skill or export one, and its promotion logic leans on success count, which is a **streak signal**, not a **calibration signal** (A7 violation).
+
+**Choice.** Adopt `SKILL.md` as Vinyan's capability artifact format with YAML frontmatter for the epistemic fields Vinyan already ledgers (`confidence_tier`, `content_hash`, `expected_error_reduction`, `backtest_id`). Every imported skill — whether from a hub, a peer, or autonomous creation — must pass the **Oracle Gate + Critic dry-run** before it can promote out of `speculative` quarantine. Autonomous skill creation fires on **sustained PredictionError reduction across a cluster of related traces**, not on a win streak.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Keep CachedSkill internal only | Zero new surface area | Cedes ecosystem to Hermes / agentskills.io; no import/export | ❌ Rejected |
+| Adopt SKILL.md but promote on success count (Hermes-style) | Matches ecosystem expectations | Violates A7 — success count is streak noise, not calibration; imports would pollute memory | ❌ Rejected |
+| **SKILL.md + Oracle Gate + PredictionError-delta promotion** | Matches ecosystem surface; raises the epistemic bar; imports cannot outrun the verifier | More rollout work (parser, schema, quarantine pipeline) | ✅ Chosen |
+
+**Consequences.**
+- Migration `004_skill_artifact.ts` adds `confidence_tier`, `skill_md_path`, `content_hash`, `expected_error_reduction`, `backtest_id`, `quarantined_at` to `cached_skills` (reserved in [w1-contracts §2](../spec/w1-contracts.md)).
+- `skill-registry` is a `single (active)` plugin category (w1-contracts §5). Hub becomes the active provider once ready; the built-in `CachedSkill` store remains the fallback.
+- Autonomous creation code path must read from `prediction_ledger + prediction_outcomes` — not `execution_traces` alone. Drafts carry `evidenceTier: 'probabilistic'`; post-Oracle they move to `heuristic`; post-backtest they may reach `deterministic` only if bound to a content hash.
+- Skills Hub becomes an epistemic, not just a security, surface. This is flagship differentiator #2.
+
+---
+
+### Decision 21: Messaging Gateway = Adapter-Only, Core Loop Unchanged `[Wave 2–5]`
+
+> **Axioms: A3, A6** — Deterministic Governance (every ingress path converges on one rule-based entry) + Zero-Trust Execution (adapters never execute; they only publish to the bus)
+
+**Context.** Hermes ships a messaging surface (Telegram, Slack, Discord, WhatsApp, Signal, Email, cron) as a first-class capability. The straightforward way to match this is to let each adapter call the relevant subsystem directly. That is exactly what we must not do — it creates N entry points to the governance pipeline and makes crash-safety, redaction, and audit N-way problems.
+
+**Choice.** Every messaging adapter (Telegram, Slack, Discord, WhatsApp, Signal, Email) plus NL cron, ACP inbound, A2A peer, MCP bridge, CLI, and HTTP API **all** call the single `executeTask(input: TaskInput)` defined in [w1-contracts §4](../spec/w1-contracts.md). Adapters publish to the EventBus with **zero execution privilege** — they cannot read files, invoke oracles, or persist memory. They only turn a transport envelope into a `TaskInput` and hand it off.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Adapters call orchestrator subsystems directly | Lower latency, simpler adapter code | N entry points to governance, N-way audit, crash-safety fence violated | ❌ Rejected |
+| Each adapter has its own mini-Orchestrator | Independent evolution | Massive duplication; impossible to keep A3 invariants consistent | ❌ Rejected |
+| **Adapter-only: all paths converge on `executeTask`** | One rule-based entry, one audit trail, crash-safety preserved | Adapters slightly heavier (envelope translation) | ✅ Chosen |
+
+**Consequences.**
+- `TaskInput.source` enum enumerates all gateway paths (`hermes-telegram`, `hermes-slack`, `hermes-discord`, `hermes-whatsapp`, `hermes-signal`, `hermes-email`, `hermes-cron`, `acp`, `a2a`, `cli`, `api`, `internal`). Adding a new transport means extending this enum and amending w1-contracts, not adding an entry point.
+- `originEnvelope` field carries the reply-routing context opaquely through the Core Loop so gateways can respond without re-parsing.
+- Interrupt-and-redirect (H5) is *not* a second entry point. It is an evidence-delta Perceive re-run against the in-flight task (honoring the crash-safety fence in w1-contracts §4).
+- ACP adapter (W5) is gateway-only. Internal A2A peer comms stay on ECP — we do not let an external protocol set confidence on internal records (clamp rule, w1-contracts §1).
+- NL cron becomes a `ScheduledHypothesisTuple` row; the scheduler only *fires* `executeTask`; it does not execute.
+
+---
+
+### Decision 22: MemoryProvider Plugin Interface + Tiered Retrieval `[Wave 1–2]`
+
+> **Axioms: A5, A7** — Tiered Trust (retrieval weights by evidence tier) + Prediction Error as Learning Signal (historical prediction error penalizes low-signal memories at retrieval time)
+
+**Context.** The current built-in memory store is tightly coupled to the orchestrator — it is not swappable, and it ranks retrieval by cosine similarity plus recency alone. That ranker is tier-blind: a speculative inbound fact and a deterministic Oracle-verified fact compete as equals. It is also blind to whether a memory has previously been *evidence in a turn whose prediction was wrong* (a signal that something in that memory misled the model).
+
+**Choice.** Refactor built-in memory behind a `MemoryProvider` plugin interface. Category cardinality is `single (active) + fallback chain` (w1-contracts §5). The retrieval ranker scores every candidate as:
+
+```
+score = similarity · tierWeight(evidenceTier) · recency(createdAt) − predErrorPenalty(memoryId)
+```
+
+where `tierWeight` prefers `deterministic > heuristic > probabilistic > speculative`, and `predErrorPenalty` accumulates from `prediction_outcomes` rows in which this memory appeared in `evidence_chain`.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Keep built-in memory; add more weights | Lower churn | Still not swappable; third parties cannot ship a provider | ❌ Rejected |
+| Pure vector DB with external ranker | Ecosystem-standard | Loses provenance, invalidation, tier awareness | ❌ Rejected |
+| **MemoryProvider interface + tier/predError-aware ranker** | Swappable; preserves A4/A5; compounds on A7 data | Small migration; ranker must be explainable | ✅ Chosen |
+
+**Consequences.**
+- Migration `003_memory_records.ts` creates `memory_records` + FTS5 `memory_records_fts` (w1-contracts §2) with mandatory `profile` column (w1-contracts §3).
+- The ranker is part of observable routing (D23 / Differentiator #4) — it must emit its weight breakdown so users can see *why* a memory surfaced.
+- `session_search` (W4) is an FTS5 tool over the same table, so FTS and vector retrieval share a row identity.
+- Fallback chain means a failing plugin degrades to the default provider rather than taking the agent offline.
+- This decision is what makes Differentiator #3 (dialectic USER.md) possible — USER.md is just a special-shaped set of `MemoryRecord`s consumed by the Critic.
+
+---
+
+### Decision 23: PredictionError-Tagged Trajectory Export as Flagship Data Asset `[Wave 1, 4]`
+
+> **Axioms: A4, A7** — Content-Addressed Truth (trajectory manifest hash covers redacted payload; bypassing redaction shows as a manifest diff) + Prediction Error as Learning Signal (per-turn Brier/CRPS + OracleVerdict + evidence_chain are the signal, not the noise)
+
+**Context.** The agentic ecosystem exports trajectories in ShareGPT / OpenAI-messages shape — chat-only, no epistemic metadata. Vinyan already ledgers per-turn `PredictionError`, per-turn `OracleVerdict`, and per-turn `evidence_chain`. Exporting those as JSONL alongside the chat tokens produces a training signal no other framework can generate: **behavior cloning data weighted by verified prediction error**. This is Vinyan's single biggest data moat.
+
+**Choice.** Define an **ECP-enriched** trajectory format. Row identity is `trace_id` from `execution_traces.id` (w1-contracts §6). Each exported row carries, per turn:
+
+- standard chat fields (messages, tool calls, tool results)
+- Brier score + CRPS on every registered prediction
+- `OracleVerdict` summary + verdict type (`verified | falsified | uncertain | unknown | contradictory`)
+- `evidence_chain` (hash-rooted)
+- `routingLevel` + the inputs that produced it (observable-routing payload)
+
+Redaction of PII, secrets, and workspace paths runs **before** the manifest hash. Bypassing redaction therefore produces a **visible manifest diff** — tamper-evident by construction.
+
+**Alternatives considered:**
+
+| Option | Pros | Cons | Verdict |
+|--------|------|------|---------|
+| Export ShareGPT-only | Drop-in for existing tooling | Discards the moat (per-turn prediction error) | ❌ Rejected (as final state; acceptable as W1 MVP canary) |
+| Export ECP-enriched + hash after (post-redaction) | Signature becomes meaningless under redaction edits | Tamper-evidence lost | ❌ Rejected |
+| **ECP-enriched + hash redacted payload** | Preserves moat, tamper-evident, safe to publish | Larger rows; consumers must opt-in to enriched fields | ✅ Chosen |
+
+**Consequences.**
+- Migration `005_trajectory_export.ts` stores manifest pointers only; artifacts live on disk (w1-contracts §2).
+- W1 ships the ShareGPT MVP as the canary that proves the join graph (`execution_traces ⋈ prediction_ledger ⋈ oracle_accuracy_store ⋈ session_turns`) already answers the learning-loop question — no new join keys.
+- W4 ships the full ECP-enriched format once observable routing (same wave) produces a stable explainer payload to embed.
+- This is Differentiator #1. Ownership of a public ECP-enriched trajectory dataset is downstream leverage (fine-tuning, benchmarking, research partnerships) that no Hermes-class framework can produce.
+
+---
+
 ## 4. Technology Stack
 
 | Component | Technology | Rationale |

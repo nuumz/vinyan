@@ -30,6 +30,7 @@ Commands:
   logs [--limit N]   Inspect execution traces
 
   economy [sub]      Economy OS: budget, costs, market, trust
+  trajectory <sub>   Export execution traces (ShareGPT-baseline)
   metrics            Print full system metrics as JSON
   rules              List evolutionary rules
   skills             List cached skills
@@ -191,6 +192,12 @@ switch (command) {
   case 'economy': {
     const { runEconomyCommand } = await import('./economy.ts');
     await runEconomyCommand(args.slice(1));
+    break;
+  }
+
+  case 'trajectory': {
+    const { runTrajectoryCommand } = await import('./trajectory.ts');
+    await runTrajectoryCommand(args.slice(1), workspacePath);
     break;
   }
 

@@ -11,7 +11,9 @@ export type { MigrateResult, Migration } from './migration-runner.ts';
 export { MigrationRunner } from './migration-runner.ts';
 
 import { migration001 } from './001_initial_schema.ts';
+import { migration003 } from './003_memory_records.ts';
+import { migration005 } from './005_trajectory_export.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001];
+export const ALL_MIGRATIONS: Migration[] = [migration001, migration003, migration005];

@@ -1,4 +1,15 @@
 export { type BusEventName, createBus, EventBus, type VinyanBus, type VinyanBusEvents } from './bus.ts';
+export {
+  clampConfidenceToTier,
+  CONFIDENCE_TIERS,
+  type ConfidenceTier,
+  isConfidenceTier,
+  isStrongerThan,
+  rankOf,
+  TIER_CONFIDENCE_CEILING,
+  TIER_WEIGHT,
+  weakerOf,
+} from './confidence-tier.ts';
 export type { ConflictReport, FusionInput, SubjectiveOpinion } from './subjective-opinion.ts';
 export {
   averagingFusion,

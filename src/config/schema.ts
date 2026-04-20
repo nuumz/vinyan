@@ -504,6 +504,34 @@ const EnginesConfigSchema = z.object({
 
 export type EnginesConfig = z.infer<typeof EnginesConfigSchema>;
 
+// ─── Profiles schema (W1 PR #1 — filesystem-scoped profile isolation) ─
+
+/**
+ * Profile name convention (matches AgentSpecSchema.id and w1-contracts §4
+ * `source` naming): kebab-case, must start with a lowercase letter.
+ */
+const PROFILE_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Profiles config — opt-in per-profile state isolation. When absent, all
+ * existing single-profile deployments keep working (backwards compatible).
+ * See docs/spec/w1-contracts.md §3, §4.
+ */
+const ProfilesConfigSchema = z
+  .object({
+    /** Name of the profile used when no --profile flag or VINYAN_PROFILE env var is set. */
+    default: z.string().regex(PROFILE_NAME_PATTERN).default('default'),
+    /**
+     * When true, a store method called without a `profile` filter may return
+     * rows from other profiles after logging a `profile:cross-read` audit
+     * event. Default false (strict isolation).
+     */
+    allowedCrossProfileReads: z.boolean().default(false),
+  })
+  .default(() => ({ default: 'default', allowedCrossProfileReads: false }));
+
+export type ProfilesConfig = z.infer<typeof ProfilesConfigSchema>;
+
 // ─── Root schema ─────────────────────────────────────────────────────
 
 export const VinyanConfigSchema = z.object({
@@ -598,6 +626,12 @@ export const VinyanConfigSchema = z.object({
    * appends here and writes back to vinyan.json.
    */
   agents: z.array(AgentSpecSchema).optional(),
+  /**
+   * Profiles — filesystem-scoped isolation (W1 PR #1). Optional for
+   * backwards compatibility. When present, selects default profile and
+   * configures cross-profile read policy.
+   */
+  profiles: ProfilesConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

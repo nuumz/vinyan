@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { VolunteerStore } from '../../../src/db/volunteer-store.ts';
-import { migration034 } from '../../../src/db/migrations/034_add_volunteer.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import {
   VolunteerRegistry,
   scoreCandidate,
@@ -14,7 +14,7 @@ import { HelpfulnessTracker } from '../../../src/orchestrator/ecosystem/helpfuln
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration034.up(db);
+  migration001.up(db);
   return db;
 }
 

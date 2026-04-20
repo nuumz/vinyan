@@ -1,11 +1,10 @@
 /**
  * Migration Runner Tests — TDD §20.5 Acceptance Criteria
  *
- * 1. Fresh install applies all migrations
- * 2. Existing Phase 4 DB upgrades without data loss
- * 3. Idempotent re-run
- * 4. Failed migration rolls back
- * 5. World Graph integrity preserved
+ * After the 2026-04-20 consolidation, the 41 historical migrations are
+ * squashed into a single `001_initial_schema.ts`. These tests verify the
+ * runner's contract (version tracking, idempotency, rollback on failure,
+ * dry-run) against that single-migration baseline.
  */
 
 import { Database } from 'bun:sqlite';
@@ -28,17 +27,17 @@ afterEach(() => {
 
 describe('MigrationRunner', () => {
   // ── Acceptance Criterion 1: Fresh install ───────────────
-  test('fresh install applies all migrations', () => {
+  test('fresh install applies the consolidated init migration', () => {
     const result = runner.migrate(db, ALL_MIGRATIONS);
 
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
-    expect(result.current).toBe(41);
-    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
+    expect(result.applied).toEqual([1]);
+    expect(result.current).toBe(1);
+    expect(result.pending).toEqual([1]);
 
-    // Verify all tables exist
-    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
-      name: string;
-    }[];
+    // Verify core tables exist
+    const tables = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all() as { name: string }[];
     const tableNames = tables.map((t) => t.name);
 
     expect(tableNames).toContain('execution_traces');
@@ -53,121 +52,95 @@ describe('MigrationRunner', () => {
     expect(tableNames).toContain('worker_profiles');
     expect(tableNames).toContain('session_store');
     expect(tableNames).toContain('session_tasks');
+    expect(tableNames).toContain('session_turns');
     expect(tableNames).toContain('instance_registry');
+    expect(tableNames).toContain('oracle_profiles');
     expect(tableNames).toContain('schema_version');
     expect(tableNames).toContain('causal_edges');
 
-    // Verify schema_version tracks all applied
-    const versions = db.query('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[];
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
+    // Ecosystem tables (O1-O4)
+    expect(tableNames).toContain('agent_runtime');
+    expect(tableNames).toContain('agent_runtime_transitions');
+    expect(tableNames).toContain('commitments');
+    expect(tableNames).toContain('teams');
+    expect(tableNames).toContain('team_members');
+    expect(tableNames).toContain('volunteer_offers');
+    expect(tableNames).toContain('engine_helpfulness');
+    // team_blackboard was intentionally dropped — filesystem is truth.
+    expect(tableNames).not.toContain('team_blackboard');
 
-    // Verify oracle_profiles table from migration 005
-    expect(tableNames).toContain('oracle_profiles');
+    // Agent identity — narrative columns are NOT in DB (soul.md is truth).
+    const agentCtxCols = db
+      .query("PRAGMA table_info('agent_contexts')")
+      .all() as Array<{ name: string }>;
+    const ctxColNames = new Set(agentCtxCols.map((c) => c.name));
+    expect(ctxColNames.has('persona')).toBe(false);
+    expect(ctxColNames.has('soul_md')).toBe(false);
+    expect(ctxColNames.has('anti_patterns')).toBe(false);
+    expect(ctxColNames.has('pending_insights')).toBe(true);
+    expect(ctxColNames.has('proficiencies')).toBe(true);
+    expect(ctxColNames.has('episodes')).toBe(true);
+
+    // Verify schema_version tracks the single applied migration
+    const versions = db
+      .query('SELECT version FROM schema_version ORDER BY version')
+      .all() as { version: number }[];
+    expect(versions.map((v) => v.version)).toEqual([1]);
   });
 
-  // ── Acceptance Criterion 2: Upgrade without data loss ───
-  test('existing Phase 4 DB upgrades without data loss', () => {
-    // Simulate mid-migration DB by applying migrations 1-8 (enough to have engine_config column from 008)
-    const earlyMigrations = ALL_MIGRATIONS.slice(0, 8);
-    const result1 = runner.migrate(db, earlyMigrations);
-    expect(result1.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-
-    // Insert some Phase 4 data (engine_config required by migration 024 cleanup)
-    db.run(
-      `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files)
-       VALUES ('trace-1', 'task-1', ?, 1, 'test-approach', 'mock/test', 100, 500, 'success', '{}', '[]')`,
-      [Date.now()],
-    );
-    db.run(
-      `INSERT INTO worker_profiles (id, model_id, temperature, status, created_at, demotion_count, engine_config)
-       VALUES ('worker-1', 'mock/test', 0.7, 'active', ?, 0, ?)`,
-      [Date.now(), JSON.stringify({ modelId: 'mock/test', temperature: 0.7 })],
-    );
-
-    // Now upgrade to latest
-    const result2 = runner.migrate(db, ALL_MIGRATIONS);
-    expect(result2.applied).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
-    expect(result2.current).toBe(41);
-
-    // Verify existing data is intact
-    const trace = db.query("SELECT id, approach FROM execution_traces WHERE id = 'trace-1'").get() as {
-      id: string;
-      approach: string;
-    };
-    expect(trace.id).toBe('trace-1');
-    expect(trace.approach).toBe('test-approach');
-
-    const worker = db.query("SELECT id, status FROM worker_profiles WHERE id = 'worker-1'").get() as {
-      id: string;
-      status: string;
-    };
-    expect(worker.id).toBe('worker-1');
-    expect(worker.status).toBe('active');
-
-    // Verify new tables exist
-    const tables = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_store', 'instance_registry')")
-      .all() as { name: string }[];
-    expect(tables.length).toBe(2);
-  });
-
-  // ── Acceptance Criterion 3: Idempotent re-run ───────────
+  // ── Acceptance Criterion 2: Idempotent re-run ───────────
   test('idempotent re-run applies 0 migrations', () => {
     runner.migrate(db, ALL_MIGRATIONS);
 
-    // Second run
     const result = runner.migrate(db, ALL_MIGRATIONS);
     expect(result.applied).toEqual([]);
-    expect(result.current).toBe(41);
+    expect(result.current).toBe(1);
     expect(result.pending).toEqual([]);
   });
 
-  // ── Acceptance Criterion 4: Failed migration rolls back ─
+  // ── Acceptance Criterion 3: Failed migration rolls back ─
   test('failed migration rolls back that migration only', () => {
     const failingMigration: Migration = {
       version: 99,
       description: 'This migration will fail',
       up(db: Database) {
         db.exec('CREATE TABLE test_fail_table (id TEXT PRIMARY KEY)');
-        // This will throw — invalid SQL
+        // Invalid SQL — the runner should rollback this migration entirely.
         db.exec('INVALID SQL STATEMENT');
       },
     };
 
-    // Apply good migrations first
+    // Apply the good init migration first
     runner.migrate(db, ALL_MIGRATIONS);
 
-    // Attempt the failing migration
     expect(() => {
       runner.migrate(db, [...ALL_MIGRATIONS, failingMigration]);
     }).toThrow();
 
-    // Verify: good migrations applied, failed one rolled back
-    const currentVersion = runner.getCurrentVersion(db);
-    expect(currentVersion).toBe(41);
+    // Good migration applied, failing one rolled back
+    expect(runner.getCurrentVersion(db)).toBe(1);
 
     // The table from the failed migration should NOT exist (rolled back)
-    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'test_fail_table'").all();
+    const tables = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'test_fail_table'")
+      .all();
     expect(tables.length).toBe(0);
   });
 
-  // ── Acceptance Criterion 5: World Graph integrity ───────
-  test('migrations preserve existing data integrity', () => {
-    // Apply all migrations
+  // ── Acceptance Criterion 4: Data integrity preserved ────
+  test('migrations preserve existing data integrity on re-run', () => {
     runner.migrate(db, ALL_MIGRATIONS);
 
-    // Insert data with file hashes (A4: content-addressed truth)
     db.run(
       `INSERT INTO execution_traces (id, task_id, timestamp, routing_level, approach, model_used, tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files)
        VALUES ('trace-hash', 'task-hash', ?, 2, 'refactor', 'mock/test', 200, 1000, 'success', '{"ast": {"verified": true, "fileHashes": {"src/a.ts": "sha256:abc123"}}}', '["src/a.ts"]')`,
       [Date.now()],
     );
 
-    // Re-run migrations (simulating upgrade)
+    // Re-run migrations (simulating a no-op boot)
     const result = runner.migrate(db, ALL_MIGRATIONS);
     expect(result.applied).toEqual([]);
 
-    // Verify data with file hashes is intact
     const trace = db
       .query("SELECT oracle_verdicts, affected_files FROM execution_traces WHERE id = 'trace-hash'")
       .get() as { oracle_verdicts: string; affected_files: string };
@@ -181,9 +154,9 @@ describe('MigrationRunner', () => {
     expect(runner.getCurrentVersion(db)).toBe(0);
   });
 
-  test('getCurrentVersion returns latest after migration', () => {
+  test('getCurrentVersion returns 1 after running init', () => {
     runner.migrate(db, ALL_MIGRATIONS);
-    expect(runner.getCurrentVersion(db)).toBe(41);
+    expect(runner.getCurrentVersion(db)).toBe(1);
   });
 
   // ── dryRun ──────────────────────────────────────────────
@@ -191,19 +164,12 @@ describe('MigrationRunner', () => {
     const result = runner.migrate(db, ALL_MIGRATIONS, { dryRun: true });
     expect(result.applied).toEqual([]);
     expect(result.current).toBe(0);
-    expect(result.pending).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
+    expect(result.pending).toEqual([1]);
 
     // Verify NO tables were created (except schema_version from getCurrentVersion)
-    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'execution_traces'").all();
+    const tables = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'execution_traces'")
+      .all();
     expect(tables.length).toBe(0);
-  });
-
-  test('dryRun after partial migration shows remaining', () => {
-    runner.migrate(db, [ALL_MIGRATIONS[0]!]);
-
-    const result = runner.migrate(db, ALL_MIGRATIONS, { dryRun: true });
-    expect(result.applied).toEqual([]);
-    expect(result.current).toBe(1);
-    expect(result.pending).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]);
   });
 });

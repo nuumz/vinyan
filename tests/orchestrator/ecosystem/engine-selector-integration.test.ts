@@ -1,17 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { createBus } from '../../../src/core/bus.ts';
 import { ProviderTrustStore } from '../../../src/db/provider-trust-store.ts';
 import { DefaultEngineSelector } from '../../../src/orchestrator/engine-selector.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
-import { migration031 } from '../../../src/db/migrations/031_add_agent_runtime.ts';
-import { migration032 } from '../../../src/db/migrations/032_add_commitments.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
-import { migration034 } from '../../../src/db/migrations/034_add_volunteer.ts';
-import { migration013 } from '../../../src/db/migrations/013_add_market_tables.ts';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-
 function makeDb(): Database {
   const db = new Database(':memory:');
   // We need provider_trust_records from migration 013 + its dependencies.
@@ -19,11 +13,7 @@ function makeDb(): Database {
   migration001.up(db);
   // 013 depends on 001 only (trust table is self-contained). Others we skip
   // because only 013's schema is needed here.
-  migration013.up(db);
-  migration031.up(db);
-  migration032.up(db);
-  migration033.up(db);
-  migration034.up(db);
+  migration001.up(db);
   return db;
 }
 

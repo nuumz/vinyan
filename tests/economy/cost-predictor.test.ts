@@ -1,12 +1,12 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { migration012 } from '../../src/db/migrations/012_add_economy_tables.ts';
 import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import { CostPredictor } from '../../src/economy/cost-predictor.ts';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 
 function createEnv() {
   const db = new Database(':memory:');
-  migration012.up(db);
+  migration001.up(db);
   const ledger = new CostLedger(db);
   const predictor = new CostPredictor(ledger);
   return { ledger, predictor };

@@ -1,11 +1,10 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { OracleProfileStore } from '../../src/db/oracle-profile-store.ts';
-import { migration005 } from '../../src/db/migrations/005_add_oracle_profiles.ts';
-
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 function createDb(): Database {
   const db = new Database(':memory:');
-  migration005.up(db);
+  migration001.up(db);
   return db;
 }
 

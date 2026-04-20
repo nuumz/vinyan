@@ -1,3 +1,4 @@
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 /**
  * Phase 3 — filesystem watcher & internal/external event discrimination.
  *
@@ -17,20 +18,13 @@ import { join } from 'path';
 
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { migration031 } from '../../../src/db/migrations/031_add_agent_runtime.ts';
-import { migration032 } from '../../../src/db/migrations/032_add_commitments.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
-import { migration034 } from '../../../src/db/migrations/034_add_volunteer.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
 import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration031.up(db);
-  migration032.up(db);
-  migration033.up(db);
-  migration034.up(db);
+  migration001.up(db);
   return db;
 }
 

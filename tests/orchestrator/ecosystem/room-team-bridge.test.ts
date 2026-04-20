@@ -1,3 +1,4 @@
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 /**
  * Room ↔ Team blackboard bridge tests.
  *
@@ -14,7 +15,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
 import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
 import { RoomBlackboard } from '../../../src/orchestrator/room/room-blackboard.ts';
@@ -31,7 +31,7 @@ function makeTeamManager() {
   const workspace = mkdtempSync(join(tmpdir(), 'vinyan-bridge-test-'));
   fixtures.push({ workspace });
   const db = new Database(':memory:');
-  migration033.up(db);
+  migration001.up(db);
   const fs = new TeamBlackboardFs({ root: workspace });
   const store = new TeamStore(db, { fsBlackboard: fs });
   const mgr = new TeamManager({ store, fsBlackboard: fs, now: () => 1_000 });

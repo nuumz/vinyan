@@ -3,15 +3,15 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
 import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration033.up(db);
+  migration001.up(db);
   return db;
 }
 

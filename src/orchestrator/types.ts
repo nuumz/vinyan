@@ -370,10 +370,63 @@ export interface SemanticTaskUnderstanding extends TaskUnderstanding {
   understandingFingerprint: string;
 }
 
+/**
+ * Task source — the transport / entry point that produced this task.
+ *
+ * The `hermes-*` variants, `acp`, and `internal` are reserved for future
+ * surfaces (Hermes gateway, ACP adapter, internal delegations) that enter
+ * `executeTask` from outside the current CLI/API/MCP/A2A set. See
+ * `docs/spec/w1-contracts.md` §4.
+ */
+export type TaskSource =
+  | 'cli'
+  | 'api'
+  | 'mcp'
+  | 'a2a'
+  | 'hermes-telegram'
+  | 'hermes-slack'
+  | 'hermes-discord'
+  | 'hermes-whatsapp'
+  | 'hermes-signal'
+  | 'hermes-email'
+  | 'hermes-cron'
+  | 'acp'
+  | 'internal';
+
+/**
+ * Regex for a valid profile name (kebab-case, leading lowercase letter).
+ * Mirrors the pattern in `src/config/profile-resolver.ts`. The literal
+ * name `'default'` is additionally accepted.
+ */
+export const PROFILE_REGEX = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Type-guard: does `s` look like a valid profile namespace?
+ * Accepts `'default'` or any non-empty kebab-case identifier.
+ */
+export function isValidProfileName(s: unknown): s is string {
+  return typeof s === 'string' && (s === 'default' || PROFILE_REGEX.test(s));
+}
+
+/**
+ * Normalize an optional profile string into a concrete namespace.
+ *
+ * - `undefined` → `'default'` (W1 intermediate state — see w1-contracts §4 / §9.A1).
+ * - Invalid names throw synchronously so the caller sees the offender verbatim
+ *   instead of silently falling back.
+ */
+export function coerceProfile(p: string | undefined): string {
+  if (p === undefined) return 'default';
+  if (!isValidProfileName(p)) {
+    throw new Error(`invalid profile name: ${p}`);
+  }
+  return p;
+}
+
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
   id: string;
-  source: 'cli' | 'api' | 'mcp' | 'a2a';
+  source: TaskSource;
   goal: string; // Natural language task description
   taskType: TaskType; // Explicit classification — drives prompt, perception, and verification
   targetFiles?: string[]; // Optional explicit scope
@@ -381,6 +434,30 @@ export interface TaskInput {
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   /** Conversation session ID — links this task to a multi-turn chat session. */
   sessionId?: string;
+  /**
+   * Profile namespace this task belongs to. Defaults to `'default'` when
+   * absent. See `docs/spec/w1-contracts.md` §4 — the long-term intent is
+   * to make this required, but W1 ships it optional so existing callers
+   * continue to compile. Validated against {@link PROFILE_REGEX} or the
+   * literal `'default'`.
+   */
+  profile?: string;
+  /**
+   * Parent task id for interrupt-and-redirect / delegation chains.
+   * Preserved end-to-end so observability can reconstruct the causal tree.
+   */
+  parentTaskId?: string;
+  /**
+   * Scheduling priority hint. Consumed by downstream queue / budget
+   * allocators when present. Defaults to `'normal'` when omitted.
+   */
+  priority?: 'normal' | 'high' | 'background';
+  /**
+   * Transport-preserved envelope for reply routing by the gateway that
+   * produced this task (e.g. Hermes message metadata, ACP message id).
+   * Opaque to the core loop — stored and echoed back on completion.
+   */
+  originEnvelope?: unknown;
   /**
    * Phase 7c-1: typed subagent role. Populated when this task was spawned
    * by a parent via `delegate_task` with an explicit `subagentType`. The

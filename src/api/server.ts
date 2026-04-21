@@ -19,6 +19,7 @@ import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
@@ -49,7 +50,16 @@ export interface APIServerDeps {
   runOracle?: (oracleName: string, hypothesis: unknown, options?: RunOracleOptions) => Promise<unknown>;
   /** Economy stores for /api/v1/economy endpoint. */
   costLedger?: { getAggregatedCost(window: string): { total_usd: number; count: number }; count(): number };
-  budgetEnforcer?: { checkBudget(): Array<{ window: string; spent_usd: number; limit_usd: number; utilization_pct: number; enforcement: string; exceeded: boolean }> };
+  budgetEnforcer?: {
+    checkBudget(): Array<{
+      window: string;
+      spent_usd: number;
+      limit_usd: number;
+      utilization_pct: number;
+      enforcement: string;
+      exceeded: boolean;
+    }>;
+  };
   /** Approval gate for high-risk task approval (A6). */
   approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
   /** AgentProfileStore — workspace-level Vinyan Agent identity (singleton). */
@@ -82,6 +92,12 @@ export interface APIServerDeps {
   marketScheduler?: import('../economy/market/market-scheduler.ts').MarketScheduler;
   /** Capability model — per-worker capability scores for /engines deepen. */
   capabilityModel?: import('../orchestrator/fleet/capability-model.ts').CapabilityModel;
+  /**
+   * Default profile name for this server instance. Requests that omit
+   * both the `X-Vinyan-Profile` header and `body.profile` fall back to
+   * this value. Defaults to `'default'` when not set.
+   */
+  defaultProfile?: string;
 }
 
 export class VinyanAPIServer {
@@ -158,7 +174,11 @@ export class VinyanAPIServer {
         },
         message(ws, message) {
           const client = (ws as unknown as { data: { client: { authenticated: boolean } } }).data?.client;
-          self.handleWebSocketMessage(ws, typeof message === 'string' ? message : new TextDecoder().decode(message), client);
+          self.handleWebSocketMessage(
+            ws,
+            typeof message === 'string' ? message : new TextDecoder().decode(message),
+            client,
+          );
         },
         close(ws) {
           const client = (ws as unknown as { data: { client: object } }).data?.client;
@@ -615,6 +635,14 @@ export class VinyanAPIServer {
       .optional(),
     showThinking: z.boolean().optional(),
     stream: z.boolean().optional(),
+    /**
+     * Profile namespace override (W1 PR #1). Same rules as
+     * `X-Vinyan-Profile`: /^[a-z][a-z0-9-]*$/ or 'default'.
+     */
+    profile: z
+      .string()
+      .refine(isValidProfileName, { message: 'profile must match /^[a-z][a-z0-9-]*$/ or be "default"' })
+      .optional(),
   });
 
   private async handleHttpVerify(req: Request): Promise<Response> {
@@ -660,7 +688,13 @@ export class VinyanAPIServer {
 
     const parsed = VinyanAPIServer.WsMessageSchema.safeParse(rawParsed);
     if (!parsed.success) {
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: `Invalid request: ${parsed.error.message}` } }));
+      ws.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32600, message: `Invalid request: ${parsed.error.message}` },
+        }),
+      );
       return;
     }
     const msg = parsed.data;
@@ -691,7 +725,11 @@ export class VinyanAPIServer {
       const hypothesis = msg.params?.hypothesis;
       if (!oracleName || !hypothesis) {
         ws.send(
-          JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Missing oracle_name or hypothesis' } }),
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32602, message: 'Missing oracle_name or hypothesis' },
+          }),
         );
         return;
       }
@@ -709,13 +747,19 @@ export class VinyanAPIServer {
         );
       } else {
         ws.send(
-          JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Oracle runner not configured' } }),
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32601, message: 'Oracle runner not configured' },
+          }),
         );
       }
       return;
     }
 
-    ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } }));
+    ws.send(
+      JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } }),
+    );
   }
 
   // ── Task Handlers ───────────────────────────────────────
@@ -723,7 +767,9 @@ export class VinyanAPIServer {
   // G4: Track tasks in sessions
   private async handleSyncTask(req: Request): Promise<Response> {
     const body = (await req.json()) as Partial<TaskInput>;
-    const input = buildTaskInput(body);
+    const resolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
+    const input = buildTaskInput(body, resolved.profile);
 
     const session = this.getOrCreateDefaultSession();
     this.deps.sessionManager.addTask(session.id, input);
@@ -736,7 +782,9 @@ export class VinyanAPIServer {
 
   private async handleAsyncTask(req: Request): Promise<Response> {
     const body = (await req.json()) as Partial<TaskInput>;
-    const input = buildTaskInput(body);
+    const resolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
+    const input = buildTaskInput(body, resolved.profile);
 
     const session = this.getOrCreateDefaultSession();
     this.deps.sessionManager.addTask(session.id, input);
@@ -1052,11 +1100,7 @@ export class VinyanAPIServer {
     const statusParam = new URL(req.url).searchParams.get('status');
     const skills = statusParam
       ? store.findByStatus(statusParam as 'active' | 'probation' | 'demoted')
-      : [
-          ...store.findByStatus('active'),
-          ...store.findByStatus('probation'),
-          ...store.findByStatus('demoted'),
-        ];
+      : [...store.findByStatus('active'), ...store.findByStatus('probation'), ...store.findByStatus('demoted')];
 
     return jsonResponse({ skills });
   }
@@ -1076,11 +1120,7 @@ export class VinyanAPIServer {
     const store = this.deps.ruleStore;
     if (!store) return jsonResponse({ rules: [], counts: { active: 0, probation: 0, retired: 0 } });
 
-    const statusParam = new URL(req.url).searchParams.get('status') as
-      | 'active'
-      | 'probation'
-      | 'retired'
-      | null;
+    const statusParam = new URL(req.url).searchParams.get('status') as 'active' | 'probation' | 'retired' | null;
 
     const rules = statusParam ? store.findByStatus(statusParam) : store.findByStatus('active');
     const counts = {
@@ -1226,14 +1266,9 @@ export class VinyanAPIServer {
   }
 
   private handleEconomyRecent(req: Request): Response {
-    const ledger = this.deps.costLedger as
-      | { queryByTimeRange?: (from: number, to: number) => unknown[] }
-      | undefined;
+    const ledger = this.deps.costLedger as { queryByTimeRange?: (from: number, to: number) => unknown[] } | undefined;
     if (!ledger?.queryByTimeRange) return jsonResponse({ entries: [] });
-    const limit = Math.min(
-      parseInt(new URL(req.url).searchParams.get('limit') ?? '100', 10) || 100,
-      500,
-    );
+    const limit = Math.min(parseInt(new URL(req.url).searchParams.get('limit') ?? '100', 10) || 100, 500);
     const since = Date.now() - 7 * 24 * 3600 * 1000; // last 7 days
     const all = ledger.queryByTimeRange(since, Date.now()) as Array<{ timestamp: number }>;
     const sorted = [...all].sort((a, b) => b.timestamp - a.timestamp);
@@ -1278,12 +1313,7 @@ export class VinyanAPIServer {
         counts: { pending: 0, running: 0, done: 0, failed: 0 },
       });
     }
-    const statusParam = new URL(req.url).searchParams.get('status') as
-      | 'pending'
-      | 'running'
-      | 'done'
-      | 'failed'
-      | null;
+    const statusParam = new URL(req.url).searchParams.get('status') as 'pending' | 'running' | 'done' | 'failed' | null;
     const jobs = statusParam ? store.findByStatus(statusParam) : store.findPending();
     const counts = {
       pending: store.countByStatus('pending'),
@@ -1341,9 +1371,7 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'workspace not configured' }, 503);
     }
     try {
-      const { listPendingProposals, parseProposalFile } = await import(
-        '../orchestrator/memory/memory-proposals.ts'
-      );
+      const { listPendingProposals, parseProposalFile } = await import('../orchestrator/memory/memory-proposals.ts');
       const pending = listPendingProposals(workspace);
       const proposals = pending.map((p) => {
         const parsed = parseProposalFile(p.content);
@@ -1382,10 +1410,7 @@ export class VinyanAPIServer {
 
     if (!body.handle) return jsonResponse({ error: 'handle is required' }, 400);
     if (!body.reviewer) {
-      return jsonResponse(
-        { error: 'reviewer is required (A1 compliance: audit trail must name a human)' },
-        400,
-      );
+      return jsonResponse({ error: 'reviewer is required (A1 compliance: audit trail must name a human)' }, 400);
     }
 
     try {
@@ -1449,9 +1474,7 @@ export class VinyanAPIServer {
     }
     const recentBrierScores = ledger.getRecentBrierScores(100);
     const averageBrier =
-      recentBrierScores.length > 0
-        ? recentBrierScores.reduce((a, b) => a + b, 0) / recentBrierScores.length
-        : null;
+      recentBrierScores.length > 0 ? recentBrierScores.reduce((a, b) => a + b, 0) / recentBrierScores.length : null;
     return jsonResponse({
       enabled: true,
       traceCount: ledger.getTraceCount(),
@@ -1497,9 +1520,7 @@ export class VinyanAPIServer {
         totalAnalyzed: riskScored.length,
         highRiskCount,
         avgRisk:
-          riskScored.length > 0
-            ? riskScored.reduce((acc, t) => acc + (t.riskScore ?? 0), 0) / riskScored.length
-            : null,
+          riskScored.length > 0 ? riskScored.reduce((acc, t) => acc + (t.riskScore ?? 0), 0) / riskScored.length : null,
       },
     });
   }
@@ -1730,6 +1751,12 @@ export class VinyanAPIServer {
     }
     const { content, taskType, targetFiles, budget, showThinking, stream } = parsed.data;
 
+    // W1 PR #1: resolve profile from body > X-Vinyan-Profile > server default.
+    // Validation already ran on body.profile inside SessionMessageSchema, so
+    // an error here can only originate from a bad header.
+    const resolvedProfile = resolveRequestProfile(req, parsed.data, this.deps.defaultProfile);
+    if ('error' in resolvedProfile) return jsonResponse({ error: resolvedProfile.error }, 400);
+
     // ── Dedup: reject identical messages within a short window ──
     // Prevents duplicate tasks when the UI retries on timeout or the
     // user double-clicks Send. Key = session+content hash, TTL = 60s.
@@ -1757,10 +1784,7 @@ export class VinyanAPIServer {
     // through any prior clarification rounds) rather than overwriting it
     // with the short reply text.
     const pendingBefore = this.deps.sessionManager.getPendingClarifications(sessionId);
-    const originalGoal =
-      pendingBefore.length > 0
-        ? this.deps.sessionManager.getOriginalTaskGoal(sessionId)
-        : null;
+    const originalGoal = pendingBefore.length > 0 ? this.deps.sessionManager.getOriginalTaskGoal(sessionId) : null;
     const clarificationConstraints =
       pendingBefore.length > 0
         ? [
@@ -1778,13 +1802,9 @@ export class VinyanAPIServer {
 
     // Infer taskType when the client didn't specify: code if targetFiles
     // present, otherwise reasoning (matching chat.ts).
-    const inferredType: 'code' | 'reasoning' =
-      taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
+    const inferredType: 'code' | 'reasoning' = taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
 
-    const constraints: string[] = [
-      ...(showThinking ? ['THINKING:enabled'] : []),
-      ...clarificationConstraints,
-    ];
+    const constraints: string[] = [...(showThinking ? ['THINKING:enabled'] : []), ...clarificationConstraints];
 
     const input: TaskInput = {
       id: crypto.randomUUID(),
@@ -1792,6 +1812,7 @@ export class VinyanAPIServer {
       goal: originalGoal ?? content,
       taskType: inferredType,
       sessionId,
+      profile: resolvedProfile.profile,
       ...(targetFiles?.length ? { targetFiles } : {}),
       ...(constraints.length > 0 ? { constraints } : {}),
       budget: budget ?? {
@@ -1894,10 +1915,7 @@ export class VinyanAPIServer {
     try {
       result = await this.deps.executeTask(input);
     } catch (err) {
-      return jsonResponse(
-        { error: err instanceof Error ? err.message : 'Task execution failed' },
-        500,
-      );
+      return jsonResponse({ error: err instanceof Error ? err.message : 'Task execution failed' }, 500);
     }
     this.deps.sessionManager.completeTask(sessionId, input.id, result);
     // Record the assistant turn — for status='input-required' this writes
@@ -2102,7 +2120,7 @@ function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string,
   });
 }
 
-function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
+function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInput {
   return {
     id: partial.id ?? crypto.randomUUID(),
     source: 'api',
@@ -2110,6 +2128,7 @@ function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
     taskType: partial.taskType ?? (partial.targetFiles?.length ? 'code' : 'reasoning'),
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
+    ...(profile !== undefined ? { profile } : partial.profile !== undefined ? { profile: partial.profile } : {}),
     budget: partial.budget ?? {
       maxTokens: 50_000,
       maxDurationMs: 60_000,
@@ -2117,6 +2136,43 @@ function buildTaskInput(partial: Partial<TaskInput>): TaskInput {
     },
     acceptanceCriteria: partial.acceptanceCriteria,
   };
+}
+
+/**
+ * Resolve the profile for an incoming HTTP request.
+ *
+ * Precedence: `body.profile` > `X-Vinyan-Profile` header > server default
+ * (> `'default'` when the server default is unset). Returns `{ profile }`
+ * on success or `{ error }` with a 400-appropriate message on invalid
+ * input — callers surface the error as a JSON response and MUST NOT
+ * dispatch the task.
+ */
+export function resolveRequestProfile(
+  req: Request,
+  body: unknown,
+  fallbackDefault?: string,
+): { profile: string } | { error: string } {
+  // Header (case-insensitive per RFC 7230 — Headers.get handles this).
+  const headerValue = req.headers.get('x-vinyan-profile') ?? undefined;
+  const bodyValue =
+    body !== null && typeof body === 'object' && 'profile' in body
+      ? (body as { profile?: unknown }).profile
+      : undefined;
+
+  // Body wins over header. Either must pass validation.
+  if (bodyValue !== undefined) {
+    if (!isValidProfileName(bodyValue)) {
+      return { error: `Invalid profile name in body: ${String(bodyValue)}` };
+    }
+    return { profile: bodyValue };
+  }
+  if (headerValue !== undefined && headerValue.length > 0) {
+    if (!isValidProfileName(headerValue)) {
+      return { error: `Invalid profile name in X-Vinyan-Profile header: ${headerValue}` };
+    }
+    return { profile: headerValue };
+  }
+  return { profile: fallbackDefault ?? 'default' };
 }
 
 /** Extract taskId from API path like /api/v1/tasks/:id */

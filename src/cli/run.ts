@@ -19,7 +19,18 @@ import { createOrchestrator } from '../orchestrator/factory.ts';
 import { CommandApprovalGate } from '../orchestrator/tools/command-approval-gate.ts';
 import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 
-export async function runAgentTask(argv: string[]): Promise<void> {
+/**
+ * Options plumbed in from the top-level CLI entry (src/cli/index.ts).
+ *
+ * `profile` is the already-resolved profile name (flag > env > 'default')
+ * — callers pass it through so `runAgentTask` never has to re-run
+ * `resolveProfile` itself.
+ */
+export interface RunAgentTaskOptions {
+  profile?: string;
+}
+
+export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {}): Promise<void> {
   // Parse arguments
   const goalIndex = argv.indexOf('run') + 1;
   const goal = argv[goalIndex];
@@ -64,17 +75,19 @@ export async function runAgentTask(argv: string[]): Promise<void> {
     taskType: files.length > 0 ? 'code' : 'reasoning',
     targetFiles: files.length > 0 ? files : undefined,
     agentId: agentIdOverride,
+    // W1 PR #1: forward the resolved profile. When absent (direct callers
+    // that skip the top-level CLI), core-loop defaults to 'default'.
+    ...(opts.profile ? { profile: opts.profile } : {}),
     budget: {
       maxTokens: budget,
       maxDurationMs: timeout,
       maxRetries: retries,
     },
-    ...((showThinking || enableTools) ? {
-      constraints: [
-        ...(showThinking ? ['THINKING:enabled'] : []),
-        ...(enableTools ? ['TOOLS:enabled'] : []),
-      ],
-    } : {}),
+    ...(showThinking || enableTools
+      ? {
+          constraints: [...(showThinking ? ['THINKING:enabled'] : []), ...(enableTools ? ['TOOLS:enabled'] : [])],
+        }
+      : {}),
   };
 
   // Create bus and attach listeners BEFORE creating orchestrator
@@ -119,12 +132,18 @@ export async function runAgentTask(argv: string[]): Promise<void> {
   try {
     // Dry-run: show what would happen without executing
     if (dryRun) {
-      console.log(JSON.stringify({
-        mode: 'dry-run',
-        input: { id: input.id, goal: input.goal, taskType: input.taskType, targetFiles: input.targetFiles },
-        budget: input.budget,
-        workspace,
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            mode: 'dry-run',
+            input: { id: input.id, goal: input.goal, taskType: input.taskType, targetFiles: input.targetFiles },
+            budget: input.budget,
+            workspace,
+          },
+          null,
+          2,
+        ),
+      );
       detachProgress?.();
       orchestrator.close();
       process.exit(0);
@@ -195,9 +214,10 @@ function printSummary(result: TaskResult, metrics: TraceTelemetry, output: NodeJ
             ? 'INPUT-REQUIRED'
             : 'FAILED';
 
-  const qs = result.qualityScore && !Number.isNaN(result.qualityScore.composite)
-    ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
-    : '';
+  const qs =
+    result.qualityScore && !Number.isNaN(result.qualityScore.composite)
+      ? ` quality=${result.qualityScore.composite.toFixed(2)} (${result.qualityScore.dimensionsAvailable}D)`
+      : '';
 
   output.write(`\n[vinyan] ${status} | ${metrics.totalTraces} attempt(s) | ${result.trace.durationMs}ms${qs}\n`);
 

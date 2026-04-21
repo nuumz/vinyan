@@ -444,7 +444,24 @@ const TaskBudgetSchema = z.object({
 
 export const TaskInputSchema = z.object({
   id: z.string(),
-  source: z.enum(['cli', 'api', 'mcp', 'a2a']),
+  // Kept in sync with the `TaskSource` type in `./types.ts` — widened in
+  // W1 PR #1 to cover hermes-*, acp, internal transports so the wire
+  // schema doesn't reject what the type system already allows.
+  source: z.enum([
+    'cli',
+    'api',
+    'mcp',
+    'a2a',
+    'hermes-telegram',
+    'hermes-slack',
+    'hermes-discord',
+    'hermes-whatsapp',
+    'hermes-signal',
+    'hermes-email',
+    'hermes-cron',
+    'acp',
+    'internal',
+  ]),
   goal: z.string(),
   taskType: z.enum(['code', 'reasoning']).default('code'),
   targetFiles: z.array(z.string()).optional(),
@@ -452,6 +469,15 @@ export const TaskInputSchema = z.object({
   acceptanceCriteria: z.array(z.string()).optional(),
   /** Specialist agent ID — CLI override or pre-set by caller. */
   agentId: z.string().optional(),
+  /**
+   * Profile namespace (W1 PR #1). Optional on the wire — core-loop
+   * coerces undefined → 'default'. Validated against the same regex as
+   * `isValidProfileName` in types.ts.
+   */
+  profile: z
+    .string()
+    .regex(/^(default|[a-z][a-z0-9-]*)$/, 'profile must be "default" or match /^[a-z][a-z0-9-]*$/')
+    .optional(),
   budget: TaskBudgetSchema,
 });
 

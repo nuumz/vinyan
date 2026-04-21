@@ -38,7 +38,18 @@ const PROMPT = '\x1b[36mvinyan>\x1b[0m '; // Cyan prompt
 
 // ── Main ───────────────────────────────────────────────────
 
-export async function startChat(argv: string[]): Promise<void> {
+/**
+ * Options plumbed in from the top-level CLI entry (src/cli/index.ts).
+ *
+ * `profile` is the already-resolved profile name (flag > env > 'default');
+ * `startChat` forwards it into every `TaskInput` it constructs so all
+ * per-turn tasks land in the same namespace.
+ */
+export interface StartChatOptions {
+  profile?: string;
+}
+
+export async function startChat(argv: string[], opts: StartChatOptions = {}): Promise<void> {
   const workspace = parseSingleFlag(argv, '--workspace') ?? process.cwd();
   const resumeId = parseSingleFlag(argv, '--resume');
   const listMode = argv.includes('--list');
@@ -247,10 +258,7 @@ export async function startChat(argv: string[]): Promise<void> {
             })}`,
           ]
         : [];
-    const constraintsForTurn = [
-      ...(showThinking ? ['THINKING:enabled'] : []),
-      ...clarificationConstraints,
-    ];
+    const constraintsForTurn = [...(showThinking ? ['THINKING:enabled'] : []), ...clarificationConstraints];
     // Anchor the task's goal to the original user request when we're
     // resolving a clarification round, so the reply text doesn't become
     // the new goal (see pendingTaskGoal comment above).
@@ -271,6 +279,10 @@ export async function startChat(argv: string[]): Promise<void> {
       goal: goalForTask,
       taskType: hasCodeContext ? 'code' : 'reasoning',
       sessionId: session.id,
+      // W1 PR #1: every chat-turn task carries the resolved profile so
+      // downstream store calls (once retrofitted) land in the right
+      // namespace.
+      ...(opts.profile ? { profile: opts.profile } : {}),
       budget: DEFAULT_BUDGET,
       ...(constraintsForTurn.length > 0 ? { constraints: constraintsForTurn } : {}),
     };

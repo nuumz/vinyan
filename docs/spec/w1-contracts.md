@@ -129,7 +129,8 @@ interface TaskInput {
   source: 'cli' | 'api' | 'hermes-telegram' | 'hermes-slack'
         | 'hermes-discord' | 'hermes-whatsapp' | 'hermes-signal'
         | 'hermes-email' | 'hermes-cron' | 'acp' | 'a2a' | 'internal';
-  profile: string;                   // REQUIRED; resolved by profile-resolver
+  profile?: string;                  // INTERMEDIATE-OPTIONAL — see §9.A1;
+                                     // defaults to 'default' at core-loop entry
   sessionId?: string;
   parentTaskId?: string;             // for interrupt-and-redirect chains
   priority?: 'normal' | 'high' | 'background';
@@ -144,7 +145,10 @@ function executeTask(input: TaskInput): Promise<TaskResult>;
 - Gateway adapters, NL cron, ACP server inbound, MCP bridge, CLI, and HTTP
   API all call this one function. Any "shortcut" that skips it is a bug.
 - `source` is required; used by observability and trust weighting.
-- `profile` is required; used by every downstream store.
+- `profile` is intermediate-optional during W1 rollout (see §9.A1). The
+  long-term intent is to require it; the current PR coerces an absent
+  value to `'default'` at `executeTask` entry and validates any present
+  value against `/^[a-z][a-z0-9-]*$/` or the literal `'default'`.
 - The function runs the full Core Loop (Budget → Perceive → Comprehend →
   Predict → Plan → Generate → Verify → Learn). Callers cannot request a
   subset; they can influence risk routing via `constraints`.
@@ -224,4 +228,35 @@ No silent drift.
 
 ## §9 Amendments
 
-*(none yet)*
+### A1 (2026-04-21) — `profile` optional during rollout
+- Originally §4 specified `profile: string` as required.
+- Intermediate state: `profile?: string` with coerce-to-`'default'` at core-loop
+  entry, to preserve backwards compatibility with every existing caller.
+- Final state (W3 PR): all call sites pass explicit profile; required field
+  restored; amendment expires.
+- Rationale: making it required in one PR would fail `tsc` across ~20 call
+  sites (`src/cli/run.ts`, `src/cli/chat.ts`, `src/api/server.ts`,
+  `src/a2a/bridge.ts`, `src/orchestrator/prediction/self-model.ts`,
+  `src/orchestrator/agent-memory/agent-memory-impl.ts`, `src/tui/app.ts`,
+  …) and produce no net capability gain. Stores continue to be single-profile
+  in this PR; wiring profile into store call sites is deferred to W2/W3.
+
+### A2 (2026-04-21) — `PluginRegistry.ingestInternal` for bundled providers
+- Need: bundled in-proc providers (e.g. `DefaultMemoryProvider`) have no
+  on-disk `entry` file to SHA-256, so the external-plugin `ingest()` path
+  refuses them. Until this is addressed, `registerDefaultMemory` is a
+  no-op returning `{ registered: false, pending: 'ingestInternal missing' }`.
+- Proposed addition to `src/plugin/registry.ts`:
+  ```ts
+  ingestInternal(manifest: PluginManifest, handle: unknown, tier?: ConfidenceTier): PluginSlot;
+  ```
+  - Skips integrity + signature paths (host-rooted trust).
+  - Defaults `tier` to `'deterministic'` (bundled, verified at compile time).
+  - Writes a `loaded` audit row with `detail_json: { internal: true }`.
+  - Still subject to category cardinality — activation rules unchanged.
+- Final state: this becomes a first-class registry method in a follow-up PR;
+  `registerDefaultMemory` and any future bundled provider use it in place of
+  `discoverPlugins → ingest`.
+- Rationale: keeping internal providers on the external code path would
+  force either synthetic sha256 values (misleading) or weakening the
+  integrity check for legitimate external plugins (A6 violation).

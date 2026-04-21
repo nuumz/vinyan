@@ -34,6 +34,7 @@ import { createA2AManager, type A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { VinyanAPIServer } from '../api/server.ts';
 import { SessionManager } from '../api/session-manager.ts';
 import { loadConfig } from '../config/index.ts';
+import { resolveProfile } from '../config/profile-resolver.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
@@ -80,7 +81,23 @@ const TRANSIENT_IO_CODES = new Set(['EPIPE', 'ECONNRESET', 'ERR_STREAM_DESTROYED
 
 type Phase = 'startup' | 'steady' | 'shutting_down';
 
-export async function serve(workspace: string): Promise<void> {
+/**
+ * Options plumbed in from the top-level CLI entry (src/cli/index.ts).
+ *
+ * `profile` is the already-resolved profile name (flag > env > 'default').
+ * Forwarded into the API server so inbound requests that don't supply
+ * their own profile header/body default to this one — matching
+ * `hermes serve -p <name>` semantics.
+ */
+export interface ServeOptions {
+  profile?: string;
+}
+
+export async function serve(workspace: string, opts: ServeOptions = {}): Promise<void> {
+  // Re-run resolveProfile so the result is a concrete, validated name.
+  // When called from the CLI this is redundant (index.ts already ran it)
+  // but direct callers + tests benefit from the guarantee.
+  const resolvedProfile = resolveProfile({ flag: opts.profile });
   // ── Phase tracker ───────────────────────────────────────────────
   // Mutable — flipped to 'steady' at the end of serve() after a clean
   // startup, then to 'shutting_down' when shutdown fires.
@@ -156,7 +173,11 @@ export async function serve(workspace: string): Promise<void> {
         process.exit(EXIT_CODE_STARTUP_FATAL);
       } catch {
         // Dead — remove stale PID file.
-        try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+        try {
+          unlinkSync(pidFilePath);
+        } catch {
+          /* best-effort */
+        }
       }
     }
   }
@@ -253,6 +274,7 @@ export async function serve(workspace: string): Promise<void> {
       marketScheduler: orchestrator.marketScheduler,
       capabilityModel: orchestrator.capabilityModel,
       workspace,
+      defaultProfile: resolvedProfile.name,
     },
   );
 
@@ -275,16 +297,36 @@ export async function serve(workspace: string): Promise<void> {
     }, SHUTDOWN_FORCE_EXIT_MS);
     (forceExit as { unref?: () => void }).unref?.();
 
-    try { sessionManager.suspendAll(); } catch { /* best-effort */ }
+    try {
+      sessionManager.suspendAll();
+    } catch {
+      /* best-effort */
+    }
     if (a2aManager) {
-      await withTimeout('a2a.stop', STEP_TIMEOUT_MS.a2a_stop, Promise.resolve().then(() => a2aManager!.stop()));
+      await withTimeout(
+        'a2a.stop',
+        STEP_TIMEOUT_MS.a2a_stop,
+        Promise.resolve().then(() => a2aManager!.stop()),
+      );
     }
     await withTimeout('server.stop', STEP_TIMEOUT_MS.server_stop, server.stop());
-    await withTimeout('orchestrator.close', STEP_TIMEOUT_MS.orchestrator_close, Promise.resolve().then(() => orchestrator.close()));
-    await withTimeout('db.close', STEP_TIMEOUT_MS.db_close, Promise.resolve().then(() => db.close()));
+    await withTimeout(
+      'orchestrator.close',
+      STEP_TIMEOUT_MS.orchestrator_close,
+      Promise.resolve().then(() => orchestrator.close()),
+    );
+    await withTimeout(
+      'db.close',
+      STEP_TIMEOUT_MS.db_close,
+      Promise.resolve().then(() => db.close()),
+    );
 
     clearTimeout(forceExit);
-    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* best-effort */
+    }
     process.exit(0);
   };
   shutdownFn = shutdown;
@@ -295,7 +337,11 @@ export async function serve(workspace: string): Promise<void> {
   // subprocesses even if cleanup was bypassed (force-exit, uncaught
   // error, process.exit from deep in the code).
   process.on('exit', () => {
-    try { unlinkSync(pidFilePath); } catch { /* already removed */ }
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* already removed */
+    }
   });
 
   // ── Server start — synchronous throw on EADDRINUSE etc. ─────────

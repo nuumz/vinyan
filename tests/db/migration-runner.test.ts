@@ -10,7 +10,19 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import type { Migration } from '../../src/db/migrations/migration-runner.ts';
+
+/**
+ * These tests predate the W1–W2 migrations (003/004/005/006/007). They
+ * assert properties about the *init* migration specifically — "fresh install
+ * applies the consolidated init", "dryRun returns pending=[1]", etc. — so
+ * they pin against `[migration001]` rather than the live `ALL_MIGRATIONS`
+ * array that keeps growing with each wave. The "live state" tests
+ * (idempotent re-run, data integrity, failed migration rollback) continue
+ * to use `ALL_MIGRATIONS` because that's where their semantic lives.
+ */
+const INIT_ONLY: Migration[] = [migration001];
 
 let db: Database;
 const runner = new MigrationRunner();
@@ -28,7 +40,7 @@ afterEach(() => {
 describe('MigrationRunner', () => {
   // ── Acceptance Criterion 1: Fresh install ───────────────
   test('fresh install applies the consolidated init migration', () => {
-    const result = runner.migrate(db, ALL_MIGRATIONS);
+    const result = runner.migrate(db, INIT_ONLY);
 
     expect(result.applied).toEqual([1]);
     expect(result.current).toBe(1);
@@ -90,12 +102,14 @@ describe('MigrationRunner', () => {
 
   // ── Acceptance Criterion 2: Idempotent re-run ───────────
   test('idempotent re-run applies 0 migrations', () => {
-    runner.migrate(db, ALL_MIGRATIONS);
+    const first = runner.migrate(db, ALL_MIGRATIONS);
+    const highestVersion = Math.max(...ALL_MIGRATIONS.map((m) => m.version));
 
     const result = runner.migrate(db, ALL_MIGRATIONS);
     expect(result.applied).toEqual([]);
-    expect(result.current).toBe(1);
+    expect(result.current).toBe(highestVersion);
     expect(result.pending).toEqual([]);
+    expect(first.current).toBe(highestVersion);
   });
 
   // ── Acceptance Criterion 3: Failed migration rolls back ─
@@ -112,13 +126,14 @@ describe('MigrationRunner', () => {
 
     // Apply the good init migration first
     runner.migrate(db, ALL_MIGRATIONS);
+    const highestVersion = Math.max(...ALL_MIGRATIONS.map((m) => m.version));
 
     expect(() => {
       runner.migrate(db, [...ALL_MIGRATIONS, failingMigration]);
     }).toThrow();
 
-    // Good migration applied, failing one rolled back
-    expect(runner.getCurrentVersion(db)).toBe(1);
+    // Good migrations applied, failing one rolled back
+    expect(runner.getCurrentVersion(db)).toBe(highestVersion);
 
     // The table from the failed migration should NOT exist (rolled back)
     const tables = db
@@ -155,13 +170,13 @@ describe('MigrationRunner', () => {
   });
 
   test('getCurrentVersion returns 1 after running init', () => {
-    runner.migrate(db, ALL_MIGRATIONS);
+    runner.migrate(db, INIT_ONLY);
     expect(runner.getCurrentVersion(db)).toBe(1);
   });
 
   // ── dryRun ──────────────────────────────────────────────
   test('dryRun returns pending without applying', () => {
-    const result = runner.migrate(db, ALL_MIGRATIONS, { dryRun: true });
+    const result = runner.migrate(db, INIT_ONLY, { dryRun: true });
     expect(result.applied).toEqual([]);
     expect(result.current).toBe(0);
     expect(result.pending).toEqual([1]);

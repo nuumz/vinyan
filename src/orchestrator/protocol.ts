@@ -445,20 +445,20 @@ const TaskBudgetSchema = z.object({
 export const TaskInputSchema = z.object({
   id: z.string(),
   // Kept in sync with the `TaskSource` type in `./types.ts` — widened in
-  // W1 PR #1 to cover hermes-*, acp, internal transports so the wire
+  // W1 PR #1 to cover gateway-*, acp, internal transports so the wire
   // schema doesn't reject what the type system already allows.
   source: z.enum([
     'cli',
     'api',
     'mcp',
     'a2a',
-    'hermes-telegram',
-    'hermes-slack',
-    'hermes-discord',
-    'hermes-whatsapp',
-    'hermes-signal',
-    'hermes-email',
-    'hermes-cron',
+    'gateway-telegram',
+    'gateway-slack',
+    'gateway-discord',
+    'gateway-whatsapp',
+    'gateway-signal',
+    'gateway-email',
+    'gateway-cron',
     'acp',
     'internal',
   ]),

@@ -3092,11 +3092,11 @@ Phase 0 Gaps (P0-1..P0-5)
 
 ---
 
-## Wave 1–5 Roadmap (Hermes-Parity + Axiomatic Leap)
+## Wave 1–5 Roadmap (Messaging-Parity + Axiomatic Leap)
 
 > Generated: 2026-04-21. Companion spec: [w1-contracts.md](../spec/w1-contracts.md) (frozen contract surface for parallel tracks). Architectural decisions: D20–D23 in [decisions.md](../architecture/decisions.md).
 
-The waves below extend the Phase 0–5 plan with four concurrent tracks that build the **deployment surface**, **skills ecosystem**, **memory plugin architecture**, and **learning-loop amplification** needed to reach Hermes Agent parity on user-visible capability — *while preserving and compounding Vinyan's verification moat* (Oracle Gate, tiered trust, PredictionError-as-learning-signal). Hermes gives us the comparison target; the axioms give us the differentiation. Every track ends with a capability Hermes does not have because Hermes has no epistemic substrate to attach it to.
+The waves below extend the Phase 0–5 plan with four concurrent tracks that build the **deployment surface**, **skills ecosystem**, **memory plugin architecture**, and **learning-loop amplification** needed to reach Hermes Agent (Nous Research) parity on user-visible capability — *while preserving and compounding Vinyan's verification moat* (Oracle Gate, tiered trust, PredictionError-as-learning-signal). The external Hermes Agent product gives us the comparison target; the axioms give us the differentiation. Every track ends with a capability Hermes Agent does not have because Hermes Agent has no epistemic substrate to attach it to.
 
 Status vocabulary is unchanged: ✅ Active · 🔧 Built · 📋 Designed.
 
@@ -3134,7 +3134,7 @@ Flagship differentiators unlocked by completing W1–W5:
 | Track | Scope | Exit criterion | Status |
 |:------|:------|:---------------|:------:|
 | SK2 — Progressive disclosure | L0 (metadata) / L1 (intent) / L2 (body) rendering inside the Perception step; budget-aware expansion | Skill body is read only when routing confidence or retrieval score warrants L2; measurable token savings on a representative set | 📋 |
-| H1 — Gateway + Telegram | Messaging Gateway abstraction; Telegram adapter; all inbound messages converge on `executeTask({source:'hermes-telegram', …})` | End-to-end demo: Telegram → Gateway → executeTask → reply envelope round-trips; adapter has zero execution privilege | 📋 |
+| H1 — Gateway + Telegram | Messaging Gateway abstraction; Telegram adapter; all inbound messages converge on `executeTask({source:'gateway-telegram', …})` | End-to-end demo: Telegram → Gateway → executeTask → reply envelope round-trips; adapter has zero execution privilege | 📋 |
 | P2 — MemoryProvider + ranker | Default built-in provider implements the W1 interface; fallback chain; retrieval ranker: `(similarity · tierWeight · recency − predErrorPenalty)` | A/B against pre-refactor retrieval shows no regression on answer relevance; ranker explains every top-k pick | 📋 |
 | P2 — Plugin Registry ★ | Formal registry with cardinality enforcement (memory:single, oracle:multi, backend:multi, etc. per w1-contracts §5); load/verify/activate audit trail | Registry refuses to activate a second `memory` plugin; `plugin_audit` migration 007 applied; hot-load is reversible | 📋 |
 
@@ -3154,7 +3154,7 @@ Flagship differentiators unlocked by completing W1–W5:
 | Track | Scope | Exit criterion | Status |
 |:------|:------|:---------------|:------:|
 | SK3 — Hub import | Skills Hub import pipeline: fetch → signature check → quarantine → Oracle Gate dry-run → Critic eval → promote or reject | An unsigned hub skill is quarantined and cannot execute until Oracle Gate passes; promotion bumps tier from `speculative` to `heuristic` | 📋 |
-| H3 — NL cron | Natural-language scheduling parsed into a `ScheduledHypothesisTuple` row; scheduler fires into `executeTask({source:'hermes-cron',…})` | "Every weekday at 9am summarize the backlog" round-trips parse → tuple → fire → task; same governance applies | 📋 |
+| H3 — NL cron | Natural-language scheduling parsed into a `ScheduledHypothesisTuple` row; scheduler fires into `executeTask({source:'gateway-cron',…})` | "Every weekday at 9am summarize the backlog" round-trips parse → tuple → fire → task; same governance applies | 📋 |
 | P3 — Critic + USER.md | Per-section dialectic USER.md: each section carries a falsifiable prediction; disagreement flips to `type:'unknown'` or triggers revise | Running 20 turns against a synthetic user produces at least one section flip; audit trail records prediction→outcome→revision | 📋 |
 | P3 — WorkerBackend | Abstract the worker spawn path behind `WorkerBackend`; Local backend is the first impl; keep existing behavior bit-exact | Existing worker tests pass unchanged on Local backend; spawn contract documented so Docker/SSH/Modal slot in without core changes | 📋 |
 

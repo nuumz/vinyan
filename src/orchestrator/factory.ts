@@ -72,6 +72,9 @@ import { RoomStore } from '../db/room-store.ts';
 import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
 import { RoomDispatcher } from './room/room-dispatcher.ts';
 import { runAgentLoop } from './agent/agent-loop.ts';
+import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
+import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
+import type { PluginRegistry } from '../plugin/registry.ts';
 import {
   FailureClusterDetector,
   type FailureCluster,
@@ -269,6 +272,30 @@ export interface Orchestrator {
   // Economy stores (exposed for API/TUI)
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
+  /**
+   * W2 Plugin Registry — populated when `config.plugins.enabled` is true.
+   * `undefined` otherwise. Tests/consumers should `await pluginsReady` before
+   * inspecting this field because plugin discovery is async.
+   */
+  pluginRegistry?: PluginRegistry;
+  /**
+   * W2 messaging-adapter lifecycle (Gateway H1). `startAll` / `stopAll` the
+   * subset of plugins whose category is `messaging-adapter`. Only populated
+   * alongside `pluginRegistry`.
+   */
+  messagingLifecycle?: MessagingAdapterLifecycleManager;
+  /**
+   * Non-fatal warnings raised during plugin discovery / memory or skill
+   * tool registration. Only populated alongside `pluginRegistry`.
+   */
+  pluginWarnings?: readonly string[];
+  /**
+   * Resolves once the W2 plugin init coroutine has finished (registry
+   * ingested discovered plugins; optional auto-activation applied). Tests
+   * awaiting `pluginRegistry` should `await pluginsReady` first. Only
+   * populated when `config.plugins.enabled` is true.
+   */
+  pluginsReady?: Promise<PluginInitResult>;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -857,6 +884,57 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     traceCollector.setEconomyDeps(costLedger, economyConfig?.rate_cards, bus);
   }
   const toolExecutor = new ToolExecutor(undefined, config.commandApprovalGate);
+
+  // W2: optional plugin subsystem. Gated on `config.plugins.enabled` — OFF
+  // by default so existing callers (and all existing tests) see a bit-for-
+  // bit identical orchestrator shape. When ON, this kicks off an async
+  // init that builds the PluginRegistry, registers DefaultMemoryProvider,
+  // adds the three SKILL.md tools, runs external plugin discovery, and
+  // builds the messaging-adapter lifecycle manager. The init promise is
+  // surfaced as `orchestrator.pluginsReady`. Failures bubble up as
+  // `pluginWarnings` — the host remains bootable either way.
+  let pluginRegistry: PluginRegistry | undefined;
+  let messagingLifecycle: MessagingAdapterLifecycleManager | undefined;
+  let pluginWarnings: readonly string[] = [];
+  let pluginsReady: Promise<PluginInitResult> | undefined;
+  try {
+    const vinyanConfigForPlugins = loadConfig(workspace);
+    const pluginsCfg = vinyanConfigForPlugins.plugins;
+    if (pluginsCfg?.enabled && db) {
+      // Tool registry view — the Map is mutated by registerSkillTools inside
+      // plugin-init; once init resolves we forward the entries into the live
+      // ToolExecutor so `executeProposedTools` can dispatch them.
+      const pluginToolRegistry = new Map<string, Tool>();
+      const vinyanHome =
+        process.env['VINYAN_HOME'] ??
+        join(process.env['HOME'] ?? workspace, '.vinyan');
+      pluginsReady = initializePlugins({
+        db: db.getDb(),
+        profile: 'default',
+        bus,
+        toolRegistry: pluginToolRegistry,
+        pluginConfig: pluginsCfg,
+        vinyanHome,
+        profileRoot: workspace,
+      })
+        .then((result) => {
+          pluginRegistry = result.registry;
+          messagingLifecycle = result.lifecycle;
+          pluginWarnings = result.warnings;
+          for (const [name, tool] of pluginToolRegistry) {
+            toolExecutor.registerTool(name, tool);
+          }
+          return result;
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          pluginWarnings = [`plugin init failed: ${msg}`];
+          throw err;
+        });
+    }
+  } catch {
+    /* plugin wiring is best-effort */
+  }
 
   // Phase 7e: kick off MCP pool initialization now that `oracleGate`
   // exists. This is fire-and-forget — `buildMcpToolMap` populates the
@@ -1716,7 +1794,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     (shadowInterval as { unref?: () => void }).unref?.();
   }
 
-  return {
+  const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
       sessionCount++;
@@ -1769,6 +1847,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalGate,
     costLedger,
     budgetEnforcer,
+    // W2: optional plugin subsystem — populated when
+    // `config.plugins.enabled` is true. pluginRegistry / messagingLifecycle
+    // / pluginWarnings are filled in asynchronously by the init promise,
+    // so consumers must `await pluginsReady` before reading them. Getters
+    // read the closure variables to surface the latest state without the
+    // factory needing to rebuild its return object.
+    ...(pluginsReady ? { pluginsReady } : {}),
     getSessionCount: () => sessionCount,
     close: async () => {
       // Order matters:
@@ -1801,6 +1886,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       } catch {
         /* best-effort */
       }
+      // W2 messaging adapters — stop before we tear down anything the
+      // adapter callbacks might reach (bus is still alive at this point,
+      // but adapters may own their own fds/sockets).
+      if (messagingLifecycle) {
+        try {
+          await raceTimeout(messagingLifecycle.stopAll().then(() => undefined), 2_000);
+        } catch {
+          /* best-effort */
+        }
+      }
       // MCP client pool — subprocess-based. shutdown() is async but we
       // bound the wait so a misbehaving MCP server cannot strand us.
       if (mcpClientPool) {
@@ -1829,6 +1924,33 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
     },
   };
+
+  // W2 plugin subsystem — expose pluginRegistry / messagingLifecycle /
+  // pluginWarnings as live getters so consumers see the latest state once
+  // the async `pluginsReady` resolves. Defined here (after the object is
+  // built) to avoid spread-losing-getter semantics. When the flag is off,
+  // `pluginsReady` is undefined and these getters are not installed — the
+  // orchestrator shape stays byte-for-byte identical to the pre-wiring
+  // version.
+  if (pluginsReady) {
+    Object.defineProperty(orchestrator, 'pluginRegistry', {
+      enumerable: true,
+      configurable: true,
+      get: () => pluginRegistry,
+    });
+    Object.defineProperty(orchestrator, 'messagingLifecycle', {
+      enumerable: true,
+      configurable: true,
+      get: () => messagingLifecycle,
+    });
+    Object.defineProperty(orchestrator, 'pluginWarnings', {
+      enumerable: true,
+      configurable: true,
+      get: () => pluginWarnings,
+    });
+  }
+
+  return orchestrator;
 }
 
 /** Default allowed engine ID prefixes — configurable via OrchestratorConfig.workerModelAllowlist. */

@@ -1211,7 +1211,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 > **Axioms: A3, A6** — Deterministic Governance (every ingress path converges on one rule-based entry) + Zero-Trust Execution (adapters never execute; they only publish to the bus)
 
-**Context.** Hermes ships a messaging surface (Telegram, Slack, Discord, WhatsApp, Signal, Email, cron) as a first-class capability. The straightforward way to match this is to let each adapter call the relevant subsystem directly. That is exactly what we must not do — it creates N entry points to the governance pipeline and makes crash-safety, redaction, and audit N-way problems.
+**Context.** The comparison reference (Hermes Agent from Nous Research) ships a messaging surface (Telegram, Slack, Discord, WhatsApp, Signal, Email, cron) as a first-class capability. The straightforward way to match this is to let each adapter call the relevant subsystem directly. That is exactly what we must not do — it creates N entry points to the governance pipeline and makes crash-safety, redaction, and audit N-way problems.
 
 **Choice.** Every messaging adapter (Telegram, Slack, Discord, WhatsApp, Signal, Email) plus NL cron, ACP inbound, A2A peer, MCP bridge, CLI, and HTTP API **all** call the single `executeTask(input: TaskInput)` defined in [w1-contracts §4](../spec/w1-contracts.md). Adapters publish to the EventBus with **zero execution privilege** — they cannot read files, invoke oracles, or persist memory. They only turn a transport envelope into a `TaskInput` and hand it off.
 
@@ -1224,7 +1224,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 | **Adapter-only: all paths converge on `executeTask`** | One rule-based entry, one audit trail, crash-safety preserved | Adapters slightly heavier (envelope translation) | ✅ Chosen |
 
 **Consequences.**
-- `TaskInput.source` enum enumerates all gateway paths (`hermes-telegram`, `hermes-slack`, `hermes-discord`, `hermes-whatsapp`, `hermes-signal`, `hermes-email`, `hermes-cron`, `acp`, `a2a`, `cli`, `api`, `internal`). Adding a new transport means extending this enum and amending w1-contracts, not adding an entry point.
+- `TaskInput.source` enum enumerates all gateway paths (`gateway-telegram`, `gateway-slack`, `gateway-discord`, `gateway-whatsapp`, `gateway-signal`, `gateway-email`, `gateway-cron`, `acp`, `a2a`, `cli`, `api`, `internal`). Adding a new transport means extending this enum and amending w1-contracts, not adding an entry point.
 - `originEnvelope` field carries the reply-routing context opaquely through the Core Loop so gateways can respond without re-parsing.
 - Interrupt-and-redirect (H5) is *not* a second entry point. It is an evidence-delta Perceive re-run against the in-flight task (honoring the crash-safety fence in w1-contracts §4).
 - ACP adapter (W5) is gateway-only. Internal A2A peer comms stay on ECP — we do not let an external protocol set confidence on internal records (clamp rule, w1-contracts §1).

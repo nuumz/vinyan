@@ -14,8 +14,16 @@ import { migration001 } from './001_initial_schema.ts';
 import { migration003 } from './003_memory_records.ts';
 import { migration004 } from './004_skill_artifact.ts';
 import { migration005 } from './005_trajectory_export.ts';
+import { migration006 } from './006_gateway_tables.ts';
 import { migration007 } from './007_plugin_audit.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
-export const ALL_MIGRATIONS: Migration[] = [migration001, migration003, migration004, migration005, migration007];
+export const ALL_MIGRATIONS: Migration[] = [
+  migration001,
+  migration003,
+  migration004,
+  migration005,
+  migration006,
+  migration007,
+];

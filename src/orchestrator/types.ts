@@ -373,8 +373,8 @@ export interface SemanticTaskUnderstanding extends TaskUnderstanding {
 /**
  * Task source — the transport / entry point that produced this task.
  *
- * The `hermes-*` variants, `acp`, and `internal` are reserved for future
- * surfaces (Hermes gateway, ACP adapter, internal delegations) that enter
+ * The `gateway-*` variants, `acp`, and `internal` are reserved for future
+ * surfaces (messaging gateway, ACP adapter, internal delegations) that enter
  * `executeTask` from outside the current CLI/API/MCP/A2A set. See
  * `docs/spec/w1-contracts.md` §4.
  */
@@ -383,13 +383,13 @@ export type TaskSource =
   | 'api'
   | 'mcp'
   | 'a2a'
-  | 'hermes-telegram'
-  | 'hermes-slack'
-  | 'hermes-discord'
-  | 'hermes-whatsapp'
-  | 'hermes-signal'
-  | 'hermes-email'
-  | 'hermes-cron'
+  | 'gateway-telegram'
+  | 'gateway-slack'
+  | 'gateway-discord'
+  | 'gateway-whatsapp'
+  | 'gateway-signal'
+  | 'gateway-email'
+  | 'gateway-cron'
   | 'acp'
   | 'internal';
 
@@ -454,7 +454,7 @@ export interface TaskInput {
   priority?: 'normal' | 'high' | 'background';
   /**
    * Transport-preserved envelope for reply routing by the gateway that
-   * produced this task (e.g. Hermes message metadata, ACP message id).
+   * produced this task (e.g. Gateway message metadata, ACP message id).
    * Opaque to the core loop — stored and echoed back on completion.
    */
   originEnvelope?: unknown;

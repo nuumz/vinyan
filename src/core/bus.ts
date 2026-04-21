@@ -989,6 +989,19 @@ export interface VinyanBusEvents {
     reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
     score: number;
   };
+  /**
+   * Gateway inbound (W2 H1). A messaging adapter received a message
+   * and published it onto the bus via `GatewayAdapterContext.publishInbound`.
+   * The Gateway dispatcher (separate track) subscribes here and turns the
+   * envelope into a `TaskInput` for `executeTask` — adapters never call
+   * `executeTask` directly (A3, A6, D21).
+   *
+   * Field is the minimal envelope shape owned by `src/gateway/types.ts`
+   * (kept structural to avoid import cycles from bus.ts).
+   */
+  'gateway:inbound': {
+    envelope: import('../gateway/types.ts').GatewayInboundEnvelopeMinimal;
+  };
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

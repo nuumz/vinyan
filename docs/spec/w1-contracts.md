@@ -1,6 +1,6 @@
 # W1 Shared Contracts — Frozen for Parallel Implementation
 
-> Status: **FROZEN** at 2026-04-21. Consumers: Hermes Gateway, MemoryProvider,
+> Status: **FROZEN** at 2026-04-21. Consumers: Messaging Gateway, MemoryProvider,
 > Skills Hub, Trajectory Export, Profile Resolver, Observable Routing UI,
 > ACP Adapter, WorkerBackend abstraction.
 >
@@ -77,7 +77,7 @@ migrations into `001_initial_schema.ts`.
 | `003_memory_records.ts` | PR #2 MemoryProvider | `memory_records` table + FTS5 virtual table `memory_records_fts`. Columns include `profile TEXT NOT NULL DEFAULT 'default'`. |
 | `004_skill_artifact.ts` | PR #3 Skills SKILL.md | Add columns to `cached_skills`: `confidence_tier`, `skill_md_path`, `content_hash`, `expected_error_reduction`, `backtest_id`, `quarantined_at`. |
 | `005_trajectory_export.ts` | PR #4 Trajectory Exporter | `trajectory_exports` table (manifest pointer only; artifacts live on disk). |
-| `006_hermes_tables.ts` | W2 Hermes Gateway | `hermes_schedules`, `hermes_identity`, `hermes_pairing_tokens`. |
+| `006_gateway_tables.ts` | W2 Messaging Gateway | `gateway_schedules`, `gateway_identity`, `gateway_pairing_tokens`. |
 | `007_plugin_audit.ts` | W2 Plugin Registry | `plugin_audit` (load/verify/activate/deactivate events). |
 
 Agents adding migrations beyond this range must amend this table first.
@@ -126,9 +126,9 @@ interface TaskInput {
   goal: string;
   constraints?: Record<string, unknown>;
   targetFiles?: string[];
-  source: 'cli' | 'api' | 'hermes-telegram' | 'hermes-slack'
-        | 'hermes-discord' | 'hermes-whatsapp' | 'hermes-signal'
-        | 'hermes-email' | 'hermes-cron' | 'acp' | 'a2a' | 'internal';
+  source: 'cli' | 'api' | 'gateway-telegram' | 'gateway-slack'
+        | 'gateway-discord' | 'gateway-whatsapp' | 'gateway-signal'
+        | 'gateway-email' | 'gateway-cron' | 'acp' | 'a2a' | 'internal';
   profile?: string;                  // INTERMEDIATE-OPTIONAL — see §9.A1;
                                      // defaults to 'default' at core-loop entry
   sessionId?: string;

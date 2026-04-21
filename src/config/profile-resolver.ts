@@ -2,7 +2,7 @@
  * Profile Resolver — W1 PR #1
  *
  * Filesystem + config layer for per-profile state isolation. Mirrors
- * Hermes Agent's `hermes -p <name>` model: each profile owns an
+ * Hermes Agent (Nous Research)'s `hermes -p <name>` model: each profile owns an
  * independent HOME, config, memory, sessions, budget, trust, PID file.
  *
  * Resolution priority (first match wins):
@@ -35,7 +35,7 @@ const PROFILE_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 /** Directory permissions for profile state (owner rwx, group/other nothing). */
 const PROFILE_DIR_MODE = 0o700;
 
-/** Secrets dir is extra strict — matches Hermes' `secrets/` convention. */
+/** Secrets dir is extra strict — matches the `secrets/` convention. */
 const SECRETS_DIR_MODE = 0o700;
 
 /**

@@ -87,7 +87,7 @@ type Phase = 'startup' | 'steady' | 'shutting_down';
  * `profile` is the already-resolved profile name (flag > env > 'default').
  * Forwarded into the API server so inbound requests that don't supply
  * their own profile header/body default to this one — matching
- * `hermes serve -p <name>` semantics.
+ * `vinyan serve -p <name>` semantics.
  */
 export interface ServeOptions {
   profile?: string;

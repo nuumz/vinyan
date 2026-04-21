@@ -532,6 +532,113 @@ const ProfilesConfigSchema = z
 
 export type ProfilesConfig = z.infer<typeof ProfilesConfigSchema>;
 
+// ─── Plugins config (W2 — PluginRegistry / MemoryProvider / Skill tools) ─
+
+/**
+ * Opt-in activation of the W2 plugin infrastructure: the PluginRegistry
+ * build, DefaultMemoryProvider registration, SKILL.md tools, and
+ * auto-activation of messaging adapters.
+ *
+ * Default master switch is OFF so existing deployments (and tests) see
+ * byte-for-byte identical factory behavior. Enabling this block is
+ * additive: it adds a `pluginRegistry` + `messagingLifecycle` + collected
+ * `pluginWarnings` on the orchestrator return value, but never replaces
+ * any existing component. See docs/spec/w1-contracts.md §5 + §9.A2.
+ */
+const PluginsConfigSchema = z
+  .object({
+    /** Master switch. Default OFF to preserve existing test behavior. */
+    enabled: z.boolean().default(false),
+    /** Permissive mode loads unsigned external plugins (demoted to 'speculative'). */
+    permissive: z.boolean().default(false),
+    /** Paths for discovery in addition to CWD / $VINYAN_HOME defaults. */
+    extraDiscoveryPaths: z.array(z.string()).default([]),
+    /** Memory provider activation. When false, registry still boots but memory is not activated. */
+    activateMemory: z.boolean().default(true),
+    /** Register and expose the three SKILL.md tools. */
+    registerSkillTools: z.boolean().default(true),
+    /** Activate each discovered messaging-adapter plugin at factory boot. */
+    autoActivateMessagingAdapters: z.boolean().default(false),
+  })
+  .default(() => ({
+    enabled: false,
+    permissive: false,
+    extraDiscoveryPaths: [],
+    activateMemory: true,
+    registerSkillTools: true,
+    autoActivateMessagingAdapters: false,
+  }));
+
+export type PluginsConfig = z.infer<typeof PluginsConfigSchema>;
+
+// ─── Gateway config (messaging gateway — telegram, later slack/discord) ─
+
+/**
+ * Messaging gateway configuration. Opt-in — the gateway only activates
+ * when `gateway.enabled === true` AND `plugins.enabled === true` (the adapter
+ * registry lives in the plugin subsystem).
+ *
+ * Rendered as a sibling of `plugins` rather than a sub-block so operators can
+ * keep the gateway toggles next to API keys in their config files — gateway
+ * lifecycle is tied to runtime messaging, not to plugin discovery per se.
+ */
+const GatewayConfigSchema = z
+  .object({
+    /** Master switch for the messaging gateway. Default OFF. */
+    enabled: z.boolean().default(false),
+    /** Telegram adapter (bundled). */
+    telegram: z
+      .object({
+        enabled: z.boolean().default(false),
+        /**
+         * Bot token. MAY be omitted in the config file and instead placed in
+         * `$VINYAN_HOME/profiles/<profile>/secrets/telegram.token` — the
+         * loader that inflates this config picks the file up when the field
+         * is missing. When both are absent, Gateway logs a warning and skips
+         * Telegram adapter activation (the rest of the gateway still boots).
+         */
+        botToken: z.string().optional(),
+        /** Optional allowlist of Telegram chat IDs — empty = accept all. */
+        allowedChats: z.array(z.string()).default([]),
+        /** Long-poll timeout in seconds (Telegram's `timeout` parameter). */
+        pollTimeoutSec: z.number().int().positive().default(30),
+      })
+      .default(() => ({ enabled: false, allowedChats: [], pollTimeoutSec: 30 })),
+    /**
+     * Per-trust-tier token-bucket rate limits. Falls back to the defaults
+     * baked into `GatewayRateLimiter` when absent. See
+     * src/gateway/security/rate-limiter.ts for the defaults.
+     */
+    rateLimit: z
+      .object({
+        paired: z
+          .object({
+            capacity: z.number().int().positive().default(20),
+            refillPerSec: z
+              .number()
+              .positive()
+              .default(20 / 60),
+          })
+          .optional(),
+        unpaired: z
+          .object({
+            capacity: z.number().int().positive().default(3),
+            refillPerSec: z
+              .number()
+              .positive()
+              .default(3 / 60),
+          })
+          .optional(),
+      })
+      .optional(),
+  })
+  .default(() => ({
+    enabled: false,
+    telegram: { enabled: false, allowedChats: [], pollTimeoutSec: 30 },
+  }));
+
+export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
+
 // ─── Root schema ─────────────────────────────────────────────────────
 
 export const VinyanConfigSchema = z.object({
@@ -632,6 +739,20 @@ export const VinyanConfigSchema = z.object({
    * configures cross-profile read policy.
    */
   profiles: ProfilesConfigSchema.optional(),
+  /**
+   * Plugins (W2 PluginRegistry + MemoryProvider + Skill tools). Opt-in;
+   * master `enabled` flag is OFF by default so existing deployments are
+   * bit-for-bit identical until the operator flips it on. See
+   * docs/spec/w1-contracts.md §5.
+   */
+  plugins: PluginsConfigSchema.optional(),
+  /**
+   * Messaging gateway (Telegram today; Slack/Discord later). Opt-in;
+   * requires `plugins.enabled === true` as well, since adapters ride the
+   * plugin registry. Disabled by default so existing deployments are not
+   * affected until the operator flips both switches.
+   */
+  gateway: GatewayConfigSchema.optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

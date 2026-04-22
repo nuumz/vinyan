@@ -59,3 +59,53 @@ export {
   type TelegramUser,
   type SendMessageOptions,
 } from './adapters/telegram-api.ts';
+
+// Slack adapter + API wrapper
+export { SlackAdapter, type SlackAdapterOptions, splitForSlack } from './adapters/slack.ts';
+export {
+  SlackApi,
+  SlackApiError,
+  mapSlackChannelKind,
+  type SlackApiOptions,
+  type SlackConnectionsOpenResult,
+  type SlackPostMessageResult,
+  type SlackSocketEnvelope,
+  type SlackEvent,
+  type SlackWebSocketLike,
+  type SlackWebSocketCtor,
+} from './adapters/slack-api.ts';
+
+// Discord adapter + API wrapper
+export { DiscordAdapter, type DiscordAdapterOptions, splitForDiscord } from './adapters/discord.ts';
+export {
+  DiscordApi,
+  DiscordApiError,
+  DISCORD_INTENT_BITS,
+  computeIntents,
+  type DiscordApiOptions,
+  type DiscordMessageResult,
+  type DiscordGatewayPayload,
+  type DiscordMessageCreateData,
+  type DiscordWebSocketLike,
+  type DiscordWebSocketCtor,
+} from './adapters/discord-api.ts';
+
+// Bundled registration helpers
+export {
+  registerTelegramAdapter,
+  buildTelegramManifest,
+  type RegisterTelegramAdapterOptions,
+  type RegisterTelegramAdapterResult,
+} from './register-telegram.ts';
+export {
+  registerSlackAdapter,
+  buildSlackManifest,
+  type RegisterSlackAdapterOptions,
+  type RegisterSlackAdapterResult,
+} from './register-slack.ts';
+export {
+  registerDiscordAdapter,
+  buildDiscordManifest,
+  type RegisterDiscordAdapterOptions,
+  type RegisterDiscordAdapterResult,
+} from './register-discord.ts';

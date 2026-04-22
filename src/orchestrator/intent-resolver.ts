@@ -157,6 +157,44 @@ export function intentResolverCacheSize(): number {
 // and imported at the top of this file. Re-exported for backward compat.
 export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStrategy };
 
+// ---------------------------------------------------------------------------
+// W3 H3 — schedule pre-classifier (add-only, does not touch existing strategies).
+//
+// A pre-filter: when the input text matches a small scheduling grammar AND is
+// NOT a code-mutation task, we return `{ strategy: 'schedule', scheduleText }`.
+// Callers (follow-up PR wires this into the orchestrator) dispatch this to
+// `interpretSchedule()` instead of the normal pipeline. When the input does
+// not match, the classifier returns `null` and the caller runs `resolveIntent`
+// as before — existing behaviour is unchanged.
+// ---------------------------------------------------------------------------
+
+/** Strategy emitted by the NL-cron pre-classifier. Kept local to preserve the frozen `ExecutionStrategy` union. */
+export interface ScheduleStrategyClassification {
+  readonly strategy: 'schedule';
+  readonly scheduleText: string;
+}
+
+const SCHEDULE_TRIGGER_RE =
+  /\b(every\b|daily\b|weekly\b|at\s+\d|on\s+(mon|tue|wed|thu|fri|sat|sun|weekday|weekend))/i;
+
+/**
+ * Return `{ strategy: 'schedule', scheduleText }` when `text` matches the NL
+ * scheduling grammar, `null` otherwise. Code-mutation hints (presence of
+ * `targetFiles` or a domain of `code-mutation` in the supplied STU) suppress
+ * the match so a scheduled-code-change reading (rare) does not swallow a
+ * real code-mutation request.
+ */
+export function classifyScheduleStrategy(
+  input: Pick<TaskInput, 'goal' | 'targetFiles'>,
+  understanding?: SemanticTaskUnderstanding,
+): ScheduleStrategyClassification | null {
+  const text = input.goal;
+  if (!text || !SCHEDULE_TRIGGER_RE.test(text)) return null;
+  if (input.targetFiles && input.targetFiles.length > 0) return null;
+  if (understanding?.taskDomain === 'code-mutation') return null;
+  return { strategy: 'schedule', scheduleText: text };
+}
+
 // Commit D4: buildClarificationRequest / formatConversationContext /
 // formatAgentCatalog / resolveSelectedAgent moved to
 // `src/orchestrator/intent/formatters.ts` and imported at the top.

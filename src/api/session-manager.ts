@@ -9,13 +9,8 @@
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
-import type {
-  ContentBlock,
-  TaskInput,
-  TaskResult,
-  Turn,
-  TurnTokenCount,
-} from '../orchestrator/types.ts';
+import type { ContentBlock, TaskInput, TaskResult, Turn, TurnTokenCount } from '../orchestrator/types.ts';
+import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
 // Merge note: `classifyTurn` / `TurnImportance` from `./turn-importance.ts`
 // were consumed by the Phase 1 priority-weighted compaction. A7 moved
 // compaction to `src/memory/summary-ladder.ts`, so these imports are
@@ -58,6 +53,15 @@ export class SessionManager {
     private retriever?: ContextRetriever,
   ) {}
 
+  /**
+   * P3 USER.md dialectic hook. Optional — the factory-wiring coordinator pass
+   * installs this after SessionManager is constructed (see
+   * `src/orchestrator/user-context/wiring.ts`). When set, `recordUserTurn`
+   * feeds each user turn through the observer so deltas are ledgered for the
+   * rolling dialectic rule. Never required; its absence degrades silently.
+   */
+  private userMdObserver?: UserMdObserver;
+
   /** Accessor for direct DB queries (e.g. keyword extraction for user-context mining). */
   getSessionStore(): SessionStore {
     return this.sessionStore;
@@ -66,6 +70,15 @@ export class SessionManager {
   /** Plan commit E4: accessor so core-loop can pull the retriever without re-plumbing. */
   getContextRetriever(): ContextRetriever | undefined {
     return this.retriever;
+  }
+
+  /**
+   * Factory-wiring hook for the P3 USER.md dialectic. Called once after
+   * construction by the coordinator pass (intentionally NOT a constructor
+   * parameter so the factory can stay lean). Passing `undefined` clears it.
+   */
+  setUserMdObserver(observer: UserMdObserver | undefined): void {
+    this.userMdObserver = observer;
   }
 
   create(source: string): Session {
@@ -276,6 +289,16 @@ export class SessionManager {
     // degrades to recency-only retrieval; the conversation turn itself is
     // already persisted above.
     this.indexTurnAsync(persisted);
+    // P3 USER.md dialectic: ledger observed-vs-predicted delta per section.
+    // Best-effort — never blocks turn processing (A3).
+    const observer = this.userMdObserver;
+    if (observer) {
+      try {
+        observer.observeTurn({ turnId: persisted.id, userText: content, ts: now });
+      } catch (err) {
+        console.warn(`[vinyan] SessionManager.userMdObserver.observeTurn failed: ${String(err)}`);
+      }
+    }
   }
 
   /**
@@ -424,8 +447,7 @@ export class SessionManager {
       const t = turns[i]!;
       if (t.role === 'user') {
         const prev = i > 0 ? turns[i - 1] : null;
-        const isClarificationReply =
-          prev?.role === 'assistant' && turnText(prev).includes('[INPUT-REQUIRED]');
+        const isClarificationReply = prev?.role === 'assistant' && turnText(prev).includes('[INPUT-REQUIRED]');
         if (!isClarificationReply) return turnText(t);
         // skip this reply and the clarification that triggered it
         i -= 2;
@@ -486,7 +508,10 @@ export class SessionManager {
    * drop-marker ideas can be ported onto that module in a follow-up
    * without re-introducing a ConversationEntry dependency here.
    */
-  getConversationHistoryText(sessionId: string, maxTurns = 1000): Array<{
+  getConversationHistoryText(
+    sessionId: string,
+    maxTurns = 1000,
+  ): Array<{
     role: 'user' | 'assistant';
     content: string;
     taskId: string;

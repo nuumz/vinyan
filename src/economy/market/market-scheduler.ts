@@ -17,18 +17,81 @@ import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } f
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
 
+/**
+ * Log a tick-hook failure without crashing the loop (A6). Uses `console.warn`
+ * intentionally — MarketScheduler has no injected logger today, and adding
+ * one purely for this path would balloon the contract. The bus does not
+ * carry a `market:tick_hook_failed` event in the current EventMap.
+ */
+function logTickHookFailure(err: unknown): void {
+  // eslint-disable-next-line no-console
+  console.warn('[market-scheduler] tick hook threw', {
+    err: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export class MarketScheduler {
   private config: MarketConfig;
   private accuracyTracker: BidAccuracyTracker;
   private phaseState: MarketPhaseState;
   private bus: VinyanBus | undefined;
   private auctionHistory: Array<{ bidSpread: number }> = [];
+  /**
+   * Tick hooks registered via {@link registerTickHook}. Invoked on every
+   * {@link tick} call after the scheduler's own work completes. See
+   * `docs/spec/w1-contracts.md` §9.A3.
+   */
+  private tickHooks: Array<() => void | Promise<void>> = [];
 
   constructor(config: MarketConfig, bus?: VinyanBus) {
     this.config = config;
     this.accuracyTracker = new BidAccuracyTracker();
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
+  }
+
+  /**
+   * Register a callback fired on every {@link tick}. Hooks run AFTER the
+   * scheduler's own tick work; exceptions are logged but do not break the
+   * loop (A6 — hooks cannot DoS the market).
+   *
+   * Returns an unsubscribe function that removes the hook when called.
+   * Contract: w1-contracts §9.A3.
+   */
+  registerTickHook(fn: () => void | Promise<void>): () => void {
+    this.tickHooks.push(fn);
+    return () => {
+      const idx = this.tickHooks.indexOf(fn);
+      if (idx >= 0) this.tickHooks.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Drive a single tick. The scheduler itself currently has no internal
+   * per-tick work (phase transitions are evaluated via
+   * {@link evaluatePhase}); the hook invocation loop exists so external
+   * consumers (e.g. `ScheduleRunner`) can piggyback on the scheduler's
+   * clock rather than spinning a parallel timer. A3-aligned single clock.
+   *
+   * A failing hook is logged via the bus and isolated — subsequent hooks
+   * still run. A misbehaving hook cannot crash the loop (A6).
+   */
+  tick(): void {
+    // Snapshot to defend against hooks mutating the array mid-iteration
+    // (e.g., a hook that unsubscribes itself).
+    const hooks = [...this.tickHooks];
+    for (const hook of hooks) {
+      try {
+        const r = hook();
+        if (r instanceof Promise) {
+          r.catch((err) => {
+            logTickHookFailure(err);
+          });
+        }
+      } catch (err) {
+        logTickHookFailure(err);
+      }
+    }
   }
 
   /** Check if market is active (Phase B+). */

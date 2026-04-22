@@ -265,6 +265,14 @@ const OrchestratorConfigSchema = z.object({
   skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
   /** Wave 6: Workflow registry (metadata surface). Default ON. */
   workflowRegistry: WorkflowRegistryConfigSchema.default(() => defaults(WorkflowRegistryConfigSchema)),
+  /**
+   * W3 P3: opt-in delegation of L0 dispatch through the new WorkerBackend
+   * abstraction (src/runtime). Default OFF so the 1996-test baseline is
+   * bit-exact. When ON and a BackendSelector is wired into WorkerPoolImpl,
+   * L0 tasks run through LocalInprocBackend; L1+ stays on the legacy path
+   * until the follow-up migration.
+   */
+  useBackendAbstraction: z.boolean().default(false),
 });
 
 // ─── Fleet Governance schema ────────────────────────────────────────
@@ -604,6 +612,39 @@ const GatewayConfigSchema = z
         pollTimeoutSec: z.number().int().positive().default(30),
       })
       .default(() => ({ enabled: false, allowedChats: [], pollTimeoutSec: 30 })),
+    /** Slack adapter (bundled) — Socket Mode (WebSocket, no inbound HTTP). */
+    slack: z
+      .object({
+        enabled: z.boolean().default(false),
+        /** App-level token (`xapp-…`) used to open Socket Mode connections. */
+        appToken: z.string().optional(),
+        /** Bot token (`xoxb-…`) used for `chat.postMessage`. */
+        botToken: z.string().optional(),
+        /** Optional allowlist of Slack channel IDs — empty = accept all. */
+        allowedChannels: z.array(z.string()).default([]),
+      })
+      .default(() => ({ enabled: false, allowedChannels: [] })),
+    /** Discord adapter (bundled) — Gateway v10 with intents. */
+    discord: z
+      .object({
+        enabled: z.boolean().default(false),
+        /** Bot token (used with `Authorization: Bot …`). */
+        botToken: z.string().optional(),
+        /**
+         * Gateway intents — names from Discord's docs. Defaults cover the
+         * MVP message-only scope.
+         */
+        intents: z
+          .array(z.string())
+          .default(['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES']),
+        /** Optional allowlist of Discord guild IDs — empty = accept all. */
+        allowedGuilds: z.array(z.string()).default([]),
+      })
+      .default(() => ({
+        enabled: false,
+        intents: ['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES'],
+        allowedGuilds: [],
+      })),
     /**
      * Per-trust-tier token-bucket rate limits. Falls back to the defaults
      * baked into `GatewayRateLimiter` when absent. See
@@ -635,6 +676,12 @@ const GatewayConfigSchema = z
   .default(() => ({
     enabled: false,
     telegram: { enabled: false, allowedChats: [], pollTimeoutSec: 30 },
+    slack: { enabled: false, allowedChannels: [] },
+    discord: {
+      enabled: false,
+      intents: ['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES'],
+      allowedGuilds: [],
+    },
   }));
 
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;

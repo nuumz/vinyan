@@ -100,6 +100,15 @@ export interface WorkerPoolConfig {
    * manager there is no ecosystem visibility of runtime occupancy.
    */
   runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
+  /**
+   * W3 P3 WorkerBackend abstraction — MVP opt-in delegation.
+   * When `useBackendAbstraction` is true AND `backendSelector` is present,
+   * L0 dispatch routes through the abstraction (LocalInprocBackend) instead
+   * of the inlined empty-result path. L1+ stays on the legacy path for MVP.
+   * Both flags default OFF so existing callers and tests are untouched.
+   */
+  useBackendAbstraction?: boolean;
+  backendSelector?: import('../../runtime/backend-selector.ts').BackendSelector;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -353,6 +362,9 @@ export class WorkerPoolImpl implements WorkerPool {
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
   private streamingEnabled: boolean;
   private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
+  /** W3 P3: opt-in backend-abstraction delegation (MVP: L0 only). */
+  private useBackendAbstraction: boolean;
+  private backendSelector?: import('../../runtime/backend-selector.ts').BackendSelector;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -382,6 +394,8 @@ export class WorkerPoolImpl implements WorkerPool {
     this.agentContextBuilder = config.agentContextBuilder;
     this.soulStore = config.soulStore;
     this.runtimeStateManager = config.runtimeStateManager;
+    this.useBackendAbstraction = config.useBackendAbstraction ?? false;
+    this.backendSelector = config.backendSelector;
   }
 
   /**
@@ -463,6 +477,14 @@ export class WorkerPoolImpl implements WorkerPool {
 
     // L0: no LLM needed
     if (routing.level === 0) {
+      // W3 P3: opt-in delegation through the WorkerBackend abstraction.
+      // When the feature flag is on AND a selector is wired, L0 routes
+      // through LocalInprocBackend. The return shape stays bit-exact with
+      // the legacy empty-output path so no downstream consumer observes
+      // a difference. All other levels remain on the legacy path for MVP.
+      if (this.useBackendAbstraction && this.backendSelector) {
+        return await this.dispatchL0ViaBackend(input, startTime);
+      }
       return {
         mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
         proposedToolCalls: [] as import('../types.ts').ToolCall[],
@@ -528,6 +550,54 @@ export class WorkerPoolImpl implements WorkerPool {
     } finally {
       releaseRuntime();
     }
+  }
+
+  /**
+   * W3 P3 MVP: L0 dispatch via the WorkerBackend abstraction. Shape-equivalent
+   * to the legacy empty-output path — L0 is the "no LLM needed" tier, so the
+   * backend is invoked purely to exercise the abstraction (spawn → teardown).
+   * Selector errors degrade gracefully to the legacy return shape so flipping
+   * the flag on cannot break dispatch.
+   */
+  private async dispatchL0ViaBackend(
+    input: TaskInput,
+    startTime: number,
+  ): Promise<{
+    mutations: Array<{ file: string; content: string; diff: string; explanation: string }>;
+    proposedToolCalls: import('../types.ts').ToolCall[];
+    tokensConsumed: number;
+    durationMs: number;
+  }> {
+    const selector = this.backendSelector!;
+    try {
+      const backend = selector.select(0);
+      const handle = await backend.spawn({
+        taskId: input.id,
+        routingLevel: 0,
+        workspace: { host: this.workspace, readonly: true },
+        networkPolicy: 'deny-all',
+        resourceLimits: { cpuMs: 0, memMB: 0, fdMax: 0 },
+        log: () => {},
+      });
+      try {
+        // L0 inputs have no prompt to send — the backend is merely a
+        // lifecycle pass-through. Budget stays zero so inproc.execute
+        // returns deterministically with tokensUsed = 0.
+        await backend.execute(handle, { taskId: input.id, prompt: '' });
+      } finally {
+        await backend.teardown(handle);
+      }
+    } catch {
+      // Selector / backend failure must never break L0 — fall through to
+      // the legacy empty result. The abstraction is an opt-in observability
+      // lens for MVP, not a required dependency.
+    }
+    return {
+      mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
+      proposedToolCalls: [] as import('../types.ts').ToolCall[],
+      tokensConsumed: 0,
+      durationMs: Math.round(performance.now() - startTime),
+    };
   }
 
   async withSessionLimit<T>(level: number, fn: () => Promise<T>): Promise<T> {

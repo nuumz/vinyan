@@ -65,6 +65,33 @@ function writeConfig(enabled: boolean): void {
   );
 }
 
+function writeConfigWithGateway(): void {
+  writeFileSync(
+    join(tempDir, 'vinyan.json'),
+    JSON.stringify({
+      oracles: {
+        type: { enabled: false },
+        dep: { enabled: false },
+        ast: { enabled: false },
+        test: { enabled: false },
+        lint: { enabled: false },
+      },
+      plugins: {
+        enabled: true,
+        activateMemory: false,
+        registerSkillTools: false,
+        autoActivateMessagingAdapters: false,
+        permissive: false,
+        extraDiscoveryPaths: [],
+      },
+      // Telegram sub-block OFF so we don't need to mock fetch — we're only
+      // asserting that the dispatcher is built and the deferred executeTask
+      // closure is reachable via the bus.
+      gateway: { enabled: true, telegram: { enabled: false, allowedChats: [], pollTimeoutSec: 30 } },
+    }),
+  );
+}
+
 describe('Factory — W2 plugin integration', () => {
   test('flag OFF: orchestrator shape is unchanged (no plugin fields)', async () => {
     writeConfig(false);
@@ -115,6 +142,75 @@ describe('Factory — W2 plugin integration', () => {
       // Also: no spurious warnings about skill tool registration.
       const skillWarnings = (orchestrator.pluginWarnings ?? []).filter((w) => w.includes('skill'));
       expect(skillWarnings).toEqual([]);
+    } finally {
+      await orchestrator.close();
+    }
+  });
+
+  test('gateway enabled: factory threads executeTask closure + config into initializePlugins', async () => {
+    writeConfigWithGateway();
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeRegistry(),
+      useSubprocess: false,
+    });
+    try {
+      const init = await orchestrator.pluginsReady!;
+      // Dispatcher constructed — proves factory passed executeTask through.
+      expect(init.dispatcher).toBeDefined();
+      // No `executeTask not provided` warning (that path would've fired if
+      // the factory forgot to thread the closure).
+      const bad = init.warnings.find((w) => w.includes('executeTask not provided'));
+      expect(bad).toBeUndefined();
+
+      // Stub executeTask on the live orchestrator. The factory's deferred
+      // closure re-reads `orchestrator.executeTask` at dispatch time, so our
+      // replacement is honoured even though it was set AFTER the factory
+      // returned.
+      const calls: string[] = [];
+      orchestrator.executeTask = async (input) => {
+        calls.push(input.source ?? '');
+        return {
+          id: input.id,
+          status: 'completed',
+          response: 'ok',
+          routingLevel: 0,
+          artifacts: [],
+          traceId: 't',
+        } as never;
+      };
+
+      // Emit a paired inbound envelope directly — no adapter running, but
+      // the dispatcher is subscribed to the bus and that's what we want to
+      // verify. The bus event is typed against the structural minimum; the
+      // dispatcher re-parses via Zod so we need the fuller shape. Cast
+      // bridges the declared-narrower-vs-wider gap.
+      orchestrator.bus.emit('gateway:inbound', {
+        envelope: {
+          envelopeId: '00000000-0000-4000-8000-000000000042',
+          platform: 'telegram',
+          profile: 'default',
+          receivedAt: Date.now(),
+          text: 'ping',
+          chat: { id: '1', kind: 'dm' },
+          sender: {
+            platformUserId: 'u-1',
+            displayName: 'T',
+            gatewayUserId: null,
+            trustTier: 'paired',
+          },
+          message: { text: 'ping', attachments: [] },
+          hypothesis: {
+            claim: 'ping',
+            confidence: 'unknown',
+            evidence: [{ kind: 'user-message', hash: 'h' }],
+          },
+        } as never,
+      });
+
+      // Give the dispatcher's async handler a tick.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls).toEqual(['gateway-telegram']);
     } finally {
       await orchestrator.close();
     }

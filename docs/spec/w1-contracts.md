@@ -79,6 +79,8 @@ migrations into `001_initial_schema.ts`.
 | `005_trajectory_export.ts` | PR #4 Trajectory Exporter | `trajectory_exports` table (manifest pointer only; artifacts live on disk). |
 | `006_gateway_tables.ts` | W2 Messaging Gateway | `gateway_schedules`, `gateway_identity`, `gateway_pairing_tokens`. |
 | `007_plugin_audit.ts` | W2 Plugin Registry | `plugin_audit` (load/verify/activate/deactivate events). |
+| `008_skill_trust_ledger.ts` | W3 SK3 Skills Hub import | `skill_trust_ledger` (discover/scan/quarantine/dry-run/critic/promote/demote/reject events per imported skill). |
+| `009_user_md_dialectic.ts` | W3 P3 USER.md dialectic | `user_md_sections` (slug, content, predicted_response, evidence_tier) + `user_md_prediction_errors` (per-section observed vs predicted delta history). |
 
 Agents adding migrations beyond this range must amend this table first.
 
@@ -260,3 +262,41 @@ No silent drift.
 - Rationale: keeping internal providers on the external code path would
   force either synthetic sha256 values (misleading) or weakening the
   integrity check for legitimate external plugins (A6 violation).
+
+### A3 (2026-04-21) — `MarketScheduler.registerTickHook(fn)` for gateway cron
+- Need: H3 NL cron's `ScheduleRunner` needs a tick source to fire due schedules.
+  The intended piggyback surface is the existing `MarketScheduler` tick loop, but
+  that class does not currently expose a public hook API. W3 MVP ships a local-
+  timer fallback (`setInterval`, default 30 s) so the track is usable without
+  blocking on the extension.
+- Proposed addition to `src/economy/market/market-scheduler.ts`:
+  ```ts
+  registerTickHook(fn: () => void | Promise<void>): () => void;
+  ```
+  - Returns an unsubscribe function.
+  - Hook invoked on every tick after the scheduler's own work; exceptions in a
+    hook are logged but don't crash the loop (A6 — hooks can't DoS the market).
+- Final state: `ScheduleRunner` detects the hook via structural typing on its
+  injected `marketScheduler` dep and auto-prefers it over the local timer.
+  Already shaped for it — the upgrade is zero-source-change on the cron side.
+- Rationale: two timer loops racing is wasteful and makes "next fire" ordering
+  non-deterministic across startups; one tick source is A3-aligned.
+
+### A4 (2026-04-21) — Importer gate/critic structural stubs
+- Need: SK3 Skills Hub `SkillImporter` needs to call Oracle Gate + Critic in
+  dry-run mode. The real `runGate(request)` in `src/gate/gate.ts` and
+  `CriticEngine.review(...)` in `src/orchestrator/critic/` expect richer input
+  shapes (`WorkerProposal`, full verdict rollups) than a static SKILL.md body
+  trivially provides.
+- MVP: importer accepts two structural function types (`ImporterGateFn`,
+  `ImporterCriticFn`) as deps. Tests inject fakes; production consumers will
+  need small adapter functions that synthesize a `WorkerProposal` from the
+  skill's Procedure body and map the returned `GateVerdict` / `CriticResult`
+  to the narrower `ImporterGateVerdict` / `ImporterCriticResult` shapes the
+  importer expects.
+- Final state: the adapter functions live next to the factory wiring that
+  connects the importer to the real gate/critic engines (follow-up).
+- Rationale: pinning importer directly against the full gate/critic surface
+  would couple SK3 to two large modules and block parallel work. Structural
+  deps preserve the axiomatic guarantees (A1 — gate still verifies; A3 — rule
+  is still deterministic) while keeping the coupling narrow.

@@ -16,6 +16,8 @@ import { migration004 } from './004_skill_artifact.ts';
 import { migration005 } from './005_trajectory_export.ts';
 import { migration006 } from './006_gateway_tables.ts';
 import { migration007 } from './007_plugin_audit.ts';
+import { migration008 } from './008_skill_trust_ledger.ts';
+import { migration009 } from './009_user_md_dialectic.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -26,4 +28,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration005,
   migration006,
   migration007,
+  migration008,
+  migration009,
 ];

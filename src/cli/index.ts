@@ -59,12 +59,15 @@ Commands:
   logs [--limit N]   Inspect execution traces
 
   economy [sub]      Economy OS: budget, costs, market, trust
-  trajectory <sub>   Export execution traces (ShareGPT-baseline)
+  trajectory <sub>   Export execution traces (ShareGPT or ECP-enriched)
+  routing-explain <task_id>  Explain why a task was routed to Lx (observable routing)
   metrics            Print full system metrics as JSON
   rules              List evolutionary rules
   skills             List cached skills
   patterns           Export/import patterns for cross-project transfer
   memory [sub]       Review agent-proposed memory
+  schedule <sub>     Manage NL-cron schedules (create|list|show|delete)
+  skills import <id> Import a SKILL.md from an external registry (github:… / agentskills:…)
 
   gate               Run oracle gate (JSON on stdin)
   analyze [dir]      Analyze session logs
@@ -228,7 +231,21 @@ if (import.meta.main) {
     }
 
     case 'skills': {
-      await runSkillsCommand(workspacePath);
+      // Sub-subcommand dispatch: `skills import <id>` routes to the W3 SK3
+      // hub importer; everything else falls through to the legacy
+      // single-command `runSkillsCommand` (list cached skills).
+      if (args[1] === 'import') {
+        const { runSkillsImportCommand } = await import('./skills-import.ts');
+        await runSkillsImportCommand(args.slice(2), { profile: resolvedProfile.name });
+      } else {
+        await runSkillsCommand(workspacePath);
+      }
+      break;
+    }
+
+    case 'schedule': {
+      const { runScheduleCommand } = await import('./schedule.ts');
+      await runScheduleCommand(args.slice(1), { profile: resolvedProfile.name });
       break;
     }
 
@@ -262,6 +279,15 @@ if (import.meta.main) {
     case 'trajectory': {
       const { runTrajectoryCommand } = await import('./trajectory.ts');
       await runTrajectoryCommand(args.slice(1), workspacePath);
+      break;
+    }
+
+    case 'routing-explain': {
+      const { runRoutingExplainCommand } = await import('./routing-explain.ts');
+      await runRoutingExplainCommand(args.slice(1), {
+        workspace: workspacePath,
+        profile: resolvedProfile.name,
+      });
       break;
     }
 

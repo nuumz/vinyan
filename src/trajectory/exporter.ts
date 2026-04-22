@@ -24,6 +24,15 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { explainRouting, type RoutingExplanation } from '../gate/routing-explainer.ts';
+import type { RiskFactors, RoutingDecision } from '../orchestrator/types.ts';
+import { toECPEnriched } from './ecp-enriched.ts';
+import {
+  type EcpEnrichedRow,
+  EcpEnrichedRowSchema,
+  type EcpExportManifest,
+  EcpExportManifestSchema,
+} from './ecp-schemas.ts';
 import { applyPolicy, BUILT_IN_POLICY, hashPolicy, loadPolicy, type RedactionPolicy } from './redaction.ts';
 import {
   DATASET_VERSION,
@@ -46,7 +55,7 @@ export interface ExportOptions {
   readonly outcome?: readonly Outcome[];
   readonly minQualityComposite?: number;
   readonly outDir?: string;
-  readonly format?: 'sharegpt';
+  readonly format?: 'sharegpt' | 'ecp';
   readonly dryRun?: boolean;
   /** Explicit policy path; if omitted we try `<vinyanHome>/trajectory-policy.json`. */
   readonly policyPath?: string;
@@ -141,8 +150,8 @@ export interface JoinedTraceRow {
 export async function exportTrajectories(db: Database, opts: ExportOptions): Promise<ExportResult> {
   const started = Date.now();
   const format = opts.format ?? 'sharegpt';
-  if (format !== 'sharegpt') {
-    throw new Error(`Unsupported format: ${format} (MVP supports 'sharegpt' only)`);
+  if (format !== 'sharegpt' && format !== 'ecp') {
+    throw new Error(`Unsupported format: ${format} (supported: 'sharegpt', 'ecp')`);
   }
 
   const vinyanHome = opts.vinyanHome ?? join(process.cwd(), '.vinyan');
@@ -164,15 +173,45 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
     return buildJoinedRow(t, turns);
   });
 
-  const shareRows: ShareGPTRow[] = joinedRows.map((j) => toShareGPT(j, { profile: opts.profile, policy }));
+  let rowCount: number;
+  let jsonl: string;
+  let manifestFormat: 'sharegpt-baseline' | 'ecp-enriched';
 
-  // Validate every row — fail fast if we produced something the schema
-  // rejects, rather than writing a corrupt artifact.
-  for (const row of shareRows) {
-    ShareGPTRowSchema.parse(row);
+  if (format === 'ecp') {
+    // ECP-enriched projector path. Redaction is applied to the serialized
+    // JSONL body BEFORE the gzip/hash step below, which preserves the A4
+    // "bypass = visible manifest diff" invariant without refactoring
+    // redaction.ts (we reuse applyPolicy as the string-level filter).
+    const ecpRows: EcpEnrichedRow[] = joinedRows.map((j) => {
+      const routing = buildRoutingExplanationFor(j);
+      return toECPEnriched(j, routing, {
+        redactionApplied: policy.rules.map((r) => r.kind),
+        redactionPolicyVersion: policy.version,
+      });
+    });
+
+    for (const row of ecpRows) {
+      EcpEnrichedRowSchema.parse(row);
+    }
+
+    // Redact the JSONL text BEFORE hashing (A4). Object traversal isn't
+    // needed — applyPolicy runs on the serialized string.
+    const rawJsonl = ecpRows.map((r) => JSON.stringify(r)).join('\n');
+    jsonl = applyPolicy(rawJsonl, policy);
+    rowCount = ecpRows.length;
+    manifestFormat = 'ecp-enriched';
+  } else {
+    const shareRows: ShareGPTRow[] = joinedRows.map((j) => toShareGPT(j, { profile: opts.profile, policy }));
+    // Validate every row — fail fast if we produced something the schema
+    // rejects, rather than writing a corrupt artifact.
+    for (const row of shareRows) {
+      ShareGPTRowSchema.parse(row);
+    }
+    jsonl = shareRows.map((r) => JSON.stringify(r)).join('\n');
+    rowCount = shareRows.length;
+    manifestFormat = 'sharegpt-baseline';
   }
 
-  const jsonl = shareRows.map((r) => JSON.stringify(r)).join('\n');
   const gzipped = gzipSync(Buffer.from(jsonl, 'utf-8'));
   const sha256 = createHash('sha256').update(gzipped).digest('hex');
 
@@ -184,9 +223,9 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
   };
 
   const datasetId = computeDatasetId({
-    format: 'sharegpt-baseline',
+    format: manifestFormat,
     filter,
-    rowCount: shareRows.length,
+    rowCount,
     redactionPolicyHash: policyHash,
   });
 
@@ -195,9 +234,8 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
   const manifestPath = join(outDir, 'manifest.json');
   const policySnapshotPath = join(outDir, 'redaction-policy.json');
 
-  const manifest: ExportManifest = {
-    format: 'sharegpt-baseline',
-    schema_version: 'v1',
+  const manifestBody = {
+    schema_version: 'v1' as const,
     dataset_id: datasetId,
     filter: {
       profile: opts.profile,
@@ -205,15 +243,24 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
       outcome: opts.outcome ? [...opts.outcome] : undefined,
       minQualityComposite: opts.minQualityComposite ?? null,
     },
-    rowCount: shareRows.length,
+    rowCount,
     sha256,
     redactionPolicyVersion: policy.version,
     redactionPolicyHash: policyHash,
     createdAt: Date.now(),
-    sourceTables: ['execution_traces', 'session_turns'],
+    sourceTables:
+      format === 'ecp'
+        ? ['execution_traces', 'session_turns', 'prediction_ledger', 'prediction_outcomes', 'oracle_accuracy']
+        : ['execution_traces', 'session_turns'],
     ...(opts.vinyanGitSha ? { vinyanGitSha: opts.vinyanGitSha } : {}),
   };
-  ExportManifestSchema.parse(manifest);
+
+  let manifest: ExportManifest | EcpExportManifest;
+  if (format === 'ecp') {
+    manifest = EcpExportManifestSchema.parse({ format: 'ecp-enriched', ...manifestBody });
+  } else {
+    manifest = ExportManifestSchema.parse({ format: 'sharegpt-baseline', ...manifestBody });
+  }
 
   const dryRun = opts.dryRun ?? false;
 
@@ -235,13 +282,13 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
         [
           datasetId,
           opts.profile,
-          'sharegpt-baseline',
+          manifestFormat,
           'v1',
           manifestPath,
           artifactPath,
           sha256,
           policyHash,
-          shareRows.length,
+          rowCount,
           manifest.createdAt,
           JSON.stringify(manifest.filter),
         ],
@@ -255,13 +302,50 @@ export async function exportTrajectories(db: Database, opts: ExportOptions): Pro
   return {
     manifestPath,
     artifactPath,
-    rowCount: shareRows.length,
+    rowCount,
     bytes: gzipped.byteLength,
     durationMs: Date.now() - started,
     datasetId,
     sha256,
     dryRun,
   };
+}
+
+/**
+ * Build a RoutingExplanation for a JoinedTraceRow from what we have in the
+ * trace row. We have `routing_level` and `risk_score` persisted — we
+ * reconstruct a minimal `RoutingDecision` + neutral `RiskFactors` so the
+ * explainer produces a stable, deterministic payload. If more routing
+ * detail gets persisted on execution_traces in a future migration, replace
+ * this shim with a direct DB read.
+ */
+function buildRoutingExplanationFor(joined: JoinedTraceRow): RoutingExplanation {
+  const { trace } = joined;
+  const level = clampRoutingLevel(trace.routing_level);
+  const decision: RoutingDecision = {
+    level,
+    model: trace.model_used,
+    budgetTokens: 0,
+    latencyBudgetMs: 0,
+    riskScore: trace.risk_score ?? undefined,
+  };
+  // Neutral factors — we do not have per-trace factor persistence yet.
+  // The explainer handles zero-factor input gracefully (summary falls back
+  // to "no significant risk factors detected").
+  const factors: RiskFactors = {
+    blastRadius: 0,
+    dependencyDepth: 0,
+    testCoverage: 1.0,
+    fileVolatility: 0,
+    irreversibility: 0,
+    hasSecurityImplication: false,
+    environmentType: 'development',
+  };
+  return explainRouting({
+    taskId: trace.task_id,
+    decision,
+    factors,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -491,7 +575,7 @@ function clampRoutingLevel(n: number): 0 | 1 | 2 | 3 {
 // ─────────────────────────────────────────────────────────────────────────
 
 interface DatasetIdInput {
-  format: 'sharegpt-baseline';
+  format: 'sharegpt-baseline' | 'ecp-enriched';
   filter: {
     profile?: string;
     sinceMs: number | null;

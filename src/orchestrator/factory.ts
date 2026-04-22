@@ -73,8 +73,13 @@ import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
 import { RoomDispatcher } from './room/room-dispatcher.ts';
 import { runAgentLoop } from './agent/agent-loop.ts';
 import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
+import {
+  type ScheduleRunnerHandle,
+  setupScheduleRunner,
+} from '../gateway/scheduling/wiring.ts';
 import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
+import { setupUserMdObserver } from './user-context/wiring.ts';
 import {
   FailureClusterDetector,
   type FailureCluster,
@@ -897,6 +902,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let messagingLifecycle: MessagingAdapterLifecycleManager | undefined;
   let pluginWarnings: readonly string[] = [];
   let pluginsReady: Promise<PluginInitResult> | undefined;
+  // W3 H3: NL-cron runner. Constructed once plugins resolve (needs lifecycle
+  // for reply routing). Fires scheduled tasks through the same executeTask
+  // converger — governance stays identical (A3).
+  let scheduleRunnerHandle: ScheduleRunnerHandle | undefined;
+  // Deferred executeTask holder — the gateway dispatcher needs a closure that
+  // reaches the orchestrator's `executeTask`, but the orchestrator object
+  // isn't built until much later in this function. We close over a mutable
+  // slot and fill it synchronously immediately after the orchestrator is
+  // constructed (before any adapter's `startAll()` can fire). A dispatch
+  // arriving before wiring completes throws — a bug, not a race, so loud is
+  // correct.
+  let orchestratorExecuteTask: ((input: TaskInput) => Promise<TaskResult>) | null = null;
+  const deferredExecuteTask = async (input: TaskInput): Promise<TaskResult> => {
+    if (!orchestratorExecuteTask) {
+      throw new Error('gateway dispatcher invoked executeTask before orchestrator ready');
+    }
+    return orchestratorExecuteTask(input);
+  };
   try {
     const vinyanConfigForPlugins = loadConfig(workspace);
     const pluginsCfg = vinyanConfigForPlugins.plugins;
@@ -914,6 +937,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         bus,
         toolRegistry: pluginToolRegistry,
         pluginConfig: pluginsCfg,
+        gatewayConfig: vinyanConfigForPlugins.gateway,
+        executeTask: deferredExecuteTask,
         vinyanHome,
         profileRoot: workspace,
       })
@@ -1886,12 +1911,40 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       } catch {
         /* best-effort */
       }
+      // W3 H3 cron — stop ScheduleRunner BEFORE the lifecycle so a tick
+      // that's already in flight gets the lifecycle it was built with.
+      if (scheduleRunnerHandle) {
+        try {
+          scheduleRunnerHandle.stop();
+        } catch {
+          /* best-effort */
+        }
+      }
       // W2 messaging adapters — stop before we tear down anything the
       // adapter callbacks might reach (bus is still alive at this point,
       // but adapters may own their own fds/sockets).
       if (messagingLifecycle) {
         try {
           await raceTimeout(messagingLifecycle.stopAll().then(() => undefined), 2_000);
+        } catch {
+          /* best-effort */
+        }
+      }
+      // Gateway dispatcher — unsubscribe from the bus. `stopAll` already
+      // stopped adapter polling; the dispatcher's own bus handler still
+      // needs explicit teardown so a late `bus.emit` doesn't fire through
+      // a half-torn-down dispatcher.
+      if (pluginsReady) {
+        try {
+          const bounded = Promise.race<PluginInitResult | undefined>([
+            pluginsReady,
+            new Promise<undefined>((resolve) => {
+              const t = setTimeout(() => resolve(undefined), 1_000);
+              (t as { unref?: () => void }).unref?.();
+            }),
+          ]).catch(() => undefined);
+          const initResult = await bounded;
+          initResult?.dispatcher?.stop();
         } catch {
           /* best-effort */
         }
@@ -1948,6 +2001,79 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       configurable: true,
       get: () => pluginWarnings,
     });
+  }
+
+  // W2 task #18: fulfill the deferred `executeTask` closure the gateway
+  // dispatcher holds. This MUST happen before `startAll()` — the dispatcher
+  // bus subscription is live the moment the adapter publishes its first
+  // envelope. We bounce through `orchestrator.executeTask` at call time
+  // rather than capturing a bound reference so tests can override
+  // `orchestrator.executeTask` post-construction (the default wrapper
+  // invokes core-loop's `executeTask` plus sleep-cycle tracking).
+  orchestratorExecuteTask = (input: TaskInput) => orchestrator.executeTask(input);
+
+  // W2 task #18: kick off messaging-adapter startup once plugins finish
+  // initialising. Adapters poll asynchronously; the factory returns
+  // promptly so synchronous consumers aren't blocked. Start failures are
+  // logged but never fatal — the orchestrator stays bootable even if
+  // Telegram's auth fails.
+  if (pluginsReady) {
+    void pluginsReady
+      .then(async (result) => {
+        if (result.lifecycle) {
+          const startReport = await result.lifecycle.startAll();
+          for (const failure of startReport.failed) {
+            console.warn('[gateway] adapter failed to start', failure);
+          }
+        }
+        // Dispatcher.start() is already invoked inside initializePlugins;
+        // no additional wiring needed here.
+
+        // W3 H3: construct + start the NL-cron runner. Needs the same
+        // `deferredExecuteTask` closure the dispatcher holds, plus the
+        // messaging lifecycle for reply routing and the market scheduler
+        // for a single-tick-source clock (A3). Adapter-less (CLI-only)
+        // deployments still get cron: origin=cli schedules just log.
+        if (db) {
+          try {
+            scheduleRunnerHandle = setupScheduleRunner({
+              db: db.getDb(),
+              executeTask: deferredExecuteTask,
+              lifecycle: result.lifecycle,
+              marketScheduler,
+              log: (level, msg, meta) => {
+                if (level === 'error') console.error(`[gateway-cron] ${msg}`, meta ?? '');
+                else if (level === 'warn') console.warn(`[gateway-cron] ${msg}`, meta ?? '');
+                else console.log(`[gateway-cron] ${msg}`, meta ?? '');
+              },
+            });
+            scheduleRunnerHandle.start();
+          } catch (err) {
+            console.warn('[gateway-cron] setup failed', err);
+          }
+        }
+      })
+      .catch((err) => {
+        console.error('[gateway] startup failed', err);
+      });
+  }
+
+  // W3 P3: wire the USER.md dialectic observer into SessionManager if one
+  // is injected. Every user turn gets compared to each section's
+  // predicted_response; deltas ledger into `user_md_prediction_errors` and
+  // the Sleep Cycle (P5) or a manual trigger runs `applyDialectic` later.
+  // Always-on when sessionManager is present — sections-empty case is a
+  // no-op.
+  if (deps.sessionManager && db) {
+    try {
+      const { observer } = setupUserMdObserver({
+        db: db.getDb(),
+        profile: 'default',
+      });
+      deps.sessionManager.setUserMdObserver(observer);
+    } catch (err) {
+      console.warn('[user-md] observer setup failed', err);
+    }
   }
 
   return orchestrator;

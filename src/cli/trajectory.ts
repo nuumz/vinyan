@@ -27,6 +27,7 @@ type Flags = {
   outDir?: string;
   dryRun: boolean;
   workspace: string;
+  format: 'sharegpt' | 'ecp';
 };
 
 const KNOWN_OUTCOMES: ReadonlySet<Outcome> = new Set(['success', 'failure', 'timeout', 'escalated']);
@@ -48,8 +49,7 @@ export async function runTrajectoryCommand(args: string[], workspacePath: string
   // `vinyan trajectory export`, that positional is the subcommand ("export"),
   // not a workspace. Fall back to cwd so we resolve `.vinyan/` relative to
   // where the user is actually working.
-  const resolvedWorkspace =
-    workspacePath === 'export' || workspacePath === sub ? process.cwd() : workspacePath;
+  const resolvedWorkspace = workspacePath === 'export' || workspacePath === sub ? process.cwd() : workspacePath;
 
   const flags = parseFlags(args.slice(1), resolvedWorkspace);
   await runExport(flags);
@@ -67,6 +67,7 @@ Flags (export):
   --outcome <list>        Comma-separated outcomes: success,failure,timeout,escalated
   --min-quality <0..1>    Minimum quality_composite
   --out-dir <path>        Output directory (default: <vinyan-home>/trajectories/<id>)
+  --format <fmt>          'sharegpt' (default) or 'ecp' (ECP-enriched, Decision 23)
   --dry-run               Compute manifest; do not write artifact
 `);
 }
@@ -76,6 +77,7 @@ function parseFlags(args: string[], workspacePath: string): Flags {
     profile: 'default',
     dryRun: false,
     workspace: workspacePath,
+    format: 'sharegpt',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -119,6 +121,15 @@ function parseFlags(args: string[], workspacePath: string): Flags {
       case '--out-dir':
         flags.outDir = requireValue(args, ++i, '--out-dir');
         break;
+      case '--format': {
+        const raw = requireValue(args, ++i, '--format');
+        if (raw !== 'sharegpt' && raw !== 'ecp') {
+          console.error(`Invalid --format: ${raw} (expected 'sharegpt' or 'ecp')`);
+          process.exit(2);
+        }
+        flags.format = raw;
+        break;
+      }
       case '--dry-run':
         flags.dryRun = true;
         break;
@@ -161,6 +172,7 @@ async function runExport(flags: Flags): Promise<void> {
       minQualityComposite: flags.minQuality,
       outDir: flags.outDir,
       dryRun: flags.dryRun,
+      format: flags.format,
       vinyanHome,
     });
 

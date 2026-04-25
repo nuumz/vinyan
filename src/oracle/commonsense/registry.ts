@@ -23,6 +23,28 @@ import {
 } from './types.ts';
 
 /**
+ * M4 — Priority caps by rule source. Prevents noisy mined rules from
+ * outranking carefully-curated innate rules (Stripe Radar / Sift Science /
+ * Cloudflare convergent pattern; see design doc Appendix B).
+ *
+ *  - innate:                priority unchanged (operator-level trust)
+ *  - configured:            clamp to [40, 80] (workspace-supplied)
+ *  - promoted-from-pattern: clamp to [30, 70] (mined; capped below innate)
+ */
+const PRIORITY_CAPS: Record<CommonSenseRule['source'], { min: number; max: number }> = {
+  innate: { min: 0, max: 100 },
+  configured: { min: 40, max: 80 },
+  'promoted-from-pattern': { min: 30, max: 70 },
+};
+
+function clampPriority(priority: number, source: CommonSenseRule['source']): number {
+  const caps = PRIORITY_CAPS[source];
+  if (priority < caps.min) return caps.min;
+  if (priority > caps.max) return caps.max;
+  return priority;
+}
+
+/**
  * Compute the content-addressed id for a rule.
  *
  * SHA-256 of the canonical JSON of (microtheory, pattern, default_outcome).
@@ -89,6 +111,11 @@ export class CommonSenseRegistry {
     const id = computeRuleId(validated.microtheory, validated.pattern, validated.default_outcome);
     const createdAt = Date.now();
 
+    // M4 — priority caps by source. Innate rules keep their author-set priority;
+    // configured + promoted-from-pattern rules are clamped so they cannot
+    // outrank curated innate rules.
+    const cappedPriority = clampPriority(validated.priority, validated.source);
+
     this.insertStmt.run({
       $id: id,
       $lang: validated.microtheory.language,
@@ -97,7 +124,7 @@ export class CommonSenseRegistry {
       $pattern: JSON.stringify(validated.pattern),
       $default_outcome: validated.default_outcome,
       $abnormality: validated.abnormality_predicate ? JSON.stringify(validated.abnormality_predicate) : null,
-      $priority: validated.priority,
+      $priority: cappedPriority,
       $confidence: validated.confidence,
       $source: validated.source,
       $evidence_hash: validated.evidence_hash ?? null,
@@ -106,7 +133,7 @@ export class CommonSenseRegistry {
       $rationale: validated.rationale,
     });
 
-    return { ...validated, id, created_at: createdAt };
+    return { ...validated, id, priority: cappedPriority, created_at: createdAt };
   }
 
   findById(id: string): CommonSenseRule | null {

@@ -45,7 +45,7 @@ defined, partial / stub implementation.
 | 6 | Agentic Worker Protocol | ✅ Active | Default path |
 | K1 | Kernel Hardening (guardrails, agent contracts, tool auth) | ✅ Active | Always |
 | 2 | Evolution Engine (Sleep Cycle + skill cache + rule promotion) | 🔧 Built | DB + ≥100 traces |
-| 2.5 | Common Sense Substrate (defeasible-prior knowledge layer) | 📋 Designed | M1–M4 ship; ≥30 seed rules; ≥1 default-path invocation |
+| 2.5 | Common Sense Substrate (defeasible-prior knowledge layer) | 🔧 Built | All M1–M4 shipped; needs `commonsense.enabled: true` + orchestrator wiring (M3.5) + sleep-cycle hookup (M4.5) |
 | 3 | Self-Model (trace-calibrated prediction) | 🔧 Built | DB; uses stub otherwise |
 | 4 | Fleet Governance (worker profiles, capability routing) | 🔧 Built | DB + multiple LLM providers |
 | 5 | ENS (API, TUI, A2A coordination, cross-language oracles) | 🔧 Built | API via `vinyan serve`; A2A needs `network.instances.enabled` |

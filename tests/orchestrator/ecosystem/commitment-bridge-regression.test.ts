@@ -177,3 +177,78 @@ describe('Reconcile sweep — expired commitment reaper', () => {
     coordinator.stop();
   });
 });
+
+describe('CommitmentBridge — production resolver via TaskFactsRegistry', () => {
+  it('opens a commitment when facts come from the production registry, not a stub', async () => {
+    const { TaskFactsRegistry } = await import('../../../src/orchestrator/ecosystem/task-facts-registry.ts');
+    const db = makeDb();
+    const bus = createBus();
+    const registry = new TaskFactsRegistry();
+
+    const { commitments, coordinator } = buildEcosystem({
+      db,
+      bus,
+      taskResolver: (id) => registry.resolve(id),
+      engineRoster: () => [],
+    });
+    coordinator.start();
+
+    // Emulate what core-loop.executeTask does at task entry.
+    registry.register('t-prod-1', {
+      goal: 'real goal text',
+      targetFiles: ['x.ts'],
+      deadlineAt: Date.now() + 60_000,
+    });
+
+    bus.emit('market:auction_completed', {
+      auctionId: 'auc-t-prod-1-1',
+      taskId: 't-prod-1',
+      winnerId: 'engine-prod',
+      score: 0.9,
+      bidderCount: 2,
+    });
+
+    const open = commitments.openByTask('t-prod-1');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.engineId).toBe('engine-prod');
+    expect(open[0]!.taskId).toBe('t-prod-1');
+    // The commitment's deliverableHash is derived from goal+targetFiles via
+    // computeGoalHash; non-empty proves the resolver delivered real facts.
+    expect(open[0]!.deliverableHash).toBeTruthy();
+
+    coordinator.stop();
+  });
+
+  it('drops the commitment cleanly after unregister (post-task cleanup)', () => {
+    const { TaskFactsRegistry } = require('../../../src/orchestrator/ecosystem/task-facts-registry.ts') as {
+      TaskFactsRegistry: new () => { register: (id: string, f: TaskFacts) => void; resolve: (id: string) => TaskFacts | null; unregister: (id: string) => void };
+    };
+    const db = makeDb();
+    const bus = createBus();
+    const registry = new TaskFactsRegistry();
+
+    const { commitments, coordinator } = buildEcosystem({
+      db,
+      bus,
+      taskResolver: (id) => registry.resolve(id),
+      engineRoster: () => [],
+    });
+    coordinator.start();
+
+    // Late auction (after executeTask finally unregistered facts) should
+    // not crash and should leave the ledger empty — the bridge silently
+    // skips when facts are absent.
+    registry.unregister('t-late');
+    bus.emit('market:auction_completed', {
+      auctionId: 'auc-t-late-1',
+      taskId: 't-late',
+      winnerId: 'engine-x',
+      score: 0.7,
+      bidderCount: 2,
+    });
+
+    expect(commitments.openByTask('t-late')).toHaveLength(0);
+
+    coordinator.stop();
+  });
+});

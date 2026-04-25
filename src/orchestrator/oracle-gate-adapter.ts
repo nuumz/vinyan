@@ -6,6 +6,7 @@
  */
 import type { OracleVerdict } from '../core/types.ts';
 import type { EpistemicGateDecision } from '../gate/epistemic-decision.ts';
+import type { GateRequest } from '../gate/gate.ts';
 import { runGate } from '../gate/gate.ts';
 import type { OracleGate } from './core-loop.ts';
 import type { VerificationHint } from './types.ts';
@@ -17,7 +18,13 @@ export class OracleGateAdapter implements OracleGate {
     this.workspace = workspace;
   }
 
-  async verify(mutations: Array<{ file: string; content: string }>, _workspace: string, verificationHint?: VerificationHint, routingLevel?: number) {
+  async verify(
+    mutations: Array<{ file: string; content: string }>,
+    _workspace: string,
+    verificationHint?: VerificationHint,
+    routingLevel?: number,
+    commonsenseSignals?: GateRequest['commonsenseSignals'],
+  ) {
     // Empty mutations (L0) → trivially pass
     if (mutations.length === 0) {
       return { passed: true as const, verdicts: {} as Record<string, OracleVerdict> };
@@ -52,6 +59,8 @@ export class OracleGateAdapter implements OracleGate {
           },
           verificationHint,
           routingLevel,
+          // M3.5 — feed self-model signals to commonsense oracle activation gate
+          ...(commonsenseSignals ? { commonsenseSignals } : {}),
         }).then((gateResult) => ({ mutation, gateResult })),
       ),
     );

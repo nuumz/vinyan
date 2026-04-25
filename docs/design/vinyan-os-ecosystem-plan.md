@@ -239,10 +239,10 @@ ledger, no department index). With it on:
 | Integration point | Wiring | Source |
 |---|---|---|
 | Ecosystem bundle construction | `buildEcosystem` called from `factory.ts` when `ecosystem.enabled` | factory.ts |
-| Runtime FSM hooks on dispatch/return | `WorkerPoolImpl.acquireRuntimeSlot` in the dispatch path | worker-pool.ts |
-| Engine selector runtime gate | `DefaultEngineSelector` drops providers in dormant/awakening state | engine-selector.ts |
+| Worker dispatch engine resolution | `WorkerPoolImpl` resolves engine by `routing.workerId → routing.model → selectForRoutingLevel(level)` so the EngineSelector pick is honored | worker-pool.ts |
+| Engine selector runtime gate | `DefaultEngineSelector` drops dormant/awakening providers AND `working` providers at capacity | engine-selector.ts |
 | Department-scoped engine selection | `DefaultEngineSelector` narrows pool when `options.departmentId` is set | engine-selector.ts |
-| Commitment bridge | `CommitmentBridge.start()` subscribes to `market:auction_completed` + `trace:record` | ecosystem-coordinator.ts |
+| Commitment bridge | `CommitmentBridge.start()` subscribes to `market:auction_completed` + `trace:record`. `taskResolver` is wired to `TaskFactsRegistry` (registered/unregistered by `executeTask`) | ecosystem-coordinator.ts + task-facts-registry.ts |
 | Helpfulness tiebreaker in promotion | `WorkerGates` uses `helpfulnessCount` for Wilson-LB ties | worker-gates.ts |
 | Volunteer fallback on auction empty | `DefaultEngineSelector` calls `volunteerFallback` when market + wilson-LB miss | engine-selector.ts + factory.ts |
 | Crash recovery | `coordinator.start()` calls `recoverFromCrash()` on every boot | ecosystem-coordinator.ts |
@@ -270,6 +270,56 @@ ledger, no department index). With it on:
 4. ✅ **Volunteer no-winner cleanup** — `attemptVolunteerFallback` now
    declines offers when `selectVolunteer` returns no winner (previously left
    rows in an indeterminate state).
+
+### Shipped follow-ups (2026-04-26 — accountability loop)
+
+5. ✅ **Task identity contract** — `EngineSelector.select()` now takes the
+   real `TaskInput.id` (not `goal.slice(0, 50)`). The cost-prediction key
+   moved into `SelectOptions.taskType`. Auction allocation, volunteer
+   fallback, and `engine:selected` events all key off the real task id, so
+   the commitment opened on `market:auction_completed` is the same id seen
+   on `trace:record` end-to-end.
+6. ✅ **Production task-facts resolver** — `TaskFactsRegistry`
+   (`src/orchestrator/ecosystem/task-facts-registry.ts`) is instantiated
+   by `factory.ts` and registered into `OrchestratorDeps`. `executeTask()`
+   registers `goal` / `targetFiles` / `deadlineAt` at task entry and
+   unregisters in its `finally` block; the bridge's `taskResolver` reads
+   from it. The previous `taskResolver: () => null` placeholder is gone.
+7. ✅ **WorkerPool honors `routing.model`** — engine resolution and the
+   runtime slot id now use `routing.workerId ?? routing.model ??
+   selectForRoutingLevel(level)`. The trust-weighted pick from
+   `EngineSelector` is no longer silently discarded when the fleet
+   profile is absent.
+8. ✅ **Capacity-aware runtime gate** — `DefaultEngineSelector` filters out
+   `working` providers whose `activeTaskCount >= capacityMax`, in addition
+   to dormant/awakening. Wilson-LB ranking now runs over the filtered
+   pool when any runtime/department filter is active so the selection
+   stays consistent with the gate.
+
+### Known limitations (still on the runway)
+
+- **Reconcile is detect-only.** `EcosystemCoordinator.reconcile()` reaps
+  expired commitments and emits `ecosystem:invariant_violation` for I-E1
+  / I-E2 / I-E3, but does not auto-repair runtime state vs. ledger
+  inconsistencies — operators are expected to act on the events. The
+  earlier "self-heals from partial-write crash" wording in §5 only refers
+  to the boot-time `recoverFromCrash()` sweep (Working → Standby).
+- **Team blackboard is filesystem-backed.** `TeamBlackboardFs` writes
+  under `<workspace>/.vinyan/teams/`; SQLite is an in-process mirror,
+  not the source of truth. Migration 040 dropped the `team_blackboard`
+  table.
+- **WorkerPool capacity exhaustion is non-fatal.** `acquireRuntimeSlot`
+  logs and continues when `markWorking` would exceed capacity. The
+  selector-side filter is the active gate; making dispatch-time capacity
+  failure fatal needs a reselection / retry policy and is deferred.
+- **Volunteer fallback is deterministic standby selection.** The
+  current implementation picks among standby agents in the department
+  via `(capability × trust × current_load⁻¹)`. Agent-originated
+  voluntary bids are not yet supported; "volunteer" is the orchestrator
+  invoking the fallback path.
+- **Federation-compatible API surface, not federation-ready runtime.**
+  See §9 — the public surface accepts the shape needed by remote peers,
+  but cross-instance commitment / runtime semantics depend on A2A R3.
 
 ### Remaining gap
 

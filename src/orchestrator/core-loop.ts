@@ -123,6 +123,15 @@ export interface OracleGate {
     workspace: string,
     verificationHint?: import('./types.ts').VerificationHint,
     routingLevel?: number,
+    /**
+     * M3.5 — Optional self-model signals for the CommonSense Oracle's
+     * surprise-driven activation gate (`docs/design/commonsense-substrate-system-design.md` §6 M3).
+     * When present and `commonsense.enabled: true`, the gate decides whether
+     * the commonsense oracle fires. When absent, commonsense (if enabled)
+     * fires unconditionally — preserves backward compatibility for callers
+     * that don't yet plumb self-model signals.
+     */
+    commonsenseSignals?: import('../gate/gate.ts').GateRequest['commonsenseSignals'],
   ): Promise<import('./phases/types.ts').VerificationResult>;
 }
 
@@ -225,6 +234,13 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /**
+   * Ecosystem: dispatch-scoped task facts registry. When present,
+   * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
+   * entry and unregisters in its finally block, so the CommitmentBridge can
+   * resolve facts synchronously when `market:auction_completed` fires.
+   */
+  taskFactsRegistry?: import('./ecosystem/task-facts-registry.ts').TaskFactsRegistry;
   // Wave 2: Replan Engine (gated OFF by default). Requires Wave 1 (goalLoop).
   replanEngine?: import('./replan/replan-engine.ts').ReplanEngine;
   replanConfig?: import('./replan/replan-engine.ts').ReplanEngineConfig;
@@ -1673,6 +1689,16 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   console.info(`task ${input.id} profile=${resolvedProfile} source=${input.source ?? 'internal'}`);
 
   deps.agentMemory?.beginTask(input.id);
+  // Ecosystem: register transient task facts for the duration of this task
+  // so CommitmentBridge can resolve goal/targetFiles/deadlineAt when the
+  // auction fires. Unregistered in the finally block below.
+  if (deps.taskFactsRegistry) {
+    deps.taskFactsRegistry.register(input.id, {
+      goal: input.goal,
+      targetFiles: input.targetFiles ?? [],
+      deadlineAt: Date.now() + input.budget.maxDurationMs,
+    });
+  }
   try {
     const goalLoop = deps.goalLoop;
     if (goalLoop?.enabled && deps.goalEvaluator) {
@@ -1684,6 +1710,7 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
     return await executeTaskCore(input, deps);
   } finally {
     deps.agentMemory?.endTask(input.id);
+    deps.taskFactsRegistry?.unregister(input.id);
   }
 }
 

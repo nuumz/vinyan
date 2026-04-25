@@ -102,6 +102,7 @@ import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { buildEcosystem, type EcosystemBundle } from './ecosystem/builder.ts';
+import { TaskFactsRegistry } from './ecosystem/task-facts-registry.ts';
 import { DefaultEngineSelector } from './engine-selector.ts';
 import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
@@ -696,6 +697,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Source of truth: docs/design/vinyan-os-ecosystem-plan.md
   let ecosystemBundle: EcosystemBundle | undefined;
   let ecosystemConfig: import('../config/schema.ts').VinyanConfig['ecosystem'] | undefined;
+  // Dispatch-scoped facts registry — instantiated unconditionally so the
+  // core-loop can register/unregister facts whether or not the ecosystem
+  // bundle is built; the bundle's CommitmentBridge consumes the same
+  // registry when ecosystem is enabled.
+  const taskFactsRegistry = new TaskFactsRegistry();
   try {
     const vinyanConfigForEco = loadConfig(workspace);
     ecosystemConfig = vinyanConfigForEco.ecosystem;
@@ -710,7 +716,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           anchorCapabilities: d.anchor_capabilities,
           minMatchCount: d.min_match_count,
         })),
-        taskResolver: () => null, // populated at dispatch time by core-loop
+        // Production-wired: facts registered by core-loop.executeTask are
+        // resolved here. The auction → commitment-bridge → ledger path is
+        // now runtime-true; previously this returned `null` and silently
+        // dropped every commitment.
+        taskResolver: (id) => taskFactsRegistry.resolve(id),
         engineRoster: () => effectiveEngineRegistry.listEngines(),
         reconcileIntervalMs: ecosystemConfig.reconcile_interval_ms,
       });
@@ -1415,12 +1425,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
                     const load = bundle.runtime.get(id)?.activeTaskCount ?? 0;
                     return { capability: 0.5, trust, currentLoad: load };
                   };
+                  // Prefer the real task facts (registered by executeTask) so
+                  // the volunteer fallback's commitment matches the
+                  // commitment-bridge view. Fall back to a synthetic goal /
+                  // deadline only when facts are absent (legacy / out-of-band
+                  // entry paths).
+                  const facts = taskFactsRegistry.resolve(taskId);
                   const deadlineMs =
                     ecosystemConfig?.volunteer_fallback_deadline_ms ?? 600_000;
                   const res = bundle.coordinator.attemptVolunteerFallback({
                     taskId,
-                    goal: `fallback:${taskId}`,
-                    deadlineAt: Date.now() + deadlineMs,
+                    goal: facts?.goal ?? `fallback:${taskId}`,
+                    deadlineAt: facts?.deadlineAt ?? Date.now() + deadlineMs,
                     ...(departmentId ? { departmentId } : {}),
                     contextProvider: ctx,
                   });
@@ -1451,6 +1467,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
+    // goal/targetFiles/deadlineAt synchronously when an auction completes.
+    taskFactsRegistry,
     // Wave 2: Replan Engine — only active when both goalLoop and replan are
     // enabled. Self-assembles L1 perception so outer-loop doesn't need routing.
     replanEngine: goalLoopConfig?.enabled && replanConfig?.enabled

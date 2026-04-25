@@ -175,6 +175,8 @@ export class CalibratedSelfModel implements SelfModel {
       metaConfidence,
       basis: this.computeBasis(obs, params.predictionAccuracy),
       calibrationDataPoints: this.totalObservations,
+      // M3.5 — surface task signature so phase-verify can build GateRequest.commonsenseSignals
+      taskTypeSignature: taskSig,
       ...(forceMinLevel != null ? { forceMinLevel } : {}),
       ...(auditSample ? { auditSample } : {}),
     };
@@ -325,6 +327,26 @@ export class CalibratedSelfModel implements SelfModel {
   /** Get params for a specific task type. */
   getTaskTypeParams(taskSig: string): TaskTypeParams {
     return this.resolveTaskTypeParams(taskSig);
+  }
+
+  /**
+   * M3 — Bernoulli-variance proxy for the surprise gate in CommonSense Oracle
+   * activation. Returns sqrt(p * (1 - p)) where p is the EMA prediction
+   * accuracy for this task type signature.
+   *
+   * Used by `src/oracle/commonsense/activation.ts` to decide whether the
+   * commonsense oracle should fire — see
+   * `docs/design/commonsense-substrate-system-design.md` §6 (M3).
+   */
+  currentSigma(taskSig: string): number {
+    const p = this.resolveTaskTypeParams(taskSig).predictionAccuracy;
+    const clamped = Number.isNaN(p) ? 0.5 : Math.min(1, Math.max(0, p));
+    return Math.sqrt(clamped * (1 - clamped));
+  }
+
+  /** M3 — observation count for the cold-start gate. */
+  getObservationCount(taskSig: string): number {
+    return this.resolveTaskTypeParams(taskSig).observationCount;
   }
 
   /** Epistemic signal for risk-router de-escalation feedback. */

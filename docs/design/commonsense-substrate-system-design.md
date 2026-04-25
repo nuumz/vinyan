@@ -1,6 +1,6 @@
 # Common Sense Substrate — Implementable System Design
 
-> 📋 **Status: To-Be (Designed).** Architecture and MVP scope are fixed. No code shipped yet. Phase 2.5 placement (between Evolution Engine and Self-Model refinement). Activation gate: ≥30 seed rules + ≥1 invocation in default `vinyan run` smoke test.
+> 🔧 **Status: To-Be (Built).** M1 + M2 + M3 + M4 all code-complete with passing tests. Phase 2.5 sits between Evolution Engine (Phase 2) and Self-Model refinement (Phase 3). Currently `commonsense.enabled: false` by default — flip to `true` in vinyan.json to activate. Promotes from 🔧 → ✅ Active when (a) ≥1 invocation observed in default `vinyan run` smoke test AND (b) sleep-cycle promotion path wired to `SleepCycleRunner`.
 
 > **Document boundary**: Concrete implementation design for the Common Sense Substrate — a defeasible-prior knowledge layer that gives proposed actions a *named, auditable, content-addressed* sanity check. Replaces the scattered hardcoded heuristics currently embedded in `risk-router.ts`, `shell-policy.ts`, `goal-alignment-verifier.ts`, etc.
 >
@@ -40,22 +40,32 @@ This document specifies a **Common Sense Substrate** that consolidates these sca
 ### Current status at a glance
 
 ```
-📋 Designed (this document):
-  M1 CommonSense Registry        — SQLite store + zod schema + content addressing
-  M2 CommonSense Oracle          — verification-gate adapter for OracleGate
-  M3 Surprise-driven activation  — prediction-error gate before invocation
-  M4 Sleep-cycle promotion path  — pattern → rule via Wilson CI + backtest
+🔧 Built (M1 + M2 + M3 + M4 all shipped):
+  M1 CommonSense Registry        — SQLite store + 27 innate seed rules + content addressing
+                                   src/oracle/commonsense/{types,registry,seeds,predicate-eval}.ts
+                                   src/db/migrations/010_commonsense_rules.ts
+  M2 CommonSense Oracle          — verification-gate adapter; SARIF-shape suppression in evidence
+                                   src/oracle/commonsense/{oracle,microtheory-selector,mutation-classifier}.ts
+                                   wired in src/gate/gate.ts ORACLE_ENTRIES
+  M3 Surprise-driven activation  — debouncer + activation predicate; gate filter via commonsenseSignals
+                                   src/oracle/commonsense/activation.ts
+                                   src/orchestrator/prediction/self-model.ts:currentSigma()
+  M4 Sleep-cycle promotion path  — walk-forward backtest + Wilson 0.95 + priority caps
+                                   src/sleep-cycle/promotion.ts
+                                   src/oracle/commonsense/microtheory-inferer.ts
 
-🔧 Built (already exists, will be reused):
+🔧 Reused (existing infrastructure):
   src/oracle/protocol.ts         — Oracle interface
   src/oracle/registry.ts         — Oracle registration
   src/oracle/circuit-breaker.ts  — Per-oracle isolation
   src/world-graph/               — Content-addressed fact pattern (template for A4 compliance)
-  src/sleep-cycle/               — Pattern mining + Wilson CI promotion
+  src/sleep-cycle/wilson.ts      — Wilson CI implementation
   src/orchestrator/prediction/   — Self-model EMA (used by M3 activation)
 
-⚠️ Needs design alignment:
-  ECP `prior_assumption` field — proposed in §7, requires ECP v1.x amendment (NOT v2)
+📋 Designed (deferred):
+  M3.5  Orchestrator wiring      — core-loop populates GateRequest.commonsenseSignals
+  M4.5  SleepCycleRunner hookup  — call promoteAllPatterns() after pattern mining
+  ECP `prior_assumption` field   — Phase 3 amendment (see §7)
 ```
 
 ---

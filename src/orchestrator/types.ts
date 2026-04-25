@@ -849,6 +849,13 @@ export interface SelfModelPrediction {
   pPass?: number;
   basis: 'static-heuristic' | 'trace-calibrated' | 'hybrid';
   calibrationDataPoints: number;
+  /**
+   * M3.5 — Per-task-type signature (e.g. `delete::ts::large-blast`). Populated
+   * by CalibratedSelfModel.predict() so phase-verify can construct
+   * GateRequest.commonsenseSignals without re-deriving the signature. See
+   * docs/design/commonsense-substrate-system-design.md §6 (M3).
+   */
+  taskTypeSignature?: string;
   /** S1: Cold-start safeguard — force minimum routing level for first N tasks */
   forceMinLevel?: number;
   /** S3: Audit sampling flag — 10% probability for first 100 tasks */

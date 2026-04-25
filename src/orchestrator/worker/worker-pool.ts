@@ -496,7 +496,13 @@ export class WorkerPoolImpl implements WorkerPool {
     // Ecosystem: flip the selected worker to Working for the lifetime of the
     // dispatch. `releaseRuntime` must fire on every exit path (success OR
     // throw), so everything below is wrapped in try/finally.
-    const releaseRuntime = this.acquireRuntimeSlot(routing.workerId, input.id);
+    //
+    // Runtime slot id resolution mirrors engine resolution below:
+    //   1. routing.workerId   — fleet-selected profile id (authoritative)
+    //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+    //   3. undefined          — silent no-op (legacy / non-fleet path)
+    const runtimeSlotId = routing.workerId ?? routing.model ?? undefined;
+    const releaseRuntime = this.acquireRuntimeSlot(runtimeSlotId ?? undefined, input.id);
 
     try {
       const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
@@ -524,9 +530,18 @@ export class WorkerPoolImpl implements WorkerPool {
       // DESIGN CONSTRAINT: subprocess path is LLM-only — worker-entry.ts reconstructs an
       // LLMProviderRegistry from env vars and cannot serialize/deserialize custom RE types.
       // If the selected engine is non-LLM, fall back to in-process dispatch with a warning.
+      // Engine resolution priority (preflight for subprocess gating):
+      //   1. routing.workerId   — fleet profile id
+      //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+      //   3. selectForRoutingLevel(routing.level) — tier default
       const selectedEngine = routing.workerId
-        ? this.engineRegistry.selectById(routing.workerId)
-        : this.engineRegistry.selectForRoutingLevel(routing.level);
+        ? (this.engineRegistry.selectById(routing.workerId)
+            ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
+            ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+        : (routing.model
+            ? (this.engineRegistry.selectById(routing.model)
+                ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+            : this.engineRegistry.selectForRoutingLevel(routing.level));
       const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
       // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
       // is only needed when the worker writes to disk. This avoids LLM proxy overhead
@@ -700,10 +715,18 @@ export class WorkerPoolImpl implements WorkerPool {
     peerAgents?: import('../types.ts').AgentSpec[],
     turns?: import('../types.ts').Turn[],
   ): Promise<WorkerOutput> {
-    // PH4.4: Use workerId to select engine if available, fallback to tier-based
+    // PH4.4 + Ecosystem K2.2: Engine resolution priority —
+    //   1. routing.workerId   — fleet-selected profile id (authoritative)
+    //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+    //   3. selectForRoutingLevel(routing.level) — tier default
     const engine = routing.workerId
-      ? (this.engineRegistry.selectById(routing.workerId) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-      : this.engineRegistry.selectForRoutingLevel(routing.level);
+      ? (this.engineRegistry.selectById(routing.workerId)
+          ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
+          ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+      : (routing.model
+          ? (this.engineRegistry.selectById(routing.model)
+              ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+          : this.engineRegistry.selectForRoutingLevel(routing.level));
     if (!engine) {
       return emptyOutput(workerInput.taskId);
     }

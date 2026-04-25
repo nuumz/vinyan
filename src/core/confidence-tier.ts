@@ -19,15 +19,20 @@
 export const CONFIDENCE_TIERS = [
   'deterministic',
   'heuristic',
+  'pragmatic',
   'probabilistic',
   'speculative',
 ] as const;
 
 export type ConfidenceTier = (typeof CONFIDENCE_TIERS)[number];
 
+// `pragmatic` (Phase 2.5 Common Sense Substrate) sits between heuristic and
+// probabilistic — defeasible-prior knowledge with named abnormality predicates.
+// See docs/design/commonsense-substrate-system-design.md §3.4.
 const TIER_RANK: Record<ConfidenceTier, number> = {
-  deterministic: 3,
-  heuristic: 2,
+  deterministic: 4,
+  heuristic: 3,
+  pragmatic: 2,
   probabilistic: 1,
   speculative: 0,
 };
@@ -52,6 +57,7 @@ export function weakerOf(a: ConfidenceTier, b: ConfidenceTier): ConfidenceTier {
 export const TIER_WEIGHT: Record<ConfidenceTier, number> = {
   deterministic: 1.0,
   heuristic: 0.7,
+  pragmatic: 0.55,
   probabilistic: 0.4,
   speculative: 0.15,
 };
@@ -65,6 +71,12 @@ export const TIER_WEIGHT: Record<ConfidenceTier, number> = {
 export const TIER_CONFIDENCE_CEILING: Record<ConfidenceTier, number> = {
   deterministic: 1.0,
   heuristic: 0.95,
+  // pragmatic ceiling = 0.7 (top of pragmatic confidence band [0.5, 0.7])
+  // — defeasible rules cannot self-report higher than their tier band.
+  // Note: pragmatic ceiling is LOWER than probabilistic's; this is intentional —
+  // confidence ceiling caps inflation, while TIER_WEIGHT/TIER_RANK encode trust.
+  // The two are different concepts. See docs/design/commonsense-substrate-system-design.md §3.4.
+  pragmatic: 0.7,
   probabilistic: 0.85,
   speculative: 0.6,
 };

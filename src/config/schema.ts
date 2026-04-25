@@ -15,7 +15,9 @@ const OracleConfigSchema = z.object({
   command: z.string().optional(),
   timeout_ms: z.number().positive().optional(),
   /** Trust tier — determines confidence range and conflict resolution priority. */
-  tier: z.enum(['deterministic', 'heuristic', 'probabilistic', 'speculative']).default('deterministic'),
+  tier: z
+    .enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative'])
+    .default('deterministic'),
   /** Behavior on timeout: 'block' = fail-closed, 'warn' = skip oracle and continue. */
   timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
@@ -699,6 +701,10 @@ export const VinyanConfigSchema = z.object({
     dep: { enabled: true, tier: 'heuristic', timeout_behavior: 'block' },
     test: { enabled: false, timeout_ms: 5000, tier: 'deterministic', timeout_behavior: 'warn' },
     lint: { enabled: false, timeout_ms: 1000, tier: 'deterministic', timeout_behavior: 'warn' },
+    // Phase 2.5 Common Sense Substrate — disabled by default until M3 (surprise
+    // activation) and M4 (sleep-cycle promotion) are wired.
+    // See docs/design/commonsense-substrate-system-design.md
+    commonsense: { enabled: false, timeout_ms: 200, tier: 'pragmatic', timeout_behavior: 'warn' },
   }),
   /** Orchestrator config — routing, isolation, evolution, escalation. */
   orchestrator: OrchestratorConfigSchema.optional(),

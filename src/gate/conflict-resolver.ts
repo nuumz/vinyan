@@ -98,8 +98,9 @@ function getOracleDomain(name: string): OracleDomain {
 
 /** Tier priority — higher number = higher trust. */
 const TIER_PRIORITY: Record<string, number> = {
-  deterministic: 4,
-  heuristic: 3,
+  deterministic: 5,
+  heuristic: 4,
+  pragmatic: 3,
   probabilistic: 2,
   speculative: 1,
 };

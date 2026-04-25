@@ -12,7 +12,7 @@ export interface OracleRegistryEntry {
   /** Languages this oracle supports. */
   languages?: string[];
   /** Trust tier. */
-  tier?: 'deterministic' | 'heuristic' | 'probabilistic' | 'speculative';
+  tier?: 'deterministic' | 'heuristic' | 'pragmatic' | 'probabilistic' | 'speculative';
   /** Transport type — how the oracle is invoked. */
   transport?: 'stdio' | 'websocket' | 'http' | 'a2a';
   /** Timeout in ms. */

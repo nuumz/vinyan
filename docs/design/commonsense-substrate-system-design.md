@@ -190,6 +190,27 @@ export type CommonSenseRule = z.infer<typeof CommonSenseRuleSchema>;
 
 The oracle returns a standard `OracleVerdict` (no schema change required for MVP), with `tier='pragmatic'` and `confidence_source='evidence-derived'`. The new pragmatic tier slots between heuristic (0.7–0.9) and probabilistic (0.3–0.5):
 
+**SARIF-shape suppression for fired-but-suppressed rules** (research-driven addition, 2026-04-25). When a rule's pattern matches but its abnormality predicate also holds (the rule fires UNLESS abnormality), the verdict's `evidence` array carries a SARIF §3.35-shaped suppression record so the Reiter "rule fired UNLESS" semantics are visible in audit logs ([SARIF v2.1.0 spec](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html), [GitHub SARIF support](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)):
+
+```typescript
+// Evidence entry for "rule X fired but suppressed by abnormality predicate Y"
+{
+  file: 'commonsense:suppression',
+  line: 0,
+  snippet: JSON.stringify({
+    suppression: {
+      kind: 'inSource',
+      status: 'accepted',
+      justification: '<predicate-as-string>',
+      ruleId: '<rule_id>',
+      microtheory: '<3-axis-label>',
+    }
+  })
+}
+```
+
+This makes "rule fired but suppressed" auditable instead of silently filtered (avoids the "rule never matters" trap when an abnormality predicate is too eager).
+
 | Tier | Confidence band | Source | A5 weight |
 |---|---|---|---|
 | Deterministic | 1.0 | AST, type, structural | Highest |
@@ -312,42 +333,80 @@ When two **pragmatic** rules within the same microtheory conflict (e.g., one say
 
 **Goal:** Don't run M2 on every task. Activate only when self-model prediction error spikes (cost-aware, A7-aligned).
 
+**External research (2026-04-25)** revised the activation rule from the v1 design:
+- Sigma multiplier raised from 1.5 → **2.0** (Datadog/Grafana/Sinch convergent default is 2σ–3σ; 1.5σ activates on noise — see [Sinch dynamic threshold](https://sinch.com/blog/dynamic-threshold-estimation-for-anomaly-detection/))
+- **Prometheus-style anti-thrashing** added (`for:` + `keep_firing_for:` pattern — see [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/))
+- Self-model exposes `currentSigma(taskTypeSig)` as Bernoulli-variance proxy `sqrt(p*(1-p))` from existing `predictionAccuracy` EMA — no new persisted field
+
 | File | Purpose | LOC est. |
 |------|---------|---|
-| `src/orchestrator/core-loop.ts` | Wrap `oracleGate.run()` with activation gate; pass `enabled.commonsense` | ~25 |
-| `src/orchestrator/prediction/self-model.ts` | Expose `currentSigma()` for activation threshold | ~10 |
-| `tests/orchestrator/commonsense-activation.test.ts` | Activation gate tests | ~80 |
+| `src/gate/gate.ts` | Extend GateRequest to receive `selfModelPrediction` + `riskScore` scalar; compute activation in gate | ~40 |
+| `src/oracle/commonsense/activation-debouncer.ts` | Per-microtheory dwell-time + cool-down state | ~80 |
+| `src/orchestrator/prediction/self-model.ts` | Expose `currentSigma(taskSig: string): number` (Bernoulli proxy) | ~20 |
+| `tests/orchestrator/commonsense-activation.test.ts` | Activation gate tests | ~120 |
 
 Activation rule (deterministic, A3):
 ```typescript
-const activate = predictionError > selfModel.currentSigma() * 1.5
-              || hypothesisRisk >= 0.6
-              || mutationClass === 'destructive';
+const activate =
+  // Surprise gate (anti-aggressive, anti-thrashing)
+  (predictionError > selfModel.currentSigma(taskSig) * 2.0
+    && debouncer.dwellExceeded(microtheory, MIN_DWELL_MS=500))
+  // Risk override (bypass surprise gate)
+  || hypothesisRisk >= 0.6
+  // Class override (always activate on destructive mutations)
+  || mutationClass === 'mutation-destructive'
+  // Cool-down: keep activated for 5s after first activation to avoid flapping
+  || debouncer.inCoolDown(microtheory, COOL_DOWN_MS=5000);
 ```
+
+Cold-start: when self-model has < 30 obs for the task signature, **always activate** (parallels existing self-model cold-start floor at `self-model.ts:147-149`).
 
 | Test | Expected |
 |------|----------|
 | Low prediction error, additive mutation, low risk | CommonSense Oracle skipped |
-| Prediction error 2× sigma | CommonSense Oracle invoked |
+| Prediction error 1.6× sigma (above old threshold, below new) | CommonSense Oracle skipped — no false-positive |
+| Prediction error 2.5× sigma sustained for 500ms | CommonSense Oracle invoked |
 | Destructive mutation regardless of error | CommonSense Oracle invoked |
 | `risk_score >= 0.6` regardless of error | CommonSense Oracle invoked |
+| Sigma fluctuates above/below threshold rapidly | Single activation (cool-down prevents flap) |
+| Cold-start (< 30 obs for task sig) | Activated unconditionally |
 
 ### M4 — Sleep-cycle promotion path
 
-**Goal:** Patterns observed by sleep cycle (Wilson CI ≥ 0.95, ≥30 obs, 80/20 backtest passes) auto-promote to commonsense rules with `source='promoted-from-pattern'`.
+**Goal:** Patterns observed by sleep cycle (Wilson CI ≥ 0.95, ≥30 obs, walk-forward backtest passes) auto-promote to commonsense rules with `source='promoted-from-pattern'`.
+
+**External research (2026-04-25)** revised promotion gating from the v1 design:
+- **80/20 random split → walk-forward (K=5 expanding windows)** for time-ordered traces with concept drift (see [walk-forward validation](https://www.lightly.ai/blog/train-test-validation-split), [About Trading walk-forward](https://abouttrading.substack.com/p/walk-forward-validation-vs-train))
+- **Priority caps by source** to prevent noisy promoted rules from overriding hand-crafted innate rules (Stripe/Sift/Cloudflare convergent pattern):
+  - innate: priority ∈ [60, 100]
+  - configured: priority ∈ [40, 80]
+  - promoted-from-pattern: priority ∈ [30, 70]
+- **No public source confirms Stripe Radar / Sift Science use Wilson at fixed N=30** — production fraud-rule systems use simulator backtest + reviewer-in-the-loop. Vinyan's Wilson approach is academically defensible but should add **rule-set-aware simulation** (deferred to M4 v2): replay traces with the candidate rule INSERTED into the existing rule set; reject promotion if it regresses F1 against the existing set, even if Wilson LB passes ([Stripe Radar testing](https://docs.stripe.com/radar/testing)).
 
 | File | Purpose | LOC est. |
 |------|---------|---|
-| `src/sleep-cycle/promotion.ts` | Add `promoteToCommonsense()` path next to existing rule promotion | ~100 |
-| `src/oracle/commonsense/registry.ts` | Accept `promoted_from_pattern_id` in `insertRule` | ~10 |
-| `tests/sleep-cycle/commonsense-promotion.test.ts` | End-to-end pattern → rule | ~100 |
+| `src/sleep-cycle/promotion.ts` | Walk-forward backtest + Wilson LB gate + microtheory inference + priority-cap enforcement; calls `commonSenseRegistry.insertRule()` | ~150 |
+| `src/oracle/commonsense/microtheory-inferer.ts` | Pattern → 3-axis microtheory: language from `taskTypeSignature` extension, domain from affected files + task semantics, action from pattern type | ~80 |
+| `src/oracle/commonsense/registry.ts` | Enforce priority caps in `insertRule()` (clamp by source) | ~15 |
+| `tests/sleep-cycle/commonsense-promotion.test.ts` | End-to-end pattern → rule | ~120 |
 
 | Test | Expected |
 |------|----------|
-| Pattern with Wilson LB 0.96, 35 obs, backtest 0.92 | Promoted; rule has `source='promoted-from-pattern'`, microtheory inferred from pattern context |
+| Pattern with Wilson LB 0.96, 35 obs, walk-forward passes 4/5 windows | Promoted; rule has `source='promoted-from-pattern'`, microtheory inferred, priority capped at ≤70 |
 | Pattern with Wilson LB 0.91 | Not promoted (< 0.95 threshold) |
 | Pattern with 28 obs | Not promoted (< 30 obs) |
+| Pattern passes only 2/5 walk-forward windows | Not promoted (drift detected) |
+| Promoter requests priority=85 for promoted source | Clamped to 70 (priority-cap enforcement) |
 | Same pattern observed again after promotion | Rule confidence updates (not duplicated) |
+
+#### Demotion criteria (M4 v2 — deferred)
+
+Convergent literature (concept-drift + production rule-engine practice) gives three triggers:
+1. Rolling-window F1 / accuracy drop on the rule (ADWIN signal — see [comparative drift detectors study](https://www.researchgate.net/publication/264081451_A_Comparative_Study_on_Concept_Drift_Detectors), [Aporia 8 methods](https://www.aporia.com/learn/data-drift/concept-drift-detection-methods/))
+2. Time-since-last-fired exceeds threshold (the "stale rule" signal — already in §5 Q4)
+3. **Override-rate too high** (pragmatic verdict frequently overridden by deterministic — defeated by the very thing it predicted) — track `override_count` per rule; demote when `override_rate > 0.5 over last 100 firings`
+
+Adding `override_count` and `last_fired_at` columns is a future migration — not in MVP.
 
 ### Rollout sequence
 
@@ -470,12 +529,55 @@ Both substrates are rule-based, deterministic at application time, content-addre
 
 ## Appendix B. References
 
+### Foundational
 - McCarthy (1959), *Programs with Common Sense*, Stanford archive.
 - Reiter (1980), *A Logic for Default Reasoning*, AI Journal.
 - McCarthy (1980), *Circumscription — A Form of Non-Monotonic Reasoning*, AI Journal.
 - Lifschitz (1985), *Computing Circumscription*, IJCAI.
-- Lenat & Marcus (2023), *Getting from Generative AI to Trustworthy AI: What LLMs might learn from Cyc*, arXiv 2308.04445.
+- Lenat & Marcus (2023), *Getting from Generative AI to Trustworthy AI: What LLMs might learn from Cyc*, [arXiv 2308.04445](https://arxiv.org/abs/2308.04445).
 - Davis & Marcus (2015), *Commonsense Reasoning and Commonsense Knowledge in AI*, CACM.
 - Friston (2010), *The Free-Energy Principle*, Nature Reviews Neuroscience.
 - Vadim (2024), *The Agent That Says No — Verification Gate Research to Practice*, vadim.blog.
-- Vinyan: `docs/foundation/concept.md`, `docs/foundation/theory.md`, `docs/spec/ecp-spec.md`, `docs/design/world-model.md`, `docs/design/k1-implementable-system-design.md`.
+
+### Defeasible-reasoning oracles (research informed M2)
+- García & Simari (2014), *Defeasible Logic Programming: DeLP-Servers, Contextual Queries, and Explanations for Answers*, [DeLP-Server paper](https://journals.sagepub.com/doi/10.1080/19462166.2013.869767).
+- Lam & Governatori (2009), *The Making of SPINdle*, [SPINdle paper](http://www.governatori.net/papers/2009/ruleml09spindle.pdf).
+- Gordon, Prakken & Walton (2007), *The Carneades Model of Argument and Burden of Proof*, [paper](https://webspace.science.uu.nl/~prakk101/pubs/GordonPrakkenWalton2007a.pdf).
+- KIE (2022), *Defeasible Reasoning, Drools and the Truth Maintenance System*, [KIE blog](https://blog.kie.org/2022/04/defeasible-reasoning-drools-and-truth-maintenance-system.html).
+- Anthropic (2026), *Claude Code hooks reference*, [code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks) — adopted verdict-shape precedent for `allow/deny/ask/defer`.
+- OASIS (2020), *SARIF v2.1.0 §3.35 Suppression*, [SARIF spec](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) — adopted shape for "rule fired but suppressed by abnormality".
+
+### Surprise-driven activation (research informed M3)
+- Pathak et al. (2017), *Curiosity-Driven Exploration by Self-Supervised Prediction*, [arXiv 1705.05363](https://arxiv.org/abs/1705.05363) — RND-style visit-count decay (deferred to M3 v2).
+- Burda et al. (2018), *Exploration by Random Network Distillation*, [endtoend.ai summary](https://v1.endtoend.ai/slowpapers/rnd/).
+- Friston (2024), *Many Roles of Precision in Predictive Coding*, [MDPI Entropy](https://www.mdpi.com/1099-4300/26/9/790).
+- Datadog (current), *Anomaly Monitor Algorithms*, [docs.datadoghq.com](https://docs.datadoghq.com/monitors/types/anomaly/) — convergent industry default 2σ–3σ.
+- Sinch (current), *Dynamic Threshold Estimation for Anomaly Detection*, [Sinch blog](https://sinch.com/blog/dynamic-threshold-estimation-for-anomaly-detection/) — `std_coef ∈ [2,3]`.
+- Prometheus (current), *Alerting Rules*, [Prometheus docs](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) — `for:` + `keep_firing_for:` anti-thrashing.
+- Ganapini et al. (2025), *SOFAI: Slow and Fast AI*, [Nature npj AI](https://www.nature.com/articles/s44387-025-00027-5) — metacognitive arbitration (deferred to M3 v2).
+
+### Promotion + lifecycle (research informed M4)
+- Miller (2009), *How Not To Sort By Average Rating*, [Evan Miller](https://www.evanmiller.org/how-not-to-sort-by-average-rating.html) — Wilson LB ranking primitive.
+- Stripe (current), *Testing custom rules with Stripe Radar*, [Stripe docs](https://docs.stripe.com/radar/testing) — production rule-promotion pattern (rule-set-aware backtest + human review).
+- Sift Science (current), *Workflow Simulation*, [Sift blog](https://sift.com/blog/introducing-workflow-simulation/) — immutable rule versions, simulation-first promotion.
+- Lightly (current), *Train-test validation split: walk-forward*, [Lightly blog](https://www.lightly.ai/blog/train-test-validation-split).
+- Aerial+ (2025), *Neuro-symbolic Association Rule Mining*, [arXiv 2504.19354](https://arxiv.org/abs/2504.19354) — rule-explosion prevention via redundancy/coverage check.
+- Johari et al. (2015), *Always-Valid Inference for sequential testing*, [arXiv 1512.04922](https://arxiv.org/abs/1512.04922) — alternative to fixed-N Wilson when peeking is uncontrolled (deferred).
+
+### Vinyan internal
+- `docs/foundation/concept.md`, `docs/foundation/theory.md`, `docs/spec/ecp-spec.md`, `docs/design/world-model.md`, `docs/design/k1-implementable-system-design.md`, `docs/architecture/decisions.md`.
+
+## Appendix C. Deferred upgrade paths (research-surfaced, not in MVP)
+
+Documented for future iterations — each tied to specific research finding and target file:
+
+| # | Upgrade | Trigger | Source | Vinyan target |
+|---|---------|---------|--------|---------------|
+| 1 | Rename `default_outcome` to Claude Code hook standard `allow/deny/ask/defer` | If Vinyan ever exposes the substrate over external API or A2A | [Claude Code hooks](https://code.claude.com/docs/en/hooks) | `src/oracle/commonsense/types.ts:DefaultOutcomeSchema` |
+| 2 | RND-style visit-count decay on per-(microtheory, pattern) firing | When traces show repeated activation on same surprise without new evidence | [Burda RND](https://v1.endtoend.ai/slowpapers/rnd/) | `src/oracle/commonsense/activation-decay.ts` (new) |
+| 3 | SOFAI-style metacognitive arbitration combining 4 signals | When sigma-only gating proves insufficient (FP rate > 30%) | [SOFAI 2025](https://www.nature.com/articles/s44387-025-00027-5) | `src/orchestrator/core-loop.ts` (M3 activation predicate) |
+| 4 | mSPRT / always-valid CIs replacing fixed-N Wilson | When Sleep-Cycle peeks at patterns more than once per N-window | [Johari et al.](https://arxiv.org/abs/1512.04922) | `src/sleep-cycle/wilson.ts` |
+| 5 | Stripe Radar-style rule-set-aware simulation | M4 v2 — once registry exceeds ~50 rules | [Stripe Radar](https://docs.stripe.com/radar/testing) | `src/sleep-cycle/promotion.ts` (extend) |
+| 6 | Override-count column + override-rate demotion criterion | After M2 ships and override patterns become observable | [TDS neuro-symbolic fraud](https://towardsdatascience.com/neuro-symbolic-fraud-detection-catching-concept-drift-before-f1-drops-label-free/) | New migration; `commonsense_rules.override_count` |
+| 7 | ADWIN drift detector per rule | M4 v2 — quarterly review automation | [Comparative drift study](https://www.researchgate.net/publication/264081451_A_Comparative_Study_on_Concept_Drift_Detectors) | `src/sleep-cycle/drift-detector.ts` (new) |
+| 8 | ECP `prior_assumption` field in OracleVerdict | Phase 3 — when A2A federation needs to share defeasible verdicts | §7 of this doc | `src/spec/ecp-spec.md` amendment |

@@ -82,7 +82,12 @@ export class UserMdParseError extends Error {
  */
 const DEMOTION_NEXT: Record<ConfidenceTier, ConfidenceTier> = {
   deterministic: 'heuristic',
+  // user-md sections track confidence in user-behavior predictions; they don't
+  // use the `pragmatic` (defeasible-prior knowledge) tier semantically. Skip
+  // pragmatic in this demotion ladder — heuristic demotes directly to
+  // probabilistic. The `pragmatic` entry below is for type completeness only.
   heuristic: 'probabilistic',
+  pragmatic: 'probabilistic',
   probabilistic: 'speculative',
   // Speculative is the floor — cannot demote further (A5).
   speculative: 'speculative',

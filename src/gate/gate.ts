@@ -16,6 +16,7 @@ import type { HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict, 
 import { containsBypassAttempt, detectPromptInjection } from '../guardrails/index.ts';
 import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
 import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
+import { verify as commonsenseVerify } from '../oracle/commonsense/oracle.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { verify as lintVerify } from '../oracle/lint/lint-verifier.ts';
@@ -181,6 +182,15 @@ const ORACLE_ENTRIES: Record<string, OracleEntry> = {
     defaultPattern: 'goal-alignment',
     requiresContext: false, // Runs whenever understanding is available (abstains if missing)
   },
+  // Phase 2.5 — Common Sense Substrate (M2). Disabled by default in
+  // OracleConfigSchema; flip `commonsense.enabled: true` in vinyan.json to
+  // activate. Pragmatic-tier verdicts (confidence band 0.5–0.7) flow through
+  // the conflict resolver alongside heuristic and probabilistic verdicts.
+  commonsense: {
+    verify: commonsenseVerify,
+    defaultPattern: 'commonsense-check',
+    requiresContext: false, // Reads tool/path from hypothesis context; doesn't require file content
+  },
 };
 
 /** Oracles that are informational-only — never block the gate. */
@@ -194,6 +204,7 @@ const ORACLE_TIERS: Record<string, 'structural' | 'full'> = {
   lint: 'structural',
   test: 'full',
   'goal-alignment': 'structural',
+  commonsense: 'structural', // SQLite query + pattern eval — sub-millisecond
 };
 
 // ── Gate logic ──────────────────────────────────────────────────
@@ -299,6 +310,10 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           target: request.params.file_path,
           pattern: entry.defaultPattern,
           context: {
+            // Tool name — consumed by commonsense oracle (M2) to drive
+            // microtheory selection + mutation classification. Other oracles
+            // ignore unknown context fields.
+            tool: request.tool,
             ...(request.params.content ? { content: request.params.content } : {}),
             // A1 Understanding layer: inject TaskUnderstanding for goal-alignment oracle
             ...(request.verificationHint?.understanding ? { understanding: request.verificationHint.understanding } : {}),

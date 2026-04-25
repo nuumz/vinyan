@@ -66,7 +66,7 @@ export const A2ASkillSchema = z.object({
 
 export const VinyanOracleCapabilitySchema = z.object({
   name: z.string(),
-  tier: z.enum(['deterministic', 'heuristic', 'probabilistic', 'speculative']),
+  tier: z.enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative']),
   languages: z.array(z.string()),
   accuracy: z.number().optional(),
   latency_ms: z.number().optional(),

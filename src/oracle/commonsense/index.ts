@@ -9,6 +9,11 @@ export { evaluatePattern } from './predicate-eval.ts';
 export type { MicrotheoryQuery } from './registry.ts';
 export { CommonSenseRegistry, computeRuleId } from './registry.ts';
 
+export { classifyMutation } from './mutation-classifier.ts';
+export { extractApplicationContext, selectMicrotheory } from './microtheory-selector.ts';
+
+export { clearRegistryCache, setDbPathResolver, verify } from './oracle.ts';
+
 export { INNATE_RULES, loadInnateSeed } from './seeds/innate.ts';
 
 export type {

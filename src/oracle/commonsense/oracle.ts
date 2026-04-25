@@ -32,6 +32,7 @@ import type {
   OracleAbstention,
   OracleResponse,
   OracleVerdict,
+  PriorAssumption,
 } from '../../core/types.ts';
 import { evaluatePattern } from './predicate-eval.ts';
 import { extractApplicationContext, selectMicrotheory } from './microtheory-selector.ts';
@@ -122,6 +123,34 @@ function buildFiringEvidence(rule: CommonSenseRule): Evidence {
  * SARIF's Suppression object so downstream consumers (audit, A2A federation)
  * can interpret it without a Vinyan-specific parser.
  */
+/**
+ * Build typed PriorAssumption for one firing rule. Phase 2.5 ECP extension —
+ * gives downstream consumers (audit, A2A federation) typed access to the
+ * defeasible-prior knowledge that informed this verdict, instead of having
+ * to parse JSON-encoded snippets out of `evidence`.
+ *
+ * Suppressed rules do NOT appear here — they stay in `evidence` as SARIF
+ * Suppression records (auditor-facing). Only firing rules contribute.
+ */
+function buildPriorAssumption(rule: CommonSenseRule): PriorAssumption {
+  return {
+    ruleId: rule.id,
+    microtheory: {
+      language: rule.microtheory.language,
+      domain: rule.microtheory.domain,
+      action: rule.microtheory.action,
+    },
+    abnormalityPredicate: rule.abnormality_predicate
+      ? JSON.stringify(rule.abnormality_predicate)
+      : undefined,
+    source: rule.source,
+    priority: rule.priority,
+    confidence: rule.confidence,
+    defaultOutcome: rule.default_outcome,
+    rationale: rule.rationale,
+  };
+}
+
 function buildSuppressionEvidence(rule: CommonSenseRule): Evidence {
   return {
     file: 'commonsense:suppression',
@@ -184,6 +213,7 @@ function makeUnknownVerdict(
 
 function makeFiringVerdict(
   winner: CommonSenseRule,
+  firing: CommonSenseRule[],
   evidence: Evidence[],
   durationMs: number,
 ): OracleVerdict {
@@ -203,6 +233,8 @@ function makeFiringVerdict(
       decayModel: 'exponential' as const,
       halfLife: 300_000,
     },
+    // Phase 2.5 ECP extension — typed defeasible-prior attribution.
+    priorAssumption: firing.map(buildPriorAssumption),
   };
 
   switch (winner.default_outcome) {
@@ -301,7 +333,11 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
     );
   }
 
-  // At least one rule fires — winner = highest-priority (registry already sorts)
+  // At least one rule fires — winner = highest-priority (registry already sorts).
+  // Record telemetry (Appendix C #6 — Override-rate demotion). No-op when
+  // migration011 hasn't been applied; does not block the verdict path.
+  registry.recordFiring(firing.map((r) => r.id));
+
   const winner = firing[0]!;
-  return makeFiringVerdict(winner, allEvidence, durationMs);
+  return makeFiringVerdict(winner, firing, allEvidence, durationMs);
 }

@@ -278,6 +278,17 @@ export async function executeVerifyPhase(
   }
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
+  // L0 + oracle rejection → escalate (never commit when oracle says no)
+  if (routing.level === 0 && !verification.passed) {
+    deps.bus?.emit('task:escalate', {
+      taskId: input.id,
+      fromLevel: routing.level,
+      toLevel: (routing.level + 1) as RoutingLevel,
+      reason: verification.reason ?? 'Oracle rejection at L0',
+    });
+    return Phase.escalate({ ...routing, level: (routing.level + 1) as RoutingLevel });
+  }
+
   const effectiveOutcome: ExecutionTrace['outcome'] =
     routing.level === 0 || !confidenceDecision
       ? verification.passed ? 'success' : 'failure'

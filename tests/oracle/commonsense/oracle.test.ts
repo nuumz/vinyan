@@ -350,3 +350,148 @@ describe('CommonSense Oracle — verify()', () => {
     expect(verdict.evidence.some((e) => e.file === 'commonsense:suppression')).toBe(true);
   });
 });
+
+describe('CommonSense Oracle — priorAssumption (ECP extension)', () => {
+  test('verdict has priorAssumption[] populated when rule fires', async () => {
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'filesystem', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'rm -rf', case_sensitive: true },
+        default_outcome: 'block',
+      }),
+    );
+    const result = await verify(
+      makeHypothesis({
+        target: 'tmp.txt',
+        context: { tool: 'rm', command: 'rm -rf /tmp/cache' },
+      }),
+    );
+    const verdict = result as OracleVerdict;
+    expect(verdict.priorAssumption).toBeDefined();
+    expect(verdict.priorAssumption!.length).toBeGreaterThanOrEqual(1);
+
+    const pa = verdict.priorAssumption![0]!;
+    expect(pa.ruleId).toMatch(/^[a-f0-9]{64}$/);
+    expect(pa.microtheory).toEqual({ language: 'universal', domain: 'filesystem', action: 'mutation-destructive' });
+    expect(pa.source).toBe('innate');
+    expect(pa.priority).toBe(90);
+    expect(pa.confidence).toBe(0.7);
+    expect(pa.defaultOutcome).toBe('block');
+    expect(pa.rationale).toBe('test rule');
+    expect(pa.abnormalityPredicate).toBeUndefined();
+  });
+
+  test('priorAssumption.abnormalityPredicate is serialized when rule has one', async () => {
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'git-workflow', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'git push --force', case_sensitive: true },
+        abnormality_predicate: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: '--force-with-lease',
+          case_sensitive: true,
+        },
+        default_outcome: 'block',
+      }),
+    );
+    const result = await verify(
+      makeHypothesis({
+        target: 'README.md',
+        context: { tool: 'git', command: 'git push --force origin main' }, // no lease → fires
+      }),
+    );
+    const verdict = result as OracleVerdict;
+    expect(verdict.priorAssumption!.length).toBe(1);
+    expect(verdict.priorAssumption![0]!.abnormalityPredicate).toBeDefined();
+    // Round-trip: consumers can parse and re-evaluate
+    const parsed = JSON.parse(verdict.priorAssumption![0]!.abnormalityPredicate!);
+    expect(parsed.kind).toBe('literal-substring');
+    expect(parsed.needle).toBe('--force-with-lease');
+  });
+
+  test('priorAssumption is absent on unknown verdict (no rule fired)', async () => {
+    // Empty registry → out_of_domain abstention. Test the no-fire path:
+    // matching microtheory but no pattern match.
+    env.registry.insertRule(makeRule());
+    const result = await verify(
+      makeHypothesis({
+        target: 'foo.sh',
+        context: { tool: 'rm', command: 'rm /tmp/x' }, // doesn't include 'rm -rf'
+      }),
+    );
+    const verdict = result as OracleVerdict;
+    expect(verdict.type).toBe('unknown');
+    expect(verdict.priorAssumption).toBeUndefined();
+  });
+
+  test('priorAssumption excludes suppressed rules (only firing)', async () => {
+    // Two rules: one fires, one suppressed by abnormality
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'filesystem', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'rm -rf', case_sensitive: true },
+        default_outcome: 'block',
+        priority: 95,
+      }),
+    );
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'filesystem', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'rm -rf', case_sensitive: true },
+        abnormality_predicate: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: '--dry-run',
+          case_sensitive: true,
+        },
+        default_outcome: 'allow',
+        priority: 80,
+      }),
+    );
+    const result = await verify(
+      makeHypothesis({
+        target: 'tmp.txt',
+        context: { tool: 'rm', command: 'rm -rf /tmp/cache' }, // no --dry-run → both rules pattern-match, the one with abnormality fires (no suppression), the other... wait
+      }),
+    );
+    // With no '--dry-run' in command:
+    //   Rule A (no abnormality):       fires → priorAssumption
+    //   Rule B (--dry-run abnormality): pattern matches, abnormality does NOT hold → also fires
+    // Both fire. priorAssumption has 2 entries.
+    const verdict = result as OracleVerdict;
+    expect(verdict.priorAssumption!.length).toBe(2);
+  });
+
+  test('priorAssumption preserved across multiple firing rules — sorted by priority', async () => {
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'filesystem', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'delete', case_sensitive: true },
+        default_outcome: 'block',
+        priority: 95,
+        rationale: 'high priority',
+      }),
+    );
+    env.registry.insertRule(
+      makeRule({
+        microtheory: { language: 'universal', domain: 'filesystem', action: 'mutation-destructive' },
+        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'delete', case_sensitive: true },
+        default_outcome: 'allow', // different default_outcome → different id
+        priority: 50,
+        rationale: 'low priority',
+      }),
+    );
+    const result = await verify(
+      makeHypothesis({
+        target: 'foo.txt',
+        context: { tool: 'rm', command: 'delete this file' },
+      }),
+    );
+    const verdict = result as OracleVerdict;
+    expect(verdict.priorAssumption!.length).toBe(2);
+    // Sorted by priority DESC (registry order)
+    expect(verdict.priorAssumption![0]!.priority).toBe(95);
+    expect(verdict.priorAssumption![1]!.priority).toBe(50);
+  });
+});

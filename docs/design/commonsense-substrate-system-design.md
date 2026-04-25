@@ -1,6 +1,6 @@
 # Common Sense Substrate — Implementable System Design
 
-> 🔧 **Status: To-Be (Built).** M1 + M2 + M3 + M4 all code-complete with passing tests. Phase 2.5 sits between Evolution Engine (Phase 2) and Self-Model refinement (Phase 3). Currently `commonsense.enabled: false` by default — flip to `true` in vinyan.json to activate. Promotes from 🔧 → ✅ Active when (a) ≥1 invocation observed in default `vinyan run` smoke test AND (b) sleep-cycle promotion path wired to `SleepCycleRunner`.
+> 🔧 **Status: To-Be (Built).** M1 + M2 + M3 + M3.5 + M4 + M4.5 + ECP `priorAssumption` field all code-complete with passing tests (~648 across affected areas). Phase 2.5 sits between Evolution Engine (Phase 2) and Self-Model refinement (Phase 3). Currently `commonsense.enabled: false` by default — flip to `true` in vinyan.json to activate end-to-end. Promotes from 🔧 → ✅ Active when ≥1 invocation observed in default `vinyan run` smoke test AND ≥1 sleep-cycle promotion observed end-to-end.
 
 > **Document boundary**: Concrete implementation design for the Common Sense Substrate — a defeasible-prior knowledge layer that gives proposed actions a *named, auditable, content-addressed* sanity check. Replaces the scattered hardcoded heuristics currently embedded in `risk-router.ts`, `shell-policy.ts`, `goal-alignment-verifier.ts`, etc.
 >
@@ -40,7 +40,7 @@ This document specifies a **Common Sense Substrate** that consolidates these sca
 ### Current status at a glance
 
 ```
-🔧 Built (M1 + M2 + M3 + M4 all shipped):
+🔧 Built (M1 + M2 + M3 + M3.5 + M4 + M4.5 + ECP priorAssumption — all shipped):
   M1 CommonSense Registry        — SQLite store + 27 innate seed rules + content addressing
                                    src/oracle/commonsense/{types,registry,seeds,predicate-eval}.ts
                                    src/db/migrations/010_commonsense_rules.ts
@@ -50,9 +50,18 @@ This document specifies a **Common Sense Substrate** that consolidates these sca
   M3 Surprise-driven activation  — debouncer + activation predicate; gate filter via commonsenseSignals
                                    src/oracle/commonsense/activation.ts
                                    src/orchestrator/prediction/self-model.ts:currentSigma()
+  M3.5 Orchestrator wiring       — phase-verify constructs commonsenseSignals from prediction
+                                   SelfModelPrediction.taskTypeSignature; OracleGate.verify extended
+                                   src/orchestrator/{phases/phase-verify,oracle-gate-adapter,types}.ts
   M4 Sleep-cycle promotion path  — walk-forward backtest + Wilson 0.95 + priority caps
                                    src/sleep-cycle/promotion.ts
                                    src/oracle/commonsense/microtheory-inferer.ts
+  M4.5 SleepCycleRunner hookup   — promoteAllPatterns() called when commonsenseRegistry wired
+                                   commonsensePromoted in SleepCycleResult + productive-check
+                                   src/sleep-cycle/sleep-cycle.ts
+  ECP priorAssumption (§7)       — typed defeasible-prior attribution in OracleVerdict
+                                   src/oracle/protocol.ts:PriorAssumptionSchema
+                                   src/core/types.ts:PriorAssumption
 
 🔧 Reused (existing infrastructure):
   src/oracle/protocol.ts         — Oracle interface
@@ -62,10 +71,21 @@ This document specifies a **Common Sense Substrate** that consolidates these sca
   src/sleep-cycle/wilson.ts      — Wilson CI implementation
   src/orchestrator/prediction/   — Self-model EMA (used by M3 activation)
 
+🔧 Built (telemetry/lifecycle additions):
+  Override-rate demotion (#6)    — telemetry columns + recordFiring/Override + evaluateDemotion + retire
+                                   src/db/migrations/011_commonsense_rule_telemetry.ts
+                                   src/oracle/commonsense/registry.ts (DEFAULT_DEMOTION_CONFIG)
+                                   oracle.ts auto-records firing on each verdict
+                                   findApplicable + findActive filter retired_at IS NULL
+                                   demotion criterion: firing_count ≥ 100 AND override_rate > 0.5
+
 📋 Designed (deferred):
-  M3.5  Orchestrator wiring      — core-loop populates GateRequest.commonsenseSignals
-  M4.5  SleepCycleRunner hookup  — call promoteAllPatterns() after pattern mining
-  ECP `prior_assumption` field   — Phase 3 amendment (see §7)
+  RND visit-count decay          — per-(microtheory, pattern) activation decay (Appendix C #2)
+  SOFAI metacognitive arbitration — multi-signal activation score (Appendix C #3)
+  mSPRT / always-valid CIs       — when M4 peeking is uncontrolled (Appendix C #4)
+  Stripe Radar-style simulation  — rule-set-aware backtest at scale (Appendix C #5)
+  Override-detection wiring (#6.5) — conflict-resolver calls registry.recordOverride
+  ADWIN drift detector           — per-rule effectiveness watch (Appendix C #7)
 ```
 
 ---
@@ -430,36 +450,57 @@ Week 6:  ≥1 invocation observed in default smoke test → phase status 🔧 �
 
 ---
 
-## 7. ECP Extension — `prior_assumption` Field (Post-MVP)
+## 7. ECP Extension — `priorAssumption` Field (Shipped 2026-04-26)
 
-**This section is forward-looking and NOT part of the MVP.** It documents the protocol amendment that will make the substrate's role ECP-visible in Phase 3+.
+**Status: 🔧 Built.** Optional field landed in `OracleVerdictSchema` (Phase 2.5+). M2 oracle populates it from firing rules; consumers can read the typed shape directly. ECP v1.x compatible — unknown-field tolerance per spec §3.4 means older consumers ignore it cleanly.
 
 ### 7.1 Motivation
 
-Today an oracle returns `verified | confidence | evidence_chain | falsifiable_by`. When the verdict is *informed by* a defeasible commonsense rule, that fact is currently invisible to downstream consumers. Cross-instance A2A coordination, audit logs, and federation economy markets all benefit from explicit prior-assumption disclosure.
+Before this amendment, when a verdict was *informed by* a defeasible commonsense rule, that fact was invisible to downstream consumers (cross-instance A2A coordination, audit logs, federation markets). The information was present in `evidence` as JSON-encoded snippets, but consumers had to parse strings to recover the structure.
 
-### 7.2 Proposed amendment to ECP v1.x (NOT v2 — v2 has not been released)
+### 7.2 Implemented amendment to ECP v1.x
 
 ```typescript
-interface OracleVerdict {
-  // existing fields ...
-  prior_assumption?: {
-    rule_id: string;             // content-addressed hash from registry
-    microtheory: string;         // three-axis label
-    abnormality_predicate?: string; // serialized; consumer can re-eval to falsify
-    confidence_impact: number;   // 0.0–1.0: how much this rule moves the verdict
-    rationale: string;           // human-readable WHY
-  }[];
+// src/oracle/protocol.ts → OracleVerdictSchema
+priorAssumption: z.array(PriorAssumptionSchema).optional(),
+
+// src/core/types.ts → OracleVerdict
+priorAssumption?: PriorAssumption[];
+
+// PriorAssumption shape (one entry per firing rule)
+{
+  ruleId: string;                // SHA-256 hex (64 chars)
+  microtheory: { language, domain, action };  // three-axis label
+  abnormalityPredicate?: string; // serialized JSON; consumer can re-eval to falsify
+  source: 'innate' | 'configured' | 'promoted-from-pattern';
+  priority: number;              // post-cap (innate ≤100, configured ≤80, promoted ≤70)
+  confidence: number;            // pragmatic-tier band [0.5, 0.7]
+  defaultOutcome: 'allow' | 'block' | 'needs-confirmation' | 'escalate';
+  rationale: string;             // human-readable WHY
 }
 ```
 
-### 7.3 Backward compatibility
+### 7.3 Suppressed rules stay in `evidence`
 
-The field is OPTIONAL. ECP v1.x consumers ignore unknown fields per spec §3.4. No version bump required.
+Suppressed rules (pattern matched but abnormality predicate also held) do NOT appear in `priorAssumption` — they remain in `evidence` as SARIF v2.1.0 §3.35 Suppression records. The split is intentional:
 
-### 7.4 Decision
+- `priorAssumption` = rules that *contributed* to the verdict (contractual signal)
+- `evidence` (with SARIF Suppression) = full audit trail (transparency for reviewers)
 
-**Defer to Phase 3.** Risk of premature commitment to wire format outweighs benefit during MVP. M2 verdicts emit the field internally (pretest the shape) but it is stripped before A2A serialization until amendment is ratified.
+A consumer that wants only the firing set reads `priorAssumption`. A consumer that wants full provenance reads `evidence`. Both are typed.
+
+### 7.4 Backward compatibility
+
+The field is OPTIONAL. ECP v1.x consumers ignore unknown fields per spec §3.4. No version bump required. Tests verify the field is `undefined` when no rule fires (e.g., `type: 'unknown'` verdicts), and an array of length ≥1 when rules fire.
+
+### 7.5 Tests
+
+`tests/oracle/commonsense/oracle.test.ts` — see "CommonSense Oracle — priorAssumption (ECP extension)" describe block. Verifies:
+- Field populated when rule fires (single + multiple rules)
+- Field absent on unknown verdicts (no rule fired)
+- `abnormalityPredicate` round-trippable to JSON for falsification
+- Suppressed rules excluded from `priorAssumption` (they stay in `evidence`)
+- Multiple firing rules sorted by priority descending
 
 ---
 
@@ -491,7 +532,7 @@ The field is OPTIONAL. ECP v1.x consumers ignore unknown fields per spec §3.4. 
 | ConceptNet / ATOMIC import | License + scope creep; coding-agent commonsense ≠ general commonsense | Phase 5 if multi-domain tasks dominate (>50% non-code traffic) |
 | Per-user personalized rules | Creates state divergence across instances; breaks A2A coordination | Possibly via federation economy in Phase 5+ |
 | Explicit "common sense benchmark" suite (HellaSwag, etc.) | Benchmarks measure LLM commonsense, not substrate efficacy | Replace with internal shadow-execution backtest (A7-aligned) |
-| `prior_assumption` field shipping in MVP | Premature wire-format commitment | §7 — Phase 3 amendment |
+| ~~`prior_assumption` field shipping in MVP~~ | ~~Premature wire-format commitment~~ | **Shipped 2026-04-26** — see §7 |
 | Generation-prior path (system-prompt rules) | Violates A1 (engine evaluates own output) | Never — see §3.1 decision |
 
 ---
@@ -588,6 +629,7 @@ Documented for future iterations — each tied to specific research finding and 
 | 3 | SOFAI-style metacognitive arbitration combining 4 signals | When sigma-only gating proves insufficient (FP rate > 30%) | [SOFAI 2025](https://www.nature.com/articles/s44387-025-00027-5) | `src/orchestrator/core-loop.ts` (M3 activation predicate) |
 | 4 | mSPRT / always-valid CIs replacing fixed-N Wilson | When Sleep-Cycle peeks at patterns more than once per N-window | [Johari et al.](https://arxiv.org/abs/1512.04922) | `src/sleep-cycle/wilson.ts` |
 | 5 | Stripe Radar-style rule-set-aware simulation | M4 v2 — once registry exceeds ~50 rules | [Stripe Radar](https://docs.stripe.com/radar/testing) | `src/sleep-cycle/promotion.ts` (extend) |
-| 6 | Override-count column + override-rate demotion criterion | After M2 ships and override patterns become observable | [TDS neuro-symbolic fraud](https://towardsdatascience.com/neuro-symbolic-fraud-detection-catching-concept-drift-before-f1-drops-label-free/) | New migration; `commonsense_rules.override_count` |
+| ~~6~~ | ~~Override-count column + override-rate demotion criterion~~ | ✅ **Shipped 2026-04-26** as migration 011 + registry.recordFiring/recordOverride/evaluateDemotion/retire/isRetired/findActive | [TDS neuro-symbolic fraud](https://towardsdatascience.com/neuro-symbolic-fraud-detection-catching-concept-drift-before-f1-drops-label-free/) | `src/db/migrations/011_commonsense_rule_telemetry.ts`, `src/oracle/commonsense/registry.ts` |
+| 6.5 | Wire override detection in conflict resolver — gate calls registry.recordOverride when pragmatic verdict overridden by deterministic | When `commonsense.enabled: true` and oracle starts firing in production traces | n/a | `src/gate/conflict-resolver.ts` + `src/gate/gate.ts` |
 | 7 | ADWIN drift detector per rule | M4 v2 — quarterly review automation | [Comparative drift study](https://www.researchgate.net/publication/264081451_A_Comparative_Study_on_Concept_Drift_Detectors) | `src/sleep-cycle/drift-detector.ts` (new) |
-| 8 | ECP `prior_assumption` field in OracleVerdict | Phase 3 — when A2A federation needs to share defeasible verdicts | §7 of this doc | `src/spec/ecp-spec.md` amendment |
+| ~~8~~ | ~~ECP `prior_assumption` field in OracleVerdict~~ | ✅ **Shipped 2026-04-26** as `priorAssumption?: PriorAssumption[]` | §7 of this doc | `src/oracle/protocol.ts`, `src/core/types.ts` |

@@ -118,14 +118,24 @@ export const CommonSenseRuleSchema = z.object({
   promoted_from_pattern_id: z.string().optional(),
   created_at: z.number().int(),
   rationale: z.string().min(1), // human-readable WHY (audit)
+  // ── Telemetry (Appendix C #6 — Override-rate demotion) ────────────────
+  // Populated/maintained by CommonSenseRegistry; not user-supplied.
+  firing_count: z.number().int().min(0).default(0),
+  override_count: z.number().int().min(0).default(0),
+  last_fired_at: z.number().int().nullable().optional(),
+  retired_at: z.number().int().nullable().optional(),
 });
 export type CommonSenseRule = z.infer<typeof CommonSenseRuleSchema>;
 
-// ── Insert payload (id derived, created_at injected) ─────────────────────
+// ── Insert payload (id derived, created_at injected, telemetry maintained by registry) ──
 
 export const CommonSenseRuleInputSchema = CommonSenseRuleSchema.omit({
   id: true,
   created_at: true,
+  firing_count: true,
+  override_count: true,
+  last_fired_at: true,
+  retired_at: true,
 });
 export type CommonSenseRuleInput = z.infer<typeof CommonSenseRuleInputSchema>;
 

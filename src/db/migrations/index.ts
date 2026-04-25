@@ -19,6 +19,7 @@ import { migration007 } from './007_plugin_audit.ts';
 import { migration008 } from './008_skill_trust_ledger.ts';
 import { migration009 } from './009_user_md_dialectic.ts';
 import { migration010 } from './010_commonsense_rules.ts';
+import { migration011 } from './011_commonsense_rule_telemetry.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -32,4 +33,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration008,
   migration009,
   migration010,
+  migration011,
 ];

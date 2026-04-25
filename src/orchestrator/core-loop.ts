@@ -19,10 +19,12 @@ import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
+import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
 import type { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
+import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executePlanPhase } from './phases/phase-plan.ts';
 import { executePredictPhase } from './phases/phase-predict.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
@@ -2145,6 +2147,40 @@ async function executeTaskCore(
         }
 
         // ═══════════════════════════════════════════════════════════════
+        // Step 0.5: BRAINSTORM (Agentic SDLC — optional pre-Perceive ideation)
+        // ═══════════════════════════════════════════════════════════════
+        // Runs when the ideation classifier detects an open-ended / options-type
+        // goal. Produces N ranked candidate approaches, asks the human to pick
+        // one, and injects the chosen approach into ctx.input.constraints so
+        // downstream phases see it. Gated off by default (classifier is
+        // conservative); `BRAINSTORM_PHASE:off` kill-switches entirely.
+        //
+        // A1: drafters + critic + integrator are distinct roles (Brainstorm Room
+        //     preset enforces). In fast fallback mode (no Room dispatcher) the
+        //     phase still separates ideation from later generation.
+        // A3: classifier is a pure regex function; no LLM in routing path.
+        // A7: ranked candidates with explicit risk notes surface uncertainty.
+        const brainstormStart = Date.now();
+        const brainstormOutcome = await executeBrainstormPhase(ctx, routing, understanding);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'brainstorm',
+          durationMs: Date.now() - brainstormStart,
+          routingLevel: routing.level,
+        });
+        if (brainstormOutcome.action === 'return') {
+          deps.bus?.emit('task:complete', { result: brainstormOutcome.result });
+          return brainstormOutcome.result;
+        }
+        if (!brainstormOutcome.value.skipped && brainstormOutcome.value.ideation) {
+          understanding = { ...understanding, ideation: brainstormOutcome.value.ideation };
+          if (brainstormOutcome.value.enhancedInput) {
+            ctx = { ...ctx, input: brainstormOutcome.value.enhancedInput };
+            input = brainstormOutcome.value.enhancedInput;
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
         // Step 1: PERCEIVE
         // ═══════════════════════════════════════════════════════════════
         const perceiveStart = Date.now();
@@ -2237,6 +2273,40 @@ async function executeTaskCore(
             };
             deps.bus?.emit('task:complete', { result: comprehensionResult });
             return comprehensionResult;
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 1.5: SPEC REFINEMENT (Agentic SDLC — pre-Plan spec artifact)
+        // ═══════════════════════════════════════════════════════════════
+        // For code-mutation domain tasks at routing >= 1, collaboratively draft
+        // a SpecArtifact (summary, acceptance criteria, API shape, edge cases)
+        // BEFORE planning. The approved artifact's criteria + edge cases are
+        // merged into ctx.input so GoalEvaluator (C5 coverage) and Plan phase
+        // anchor to a frozen contract rather than the raw goal string.
+        //
+        // A1: spec-author, api-designer, edge-case-critic, spec-integrator are
+        //     distinct roles (Spec Room preset). Fast-mode fallback still runs
+        //     spec generation separately from downstream generation.
+        // A3: once approved, the spec is immutable input to deterministic gates.
+        // A7: acceptance criteria turn implicit "done" into explicit, testable.
+        const specStart = Date.now();
+        const specOutcome = await executeSpecPhase(ctx, routing, understanding);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'spec',
+          durationMs: Date.now() - specStart,
+          routingLevel: routing.level,
+        });
+        if (specOutcome.action === 'return') {
+          deps.bus?.emit('task:complete', { result: specOutcome.result });
+          return specOutcome.result;
+        }
+        if (!specOutcome.value.skipped && specOutcome.value.spec) {
+          understanding = { ...understanding, spec: specOutcome.value.spec };
+          if (specOutcome.value.enhancedInput) {
+            ctx = { ...ctx, input: specOutcome.value.enhancedInput };
+            input = specOutcome.value.enhancedInput;
           }
         }
 

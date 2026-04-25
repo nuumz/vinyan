@@ -104,7 +104,7 @@ export type TaskDomain = 'code-mutation' | 'code-reasoning' | 'general-reasoning
  * Concept §1: Vinyan is a task orchestrator, not a Q&A chatbot.
  * When intent=execute, the response should frame as capability assessment, not tutorial.
  */
-export type TaskIntent = 'execute' | 'inquire' | 'converse';
+export type TaskIntent = 'execute' | 'inquire' | 'converse' | 'ideate';
 
 /**
  * Whether the task requires tool execution to fulfil the user's goal.
@@ -368,6 +368,15 @@ export interface SemanticTaskUnderstanding extends TaskUnderstanding {
   // ── Content-addressing (P8) ────────────────────────────
   /** SHA-256 fingerprint = hash(goal + sorted(resolvedPaths) + taskSignature). */
   understandingFingerprint: string;
+
+  // ── Agentic SDLC enrichments (optional, populated by phase-spec / phase-brainstorm) ──
+  /** Frozen, human-approved specification produced by phase-spec. When present,
+   *  GoalEvaluator anchors C5 coverage to this artifact rather than the raw goal. */
+  spec?: import('./spec/spec-artifact.ts').SpecArtifact;
+  /** Brainstorm output — N ranked candidate approaches. Populated by phase-brainstorm
+   *  when the ideation classifier matches the goal. The chosen candidate's approach
+   *  is also surfaced via TaskInput.constraints for prompt assembly. */
+  ideation?: import('./intent/ideation-types.ts').IdeationResult;
 }
 
 /**

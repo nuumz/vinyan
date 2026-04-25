@@ -142,6 +142,29 @@ export interface VinyanBusEvents {
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
 
+  // Agentic SDLC — Spec Refinement phase (between Perceive and Predict)
+  'spec:drafted': {
+    taskId: string;
+    criteriaCount: number;
+    edgeCaseCount: number;
+    openQuestionCount: number;
+    durationMs: number;
+  };
+  'spec:approved': { taskId: string; approvedBy: string; criteriaCount: number };
+  'spec:rejected': { taskId: string; reason: string };
+  'spec:drafting_failed': { taskId: string; reason: string; durationMs: number };
+
+  // Agentic SDLC — Brainstorm phase (pre-Perceive ideation)
+  'brainstorm:drafted': {
+    taskId: string;
+    candidateCount: number;
+    convergenceScore: number;
+    durationMs: number;
+  };
+  'brainstorm:approved': { taskId: string; approvedCandidateId?: string; convergenceScore: number };
+  'brainstorm:rejected': { taskId: string; reason: string };
+  'brainstorm:drafting_failed': { taskId: string; reason: string; durationMs: number };
+
   // PH3.6: Epsilon-greedy exploration
   'task:explore': { taskId: string; fromLevel: number; toLevel: number };
 

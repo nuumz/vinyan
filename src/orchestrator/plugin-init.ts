@@ -47,7 +47,12 @@ import { discoverPlugins } from '../plugin/discovery.ts';
 import { InprocLoader } from '../plugin/loader.ts';
 import { PluginRegistry } from '../plugin/registry.ts';
 import type { TrustConfig } from '../plugin/signature.ts';
+import { DiscordAdapter } from '../gateway/adapters/discord.ts';
+import { SlackAdapter } from '../gateway/adapters/slack.ts';
+import { registerDiscordAdapter } from '../gateway/register-discord.ts';
+import { registerSlackAdapter } from '../gateway/register-slack.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
+import { registerSessionSearchTool } from './tools/register-session-search.ts';
 import { registerSkillTools } from './tools/register-skill-tools.ts';
 import type { Tool } from './tools/tool-interface.ts';
 import type { TaskInput, TaskResult } from './types.ts';
@@ -96,6 +101,7 @@ export interface PluginInitResult {
   readonly memoryRegistered: boolean;
   readonly memoryActivated: boolean;
   readonly skillToolsRegistered: boolean;
+  readonly sessionSearchRegistered: boolean;
   /**
    * Gateway dispatcher, constructed only when `gateway.enabled=true` AND an
    * `executeTask` closure was provided. Callers wire teardown via
@@ -180,6 +186,22 @@ export async function initializePlugins(opts: PluginInitOptions): Promise<Plugin
     }
   }
 
+  // 6.5. Session search tool — FTS5 over memory_records (migration 003).
+  // User-invocable historical recall without cluttering active memory (A4).
+  let sessionSearchRegistered = false;
+  if (opts.pluginConfig.registerSessionSearch !== false) {
+    try {
+      registerSessionSearchTool({
+        toolRegistry: opts.toolRegistry,
+        deps: { db: opts.db },
+      });
+      sessionSearchRegistered = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`session_search registration failed: ${msg}`);
+    }
+  }
+
   // 7. External plugin discovery + ingest.
   try {
     const discovered = await discoverPlugins({
@@ -243,6 +265,7 @@ export async function initializePlugins(opts: PluginInitOptions): Promise<Plugin
     memoryRegistered,
     memoryActivated,
     skillToolsRegistered,
+    sessionSearchRegistered,
     dispatcher,
     warnings,
   };
@@ -270,6 +293,8 @@ interface WireGatewayInput {
  */
 async function wireGateway(input: WireGatewayInput): Promise<GatewayDispatcher | undefined> {
   await maybeRegisterTelegram(input);
+  await maybeRegisterSlack(input);
+  await maybeRegisterDiscord(input);
 
   // Dispatcher — needs `executeTask` to dispatch inbound envelopes through
   // the core loop. When the caller hasn't threaded `executeTask` through yet
@@ -324,6 +349,75 @@ async function maybeRegisterTelegram(input: WireGatewayInput): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     input.warnings.push(`telegram adapter registration failed: ${msg}`);
+  }
+}
+
+/**
+ * Best-effort bundled Slack adapter registration. Mirrors Telegram path.
+ * Missing tokens → warn + skip (gateway still starts with whatever succeeded).
+ */
+async function maybeRegisterSlack(input: WireGatewayInput): Promise<void> {
+  const slackCfg = input.gatewayConfig.slack;
+  if (!slackCfg?.enabled) return;
+
+  if (!slackCfg.appToken || !slackCfg.botToken) {
+    input.warnings.push(
+      'gateway.slack.enabled but appToken and/or botToken absent — slack adapter not registered',
+    );
+    return;
+  }
+
+  try {
+    const adapter = new SlackAdapter({
+      appToken: slackCfg.appToken,
+      botToken: slackCfg.botToken,
+      allowedChannels: slackCfg.allowedChannels,
+    });
+    const result = await registerSlackAdapter({
+      registry: input.registry,
+      adapter,
+      activate: true,
+    });
+    if (!result.registered) {
+      input.warnings.push('slack adapter not registered (registry refused activation)');
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    input.warnings.push(`slack adapter registration failed: ${msg}`);
+  }
+}
+
+/**
+ * Best-effort bundled Discord adapter registration. Mirrors Telegram path.
+ */
+async function maybeRegisterDiscord(input: WireGatewayInput): Promise<void> {
+  const discordCfg = input.gatewayConfig.discord;
+  if (!discordCfg?.enabled) return;
+
+  if (!discordCfg.botToken) {
+    input.warnings.push(
+      'gateway.discord.enabled but botToken absent — discord adapter not registered',
+    );
+    return;
+  }
+
+  try {
+    const adapter = new DiscordAdapter({
+      botToken: discordCfg.botToken,
+      intents: discordCfg.intents,
+      allowedGuilds: discordCfg.allowedGuilds,
+    });
+    const result = await registerDiscordAdapter({
+      registry: input.registry,
+      adapter,
+      activate: true,
+    });
+    if (!result.registered) {
+      input.warnings.push('discord adapter not registered (registry refused activation)');
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    input.warnings.push(`discord adapter registration failed: ${msg}`);
   }
 }
 

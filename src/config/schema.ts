@@ -565,6 +565,8 @@ const PluginsConfigSchema = z
     activateMemory: z.boolean().default(true),
     /** Register and expose the three SKILL.md tools. */
     registerSkillTools: z.boolean().default(true),
+    /** Register the session_search tool (FTS5 over memory_records). */
+    registerSessionSearch: z.boolean().default(true),
     /** Activate each discovered messaging-adapter plugin at factory boot. */
     autoActivateMessagingAdapters: z.boolean().default(false),
   })
@@ -574,6 +576,7 @@ const PluginsConfigSchema = z
     extraDiscoveryPaths: [],
     activateMemory: true,
     registerSkillTools: true,
+    registerSessionSearch: true,
     autoActivateMessagingAdapters: false,
   }));
 

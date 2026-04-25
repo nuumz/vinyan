@@ -19,6 +19,9 @@ import {
 import { directoryList } from './directory-tools.ts';
 // ── Category imports ────────────────────────────────────────────────
 import { fileEdit, fileRead, fileWrite } from './file-tools.ts';
+import { gitCommit } from './git-commit.ts';
+import { gitPr } from './git-pr.ts';
+import { gitPush } from './git-push.ts';
 import { gitDiff, gitStatus } from './git-tools.ts';
 import { httpGet } from './http-tools.ts';
 import { memoryPropose } from './memory-tools.ts';
@@ -74,7 +77,10 @@ export {
   fileEdit,
   fileRead,
   fileWrite,
+  gitCommit,
   gitDiff,
+  gitPr,
+  gitPush,
   gitStatus,
   httpGet,
   memoryPropose,
@@ -119,6 +125,9 @@ export const BUILT_IN_TOOLS: Map<string, Tool> = new Map([
   ['shell_exec', shellExec],
   ['git_status', gitStatus],
   ['git_diff', gitDiff],
+  ['git_commit', gitCommit],
+  ['git_push', gitPush],
+  ['git_pr', gitPr],
   ['search_semantic', searchSemantic],
   ['http_get', httpGet],
   ['memory_propose', memoryPropose],

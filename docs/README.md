@@ -45,6 +45,7 @@ defined, partial / stub implementation.
 | 6 | Agentic Worker Protocol | ✅ Active | Default path |
 | K1 | Kernel Hardening (guardrails, agent contracts, tool auth) | ✅ Active | Always |
 | 2 | Evolution Engine (Sleep Cycle + skill cache + rule promotion) | 🔧 Built | DB + ≥100 traces |
+| 2.5 | Common Sense Substrate (defeasible-prior knowledge layer) | 📋 Designed | M1–M4 ship; ≥30 seed rules; ≥1 default-path invocation |
 | 3 | Self-Model (trace-calibrated prediction) | 🔧 Built | DB; uses stub otherwise |
 | 4 | Fleet Governance (worker profiles, capability routing) | 🔧 Built | DB + multiple LLM providers |
 | 5 | ENS (API, TUI, A2A coordination, cross-language oracles) | 🔧 Built | API via `vinyan serve`; A2A needs `network.instances.enabled` |
@@ -96,6 +97,7 @@ defined, partial / stub implementation.
 - [`design/autonomous-orchestrator-v1.md`](design/autonomous-orchestrator-v1.md) — Wave 1–6 outer-loop upgrade design. **Shipped behind feature flags (W3/W5b/W6 default ON; W1/W2/W4/W5a default OFF).**
 - [`design/book-integration-implementation-plan.md`](design/book-integration-implementation-plan.md) — Book-integration impl plan (multiple waves landed in code).
 - [`design/ecp-system-design.md`](design/ecp-system-design.md) — **To-Be — describes a hypothetical ECP v2. ECP v2 has NOT been released. Read for ideas, do not implement from this doc.**
+- [`design/commonsense-substrate-system-design.md`](design/commonsense-substrate-system-design.md) — **To-Be (📋 Designed).** Defeasible-prior knowledge layer + Common Sense Oracle. Phase 2.5; extends A1/A3/A5; reuses sleep-cycle promotion path.
 
 ### Research (background, not active planning)
 

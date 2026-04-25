@@ -1,5 +1,7 @@
 # Extensible Thinking — System Design & Implementation Plan
 
+> 📋 **Status: To-Be — Designed, NOT prioritized.** Multi-hypothesis thinking, per-task-type thinking overrides, and the per-task-type calibration loop described here are **not yet implemented** and not on the active roadmap. Read for direction; do not assume any of this is wired.
+
 > **Document boundary**: This document owns the system design, component contracts, data contracts, and phased implementation plan for Vinyan's Extensible Thinking feature.
 > For the debate foundations, see [extensible-thinking-debate-synthesis.md](../research/extensible-thinking-debate-synthesis.md). For academic validation, see [extensible-thinking-deep-research.md](../research/extensible-thinking-deep-research.md). For current architecture, see [decisions.md](../architecture/decisions.md).
 

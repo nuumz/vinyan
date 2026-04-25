@@ -1,5 +1,7 @@
 # Semantic Task Understanding — System Design
 
+> 🔧 **Status: Mixed.** STU **Phase A–B** (task decomposition, entity resolution, intent classification) are **✅ Active**. **Phase C** (claim verification) is wired into core-loop. **Phase D** (multi-turn grounding) ships in ACR (R0–R2). **Phase E+** is **📋 Designed only**.
+
 > **Document boundary**: This document owns the system design for Vinyan's layered semantic task understanding architecture — from the current rule-based extraction through structural resolution and LLM-assisted semantic parsing.
 > For core axioms and identity → [concept.md](../foundation/concept.md).
 > For architecture decisions → [decisions.md](../architecture/decisions.md).

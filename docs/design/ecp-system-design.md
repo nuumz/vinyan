@@ -1,7 +1,9 @@
 # ECP: System Design & Implementation Plan
 
-> **Date:** 2026-04-04 | **Status:** Design Draft | **Produced by:** Expert Agent Team (4 domain specialists + Orchestrator)
-> **Input:** [ecp-migration-brainstorm.md](../research/ecp-migration-brainstorm.md) — corrected and refined by codebase verification
+> ⚠️ **Status: To-Be — DO NOT IMPLEMENT FROM THIS DOC.** This describes a hypothetical "ECP v2" that has **never been released**. Only one ECP version exists today: see [`spec/ecp-spec.md`](../spec/ecp-spec.md). Read this for ideas; cite the spec for authority. The migration brainstorm referenced below has been moved to [`archive/ecp-migration-brainstorm.md`](../archive/ecp-migration-brainstorm.md).
+
+> **Date:** 2026-04-04 | **Status:** Design Draft (NOT shipped) | **Produced by:** Expert Agent Team (4 domain specialists + Orchestrator)
+> **Input:** [`archive/ecp-migration-brainstorm.md`](../archive/ecp-migration-brainstorm.md) — archived; corrected and refined by codebase verification
 > **Review:** [ecp-system-design-debate-synthesis.md](../research/ecp-system-design-debate-synthesis.md) — 6-expert review, 5 dead ends identified, CONDITIONAL GO
 > **Prerequisite:** [ecp-spec.md](../spec/ecp-spec.md), [design-subjective-logic.md](../research/design-subjective-logic.md)
 

@@ -1,6 +1,6 @@
 ---
 type: design
-status: draft
+status: built-opt-in (Phase A shipped 2026-04-18: O1-O5 ✅ implemented, gated behind `ecosystem.enabled: true` — see §10 activation recipe; cross-instance modes still 📋 Designed)
 single-source-of-truth-for: Vinyan OS agent ecosystem (runtime states, org structure, volunteer protocol, full-cycle bidding)
 related:
   - ./agent-conversation.md            # Room (R0-R2 shipped)

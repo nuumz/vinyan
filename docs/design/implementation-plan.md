@@ -2295,7 +2295,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Session management with compaction.** Group multiple `TaskInput` submissions under a session. Session state includes shared `WorkingMemory`, cumulative trace history, and a **compaction pipeline**: after N tasks or M minutes, summarize the session transcript into a condensed episode (approach sequences, key failures, successful patterns). Compacted sessions feed Sleep Cycle as first-class input. [Closes GAP-3: session management]
 - **Checkpoint recovery.** Persist session state and in-progress task state to SQLite (new `session_store` table following `WorkerStore` pattern from `db/worker-store.ts`). On restart, recover pending tasks and resume from last checkpoint. [Closes GAP-H FC6: "restarted randomly"]
 - **Health and metrics.** Expose `SystemMetrics` (from `observability/metrics.ts`) and `FleetMetrics` (from `fleet-evaluator.ts`) via read-only HTTP endpoints.
-- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects VIIP peers, then closes resources. See [tdd.md §22.7](../spec/tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
+- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects A2A peers, then closes resources. See [tdd.md §22.7](../spec/tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
 
 **Extends:** `TaskInput.source: 'api'` (types.ts:56), `Orchestrator` interface (factory.ts), `WorkingMemory` (working-memory.ts)
 **New files:** `src/api/server.ts`, `src/api/routes.ts`, `src/api/session-manager.ts`, `src/db/session-schema.ts`, `src/db/session-store.ts`
@@ -2424,7 +2424,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.7 — ECP Network Transport `[L]`
 
-> **Design prerequisite:** [a2a-protocol.md](../spec/a2a-protocol.md) specifies the full wire protocol (VIIP), message envelope, delivery guarantees, and failure modes. [concept.md §2.4](../foundation/concept.md) specifies network-aware ECP semantics and confidence degradation.
+> **Design prerequisite:** [a2a-protocol.md](../spec/a2a-protocol.md) specifies the full wire protocol (ECP-over-A2A v1.0; replaces the deleted VIIP), message envelope, delivery guarantees, and failure modes. [concept.md §2.4](../foundation/concept.md) specifies network-aware ECP semantics and confidence degradation.
 
 **Purpose:** Extend ECP from stdio (local process) to network boundaries. Preserves epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol does this natively.
 
@@ -2436,17 +2436,17 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Temporal context enforcement.** `temporal_context` (concept §13.2) becomes required on all cross-instance ECP messages. Receiving Orchestrator checks `valid_until` before trusting remote evidence. Stale evidence auto-degrades to `type: 'unknown'`.
 - **`deliberation_request` support.** Implement concept §13.1: engines signal insufficient reasoning depth and request additional compute. Maps to routing level escalation in the receiving instance.
 - **Instance discovery.** Static config (Phase 5 default) + `.well-known/vinyan.json` endpoint (concept §11.2). Declares oracle set, language coverage, domain tags, health, capacity.
-- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake per VIIP §2.3.
+- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake per `a2a-protocol.md` §2.3.
 
 **Extends:** `oracle/runner.ts` (transport abstraction), `OracleConfig.command` (config/schema.ts:14), `ECP_PROTOCOL_VERSION` (types.ts:24)
 **Dependencies:** PH5.14 (Security — mTLS/signing), PH5.1 (shares HTTP/WebSocket infra)
 
 **Design decisions resolved (from gap analysis):**
-- Wire protocol: **WebSocket** (persistent, bidirectional) with HTTP/2 SSE fallback (VIIP §2.1)
+- Wire protocol: **HTTP POST + JSON-RPC 2.0** (Google A2A v1.0) with SSE for streaming (`a2a-protocol.md` §2.1)
 - Serialization: **JSON** (readable, debuggable) — optimize to MessagePack only if profiling shows bottleneck
-- Auth: **Ed25519 message signatures** + optional mTLS (VIIP §4)
-- Message ordering: **Causal per-instance** (UUIDv7 time-sortable), no global ordering (VIIP §6.2)
-- Delivery: **At-least-once with idempotency** — 10K message dedup window (VIIP §6.1)
+- Auth: **Ed25519 message signatures** + optional mTLS (`a2a-protocol.md` §4)
+- Message ordering: **Causal per-instance** (UUIDv7 time-sortable), no global ordering (`a2a-protocol.md` §6.2)
+- Delivery: **At-least-once with idempotency** — 10K message dedup window (`a2a-protocol.md` §6.1)
 
 ##### PH5.8 — Instance Coordinator `[XL]` (Research)
 

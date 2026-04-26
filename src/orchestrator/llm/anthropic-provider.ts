@@ -168,6 +168,14 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             messages,
             ...(tools?.length ? { tools } : {}),
             ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+            // G3 per-phase sampling: forward top_p / top_k / stop_sequences when set.
+            // Anthropic forbids top_p + temperature together when thinking is on; the
+            // SDK already nulls temperature in that case so top_p stands alone.
+            ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+            ...(request.topK !== undefined ? { top_k: request.topK } : {}),
+            ...(request.stopSequences && request.stopSequences.length > 0
+              ? { stop_sequences: request.stopSequences }
+              : {}),
             // G4 structured output: when the caller declares a response_format,
             // pin tool_choice so the model MUST emit the named tool. Anthropic
             // does not have a direct json_schema parameter, so json_schema is
@@ -265,6 +273,12 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           messages,
           ...(tools?.length ? { tools } : {}),
           ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          // G3 per-phase sampling — same forwarding as the non-streaming path.
+          ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+          ...(request.topK !== undefined ? { top_k: request.topK } : {}),
+          ...(request.stopSequences && request.stopSequences.length > 0
+            ? { stop_sequences: request.stopSequences }
+            : {}),
           ...buildThinkingParams(request.thinking),
         });
 

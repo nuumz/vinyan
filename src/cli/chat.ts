@@ -82,7 +82,14 @@ export async function startChat(argv: string[], opts: StartChatOptions = {}): Pr
 
   // Create orchestrator with session manager for cross-turn context.
   // Pass the existing `db` so factory does not double-open the WAL file.
-  const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager, db });
+  const orchestrator = createOrchestrator({
+    workspace,
+    llmProxy: true,
+    // G2+ A6: opt-in OS keychain lookup. VINYAN_USE_KEYCHAIN=1 to enable.
+    useKeychain: process.env.VINYAN_USE_KEYCHAIN === '1',
+    sessionManager,
+    db,
+  });
 
   // Phase 0 W5: when --verbose is set, attach the bus progress listener so
   // tool calls, oracle verdicts, and escalations stream to stderr while

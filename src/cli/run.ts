@@ -108,6 +108,9 @@ export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {
     workspace,
     bus,
     llmProxy: true,
+    // G2+ A6: opt-in OS keychain lookup for missing provider keys.
+    // Set VINYAN_USE_KEYCHAIN=1 to avoid `*_API_KEY` in shell history / env.
+    useKeychain: process.env.VINYAN_USE_KEYCHAIN === '1',
     commandApprovalGate,
     // One-shot CLI tasks without target files do not benefit from background
     // workspace crawling, and chokidar startup can delay direct-tool launch commands.

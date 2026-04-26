@@ -115,6 +115,7 @@ import { FleetRegistry } from './profile/fleet-registry.ts';
 import { WorkerSelector } from './fleet/worker-selector.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
@@ -183,8 +184,22 @@ export interface OrchestratorConfig {
    * cap enforced). Set to 0 to disable debate for the whole day.
    */
   debateMaxPerDay?: number;
-  /** Enable LLM proxy for credential isolation (A6). Default: false. */
+  /**
+   * Enable LLM proxy for credential isolation (A6).
+   * Default: `true` when subprocess workers are used (the production case).
+   * Tests with `useSubprocess: false` are unaffected. Pass `false` to opt out
+   * (legacy mode forwards `*_API_KEY` to worker subprocesses — A6 violation).
+   */
   llmProxy?: boolean;
+  /**
+   * Pull provider API keys from the OS keychain at startup (G2+ — A6).
+   * Default: `false`. When `true`, missing env vars (e.g., `ANTHROPIC_API_KEY`)
+   * are populated from the keychain entry stored under service `vinyan`,
+   * account = env-var name. Existing env vars take precedence. macOS prompts
+   * the user on first read; Linux requires `secret-tool` (libsecret).
+   * See src/security/keychain.ts for setup commands.
+   */
+  useKeychain?: boolean;
   /** Session manager for conversation agent mode (optional — wired into deps if provided). */
   sessionManager?: import('../api/session-manager.ts').SessionManager;
   /**
@@ -358,6 +373,17 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Cleanup stale overlay directories from crashed sessions
   const staleCount = cleanupStaleOverlays(workspace);
   if (staleCount > 0) console.warn(`[vinyan] Cleaned up ${staleCount} stale session overlays`);
+
+  // G2+: Optionally fill missing provider keys from the OS keychain BEFORE
+  // building the registry. Env vars still win (so `ANTHROPIC_API_KEY=...
+  // bun run vinyan run` keeps overriding behaviour). When the caller supplied
+  // their own registry we skip — they own credential resolution.
+  if (config.useKeychain && !config.registry) {
+    const result = populateProviderKeysFromKeychain();
+    if (result.populated.length > 0) {
+      console.warn(`[vinyan] Loaded ${result.populated.length} key(s) from keychain (${result.backend})`);
+    }
+  }
 
   // Set up LLM provider registry
   const registry = config.registry ?? createDefaultRegistry();
@@ -878,9 +904,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           console.warn('[vinyan] No LLM providers — using single-node task decomposition');
           return new TaskDecomposerStub();
         })();
-  // A6: Start LLM proxy for credential isolation if enabled
+  // A6: Start LLM proxy for credential isolation when subprocess workers run.
+  // Default ON when subprocess mode is on; explicit `llmProxy: false` opts out.
   let llmProxy: import('./llm/llm-proxy.ts').LLMProxyServer | undefined;
-  if (config.llmProxy && (config.useSubprocess ?? true)) {
+  const subprocessEnabled = config.useSubprocess ?? true;
+  const llmProxyEnabled = (config.llmProxy ?? true) && subprocessEnabled;
+  if (llmProxyEnabled) {
     llmProxy = startLLMProxy(registry);
   }
   const workerPool = new WorkerPoolImpl({

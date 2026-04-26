@@ -10,6 +10,7 @@
 import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type {
   CachedSkill,
+  EngineProfile,
   EvolutionaryRule,
   ExecutionTrace,
   RoutingDecision,
@@ -20,7 +21,6 @@ import type {
   TaskResult,
   ToolResult,
   WorkerOutput,
-  EngineProfile,
 } from '../orchestrator/types.ts';
 import type { Fact, OracleVerdict } from './types.ts';
 
@@ -703,9 +703,7 @@ export interface VinyanBusEvents {
     minedAt: number;
     windowSinceMs: number;
     rowsScanned: number;
-    insights: ReadonlyArray<
-      import('../orchestrator/comprehension/learning/miner.ts').ComprehensionInsight
-    >;
+    insights: ReadonlyArray<import('../orchestrator/comprehension/learning/miner.ts').ComprehensionInsight>;
   };
 
   // Extensible Thinking events
@@ -799,6 +797,17 @@ export interface VinyanBusEvents {
     limit_usd: number;
     enforcement: string;
   };
+  /**
+   * G6 soft-degrade hint: emitted at the 80% warning threshold when
+   * `budgets.degrade_on_warning` is enabled. Listeners may use the
+   * `soft_degrade_to_level` to downgrade non-critical phase routing
+   * before the hard cap is exceeded.
+   */
+  'economy:budget_soft_degrade': {
+    window: 'hour' | 'day' | 'month';
+    utilization_pct: number;
+    soft_degrade_to_level: number;
+  };
   'economy:budget_degraded': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'economy:rate_card_miss': { engineId: string; fallback: string };
 
@@ -809,7 +818,13 @@ export interface VinyanBusEvents {
 
   // Economy Layer 3: Market events
   'market:auction_started': { auctionId: string; taskId: string; eligibleBidders: number };
-  'market:auction_completed': { auctionId: string; taskId: string; winnerId: string; score: number; bidderCount: number };
+  'market:auction_completed': {
+    auctionId: string;
+    taskId: string;
+    winnerId: string;
+    score: number;
+    bidderCount: number;
+  };
   'market:fallback_to_selector': { taskId: string; reason: string };
   'market:settlement_recorded': { settlementId: string; bidAccuracy: number; penaltyType: string | null };
   'market:collusion_suspected': { auctionId: string; bidSpread: number; consecutiveCount: number };

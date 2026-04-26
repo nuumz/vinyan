@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import { resolveInstanceId } from '../a2a/identity.ts';
 import { attachAuditListener } from '../bus/audit-listener.ts';
 import { attachComprehensionTraceListener } from '../bus/comprehension-trace-listener.ts';
@@ -738,9 +738,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       const workspaceRoot = resolve(workspace);
       const mcpJsonPaths = Array.from(
         new Set(
-          mcpJsonResult.attemptedPaths.map((p) =>
-            p.startsWith(`${workspaceRoot}/`) ? p.slice(workspaceRoot.length + 1) : p,
-          ),
+          mcpJsonResult.attemptedPaths.map((p) => {
+            const rel = relative(workspaceRoot, p);
+            // Guard: path escapes workspace (starts with ".." segment) or is on
+            // a different drive (Windows: path.relative returns absolute path).
+            return rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel) ? p : rel;
+          }),
         ),
       );
       const sources: string[] = [];

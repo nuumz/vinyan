@@ -23,13 +23,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, TaskInput, TaskResult } from '../types.ts';
+import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
 import {
   type SpecArtifact,
   SpecArtifactSchema,
   specToAcceptanceCriteriaList,
   specToConstraintsList,
 } from '../spec/spec-artifact.ts';
+import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, TaskInput, TaskResult } from '../types.ts';
 import type { PhaseContext, PhaseContinue, PhaseReturn } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -121,11 +122,16 @@ async function draftSpecViaLLM(
   const systemPrompt = buildSpecSystemPrompt();
   const userPrompt = buildSpecUserPrompt(input, understanding);
 
+  // G3 per-phase sampling: spec drafting is structured + deterministic, so the
+  // baseline temperature is low. Operators can dial it via vinyan.json
+  // `orchestrator.llm.phases.spec`. Default unchanged from the previous
+  // hardcoded 0.2.
+  const phaseCfg = resolvePhaseConfig('spec', routing, { temperature: 0.2 });
   const response = await provider.generate({
     systemPrompt,
     userPrompt,
     maxTokens: Math.min(4096, Math.floor(input.budget.maxTokens / 4)),
-    temperature: 0.2,
+    ...phaseCfg.sampling,
   });
 
   const parsed = parseSpecArtifactJSON(response.content);
@@ -176,9 +182,7 @@ function buildSpecUserPrompt(input: TaskInput, understanding: SemanticTaskUnders
     for (const c of input.acceptanceCriteria ?? []) lines.push(`  - ${c}`);
   }
   if (understanding.ideation?.approvedCandidateId) {
-    const chosen = understanding.ideation.candidates.find(
-      (c) => c.id === understanding.ideation?.approvedCandidateId,
-    );
+    const chosen = understanding.ideation.candidates.find((c) => c.id === understanding.ideation?.approvedCandidateId);
     if (chosen) {
       lines.push(`User-approved approach: ${chosen.title} — ${chosen.approach}`);
     }

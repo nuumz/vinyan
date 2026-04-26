@@ -49,11 +49,12 @@ import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
 import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/scheduling/wiring.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
-import { loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
+import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
+import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import {
@@ -711,20 +712,44 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       );
     }
 
+    // 1b. Plugin bundle manifest (.vinyan-plugin/plugin.json + thclaws compat) —
+    // pure additive source, same default trust as .mcp.json. Concatenated AFTER
+    // .mcp.json so bundle entries override raw .mcp.json on name conflict (a
+    // bundle is the higher-level packaging unit and operators expect it to win
+    // when the same server name appears in both).
+    let bundleResult: ReturnType<typeof loadBundleManifests> = {
+      bundles: [],
+      attemptedPaths: [],
+      invalidPaths: [],
+      mcpServers: [],
+    };
+    try {
+      bundleResult = loadBundleManifests(workspace);
+    } catch (err) {
+      console.warn(
+        `[vinyan] plugin bundle read failed: ${err instanceof Error ? err.message : String(err)} — continuing without it`,
+      );
+    }
+    // Merge .mcp.json entries with bundle-manifest entries; bundle wins on
+    // name conflict (the curated packaging unit overrides raw .mcp.json).
+    // Extracted to a pure helper so the precedence chain is unit-testable
+    // without spinning up the full factory (review #38:761).
+    const dedupedLoaded = dedupePreVinyanSources(mcpJsonResult.servers, bundleResult.mcpServers);
+
     // 2. vinyan.json — best-effort overrides on name conflict. Loaded in its
-    // own try/catch so a malformed vinyan.json doesn't suppress .mcp.json.
+    // own try/catch so a malformed vinyan.json doesn't suppress earlier sources.
     let mcpConfig: { client_servers?: Array<{ name: string; command: string; trust_level?: string }> } | undefined;
     try {
       const vinyanConfig = loadConfig(workspace);
       mcpConfig = vinyanConfig.network?.mcp as typeof mcpConfig;
     } catch (err) {
       console.warn(
-        `[vinyan] vinyan.json read failed: ${err instanceof Error ? err.message : String(err)} — using .mcp.json only`,
+        `[vinyan] vinyan.json read failed: ${err instanceof Error ? err.message : String(err)} — using earlier sources only`,
       );
     }
 
     const serverConfigs = mergeMcpServerSources<McpSourceZone>(
-      mcpJsonResult.servers,
+      dedupedLoaded,
       mcpConfig?.client_servers ?? [],
       TRUST_MAP,
       'remote',
@@ -732,26 +757,30 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
     if (serverConfigs.length > 0) {
       mcpClientPool = new MCPClientPool(serverConfigs, bus);
-      // Distinguish .mcp.json from .claude/mcp.json in startup logs so
-      // operators aren't misled about which file was actually read (review
-      // comment on PR #25:732).
+      // Distinguish each input file in startup logs so operators aren't
+      // misled about which config was actually read.
       const workspaceRoot = resolve(workspace);
-      const mcpJsonPaths = Array.from(
-        new Set(
-          mcpJsonResult.attemptedPaths.map((p) => {
-            const rel = relative(workspaceRoot, p);
-            // Guard: path escapes workspace (starts with ".." segment) or is on
-            // a different drive (Windows: path.relative returns absolute path).
-            return rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel) ? p : rel;
-          }),
-        ),
-      );
+      const toRel = (p: string) => {
+        const rel = relative(workspaceRoot, p);
+        // Guard: path escapes workspace (starts with ".." segment) or is on
+        // a different drive (Windows: path.relative returns absolute path).
+        return rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel) ? p : rel;
+      };
+      const mcpJsonPaths = Array.from(new Set(mcpJsonResult.attemptedPaths.map(toRel)));
+      const bundlePaths = Array.from(new Set(bundleResult.attemptedPaths.map(toRel)));
       const sources: string[] = [];
       if (mcpJsonResult.servers.length > 0) {
         const label =
           mcpJsonPaths.length > 0
             ? `${mcpJsonPaths.join('+')}: ${mcpJsonResult.servers.length}`
             : `mcp.json: ${mcpJsonResult.servers.length}`;
+        sources.push(label);
+      }
+      if (bundleResult.mcpServers.length > 0) {
+        const label =
+          bundlePaths.length > 0
+            ? `${bundlePaths.join('+')}: ${bundleResult.mcpServers.length}`
+            : `plugin.json: ${bundleResult.mcpServers.length}`;
         sources.push(label);
       }
       if (mcpConfig?.client_servers?.length) sources.push(`vinyan.json: ${mcpConfig.client_servers.length}`);

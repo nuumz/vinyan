@@ -27,6 +27,21 @@ const BudgetConfigSchema = z.object({
   monthly_usd: z.number().positive().optional(),
   /** warn = log only, block = refuse task, degrade = reduce routing level */
   enforcement: z.enum(['warn', 'block', 'degrade']).default('warn'),
+  /**
+   * G6 cost-aware soft degrade: when true, BudgetEnforcer suggests reducing
+   * the routing level **before** the cap is exceeded — at the 80% warning
+   * threshold. Listeners that opt in see `softDegradeToLevel` in the
+   * BudgetCheckResult and may downgrade non-critical phases (perceive,
+   * comprehend) preemptively. The hard `degrade` enforcement on exceed is
+   * unchanged.
+   *
+   * Optional so existing BudgetConfig literals across the codebase stay
+   * valid without retro-fitting every test fixture. When loaded via Zod
+   * the absence is treated as `false`.
+   */
+  degrade_on_warning: z.boolean().optional(),
+  /** Routing level the soft degrade suggests. Default 1 (cheapest). */
+  soft_degrade_level: z.number().int().min(0).max(3).optional(),
 });
 
 export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;

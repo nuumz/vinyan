@@ -6,11 +6,12 @@
  * Guarded by ANTHROPIC_API_KEY environment variable.
  * Source of truth: spec/tdd.md §17.1
  */
-import { PromptTooLargeError } from '../types.ts';
+
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig, ToolCall } from '../types.ts';
-import { normalizeMessages } from './provider-format.ts';
+import { PromptTooLargeError } from '../types.ts';
 import type { AnthropicMessage } from './provider-format.ts';
-import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
+import { normalizeMessages } from './provider-format.ts';
+import { DEFAULT_RETRYABLE_STATUSES, retryWithBackoff } from './retry.ts';
 
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 30_000,
@@ -167,6 +168,21 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             messages,
             ...(tools?.length ? { tools } : {}),
             ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+            // G3 per-phase sampling: forward top_p / top_k / stop_sequences when set.
+            // Anthropic forbids top_p + temperature together when thinking is on; the
+            // SDK already nulls temperature in that case so top_p stands alone.
+            ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+            ...(request.topK !== undefined ? { top_k: request.topK } : {}),
+            ...(request.stopSequences && request.stopSequences.length > 0
+              ? { stop_sequences: request.stopSequences }
+              : {}),
+            // G4 structured output: when the caller declares a response_format,
+            // pin tool_choice so the model MUST emit the named tool. Anthropic
+            // does not have a direct json_schema parameter, so json_schema is
+            // mapped onto a tool whose name = `responseFormat.name ?? 'output'`
+            // (the caller is responsible for including a matching tool
+            // definition in `tools[]`).
+            ...buildAnthropicToolChoice(request.responseFormat),
             ...buildThinkingParams(request.thinking),
             signal: signal as any,
           });
@@ -257,6 +273,16 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           messages,
           ...(tools?.length ? { tools } : {}),
           ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          // G3 per-phase sampling — same forwarding as the non-streaming path.
+          ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+          ...(request.topK !== undefined ? { top_k: request.topK } : {}),
+          ...(request.stopSequences && request.stopSequences.length > 0
+            ? { stop_sequences: request.stopSequences }
+            : {}),
+          // G4 structured output — same tool_choice enforcement as the
+          // non-streaming path so callers that opt into responseFormat get
+          // the same shape guarantee on streaming.
+          ...buildAnthropicToolChoice(request.responseFormat),
           ...buildThinkingParams(request.thinking),
         });
 
@@ -322,9 +348,38 @@ function buildThinkingParams(thinking?: ThinkingConfig): Record<string, unknown>
   }
   if (thinking.type === 'enabled') {
     return {
-      thinking: { type: 'enabled', budget_tokens: thinking.budgetTokens, ...(thinking.display ? { display: thinking.display } : {}) },
+      thinking: {
+        type: 'enabled',
+        budget_tokens: thinking.budgetTokens,
+        ...(thinking.display ? { display: thinking.display } : {}),
+      },
     };
   }
   // Future thinking types (multi-hypothesis, counterfactual, etc.) — types defined in types.ts, provider support not yet implemented
+  return {};
+}
+
+/**
+ * G4 structured output: translate `LLMRequest.responseFormat` into an Anthropic
+ * `tool_choice` clause. Returns `{}` when the caller didn't ask for structured
+ * output so the existing call sites stay bit-exact.
+ *
+ * Anthropic does not expose a direct `response_format: json_schema` field;
+ * the supported pattern is "force a specific tool call". Both `tool_use_required`
+ * and `json_schema` therefore resolve to a `tool_choice: { type: 'tool', name }`.
+ *
+ * Caller responsibility: include the matching tool definition in `tools[]`. The
+ * provider does NOT synthesize a tool — that would hide the contract from the
+ * caller and from the prompt cache (the tool description matters for caching).
+ */
+function buildAnthropicToolChoice(responseFormat?: import('../types.ts').ResponseFormat): Record<string, unknown> {
+  if (!responseFormat) return {};
+  if (responseFormat.type === 'tool_use_required') {
+    return { tool_choice: { type: 'tool', name: responseFormat.toolName } };
+  }
+  if (responseFormat.type === 'json_schema') {
+    const name = responseFormat.name ?? 'output';
+    return { tool_choice: { type: 'tool', name } };
+  }
   return {};
 }

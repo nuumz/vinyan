@@ -1,9 +1,9 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { BudgetEnforcer } from '../../src/economy/budget-enforcer.ts';
 import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import type { BudgetConfig } from '../../src/economy/economy-config.ts';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 
 function createTestEnv(budgetConfig: Partial<BudgetConfig> = {}) {
   const db = new Database(':memory:');
@@ -143,5 +143,56 @@ describe('BudgetEnforcer', () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].window).toBe('hour');
     expect(rows[0].spent_usd).toBeCloseTo(25.0, 5);
+  });
+
+  // G6 cost-aware soft degrade — opt-in preemptive downgrade at the 80%
+  // warning threshold. The hard `degrade` enforcement on exceed is unchanged.
+  describe('G6 soft degrade on warning', () => {
+    test('does NOT set softDegradeToLevel when degrade_on_warning is off (back-compat)', () => {
+      const { ledger, enforcer, events } = createTestEnv({ hourly_usd: 10.0 });
+      ledger.record(makeEntry({ computed_usd: 9.0 })); // 90% utilization
+      const result = enforcer.canProceed();
+      expect(result.softDegradeToLevel).toBeUndefined();
+      expect(events.find((e) => e.event === 'economy:budget_soft_degrade')).toBeUndefined();
+    });
+
+    test('sets softDegradeToLevel + emits soft_degrade event when enabled and >=80%', () => {
+      const { ledger, enforcer, events } = createTestEnv({
+        hourly_usd: 10.0,
+        degrade_on_warning: true,
+        soft_degrade_level: 1,
+      });
+      ledger.record(makeEntry({ computed_usd: 8.5 })); // 85% utilization
+      const result = enforcer.canProceed();
+      expect(result.allowed).toBe(true);
+      expect(result.softDegradeToLevel).toBe(1);
+      const evt = events.find((e) => e.event === 'economy:budget_soft_degrade');
+      expect(evt).toBeDefined();
+      expect((evt?.payload as { soft_degrade_to_level: number }).soft_degrade_to_level).toBe(1);
+    });
+
+    test('respects custom soft_degrade_level (not always 1)', () => {
+      const { ledger, enforcer } = createTestEnv({
+        hourly_usd: 10.0,
+        degrade_on_warning: true,
+        soft_degrade_level: 0,
+      });
+      ledger.record(makeEntry({ computed_usd: 8.0 }));
+      const result = enforcer.canProceed();
+      expect(result.softDegradeToLevel).toBe(0);
+    });
+
+    test('does NOT emit soft_degrade event when window is exceeded (hard path takes over)', () => {
+      const { ledger, enforcer, events } = createTestEnv({
+        hourly_usd: 10.0,
+        degrade_on_warning: true,
+        enforcement: 'degrade',
+      });
+      ledger.record(makeEntry({ computed_usd: 11.0 })); // exceeded
+      const result = enforcer.canProceed();
+      expect(result.degradeToLevel).toBe(1); // hard degrade still fires
+      expect(events.some((e) => e.event === 'economy:budget_exceeded')).toBe(true);
+      expect(events.some((e) => e.event === 'economy:budget_soft_degrade')).toBe(false);
+    });
   });
 });

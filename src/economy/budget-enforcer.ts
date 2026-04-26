@@ -26,6 +26,15 @@ export interface BudgetCheckResult {
   statuses: BudgetStatus[];
   /** When enforcement=degrade and exceeded, reduce to this level. */
   degradeToLevel?: number;
+  /**
+   * G6 cost-aware soft degrade: set when `degrade_on_warning` is enabled and
+   * a window crossed the 80% warning threshold WITHOUT exceeding. Listeners
+   * (typically core-loop or risk-router-adapter) may opt to downgrade
+   * non-critical phases preemptively. Distinct from `degradeToLevel` so
+   * callers can apply a softer policy (e.g. only downgrade observation
+   * phases, not generate/verify).
+   */
+  softDegradeToLevel?: number;
 }
 
 /** Warning threshold: emit warning when utilization crosses this. */
@@ -77,7 +86,8 @@ export class BudgetEnforcer {
     const statuses = this.checkBudget();
     const exceededStatuses = statuses.filter((s) => s.exceeded);
 
-    // Emit warnings for high utilization
+    // Emit warnings for high utilization + compute soft-degrade hint.
+    let softDegradeToLevel: number | undefined;
     for (const status of statuses) {
       if (status.utilization_pct >= WARNING_THRESHOLD * 100 && !status.exceeded) {
         this.bus?.emit('economy:budget_warning', {
@@ -86,11 +96,25 @@ export class BudgetEnforcer {
           spent_usd: status.spent_usd,
           limit_usd: status.limit_usd,
         });
+        // G6: when `degrade_on_warning` is on, surface a soft-degrade hint so
+        // callers can preemptively reduce non-critical phase routing before
+        // the hard cap is exceeded. We pick the lowest target level across
+        // windows so the strictest hint wins. Default target is L1 (cheapest)
+        // when the operator didn't pin a value in vinyan.json.
+        if (this.config.degrade_on_warning) {
+          const target = this.config.soft_degrade_level ?? 1;
+          softDegradeToLevel = softDegradeToLevel === undefined ? target : Math.min(softDegradeToLevel, target);
+          this.bus?.emit('economy:budget_soft_degrade', {
+            window: status.window,
+            utilization_pct: status.utilization_pct,
+            soft_degrade_to_level: target,
+          });
+        }
       }
     }
 
     if (exceededStatuses.length === 0) {
-      return { allowed: true, statuses };
+      return { allowed: true, statuses, ...(softDegradeToLevel !== undefined ? { softDegradeToLevel } : {}) };
     }
 
     // At least one window exceeded

@@ -43,6 +43,13 @@ export interface RoutingDecision {
   thinkingPolicy?: import('./thinking/thinking-policy.ts').ThinkingPolicy;
   /** True when task was escalated from a lower routing level (suppresses exploration). */
   isEscalated?: boolean;
+  /**
+   * G3 per-phase sampling config — partial override map from phase name to
+   * per-phase LLM params. Resolved by `resolvePhaseConfig(phase, routing)`.
+   * Phases that don't appear in the map fall back to hardcoded defaults so
+   * existing call sites stay bit-exact when no config is supplied.
+   */
+  phaseConfigs?: Partial<Record<PhaseName, PhaseLLMConfig>>;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -1312,6 +1319,23 @@ export interface LLMRequest {
   userPrompt: string;
   maxTokens: number;
   temperature?: number;
+  /**
+   * G3 per-phase sampling: nucleus sampling parameter (0..1). When set,
+   * providers forward as `top_p` (Anthropic) or `top_p` (OpenAI-compat).
+   * Mutually overridable with `temperature` per provider semantics.
+   */
+  topP?: number;
+  /**
+   * G3 per-phase sampling: top-k sampling. Anthropic-only — OpenRouter / OpenAI-compat
+   * providers may ignore this field. Set to enforce a hard cap on next-token
+   * candidates (e.g., `1` for greedy, larger for diversity).
+   */
+  topK?: number;
+  /**
+   * G3 per-phase sampling: stop sequences. Provider stops generation as soon as any
+   * of these strings appears in the output. Empty array is treated as unset.
+   */
+  stopSequences?: string[];
   tools?: Array<{
     name: string;
     description: string;
@@ -1329,7 +1353,62 @@ export interface LLMRequest {
    * turn-volatile suffix is re-processed each request.
    */
   tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
+  /**
+   * G4 structured output enforcement: ask the provider to constrain output
+   * shape at the API level instead of relying on prompt engineering.
+   *
+   * - `tool_use_required`: emit `tool_choice: { type: 'tool', name }` so the
+   *   model MUST call the named tool. Anthropic-friendly. Caller must include
+   *   the matching tool definition in `tools[]`.
+   * - `json_schema`: provider-specific structured-output mode (OpenAI-compat
+   *   `response_format: { type: 'json_schema' }`). For Anthropic providers
+   *   this is mapped onto a `tool_choice` directive against a tool whose
+   *   name matches `responseFormat.name` (or `'output'`). The provider does
+   *   NOT auto-synthesize a tool definition — the caller is still
+   *   responsible for including the matching `tools[]` entry, since the
+   *   tool description matters for prompt caching and surfacing the
+   *   contract to the caller.
+   */
+  responseFormat?: ResponseFormat;
 }
+
+/** G4 response format directive — see `LLMRequest.responseFormat`. */
+export type ResponseFormat =
+  | { type: 'tool_use_required'; toolName: string }
+  | { type: 'json_schema'; schema: Record<string, unknown>; name?: string };
+
+/**
+ * G3 per-phase LLM config — overrides sampling parameters when the orchestrator
+ * dispatches a specific phase. Resolved by `resolvePhaseConfig()`; missing
+ * fields fall back to the phase's hardcoded defaults.
+ *
+ * Why per-phase: Critic should sample at T≈0 (verify, don't explore), Brainstorm
+ * at T≈0.7 (explore), TestGen at higher T for diversity. Keeping these in one
+ * shared knob (the routing-level temperature) blurs epistemic separation (A1).
+ */
+export interface PhaseLLMConfig {
+  /** Override the routing-level model id for this phase only. */
+  model?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  stopSequences?: string[];
+  /** Override extended-thinking effort. Provider-specific. */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+}
+
+/** Canonical phase names — keep in sync with `src/orchestrator/phases/*`. */
+export type PhaseName =
+  | 'perceive'
+  | 'comprehend'
+  | 'predict'
+  | 'plan'
+  | 'brainstorm'
+  | 'generate'
+  | 'verify'
+  | 'critic'
+  | 'spec'
+  | 'learn';
 
 /** Response from an LLM provider */
 export interface LLMResponse {

@@ -54,15 +54,29 @@ export interface StructuredOutputAttempt<T> {
 
 export type StructuredParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+/** What kind of failure ended the last attempt. */
+export type AttemptFailureKind = 'parse' | 'transport';
+
 export interface StructuredOutputResult<T> {
   /** Parsed value when one of the attempts succeeded; null when all failed. */
   value: T | null;
   /** Number of `attempt()` calls made. Always >= 1, <= maxAttempts. */
   attempts: number;
-  /** Last parse error string when value is null. */
+  /**
+   * Error message from the most recent failure.
+   * @see lastErrorKind to disambiguate transport vs parse failure.
+   */
   lastError?: string;
-  /** Raw responses from each attempt — useful for tracing and observability. */
+  /** Whether `lastError` came from `attempt()` throwing or from `parse()` rejecting. */
+  lastErrorKind?: AttemptFailureKind;
+  /** Successful provider responses (attempts that didn't throw). */
   responses: LLMResponse[];
+  /**
+   * Per-attempt error trace — one entry per failed attempt in scan order.
+   * Successful attempts don't append. Useful for observability when a
+   * transport hiccup recovers on retry.
+   */
+  errors: Array<{ kind: AttemptFailureKind; message: string }>;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -73,6 +87,12 @@ const defaultRetryPrompt = (err: string): string =>
 /**
  * Run an LLM call that's expected to return a structured payload. Retry once
  * on parse failure with the parse error fed back as guidance to the model.
+ *
+ * Retry feedback is keyed off the LAST PARSE failure only — when an attempt
+ * throws (transport error, timeout, rate limit), the next call is sent with
+ * `feedback = null` so the model isn't told its non-existent previous response
+ * was malformed. This keeps the retry prompt honest about what actually
+ * happened.
  */
 export async function runWithStructuredOutput<T>(
   config: StructuredOutputAttempt<T>,
@@ -80,17 +100,29 @@ export async function runWithStructuredOutput<T>(
   const maxAttempts = Math.max(1, config.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
   const buildRetryPrompt = config.buildRetryPrompt ?? defaultRetryPrompt;
   const responses: LLMResponse[] = [];
+  const errors: Array<{ kind: AttemptFailureKind; message: string }> = [];
+  let lastParseError: string | undefined;
   let lastError: string | undefined;
+  let lastErrorKind: AttemptFailureKind | undefined;
   let attempts = 0;
 
   for (let i = 0; i < maxAttempts; i++) {
     attempts = i + 1;
-    const feedback = i === 0 ? null : buildRetryPrompt(lastError ?? 'unknown parse error');
+    // Retry feedback is keyed strictly off the last PARSE failure so a prior
+    // transport error doesn't trigger a misleading "your previous response
+    // was malformed" prompt.
+    const feedback = lastParseError !== undefined ? buildRetryPrompt(lastParseError) : null;
     let response: LLMResponse;
     try {
       response = await config.attempt(feedback);
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push({ kind: 'transport', message });
+      lastError = message;
+      lastErrorKind = 'transport';
+      // Do NOT update lastParseError — transport failure leaves parse state
+      // unchanged so the next retry can still feed back the original parse
+      // problem if there was one.
       continue;
     }
     responses.push(response);
@@ -102,12 +134,22 @@ export async function runWithStructuredOutput<T>(
       parsed = { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (parsed.ok) {
-      return { value: parsed.value, attempts, responses };
+      return { value: parsed.value, attempts, responses, errors };
     }
+    errors.push({ kind: 'parse', message: parsed.error });
+    lastParseError = parsed.error;
     lastError = parsed.error;
+    lastErrorKind = 'parse';
   }
 
-  return { value: null, attempts, lastError, responses };
+  return {
+    value: null,
+    attempts,
+    lastError,
+    ...(lastErrorKind ? { lastErrorKind } : {}),
+    responses,
+    errors,
+  };
 }
 
 /**
@@ -124,15 +166,25 @@ export function extractToolUseInput(response: LLMResponse, toolName: string): Re
 /**
  * Helper: assemble a default request augmented with a feedback string. Folds
  * the feedback into a trailing user-message turn so the prompt cache prefix
- * stays stable across retries (the original userPrompt is unchanged).
+ * stays stable across retries.
+ *
+ * Both Anthropic and OpenRouter providers ignore `request.userPrompt` whenever
+ * `messages` is non-empty. So when the input request has no `messages` yet,
+ * we seed the messages array with `{ role: 'user', content: userPrompt }`
+ * before appending the feedback turn — otherwise the original user prompt
+ * would silently disappear on the retry call.
  */
 export function appendFeedbackTurn(request: LLMRequest, feedback: string | null): LLMRequest {
   if (feedback == null) return request;
-  const existing = request.messages ?? [];
+  const seeded = request.messages?.length
+    ? request.messages
+    : request.userPrompt
+      ? [{ role: 'user' as const, content: request.userPrompt }]
+      : [];
   return {
     ...request,
     messages: [
-      ...existing,
+      ...seeded,
       { role: 'assistant' as const, content: 'Acknowledged.' },
       { role: 'user' as const, content: feedback },
     ],

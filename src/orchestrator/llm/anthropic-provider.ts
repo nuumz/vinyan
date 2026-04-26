@@ -279,6 +279,10 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           ...(request.stopSequences && request.stopSequences.length > 0
             ? { stop_sequences: request.stopSequences }
             : {}),
+          // G4 structured output — same tool_choice enforcement as the
+          // non-streaming path so callers that opt into responseFormat get
+          // the same shape guarantee on streaming.
+          ...buildAnthropicToolChoice(request.responseFormat),
           ...buildThinkingParams(request.thinking),
         });
 

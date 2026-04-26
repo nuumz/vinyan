@@ -684,7 +684,8 @@ describe('G6 soft-degrade routing integration', () => {
     const degradeEvents: Array<{ reason: string }> = [];
     orchestrator.bus.on('economy:budget_degraded', (e) => degradeEvents.push(e));
 
-    // MIN_ROUTING_LEVEL:1 — routing starts at L1, soft degrade target is L2: 1 > 2 = false
+    // MIN_ROUTING_LEVEL:1 — routing starts at L1, soft degrade target is L2:
+    // currentLevel (1) <= targetLevel (2), so no downgrade occurs.
     const result = await orchestrator.executeTask({
       id: 'g6-no-op',
       source: 'cli',

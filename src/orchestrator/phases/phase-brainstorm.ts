@@ -24,6 +24,7 @@ import type {
   TaskResult,
 } from '../types.ts';
 import { MAX_BRAINSTORM_DRAFTERS } from '../intent/ideation-classifier.ts';
+import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
 import {
   ideationToConstraint,
   type IdeationCandidate,
@@ -108,11 +109,15 @@ async function draftIdeationViaLLM(
     throw new Error('Brainstorm phase: no LLM provider available.');
   }
 
+  // G3 per-phase sampling: brainstorm exploits high temperature for diversity,
+  // but operators can dial it via vinyan.json `orchestrator.llm.phases.brainstorm`.
+  // The default below preserves the historical hardcoded value (T=0.7).
+  const phaseCfg = resolvePhaseConfig('brainstorm', routing, { temperature: 0.7 });
   const response = await provider.generate({
     systemPrompt: buildBrainstormSystemPrompt(),
     userPrompt: buildBrainstormUserPrompt(input),
     maxTokens: Math.min(2048, Math.floor(input.budget.maxTokens / 6)),
-    temperature: 0.7,
+    ...phaseCfg.sampling,
   });
 
   const parsed = parseBrainstormJSON(response.content);

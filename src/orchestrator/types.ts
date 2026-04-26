@@ -1361,9 +1361,13 @@ export interface LLMRequest {
    *   model MUST call the named tool. Anthropic-friendly. Caller must include
    *   the matching tool definition in `tools[]`.
    * - `json_schema`: provider-specific structured-output mode (OpenAI-compat
-   *   `response_format: { type: 'json_schema' }`). Anthropic providers fall
-   *   back to `tool_use_required` against a synthetic tool when this is set
-   *   without a paired tool definition.
+   *   `response_format: { type: 'json_schema' }`). For Anthropic providers
+   *   this is mapped onto a `tool_choice` directive against a tool whose
+   *   name matches `responseFormat.name` (or `'output'`). The provider does
+   *   NOT auto-synthesize a tool definition — the caller is still
+   *   responsible for including the matching `tools[]` entry, since the
+   *   tool description matters for prompt caching and surfacing the
+   *   contract to the caller.
    */
   responseFormat?: ResponseFormat;
 }

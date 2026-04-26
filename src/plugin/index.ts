@@ -6,6 +6,14 @@
  * matcher, discovery scanners) stay hidden.
  */
 
+export type {
+  BundleAgentRef,
+  BundleManifest,
+  BundleMcpServer,
+  BundleSkillRef,
+  LoadBundleResult,
+} from './bundle-manifest.ts';
+export { BundleManifestSchema, loadBundleManifests } from './bundle-manifest.ts';
 export type { DiscoverOptions, DiscoveryWarning } from './discovery.ts';
 export { discoverPlugins } from './discovery.ts';
 export type { InprocLoaderOptions, LoadOutcome } from './loader.ts';

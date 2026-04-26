@@ -19,6 +19,7 @@ import type {
   TaskDAG,
   VerificationHint,
   EngineSelectionResult,
+  TaskResult,
 } from '../types.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
@@ -278,7 +279,9 @@ export async function executeVerifyPhase(
   }
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
-  // L0 + oracle rejection → escalate (never commit when oracle says no)
+
+  // L0 + oracle rejection → return 'escalated' immediately (never commit when oracle says no)
+  // Must be checked BEFORE effectiveOutcome calculation to avoid setting outcome to 'failure'
   if (routing.level === 0 && !verification.passed) {
     deps.bus?.emit('task:escalate', {
       taskId: input.id,
@@ -286,7 +289,30 @@ export async function executeVerifyPhase(
       toLevel: (routing.level + 1) as RoutingLevel,
       reason: verification.reason ?? 'Oracle rejection at L0',
     });
-    return Phase.escalate({ ...routing, level: (routing.level + 1) as RoutingLevel });
+    // Build a minimal trace for the escalated result
+    const escalatedTrace: ExecutionTrace = {
+      id: `trace-${input.id}-${routing.level}-escalated`,
+      taskId: input.id,
+      workerId: routing.workerId ?? routing.model ?? 'unknown',
+      agentId: input.agentId,
+      timestamp: Date.now(),
+      routingLevel: routing.level,
+      approach: 'oracle-rejection-l0',
+      oracleVerdicts: Object.fromEntries(Object.entries(verification.verdicts).map(([k, v]) => [k, v.verified])),
+      modelUsed: routing.model ?? 'none',
+      tokensConsumed: workerResult.tokensConsumed,
+      durationMs: Date.now() - startTime,
+      outcome: 'escalated',
+      failureReason: verification.reason ?? 'Oracle rejection at L0',
+      affectedFiles: [],
+    };
+    return Phase.return({
+      id: input.id,
+      status: 'escalated',
+      mutations: [],
+      trace: escalatedTrace,
+      escalationReason: verification.reason ?? 'Oracle rejection at L0',
+    } as TaskResult);
   }
 
   const effectiveOutcome: ExecutionTrace['outcome'] =

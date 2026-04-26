@@ -49,7 +49,7 @@ import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
 import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/scheduling/wiring.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
-import { loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
+import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
@@ -730,16 +730,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         `[vinyan] plugin bundle read failed: ${err instanceof Error ? err.message : String(err)} — continuing without it`,
       );
     }
-    const bundleAsLoaded = bundleResult.mcpServers.map((s) => ({
-      name: s.name,
-      command: s.command,
-      ...(s.args ? { args: s.args } : {}),
-      defaultTrust: 'untrusted' as const,
-      source: s.source,
-    }));
-    const dedupedLoaded = new Map<string, (typeof bundleAsLoaded)[number]>();
-    for (const s of mcpJsonResult.servers) dedupedLoaded.set(s.name, s);
-    for (const s of bundleAsLoaded) dedupedLoaded.set(s.name, s); // bundle wins over raw .mcp.json
+    // Merge .mcp.json entries with bundle-manifest entries; bundle wins on
+    // name conflict (the curated packaging unit overrides raw .mcp.json).
+    // Extracted to a pure helper so the precedence chain is unit-testable
+    // without spinning up the full factory (review #38:761).
+    const dedupedLoaded = dedupePreVinyanSources(mcpJsonResult.servers, bundleResult.mcpServers);
 
     // 2. vinyan.json — best-effort overrides on name conflict. Loaded in its
     // own try/catch so a malformed vinyan.json doesn't suppress earlier sources.
@@ -754,7 +749,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
 
     const serverConfigs = mergeMcpServerSources<McpSourceZone>(
-      Array.from(dedupedLoaded.values()),
+      dedupedLoaded,
       mcpConfig?.client_servers ?? [],
       TRUST_MAP,
       'remote',

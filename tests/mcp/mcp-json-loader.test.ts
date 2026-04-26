@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcpJsonServers, mergeMcpServerSources } from '../../src/mcp/mcp-json-loader.ts';
+import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../../src/mcp/mcp-json-loader.ts';
 
 let workspace: string;
 
@@ -124,6 +124,17 @@ describe('loadMcpJsonServers', () => {
   });
 });
 
+// ── shared helpers for merge / dedup tests ─────────────────────────────
+function mcpJson(name: string, command: string, args?: string[]) {
+  return {
+    name,
+    command,
+    ...(args ? { args } : {}),
+    defaultTrust: 'untrusted' as const,
+    source: `/fake/${name}`,
+  };
+}
+
 // ── mergeMcpServerSources ───────────────────────────────────────────────
 //
 // Pure-function tests for the merge precedence rules used by factory.ts.
@@ -137,16 +148,6 @@ describe('mergeMcpServerSources', () => {
     provisional: 'network',
     trusted: 'local',
   };
-
-  function mcpJson(name: string, command: string, args?: string[]) {
-    return {
-      name,
-      command,
-      ...(args ? { args } : {}),
-      defaultTrust: 'untrusted' as const,
-      source: `/fake/${name}`,
-    };
-  }
 
   test('mcp.json only — passes through with default zone', () => {
     const merged = mergeMcpServerSources<Zone>([mcpJson('a', 'cmd-a', ['--foo'])], [], TrustMap, 'remote');
@@ -215,5 +216,138 @@ describe('mergeMcpServerSources', () => {
       'remote',
     );
     expect(merged.map((s) => s.name)).toEqual(['first', 'second', 'third']);
+  });
+});
+
+// ── dedupePreVinyanSources ──────────────────────────────────────────────
+//
+// Pure-function tests for the bundle-overrides-`.mcp.json` precedence used
+// by factory.ts before the result is fed to `mergeMcpServerSources`.
+// Closes the suppressed review comment on PR #38:761 (no focused test for
+// the bundle-merge precedence).
+describe('dedupePreVinyanSources', () => {
+  function bundleEntry(name: string, command: string, args?: string[], source = `/bundle/${name}`) {
+    return {
+      name,
+      command,
+      ...(args ? { args } : {}),
+      source,
+    };
+  }
+
+  test('mcp.json only — passes through unchanged', () => {
+    const result = dedupePreVinyanSources([mcpJson('a', 'cmd-a', ['--flag'])], []);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe('a');
+    expect(result[0]?.command).toBe('cmd-a');
+    expect(result[0]?.args).toEqual(['--flag']);
+    expect(result[0]?.defaultTrust).toBe('untrusted');
+  });
+
+  test('bundle only — wraps each entry with defaultTrust: untrusted', () => {
+    const result = dedupePreVinyanSources([], [bundleEntry('b', 'cmd-b', ['--quiet'])]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe('b');
+    expect(result[0]?.command).toBe('cmd-b');
+    expect(result[0]?.args).toEqual(['--quiet']);
+    expect(result[0]?.defaultTrust).toBe('untrusted');
+    expect(result[0]?.source).toBe('/bundle/b');
+  });
+
+  test('bundle wins over .mcp.json on name conflict (curated > raw)', () => {
+    const result = dedupePreVinyanSources(
+      [mcpJson('shared', 'mcp-cmd', ['--from-mcp'])],
+      [bundleEntry('shared', 'bundle-cmd', ['--from-bundle'], '/bundle/shared')],
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]?.command).toBe('bundle-cmd');
+    expect(result[0]?.args).toEqual(['--from-bundle']);
+    expect(result[0]?.source).toBe('/bundle/shared');
+  });
+
+  test('non-conflicting names accumulate from both sources', () => {
+    const result = dedupePreVinyanSources(
+      [mcpJson('a', 'cmd-a'), mcpJson('b', 'cmd-b')],
+      [bundleEntry('c', 'cmd-c'), bundleEntry('d', 'cmd-d')],
+    );
+    expect(result).toHaveLength(4);
+    expect(result.map((s) => s.name).sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  test('order: mcp.json entries first, then bundle-only names appended', () => {
+    const result = dedupePreVinyanSources(
+      [mcpJson('first', 'a'), mcpJson('second', 'b')],
+      [bundleEntry('second', 'override-b'), bundleEntry('third', 'c')],
+    );
+    // Iteration order of Map preserves insertion / last-update order: 'first'
+    // and 'second' inserted from mcp.json, 'second' overwritten in place,
+    // 'third' appended.
+    expect(result.map((s) => s.name)).toEqual(['first', 'second', 'third']);
+    // The override on 'second' takes effect.
+    expect(result.find((s) => s.name === 'second')?.command).toBe('override-b');
+  });
+
+  test('bundle entry without args: omits args (does not poison output with empty array)', () => {
+    const result = dedupePreVinyanSources([], [bundleEntry('x', 'cmd-x')]);
+    expect(result[0]?.args).toBeUndefined();
+  });
+
+  test('empty inputs return empty array', () => {
+    expect(dedupePreVinyanSources([], [])).toEqual([]);
+  });
+});
+
+// ── End-to-end precedence: bundle → .mcp.json → vinyan.json ─────────────
+//
+// Confirms the full chain documented in factory.ts works as expected:
+//   1. .mcp.json provides defaults (trust 'remote' after merge)
+//   2. bundle entries override .mcp.json on name
+//   3. vinyan.json overrides trust + command, args from earlier sources preserved
+describe('full MCP precedence chain (bundle → .mcp.json → vinyan.json)', () => {
+  type Zone = 'local' | 'network' | 'remote';
+  const TrustMap: Record<string, Zone> = {
+    untrusted: 'remote',
+    provisional: 'network',
+    trusted: 'local',
+  };
+
+  test('bundle overrides .mcp.json command + args, vinyan.json overrides trust without dropping bundle args', () => {
+    const mcpJsonServers = [
+      {
+        name: 'github',
+        command: 'old-mcp',
+        args: ['--from-mcp-json'],
+        defaultTrust: 'untrusted' as const,
+        source: '/.mcp.json',
+      },
+    ];
+    const bundleServers = [
+      {
+        name: 'github',
+        command: 'npx',
+        args: ['-y', '@anthropic/server-github'],
+        source: '/.vinyan-plugin/plugin.json',
+      },
+    ];
+    const vinyanClientServers = [{ name: 'github', command: 'npx', trust_level: 'trusted' }];
+
+    const deduped = dedupePreVinyanSources(mcpJsonServers, bundleServers);
+    const merged = mergeMcpServerSources<Zone>(deduped, vinyanClientServers, TrustMap, 'remote');
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.name).toBe('github');
+    expect(merged[0]?.command).toBe('npx'); // vinyan.json wins on command (matches bundle anyway)
+    expect(merged[0]?.args).toEqual(['-y', '@anthropic/server-github']); // bundle args preserved through vinyan.json override
+    expect(merged[0]?.trustLevel).toBe('local'); // vinyan.json upgraded trust
+  });
+
+  test('vinyan.json-only entry: no bundle / mcp.json source', () => {
+    const merged = mergeMcpServerSources<Zone>(
+      dedupePreVinyanSources([], []),
+      [{ name: 'solo', command: 'cmd', trust_level: 'provisional' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged).toEqual([{ name: 'solo', command: 'cmd', trustLevel: 'network' }]);
   });
 });

@@ -180,3 +180,43 @@ export function mergeMcpServerSources<TZone extends string>(
 
   return Array.from(merged.values());
 }
+
+/**
+ * Shape of a bundle-manifest MCP server — same as `LoadedMcpServer` so
+ * `dedupePreVinyanSources()` can accept either source uniformly. Defined
+ * inline (not imported from `../plugin/`) so this module stays free of
+ * plugin-layer dependencies.
+ */
+export interface BundleMcpEntry {
+  name: string;
+  command: string;
+  args?: string[];
+  source: string;
+}
+
+/**
+ * Dedup `.mcp.json` entries with bundle-manifest entries before they hit
+ * `mergeMcpServerSources()`. Bundle wins on name conflict — bundles are
+ * the higher-level packaging unit and operators expect the curated entry
+ * to override a raw `.mcp.json` declaration when both are present.
+ *
+ * Pure function — exported for unit-testing the precedence chain
+ * (review #38:761).
+ */
+export function dedupePreVinyanSources(
+  mcpJsonServers: readonly LoadedMcpServer[],
+  bundleServers: readonly BundleMcpEntry[],
+): LoadedMcpServer[] {
+  const merged = new Map<string, LoadedMcpServer>();
+  for (const s of mcpJsonServers) merged.set(s.name, s);
+  for (const s of bundleServers) {
+    merged.set(s.name, {
+      name: s.name,
+      command: s.command,
+      ...(s.args ? { args: s.args } : {}),
+      defaultTrust: 'untrusted',
+      source: s.source,
+    });
+  }
+  return Array.from(merged.values());
+}

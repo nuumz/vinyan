@@ -6,11 +6,12 @@
  *
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
-import { PromptTooLargeError } from '../types.ts';
+
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
-import { normalizeMessages } from './provider-format.ts';
+import { PromptTooLargeError } from '../types.ts';
 import type { OpenAIMessage } from './provider-format.ts';
-import { retryWithBackoff, DEFAULT_RETRYABLE_STATUSES } from './retry.ts';
+import { normalizeMessages } from './provider-format.ts';
+import { DEFAULT_RETRYABLE_STATUSES, retryWithBackoff } from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
@@ -65,6 +66,13 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         body.temperature = request.temperature;
       }
 
+      // G3 per-phase sampling — OpenAI-compatible. top_k is intentionally
+      // omitted: standard chat completions don't accept it (Anthropic-only).
+      if (request.topP !== undefined) body.top_p = request.topP;
+      if (request.stopSequences && request.stopSequences.length > 0) {
+        body.stop = request.stopSequences;
+      }
+
       // Convert tools to OpenAI function-calling format
       if (request.tools?.length) {
         body.tools = request.tools.map((t) => ({
@@ -75,6 +83,29 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             parameters: t.parameters,
           },
         }));
+      }
+
+      // G4 structured output — OpenAI-compatible. tool_use_required maps to
+      // `tool_choice: { type: 'function', function: { name } }`. json_schema
+      // maps to `response_format: { type: 'json_schema', ... }` which most
+      // OpenRouter backends now honor (passes through to OpenAI / Anthropic
+      // as the underlying provider supports). Backends that ignore it fall
+      // back gracefully — the structured-output validator catches parse fail
+      // and retries with feedback (PR #30 semantics).
+      const fmt = request.responseFormat;
+      if (fmt) {
+        if (fmt.type === 'tool_use_required') {
+          body.tool_choice = { type: 'function', function: { name: fmt.toolName } };
+        } else if (fmt.type === 'json_schema') {
+          body.response_format = {
+            type: 'json_schema',
+            json_schema: {
+              name: fmt.name ?? 'output',
+              schema: fmt.schema,
+              strict: true,
+            },
+          };
+        }
       }
 
       return retryWithBackoff(
@@ -93,7 +124,11 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
 
           if (!response.ok) {
             const errorText = await response.text();
-            if (response.status === 413 || errorText.includes('context_length_exceeded') || errorText.includes('too large')) {
+            if (
+              response.status === 413 ||
+              errorText.includes('context_length_exceeded') ||
+              errorText.includes('too large')
+            ) {
               const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
@@ -115,7 +150,9 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             for (const tc of choice.message.tool_calls) {
               if (tc.type === 'function') {
                 let params: Record<string, unknown> = {};
-                try { params = JSON.parse(tc.function.arguments); } catch {
+                try {
+                  params = JSON.parse(tc.function.arguments);
+                } catch {
                   console.warn(`[openrouter] Malformed tool arguments for ${tc.function.name}, using empty params`);
                 }
                 toolCalls.push({ id: tc.id, tool: tc.function.name, parameters: params });
@@ -124,8 +161,10 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           }
 
           const stopReason: LLMResponse['stopReason'] =
-            choice.finish_reason === 'tool_calls' ? 'tool_use'
-              : choice.finish_reason === 'length' ? 'max_tokens'
+            choice.finish_reason === 'tool_calls'
+              ? 'tool_use'
+              : choice.finish_reason === 'length'
+                ? 'max_tokens'
                 : 'end_turn';
 
           return {
@@ -170,11 +209,32 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             ],
       };
       if (request.temperature !== undefined) body.temperature = request.temperature;
+      if (request.topP !== undefined) body.top_p = request.topP;
+      if (request.stopSequences && request.stopSequences.length > 0) {
+        body.stop = request.stopSequences;
+      }
       if (request.tools?.length) {
         body.tools = request.tools.map((t) => ({
           type: 'function',
           function: { name: t.name, description: t.description, parameters: t.parameters },
         }));
+      }
+      // G4 structured output — same wire-up as the non-streaming path so
+      // streaming callers also get the shape guarantee.
+      const streamFmt = request.responseFormat;
+      if (streamFmt) {
+        if (streamFmt.type === 'tool_use_required') {
+          body.tool_choice = { type: 'function', function: { name: streamFmt.toolName } };
+        } else if (streamFmt.type === 'json_schema') {
+          body.response_format = {
+            type: 'json_schema',
+            json_schema: {
+              name: streamFmt.name ?? 'output',
+              schema: streamFmt.schema,
+              strict: true,
+            },
+          };
+        }
       }
 
       const controller = new AbortController();
@@ -234,7 +294,11 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             const data = trimmed.slice(5).trim();
             if (data === '[DONE]') continue;
             let chunk: any;
-            try { chunk = JSON.parse(data); } catch { continue; }
+            try {
+              chunk = JSON.parse(data);
+            } catch {
+              continue;
+            }
             if (chunk.model) modelId = chunk.model;
             if (chunk.usage) usage = chunk.usage;
             const choice = chunk.choices?.[0];
@@ -260,20 +324,26 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         }
       } finally {
         clearTimeout(timer);
-        try { reader.releaseLock(); } catch { /* ignore */ }
+        try {
+          reader.releaseLock();
+        } catch {
+          /* ignore */
+        }
       }
 
       const toolCalls: ToolCall[] = [];
       for (const { id, name, args } of toolArgAcc.values()) {
         if (!name) continue;
         let params: Record<string, unknown> = {};
-        try { params = args ? JSON.parse(args) : {}; } catch { /* use empty */ }
+        try {
+          params = args ? JSON.parse(args) : {};
+        } catch {
+          /* use empty */
+        }
         toolCalls.push({ id: id || `tc_${name}`, tool: name, parameters: params });
       }
       const stopReason: LLMResponse['stopReason'] =
-        finishReason === 'tool_calls' ? 'tool_use'
-          : finishReason === 'length' ? 'max_tokens'
-            : 'end_turn';
+        finishReason === 'tool_calls' ? 'tool_use' : finishReason === 'length' ? 'max_tokens' : 'end_turn';
 
       return {
         content: contentAcc,

@@ -15,6 +15,7 @@ import { attachComprehensionTraceListener } from '../bus/comprehension-trace-lis
 import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
+import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
@@ -75,6 +76,7 @@ import { SoulReflector } from './agent-context/soul-reflector.ts';
 import { SoulStore } from './agent-context/soul-store.ts';
 import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
+import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
@@ -1372,11 +1374,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   }
 
-  // Multi-agent: load specialist registry (vinyan.json agents[] + built-in defaults)
+  // Multi-agent: load specialist registry (vinyan.json agents[] + built-in defaults
+  // + Round F: `.claude/agents/<id>/AGENT.md` markdown loader for Claude Code
+  // drop-in compat). vinyan.json wins on id conflict — markdown loader merges
+  // first, then config agents override.
   let agentRegistry: ReturnType<typeof loadAgentRegistry> | undefined;
   try {
     const vinyanCfg = loadConfig(workspace);
-    agentRegistry = loadAgentRegistry(workspace, vinyanCfg.agents);
+    const mdScan = scanAgentMarkdown(workspace);
+    const mergedConfigs: AgentSpecConfig[] = [...mdScan.entries.map((e) => e.config), ...(vinyanCfg.agents ?? [])];
+    agentRegistry = loadAgentRegistry(workspace, mergedConfigs, soulsByIdFrom(mdScan.entries));
+    if (mdScan.entries.length > 0) {
+      console.log(`[vinyan] Agent registry: ${mdScan.entries.length} agent(s) loaded from .claude/agents/`);
+    }
   } catch (err) {
     console.warn('[vinyan] Agent registry load failed, using built-in defaults:', err);
     agentRegistry = loadAgentRegistry(workspace, undefined);

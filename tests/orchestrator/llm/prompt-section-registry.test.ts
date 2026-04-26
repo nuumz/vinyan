@@ -205,6 +205,83 @@ describe('createDefaultRegistry', () => {
     expect(user).toContain('oracle: ast');
   });
 
+  // G8 prefix-stable rendering: rendered output must be deterministic per fact
+  // set and append-only stable, so downstream Anthropic prompt cache and trace
+  // fixtures stay byte-identical across runs.
+  describe('G8 prefix-stable known-facts rendering', () => {
+    const factA = {
+      target: 'src/a.ts',
+      pattern: 'export const a',
+      verified_at: 100,
+      hash: 'aaa',
+      confidence: 0.9,
+      oracleName: 'ast',
+      tierReliability: 0.99,
+    };
+    const factB = {
+      target: 'src/b.ts',
+      pattern: 'export const b',
+      verified_at: 200,
+      hash: 'bbb',
+      confidence: 0.9,
+      oracleName: 'ast',
+      tierReliability: 0.99,
+    };
+    const factC = {
+      target: 'src/c.ts',
+      pattern: 'export const c',
+      verified_at: 300,
+      hash: 'ccc',
+      confidence: 0.9,
+      oracleName: 'ast',
+      tierReliability: 0.99,
+    };
+
+    function renderWith(facts: typeof factA[]): string {
+      const registry = createDefaultRegistry();
+      const ctx = makeContext({
+        perception: {
+          taskTarget: { file: 'src/x.ts', description: 'noop' },
+          dependencyCone: { directImporters: [], directImportees: [], transitiveBlastRadius: 0 },
+          diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
+          verifiedFacts: facts,
+          runtime: { nodeVersion: '20.0.0', os: 'linux', availableTools: [] },
+        },
+      });
+      return registry.renderTarget('user', ctx);
+    }
+
+    it('produces identical output regardless of input fact order (deterministic)', () => {
+      const forward = renderWith([factA, factB, factC]);
+      const reversed = renderWith([factC, factB, factA]);
+      const shuffled = renderWith([factB, factA, factC]);
+      expect(reversed).toBe(forward);
+      expect(shuffled).toBe(forward);
+    });
+
+    it('appending a newer fact keeps the prefix bytes unchanged', () => {
+      const before = renderWith([factA, factB]);
+      const after = renderWith([factA, factB, factC]);
+      // The prefix up to factB must still be present and in the same place.
+      const factBLine = '  src/b.ts: export const b';
+      expect(before).toContain(factBLine);
+      expect(after).toContain(factBLine);
+      const beforeIdx = before.indexOf(factBLine);
+      const afterIdx = after.indexOf(factBLine);
+      expect(afterIdx).toBe(beforeIdx);
+    });
+
+    it('ties on verified_at break by hash ascending', () => {
+      const tie1 = { ...factA, hash: 'm', verified_at: 500, target: 'src/m.ts', pattern: 'm' };
+      const tie2 = { ...factA, hash: 'a', verified_at: 500, target: 'src/early.ts', pattern: 'early' };
+      const out = renderWith([tie1, tie2]);
+      // 'a' hash must render before 'm' hash regardless of input order
+      expect(out.indexOf('src/early.ts')).toBeLessThan(out.indexOf('src/m.ts'));
+      const reversed = renderWith([tie2, tie1]);
+      expect(reversed).toBe(out);
+    });
+  });
+
   it('user prompt includes FAILED APPROACHES for failed approaches', () => {
     const registry = createDefaultRegistry();
     const ctx = makeContext({

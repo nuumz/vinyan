@@ -1221,6 +1221,10 @@ async function prepareExecution(
         model: cfg.model,
         budgetTokens: cfg.budgetTokens,
         latencyBudgetMs: cfg.latencyBudgetMs,
+        // Symmetry with the soft-degrade path (3106862): also reset
+        // thinkingConfig so we don't end up with e.g. an L1 routing
+        // carrying L2/L3 thinking params when the hard cap is exceeded.
+        thinkingConfig: cfg.thinkingConfig,
       };
       deps.bus?.emit('economy:budget_degraded', {
         taskId: input.id,

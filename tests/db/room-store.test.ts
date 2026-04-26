@@ -1,3 +1,4 @@
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 /**
  * RoomStore — full CRUD roundtrip tests.
  *
@@ -7,15 +8,13 @@
  * query methods (findSessionByParentTask, findLedgerByRoom, etc.).
  */
 import { Database } from 'bun:sqlite';
-import { describe, expect, it } from 'bun:test';
-import { migration016 } from '../../src/db/migrations/016_add_room_tables.ts';
-import { RoomStore } from '../../src/db/room-store.ts';
+import { describe, expect, it } from 'bun:test';import { RoomStore } from '../../src/db/room-store.ts';
 import type { LedgerEntry } from '../../src/orchestrator/room/types.ts';
 
 function freshStore(): RoomStore {
   const db = new Database(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');
-  migration016.up(db);
+  migration001.up(db);
   return new RoomStore(db);
 }
 

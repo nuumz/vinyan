@@ -76,7 +76,7 @@ export async function runSessionCommand(argv: string[]): Promise<void> {
           console.error(`Session not found: ${id}`);
           process.exit(1);
         }
-        const history = manager.getConversationHistory(id);
+        const history = manager.getConversationHistoryText(id);
         console.log(JSON.stringify({ session, conversation: history }, null, 2));
         break;
       }

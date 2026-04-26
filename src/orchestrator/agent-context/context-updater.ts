@@ -40,37 +40,40 @@ export class AgentContextUpdater {
     try {
       const context = this.store.findOrCreate(agentId);
 
-      // 1. Record episode
+      // 1. Record episode (machine audit log — stays in DB).
       const episode = this.extractEpisode(trace);
       this.addEpisode(context, episode);
 
-      // 2. Update skill proficiency
+      // 2. Update skill proficiency (machine stats — stay in DB).
       if (trace.taskTypeSignature) {
         this.updateProficiency(context, trace);
       }
 
-      // 3. Record preferred approach if successful
+      // Narrative writes (preferred approaches, anti-patterns) are NOT
+      // persisted here post-migration-041 — soul.md is the authoritative
+      // home for those. The soul-reflector below synthesizes them from
+      // the pending-insights queue during the sleep cycle. We still
+      // update the in-memory context so reflection sees fresh signals.
       if (trace.outcome === 'success' && trace.taskTypeSignature && trace.approach) {
         context.skills.preferredApproaches[trace.taskTypeSignature] = trace.approach;
       }
-
-      // 4. Record anti-pattern if failed
       if (trace.outcome === 'failure' && trace.approach && trace.failureReason) {
         const antiPattern = `${trace.approach}: ${trace.failureReason.slice(0, 100)}`;
         if (!context.skills.antiPatterns.includes(antiPattern)) {
           context.skills.antiPatterns.push(antiPattern);
-          // Keep bounded
           if (context.skills.antiPatterns.length > 10) {
             context.skills.antiPatterns = context.skills.antiPatterns.slice(-10);
           }
         }
       }
 
-      // 5. Persist
+      // Persist the MACHINE slice (episodes + proficiencies). The upsert
+      // ignores narrative fields by design; those reach soul.md via the
+      // reflector path below.
       context.lastUpdated = Date.now();
       this.store.upsert(context);
 
-      // 6. Living Agent Soul: significance-gated LLM reflection (async, non-blocking)
+      // 3. Living Agent Soul: significance-gated LLM reflection (async, non-blocking).
       if (this.soulReflector) {
         this.soulReflector.reflectOnTrace(agentId, trace, context).catch(() => {
           /* Soul reflection is fire-and-forget — never blocks */

@@ -29,7 +29,7 @@ import type {
   ComprehensionEngineType,
 } from '../../orchestrator/comprehension/types.ts';
 import { maxTierForEngineType, tierRank } from '../../orchestrator/comprehension/types.ts';
-import type { ConversationEntry } from '../../orchestrator/types.ts';
+import type { ContentBlock, Turn } from '../../orchestrator/types.ts';
 
 /**
  * Narrow verdict shape — compatible in spirit with OracleVerdict but does
@@ -56,8 +56,8 @@ export interface ComprehensionVerdict {
 
 export interface VerifyComprehensionInput {
   message: ComprehendedTaskMessage;
-  /** Same history the engine saw — oracle cross-checks against it. */
-  history: ConversationEntry[];
+  /** Same Turn-model history the engine saw — oracle cross-checks against it. */
+  history: Turn[];
   /** Same pending questions the engine saw. */
   pendingQuestions: string[];
   /**
@@ -75,17 +75,29 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/** Flatten a Turn's visible text blocks into one string for grounding checks. */
+function turnVisibleText(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (b.type === 'text') parts.push(b.text);
+    else if (b.type === 'tool_result') parts.push(b.content);
+    // tool_use input + thinking are excluded — grounding should match what
+    // a human-visible transcript would contain.
+  }
+  return parts.join(' ');
+}
+
 /**
- * Return true when `needle` is contained in any history entry's content OR
- * in the literal goal. Used to verify that referenced text actually exists
+ * Return true when `needle` is contained in any turn's visible text OR in
+ * the literal goal. Used to verify that referenced text actually exists
  * somewhere in the session context — no hallucination.
  */
-function isGroundedInSession(needle: string, history: readonly ConversationEntry[], literalGoal: string): boolean {
+function isGroundedInSession(needle: string, history: readonly Turn[], literalGoal: string): boolean {
   const n = norm(needle);
   if (!n) return false;
   if (norm(literalGoal).includes(n)) return true;
-  for (const entry of history) {
-    if (norm(entry.content).includes(n)) return true;
+  for (const turn of history) {
+    if (norm(turnVisibleText(turn.blocks)).includes(n)) return true;
   }
   return false;
 }

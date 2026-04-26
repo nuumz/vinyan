@@ -1,22 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { createBus } from '../../../src/core/bus.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
-import { migration031 } from '../../../src/db/migrations/031_add_agent_runtime.ts';
-import { migration032 } from '../../../src/db/migrations/032_add_commitments.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
-import { migration034 } from '../../../src/db/migrations/034_add_volunteer.ts';
 import type { TaskFacts } from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
 import type { ReasoningEngine } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
   // Run the four ecosystem migrations in order
-  migration031.up(db);
-  migration032.up(db);
-  migration033.up(db);
-  migration034.up(db);
+  migration001.up(db);
   return db;
 }
 

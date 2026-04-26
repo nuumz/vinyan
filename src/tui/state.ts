@@ -2,7 +2,15 @@
  * TUI State — state management and mutations for the interactive terminal UI.
  */
 
-import type { EventLogEntry, NotificationEntry, PeerSortField, SortConfig, SortField, TUIState, ViewTab } from './types.ts';
+import type {
+  EventLogEntry,
+  NotificationEntry,
+  PeerSortField,
+  SortConfig,
+  SortField,
+  TUIState,
+  ViewTab,
+} from './types.ts';
 
 // ── Initial State ───────────────────────────────────────────────────
 
@@ -37,6 +45,7 @@ export function createInitialState(workspace = '.'): TUIState {
     chatWorkflowStepStatus: new Map(),
     chatSessions: [],
     chatScroll: 0,
+    chatRunningTools: new Map(),
 
     successHistory: [],
 
@@ -184,10 +193,7 @@ export function updateTermSize(state: TUIState): void {
 
 // ── Notification Mutations ──────────────────────────────────────────
 
-export function pushNotification(
-  state: TUIState,
-  entry: Omit<NotificationEntry, 'id'>,
-): void {
+export function pushNotification(state: TUIState, entry: Omit<NotificationEntry, 'id'>): void {
   state.notificationIdCounter++;
   state.notifications.push({ ...entry, id: state.notificationIdCounter });
   // Sort by priority (1 = highest) so highest-priority is always first
@@ -247,7 +253,8 @@ export function updateTabBadges(state: TUIState): void {
     running > 0 || hasApproval ? { count: running, color: hasApproval ? 'red' : undefined } : undefined;
 
   // System badge: health dot (no count)
-  const healthColor = state.health?.status === 'unhealthy' ? 'red' : state.health?.status === 'degraded' ? 'yellow' : 'green';
+  const healthColor =
+    state.health?.status === 'unhealthy' ? 'red' : state.health?.status === 'degraded' ? 'yellow' : 'green';
   state.tabBadges.system = { count: 0, color: healthColor };
 
   // Peers badge: connected count

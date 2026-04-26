@@ -11,12 +11,12 @@ import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rul
 import {
   ComprehendedTaskMessageSchema,
 } from '../../../src/orchestrator/comprehension/types.ts';
-import type { ConversationEntry, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
   sessionId?: string;
-  history?: ConversationEntry[];
+  history?: Turn[];
   pendingQuestions?: string[];
   rootGoal?: string | null;
 }) {
@@ -60,21 +60,9 @@ describe('RuleComprehender', () => {
 
   test('clarification-answer preserves rootGoal as resolvedGoal', async () => {
     const eng = newRuleComprehender();
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'ช่วยแต่งนิยายก่อนนอน',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 10,
-      },
-      {
-        role: 'assistant',
-        content: '[INPUT-REQUIRED]\n- แนวอะไร?\n- ยาวแค่ไหน?',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 10,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'ช่วยแต่งนิยายก่อนนอน' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- แนวอะไร?\n- ยาวแค่ไหน?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const out = await eng.comprehend(
       makeInput({
@@ -109,20 +97,8 @@ describe('RuleComprehender', () => {
       makeInput({
         goal: 'ok',
         history: [
-          {
-            role: 'user',
-            content: 'please review my code',
-            taskId: 't-0',
-            timestamp: 1,
-            tokenEstimate: 4,
-          },
-          {
-            role: 'assistant',
-            content: 'Reviewed. Want me to apply the fixes?',
-            taskId: 't-0',
-            timestamp: 2,
-            tokenEstimate: 8,
-          },
+          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'please review my code' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Reviewed. Want me to apply the fixes?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
         ],
       }),
     );
@@ -155,13 +131,7 @@ describe('RuleComprehender', () => {
     const args = makeInput({
       goal: 'do the thing',
       history: [
-        {
-          role: 'user',
-          content: 'earlier',
-          taskId: 't-0',
-          timestamp: 1,
-          tokenEstimate: 3,
-        },
+        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'earlier' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
       ],
     });
     const a = await eng.comprehend(args);
@@ -177,13 +147,7 @@ describe('RuleComprehender', () => {
     const extended = makeInput({
       goal: 'continue',
       history: [
-        {
-          role: 'user',
-          content: 'earlier turn',
-          taskId: 't-0',
-          timestamp: 1,
-          tokenEstimate: 4,
-        },
+        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'earlier turn' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
       ],
     });
     const b = await eng.comprehend(extended);
@@ -192,21 +156,9 @@ describe('RuleComprehender', () => {
 
   test('follow-up without pending clarification stays non-clarification-answer', async () => {
     const eng = newRuleComprehender();
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'analyze this code',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 4,
-      },
-      {
-        role: 'assistant',
-        content: 'Done — looks fine.',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 5,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'analyze this code' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Done — looks fine.' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const out = await eng.comprehend(
       makeInput({ goal: 'now add unit tests', history }),
@@ -231,21 +183,9 @@ describe('RuleComprehender', () => {
 
   test('rootGoal is surfaced both at envelope.params and inside data.state', async () => {
     const eng = newRuleComprehender();
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'write a bedtime story',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 4,
-      },
-      {
-        role: 'assistant',
-        content: '[INPUT-REQUIRED]\n- genre?',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 4,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const out = await eng.comprehend(
       makeInput({
@@ -269,21 +209,9 @@ describe('RuleComprehender', () => {
 
   test('priorContextSummary surfaces root goal and clarification intent', async () => {
     const eng = newRuleComprehender();
-    const history: ConversationEntry[] = [
-      {
-        role: 'user',
-        content: 'write a poem',
-        taskId: 't-0',
-        timestamp: 1,
-        tokenEstimate: 3,
-      },
-      {
-        role: 'assistant',
-        content: '[INPUT-REQUIRED]\n- what style?',
-        taskId: 't-0',
-        timestamp: 2,
-        tokenEstimate: 5,
-      },
+    const history: Turn[] = [
+      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
     ];
     const out = await eng.comprehend(
       makeInput({

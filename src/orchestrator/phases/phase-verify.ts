@@ -84,11 +84,25 @@ export async function executeVerifyPhase(
     activeHint = { understanding, targetFiles: input.targetFiles };
   }
 
+  // M3.5 — Surface self-model signals for the CommonSense Oracle activation
+  // gate. Built from `prediction` when available; absent when prediction was
+  // skipped (e.g., L0 reflex path), in which case commonsense (if enabled)
+  // fires unconditionally per gate.ts default.
+  const commonsenseSignals =
+    prediction && prediction.taskTypeSignature
+      ? {
+          taskTypeSignature: prediction.taskTypeSignature,
+          observationCount: prediction.calibrationDataPoints,
+          predictionAccuracy: prediction.confidence,
+        }
+      : undefined;
+
   const verification: VerificationResult = await deps.oracleGate.verify(
     workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
     input.targetFiles?.[0] ?? '.',
     activeHint,
     routing.level,
+    commonsenseSignals,
   );
 
   // ── Emit per-oracle verdicts ──────────────────────────────────
@@ -264,6 +278,17 @@ export async function executeVerifyPhase(
   }
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
+  // L0 + oracle rejection → escalate (never commit when oracle says no)
+  if (routing.level === 0 && !verification.passed) {
+    deps.bus?.emit('task:escalate', {
+      taskId: input.id,
+      fromLevel: routing.level,
+      toLevel: (routing.level + 1) as RoutingLevel,
+      reason: verification.reason ?? 'Oracle rejection at L0',
+    });
+    return Phase.escalate({ ...routing, level: (routing.level + 1) as RoutingLevel });
+  }
+
   const effectiveOutcome: ExecutionTrace['outcome'] =
     routing.level === 0 || !confidenceDecision
       ? verification.passed ? 'success' : 'failure'

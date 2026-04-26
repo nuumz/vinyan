@@ -18,6 +18,7 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import { simpleGlobMatch } from '../core/glob.ts';
+import type { ComprehensionStore } from '../db/comprehension-store.ts';
 import type { PatternStore } from '../db/pattern-store.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
@@ -26,6 +27,10 @@ import { CostPatternMiner } from '../economy/cost-pattern-miner.ts';
 import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
 import { generateRule } from '../evolution/rule-generator.ts';
+import type { CommonSenseRegistry } from '../oracle/commonsense/registry.ts';
+import { promoteAllPatterns } from './promotion.ts';
+import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
+import { mineComprehension } from '../orchestrator/comprehension/learning/miner.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
 import type { SkillManager } from '../orchestrator/skill-manager.ts';
 import type { EvolutionaryRule, ExecutionTrace, ExtractedPattern, SleepCycleConfig } from '../orchestrator/types.ts';
@@ -72,6 +77,12 @@ export interface SleepCycleResult {
   successPatterns: number;
   decayedPatterns: number;
   rulesPromoted: number;
+  /**
+   * M4.5 — Number of patterns promoted to commonsense rules in this cycle
+   * (Wilson 0.95 + walk-forward + matcher gates passed in promotion.ts).
+   * Always 0 when no `commonsenseRegistry` is wired.
+   */
+  commonsensePromoted: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
   /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
@@ -102,6 +113,10 @@ export class SleepCycleRunner {
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+  /** Optional comprehension substrate — when both present, the cycle
+   *  emits `comprehension:mining_completed` with B1–B3 insights. */
+  private comprehensionStore?: ComprehensionStore;
+  private comprehensionCalibrator?: ComprehensionCalibrator;
   private decayExperiment: DecayExperimentState;
   /** Intentionally in-memory — reset-on-restart gives rules a fresh grace period
    * after environmental changes that may make previously ineffective rules effective again. */
@@ -149,6 +164,10 @@ export class SleepCycleRunner {
     marketScheduler?: MarketScheduler;
     /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+    /** Comprehension substrate — pass BOTH to enable mining. Optional: if
+     *  either is missing the mining step silently no-ops. */
+    comprehensionStore?: ComprehensionStore;
+    comprehensionCalibrator?: ComprehensionCalibrator;
     /**
      * Wave 5.4: override the default max no-op cycles before the
      * termination sentinel goes dormant. Default: 5. Smaller values
@@ -157,6 +176,14 @@ export class SleepCycleRunner {
      * shouldn't suppress the next run.
      */
     sentinelMaxNoopCycles?: number;
+    /**
+     * M4.5 — Optional CommonSense Registry. When wired, after pattern
+     * mining the runner calls `promoteAllPatterns()` to promote eligible
+     * patterns into commonsense rules (Wilson 0.95 + walk-forward + matcher
+     * gates). Absent → no commonsense promotion.
+     * See docs/design/commonsense-substrate-system-design.md §6 (M4).
+     */
+    commonsenseRegistry?: CommonSenseRegistry;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -172,13 +199,38 @@ export class SleepCycleRunner {
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
+    this.comprehensionStore = options.comprehensionStore;
+    this.comprehensionCalibrator = options.comprehensionCalibrator;
     this.decayExperiment = createExperimentState();
     this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
+    this.commonsenseRegistry = options.commonsenseRegistry;
+  }
+
+  /** M4.5 — registry handle, optional. Set via constructor or post-wiring. */
+  private commonsenseRegistry?: CommonSenseRegistry;
+
+  /** Test/post-construction wiring for the commonsense registry. */
+  setCommonsenseRegistry(registry: CommonSenseRegistry): void {
+    this.commonsenseRegistry = registry;
   }
 
   /** Set agent evolution for post-construction wiring (when capabilityModel is available). */
   setAgentEvolution(evolution: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution): void {
     this.agentEvolution = evolution;
+  }
+
+  /**
+   * Post-construction wiring for the comprehension substrate. Factory
+   * creates `ComprehensionCalibrator` after `SleepCycleRunner` (GAP#1
+   * ordering), so this lets us attach the substrate without
+   * reorganizing the whole factory.
+   */
+  setComprehensionSubstrate(
+    store: ComprehensionStore,
+    calibrator: ComprehensionCalibrator,
+  ): void {
+    this.comprehensionStore = store;
+    this.comprehensionCalibrator = calibrator;
   }
 
   /** Returns the configured session interval for triggering sleep cycles. */
@@ -210,6 +262,7 @@ export class SleepCycleRunner {
         successPatterns: 0,
         decayedPatterns: 0,
         rulesPromoted: 0,
+        commonsensePromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'data-gate',
@@ -242,6 +295,7 @@ export class SleepCycleRunner {
         successPatterns: 0,
         decayedPatterns: 0,
         rulesPromoted: 0,
+        commonsensePromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'sentinel-dormant',
@@ -275,6 +329,7 @@ export class SleepCycleRunner {
         successPatterns: 0,
         decayedPatterns: 0,
         rulesPromoted,
+        commonsensePromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
       };
@@ -518,6 +573,20 @@ export class SleepCycleRunner {
     // Apply decay to existing patterns
     const decayedCount = this.applyDecay();
 
+    // M4.5 — promote eligible patterns to commonsense rules.
+    // Walk-forward backtest + Wilson 0.95 + matcher gates (in promotion.ts).
+    // Idempotent: same pattern → same rule id (registry uses INSERT OR REPLACE).
+    // Count surfaces in SleepCycleResult.commonsensePromoted; bus event
+    // payload extension is deferred (would require event-registry change).
+    let commonsensePromoted = 0;
+    if (this.commonsenseRegistry && newPatterns.length > 0) {
+      const results = promoteAllPatterns(newPatterns, {
+        registry: this.commonsenseRegistry,
+        traces,
+      });
+      commonsensePromoted = results.filter((r) => r.promoted).length;
+    }
+
     this.patternStore.recordCycleComplete(cycleId, traces.length, newPatterns.length);
 
     this.bus?.emit('sleep:cycleComplete', {
@@ -552,6 +621,30 @@ export class SleepCycleRunner {
       // Thinking readiness gate is non-critical — swallow errors to avoid disrupting sleep cycle
     }
 
+    // Comprehension mining (B1 engine-fit + label-drift, B2 stage-agreement,
+    // B3 divergence attribution). Best-effort: a failure here MUST NOT
+    // disrupt the cycle because A7 (prediction error as learning) is a
+    // feedback substrate, not a dependency for decomposition/planning.
+    // The mining step reads from ComprehensionStore + Calibrator only —
+    // no mutation — and emits a single bus event that dashboards tail.
+    if (this.comprehensionStore && this.comprehensionCalibrator) {
+      try {
+        const result = mineComprehension({
+          store: this.comprehensionStore,
+          calibrator: this.comprehensionCalibrator,
+        });
+        this.bus?.emit('comprehension:mining_completed', {
+          cycleId,
+          minedAt: result.minedAt,
+          windowSinceMs: result.windowSinceMs,
+          rowsScanned: result.rowsScanned,
+          insights: result.insights,
+        });
+      } catch {
+        /* Comprehension mining is best-effort — never disrupts sleep cycle */
+      }
+    }
+
     // PH5.9: Export high-quality patterns for cross-instance sharing
     if (this.knowledgeExchange && newPatterns.length > 0) {
       this.knowledgeExchange.exportFromStore();
@@ -575,7 +668,8 @@ export class SleepCycleRunner {
       rulesPromoted > 0 ||
       rulesRetired > 0 ||
       skillsCreated > 0 ||
-      costPatternsFound > 0;
+      costPatternsFound > 0 ||
+      commonsensePromoted > 0;
     if (productive) {
       this.consecutiveNoopCycles = 0;
     } else {
@@ -591,6 +685,7 @@ export class SleepCycleRunner {
       successPatterns: newPatterns.filter((p) => p.type === 'success-pattern').length,
       decayedPatterns: decayedCount,
       rulesPromoted,
+      commonsensePromoted,
       costPatternsFound,
       marketPhaseEvaluated,
       thinkingReadinessVerdict,

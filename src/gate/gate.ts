@@ -16,6 +16,9 @@ import type { HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict, 
 import { containsBypassAttempt, detectPromptInjection } from '../guardrails/index.ts';
 import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
 import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
+import { shouldActivate as shouldActivateCommonsense } from '../oracle/commonsense/activation.ts';
+import { classifyMutation } from '../oracle/commonsense/mutation-classifier.ts';
+import { verify as commonsenseVerify } from '../oracle/commonsense/oracle.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { verify as lintVerify } from '../oracle/lint/lint-verifier.ts';
@@ -134,6 +137,25 @@ export interface GateRequest {
   verificationHint?: VerificationHint;
   /** Wave C: routing level for SL fusion depth control. */
   routingLevel?: number;
+  /**
+   * M3 — Optional self-model signals consumed by the CommonSense Oracle's
+   * surprise-driven activation gate. When absent, the commonsense oracle
+   * (if `commonsense.enabled: true` in config) fires on every task. When
+   * present, activation follows
+   * `src/oracle/commonsense/activation.ts:shouldActivate()`.
+   *
+   * See `docs/design/commonsense-substrate-system-design.md` §6 (M3).
+   */
+  commonsenseSignals?: {
+    /** Task type signature, e.g. `delete::ts::large-blast`. */
+    taskTypeSignature: string;
+    /** Self-model observation count for this signature. */
+    observationCount: number;
+    /** Self-model EMA prediction accuracy ∈ [0, 1]. */
+    predictionAccuracy: number;
+    /** Optional per-task prediction error; falls back to (1 - predictionAccuracy). */
+    predictionError?: number;
+  };
 }
 
 export type GateDecision = 'allow' | 'block';
@@ -181,6 +203,15 @@ const ORACLE_ENTRIES: Record<string, OracleEntry> = {
     defaultPattern: 'goal-alignment',
     requiresContext: false, // Runs whenever understanding is available (abstains if missing)
   },
+  // Phase 2.5 — Common Sense Substrate (M2). Disabled by default in
+  // OracleConfigSchema; flip `commonsense.enabled: true` in vinyan.json to
+  // activate. Pragmatic-tier verdicts (confidence band 0.5–0.7) flow through
+  // the conflict resolver alongside heuristic and probabilistic verdicts.
+  commonsense: {
+    verify: commonsenseVerify,
+    defaultPattern: 'commonsense-check',
+    requiresContext: false, // Reads tool/path from hypothesis context; doesn't require file content
+  },
 };
 
 /** Oracles that are informational-only — never block the gate. */
@@ -194,6 +225,7 @@ const ORACLE_TIERS: Record<string, 'structural' | 'full'> = {
   lint: 'structural',
   test: 'full',
   'goal-alignment': 'structural',
+  commonsense: 'structural', // SQLite query + pattern eval — sub-millisecond
 };
 
 // ── Gate logic ──────────────────────────────────────────────────
@@ -287,6 +319,22 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
         if (request.verificationHint?.skipTestWhen && name === 'test') {
           return false;
         }
+        // M3 — Common Sense Oracle surprise-driven activation gate.
+        // When `commonsenseSignals` is provided, the oracle fires only when
+        // shouldActivate() approves. When absent, falls through to default
+        // dispatch (preserves backward compatibility for callers that don't
+        // yet plumb self-model signals).
+        if (name === 'commonsense' && request.commonsenseSignals) {
+          const decision = shouldActivateCommonsense({
+            taskTypeSignature: request.commonsenseSignals.taskTypeSignature,
+            observationCount: request.commonsenseSignals.observationCount,
+            predictionAccuracy: request.commonsenseSignals.predictionAccuracy,
+            predictionError: request.commonsenseSignals.predictionError,
+            riskScore,
+            mutationAction: classifyMutation(request.tool),
+          });
+          if (!decision.activate) return false;
+        }
         return true;
       })
       .map(async ([name]) => {
@@ -299,6 +347,10 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           target: request.params.file_path,
           pattern: entry.defaultPattern,
           context: {
+            // Tool name — consumed by commonsense oracle (M2) to drive
+            // microtheory selection + mutation classification. Other oracles
+            // ignore unknown context fields.
+            tool: request.tool,
             ...(request.params.content ? { content: request.params.content } : {}),
             // A1 Understanding layer: inject TaskUnderstanding for goal-alignment oracle
             ...(request.verificationHint?.understanding ? { understanding: request.verificationHint.understanding } : {}),

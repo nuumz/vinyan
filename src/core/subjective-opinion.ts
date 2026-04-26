@@ -276,17 +276,19 @@ export interface FusionInput {
   deps: string[]; // dependency file paths (for Jaccard overlap)
 }
 
-/** Tier priority order (deterministic first). */
+/** Tier priority order (deterministic first; lower number = higher priority). */
 const TIER_PRIORITY: Record<string, number> = {
   deterministic: 0,
   heuristic: 1,
-  probabilistic: 2,
+  pragmatic: 2,
+  probabilistic: 3,
 };
 
 /** Tier weights for weighted fusion. */
 const TIER_WEIGHT: Record<string, number> = {
   deterministic: 1.0,
   heuristic: 0.6,
+  pragmatic: 0.45,
   probabilistic: 0.3,
 };
 
@@ -361,6 +363,7 @@ export function fuseAll(inputs: FusionInput[]): SubjectiveOpinion {
 const TIER_U_FLOORS: Record<string, number> = {
   deterministic: 0.01,
   heuristic: 0.10,
+  pragmatic: 0.18,
   probabilistic: 0.25,
 };
 

@@ -38,14 +38,27 @@ const PROMPT = '\x1b[36mvinyan>\x1b[0m '; // Cyan prompt
 
 // ── Main ───────────────────────────────────────────────────
 
-export async function startChat(argv: string[]): Promise<void> {
+/**
+ * Options plumbed in from the top-level CLI entry (src/cli/index.ts).
+ *
+ * `profile` is the already-resolved profile name (flag > env > 'default');
+ * `startChat` forwards it into every `TaskInput` it constructs so all
+ * per-turn tasks land in the same namespace.
+ */
+export interface StartChatOptions {
+  profile?: string;
+}
+
+export async function startChat(argv: string[], opts: StartChatOptions = {}): Promise<void> {
   const workspace = parseSingleFlag(argv, '--workspace') ?? process.cwd();
   const resumeId = parseSingleFlag(argv, '--resume');
   const listMode = argv.includes('--list');
   let showThinking = argv.includes('--thinking');
   const verbose = argv.includes('--verbose');
 
-  // DB + SessionManager
+  // DB + SessionManager. The same VinyanDB handle is injected into
+  // createOrchestrator below (via `db`) so the factory reuses it instead
+  // of opening a second bun:sqlite connection on the same WAL file.
   const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
@@ -67,8 +80,16 @@ export async function startChat(argv: string[]): Promise<void> {
     return;
   }
 
-  // Create orchestrator with session manager for cross-turn context
-  const orchestrator = createOrchestrator({ workspace, llmProxy: true, sessionManager });
+  // Create orchestrator with session manager for cross-turn context.
+  // Pass the existing `db` so factory does not double-open the WAL file.
+  const orchestrator = createOrchestrator({
+    workspace,
+    llmProxy: true,
+    // G2+ A6: opt-in OS keychain lookup. VINYAN_USE_KEYCHAIN=1 to enable.
+    useKeychain: process.env.VINYAN_USE_KEYCHAIN === '1',
+    sessionManager,
+    db,
+  });
 
   // Phase 0 W5: when --verbose is set, attach the bus progress listener so
   // tool calls, oracle verdicts, and escalations stream to stderr while
@@ -100,7 +121,7 @@ export async function startChat(argv: string[]): Promise<void> {
     } else {
       session = existing;
     }
-    const history = sessionManager.getConversationHistory(session.id);
+    const history = sessionManager.getConversationHistoryText(session.id);
     if (history.length > 0) {
       console.log(`\x1b[2mResuming session ${session.id.slice(0, 8)} (${history.length} messages)\x1b[0m`);
       // Show last 3 turns as context recap
@@ -244,10 +265,7 @@ export async function startChat(argv: string[]): Promise<void> {
             })}`,
           ]
         : [];
-    const constraintsForTurn = [
-      ...(showThinking ? ['THINKING:enabled'] : []),
-      ...clarificationConstraints,
-    ];
+    const constraintsForTurn = [...(showThinking ? ['THINKING:enabled'] : []), ...clarificationConstraints];
     // Anchor the task's goal to the original user request when we're
     // resolving a clarification round, so the reply text doesn't become
     // the new goal (see pendingTaskGoal comment above).
@@ -268,6 +286,10 @@ export async function startChat(argv: string[]): Promise<void> {
       goal: goalForTask,
       taskType: hasCodeContext ? 'code' : 'reasoning',
       sessionId: session.id,
+      // W1 PR #1: every chat-turn task carries the resolved profile so
+      // downstream store calls (once retrofitted) land in the right
+      // namespace.
+      ...(opts.profile ? { profile: opts.profile } : {}),
       budget: DEFAULT_BUDGET,
       ...(constraintsForTurn.length > 0 ? { constraints: constraintsForTurn } : {}),
     };
@@ -423,7 +445,7 @@ function tryBuiltinCommand(
       return true;
 
     case '/history': {
-      const history = sessionManager.getConversationHistory(session.id);
+      const history = sessionManager.getConversationHistoryText(session.id);
       if (history.length === 0) {
         console.log('  (no conversation history)');
       } else {

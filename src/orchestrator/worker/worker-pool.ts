@@ -100,6 +100,15 @@ export interface WorkerPoolConfig {
    * manager there is no ecosystem visibility of runtime occupancy.
    */
   runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
+  /**
+   * W3 P3 WorkerBackend abstraction — MVP opt-in delegation.
+   * When `useBackendAbstraction` is true AND `backendSelector` is present,
+   * L0 dispatch routes through the abstraction (LocalInprocBackend) instead
+   * of the inlined empty-result path. L1+ stays on the legacy path for MVP.
+   * Both flags default OFF so existing callers and tests are untouched.
+   */
+  useBackendAbstraction?: boolean;
+  backendSelector?: import('../../runtime/backend-selector.ts').BackendSelector;
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────
@@ -353,6 +362,9 @@ export class WorkerPoolImpl implements WorkerPool {
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
   private streamingEnabled: boolean;
   private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
+  /** W3 P3: opt-in backend-abstraction delegation (MVP: L0 only). */
+  private useBackendAbstraction: boolean;
+  private backendSelector?: import('../../runtime/backend-selector.ts').BackendSelector;
 
   constructor(config: WorkerPoolConfig) {
     this.registry = config.registry ?? new LLMProviderRegistry();
@@ -382,6 +394,8 @@ export class WorkerPoolImpl implements WorkerPool {
     this.agentContextBuilder = config.agentContextBuilder;
     this.soulStore = config.soulStore;
     this.runtimeStateManager = config.runtimeStateManager;
+    this.useBackendAbstraction = config.useBackendAbstraction ?? false;
+    this.backendSelector = config.backendSelector;
   }
 
   /**
@@ -450,11 +464,12 @@ export class WorkerPoolImpl implements WorkerPool {
     routing: RoutingDecision,
     understanding?: import('../types.ts').SemanticTaskUnderstanding,
     contract?: import('../../core/agent-contract.ts').AgentContract,
-    conversationHistory?: import('../types.ts').ConversationEntry[],
     /**
-     * Plan commit A: Turn-model history. When present, subprocess workers
-     * receive it via WorkerInput.turns and the in-process assembler prefers
-     * it over `conversationHistory` — preserves tool_use / tool_result blocks.
+     * Turn-model conversation history. A6: replaces the prior
+     * `conversationHistory: ConversationEntry[]` flow-through parameter.
+     * Subprocess workers receive it via WorkerInput.turns; the in-process
+     * assembler renders it via renderTurnsSection, preserving tool_use /
+     * tool_result blocks verbatim.
      */
     turns?: import('../types.ts').Turn[],
   ) {
@@ -462,6 +477,14 @@ export class WorkerPoolImpl implements WorkerPool {
 
     // L0: no LLM needed
     if (routing.level === 0) {
+      // W3 P3: opt-in delegation through the WorkerBackend abstraction.
+      // When the feature flag is on AND a selector is wired, L0 routes
+      // through LocalInprocBackend. The return shape stays bit-exact with
+      // the legacy empty-output path so no downstream consumer observes
+      // a difference. All other levels remain on the legacy path for MVP.
+      if (this.useBackendAbstraction && this.backendSelector) {
+        return await this.dispatchL0ViaBackend(input, startTime);
+      }
       return {
         mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
         proposedToolCalls: [] as import('../types.ts').ToolCall[],
@@ -473,12 +496,16 @@ export class WorkerPoolImpl implements WorkerPool {
     // Ecosystem: flip the selected worker to Working for the lifetime of the
     // dispatch. `releaseRuntime` must fire on every exit path (success OR
     // throw), so everything below is wrapped in try/finally.
-    const releaseRuntime = this.acquireRuntimeSlot(routing.workerId, input.id);
+    //
+    // Runtime slot id resolution mirrors engine resolution below:
+    //   1. routing.workerId   — fleet-selected profile id (authoritative)
+    //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+    //   3. undefined          — silent no-op (legacy / non-fleet path)
+    const runtimeSlotId = routing.workerId ?? routing.model ?? undefined;
+    const releaseRuntime = this.acquireRuntimeSlot(runtimeSlotId ?? undefined, input.id);
 
     try {
       const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
-      // Carry conversation history for prompt assembly (not serialized into WorkerInput)
-      const ConversationHistory = conversationHistory;
 
       // L2/L3: container dispatch when isolation level = 2
       // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -503,9 +530,18 @@ export class WorkerPoolImpl implements WorkerPool {
       // DESIGN CONSTRAINT: subprocess path is LLM-only — worker-entry.ts reconstructs an
       // LLMProviderRegistry from env vars and cannot serialize/deserialize custom RE types.
       // If the selected engine is non-LLM, fall back to in-process dispatch with a warning.
+      // Engine resolution priority (preflight for subprocess gating):
+      //   1. routing.workerId   — fleet profile id
+      //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+      //   3. selectForRoutingLevel(routing.level) — tier default
       const selectedEngine = routing.workerId
-        ? this.engineRegistry.selectById(routing.workerId)
-        : this.engineRegistry.selectForRoutingLevel(routing.level);
+        ? (this.engineRegistry.selectById(routing.workerId)
+            ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
+            ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+        : (routing.model
+            ? (this.engineRegistry.selectById(routing.model)
+                ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+            : this.engineRegistry.selectForRoutingLevel(routing.level));
       const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
       // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
       // is only needed when the worker writes to disk. This avoids LLM proxy overhead
@@ -523,12 +559,60 @@ export class WorkerPoolImpl implements WorkerPool {
 
       const output = useSubprocessForTask
         ? await this.dispatchSubprocess(workerInput, routing)
-        : await this.dispatchInProcess(workerInput, routing, ConversationHistory, agentProfile, peerAgents, turns);
+        : await this.dispatchInProcess(workerInput, routing, agentProfile, peerAgents, turns);
 
       return this.toWorkerResult(output, startTime);
     } finally {
       releaseRuntime();
     }
+  }
+
+  /**
+   * W3 P3 MVP: L0 dispatch via the WorkerBackend abstraction. Shape-equivalent
+   * to the legacy empty-output path — L0 is the "no LLM needed" tier, so the
+   * backend is invoked purely to exercise the abstraction (spawn → teardown).
+   * Selector errors degrade gracefully to the legacy return shape so flipping
+   * the flag on cannot break dispatch.
+   */
+  private async dispatchL0ViaBackend(
+    input: TaskInput,
+    startTime: number,
+  ): Promise<{
+    mutations: Array<{ file: string; content: string; diff: string; explanation: string }>;
+    proposedToolCalls: import('../types.ts').ToolCall[];
+    tokensConsumed: number;
+    durationMs: number;
+  }> {
+    const selector = this.backendSelector!;
+    try {
+      const backend = selector.select(0);
+      const handle = await backend.spawn({
+        taskId: input.id,
+        routingLevel: 0,
+        workspace: { host: this.workspace, readonly: true },
+        networkPolicy: 'deny-all',
+        resourceLimits: { cpuMs: 0, memMB: 0, fdMax: 0 },
+        log: () => {},
+      });
+      try {
+        // L0 inputs have no prompt to send — the backend is merely a
+        // lifecycle pass-through. Budget stays zero so inproc.execute
+        // returns deterministically with tokensUsed = 0.
+        await backend.execute(handle, { taskId: input.id, prompt: '' });
+      } finally {
+        await backend.teardown(handle);
+      }
+    } catch {
+      // Selector / backend failure must never break L0 — fall through to
+      // the legacy empty result. The abstraction is an opt-in observability
+      // lens for MVP, not a required dependency.
+    }
+    return {
+      mutations: [] as Array<{ file: string; content: string; diff: string; explanation: string }>,
+      proposedToolCalls: [] as import('../types.ts').ToolCall[],
+      tokensConsumed: 0,
+      durationMs: Math.round(performance.now() - startTime),
+    };
   }
 
   async withSessionLimit<T>(level: number, fn: () => Promise<T>): Promise<T> {
@@ -627,15 +711,22 @@ export class WorkerPoolImpl implements WorkerPool {
   private async dispatchInProcess(
     workerInput: WorkerInput,
     routing: RoutingDecision,
-    conversationHistory?: import('../types.ts').ConversationEntry[],
     agentProfile?: import('../types.ts').AgentSpec,
     peerAgents?: import('../types.ts').AgentSpec[],
     turns?: import('../types.ts').Turn[],
   ): Promise<WorkerOutput> {
-    // PH4.4: Use workerId to select engine if available, fallback to tier-based
+    // PH4.4 + Ecosystem K2.2: Engine resolution priority —
+    //   1. routing.workerId   — fleet-selected profile id (authoritative)
+    //   2. routing.model      — trust-weighted provider chosen by EngineSelector
+    //   3. selectForRoutingLevel(routing.level) — tier default
     const engine = routing.workerId
-      ? (this.engineRegistry.selectById(routing.workerId) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-      : this.engineRegistry.selectForRoutingLevel(routing.level);
+      ? (this.engineRegistry.selectById(routing.workerId)
+          ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
+          ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+      : (routing.model
+          ? (this.engineRegistry.selectById(routing.model)
+              ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+          : this.engineRegistry.selectForRoutingLevel(routing.level));
     if (!engine) {
       return emptyOutput(workerInput.taskId);
     }
@@ -659,7 +750,7 @@ export class WorkerPoolImpl implements WorkerPool {
       ? this.soulStore.loadSoulRaw(aclKey)
       : undefined;
 
-    const { systemPrompt, userPrompt, tiers, systemCacheControl, instructionCacheControl } = assemblePrompt(
+    const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
@@ -668,13 +759,12 @@ export class WorkerPoolImpl implements WorkerPool {
       instructions,
       workerInput.understanding, // Gap 9A: pass TaskUnderstanding for enriched prompt sections
       routing.level, // R2 (§5): gate tool descriptions out of L0-L1 prompts
-      conversationHistory,
+      turns, // A6: Turn-model history replaces legacy ConversationEntry[]
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
       agentContext, // Agent Context Layer: persistent agent identity/memory/skills
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
       agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
-      turns, // Plan commit A: Turn-model history with tool_use/tool_result preserved
     );
 
     const startTime = performance.now();
@@ -694,11 +784,7 @@ export class WorkerPoolImpl implements WorkerPool {
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
           // Plan commit B: tier offsets drive multi-breakpoint cache markers.
-          // Legacy cacheControl / instructionCacheControl are kept until B5
-          // as a safety net for non-Anthropic providers that ignore `tiers`.
           tiers,
-          cacheControl: systemCacheControl ?? { type: 'ephemeral' as const },
-          ...(instructionCacheControl ? { instructionCacheControl } : {}),
         },
       })
       .catch((err): 'error' => {

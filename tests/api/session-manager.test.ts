@@ -145,20 +145,19 @@ describe('Session Compaction', () => {
   });
 });
 
-// Helper: write an assistant [INPUT-REQUIRED] turn directly to the session
-// store so tests can construct arbitrary clarification histories without
-// needing a full TaskResult round-trip.
+// Helper: append an assistant [INPUT-REQUIRED] turn directly to session_turns
+// so tests can construct arbitrary clarification histories without needing a
+// full TaskResult round-trip. A7: uses Turn model instead of session_messages.
 function insertInputRequiredAssistant(sessionId: string, questions: string[]): void {
   const body = questions.map((q) => `- ${q}`).join('\n');
-  sessionStore.insertMessage({
-    session_id: sessionId,
-    task_id: 'test-ir',
+  sessionStore.appendTurn({
+    id: `test-ir-${Math.random().toString(36).slice(2, 8)}`,
+    sessionId,
     role: 'assistant',
-    content: `[INPUT-REQUIRED]\n${body}`,
-    thinking: null,
-    tools_used: null,
-    token_estimate: 10,
-    created_at: Date.now(),
+    blocks: [{ type: 'text', text: `[INPUT-REQUIRED]\n${body}` }],
+    tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    taskId: 'test-ir',
+    createdAt: Date.now(),
   });
 }
 
@@ -196,15 +195,14 @@ describe('SessionManager.getOriginalTaskGoal', () => {
     const s = manager.create('api');
     // Turn 1: completed normally (not an IR).
     manager.recordUserTurn(s.id, 'first task done');
-    sessionStore.insertMessage({
-      session_id: s.id,
-      task_id: 't1',
+    sessionStore.appendTurn({
+      id: 't1-assistant',
+      sessionId: s.id,
       role: 'assistant',
-      content: 'ok, done',
-      thinking: null,
-      tools_used: null,
-      token_estimate: 5,
-      created_at: Date.now(),
+      blocks: [{ type: 'text', text: 'ok, done' }],
+      tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      taskId: 't1',
+      createdAt: Date.now(),
     });
     // Turn 2: new task, assistant asks for clarification.
     manager.recordUserTurn(s.id, 'now write a poem');
@@ -216,15 +214,14 @@ describe('SessionManager.getOriginalTaskGoal', () => {
   test('returns the most recent user message when no clarification is pending', () => {
     const s = manager.create('api');
     manager.recordUserTurn(s.id, 'hello');
-    sessionStore.insertMessage({
-      session_id: s.id,
-      task_id: 't1',
+    sessionStore.appendTurn({
+      id: 't1-assistant-2',
+      sessionId: s.id,
       role: 'assistant',
-      content: 'hi back',
-      thinking: null,
-      tools_used: null,
-      token_estimate: 3,
-      created_at: Date.now(),
+      blocks: [{ type: 'text', text: 'hi back' }],
+      tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      taskId: 't1',
+      createdAt: Date.now(),
     });
     manager.recordUserTurn(s.id, 'latest goal');
     // No [INPUT-REQUIRED] in play — latest user message wins.

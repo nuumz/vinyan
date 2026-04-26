@@ -29,10 +29,24 @@ import {
   resolveSelectedAgent,
 } from './intent/formatters.ts';
 import {
+  classifyWithFallback,
+  pickPrimaryProvider,
+} from './intent/llm-client.ts';
+import {
+  isLLMRefinement,
+  LLM_UNCERTAIN_THRESHOLD,
+  mergeDeterministicAndLLM,
+} from './intent/merge.ts';
+import {
+  buildClassifierUserPrompt,
+  buildComprehensionBlock,
+} from './intent/prompt.ts';
+import {
   composeDeterministicCandidate,
   fallbackStrategy,
   mapUnderstandingToStrategy,
 } from './intent/strategy.ts';
+import type { IntentResolverDeps } from './intent/types.ts';
 import {
   containsShellFallbackChain,
   IntentResponseSchema,
@@ -46,7 +60,6 @@ import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
-  ConversationEntry,
   ExecutionStrategy,
   IntentDeterministicCandidate,
   IntentResolution,
@@ -63,128 +76,6 @@ import {
 // ---------------------------------------------------------------------------
 // Zod schema for LLM response parsing
 // ---------------------------------------------------------------------------
-
-// Commit D3: IntentResponseSchema moved to `src/orchestrator/intent/parser.ts`
-// and re-imported above. Kept as a pure-type alias for legacy call sites.
-
-// ---------------------------------------------------------------------------
-// System prompt
-// ---------------------------------------------------------------------------
-
-const INTENT_SYSTEM_PROMPT = `You are an intent classifier for Vinyan, a task orchestrator.
-Given a user's goal, determine the execution strategy.
-
-Respond as JSON with these fields:
-- strategy: one of "full-pipeline" | "direct-tool" | "conversational" | "agentic-workflow"
-- refinedGoal: restate the goal clearly and precisely (in the same language as the user)
-- reasoning: brief explanation of your classification (1 sentence, English)
-- directToolCall: (only if strategy="direct-tool") { "tool": "<tool_name>", "parameters": {...} }
-- workflowPrompt: (only if strategy="agentic-workflow") a detailed, step-by-step execution prompt for the downstream agent
-
-Strategy definitions:
-- "conversational": SHORT greetings, simple factual Q&A answerable in 1-3 sentences, meta-questions about capabilities. The response is brief and needs no planning or generation effort.
-- "direct-tool": a SINGLE fire-and-forget action with no expected textual output — the action itself IS the result. Examples: open an app, run a server, launch a URL.
-- "agentic-workflow": tasks requiring generation, planning, research, or synthesis — creative writing (stories, poems, essays), summarization, analysis, multi-step tasks, refactor+deploy, build+test+release. If the answer requires more than 3 sentences of original content, this is likely agentic-workflow.
-- "full-pipeline": code modification tasks with clear file targets — bug fixes, feature additions, refactoring.
-
-CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
-
-1. CONVERSATIONAL test — Is this a SHORT, simple exchange?
-   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
-   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work", "นิยายเว็บตูนคืออะไร") → "conversational"
-   - Meta-questions about system capabilities → "conversational"
-   - DELIVERABLE META-RULE: If the answer would be a copy/paste/publishable ARTIFACT (novel chapter, full article, script, deck, application, website, report, summary) — regardless of the verb the user chose or whether they phrased it as a question — it is ALWAYS "agentic-workflow". A 1–3 sentence answer is NOT a deliverable; anything longer likely is.
-   - Semantic test (not keyword match): ask yourself "would a complete, satisfying answer fit in one short paragraph?" If NO → "agentic-workflow".
-   - Question FORM ≠ conversational INTENT. "ช่วยทำ X ได้ไหม", "can you build X?" — when X is a concrete deliverable, treat as REQUEST TO DO X → "agentic-workflow".
-   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation.
-   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization, NOT authoring). Read the verb + object semantically, not keywords in isolation.
-
-2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
-   - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
-   - If the user wants an ANSWER, SUMMARY, LIST, or REPORT → NEVER "direct-tool"
-   - Words like "summarize", "list", "find all", "analyze", "report", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool"
-   - Asking about a file's content → NOT "direct-tool" (reading is not opening)
-   - If strategy="direct-tool", you MUST include directToolCall with an executable tool invocation
-   - Emit exactly ONE platform-appropriate command. Never chain alternatives with ||, &&, ;, |, or multi-line shell scripts
-   - The current platform is provided in the user prompt. Choose the command for THAT platform only
-   - For web services / SaaS products that are normally opened in a browser, prefer opening the canonical URL instead of inventing a local app name
-   - Even if the user says "app" / "แอพ", if the target is primarily a web service, open its canonical URL instead of trying to launch a nonexistent desktop app
-   - Example: "open Gmail" → shell_exec with a browser/open command for Gmail's web URL, NOT "open -a gmail" and NOT cross-platform fallback chains
-   - Only use a native app launch when the target is clearly a desktop app
-
-3. FULL-PIPELINE test — Is this a focused code change?
-   - Has explicit file targets AND involves code modification → "full-pipeline"
-   - Bug fix, implement feature, refactor specific module → "full-pipeline"
-   - If it requires multi-file coordination OR exploration first → "agentic-workflow" instead
-
-4. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
-   - Multi-step tasks, research, analysis, synthesis
-   - Creative generation: stories, essays, poems, scripts, long-form content
-   - Tasks requiring exploration before action
-   - Tasks spanning multiple files without clear targets
-   - Any task where the output is substantial text (more than a short paragraph)
-
-5. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
-   - If user asks for a CATEGORY (e.g., "แอพ mail", "email app", "browser") and a preference exists → ALWAYS use the preferred app
-   - Generate the directToolCall command for the PREFERRED app, not the platform default
-   - Example: if user prefers "gmail" for "mail", then "เปิดแอพ mail" → open Gmail's URL, NOT "open -a Mail"
-   - If user names a SPECIFIC app ("เปิด Outlook"), respect that even if preference says something else
-
-workflowPrompt guidelines (for "agentic-workflow" ONLY):
-- Write it as if briefing a smart colleague who just walked into the room
-- Include: what to accomplish, what approach to take, what success looks like
-- Be specific about outputs expected (e.g., "produce a bullet-point summary", "list all files matching X")
-- Do NOT include generic platitudes like "be careful" — give actionable steps
-
-Available tools (use ONLY these exact names — do NOT invent tool names):
-- shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }
-- file_read: Read file contents. Parameters: { "file_path": "..." }
-- file_write: Write/create a file. Parameters: { "file_path": "...", "content": "..." }
-- file_edit: Edit a file with search/replace. Parameters: { "file_path": "...", "old_text": "...", "new_text": "..." }
-- directory_list: List directory contents. Parameters: { "path": "..." }
-- search_grep: Search file contents. Parameters: { "pattern": "...", "path": "..." }
-- git_status: Show git status. Parameters: {}
-- git_diff: Show git diff. Parameters: {}
-- search_semantic: Semantic code search. Parameters: { "query": "..." }
-- http_get: HTTP GET request. Parameters: { "url": "..." }
-
-IMPORTANT: For opening apps, running system commands, or any OS interaction, use shell_exec with the appropriate command.
-
-## Canonical Examples (study these — they cover cases that trip up naive keyword matching)
-
-1. GOAL: "อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง"
-   STRATEGY: agentic-workflow
-   WHY: Multi-chapter creative deliverable. The answer is a publishable artifact, not a chat reply.
-
-2. GOAL: "สวัสดีครับ"
-   STRATEGY: conversational
-   WHY: Greeting; 1-sentence friendly reply.
-
-3. GOAL: "นิยายเว็บตูนคืออะไร"
-   STRATEGY: conversational
-   WHY: Informational question — user wants a definition, not a novel. Mentioning "นิยาย" does NOT mean "write one".
-
-4. GOAL: "fix type error in src/foo.ts"
-   STRATEGY: full-pipeline
-   WHY: Code modification with an explicit file target.
-
-5. GOAL: "เปิดแอพ Gmail ให้หน่อย"
-   STRATEGY: direct-tool
-   WHY: Single fire-and-forget OS action; the side-effect IS the result.
-
-6. GOAL: "แปลนิยายเรื่องนี้เป็นอังกฤษ"
-   STRATEGY: agentic-workflow
-   WHY: Multi-chapter text transformation (translation). Output is long even though the user is not "authoring" from scratch.
-
-7. GOAL: "ทำให้เว็บตูนโหลดเร็วขึ้น"
-   STRATEGY: full-pipeline (with targetFiles) OR agentic-workflow (without)
-   WHY: Performance optimization in a codebase. "เว็บตูน" here names the PRODUCT being optimized, NOT a writing task. Verb+object semantics beats keyword matching.
-
-8. GOAL: "ช่วยคิดพล็อตนิยายหน่อย"
-   STRATEGY: agentic-workflow
-   WHY: Creative ideation — the user wants a structured plot outline. The verb is "คิด" not "เขียน", but the deliverable is still long-form.
-
-Respond ONLY with valid JSON, no markdown fences.`;
 
 // Commit D3: stripJsonFences / parseIntentResponse / containsShellFallbackChain
 // / normalizeDirectToolCall / withTimeout moved to
@@ -266,6 +157,44 @@ export function intentResolverCacheSize(): number {
 // and imported at the top of this file. Re-exported for backward compat.
 export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStrategy };
 
+// ---------------------------------------------------------------------------
+// W3 H3 — schedule pre-classifier (add-only, does not touch existing strategies).
+//
+// A pre-filter: when the input text matches a small scheduling grammar AND is
+// NOT a code-mutation task, we return `{ strategy: 'schedule', scheduleText }`.
+// Callers (follow-up PR wires this into the orchestrator) dispatch this to
+// `interpretSchedule()` instead of the normal pipeline. When the input does
+// not match, the classifier returns `null` and the caller runs `resolveIntent`
+// as before — existing behaviour is unchanged.
+// ---------------------------------------------------------------------------
+
+/** Strategy emitted by the NL-cron pre-classifier. Kept local to preserve the frozen `ExecutionStrategy` union. */
+export interface ScheduleStrategyClassification {
+  readonly strategy: 'schedule';
+  readonly scheduleText: string;
+}
+
+const SCHEDULE_TRIGGER_RE =
+  /\b(every\b|daily\b|weekly\b|at\s+\d|on\s+(mon|tue|wed|thu|fri|sat|sun|weekday|weekend))/i;
+
+/**
+ * Return `{ strategy: 'schedule', scheduleText }` when `text` matches the NL
+ * scheduling grammar, `null` otherwise. Code-mutation hints (presence of
+ * `targetFiles` or a domain of `code-mutation` in the supplied STU) suppress
+ * the match so a scheduled-code-change reading (rare) does not swallow a
+ * real code-mutation request.
+ */
+export function classifyScheduleStrategy(
+  input: Pick<TaskInput, 'goal' | 'targetFiles'>,
+  understanding?: SemanticTaskUnderstanding,
+): ScheduleStrategyClassification | null {
+  const text = input.goal;
+  if (!text || !SCHEDULE_TRIGGER_RE.test(text)) return null;
+  if (input.targetFiles && input.targetFiles.length > 0) return null;
+  if (understanding?.taskDomain === 'code-mutation') return null;
+  return { strategy: 'schedule', scheduleText: text };
+}
+
 // Commit D4: buildClarificationRequest / formatConversationContext /
 // formatAgentCatalog / resolveSelectedAgent moved to
 // `src/orchestrator/intent/formatters.ts` and imported at the top.
@@ -274,102 +203,10 @@ export { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStra
 // Main resolver
 // ---------------------------------------------------------------------------
 
-export interface IntentResolverDeps {
-  registry: LLMProviderRegistry;
-  availableTools?: string[];
-  bus?: VinyanBus;
-  /** Formatted user preferences string for prompt injection (from UserPreferenceStore). */
-  userPreferences?: string;
-  /** Recent conversation history for multi-turn context. */
-  conversationHistory?: ConversationEntry[];
-  /**
-   * Multi-agent: roster of specialist agents. When provided, resolver picks
-   * the best-fit agentId based on goal + task characteristics.
-   */
-  agents?: AgentSpec[];
-  /** Default agent id used when resolver cannot confidently pick one. */
-  defaultAgentId?: string;
-  /**
-   * Mines user interests / recent topics from TraceStore + SessionStore. When
-   * provided, the resolver includes a "User context" block so the classifier
-   * can reason about ambiguous goals against real past activity.
-   */
-  userInterestMiner?: UserInterestMiner;
-  /** Session id for user-context mining (keyword extraction scoped to session). */
-  sessionId?: string;
-  /** Test hook for deterministic clock (cache TTL). */
-  now?: () => number;
-  /**
-   * Pre-computed SemanticTaskUnderstanding. When supplied, the deterministic
-   * path runs BEFORE the LLM (tier 0.8 candidate + ambiguity detection). When
-   * absent, the resolver falls back to the pure-LLM path for backwards compat.
-   */
-  understanding?: SemanticTaskUnderstanding;
-  /**
-   * Oracle-verified conversation comprehension (pre-routing). When present:
-   *  - `state.isClarificationAnswer=true` → resolver preserves the prior
-   *    workflow (suppresses re-classification to conversational/direct-tool)
-   *    by blending the signal into the cache key and the LLM user prompt.
-   *  - `state.rootGoal` / `data.resolvedGoal` → appended to the prompt as
-   *    grounding; classifier sees the user's real intent, not just the
-   *    short reply text.
-   *  - `state.hasAmbiguousReferents=true` without a resolved rootGoal →
-   *    forces the resolver to treat the literal message as provisional
-   *    (LLM advisory path even if deterministic would skip).
-   */
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
-}
+// Commit D6: IntentResolverDeps moved to `src/orchestrator/intent/types.ts`
+// and imported at the top. Re-exported for legacy call sites.
+export type { IntentResolverDeps };
 
-const INTENT_TIMEOUT_MS = 8000;
-
-/**
- * Provider-tier preference for intent resolution.
- *
- * Rationale (see plan `vinyan-agent-intent-replicated-kite.md`): intent calls
- * run once per task, so the marginal cost of using the `balanced` tier is
- * negligible compared to the accuracy win over `fast`/`tool-uses`. A regex
- * pre-filter used to paper over `fast` misclassification — it was brittle
- * and keyword-bound, so it was removed in favour of a stronger default tier
- * plus canonical few-shot examples in the system prompt.
- */
-const TIER_PREFERENCE = ['balanced', 'tool-uses', 'fast'] as const;
-
-function pickPrimaryProvider(registry: LLMProviderRegistry): LLMProvider | null {
-  for (const tier of TIER_PREFERENCE) {
-    const p = registry.selectByTier(tier);
-    if (p) return p;
-  }
-  return null;
-}
-
-function pickAlternateProvider(
-  registry: LLMProviderRegistry,
-  excludeId: string,
-): LLMProvider | null {
-  for (const tier of TIER_PREFERENCE) {
-    const p = registry.selectByTier(tier);
-    if (p && p.id !== excludeId) return p;
-  }
-  return null;
-}
-
-async function classifyOnce(
-  provider: LLMProvider,
-  userPrompt: string,
-): Promise<z.infer<typeof IntentResponseSchema>> {
-  const response = await withTimeout(
-    provider.generate({
-      systemPrompt: INTENT_SYSTEM_PROMPT,
-      userPrompt,
-      maxTokens: 500,
-      temperature: 0,
-    }),
-    INTENT_TIMEOUT_MS,
-  );
-  const parsed = parseIntentResponse(response.content.trim());
-  parsed.directToolCall = normalizeDirectToolCall(parsed.strategy, parsed.directToolCall);
-  return parsed;
-}
 
 /**
  * Threshold at which a deterministic candidate is trusted enough to bypass
@@ -377,133 +214,16 @@ async function classifyOnce(
  */
 const DETERMINISTIC_SKIP_THRESHOLD = 0.85;
 
-/** Low-confidence watermark from the LLM — below this we flag the resolution uncertain. */
-const LLM_UNCERTAIN_THRESHOLD = 0.5;
-
 /**
  * Strategy pairs where rule vs. LLM disagreement is merely refinement (not
  * contradiction). Rule says X, LLM says Y — we accept Y because it carries
  * strictly more information (e.g. full-pipeline vs agentic-workflow with a
  * concrete workflowPrompt).
  */
-function isLLMRefinement(rule: ExecutionStrategy, llm: ExecutionStrategy): boolean {
-  if (rule === llm) return true;
-  if (rule === 'full-pipeline' && llm === 'agentic-workflow') return true; // wider scope = richer
-  if (rule === 'agentic-workflow' && llm === 'full-pipeline') return true; // narrower scope = focused
-  if (rule === 'conversational' && llm === 'agentic-workflow') return true; // deliverable upgrade
-  return false;
-}
-
-/**
- * A5-safe merge — deterministic (tier 0.8) wins over LLM (tier 0.4) on true
- * contradictions; refinements are accepted; agreements are recorded as known.
- */
-function mergeDeterministicAndLLM(
-  input: TaskInput,
-  understanding: SemanticTaskUnderstanding,
-  det: IntentResolution & { deterministicCandidate: IntentDeterministicCandidate },
-  llm: z.infer<typeof IntentResponseSchema>,
-  bus: VinyanBus | undefined,
-  taskId: string,
-): { resolution: IntentResolution; type: IntentResolutionType } {
-  const llmConfidence = llm.confidence ?? 0.8;
-
-  // Case 1: LLM is low-confidence → uncertain. Keep deterministic strategy.
-  if (llmConfidence < LLM_UNCERTAIN_THRESHOLD) {
-    const { request, options } = buildClarificationRequest(input, understanding, det.strategy);
-    bus?.emit('intent:uncertain', {
-      taskId,
-      reason: `LLM confidence ${llmConfidence.toFixed(2)} below threshold ${LLM_UNCERTAIN_THRESHOLD}`,
-      clarificationRequest: request,
-    });
-    return {
-      resolution: {
-        ...det,
-        reasoning: `${det.reasoning} LLM uncertain (${llmConfidence.toFixed(2)}).`,
-        reasoningSource: 'merged',
-        clarificationRequest: request,
-        clarificationOptions: options,
-      },
-      type: 'uncertain',
-    };
-  }
-
-  // A5 carve-out: when rule said 'direct-tool' but never resolved a concrete
-  // `directToolCall`, the rule has NO artifact — just an opinion. A5's
-  // tier-0.8 trust applies to deterministic FACTS, not unresolved hunches.
-  // Treat LLM disagreement as refinement (LLM fills the gap) instead of
-  // contradiction. Prevents the user from being asked to tiebreak between
-  // a hollow rule and an informed LLM pick.
-  if (
-    det.strategy === 'direct-tool' &&
-    !det.directToolCall &&
-    llm.strategy !== 'direct-tool'
-  ) {
-    const mergedStrategy = llm.strategy;
-    const mergedConfidence = Math.max(det.confidence, llmConfidence);
-    return {
-      resolution: {
-        strategy: mergedStrategy,
-        refinedGoal: llm.refinedGoal,
-        directToolCall: llm.directToolCall,
-        workflowPrompt: llm.workflowPrompt,
-        confidence: mergedConfidence,
-        reasoning: `A5 carve-out: rule=direct-tool had no resolved command (hollow); LLM=${llm.strategy} accepted as refinement. ${llm.reasoning}`,
-        reasoningSource: 'merged',
-        deterministicCandidate: det.deterministicCandidate,
-      },
-      type: 'known',
-    };
-  }
-
-  // Case 2: Contradiction — rule and LLM disagree and LLM isn't a pure refinement.
-  // A5: rule wins (tier 0.8 > tier 0.4). Emit event, surface clarification.
-  if (!isLLMRefinement(det.strategy, llm.strategy)) {
-    const { request, options } = buildClarificationRequest(
-      input,
-      understanding,
-      det.strategy,
-      llm.strategy,
-    );
-    bus?.emit('intent:contradiction', {
-      taskId,
-      ruleStrategy: det.strategy,
-      llmStrategy: llm.strategy,
-      ruleConfidence: det.confidence,
-      llmConfidence,
-      winner: det.strategy,
-    });
-    return {
-      resolution: {
-        ...det,
-        // A5: rule strategy survives, but we still carry LLM reasoning for audit.
-        reasoning: `A5 contradiction: rule=${det.strategy} (${det.confidence.toFixed(2)}) vs llm=${llm.strategy} (${llmConfidence.toFixed(2)}). Rule wins.`,
-        reasoningSource: 'merged',
-        clarificationRequest: request,
-        clarificationOptions: options,
-      },
-      type: 'contradictory',
-    };
-  }
-
-  // Case 3: Agreement or LLM refinement — accept LLM's richer payload.
-  // Confidence = max of the two (they agree), but never below the deterministic floor.
-  const mergedStrategy = llm.strategy;
-  const mergedConfidence = Math.max(det.confidence, llmConfidence);
-  return {
-    resolution: {
-      strategy: mergedStrategy,
-      refinedGoal: llm.refinedGoal,
-      directToolCall: llm.directToolCall ?? det.directToolCall,
-      workflowPrompt: llm.workflowPrompt,
-      confidence: mergedConfidence,
-      reasoning: llm.reasoning,
-      reasoningSource: 'merged',
-      deterministicCandidate: det.deterministicCandidate,
-    },
-    type: 'known',
-  };
-}
+// Commit D7: isLLMRefinement / mergeDeterministicAndLLM /
+// LLM_UNCERTAIN_THRESHOLD moved to `src/orchestrator/intent/merge.ts` and
+// imported at the top. The finalize* helpers stay here — they mutate the
+// module-level intentCache and emit orchestrator-scoped bus events.
 
 /** [B.skip] Finalize + emit a pure-deterministic resolution (no LLM consulted). */
 function finalizeDeterministicSkip(
@@ -586,102 +306,9 @@ function finalizeDeterministicOnly(
   return result;
 }
 
-/** Build the user prompt injected into the classifier LLM. */
-function buildClassifierUserPrompt(
-  input: TaskInput,
-  deps: IntentResolverDeps,
-  deterministic: ReturnType<typeof composeDeterministicCandidate> | null,
-): string {
-  const toolList =
-    deps.availableTools?.join(', ') ??
-    'shell_exec, file_read, file_write, file_edit, directory_list, search_grep, git_status, git_diff';
-  const preferencesBlock = deps.userPreferences ? `\n${deps.userPreferences}` : '';
-  const conversationBlock = formatConversationContext(deps.conversationHistory);
-  const userContextBlock = deps.userInterestMiner
-    ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
-    : '';
-  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
-  const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
-  const structuralBlock = `\n${renderStructuralFeatures(
-    computeStructuralFeatures(input.goal, deps.conversationHistory),
-  )}`;
-  const deterministicBlock = deterministic
-    ? `\nRule-based candidate (tier 0.8 — treat as grounding; override only with strong evidence): strategy=${deterministic.strategy}, confidence=${deterministic.confidence.toFixed(2)}${deterministic.deterministicCandidate.ambiguous ? ', AMBIGUOUS' : ''}. If the rule is already correct, confirm it — do not fabricate complexity.`
-    : '';
-  const comprehensionBlock = buildComprehensionBlock(deps.comprehension);
+// Commit D6: buildClassifierUserPrompt / buildComprehensionBlock moved to
+// `src/orchestrator/intent/prompt.ts` and imported at the top of this file.
 
-  // Strip orchestrator-internal prefixes — the intent classifier sees only
-  // user intent, not JSON payloads / routing metadata that belong to other
-  // pipeline stages.
-  const userCs = userConstraintsOnly(input.constraints);
-
-  return `User goal: "${input.goal}"
-Task type: ${input.taskType}
-Target files: ${input.targetFiles?.join(', ') || 'none'}
-Constraints: ${userCs.length > 0 ? userCs.join(', ') : 'none'}
-Current platform: ${process.platform}
-Available tools: ${toolList}${structuralBlock}${deterministicBlock}${comprehensionBlock}${agentsBlock}${preferencesBlock}${userContextBlock}${conversationBlock}`;
-}
-
-/**
- * Render the oracle-verified conversation comprehension as a prompt block
- * the classifier can reason over. Keep it short and structured — the LLM
- * parses fields, not prose.
- *
- * The critical signal is `isClarificationAnswer=true`: when the user's
- * message is an answer to a pending question, the classifier MUST preserve
- * the prior workflow (do not re-route to conversational / direct-tool)
- * unless the user explicitly asks for a topic change.
- */
-function buildComprehensionBlock(
-  comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage,
-): string {
-  if (!comprehension || comprehension.params.type !== 'comprehension') return '';
-  const data = comprehension.params.data;
-  if (!data) return '';
-  const s = data.state;
-  const lines: string[] = [];
-  lines.push('\nConversation comprehension (oracle-verified, tier='
-    + comprehension.params.tier + '):');
-  lines.push(`- isNewTopic: ${s.isNewTopic}`);
-  lines.push(`- isClarificationAnswer: ${s.isClarificationAnswer}`);
-  lines.push(`- isFollowUp: ${s.isFollowUp}`);
-  lines.push(`- hasAmbiguousReferents: ${s.hasAmbiguousReferents}`);
-  if (s.rootGoal) {
-    const root = s.rootGoal.length > 160 ? `${s.rootGoal.slice(0, 157)}...` : s.rootGoal;
-    lines.push(`- rootGoal: "${root}"`);
-  }
-  if (s.pendingQuestions.length > 0) {
-    lines.push(`- pendingQuestions (${s.pendingQuestions.length}):`);
-    for (const q of s.pendingQuestions.slice(0, 5)) lines.push(`    - ${q}`);
-  }
-  if (data.resolvedGoal && data.resolvedGoal !== data.literalGoal) {
-    const resolved = data.resolvedGoal.length > 160
-      ? `${data.resolvedGoal.slice(0, 157)}...` : data.resolvedGoal;
-    lines.push(`- resolvedGoal (prefer over literal): "${resolved}"`);
-  }
-  if (s.isClarificationAnswer) {
-    lines.push(
-      '- ROUTING RULE: the user is answering a prior clarification. Preserve the existing workflow (stay in agentic-workflow / do NOT reclassify as conversational or direct-tool) unless the user explicitly asks to change topic.',
-    );
-  }
-  return lines.join('\n');
-}
-
-/** Primary + alternate-tier classification call. */
-async function classifyWithFallback(
-  registry: LLMProviderRegistry,
-  primary: LLMProvider,
-  userPrompt: string,
-): Promise<z.infer<typeof IntentResponseSchema>> {
-  try {
-    return await classifyOnce(primary, userPrompt);
-  } catch (firstError) {
-    const alternate = pickAlternateProvider(registry, primary.id);
-    if (!alternate) throw firstError;
-    return classifyOnce(alternate, userPrompt);
-  }
-}
 
 export async function resolveIntent(
   input: TaskInput,

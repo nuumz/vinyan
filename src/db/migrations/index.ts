@@ -1,54 +1,30 @@
 /**
  * Migration Index — ordered list of all database migrations.
  *
- * Add new migrations here in version order.
+ * As of the 2026-04-20 consolidation, the 41 historical migrations have
+ * been squashed into a single `001_initial_schema.ts` that creates the
+ * post-041 final schema in one pass. New schema changes append migrations
+ * here in version order.
  */
 
 export type { MigrateResult, Migration } from './migration-runner.ts';
 export { MigrationRunner } from './migration-runner.ts';
 
 import { migration001 } from './001_initial_schema.ts';
-import { migration002 } from './002_add_session_tables.ts';
-import { migration003 } from './003_add_instance_registry.ts';
-import { migration004 } from './004_add_origin_provenance.ts';
-import { migration005 } from './005_add_oracle_profiles.ts';
-import { migration006 } from './006_add_causal_edges.ts';
-import { migration007 } from './007_add_skill_composition.ts';
-import { migration008 } from './008_re_agnostic_worker_profiles.ts';
-import { migration009 } from './009_add_evidence_archives.ts';
-import { migration010 } from './010_add_action_verb_to_rejected.ts';
-import { migration011 } from './011_add_understanding_trace.ts';
-import { migration012 } from './012_add_economy_tables.ts';
-import { migration013 } from './013_add_market_tables.ts';
-import { migration014 } from './014_add_federation_economy.ts';
-import { migration015 } from './015_add_session_messages.ts';
-import { migration016 } from './016_add_room_tables.ts';
-import { migration017 } from './017_add_decomposition_pattern_type.ts';
-import { migration018 } from './018_add_agent_contexts.ts';
-import { migration019 } from './019_add_soul_columns.ts';
-import { migration020 } from './020_add_local_oracle_profiles.ts';
-import { migration021 } from './021_drop_dead_worker_columns.ts';
-import { migration022 } from './022_drop_legacy_worker_config_columns.ts';
-import { migration023 } from './023_add_agent_profile.ts';
-import { migration024 } from './024_cleanup_null_engine_config.ts';
-import { migration025 } from './025_add_agent_id_to_skills.ts';
-import { migration026 } from './026_relax_agent_profile_singleton.ts';
-import { migration027 } from './027_add_agent_profile_role_columns.ts';
-import { migration028 } from './028_add_agent_id_to_traces.ts';
-import { migration029 } from './029_add_comprehension_records.ts';
-import { migration030 } from './030_add_comprehension_engine_type.ts';
-import { migration031 } from './031_add_agent_runtime.ts';
-import { migration032 } from './032_add_commitments.ts';
-import { migration033 } from './033_add_teams.ts';
-import { migration034 } from './034_add_volunteer.ts';
-import { migration035 } from './035_add_session_turns.ts';
-import { migration036 } from './036_add_turn_embeddings.ts';
+import { migration003 } from './003_memory_records.ts';
+import { migration004 } from './004_skill_artifact.ts';
+import { migration005 } from './005_trajectory_export.ts';
+import { migration006 } from './006_gateway_tables.ts';
+import { migration007 } from './007_plugin_audit.ts';
+import { migration008 } from './008_skill_trust_ledger.ts';
+import { migration009 } from './009_user_md_dialectic.ts';
+import { migration010 } from './010_commonsense_rules.ts';
+import { migration011 } from './011_commonsense_rule_telemetry.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
 export const ALL_MIGRATIONS: Migration[] = [
   migration001,
-  migration002,
   migration003,
   migration004,
   migration005,
@@ -58,29 +34,4 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration009,
   migration010,
   migration011,
-  migration012,
-  migration013,
-  migration014,
-  migration015,
-  migration016,
-  migration017,
-  migration018,
-  migration019,
-  migration020,
-  migration021,
-  migration022,
-  migration023,
-  migration024,
-  migration025,
-  migration026,
-  migration027,
-  migration028,
-  migration029,
-  migration030,
-  migration031,
-  migration032,
-  migration033,
-  migration034,
-  migration035,
-  migration036,
 ];

@@ -1,6 +1,8 @@
 # Vinyan World Model / Forward Predictor — Design Document
 
-**Status:** Design Complete — Ready for Implementation
+> 🔧 **Status: Mixed.** Heuristic and statistical tiers are **live as `ForwardPredictor`** (see `src/orchestrator/prediction/`). Causal tier (counterfactual generation) is **still pending** — it requires ML training data and is not yet wired. GAP-A (forward-looking world model vs the backward-looking World Graph) remains partially open; see `analysis/gap-analysis.md` §7.
+
+**Status:** Heuristic + Statistical tiers shipped; Causal tier pending data
 **GAP Reference:** ../analysis/gap-analysis.md Section 10.2, GAP-A
 **Phase:** Phase 2+ (builds on Phase 1 CalibratedSelfModel, Phase 0 WorldGraph)
 **Date:** 2026-04-01

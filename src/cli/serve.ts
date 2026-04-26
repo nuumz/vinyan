@@ -34,6 +34,7 @@ import { createA2AManager, type A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { VinyanAPIServer } from '../api/server.ts';
 import { SessionManager } from '../api/session-manager.ts';
 import { loadConfig } from '../config/index.ts';
+import { resolveProfile } from '../config/profile-resolver.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
@@ -80,7 +81,23 @@ const TRANSIENT_IO_CODES = new Set(['EPIPE', 'ECONNRESET', 'ERR_STREAM_DESTROYED
 
 type Phase = 'startup' | 'steady' | 'shutting_down';
 
-export async function serve(workspace: string): Promise<void> {
+/**
+ * Options plumbed in from the top-level CLI entry (src/cli/index.ts).
+ *
+ * `profile` is the already-resolved profile name (flag > env > 'default').
+ * Forwarded into the API server so inbound requests that don't supply
+ * their own profile header/body default to this one — matching
+ * `vinyan serve -p <name>` semantics.
+ */
+export interface ServeOptions {
+  profile?: string;
+}
+
+export async function serve(workspace: string, opts: ServeOptions = {}): Promise<void> {
+  // Re-run resolveProfile so the result is a concrete, validated name.
+  // When called from the CLI this is redundant (index.ts already ran it)
+  // but direct callers + tests benefit from the guarantee.
+  const resolvedProfile = resolveProfile({ flag: opts.profile });
   // ── Phase tracker ───────────────────────────────────────────────
   // Mutable — flipped to 'steady' at the end of serve() after a clean
   // startup, then to 'shutting_down' when shutdown fires.
@@ -156,7 +173,11 @@ export async function serve(workspace: string): Promise<void> {
         process.exit(EXIT_CODE_STARTUP_FATAL);
       } catch {
         // Dead — remove stale PID file.
-        try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+        try {
+          unlinkSync(pidFilePath);
+        } catch {
+          /* best-effort */
+        }
       }
     }
   }
@@ -178,8 +199,24 @@ export async function serve(workspace: string): Promise<void> {
     (watchdog as { unref?: () => void }).unref?.();
   }
 
+  // ── Shared DB + session store wiring ────────────────────────────
+  // Must exist before createOrchestrator so core-loop deps.sessionManager
+  // is populated; without it the creative-clarification gate, pending-
+  // clarification lookup, root-goal walk-back, and working-memory hydrate
+  // paths all silently no-op and treat every POST /messages as a fresh
+  // session (re-asking the same clarifications forever).
+  //
+  // The same VinyanDB handle is injected into createOrchestrator so the
+  // factory reuses it instead of opening a second bun:sqlite connection on
+  // the same WAL file. Double-open doubled migration passes and left each
+  // connection with its own cache/journal snapshot — transient SQLITE_BUSY
+  // would hit ALWAYS_FATAL_CODES here and crash the server.
+  const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
+  const sessionStore = new SessionStore(db.getDb());
+  const sessionManager = new SessionManager(sessionStore);
+
   // ── Orchestrator + server wiring ────────────────────────────────
-  const orchestrator = createOrchestrator({ workspace });
+  const orchestrator = createOrchestrator({ workspace, sessionManager, db });
 
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });
@@ -196,11 +233,6 @@ export async function serve(workspace: string): Promise<void> {
       network,
     });
   }
-
-  // Set up session store
-  const db = new VinyanDB(join(workspace, '.vinyan', 'vinyan.db'));
-  const sessionStore = new SessionStore(db.getDb());
-  const sessionManager = new SessionManager(sessionStore);
 
   const port = network?.api?.port ?? 3927;
   const bind = network?.api?.bind ?? '127.0.0.1';
@@ -242,6 +274,7 @@ export async function serve(workspace: string): Promise<void> {
       marketScheduler: orchestrator.marketScheduler,
       capabilityModel: orchestrator.capabilityModel,
       workspace,
+      defaultProfile: resolvedProfile.name,
     },
   );
 
@@ -264,16 +297,36 @@ export async function serve(workspace: string): Promise<void> {
     }, SHUTDOWN_FORCE_EXIT_MS);
     (forceExit as { unref?: () => void }).unref?.();
 
-    try { sessionManager.suspendAll(); } catch { /* best-effort */ }
+    try {
+      sessionManager.suspendAll();
+    } catch {
+      /* best-effort */
+    }
     if (a2aManager) {
-      await withTimeout('a2a.stop', STEP_TIMEOUT_MS.a2a_stop, Promise.resolve().then(() => a2aManager!.stop()));
+      await withTimeout(
+        'a2a.stop',
+        STEP_TIMEOUT_MS.a2a_stop,
+        Promise.resolve().then(() => a2aManager!.stop()),
+      );
     }
     await withTimeout('server.stop', STEP_TIMEOUT_MS.server_stop, server.stop());
-    await withTimeout('orchestrator.close', STEP_TIMEOUT_MS.orchestrator_close, Promise.resolve().then(() => orchestrator.close()));
-    await withTimeout('db.close', STEP_TIMEOUT_MS.db_close, Promise.resolve().then(() => db.close()));
+    await withTimeout(
+      'orchestrator.close',
+      STEP_TIMEOUT_MS.orchestrator_close,
+      Promise.resolve().then(() => orchestrator.close()),
+    );
+    await withTimeout(
+      'db.close',
+      STEP_TIMEOUT_MS.db_close,
+      Promise.resolve().then(() => db.close()),
+    );
 
     clearTimeout(forceExit);
-    try { unlinkSync(pidFilePath); } catch { /* best-effort */ }
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* best-effort */
+    }
     process.exit(0);
   };
   shutdownFn = shutdown;
@@ -284,7 +337,11 @@ export async function serve(workspace: string): Promise<void> {
   // subprocesses even if cleanup was bypassed (force-exit, uncaught
   // error, process.exit from deep in the code).
   process.on('exit', () => {
-    try { unlinkSync(pidFilePath); } catch { /* already removed */ }
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* already removed */
+    }
   });
 
   // ── Server start — synchronous throw on EADDRINUSE etc. ─────────

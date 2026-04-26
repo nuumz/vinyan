@@ -2,16 +2,16 @@ import { describe, expect, it, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { AgentRuntimeStore } from '../../../src/db/agent-runtime-store.ts';
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import {
   RuntimeStateManager,
   isTransitionAllowed,
   type RuntimeTransition,
 } from '../../../src/orchestrator/ecosystem/runtime-state.ts';
-import { migration031 } from '../../../src/db/migrations/031_add_agent_runtime.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration031.up(db);
+  migration001.up(db);
   return db;
 }
 

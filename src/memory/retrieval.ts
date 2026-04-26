@@ -208,13 +208,18 @@ export class ContextRetriever {
     userMessage: string,
     recentIds: Set<string>,
   ): Promise<{ semantic: Turn[]; skipReason?: string }> {
-    if (!this.vecAvailable) {
-      this.warnSemanticOnce('sqlite-vec extension not loaded');
-      return { semantic: [], skipReason: 'sqlite-vec-unavailable' };
-    }
+    // Order matters: if the caller explicitly passed an inactive embedding
+    // provider (e.g. NullEmbeddingProvider), surface that as the skip reason
+    // first — it's the user's stated intent. Fall through to the sqlite-vec
+    // availability check only when embeddings are active but the extension
+    // isn't loaded.
     if (!this.embeddings.active) {
       this.warnSemanticOnce(`embedding provider inactive (${this.embeddings.id})`);
       return { semantic: [], skipReason: 'null-embedding-provider' };
+    }
+    if (!this.vecAvailable) {
+      this.warnSemanticOnce('sqlite-vec extension not loaded');
+      return { semantic: [], skipReason: 'sqlite-vec-unavailable' };
     }
 
     let query: Float32Array;
@@ -344,6 +349,10 @@ function mergeSummaryWithDropped(
       ...summary.resolvedClarifications,
       ...extra.resolvedClarifications,
     ],
+    // Phase 1 port: concatenate KEY-DECISION lines; order is
+    // summary-first then dropped-batch since summary was built from the
+    // older span. No re-ranking across the boundary.
+    decisionLines: [...summary.decisionLines, ...extra.decisionLines],
   };
 }
 

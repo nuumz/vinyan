@@ -1,16 +1,25 @@
 /**
- * AgentContextBuilder — assembles AgentContext from DB + existing models.
+ * AgentContextBuilder — assembles AgentContext by merging:
  *
- * For agents WITH existing context: loads from AgentContextStore.
- * For cold-start agents (no prior context): derives initial identity from
- * CapabilityModel scores and recent traces, following A2 ("I don't know"
- * is valid — cold-start agents get minimal, honest context).
+ *   1. **Machine state** from AgentContextStore (proficiencies, episodes,
+ *      pending_insights).
+ *   2. **Narrative** from SoulStore (`.vinyan/souls/{agentId}.soul.md`):
+ *      persona, approach style, lessons summary, anti-patterns, preferred
+ *      approaches.
+ *   3. **Derived strengths/weaknesses** from CapabilityModel (runtime).
  *
- * Source of truth: ultraplan — Agent Contextual Redesign, Phase 2
+ * After migration 041, the DB no longer stores narrative columns — soul.md
+ * is the authoritative source for every human-readable section. Cold-start
+ * agents (no soul, no traces) get empty narratives; trace-driven fallbacks
+ * remain so a soulless agent can still offer a reasonable persona.
+ *
+ * Source: docs/plans/sqlite-joyful-lynx.md §Phase 5.
  */
 import type { Database } from 'bun:sqlite';
 import type { AgentContextStore } from '../../db/agent-context-store.ts';
 import type { CapabilityModel, CapabilityScore } from '../fleet/capability-model.ts';
+import type { SoulStore } from './soul-store.ts';
+import type { SoulDocument } from './soul-schema.ts';
 import { type AgentContext, type AgentEpisode, MAX_EPISODES, createEmptyContext } from './types.ts';
 
 /** Lightweight trace projection — only the fields we need for cold-start derivation. */
@@ -32,64 +41,164 @@ export interface AgentContextBuilderDeps {
   capabilityModel?: CapabilityModel;
   /** Direct DB access for ad-hoc queries (e.g. recent traces by worker). */
   db?: Database;
+  /**
+   * Optional soul store. When present, narrative sections (persona,
+   * approach style, anti-patterns, lessons summary, preferred approaches)
+   * are hydrated from `.vinyan/souls/{agentId}.soul.md`. Absent → builder
+   * falls back to trace-derived narrative (cold-start path).
+   */
+  soulStore?: SoulStore;
 }
 
 export class AgentContextBuilder {
   private store: AgentContextStore;
   private capabilityModel?: CapabilityModel;
   private db?: Database;
+  private soulStore?: SoulStore;
 
   constructor(deps: AgentContextBuilderDeps) {
     this.store = deps.agentContextStore;
     this.capabilityModel = deps.capabilityModel;
     this.db = deps.db;
+    this.soulStore = deps.soulStore;
   }
 
   /**
-   * Build context for an agent. Returns persisted context if available,
-   * otherwise derives initial context from capability data and traces.
+   * Build the full AgentContext. The machine slice (episodes + proficiencies)
+   * comes from the DB; strengths/weaknesses from CapabilityModel; narrative
+   * from soul.md. When no soul exists, fall back to trace-derived narrative
+   * so cold-start agents still get a usable persona.
    */
   buildContext(agentId: string): AgentContext {
-    const existing = this.store.findById(agentId);
-    if (existing && existing.identity.persona !== '') {
-      return existing;
-    }
+    const machine = this.store.findOrCreate(agentId);
+    const soul = this.soulStore?.loadSoul(agentId) ?? null;
 
-    // Cold-start: derive from existing data sources
-    return this.deriveColdStartContext(agentId);
-  }
-
-  private deriveColdStartContext(agentId: string): AgentContext {
-    const context = createEmptyContext(agentId);
-
-    // Derive strengths/weaknesses from CapabilityModel
+    // Derived strengths/weaknesses — runtime, not persisted in DB.
+    let strengths: string[] = [];
+    let weaknesses: string[] = [];
     if (this.capabilityModel) {
       const capabilities = this.capabilityModel.getWorkerCapabilities(agentId);
-      const { strengths, weaknesses } = this.deriveFromCapabilities(capabilities);
-      context.identity.strengths = strengths;
-      context.identity.weaknesses = weaknesses;
+      const derived = this.deriveFromCapabilities(capabilities);
+      strengths = derived.strengths;
+      weaknesses = derived.weaknesses;
     }
 
-    // Derive persona and approach style from recent traces
-    if (this.db) {
-      const recentTraces = this.loadRecentTraces(agentId, 20);
-      if (recentTraces.length > 0) {
-        context.identity.persona = this.derivePersona(recentTraces);
-        context.identity.approachStyle = this.deriveApproachStyle(recentTraces);
+    // Hydrate narrative from soul.md when available; otherwise fall back
+    // to trace-derived so a newly-spawned agent without a soul still has
+    // a reasonable persona string.
+    const narrative = soul
+      ? this.narrativeFromSoul(soul)
+      : this.narrativeFromTraces(agentId);
 
-        // Seed episodic memory from recent traces
-        const episodes = this.tracesToEpisodes(recentTraces);
-        context.memory.episodes = episodes.slice(0, MAX_EPISODES);
-      }
+    const merged: AgentContext = {
+      identity: {
+        agentId,
+        persona: narrative.persona,
+        strengths,
+        weaknesses,
+        approachStyle: narrative.approachStyle,
+      },
+      memory: {
+        episodes:
+          machine.memory.episodes.length > 0
+            ? machine.memory.episodes
+            : this.seedEpisodesFromTraces(agentId),
+        lessonsSummary: narrative.lessonsSummary,
+      },
+      skills: {
+        proficiencies: machine.skills.proficiencies,
+        preferredApproaches: narrative.preferredApproaches,
+        antiPatterns: narrative.antiPatterns,
+      },
+      lastUpdated: machine.lastUpdated || Date.now(),
+    };
+
+    // Persist the episode-seed back so cold-start trace derivation is a
+    // one-time cost per agent. Narrative fields are NOT persisted — soul.md
+    // is the home for them.
+    if (
+      (machine.memory.episodes.length === 0 && merged.memory.episodes.length > 0) ||
+      Object.keys(merged.skills.proficiencies).length !==
+        Object.keys(machine.skills.proficiencies).length
+    ) {
+      merged.lastUpdated = Date.now();
+      this.store.upsert(merged);
     }
 
-    // If we derived anything useful, persist for next time
-    if (context.identity.strengths.length > 0 || context.memory.episodes.length > 0) {
-      context.lastUpdated = Date.now();
-      this.store.upsert(context);
-    }
+    return merged;
+  }
 
-    return context;
+  /**
+   * Map a SoulDocument's sections onto AgentContext narrative fields.
+   * Intentionally loose — soul and context don't map 1:1:
+   *
+   *   - persona            ← soul.philosophy (first "paragraph")
+   *   - approachStyle      ← soul.selfKnowledge (joined)
+   *   - lessonsSummary     ← soul.domainExpertise bullets joined
+   *   - antiPatterns       ← soul.antiPatterns[].description
+   *   - preferredApproaches← soul.winningStrategies indexed by description (legacy shape kept
+   *                          empty-ish because winning strategies don't carry a taskSignature)
+   */
+  private narrativeFromSoul(soul: SoulDocument): {
+    persona: string;
+    approachStyle: string;
+    lessonsSummary: string;
+    antiPatterns: string[];
+    preferredApproaches: Record<string, string>;
+  } {
+    const lessons = soul.domainExpertise
+      .map((d) => `${d.area}: ${d.knowledge}`)
+      .join('; ');
+    const anti = soul.antiPatterns.map((a) => `${a.pattern} — ${a.cause}`);
+    const preferred: Record<string, string> = {};
+    for (const s of soul.winningStrategies) {
+      preferred[s.taskPattern] = s.strategy;
+    }
+    return {
+      persona: soul.philosophy,
+      approachStyle: soul.selfKnowledge.join('; '),
+      lessonsSummary: lessons,
+      antiPatterns: anti,
+      preferredApproaches: preferred,
+    };
+  }
+
+  /**
+   * Trace-derived fallback narrative for agents without a soul. Mirrors
+   * the pre-migration cold-start path — persona + approach style come
+   * from analyzing recent traces.
+   */
+  private narrativeFromTraces(agentId: string): {
+    persona: string;
+    approachStyle: string;
+    lessonsSummary: string;
+    antiPatterns: string[];
+    preferredApproaches: Record<string, string>;
+  } {
+    const empty = {
+      persona: '',
+      approachStyle: '',
+      lessonsSummary: '',
+      antiPatterns: [] as string[],
+      preferredApproaches: {} as Record<string, string>,
+    };
+    if (!this.db) return empty;
+    const recentTraces = this.loadRecentTraces(agentId, 20);
+    if (recentTraces.length === 0) return empty;
+    return {
+      persona: this.derivePersona(recentTraces),
+      approachStyle: this.deriveApproachStyle(recentTraces),
+      lessonsSummary: '',
+      antiPatterns: [],
+      preferredApproaches: {},
+    };
+  }
+
+  private seedEpisodesFromTraces(agentId: string): AgentEpisode[] {
+    if (!this.db) return [];
+    const recent = this.loadRecentTraces(agentId, 20);
+    if (recent.length === 0) return [];
+    return this.tracesToEpisodes(recent).slice(0, MAX_EPISODES);
   }
 
   private deriveFromCapabilities(capabilities: CapabilityScore[]): {

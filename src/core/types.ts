@@ -161,6 +161,46 @@ export interface OracleVerdict {
    *  'llm-self-report' is logged for A7 analysis only, excluded from governance.
    *  Axiom A3: machine-enforceable, not policy-dependent. */
   confidenceSource?: 'evidence-derived' | 'self-model-calibrated' | 'llm-self-report';
+
+  /**
+   * Phase 2.5 — Common Sense Substrate attribution (one entry per firing rule).
+   * Backward-compatible optional field; ECP v1.x consumers ignore it per
+   * spec §3.4. Suppressed rules (pattern matched but abnormality also held)
+   * stay in `evidence` as SARIF Suppression records — only firing rules
+   * appear here.
+   *
+   * See docs/design/commonsense-substrate-system-design.md §7 + Appendix C #8.
+   */
+  priorAssumption?: PriorAssumption[];
+}
+
+/**
+ * Defeasible-prior knowledge attribution. Emitted by the CommonSense Oracle
+ * (M2) when a rule's pattern matched and its abnormality predicate did not
+ * suppress it. One entry per firing rule. Empty/absent for verdicts not
+ * derived from commonsense rules.
+ */
+export interface PriorAssumption {
+  /** Content-addressed rule id (SHA-256 hex). */
+  ruleId: string;
+  /** Three-axis microtheory label. */
+  microtheory: {
+    language: string;
+    domain: string;
+    action: string;
+  };
+  /** Serialized abnormality predicate (consumer can re-eval to falsify). */
+  abnormalityPredicate?: string;
+  /** Rule provenance. */
+  source: 'innate' | 'configured' | 'promoted-from-pattern';
+  /** Priority after source-tier capping. */
+  priority: number;
+  /** Pragmatic-tier confidence ∈ [0.5, 0.7]. */
+  confidence: number;
+  /** Default outcome the rule produced. */
+  defaultOutcome: 'allow' | 'block' | 'needs-confirmation' | 'escalate';
+  /** Human-readable WHY. */
+  rationale: string;
 }
 
 /** A verified fact stored in the World Graph. */

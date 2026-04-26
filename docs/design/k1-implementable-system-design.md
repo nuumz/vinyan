@@ -1,5 +1,7 @@
 # Vinyan Kernel — Implementable System Design (K1 + K2)
 
+> ✅ **Status: As-Is (mostly).** K1 (guardrails, agent contracts, tool authorization) is **wired into core-loop and ✅ Active**. K2 (engine selector, MCP client pool, provider trust) is **🔧 Built — needs provider trust data**. Treat any "wiring pending" notes below as historical: K1 has been wired. Re-validate against `src/orchestrator/core-loop.ts` before relying on §9.x integration claims.
+
 > **Document boundary**: Concrete implementation design for K1 (kernel hardening) and K2 (multi-agent dispatch).
 > For vision and axiom mapping → [vinyan-os-architecture.md](../architecture/vinyan-os-architecture.md).
 > For ECP full protocol → [ecp-system-design.md](ecp-system-design.md).

@@ -1,5 +1,7 @@
 # Memory & Prompt Architecture — System Design
 
+> 🔧 **Status: Mixed.** `PerceptualHierarchy` (D8) and `WorkingMemory` are **✅ Active**. Prompt compaction algorithm is **🔧 Built**; per-layer tuning + adaptive memory pooling are **📋 Designed only**. Cite `decisions.md` D8 for the live contract.
+
 > **Document boundary**: This document owns the system design, architecture decisions, and implementation plan for Vinyan's memory substrates and prompt assembly pipeline.
 > For research landscape → [memory-and-prompt-architecture.md](../research/memory-and-prompt-architecture.md).
 > For Claude Code source analysis → [claude-code-deep-dive.md](../research/claude-code-deep-dive.md).

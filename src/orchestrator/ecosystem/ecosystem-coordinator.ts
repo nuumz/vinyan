@@ -70,6 +70,12 @@ export interface EcosystemCoordinatorConfig {
   readonly engineRoster: () => readonly Pick<ReasoningEngine, 'id' | 'capabilities'>[];
   readonly now?: () => number;
   /**
+   * Workspace root — when provided, `start()` attaches the team blackboard
+   * chokidar watcher on `<workspace>/.vinyan/teams/**\/*.md` and tears it
+   * down in `stop()`. Omit to skip the watcher (tests, embedded use).
+   */
+  readonly workspace?: string;
+  /**
    * Reconcile cadence in ms. 0 / undefined disables the scheduler — callers
    * must then invoke `reconcile()` manually. Default is off so tests and
    * legacy paths don't leak timers.
@@ -116,10 +122,12 @@ export class EcosystemCoordinator {
   private readonly commitmentBridge: CommitmentBridge;
   private readonly reconcileIntervalMs: number;
   private readonly timer: CoordinatorTimerImpl;
+  private readonly workspace?: string;
   private reconcileHandle: unknown = null;
   private reconcileInFlight = false;
   private unsubEngineRegistered: (() => void) | null = null;
   private unsubEngineDeregistered: (() => void) | null = null;
+  private teamBlackboardWatcherDispose: (() => void) | null = null;
   private started = false;
 
   constructor(config: EcosystemCoordinatorConfig) {
@@ -134,6 +142,7 @@ export class EcosystemCoordinator {
     this.engineRoster = config.engineRoster;
     this.now = config.now ?? (() => Date.now());
     this.reconcileIntervalMs = config.reconcileIntervalMs ?? 0;
+    this.workspace = config.workspace;
     this.timer = config.timer ?? {
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -166,6 +175,13 @@ export class EcosystemCoordinator {
     }
     this.started = true;
     this.scheduleNextReconcile();
+
+    // Phase 3 — attach team-blackboard filesystem watcher when a workspace
+    // is available. The watcher is owned by TeamManager; we keep the
+    // disposer here so stop() can tear it down deterministically.
+    if (this.workspace) {
+      this.teamBlackboardWatcherDispose = this.teams.attachBlackboardWatcher(this.workspace);
+    }
 
     // Subscribe to engine registry events so department membership stays
     // fresh and newly-registered engines are auto-registered into the
@@ -218,6 +234,8 @@ export class EcosystemCoordinator {
       this.timer.clearTimer(this.reconcileHandle);
       this.reconcileHandle = null;
     }
+    this.teamBlackboardWatcherDispose?.();
+    this.teamBlackboardWatcherDispose = null;
     this.started = false;
   }
 

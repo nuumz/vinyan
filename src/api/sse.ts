@@ -48,12 +48,17 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:turn_complete',
   'agent:tool_started',
   'agent:tool_executed',
+  'agent:tool_denied',
   'agent:text_delta',
   'agent:thinking',
   'agent:contract_violation',
   'agent:plan_update',
   'llm:stream_delta',
   'agent:clarification_requested',
+  // Phase 0.5: surface guardrail signals through SSE so web/extension
+  // clients see input-injection / bypass detections in real time.
+  'guardrail:injection_detected',
+  'guardrail:bypass_detected',
 ];
 
 interface SSEStreamOptions {
@@ -128,12 +133,16 @@ export function createSSEStream(
       if (hbMs && hbMs > 0) {
         try {
           controller.enqueue(encoder.encode(`:heartbeat ${Date.now()}\n\n`));
-        } catch { /* closed */ }
+        } catch {
+          /* closed */
+        }
         heartbeatTimer = setInterval(() => {
           if (closed) return;
           try {
             controller?.enqueue(encoder.encode(`:heartbeat ${Date.now()}\n\n`));
-          } catch { /* closed */ }
+          } catch {
+            /* closed */
+          }
         }, hbMs);
         // Heartbeats must not keep the Node event loop alive on their own —
         // when the server shuts down, we want the process to be free to exit.

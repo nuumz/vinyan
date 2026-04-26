@@ -1,8 +1,10 @@
 # Vinyan TUI — UX/UI Redesign Specification
 
+> 📋 **Status: To-Be — Approved, not yet implemented.** Spec is final; awaiting dev resource allocation (PH5.2). The current CLI provides query/preview only; the redesigned TUI screens described below do not exist yet.
+
 > **Version:** 1.0
 > **Date:** 2026-04-02
-> **Status:** Approved for implementation
+> **Status:** Approved for implementation (not started)
 > **Scope:** Complete UX/UI overhaul of the interactive Terminal UI
 
 ---

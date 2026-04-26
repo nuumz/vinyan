@@ -198,7 +198,17 @@ export async function executePredictPhase(
 
   // ── K2.2: Engine Selector — trust-weighted provider override ──
   if (deps.engineSelector) {
-    const engineSelection = deps.engineSelector.select(routing.level, input.goal.slice(0, 50));
+    // Pass the real task id (NOT a goal prefix) so auction allocation,
+    // commitment-bridge lookup, volunteer-fallback, and `engine:selected`
+    // events all key off `TaskInput.id`. `taskType` flows through
+    // SelectOptions for cost prediction / auction scoring.
+    const engineSelection = deps.engineSelector.select(
+      routing.level,
+      input.id,
+      undefined,
+      undefined,
+      { taskType: input.taskType },
+    );
     if (engineSelection.provider !== 'unknown') {
       routing = { ...routing, model: engineSelection.provider };
       deps.bus?.emit('engine:selected', {

@@ -19,10 +19,12 @@ import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
+import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
 import type { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
+import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executePlanPhase } from './phases/phase-plan.ts';
 import { executePredictPhase } from './phases/phase-predict.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
@@ -43,6 +45,7 @@ import type {
   TaskResult,
   WorkingMemoryState,
 } from './types.ts';
+import { coerceProfile } from './types.ts';
 import { checkComprehension, isComprehensionCheckDisabled } from './understanding/comprehension-check.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
 import { WorkingMemory } from './working-memory.ts';
@@ -107,8 +110,7 @@ export interface WorkerPool {
     routing: RoutingDecision,
     understanding?: SemanticTaskUnderstanding,
     contract?: import('../core/agent-contract.ts').AgentContract,
-    conversationHistory?: import('./types.ts').ConversationEntry[],
-    /** Plan commit A: Turn-model history with tool_use / tool_result blocks. */
+    /** A6: Turn-model history. Legacy ConversationEntry[] parameter removed. */
     turns?: import('./types.ts').Turn[],
   ): Promise<import('./phases/types.ts').WorkerResult>;
   /** Returns agent loop deps if configured (Phase 6.3+), null otherwise. */
@@ -121,6 +123,15 @@ export interface OracleGate {
     workspace: string,
     verificationHint?: import('./types.ts').VerificationHint,
     routingLevel?: number,
+    /**
+     * M3.5 — Optional self-model signals for the CommonSense Oracle's
+     * surprise-driven activation gate (`docs/design/commonsense-substrate-system-design.md` §6 M3).
+     * When present and `commonsense.enabled: true`, the gate decides whether
+     * the commonsense oracle fires. When absent, commonsense (if enabled)
+     * fires unconditionally — preserves backward compatibility for callers
+     * that don't yet plumb self-model signals.
+     */
+    commonsenseSignals?: import('../gate/gate.ts').GateRequest['commonsenseSignals'],
   ): Promise<import('./phases/types.ts').VerificationResult>;
 }
 
@@ -223,6 +234,13 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /**
+   * Ecosystem: dispatch-scoped task facts registry. When present,
+   * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
+   * entry and unregisters in its finally block, so the CommitmentBridge can
+   * resolve facts synchronously when `market:auction_completed` fires.
+   */
+  taskFactsRegistry?: import('./ecosystem/task-facts-registry.ts').TaskFactsRegistry;
   // Wave 2: Replan Engine (gated OFF by default). Requires Wave 1 (goalLoop).
   replanEngine?: import('./replan/replan-engine.ts').ReplanEngine;
   replanConfig?: import('./replan/replan-engine.ts').ReplanEngineConfig;
@@ -433,19 +451,35 @@ async function prepareExecution(
           try {
             const pending = deps.sessionManager?.getPendingClarifications(input.sessionId) ?? [];
             thisTurnIsClarAnswer = pending.length > 0;
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
           // Simple new-topic heuristic: no prior user turns in history other
           // than the current message. Detailed detection lives in the
           // comprehender, but we don't have its output YET at this point —
           // so we use the session manager's raw history count.
           let thisTurnIsNewTopic = false;
           try {
-            const histAll = deps.sessionManager?.getConversationHistory(input.sessionId, 2000) ?? [];
-            const priorUserCount = histAll.filter(
-              (h) => h.role === 'user' && h.content !== input.goal,
-            ).length;
+            // A7: Turn-model — count prior user turns whose flattened text
+            // isn't the current goal (new-topic heuristic).
+            const mgr = deps.sessionManager as unknown as
+              | {
+                  getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+                }
+              | undefined;
+            const turns = mgr?.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 50) : [];
+            const priorUserCount = turns.filter((t) => {
+              if (t.role !== 'user') return false;
+              const text = t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join(' ');
+              return text !== input.goal;
+            }).length;
             thisTurnIsNewTopic = priorUserCount === 0;
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
 
           const verdict = detectCorrection({
             priorRecord,
@@ -454,10 +488,16 @@ async function prepareExecution(
             currentIsNewTopic: thisTurnIsNewTopic,
           });
           if (verdict) {
-            deps.comprehensionStore.markOutcome(priorRecord.input_hash, {
-              outcome: verdict.outcome,
-              evidence: verdict.evidence,
-            });
+            // Scope outcome marking to the engine whose row we actually
+            // judged (priorRecord is that engine's row). In hybrid turns
+            // the sibling engine's row may share this input_hash — leave
+            // it NULL so we don't cross-contaminate calibration with an
+            // outcome that tested a different engine's resolvedGoal.
+            deps.comprehensionStore.markOutcome(
+              priorRecord.input_hash,
+              { outcome: verdict.outcome, evidence: verdict.evidence },
+              priorRecord.engine_id,
+            );
             deps.bus?.emit('comprehension:calibrated', {
               taskId: input.id,
               priorInputHash: priorRecord.input_hash,
@@ -472,11 +512,15 @@ async function prepareExecution(
             // a bus event — consumers (oracle tier-clamp, dashboards)
             // react without blocking the pipeline.
             try {
-              const { ComprehensionCalibrator } = await import(
-                './comprehension/learning/calibrator.ts'
-              );
+              const { ComprehensionCalibrator } = await import('./comprehension/learning/calibrator.ts');
               const calib = new ComprehensionCalibrator(deps.comprehensionStore);
-              const signal = calib.detectDivergence(priorRecord.engine_id);
+              // Pass engineType so an engine_id collision cannot
+              // contaminate the divergence signal (AXM#4 / GAP#5).
+              const signal = calib.detectDivergence(
+                priorRecord.engine_id,
+                undefined,
+                priorRecord.engine_type ?? undefined,
+              );
               if (signal && signal.diverged) {
                 deps.bus?.emit('comprehension:calibration_diverged', {
                   taskId: input.id,
@@ -489,26 +533,42 @@ async function prepareExecution(
                   historicalSamples: signal.historicalSamples,
                 });
               }
-            } catch { /* divergence check is advisory */ }
+            } catch {
+              /* divergence check is advisory */
+            }
           }
         }
-      } catch { /* best-effort — calibration never blocks the pipeline */ }
+      } catch {
+        /* best-effort — calibration never blocks the pipeline */
+      }
     }
 
     // Build input from session + pending clarifications.
-    let history: import('./types.ts').ConversationEntry[] = [];
+    // A7: Turn-model history — ConversationEntry[] was retired.
+    let history: import('./types.ts').Turn[] = [];
     let pendingQuestions: string[] = [];
     let rootGoal: string | null = null;
     if (input.sessionId && deps.sessionManager) {
       try {
-        history = deps.sessionManager.getConversationHistory(input.sessionId, 4000);
-      } catch { /* best-effort */ }
+        const mgr = deps.sessionManager as unknown as {
+          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        };
+        if (typeof mgr.getTurnsHistory === 'function') {
+          history = mgr.getTurnsHistory(input.sessionId, 20);
+        }
+      } catch {
+        /* best-effort */
+      }
       try {
         pendingQuestions = deps.sessionManager.getPendingClarifications(input.sessionId);
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
       try {
         rootGoal = deps.sessionManager.getOriginalTaskGoal(input.sessionId);
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }
 
     // Clarification-answer fallback: when the API handler records the user
@@ -532,7 +592,9 @@ async function prepareExecution(
               break;
             }
           }
-        } catch { /* malformed constraint — best-effort */ }
+        } catch {
+          /* malformed constraint — best-effort */
+        }
       }
     }
 
@@ -544,7 +606,9 @@ async function prepareExecution(
     let autoMemory: Awaited<ReturnType<typeof loadAutoMemory>> = null;
     try {
       autoMemory = loadAutoMemory({ workspace: deps.workspace ?? process.cwd() });
-    } catch { /* best-effort — null means no memory lane, pipeline proceeds */ }
+    } catch {
+      /* best-effort — null means no memory lane, pipeline proceeds */
+    }
 
     const generatedAt = Date.now();
     const comprehensionInput = {
@@ -643,7 +707,9 @@ async function prepareExecution(
             failureReason: stage2Verdict.rejectReason,
             affectedFiles: [],
           });
-        } catch { /* TraceCollector is best-effort */ }
+        } catch {
+          /* TraceCollector is best-effort */
+        }
 
         if (stage2Verdict.verified) {
           const { mergeComprehensions } = await import('./comprehension/merge.ts');
@@ -668,7 +734,9 @@ async function prepareExecution(
               verdictPass: stage2Verdict.verified,
               verdictReason: stage2Verdict.rejectReason,
             });
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
         }
       } catch {
         // Stage-2 engines are FAIL-OPEN — any unhandled exception leaves
@@ -708,7 +776,9 @@ async function prepareExecution(
         failureReason: verdict.rejectReason,
         affectedFiles: [],
       });
-    } catch { /* TraceCollector is best-effort */ }
+    } catch {
+      /* TraceCollector is best-effort */
+    }
 
     // A7 learning-loop step 2 (record this turn's comprehension). We
     // persist EVERY turn — verified or rejected — because calibration
@@ -725,7 +795,9 @@ async function prepareExecution(
           verdictPass: verdict.verified,
           verdictReason: verdict.rejectReason,
         });
-      } catch { /* best-effort — persistence never blocks the pipeline */ }
+      } catch {
+        /* best-effort — persistence never blocks the pipeline */
+      }
     }
 
     if (verdict.verified && envelope.params.type === 'comprehension') {
@@ -756,9 +828,7 @@ async function prepareExecution(
           priorContextSummary: data.priorContextSummary,
           isClarificationAnswer: data.state.isClarificationAnswer,
         };
-        const extraConstraints: string[] = [
-          `COMPREHENSION_SUMMARY:${JSON.stringify(summary)}`,
-        ];
+        const extraConstraints: string[] = [`COMPREHENSION_SUMMARY:${JSON.stringify(summary)}`];
 
         // P1: when the comprehender flagged relevant AutoMemory entries,
         // look them up in the loaded memory (which the orchestrator holds
@@ -775,9 +845,7 @@ async function prepareExecution(
         //    cannot crowd out substance-matched hits.
         const matchedRefs = data.memoryLaneRelevance.autoMem ?? [];
         if (matchedRefs.length > 0 && autoMemory) {
-          const entriesByRef = new Map(
-            autoMemory.entries.map((e) => [e.ref, e] as const),
-          );
+          const entriesByRef = new Map(autoMemory.entries.map((e) => [e.ref, e] as const));
           const payload = {
             entries: matchedRefs
               .map((m) => {
@@ -814,8 +882,7 @@ async function prepareExecution(
         taskId: input.id,
         resolvedGoal: input.goal,
         used: false,
-        fallbackReason:
-          verdict.rejectReason ?? `engine.type=${envelope.params.type}`,
+        fallbackReason: verdict.rejectReason ?? `engine.type=${envelope.params.type}`,
       });
     }
   } catch (err) {
@@ -857,19 +924,30 @@ async function prepareExecution(
   if (needsIntentResolution && deps.llmRegistry) {
     try {
       const { resolveIntent } = await import('./intent-resolver.ts');
-      // Load conversation history for multi-turn intent classification
-      let conversationCtx: import('./types.ts').ConversationEntry[] | undefined;
+      // A6: Turn-model history for multi-turn intent classification. Sourced
+      // from SessionManager's getTurnsHistory (recency) — the retriever would
+      // be overkill for a single classifier call and would also duplicate
+      // the perceive-phase bundle.
+      let intentTurns: import('./types.ts').Turn[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          conversationCtx = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 2000);
-        } catch { /* non-fatal */ }
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const ts = mgr.getTurnsHistory(input.sessionId, 20);
+            if (ts.length > 0) intentTurns = ts;
+          }
+        } catch {
+          /* non-fatal */
+        }
       }
       intentResolution = await resolveIntent(input, {
         registry: deps.llmRegistry,
         availableTools: deps.toolExecutor?.getToolNames(),
         bus: deps.bus,
         userPreferences: deps.userPreferenceStore?.formatForPrompt(),
-        conversationHistory: conversationCtx,
+        turns: intentTurns,
         agents: deps.agentRegistry?.listAgents(),
         defaultAgentId: deps.agentRegistry?.defaultAgent().id,
         userInterestMiner: deps.userInterestMiner,
@@ -1081,7 +1159,13 @@ async function prepareExecution(
     understanding = { ...understanding, toolRequirement: 'tool-needed' };
     if (routing.level < (2 as RoutingLevel)) {
       const l2Cfg = LEVEL_CONFIG[2];
-      routing = { ...routing, level: 2 as RoutingLevel, model: l2Cfg.model, budgetTokens: l2Cfg.budgetTokens, latencyBudgetMs: l2Cfg.latencyBudgetMs };
+      routing = {
+        ...routing,
+        level: 2 as RoutingLevel,
+        model: l2Cfg.model,
+        budgetTokens: l2Cfg.budgetTokens,
+        latencyBudgetMs: l2Cfg.latencyBudgetMs,
+      };
     }
   }
 
@@ -1218,18 +1302,29 @@ async function buildConversationalResult(
 
   if (provider) {
     try {
-      // Load session history for multi-turn conversation continuity
+      // A7: Load Turn-model history for multi-turn conversation continuity.
+      // Flatten each Turn's text blocks into a single string for the
+      // Anthropic HistoryMessage shape (tool_use is dropped here — this is
+      // the conversational persona path, not the tool-loop path).
       let messages: import('./types.ts').HistoryMessage[] | undefined;
       if (input.sessionId && deps.sessionManager) {
         try {
-          const history = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, 4000);
-          if (history.length > 0) {
-            messages = history.map((e) => ({
-              role: e.role as 'user' | 'assistant',
-              content: e.content,
+          const mgr = deps.sessionManager as unknown as {
+            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+          };
+          const turns = mgr.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 20) : [];
+          if (turns.length > 0) {
+            messages = turns.map((t) => ({
+              role: t.role,
+              content: t.blocks
+                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+                .map((b) => b.text)
+                .join('\n'),
             }));
           }
-        } catch { /* non-fatal */ }
+        } catch {
+          /* non-fatal */
+        }
       }
       const llmReq = {
         systemPrompt: personaSystemPrompt,
@@ -1325,7 +1420,9 @@ ${closing}`;
   if (peers.length > 0) {
     lines.push('');
     lines.push('[CONSULTABLE AGENTS]');
-    lines.push('Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:');
+    lines.push(
+      'Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:',
+    );
     for (const p of peers) {
       lines.push(`  - ${p.id}: ${p.description}`);
     }
@@ -1373,7 +1470,10 @@ async function executeDirectTool(
       });
 
       // Step 1: Deterministic app discovery (no LLM, fast)
-      if ((analysis.type === 'not_found' || (isMacAppLaunch && exitCode === 1)) && intent.directToolCall?.tool === 'shell_exec') {
+      if (
+        (analysis.type === 'not_found' || (isMacAppLaunch && exitCode === 1)) &&
+        intent.directToolCall?.tool === 'shell_exec'
+      ) {
         const { discoverApp } = await import('./tools/direct-tool-resolver.ts');
         // Extract the app name from "open -a <name>" pattern
         const appNameMatch = command.match(/open\s+-a\s+(?:"([^"]+)"|(\S+))/);
@@ -1567,23 +1667,50 @@ function quoteArgForDiscovery(s: string): string {
  *   - Default: delegate to executeTaskCore for byte-identical legacy behavior
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
+  // Profile coercion (W1 PR #1 consumer wiring).
+  //
+  // Every task enters the governance pipeline through this function, so
+  // this is the single point where an absent/invalid `profile` turns into
+  // a concrete namespace. The resolved value is written back onto `input`
+  // so downstream phases that read `input.profile` see the normalized
+  // name without having to re-coerce. An invalid name throws here —
+  // better than silently defaulting and corrupting state.
+  //
+  // See `docs/spec/w1-contracts.md` §4 / §9.A1 for the intermediate-
+  // optional contract. Stores remain single-profile in this PR; wiring
+  // into store call sites is deferred to a later PR.
+  const resolvedProfile = coerceProfile(input.profile);
+  if (input.profile !== resolvedProfile) {
+    input.profile = resolvedProfile;
+  }
+  // One-line observability ping so traces / logs can be correlated to
+  // the profile that produced them. Kept at `info` because it fires
+  // once per task (not per phase) and the value is non-secret.
+  console.info(`task ${input.id} profile=${resolvedProfile} source=${input.source ?? 'internal'}`);
+
   deps.agentMemory?.beginTask(input.id);
+  // Ecosystem: register transient task facts for the duration of this task
+  // so CommitmentBridge can resolve goal/targetFiles/deadlineAt when the
+  // auction fires. Unregistered in the finally block below.
+  if (deps.taskFactsRegistry) {
+    deps.taskFactsRegistry.register(input.id, {
+      goal: input.goal,
+      targetFiles: input.targetFiles ?? [],
+      deadlineAt: Date.now() + input.budget.maxDurationMs,
+    });
+  }
   try {
     const goalLoop = deps.goalLoop;
     if (goalLoop?.enabled && deps.goalEvaluator) {
-      return await executeWithGoalLoop(
-        input,
-        deps,
-        (i, wm) => executeTaskCore(i, deps, wm),
-        {
-          maxOuterIterations: goalLoop.maxOuterIterations,
-          goalSatisfactionThreshold: goalLoop.goalSatisfactionThreshold,
-        },
-      );
+      return await executeWithGoalLoop(input, deps, (i, wm) => executeTaskCore(i, deps, wm), {
+        maxOuterIterations: goalLoop.maxOuterIterations,
+        goalSatisfactionThreshold: goalLoop.goalSatisfactionThreshold,
+      });
     }
     return await executeTaskCore(input, deps);
   } finally {
     deps.agentMemory?.endTask(input.id);
+    deps.taskFactsRegistry?.unregister(input.id);
   }
 }
 
@@ -1623,8 +1750,8 @@ async function executeTaskCore(
       // with the clarification carried from the resolver, matching A2A
       // semantics (the next user turn answers the question).
       if (intentResolution.type === 'uncertain' || intentResolution.type === 'contradictory') {
-        const clarifText = intentResolution.clarificationRequest
-          ?? 'Vinyan is uncertain about how to proceed. Could you clarify?';
+        const clarifText =
+          intentResolution.clarificationRequest ?? 'Vinyan is uncertain about how to proceed. Could you clarify?';
         const trace: ExecutionTrace = {
           id: `trace-${input.id}-intent-clarify`,
           taskId: input.id,
@@ -1684,7 +1811,9 @@ async function executeTaskCore(
         // "แอพ mail" is ambiguous — could mean Gmail, Outlook, Apple Mail, etc.
         // Decision: learned preference → use it; no preference → ask user.
         if (deps.userPreferenceStore) {
-          const { extractSpecificApp, detectAppCategory, getAppsInCategory } = await import('../db/user-preference-store.ts');
+          const { extractSpecificApp, detectAppCategory, getAppsInCategory } = await import(
+            '../db/user-preference-store.ts'
+          );
           if (!extractSpecificApp(input.goal)) {
             const category = detectAppCategory(input.goal);
             if (category) {
@@ -1706,7 +1835,10 @@ async function executeTaskCore(
                 // No preference at all → disambiguate instead of guessing.
                 const apps = getAppsInCategory(category);
                 if (apps.length > 1) {
-                  const examples = apps.slice(0, 5).map((a) => `  - ${a}`).join('\n');
+                  const examples = apps
+                    .slice(0, 5)
+                    .map((a) => `  - ${a}`)
+                    .join('\n');
                   const answer = `ไม่แน่ใจว่าคุณต้องการเปิดแอพ ${category} ตัวไหน:\n${examples}\n\nลองระบุชื่อแอพที่ต้องการ เช่น "เปิด ${apps[0]}" — ระบบจะจดจำตัวเลือกของคุณสำหรับครั้งถัดไป`;
                   const trace: ExecutionTrace = {
                     id: `trace-${input.id}-disambiguate`,
@@ -1771,7 +1903,8 @@ async function executeTaskCore(
             llmRegistry: deps.llmRegistry,
             worldGraph: deps.worldGraph,
             agentMemory: deps.agentMemory,
-            toolExecutor: deps.toolExecutor as import('./workflow/workflow-executor.ts').WorkflowExecutorDeps['toolExecutor'],
+            toolExecutor:
+              deps.toolExecutor as import('./workflow/workflow-executor.ts').WorkflowExecutorDeps['toolExecutor'],
             bus: deps.bus,
             workspace: deps.workspace,
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
@@ -1808,10 +1941,7 @@ async function executeTaskCore(
           // LLM's paraphrase may drift from user intent, so we let downstream
           // phases plan from the raw goal instead.
           const AGENTIC_REWRITE_CONFIDENCE = 0.7;
-          if (
-            intentResolution.workflowPrompt &&
-            intentResolution.confidence >= AGENTIC_REWRITE_CONFIDENCE
-          ) {
+          if (intentResolution.workflowPrompt && intentResolution.confidence >= AGENTIC_REWRITE_CONFIDENCE) {
             intentResolution.originalGoal = input.goal;
             input = { ...input, goal: intentResolution.workflowPrompt };
           }
@@ -1852,31 +1982,79 @@ async function executeTaskCore(
     }
     const startTime = Date.now();
 
-    // Conversation Agent Mode: load conversation history if session context present
-    // Uses compacted version for long sessions (A3: rule-based, no LLM in compaction path)
-    let conversationHistory: import('./types.ts').ConversationEntry[] | undefined;
-    // Plan commit A (A5): Turn-model history loaded alongside ConversationEntry
-    // so downstream phases and workers can prefer the richer blocks when both
-    // are present. A7 drops the legacy ConversationEntry path once all readers
-    // have migrated.
+    // Conversation Agent Mode + Plan commit E5: load conversation context.
+    //
+    // Preference order:
+    //   1. ContextRetriever.retrieve(sessionId, goal) — hybrid recency +
+    //      semantic + pins + summary ladder. Returns a ContextBundle; we
+    //      flatten it to a Turn[] for PhaseContext downstream consumers.
+    //   2. SessionManager.getTurnsHistory(sessionId, 20) — recency-only
+    //      fallback when no retriever is wired.
+    //   3. SessionManager.getConversationHistoryCompacted — legacy
+    //      ConversationEntry path, kept until A6/A7 land.
+    //
+    // A3: none of these paths run an LLM. Rule-based compaction keeps
+    // governance deterministic.
+    // A6: conversationHistory loader removed. Turns come from the retriever
+    // or the getTurnsHistory fallback. A7 drops the legacy SessionManager
+    // methods (getConversationHistoryCompacted / getConversationHistory).
     let sessionTurns: import('./types.ts').Turn[] | undefined;
+    let retrievalBundle: import('../memory/retrieval.ts').ContextBundle | undefined;
+
     if (input.sessionId && deps.sessionManager) {
-      try {
-        const historyBudget = Math.floor((routing.budgetTokens ?? 8000) * 0.25);
-        conversationHistory = deps.sessionManager.getConversationHistoryCompacted(input.sessionId, historyBudget);
-      } catch {
-        // Non-fatal: proceed without conversation history
-      }
-      try {
-        const mgr = deps.sessionManager as unknown as {
-          getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
-        };
-        if (typeof mgr.getTurnsHistory === 'function') {
-          const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
-          if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+      // E5: retriever-based hybrid context when available.
+      const mgr = deps.sessionManager as unknown as {
+        getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+        getContextRetriever?: () => import('../memory/retrieval.ts').ContextRetriever | undefined;
+      };
+      const retriever = typeof mgr.getContextRetriever === 'function' ? mgr.getContextRetriever() : undefined;
+
+      if (retriever) {
+        try {
+          retrievalBundle = await retriever.retrieve(input.sessionId, input.goal);
+          // Flatten bundle into Turn[] (dedup by id): recent → semantic → pins.
+          // Summary (when present) is injected as a synthetic assistant turn
+          // so downstream workers see it in-context.
+          const flat: import('./types.ts').Turn[] = [];
+          const seen = new Set<string>();
+          for (const group of [retrievalBundle.recent, retrievalBundle.semantic, retrievalBundle.pins]) {
+            for (const t of group) {
+              if (seen.has(t.id)) continue;
+              seen.add(t.id);
+              flat.push(t);
+            }
+          }
+          if (retrievalBundle.summary && retrievalBundle.summary.text.length > 0) {
+            flat.unshift({
+              id: `ctx-summary-${input.sessionId}`,
+              sessionId: input.sessionId,
+              seq: -1,
+              role: 'assistant',
+              blocks: [{ type: 'text', text: retrievalBundle.summary.text }],
+              tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+              createdAt: Date.now(),
+            });
+          }
+          if (flat.length > 0) sessionTurns = flat;
+          // Retrieval events are not yet registered in the bus event map.
+          // A follow-up commit can add retrieval:bundle / retrieval:error
+          // once the schema is agreed. For now, the metadata is reachable
+          // via the retriever's internal warn-once log.
+        } catch (_err) {
+          // Non-fatal: fall through to recency-only below.
         }
-      } catch {
-        // Non-fatal: Turn-model history is additive; falling back to legacy path is safe.
+      }
+
+      // Fallback: recency-only when retriever missing OR retrieve() threw.
+      if (!sessionTurns) {
+        try {
+          if (typeof mgr.getTurnsHistory === 'function') {
+            const turnsFromStore = mgr.getTurnsHistory(input.sessionId, 20);
+            if (turnsFromStore.length > 0) sessionTurns = turnsFromStore;
+          }
+        } catch {
+          /* non-fatal — A7 drops legacy path entirely */
+        }
       }
     }
 
@@ -1913,18 +2091,15 @@ async function executeTaskCore(
     // phases. The caller's original `input` is never mutated because the
     // enhanced variant is a shallow clone produced by phase-plan.
     // Multi-agent: resolve the specialist spec from input.agentId (set by intent resolver).
-    const agentProfile = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) ?? undefined : undefined;
+    const agentProfile = input.agentId ? (deps.agentRegistry?.getAgent(input.agentId) ?? undefined) : undefined;
     let ctx: PhaseContext = {
       input,
       deps,
       startTime,
       workingMemory,
       explorationFlag,
-      conversationHistory,
-      // Plan commit A (A5): Turn-model history sourced from SessionManager's
-      // new session_turns table. Workers and the section-registry prefer this
-      // over `conversationHistory` when both are present so tool_use /
-      // tool_result blocks survive multi-turn resume.
+      // A6: Turn-model is the only conversation path in PhaseContext. Sourced
+      // from the ContextRetriever (E5) with recency/turn-store fallback.
       turns: sessionTurns,
       agentProfile,
     };
@@ -1942,7 +2117,7 @@ async function executeTaskCore(
             id: `trace-${input.id}-timeout`,
             taskId: input.id,
             workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+            agentId: input.agentId,
             timestamp: Date.now(),
             routingLevel: routing.level,
             approach: 'wall-clock-timeout',
@@ -1995,6 +2170,40 @@ async function executeTaskCore(
             } else {
               deps.bus?.emit('skill:miss', { taskId: input.id, taskSignature: taskSig });
             }
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Step 0.5: BRAINSTORM (Agentic SDLC — optional pre-Perceive ideation)
+        // ═══════════════════════════════════════════════════════════════
+        // Runs when the ideation classifier detects an open-ended / options-type
+        // goal. Produces N ranked candidate approaches, asks the human to pick
+        // one, and injects the chosen approach into ctx.input.constraints so
+        // downstream phases see it. Gated off by default (classifier is
+        // conservative); `BRAINSTORM_PHASE:off` kill-switches entirely.
+        //
+        // A1: drafters + critic + integrator are distinct roles (Brainstorm Room
+        //     preset enforces). In fast fallback mode (no Room dispatcher) the
+        //     phase still separates ideation from later generation.
+        // A3: classifier is a pure regex function; no LLM in routing path.
+        // A7: ranked candidates with explicit risk notes surface uncertainty.
+        const brainstormStart = Date.now();
+        const brainstormOutcome = await executeBrainstormPhase(ctx, routing, understanding);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'brainstorm',
+          durationMs: Date.now() - brainstormStart,
+          routingLevel: routing.level,
+        });
+        if (brainstormOutcome.action === 'return') {
+          deps.bus?.emit('task:complete', { result: brainstormOutcome.result });
+          return brainstormOutcome.result;
+        }
+        if (!brainstormOutcome.value.skipped && brainstormOutcome.value.ideation) {
+          understanding = { ...understanding, ideation: brainstormOutcome.value.ideation };
+          if (brainstormOutcome.value.enhancedInput) {
+            ctx = { ...ctx, input: brainstormOutcome.value.enhancedInput };
+            input = brainstormOutcome.value.enhancedInput;
           }
         }
 
@@ -2095,6 +2304,40 @@ async function executeTaskCore(
         }
 
         // ═══════════════════════════════════════════════════════════════
+        // Step 1.5: SPEC REFINEMENT (Agentic SDLC — pre-Plan spec artifact)
+        // ═══════════════════════════════════════════════════════════════
+        // For code-mutation domain tasks at routing >= 1, collaboratively draft
+        // a SpecArtifact (summary, acceptance criteria, API shape, edge cases)
+        // BEFORE planning. The approved artifact's criteria + edge cases are
+        // merged into ctx.input so GoalEvaluator (C5 coverage) and Plan phase
+        // anchor to a frozen contract rather than the raw goal string.
+        //
+        // A1: spec-author, api-designer, edge-case-critic, spec-integrator are
+        //     distinct roles (Spec Room preset). Fast-mode fallback still runs
+        //     spec generation separately from downstream generation.
+        // A3: once approved, the spec is immutable input to deterministic gates.
+        // A7: acceptance criteria turn implicit "done" into explicit, testable.
+        const specStart = Date.now();
+        const specOutcome = await executeSpecPhase(ctx, routing, understanding);
+        deps.bus?.emit('phase:timing', {
+          taskId: input.id,
+          phase: 'spec',
+          durationMs: Date.now() - specStart,
+          routingLevel: routing.level,
+        });
+        if (specOutcome.action === 'return') {
+          deps.bus?.emit('task:complete', { result: specOutcome.result });
+          return specOutcome.result;
+        }
+        if (!specOutcome.value.skipped && specOutcome.value.spec) {
+          understanding = { ...understanding, spec: specOutcome.value.spec };
+          if (specOutcome.value.enhancedInput) {
+            ctx = { ...ctx, input: specOutcome.value.enhancedInput };
+            input = specOutcome.value.enhancedInput;
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
         // Step 2: PREDICT + SELECT WORKER
         // ═══════════════════════════════════════════════════════════════
         const predictStart = Date.now();
@@ -2169,7 +2412,8 @@ async function executeTaskCore(
           durationMs: Date.now() - generateStart,
           routingLevel: routing.level,
         });
-        const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } = generateOutcome.value;
+        const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } =
+          generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
 
         // ═══════════════════════════════════════════════════════════════
@@ -2196,7 +2440,7 @@ async function executeTaskCore(
             taskId: input.id,
             sessionId: input.sessionId,
             workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+            agentId: input.agentId,
             timestamp: Date.now(),
             routingLevel: routing.level,
             approach: 'input-required-pause',
@@ -2671,7 +2915,7 @@ async function executeTaskCore(
       id: `trace-${input.id}-escalation`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+      agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: MAX_ROUTING_LEVEL,
       approach: 'all-levels-exhausted',

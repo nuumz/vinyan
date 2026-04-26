@@ -1,3 +1,4 @@
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 /**
  * Room ↔ Team blackboard bridge tests.
  *
@@ -7,20 +8,33 @@
  * test. These tests cover: import at open, export on converged close,
  * no-export on non-converged status.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
+import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
 import { RoomBlackboard } from '../../../src/orchestrator/room/room-blackboard.ts';
 import type { RoleSpec } from '../../../src/orchestrator/room/types.ts';
 
+const fixtures: Array<{ workspace: string }> = [];
+
+afterEach(() => {
+  for (const f of fixtures) rmSync(f.workspace, { recursive: true, force: true });
+  fixtures.length = 0;
+});
+
 function makeTeamManager() {
+  const workspace = mkdtempSync(join(tmpdir(), 'vinyan-bridge-test-'));
+  fixtures.push({ workspace });
   const db = new Database(':memory:');
-  migration033.up(db);
-  const store = new TeamStore(db);
-  const mgr = new TeamManager({ store, now: () => 1_000 });
+  migration001.up(db);
+  const fs = new TeamBlackboardFs({ root: workspace });
+  const store = new TeamStore(db, { fsBlackboard: fs });
+  const mgr = new TeamManager({ store, fsBlackboard: fs, now: () => 1_000 });
   return { mgr, store };
 }
 

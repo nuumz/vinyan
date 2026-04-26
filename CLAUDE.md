@@ -1,0 +1,172 @@
+# Vinyan — Epistemic Orchestration
+
+## What This Project Is
+
+Vinyan is an **autonomous task/workflow orchestrator** built on the **Epistemic Orchestration** paradigm — the thesis that AGI-grade reliability emerges from correct epistemic architecture, not from larger LLMs. Its verification layer is an **Epistemic Nervous System (ENS)**: a rule-based substrate that connects heterogeneous Reasoning Engines via the Epistemic Communication Protocol (ECP). LLMs are one component among many, NOT the brain.
+
+Code capability is Vinyan's first and most critical capability — not because Vinyan is a code tool, but because a system that can modify its own code can evolve without limits or downtime.
+
+**Core thesis:** Generation and verification MUST be performed by different components. No engine evaluates its own output. Orchestrator routing/verification/commit decisions are rule-based and state-reproducible — no LLM in the governance path.
+
+**Identity hierarchy:** Epistemic Orchestration (paradigm) → Vinyan (system) → ENS (verification substrate) → ECP (wire protocol)
+
+## 7 Core Axioms (Non-Negotiable)
+
+| # | Axiom | Principle |
+|---|-------|-----------|
+| A1 | Epistemic Separation | Generation ≠ verification at three layers (Understanding, Planning, Execution). No engine evaluates its own output. |
+| A2 | First-Class Uncertainty | "I don't know" is a valid protocol state (`type: 'unknown'`), not an error. |
+| A3 | Deterministic Governance | Orchestrator routing/verification/commit = rule-based, no LLM in governance path. |
+| A4 | Content-Addressed Truth | Facts bound to SHA-256 file hash → auto-invalidate on change. |
+| A5 | Tiered Trust | Deterministic > heuristic > probabilistic evidence. |
+| A6 | Zero-Trust Execution | Workers propose; Orchestrator disposes. Zero execution privileges for workers. |
+| A7 | Prediction Error as Learning | Improvement = delta(predicted, actual), not just success/failure. |
+
+Use axioms to resolve architectural conflicts — not as a checklist for every line edit.
+
+## Tech Stack
+
+- **Runtime:** Bun (TypeScript, strict mode) — no npm/yarn/pnpm
+- **Dependencies:** zod, chokidar — intentionally minimal
+- **Database:** SQLite (via `bun:sqlite`)
+- **Path alias:** `@vinyan/*` → `./src/*`
+- **Lint/Format/Type:** Biome + tsc — `bun run check` runs both
+
+## Project Structure (top-level)
+
+```
+src/
+  core/           # EventBus, core types (HypothesisTuple, OracleVerdict, Evidence, Fact)
+  oracle/         # RE infrastructure + per-language oracles (ast, type, dep, test, lint, go, python, rust, goal-alignment)
+  gate/           # Verification pipeline (risk-router, quality-score, tool-classifier)
+  guardrails/     # Prompt injection + agent contract enforcement (K1)
+  orchestrator/   # Core Loop, phases, RE abstraction (llm/), fleet/, critic/, test-gen/, tools/, worker/
+  world-graph/    # Content-addressed fact store
+  evolution/      # Rule generator, backtester, safety invariants
+  sleep-cycle/    # Pattern mining (Wilson CI, exponential decay)
+  economy/        # Cost accounting, budget, market (Vickrey auction)
+  db/, bus/, config/, cli/, mcp/, a2a/, api/, security/, observability/, dashboard/, hms/, tui/
+tests/            # Mirrors src/ + integration/, ecp-conformance/, property/, benchmark-fixtures/, experiment/
+```
+
+For sub-module detail, read directories directly.
+
+## Phase Status
+
+> Verify against code before relying on this — drifts over time. Last reviewed: 2026-04-25.
+
+Legend: **✅ Active** = wired in default `vinyan run` | **🔧 Built** = code+tests exist, needs config/data | **📋 Designed** = partial/stub
+
+| Phase | Scope | Status | Activation Condition |
+|-------|-------|--------|---------------------|
+| 0 | Oracle Gate | ✅ Active | Always |
+| 1 | Autonomous Agent | ✅ Active | `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` |
+| 6 | Agentic Worker Protocol | ✅ Active | Always (agent-loop.ts) |
+| K1 | Kernel Hardening | ✅ Active | Always |
+| 2 | Evolution Engine | 🔧 Built | DB + ≥100 traces |
+| 3 | Self-Model | 🔧 Built | DB; SelfModelStub fallback |
+| 4 | Fleet Governance | 🔧 Built | DB + multiple LLM providers |
+| 5 | ENS (API, TUI, A2A) | 🔧 Built | `vinyan serve` / `network.instances.enabled` |
+| K2 | Trust-Weighted Dispatch | 🔧 Built | Provider trust data |
+| E1-E4 | Economy OS | 🔧 Built | `economy.enabled: true` |
+| O1-O5 | Agent Ecosystem | 🔧 Built | `ecosystem.enabled: true` — see `docs/design/vinyan-os-ecosystem-plan.md` §10 |
+
+## Core Loop (high level)
+
+```
+Task → Intent Resolution → [conversational | direct-tool | agentic-workflow | full-pipeline]
+
+full-pipeline: Budget → Perceive → Comprehend (L2+) → Predict → Plan → Generate → Verify → Learn
+              ↑ escalation L0→L3 on verification fail (labeled `routingLoop:`, no double-escalation)
+              ↑ L3 contradiction = terminal failure (no infinite retry)
+```
+
+Wiring lives in `src/orchestrator/factory.ts` + `core-loop.ts`. Full phase contracts: `docs/architecture/vinyan-os-architecture.md`.
+
+**Protocols:**
+- **ECP (internal):** JSON-RPC + epistemic semantics (confidence, evidence_chain, falsifiable_by, temporal_context)
+- **MCP (external only):** tool access to outside world. NOT used for internal communication.
+- **Oracle I/O:** stdin(HypothesisTuple JSON) → child process → stdout(OracleVerdict JSON)
+
+**Reasoning Engine abstraction:**
+- `ReasoningEngine` interface (`src/orchestrator/types.ts`) — primary abstraction for any generator (LLM, symbolic, AGI, external)
+- `LLMReasoningEngine` adapter wraps `LLMProvider`
+- `ReasoningEngineRegistry` — capability-first selection, tier-based fallback
+- **Constraint:** subprocess path (L2/L3 isolation) is LLM-only. Non-LLM REs dispatch in-process with a warning.
+
+## Risk Routing (4 Levels)
+
+L0 Reflex (hash-only, <100ms) → L1 Heuristic (structural oracles, <2s) → L2 Analytical (all oracles, <10s) → L3 Deliberative (+shadow exec, <60s).
+
+Thresholds + scoring: `src/gate/risk-router.ts` (`ROUTING_THRESHOLDS`, `calculateRiskScore()`).
+
+## Coding Conventions
+
+Biome enforces naming + format (`biome.json`): single quotes, 2-space, 120 cols, trailing commas. File names kebab-case; DB columns snake_case; types PascalCase; functions/vars camelCase.
+
+**Architecture patterns:**
+- Zod for all external boundaries (IPC, config, oracle I/O, API)
+- EventBus for cross-module communication (FIFO, synchronous, type-safe)
+- Dependency injection in `core-loop.ts` — wired by `factory.ts`
+- Circuit breaker per oracle (failureThreshold=3, resetTimeout=60s)
+- **Crash-safety invariant:** ShadowJob persisted BEFORE online TaskResult returns
+
+## Quality Gates (enforced by review)
+
+- **Wiring verification** — no component is "done" until its function appears in a runtime trace. Build + wire + verify in same PR.
+- **Behavior tests only** — `toHaveProperty` alone is forbidden. Every test must call a function and verify output/side-effects.
+- **Benchmark gate** — run `bun run test:benchmark` before merging changes to core orchestrator (phases, core-loop, perception, agent-loop).
+- **Smoke test gate** — run `bun run test:smoke` with a real API key before declaring any session "done". Mock-only tests do NOT prove the system works.
+- **HMS integration** — hallucination analysis runs in phase-verify after oracle verification. Confidence is attenuated by HMS risk score.
+- **Honest status** — a feature is ✅ Active ONLY when it runs in default `vinyan run` without extra config.
+
+## Known Gaps
+
+```bash
+grep -rn "TODO\|FIXME\|HACK" src/ --include="*.ts"
+```
+
+Architectural gaps: `docs/architecture/decisions.md` and `docs/spec/tdd.md` §15 (Open Questions).
+
+Currently open: L3 container isolation, active task resumption (auto-abandons), Biome lint cleanup.
+
+## Concurrent Sessions
+
+Multiple Claude sessions may operate this workspace in parallel. Commit gating (`touch ~/.claude/.commit-authorized && git commit ...`) lives in `~/.claude/CLAUDE.md`. If `git status --short` shows files you didn't touch this turn, another session may be writing — diff before staging.
+
+## Commands
+
+```bash
+bun run test                # Unit tests (~5s)
+bun run test:integration    # Gate/oracle/orchestrator (~30s)
+bun run test:all            # Unit + integration (~140s)
+bun run check               # tsc + biome
+bun run test:benchmark      # E2E with phase timing
+bun run test:smoke          # Real LLM (needs API key)
+bun run build:worker        # Bundle worker-entry.ts
+```
+
+### Terminal Execution Rules (MUST follow)
+
+- **NEVER run `bun test` or `bun run test*` with `2>&1`** — redirecting stderr merges Bun's TTY progress output and hangs the terminal.
+- **NEVER pipe test commands** (`bun test | tee`, `| cat`) — same hang issue.
+- **Always scope tests** to specific files: `bun test tests/path/to/file.test.ts`. Full-suite only when shared types change.
+- **For long output**, use the runner's filters (`--reporter`, `-t <pattern>`) instead of shell pipes.
+- **Timeout** — wrap with explicit `--timeout 30000` if hang suspected; do not retry in a tight loop.
+
+## Design Documents (read before major changes)
+
+- `docs/foundation/concept.md` — Vision, axioms, ECP protocol, RE model
+- `docs/architecture/decisions.md` — Decisions D1-D8
+- `docs/spec/tdd.md` — Implementation contracts, schemas, algorithms
+- `docs/architecture/vinyan-os-architecture.md` — Authoritative architecture doc (v5)
+- `docs/design/implementation-plan.md` — Phased roadmap
+
+## Key Design Principles
+
+1. **Reuse first** — search existing code before creating modules
+2. **Backwards compatible** — don't break Phase 0 when building Phase 1
+3. **Data gates** — Phase 2 features auto-activate when data sufficient (≥100 traces, ≥5 task types)
+4. **Statistical rigor** — Wilson CI, backtesting before rule promotion, exponential decay
+5. **Progressive isolation** — L0=in-process, L1-L2=subprocess, L3=container (Phase 3)
+6. **Protocol honesty** — `type:'unknown'` over hallucination

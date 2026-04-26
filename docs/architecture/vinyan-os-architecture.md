@@ -1,5 +1,7 @@
 # Vinyan OS — AGI Economy Operating System Architecture
 
+> 🔧 **Status: Mixed (As-Is + To-Be).** O1 (runtime FSM) and the K1 + K2 kernels are wired. **O2–O5** (commitment ledger, departments, volunteer protocol, coordinator) are **🔧 Built — gated behind `ecosystem.enabled: true`**. The "2027 economy activation targets" + cross-instance economy described below are **To-Be**.
+
 > **Document boundary**: This document owns the **OS identity and thesis, axiom-to-kernel mapping, current position assessment, K1/K2 roadmap, 2027 economy activation targets, competitive landscape, research tracks, and milestone gates**.
 > For axiom definitions and paradigm vision → [concept.md](../foundation/concept.md).
 > For academic foundations and LLM deadlocks → [theory.md](../foundation/theory.md).

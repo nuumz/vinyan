@@ -444,7 +444,24 @@ const TaskBudgetSchema = z.object({
 
 export const TaskInputSchema = z.object({
   id: z.string(),
-  source: z.enum(['cli', 'api', 'mcp', 'a2a']),
+  // Kept in sync with the `TaskSource` type in `./types.ts` — widened in
+  // W1 PR #1 to cover gateway-*, acp, internal transports so the wire
+  // schema doesn't reject what the type system already allows.
+  source: z.enum([
+    'cli',
+    'api',
+    'mcp',
+    'a2a',
+    'gateway-telegram',
+    'gateway-slack',
+    'gateway-discord',
+    'gateway-whatsapp',
+    'gateway-signal',
+    'gateway-email',
+    'gateway-cron',
+    'acp',
+    'internal',
+  ]),
   goal: z.string(),
   taskType: z.enum(['code', 'reasoning']).default('code'),
   targetFiles: z.array(z.string()).optional(),
@@ -452,6 +469,15 @@ export const TaskInputSchema = z.object({
   acceptanceCriteria: z.array(z.string()).optional(),
   /** Specialist agent ID — CLI override or pre-set by caller. */
   agentId: z.string().optional(),
+  /**
+   * Profile namespace (W1 PR #1). Optional on the wire — core-loop
+   * coerces undefined → 'default'. Validated against the same regex as
+   * `isValidProfileName` in types.ts.
+   */
+  profile: z
+    .string()
+    .regex(/^(default|[a-z][a-z0-9-]*)$/, 'profile must be "default" or match /^[a-z][a-z0-9-]*$/')
+    .optional(),
   budget: TaskBudgetSchema,
 });
 
@@ -542,24 +568,10 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     environment: EnvironmentInfoSchema.optional(),
     /** Phase 7c-1: typed subagent role when this worker was spawned via delegate_task. */
     subagentType: SubagentTypeSchema.optional(),
-    conversationHistory: z
-      .array(
-        z.object({
-          role: z.enum(['user', 'assistant']),
-          content: z.string(),
-          taskId: z.string(),
-          timestamp: z.number(),
-          thinking: z.string().optional(),
-          toolsUsed: z.array(z.string()).optional(),
-          tokenEstimate: z.number(),
-        }),
-      )
-      .optional(),
     /**
-     * Turn-model conversation history (plan commit A). When set, the agent
-     * worker MUST prefer this over `conversationHistory` because it preserves
-     * tool_use / tool_result blocks verbatim. The legacy field stays for
-     * one more sub-commit to keep readers compiling.
+     * Turn-model conversation history (plan commit A). A6 removed the
+     * legacy `conversationHistory: ConversationEntry[]` sibling — turns is
+     * now the only path. Preserves tool_use / tool_result blocks verbatim.
      */
     turns: z.array(TurnSchema).optional(),
     /**

@@ -29,6 +29,10 @@ const EVENT_MAP: Record<string, EventStyle> = {
   'worker:dispatch': { domain: 'worker', icon: '→', color: ANSI.blue, defaultVisible: false },
   'worker:complete': { domain: 'worker', icon: '←', color: ANSI.green, defaultVisible: false },
   'worker:error': { domain: 'worker', icon: '✗', color: ANSI.red, defaultVisible: true },
+  // Phase 0: per-tool-call lifecycle (mirrors chat-stream-renderer)
+  'agent:tool_started': { domain: 'worker', icon: '⚙', color: ANSI.yellow, defaultVisible: true },
+  'agent:tool_executed': { domain: 'worker', icon: '⚙', color: ANSI.green, defaultVisible: true },
+  'agent:tool_denied': { domain: 'worker', icon: '✗', color: ANSI.red, defaultVisible: true },
   // Unified profile lifecycle — TUI filters by kind when rendering to the worker domain
   'profile:registered': { domain: 'worker', icon: '+', color: ANSI.green, defaultVisible: false },
   'profile:promoted': { domain: 'worker', icon: '↑', color: ANSI.green, defaultVisible: true },
@@ -185,6 +189,12 @@ export function summarizeEvent(event: string, payload: unknown): string {
       return `task=${truncStr(String(p.taskId ?? ''), 12)} ${p.durationMs}ms`;
     case 'worker:error':
       return truncStr(String(p.error ?? ''), 50);
+    case 'agent:tool_started':
+      return `${p.toolName ?? '?'}`;
+    case 'agent:tool_executed':
+      return `${p.toolName} ${p.isError ? '✗' : '✓'} ${p.durationMs}ms`;
+    case 'agent:tool_denied':
+      return `${p.toolName ?? '?'}${p.violation ? ` — ${p.violation}` : ''}`;
     case 'profile:promoted':
       return `${p.id} ${truncStr(String(p.reason ?? ''), 40)}`;
     case 'profile:demoted':

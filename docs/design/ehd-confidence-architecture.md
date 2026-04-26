@@ -1,8 +1,10 @@
 # EHD Confidence Architecture — Gap Closure Design
 
+> 🔧 **Status: Mixed (As-Is + To-Be).** Tier/transport caps are live (`tier-clamp.ts`, `task-routing-spec.md` §7.2) and peer-trust caps are wired. Composite calibration + EHD Phase 5 (ECP wire format) are still on the roadmap. The 75 % → 85 % target is aspirational.
+
 > **Document boundary**: This document owns the **current implementation state, remaining gaps, and phased closure plan** for Epistemic Humility Deficit mitigation.
 > For type definitions and resolved design conflicts, see [ehd-implementation-design.md](../research/ehd-implementation-design.md).
-> For research foundations, see [epistemic-humility-deficit-2025-07.md](../research/epistemic-humility-deficit-2025-07.md).
+> For research foundations, see [`archive/epistemic-humility-deficit-2025-07.md`](../archive/epistemic-humility-deficit-2025-07.md) (foundation snapshot, archived).
 > For 4 expert design proposals, see `design-{decision-engine,subjective-logic,pipeline-confidence,oracle-integrity}.md` in `docs/research/`.
 
 > **Status**: Architecture Design — 75% → targeting 85% at Phase B

@@ -20,6 +20,7 @@ export {
   type ResolveCommitmentParams,
 } from './commitment-ledger.ts';
 export { CommitmentBridge, type TaskFacts } from './commitment-bridge.ts';
+export { TaskFactsRegistry } from './task-facts-registry.ts';
 
 export {
   DepartmentIndex,

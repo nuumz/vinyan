@@ -8,14 +8,14 @@
  */
 import type { SessionRow, SessionStore } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
-import type {
-  ContentBlock,
-  ConversationEntry,
-  TaskInput,
-  TaskResult,
-  Turn,
-  TurnTokenCount,
-} from '../orchestrator/types.ts';
+import type { ContextRetriever } from '../memory/retrieval.ts';
+import type { ContentBlock, TaskInput, TaskResult, Turn, TurnTokenCount } from '../orchestrator/types.ts';
+import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
+// Merge note: `classifyTurn` / `TurnImportance` from `./turn-importance.ts`
+// were consumed by the Phase 1 priority-weighted compaction. A7 moved
+// compaction to `src/memory/summary-ladder.ts`, so these imports are
+// dropped here. The classifier itself remains available for future
+// summary-ladder upgrades.
 
 export interface Session {
   id: string;
@@ -40,14 +40,45 @@ export interface CompactionResult {
 }
 
 export class SessionManager {
+  /**
+   * Plan commit E4: optional ContextRetriever. When wired, every appended
+   * Turn is indexed into sqlite-vec so core-loop.perceive (E5) can surface
+   * semantic matches in addition to recency + pins. Fire-and-forget: the
+   * retriever's indexTurn logs warnings but never raises, so a failing
+   * embedding call cannot cascade into a lost conversation turn.
+   */
   constructor(
     private sessionStore: SessionStore,
     _traceStore?: TraceStore,
+    private retriever?: ContextRetriever,
   ) {}
+
+  /**
+   * P3 USER.md dialectic hook. Optional — the factory-wiring coordinator pass
+   * installs this after SessionManager is constructed (see
+   * `src/orchestrator/user-context/wiring.ts`). When set, `recordUserTurn`
+   * feeds each user turn through the observer so deltas are ledgered for the
+   * rolling dialectic rule. Never required; its absence degrades silently.
+   */
+  private userMdObserver?: UserMdObserver;
 
   /** Accessor for direct DB queries (e.g. keyword extraction for user-context mining). */
   getSessionStore(): SessionStore {
     return this.sessionStore;
+  }
+
+  /** Plan commit E4: accessor so core-loop can pull the retriever without re-plumbing. */
+  getContextRetriever(): ContextRetriever | undefined {
+    return this.retriever;
+  }
+
+  /**
+   * Factory-wiring hook for the P3 USER.md dialectic. Called once after
+   * construction by the coordinator pass (intentionally NOT a constructor
+   * parameter so the factory can stay lean). Passing `undefined` clears it.
+   */
+  setUserMdObserver(observer: UserMdObserver | undefined): void {
+    this.userMdObserver = observer;
   }
 
   create(source: string): Session {
@@ -110,14 +141,8 @@ export class SessionManager {
     // carries status='input-required' in result_json for downstream readers).
     // The session_tasks CHECK constraint does not allow 'input-required', so
     // we map at this boundary.
-    const dbStatus =
-      result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
-    this.sessionStore.updateTaskStatus(
-      sessionId,
-      taskId,
-      dbStatus,
-      JSON.stringify(result),
-    );
+    const dbStatus = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+    this.sessionStore.updateTaskStatus(sessionId, taskId, dbStatus, JSON.stringify(result));
   }
 
   /**
@@ -181,20 +206,26 @@ export class SessionManager {
   }
 
   /** List recent tasks across all sessions (newest first). */
-  listAllTasks(limit = 100): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
+  listAllTasks(
+    limit = 100,
+  ): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
     const rows = this.sessionStore.listRecentTasks(limit);
     return rows.map((row) => {
       let goal: string | undefined;
       try {
         const input = JSON.parse(row.task_input_json);
         goal = input.goal;
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       let result: TaskResult | undefined;
       if (row.result_json) {
         try {
           result = JSON.parse(row.result_json);
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
 
       return {
@@ -240,25 +271,11 @@ export class SessionManager {
   /**
    * Record a user message in the conversation history.
    *
-   * Plan commit A (A5): dual-writes to both `session_messages` (legacy flat
-   * path, consumed by ConversationEntry readers) and `session_turns`
-   * (Anthropic-native ContentBlock[] path). A7 will drop the legacy write.
+   * A7: session_messages legacy write removed. Turn-only persistence now.
    */
   recordUserTurn(sessionId: string, content: string): void {
     const now = Date.now();
-    this.sessionStore.insertMessage({
-      session_id: sessionId,
-      task_id: null,
-      role: 'user',
-      content,
-      thinking: null,
-      tools_used: null,
-      token_estimate: estimateTokens(content),
-      created_at: now,
-    });
-    // A5: mirror to session_turns as a single text block. No tool_use blocks
-    // from pure user input — user turns arrive as text regardless of LLM shape.
-    this.sessionStore.appendTurn({
+    const persisted = this.sessionStore.appendTurn({
       id: crypto.randomUUID(),
       sessionId,
       role: 'user',
@@ -266,6 +283,38 @@ export class SessionManager {
       tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
       createdAt: now,
     });
+    // E4: fire-and-forget semantic index. Retriever.indexTurn is best-effort —
+    // it logs on failure (dimension mismatch, sqlite-vec unavailable, network
+    // error from embedding provider) but does NOT raise. A failed index
+    // degrades to recency-only retrieval; the conversation turn itself is
+    // already persisted above.
+    this.indexTurnAsync(persisted);
+    // P3 USER.md dialectic: ledger observed-vs-predicted delta per section.
+    // Best-effort — never blocks turn processing (A3).
+    const observer = this.userMdObserver;
+    if (observer) {
+      try {
+        observer.observeTurn({ turnId: persisted.id, userText: content, ts: now });
+      } catch (err) {
+        console.warn(`[vinyan] SessionManager.userMdObserver.observeTurn failed: ${String(err)}`);
+      }
+    }
+  }
+
+  /**
+   * E4 helper: index a turn into the retriever in the background. Extracted
+   * so both record* paths share a single error-handling site and unit tests
+   * can assert "exactly one indexTurn call per record call".
+   */
+  private indexTurnAsync(turn: Turn): void {
+    const retriever = this.retriever;
+    if (!retriever) return;
+    // Detach: Promise chain runs after the current event-loop tick.
+    Promise.resolve()
+      .then(() => retriever.indexTurn(turn))
+      .catch((err) => {
+        console.warn(`[vinyan] SessionManager.indexTurnAsync failed: ${String(err)}`);
+      });
   }
 
   /** Record an assistant response from a TaskResult. */
@@ -274,11 +323,7 @@ export class SessionManager {
     // questions in a structured [INPUT-REQUIRED] block so compaction and
     // next-turn grounding can parse them with pure text matching (A3).
     let content: string;
-    if (
-      result.status === 'input-required'
-      && result.clarificationNeeded
-      && result.clarificationNeeded.length > 0
-    ) {
+    if (result.status === 'input-required' && result.clarificationNeeded && result.clarificationNeeded.length > 0) {
       const questionLines = result.clarificationNeeded.map((q) => `- ${q}`).join('\n');
       const preamble = result.answer ? `${result.answer}\n\n` : '';
       content = `${preamble}[INPUT-REQUIRED]\n${questionLines}`;
@@ -299,23 +344,11 @@ export class SessionManager {
       }
       content = result.answer ?? (mutationSummary || fallback);
     }
-    const toolsUsed = result.trace?.approach ? [result.trace.approach] : undefined;
     const now = Date.now();
 
-    this.sessionStore.insertMessage({
-      session_id: sessionId,
-      task_id: taskId,
-      role: 'assistant',
-      content,
-      thinking: result.thinking ?? null,
-      tools_used: toolsUsed ? JSON.stringify(toolsUsed) : null,
-      token_estimate: estimateTokens(content) + estimateTokens(result.thinking ?? ''),
-      created_at: now,
-    });
-
-    // A5: mirror to session_turns. Each mutation becomes a tool_use block so
-    // the Turn-model consumer preserves the structural information that the
-    // legacy flat content string discards. Text content + thinking are kept
+    // A7: session_messages legacy write removed. Turn-only persistence.
+    // Each mutation becomes a tool_use block so the Turn-model consumer
+    // preserves structural information. Text content + thinking are kept
     // as distinct blocks (Anthropic-native order: thinking → text).
     const blocks: ContentBlock[] = [];
     if (result.thinking && result.thinking.trim().length > 0) {
@@ -338,7 +371,7 @@ export class SessionManager {
       cacheRead: 0,
       cacheCreation: 0,
     };
-    this.sessionStore.appendTurn({
+    const persisted = this.sessionStore.appendTurn({
       id: crypto.randomUUID(),
       sessionId,
       role: 'assistant',
@@ -347,6 +380,8 @@ export class SessionManager {
       taskId,
       createdAt: now,
     });
+    // E4: semantic index. Same fire-and-forget contract as recordUserTurn.
+    this.indexTurnAsync(persisted);
   }
 
   /**
@@ -362,14 +397,19 @@ export class SessionManager {
    * Pure text matching — A3 compliant, no LLM.
    */
   getPendingClarifications(sessionId: string): string[] {
-    const messages = this.sessionStore.getMessages(sessionId);
-    if (messages.length === 0) return [];
+    // A7: Turn-model lookup. Extract [INPUT-REQUIRED] questions from the
+    // latest assistant turn's text blocks.
+    const turns = this.sessionStore.getTurns(sessionId);
+    if (turns.length === 0) return [];
 
-    const last = messages[messages.length - 1]!;
-    // If the last message is a user turn, any clarification has already been answered.
+    const last = turns[turns.length - 1]!;
+    // Already answered → user turn appears after the clarification.
     if (last.role === 'user') return [];
-    if (last.role !== 'assistant') return [];
-    return parseInputRequiredBlock(last.content);
+    const text = last.blocks
+      .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    return parseInputRequiredBlock(text);
   }
 
   /**
@@ -390,17 +430,25 @@ export class SessionManager {
    * Pure text matching — A3 compliant, no LLM.
    */
   getOriginalTaskGoal(sessionId: string): string | null {
-    const messages = this.sessionStore.getMessages(sessionId);
-    if (messages.length === 0) return null;
+    // A7: Turn-model. Walk backward skipping [assistant-[INPUT-REQUIRED],
+    // user-reply] clarification pairs to find the last non-clarification
+    // user turn.
+    const turns = this.sessionStore.getTurns(sessionId);
+    if (turns.length === 0) return null;
 
-    let i = messages.length - 1;
+    const turnText = (t: import('../orchestrator/types.ts').Turn): string =>
+      t.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+
+    let i = turns.length - 1;
     while (i >= 0) {
-      const m = messages[i]!;
-      if (m.role === 'user') {
-        const prev = i > 0 ? messages[i - 1] : null;
-        const isClarificationReply =
-          prev?.role === 'assistant' && prev.content.includes('[INPUT-REQUIRED]');
-        if (!isClarificationReply) return m.content;
+      const t = turns[i]!;
+      if (t.role === 'user') {
+        const prev = i > 0 ? turns[i - 1] : null;
+        const isClarificationReply = prev?.role === 'assistant' && turnText(prev).includes('[INPUT-REQUIRED]');
+        if (!isClarificationReply) return turnText(t);
         // skip this reply and the clarification that triggered it
         i -= 2;
         continue;
@@ -410,25 +458,9 @@ export class SessionManager {
     return null;
   }
 
-  /** Get conversation history within a token budget. */
-  getConversationHistory(sessionId: string, maxTokens = 8000): ConversationEntry[] {
-    const rows = this.sessionStore.getRecentMessages(sessionId, maxTokens);
-    return rows
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
-        role: r.role as 'user' | 'assistant',
-        content: r.content,
-        taskId: r.task_id ?? '',
-        timestamp: r.created_at,
-        thinking: r.thinking ?? undefined,
-        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
-        tokenEstimate: r.token_estimate,
-      }));
-  }
-
-  /** Get the number of conversation messages in a session. */
+  /** Get the number of conversation turns in a session. */
   getMessageCount(sessionId: string): number {
-    return this.sessionStore.countMessages(sessionId);
+    return this.sessionStore.countTurns(sessionId);
   }
 
   /**
@@ -453,133 +485,49 @@ export class SessionManager {
     this.sessionStore.updateSessionMemory(sessionId, memoryJson);
   }
 
+  // A7: getConversationHistoryCompacted + enforceTokenBudget removed.
+  // The ContextRetriever's summary ladder (src/memory/summary-ladder.ts)
+  // supersedes the compaction logic that used to live here. Callers that
+  // needed compacted history now flow through ContextRetriever.retrieve()
+  // and receive a ContextBundle with recent + semantic + pins + summary.
+
   /**
-   * Get conversation history with compaction for long conversations.
-   * Keeps last `keepRecentTurns` turns verbatim, summarizes older turns
-   * into a structured compact block (rule-based, A3-compliant — no LLM).
+   * A7: backward-compat text view of the session history for display-only
+   * consumers (CLI chat renderer, TUI, server API /messages endpoint).
+   *
+   * Flattens each Turn's visible text blocks and returns a lightweight
+   * `{role, content, taskId, timestamp}[]` shape. tool_use / tool_result
+   * blocks are dropped — callers needing structural data should consume
+   * `getTurnsHistory` directly and walk `Turn.blocks`.
+   *
+   * Merge note: the Phase 1 long-session compaction
+   * (`getConversationHistoryCompacted` + priority-weighted budget +
+   * inline KEY-DECISION lines + `[DROPPED BY BUDGET]` marker) is now the
+   * responsibility of `src/memory/summary-ladder.ts` via
+   * `ContextRetriever.retrieve`. The Phase 1 priority-weight and
+   * drop-marker ideas can be ported onto that module in a follow-up
+   * without re-introducing a ConversationEntry dependency here.
    */
-  getConversationHistoryCompacted(
+  getConversationHistoryText(
     sessionId: string,
-    maxTokens = 8000,
-    keepRecentTurns = 5,
-  ): ConversationEntry[] {
-    const allMessages = this.sessionStore.getMessages(sessionId);
-    if (allMessages.length === 0) return [];
-
-    const entries: ConversationEntry[] = allMessages
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({
-        role: r.role as 'user' | 'assistant',
-        content: r.content,
-        taskId: r.task_id ?? '',
-        timestamp: r.created_at,
-        thinking: r.thinking ?? undefined,
-        toolsUsed: r.tools_used ? JSON.parse(r.tools_used) : undefined,
-        tokenEstimate: r.token_estimate,
-      }));
-
-    // Count turns (a turn = one user + one assistant message pair)
-    const turnPairs = Math.ceil(entries.length / 2);
-    if (turnPairs <= keepRecentTurns) {
-      // Short enough — return as-is with token budget enforcement
-      return this.enforceTokenBudget(entries, maxTokens);
-    }
-
-    // Compact older turns into a structured summary
-    const recentStartIdx = Math.max(0, entries.length - keepRecentTurns * 2);
-    const olderEntries = entries.slice(0, recentStartIdx);
-    const recentEntries = entries.slice(recentStartIdx);
-
-    // Build rule-based compact summary from older turns
-    const topics = new Map<string, number>();
-    const filesDiscussed = new Set<string>();
-    // Agent Conversation: track open vs resolved clarification questions
-    // across compaction. A question is "resolved" when a user message follows
-    // the [INPUT-REQUIRED] assistant turn that raised it.
-    const openClarifications: string[] = [];
-    const resolvedClarifications: Array<{ question: string; answer: string }> = [];
-
-    for (let i = 0; i < olderEntries.length; i++) {
-      const entry = olderEntries[i]!;
-      // Extract file references (common patterns)
-      const fileRefs = entry.content.match(/[\w\-./]+\.(ts|js|py|java|tsx|jsx|md|json|yaml|yml)/g);
-      if (fileRefs) {
-        for (const f of fileRefs) filesDiscussed.add(f);
-      }
-      // Count user messages as topic indicators
-      if (entry.role === 'user') {
-        const firstLine = entry.content.split('\n')[0]?.slice(0, 80) ?? '';
-        const topic = firstLine || '(empty)';
-        topics.set(topic, (topics.get(topic) ?? 0) + 1);
-      }
-      // Detect [INPUT-REQUIRED] blocks and pair them with any following user turn
-      if (entry.role === 'assistant') {
-        const questions = parseInputRequiredBlock(entry.content);
-        if (questions.length > 0) {
-          const next = olderEntries[i + 1];
-          if (next && next.role === 'user') {
-            const answer = next.content.split('\n')[0]?.slice(0, 120) ?? '';
-            for (const q of questions) {
-              resolvedClarifications.push({ question: q, answer });
-            }
-          } else {
-            for (const q of questions) openClarifications.push(q);
-          }
-        }
-      }
-    }
-
-    const topicSummary = [...topics.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([topic, count]) => `${count > 1 ? `${count}x ` : ''}${topic}`)
-      .join('; ');
-
-    const clarificationLines: string[] = [];
-    if (resolvedClarifications.length > 0) {
-      const sample = resolvedClarifications
-        .slice(0, 5)
-        .map((r) => `Q: ${r.question} → A: ${r.answer}`)
-        .join('; ');
-      clarificationLines.push(`Resolved clarifications: ${sample}`);
-    }
-    if (openClarifications.length > 0) {
-      clarificationLines.push(`Open clarifications (awaiting user): ${openClarifications.slice(0, 5).join('; ')}`);
-    }
-
-    const compactContent = [
-      `[SESSION CONTEXT: ${olderEntries.length} prior messages, ${turnPairs - keepRecentTurns} turns compacted]`,
-      topicSummary ? `Topics: ${topicSummary}` : null,
-      filesDiscussed.size > 0 ? `Files discussed: ${[...filesDiscussed].slice(0, 10).join(', ')}` : null,
-      ...clarificationLines,
-    ].filter(Boolean).join('\n');
-
-    const compactEntry: ConversationEntry = {
-      role: 'assistant',
-      content: compactContent,
-      taskId: 'compaction',
-      timestamp: olderEntries[0]?.timestamp ?? Date.now(),
-      tokenEstimate: estimateTokens(compactContent),
-    };
-
-    return this.enforceTokenBudget([compactEntry, ...recentEntries], maxTokens);
+    maxTurns = 1000,
+  ): Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    taskId: string;
+    timestamp: number;
+  }> {
+    const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    return turns.map((t) => ({
+      role: t.role,
+      content: t.blocks
+        .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n'),
+      taskId: t.taskId ?? '',
+      timestamp: t.createdAt,
+    }));
   }
-
-  /** Trim entries to fit within token budget, removing oldest first. */
-  private enforceTokenBudget(entries: ConversationEntry[], maxTokens: number): ConversationEntry[] {
-    let totalTokens = entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
-    const result = [...entries];
-    while (totalTokens > maxTokens && result.length > 1) {
-      const removed = result.shift()!;
-      totalTokens -= removed.tokenEstimate;
-    }
-    return result;
-  }
-}
-
-/** Rough token estimation: ~3.5 chars per token for mixed content. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5);
 }
 
 /**

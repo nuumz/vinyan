@@ -19,6 +19,13 @@ const EVENT_CATEGORIES: Record<string, string> = {
   'skill:miss': 'SKILL',
   'tools:executed': 'TOOLS',
   'graph:fact': 'GRAPH',
+  // Phase 0.5: per-tool-call lifecycle from the agent loop.
+  'agent:tool_started': 'AGENT',
+  'agent:tool_executed': 'AGENT',
+  'agent:tool_denied': 'AGENT',
+  // Phase 0.5: guardrail-detector signals surfaced via SSE.
+  'guardrail:injection_detected': 'GUARDRAIL',
+  'guardrail:bypass_detected': 'GUARDRAIL',
 };
 
 export class VinyanEventPanel implements vscode.Disposable {
@@ -65,6 +72,21 @@ export class VinyanEventPanel implements vscode.Disposable {
         return `routing: L${(p.routing as Record<string, unknown>)?.level ?? '?'}`;
       case 'worker:error':
         return String(p.error ?? '');
+      case 'agent:tool_started':
+        return `${p.toolName ?? '?'}`;
+      case 'agent:tool_executed': {
+        const mark = p.isError ? '✗' : '✓';
+        return `${p.toolName} ${mark} ${p.durationMs}ms`;
+      }
+      case 'agent:tool_denied': {
+        const violation = p.violation ? ` — ${p.violation}` : '';
+        return `${p.toolName ?? '?'}${violation}`;
+      }
+      case 'guardrail:injection_detected':
+      case 'guardrail:bypass_detected': {
+        const patterns = Array.isArray(p.patterns) ? (p.patterns as string[]).join(',') : '';
+        return `field=${p.field ?? '?'}${patterns ? ` [${patterns}]` : ''}`;
+      }
       default: {
         // Brief JSON excerpt
         const str = JSON.stringify(p);

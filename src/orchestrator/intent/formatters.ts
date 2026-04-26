@@ -16,23 +16,40 @@
 
 import type {
   AgentSpec,
-  ConversationEntry,
+  ContentBlock,
   ExecutionStrategy,
   SemanticTaskUnderstanding,
   TaskInput,
+  Turn,
 } from '../types.ts';
 
+/** Flatten a Turn's blocks into a single string for classifier prompt context. */
+function flattenTurnText(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (b.type === 'text') parts.push(b.text);
+    else if (b.type === 'tool_use') parts.push(`[tool:${b.name}]`);
+    else if (b.type === 'tool_result') parts.push(b.content);
+  }
+  return parts.join(' ');
+}
+
 /**
- * Render the last ~5 user/assistant pairs as plain text for the classifier
- * prompt. Entries longer than 200 characters are truncated.
+ * Render the last ~5 turns as plain text for the classifier prompt.
+ * Entries longer than 200 characters are truncated.
+ *
+ * A6: flipped from ConversationEntry[] to Turn[] — tool_use / tool_result
+ * blocks are flattened inline so the classifier sees the shape of prior
+ * tool activity instead of just a compacted string.
  */
-export function formatConversationContext(history?: ConversationEntry[]): string {
-  if (!history?.length) return '';
-  const recent = history.slice(-10); // 10 entries ≈ 5 user+assistant pairs
-  const lines = recent.map(
-    (e) =>
-      `[${e.role}]: ${e.content.length > 200 ? `${e.content.slice(0, 200)}...` : e.content}`,
-  );
+export function formatConversationContext(turns?: Turn[]): string {
+  if (!turns?.length) return '';
+  const recent = turns.slice(-10); // 10 entries ≈ 5 user+assistant pairs
+  const lines = recent.map((t) => {
+    const text = flattenTurnText(t.blocks);
+    const trimmed = text.length > 200 ? `${text.slice(0, 200)}...` : text;
+    return `[${t.role}]: ${trimmed}`;
+  });
   return `\nRecent conversation:\n${lines.join('\n')}`;
 }
 

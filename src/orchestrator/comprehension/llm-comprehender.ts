@@ -113,8 +113,13 @@ function buildUserPrompt(input: ComprehensionInput): string {
   const pending = input.pendingQuestions.map((q) => sanitizeForPromptPassthrough(q).cleaned);
 
   // Last 6 turns only — stage 2 is a short, targeted LLM call.
+  // A7: Turn-model — flatten text blocks.
   const recent = input.history.slice(-6).map((h) => {
-    const content = sanitizeForPromptPassthrough(h.content).cleaned;
+    const raw = h.blocks
+      .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    const content = sanitizeForPromptPassthrough(raw).cleaned;
     const clipped = content.length > 400 ? `${content.slice(0, 397)}...` : content;
     return `${h.role === 'user' ? 'User' : 'Assistant'}: ${clipped}`;
   });

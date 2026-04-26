@@ -2,7 +2,8 @@
  * Tests for UserInterestMiner — live aggregation from TraceStore + SessionStore.
  */
 import { describe, expect, test } from 'bun:test';
-import type { SessionStore, SessionMessageRow } from '../../../src/db/session-store.ts';
+import type { SessionStore } from '../../../src/db/session-store.ts';
+import type { Turn } from '../../../src/orchestrator/types.ts';
 import type { TraceStore } from '../../../src/db/trace-store.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 import {
@@ -41,23 +42,21 @@ function stubTraceStore(traces: ExecutionTrace[]): TraceStore {
   } as unknown as TraceStore;
 }
 
-function msg(sessionId: string, role: SessionMessageRow['role'], content: string, createdAt: number): SessionMessageRow {
+function msg(sessionId: string, role: 'user' | 'assistant', content: string, createdAt: number): Turn {
   return {
-    id: Math.floor(Math.random() * 1_000_000),
-    session_id: sessionId,
-    task_id: null,
+    id: `${sessionId}-${createdAt}-${Math.random().toString(36).slice(2, 6)}`,
+    sessionId,
+    seq: 0,
     role,
-    content,
-    thinking: null,
-    tools_used: null,
-    token_estimate: Math.max(1, Math.ceil(content.length / 4)),
-    created_at: createdAt,
+    blocks: [{ type: 'text', text: content }],
+    tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    createdAt,
   };
 }
 
-function stubSessionStore(messagesBySession: Record<string, SessionMessageRow[]>): SessionStore {
+function stubSessionStore(turnsBySession: Record<string, Turn[]>): SessionStore {
   return {
-    getRecentMessages: (sessionId: string, _budget: number) => messagesBySession[sessionId] ?? [],
+    getRecentTurns: (sessionId: string, _n: number) => turnsBySession[sessionId] ?? [],
   } as unknown as SessionStore;
 }
 

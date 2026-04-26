@@ -142,6 +142,29 @@ export interface VinyanBusEvents {
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
 
+  // Agentic SDLC — Spec Refinement phase (between Perceive and Predict)
+  'spec:drafted': {
+    taskId: string;
+    criteriaCount: number;
+    edgeCaseCount: number;
+    openQuestionCount: number;
+    durationMs: number;
+  };
+  'spec:approved': { taskId: string; approvedBy: string; criteriaCount: number };
+  'spec:rejected': { taskId: string; reason: string };
+  'spec:drafting_failed': { taskId: string; reason: string; durationMs: number };
+
+  // Agentic SDLC — Brainstorm phase (pre-Perceive ideation)
+  'brainstorm:drafted': {
+    taskId: string;
+    candidateCount: number;
+    convergenceScore: number;
+    durationMs: number;
+  };
+  'brainstorm:approved': { taskId: string; approvedCandidateId?: string; convergenceScore: number };
+  'brainstorm:rejected': { taskId: string; reason: string };
+  'brainstorm:drafting_failed': { taskId: string; reason: string; durationMs: number };
+
   // PH3.6: Epsilon-greedy exploration
   'task:explore': { taskId: string; fromLevel: number; toLevel: number };
 
@@ -256,6 +279,20 @@ export interface VinyanBusEvents {
     commitmentId: string;
     score: number;
     offerCount: number;
+  };
+
+  // Team blackboard (FS-backed) — emitted whenever `.vinyan/teams/<id>/<key>.md`
+  // is written, either by internal orchestrator code (source='internal') or
+  // by an external editor / git pull (source='external'). A4 consumers
+  // subscribe to invalidate dependent facts. Tests can drive this event
+  // manually to simulate concurrent external edits.
+  'team:blackboard_updated': {
+    teamId: string;
+    key: string;
+    version: number;
+    author: string;
+    source: 'internal' | 'external';
+    path: string;
   };
 
   // Ecosystem reconcile — emitted once per violation found by a scheduled
@@ -652,6 +689,24 @@ export interface VinyanBusEvents {
     sampleSize: number;
     threshold: number;
   };
+  /**
+   * Sleep Cycle comprehension miner result (B1–B3). Fired once per
+   * `SleepCycleRunner.run()` when mining completes (even when no
+   * insights were produced — consumers dedupe on `minedAt`). Payload
+   * mirrors the miner's `MiningResult` shape so dashboards can tail
+   * the bus without importing miner types at runtime.
+   */
+  'comprehension:mining_completed': {
+    /** Sleep-cycle id that triggered this mining pass (for correlation
+     *  with `sleep:cycleComplete`, `agent:evolved`, etc.). */
+    cycleId: string;
+    minedAt: number;
+    windowSinceMs: number;
+    rowsScanned: number;
+    insights: ReadonlyArray<
+      import('../orchestrator/comprehension/learning/miner.ts').ComprehensionInsight
+    >;
+  };
 
   // Extensible Thinking events
   'thinking:policy-compiled': {
@@ -956,6 +1011,19 @@ export interface VinyanBusEvents {
     agentId: string;
     reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
     score: number;
+  };
+  /**
+   * Gateway inbound (W2 H1). A messaging adapter received a message
+   * and published it onto the bus via `GatewayAdapterContext.publishInbound`.
+   * The Gateway dispatcher (separate track) subscribes here and turns the
+   * envelope into a `TaskInput` for `executeTask` — adapters never call
+   * `executeTask` directly (A3, A6, D21).
+   *
+   * Field is the minimal envelope shape owned by `src/gateway/types.ts`
+   * (kept structural to avoid import cycles from bus.ts).
+   */
+  'gateway:inbound': {
+    envelope: import('../gateway/types.ts').GatewayInboundEnvelopeMinimal;
   };
 }
 

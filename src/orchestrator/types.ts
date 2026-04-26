@@ -104,7 +104,7 @@ export type TaskDomain = 'code-mutation' | 'code-reasoning' | 'general-reasoning
  * Concept §1: Vinyan is a task orchestrator, not a Q&A chatbot.
  * When intent=execute, the response should frame as capability assessment, not tutorial.
  */
-export type TaskIntent = 'execute' | 'inquire' | 'converse';
+export type TaskIntent = 'execute' | 'inquire' | 'converse' | 'ideate';
 
 /**
  * Whether the task requires tool execution to fulfil the user's goal.
@@ -368,12 +368,74 @@ export interface SemanticTaskUnderstanding extends TaskUnderstanding {
   // ── Content-addressing (P8) ────────────────────────────
   /** SHA-256 fingerprint = hash(goal + sorted(resolvedPaths) + taskSignature). */
   understandingFingerprint: string;
+
+  // ── Agentic SDLC enrichments (optional, populated by phase-spec / phase-brainstorm) ──
+  /** Frozen, human-approved specification produced by phase-spec. When present,
+   *  GoalEvaluator anchors C5 coverage to this artifact rather than the raw goal. */
+  spec?: import('./spec/spec-artifact.ts').SpecArtifact;
+  /** Brainstorm output — N ranked candidate approaches. Populated by phase-brainstorm
+   *  when the ideation classifier matches the goal. The chosen candidate's approach
+   *  is also surfaced via TaskInput.constraints for prompt assembly. */
+  ideation?: import('./intent/ideation-types.ts').IdeationResult;
+}
+
+/**
+ * Task source — the transport / entry point that produced this task.
+ *
+ * The `gateway-*` variants, `acp`, and `internal` are reserved for future
+ * surfaces (messaging gateway, ACP adapter, internal delegations) that enter
+ * `executeTask` from outside the current CLI/API/MCP/A2A set. See
+ * `docs/spec/w1-contracts.md` §4.
+ */
+export type TaskSource =
+  | 'cli'
+  | 'api'
+  | 'mcp'
+  | 'a2a'
+  | 'gateway-telegram'
+  | 'gateway-slack'
+  | 'gateway-discord'
+  | 'gateway-whatsapp'
+  | 'gateway-signal'
+  | 'gateway-email'
+  | 'gateway-cron'
+  | 'acp'
+  | 'internal';
+
+/**
+ * Regex for a valid profile name (kebab-case, leading lowercase letter).
+ * Mirrors the pattern in `src/config/profile-resolver.ts`. The literal
+ * name `'default'` is additionally accepted.
+ */
+export const PROFILE_REGEX = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Type-guard: does `s` look like a valid profile namespace?
+ * Accepts `'default'` or any non-empty kebab-case identifier.
+ */
+export function isValidProfileName(s: unknown): s is string {
+  return typeof s === 'string' && (s === 'default' || PROFILE_REGEX.test(s));
+}
+
+/**
+ * Normalize an optional profile string into a concrete namespace.
+ *
+ * - `undefined` → `'default'` (W1 intermediate state — see w1-contracts §4 / §9.A1).
+ * - Invalid names throw synchronously so the caller sees the offender verbatim
+ *   instead of silently falling back.
+ */
+export function coerceProfile(p: string | undefined): string {
+  if (p === undefined) return 'default';
+  if (!isValidProfileName(p)) {
+    throw new Error(`invalid profile name: ${p}`);
+  }
+  return p;
 }
 
 /** Input to the Orchestrator core loop */
 export interface TaskInput {
   id: string;
-  source: 'cli' | 'api' | 'mcp' | 'a2a';
+  source: TaskSource;
   goal: string; // Natural language task description
   taskType: TaskType; // Explicit classification — drives prompt, perception, and verification
   targetFiles?: string[]; // Optional explicit scope
@@ -381,6 +443,30 @@ export interface TaskInput {
   acceptanceCriteria?: string[]; // Optional semantic acceptance criteria (WP-2: critic rubric)
   /** Conversation session ID — links this task to a multi-turn chat session. */
   sessionId?: string;
+  /**
+   * Profile namespace this task belongs to. Defaults to `'default'` when
+   * absent. See `docs/spec/w1-contracts.md` §4 — the long-term intent is
+   * to make this required, but W1 ships it optional so existing callers
+   * continue to compile. Validated against {@link PROFILE_REGEX} or the
+   * literal `'default'`.
+   */
+  profile?: string;
+  /**
+   * Parent task id for interrupt-and-redirect / delegation chains.
+   * Preserved end-to-end so observability can reconstruct the causal tree.
+   */
+  parentTaskId?: string;
+  /**
+   * Scheduling priority hint. Consumed by downstream queue / budget
+   * allocators when present. Defaults to `'normal'` when omitted.
+   */
+  priority?: 'normal' | 'high' | 'background';
+  /**
+   * Transport-preserved envelope for reply routing by the gateway that
+   * produced this task (e.g. Gateway message metadata, ACP message id).
+   * Opaque to the core loop — stored and echoed back on completion.
+   */
+  originEnvelope?: unknown;
   /**
    * Phase 7c-1: typed subagent role. Populated when this task was spawned
    * by a parent via `delegate_task` with an explicit `subagentType`. The
@@ -443,19 +529,18 @@ export interface PlanTodoInput {
 // Conversation History (→ Conversation Agent Mode)
 // ---------------------------------------------------------------------------
 
-/** A single entry in the conversation history — user message or assistant response. */
-export interface ConversationEntry {
-  role: 'user' | 'assistant';
-  content: string;
-  taskId: string;
-  timestamp: number;
-  thinking?: string;
-  toolsUsed?: string[];
-  tokenEstimate: number;
-}
+// A7: ConversationEntry definition removed. The Turn model (ContentBlock[])
+// below is the only conversation representation. Migration 038 drops the
+// session_messages table that backed ConversationEntry.
+//
+// Merge note: feature/main's Phase 1 turn-importance classifier
+// (`src/api/turn-importance.ts::classifyTurn`) duck-types its input as
+// `{role, content, toolsUsed?, thinking?}` — that shape is declared inline
+// in that module as `ClassifiableTurn` and no longer depends on the
+// removed `ConversationEntry` interface.
 
 // ---------------------------------------------------------------------------
-// Turn Model (Anthropic-native ContentBlock[]) — replaces ConversationEntry
+// Turn Model (Anthropic-native ContentBlock[]) — the sole conversation path
 // for loss-free multi-turn tool-use persistence. See plan commit A.
 // ---------------------------------------------------------------------------
 
@@ -764,6 +849,13 @@ export interface SelfModelPrediction {
   pPass?: number;
   basis: 'static-heuristic' | 'trace-calibrated' | 'hybrid';
   calibrationDataPoints: number;
+  /**
+   * M3.5 — Per-task-type signature (e.g. `delete::ts::large-blast`). Populated
+   * by CalibratedSelfModel.predict() so phase-verify can construct
+   * GateRequest.commonsenseSignals without re-deriving the signature. See
+   * docs/design/commonsense-substrate-system-design.md §6 (M3).
+   */
+  taskTypeSignature?: string;
   /** S1: Cold-start safeguard — force minimum routing level for first N tasks */
   forceMinLevel?: number;
   /** S3: Audit sampling flag — 10% probability for first 100 tasks */
@@ -1237,10 +1329,6 @@ export interface LLMRequest {
    * turn-volatile suffix is re-processed each request.
    */
   tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  cacheControl?: CacheControl;
-  /** @deprecated B5 will remove — use `tiers` instead. */
-  instructionCacheControl?: CacheControl;
 }
 
 /** Response from an LLM provider */

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { CommitmentStore } from '../../../src/db/commitment-store.ts';
-import { migration032 } from '../../../src/db/migrations/032_add_commitments.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import {
   CommitmentLedger,
   type CommitmentLedgerConfig,
@@ -16,7 +16,7 @@ import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration032.up(db);
+  migration001.up(db);
   return db;
 }
 

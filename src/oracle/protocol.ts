@@ -56,6 +56,42 @@ const TemporalContextSchema = z.object({
   halfLife: z.number().optional(),
 });
 
+/**
+ * Phase 2.5+ ECP extension — defeasible-prior knowledge attribution.
+ *
+ * When a verdict was informed by Common Sense Substrate rules (M2 oracle
+ * firing), the substrate emits one entry per firing rule. Consumers (audit,
+ * A2A federation, dashboards) can read the typed shape directly instead of
+ * parsing JSON-encoded snippets out of `evidence`.
+ *
+ * Backward-compatible: optional. ECP v1.x consumers ignore unknown fields
+ * per spec §3.4 — no version bump required.
+ *
+ * See docs/design/commonsense-substrate-system-design.md §7 + Appendix C #8.
+ */
+export const PriorAssumptionSchema = z.object({
+  /** Content-addressed rule id (SHA-256 hex, 64 chars). */
+  ruleId: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Three-axis microtheory label. */
+  microtheory: z.object({
+    language: z.string(),
+    domain: z.string(),
+    action: z.string(),
+  }),
+  /** Serialized abnormality predicate (consumer can re-evaluate to falsify). */
+  abnormalityPredicate: z.string().optional(),
+  /** Rule provenance. */
+  source: z.enum(['innate', 'configured', 'promoted-from-pattern']),
+  /** Priority after source-tier capping (innate ≤100, configured ≤80, promoted ≤70). */
+  priority: z.number().int().min(0).max(100),
+  /** Pragmatic-tier confidence band [0.5, 0.7]. */
+  confidence: z.number().min(0.5).max(0.7),
+  /** Default outcome the rule produced. */
+  defaultOutcome: z.enum(['allow', 'block', 'needs-confirmation', 'escalate']),
+  /** Human-readable WHY (rule rationale). */
+  rationale: z.string(),
+});
+
 /** Zod schema for validating oracle output (OracleVerdict). */
 export const OracleVerdictSchema = z.object({
   verified: z.boolean(),
@@ -78,4 +114,7 @@ export const OracleVerdictSchema = z.object({
   engineCertainty: z.number().min(0).max(1).optional(),
   confidenceSource: z.enum(['evidence-derived', 'self-model-calibrated', 'llm-self-report']).optional(),
   confidenceReported: z.boolean().optional(),
+
+  /** Phase 2.5 — defeasible-prior knowledge attribution (Common Sense Substrate). */
+  priorAssumption: z.array(PriorAssumptionSchema).optional(),
 });

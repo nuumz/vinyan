@@ -126,9 +126,8 @@ export class SoulReflector {
         return trimSoul(updatedSoul);
       }
 
-      // Save
+      // Save — SoulStore (filesystem) is the only source of truth.
       this.soulStore.saveSoul(updatedSoul);
-      this.agentContextStore.updateSoulMd(agentId, renderSoulMd(updatedSoul), updatedSoul.version);
       this.agentContextStore.clearPendingInsights(agentId);
 
       return updatedSoul;
@@ -199,7 +198,6 @@ export class SoulReflector {
     }
 
     this.soulStore.saveSoul(updated);
-    this.agentContextStore.updateSoulMd(updated.agentId, renderSoulMd(updated), updated.version);
     this.agentContextStore.clearPendingInsights(updated.agentId);
 
     return updated;

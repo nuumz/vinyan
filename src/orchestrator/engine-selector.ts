@@ -106,6 +106,15 @@ export interface EngineSelectorConfig {
 export interface SelectOptions {
   /** Narrow candidates to this department when the index has members. */
   departmentId?: string;
+  /**
+   * Cost / classification key used by `CostPredictor` and the bid pipeline.
+   * Independent from the `taskId` argument — `taskId` identifies *which*
+   * task is being scheduled, while `taskType` identifies *what kind* of
+   * work it is for cost prediction. Defaults to the literal `taskId` when
+   * absent so legacy callers retain prior behavior, but production callers
+   * (phase-predict) should pass the real `TaskInput.taskType`.
+   */
+  taskType?: string;
 }
 
 /**
@@ -121,9 +130,21 @@ export type VolunteerFallback = (params: {
 }) => string | null;
 
 export interface EngineSelector {
+  /**
+   * Select an engine for a task.
+   *
+   * @param routingLevel — risk tier (drives trust threshold + default model).
+   * @param taskId — the real `TaskInput.id`. Used as the auction id, in
+   *   `engine:selected` events, in volunteer-fallback hooks, and as the
+   *   commitment-bridge key. Do NOT pass goal prefixes or task types here.
+   * @param requiredCapabilities — optional capability filter.
+   * @param roleHint — optional book-tier hint (read/implement/debate/verify).
+   * @param options — narrows pool by department; `options.taskType` is the
+   *   cost-prediction key (`'code'` / `'reasoning'`).
+   */
   select(
     routingLevel: RoutingLevel,
-    taskType: string,
+    taskId: string,
     requiredCapabilities?: string[],
     roleHint?: RoleHint,
     options?: SelectOptions,
@@ -153,13 +174,16 @@ export class DefaultEngineSelector implements EngineSelector {
 
   select(
     routingLevel: RoutingLevel,
-    taskType: string,
+    taskId: string,
     requiredCapabilities?: string[],
     roleHint?: RoleHint,
     options?: SelectOptions,
   ): EngineSelection {
     const defaultModel = LEVEL_CONFIG[routingLevel].model;
     const minTrust = TRUST_THRESHOLDS[routingLevel];
+    // Cost-prediction / auction-scoring key. Falls back to taskId when the
+    // caller hasn't supplied a separate cost key (preserves test ergonomics).
+    const costKey = options?.taskType ?? taskId;
 
     // 1. Get all providers, optionally filtered by capability
     const capability = requiredCapabilities?.[0];
@@ -167,7 +191,9 @@ export class DefaultEngineSelector implements EngineSelector {
       ? this.trustStore.getProvidersByCapability(capability)
       : this.trustStore.getAllProviders();
 
-    // 1a. Ecosystem O1 — drop providers whose runtime state is dormant/awakening.
+    // 1a. Ecosystem O1 + O4 — drop providers whose runtime state is
+    //     dormant/awakening, AND drop `working` providers that are at or
+    //     above their capacity (cannot accept more work right now).
     //     Unknown providers pass through (the manager only knows engines it
     //     has registered; cold-start / test paths shouldn't be blocked).
     if (this.runtimeStateManager) {
@@ -175,7 +201,9 @@ export class DefaultEngineSelector implements EngineSelector {
       providers = providers.filter((p) => {
         const snap = mgr.get(p.provider);
         if (!snap) return true;
-        return snap.state === 'standby' || snap.state === 'working';
+        if (snap.state === 'standby') return true;
+        if (snap.state === 'working') return snap.activeTaskCount < snap.capacityMax;
+        return false; // dormant / awakening
       });
     }
 
@@ -223,7 +251,7 @@ export class DefaultEngineSelector implements EngineSelector {
           selectionReason: `role-hint:${roleHint}→${tier}`,
         };
         this.bus?.emit('engine:selected', {
-          taskId: taskType,
+          taskId,
           provider: result.provider,
           trustScore: result.trustScore,
           reason: result.selectionReason,
@@ -245,10 +273,16 @@ export class DefaultEngineSelector implements EngineSelector {
 
     // 4. If MarketScheduler is active, attempt auction-based selection
     if (this.marketScheduler?.isActive() && qualified.length >= 2) {
-      const auctionResult = this.attemptAuction(taskType, routingLevel, qualified, defaultModel ?? 'unknown');
+      const auctionResult = this.attemptAuction(
+        taskId,
+        costKey,
+        routingLevel,
+        qualified,
+        defaultModel ?? 'unknown',
+      );
       if (auctionResult) {
         this.bus?.emit('engine:selected', {
-          taskId: taskType,
+          taskId,
           provider: auctionResult.provider,
           trustScore: auctionResult.trustScore,
           reason: auctionResult.selectionReason,
@@ -257,8 +291,36 @@ export class DefaultEngineSelector implements EngineSelector {
       }
     }
 
-    // 4. Rank by Wilson LB trust score
-    const selection = selectProvider(this.trustStore, defaultModel, capability);
+    // 4. Rank by Wilson LB trust score.
+    //
+    // When the runtime/department filter actually narrowed the pool, we
+    // must rank within the filtered `qualified` set — delegating to
+    // `selectProvider` would consult the unfiltered trust store and could
+    // re-introduce a provider that is dormant or at capacity. We compute
+    // the same Wilson-LB ranking inline so behavior matches `priority-router`
+    // for the unfiltered case.
+    const filterApplied =
+      this.runtimeStateManager !== undefined || options?.departmentId !== undefined;
+    let selection: { provider: string; trustScore: number; basis: 'wilson_lb' | 'cold_start' };
+    if (filterApplied) {
+      let bestProvider = defaultModel ?? 'unknown';
+      let bestScore = -1;
+      for (const p of qualified) {
+        const total = p.successes + p.failures;
+        if (total === 0) continue;
+        const score = wilsonLowerBound(p.successes, total, 1.96);
+        if (score > bestScore) {
+          bestScore = score;
+          bestProvider = p.provider;
+        }
+      }
+      selection =
+        bestScore < 0
+          ? { provider: defaultModel ?? 'unknown', trustScore: 0.5, basis: 'cold_start' }
+          : { provider: bestProvider, trustScore: bestScore, basis: 'wilson_lb' };
+    } else {
+      selection = selectProvider(this.trustStore, defaultModel, capability);
+    }
 
     // 5. Check if selected provider meets minimum trust for this level
     if (selection.trustScore < minTrust && selection.basis === 'wilson_lb') {
@@ -266,7 +328,7 @@ export class DefaultEngineSelector implements EngineSelector {
       //     fallback before giving up to the default cold-start model.
       if (this.volunteerFallback) {
         const winner = this.volunteerFallback({
-          taskId: taskType,
+          taskId,
           routingLevel,
           ...(options?.departmentId ? { departmentId: options.departmentId } : {}),
         });
@@ -277,7 +339,7 @@ export class DefaultEngineSelector implements EngineSelector {
             selectionReason: 'volunteer-fallback',
           };
           this.bus?.emit('engine:selected', {
-            taskId: taskType,
+            taskId,
             provider: result.provider,
             trustScore: result.trustScore,
             reason: result.selectionReason,
@@ -300,7 +362,7 @@ export class DefaultEngineSelector implements EngineSelector {
     };
 
     this.bus?.emit('engine:selected', {
-      taskId: taskType,
+      taskId,
       provider: result.provider,
       trustScore: result.trustScore,
       reason: result.selectionReason,
@@ -314,7 +376,8 @@ export class DefaultEngineSelector implements EngineSelector {
    * Returns null if auction fails (falls back to Wilson LB).
    */
   private attemptAuction(
-    taskType: string,
+    taskId: string,
+    costKey: string,
     routingLevel: RoutingLevel,
     qualified: Array<{ provider: string; successes: number; failures: number }>,
     defaultModel: string,
@@ -324,12 +387,15 @@ export class DefaultEngineSelector implements EngineSelector {
     const now = Date.now();
     const budgetTokens = LEVEL_CONFIG[routingLevel]?.budgetTokens ?? 10_000;
 
-    // Generate bids from cost predictor or cold-start
+    // Generate bids from cost predictor or cold-start. Cost prediction is
+    // keyed by `costKey` (taskType) so similar tasks share history; the
+    // auction itself is keyed by the real `taskId` so commitment lookup,
+    // tracing, and reconcile work end-to-end.
     const bids: EngineBid[] = [];
     const contexts = new Map<string, BidderContext>();
 
     for (const p of qualified) {
-      const prediction = this.costPredictor?.predict(taskType, routingLevel);
+      const prediction = this.costPredictor?.predict(costKey, routingLevel);
       const total = p.successes + p.failures;
       const trustScore = total > 0 ? wilsonLowerBound(p.successes, total, 1.96) : 0.5;
 
@@ -356,10 +422,10 @@ export class DefaultEngineSelector implements EngineSelector {
       });
     }
 
-    const result = this.marketScheduler.allocate(`task-${taskType}`, bids, contexts, budgetTokens);
+    const result = this.marketScheduler.allocate(taskId, bids, contexts, budgetTokens);
     if (!result) {
       this.bus?.emit('market:fallback_to_selector', {
-        taskId: taskType,
+        taskId,
         reason: 'Auction returned no winner',
       });
       return null;

@@ -384,9 +384,19 @@ export class ComprehensionCalibrator {
     if (acc.insufficient || acc.ema == null) {
       return { kind: 'unknown', reason: 'insufficient-data' };
     }
+    // GAP#7 — when AXM#5 label weights are available, combine with EMA
+    // (conservative: use whichever is LOWER). weightedAccuracy
+    // de-weights low-confidence "continuation-default" positives, so
+    // it's never higher than rawAccuracy for realistic inputs. Using
+    // min(ema, weighted) means a noisy-label engine that LOOKS accurate
+    // by naive count gets clamped by its honest weighted rate.
+    const ceiling =
+      acc.weightedAccuracy != null
+        ? Math.min(acc.ema, acc.weightedAccuracy)
+        : acc.ema;
     return {
       kind: 'known',
-      value: Math.max(0, Math.min(1, acc.ema)),
+      value: Math.max(0, Math.min(1, ceiling)),
     };
   }
 }

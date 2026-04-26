@@ -1,5 +1,7 @@
 # Vinyan Oracle SDK — Building ECP-Compatible Reasoning Engines
 
+> 📋 **Status: To-Be.** SDK is designed but not yet published. Reference Python oracle (`src/oracle/python/`) is the working baseline; the packaged SDK (`@vinyan/oracle-sdk` on npm, `vinyan-oracle-sdk` on PyPI) ships post-ECP v1 stabilization (PH5.17).
+
 > **Version:** 1.0-draft | **Date:** 2026-04-01
 > **Prerequisite:** [ecp-spec.md](ecp-spec.md) — the protocol this SDK implements
 > **Reference implementation:** `src/oracle/python/` — a working Python (Pyright) oracle

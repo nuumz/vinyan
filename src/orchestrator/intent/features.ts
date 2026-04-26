@@ -7,7 +7,7 @@
  * end-punctuation, turn number — and hands them to the classifier alongside
  * the raw goal text. Pure: no I/O, no LLM, no side effects.
  */
-import type { ConversationEntry } from '../types.ts';
+import type { Turn } from '../types.ts';
 
 export interface StructuralFeatures {
   /** Goal length in characters after trim. */
@@ -22,7 +22,8 @@ const THAI_QUESTION_PARTICLE_REGEX = /(ไหม|มั้ย|หรือเป
 
 export function computeStructuralFeatures(
   goal: string,
-  history?: ConversationEntry[],
+  /** A6: Turn-model history replaces the legacy ConversationEntry[] input. */
+  turns?: Turn[],
 ): StructuralFeatures {
   const trimmed = goal.trim();
   // Accept ASCII '?' and full-width '？' (U+FF1F, common in Thai/CJK IME input)
@@ -34,7 +35,7 @@ export function computeStructuralFeatures(
   return {
     lengthChars: trimmed.length,
     endsWithQuestion,
-    turnNumber: Math.floor((history?.length ?? 0) / 2) + 1,
+    turnNumber: Math.floor((turns?.length ?? 0) / 2) + 1,
   };
 }
 

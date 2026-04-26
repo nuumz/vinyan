@@ -2,7 +2,7 @@
 
 > Generated: 2026-03-29 | Updated: 2026-04-03 | Branch: `feature/main`
 > **Current state:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next: EHD Phase 5 (ECP wire format) or new capability.
-> Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md)
+> Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md), [w1-contracts.md](../spec/w1-contracts.md) (frozen cross-track contract surface for W1–W5 parallel work)
 
 ---
 
@@ -2295,7 +2295,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Session management with compaction.** Group multiple `TaskInput` submissions under a session. Session state includes shared `WorkingMemory`, cumulative trace history, and a **compaction pipeline**: after N tasks or M minutes, summarize the session transcript into a condensed episode (approach sequences, key failures, successful patterns). Compacted sessions feed Sleep Cycle as first-class input. [Closes GAP-3: session management]
 - **Checkpoint recovery.** Persist session state and in-progress task state to SQLite (new `session_store` table following `WorkerStore` pattern from `db/worker-store.ts`). On restart, recover pending tasks and resume from last checkpoint. [Closes GAP-H FC6: "restarted randomly"]
 - **Health and metrics.** Expose `SystemMetrics` (from `observability/metrics.ts`) and `FleetMetrics` (from `fleet-evaluator.ts`) via read-only HTTP endpoints.
-- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects VIIP peers, then closes resources. See [tdd.md §22.7](../spec/tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
+- **Graceful shutdown.** `stop()` method drains in-flight requests (30s deadline), persists active sessions to SQLite, disconnects A2A peers, then closes resources. See [tdd.md §22.7](../spec/tdd.md) for full shutdown protocol. `SIGTERM`/`SIGINT` handlers trigger graceful shutdown; second signal forces immediate exit.
 
 **Extends:** `TaskInput.source: 'api'` (types.ts:56), `Orchestrator` interface (factory.ts), `WorkingMemory` (working-memory.ts)
 **New files:** `src/api/server.ts`, `src/api/routes.ts`, `src/api/session-manager.ts`, `src/db/session-schema.ts`, `src/db/session-store.ts`
@@ -2424,7 +2424,7 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 
 ##### PH5.7 — ECP Network Transport `[L]`
 
-> **Design prerequisite:** [a2a-protocol.md](../spec/a2a-protocol.md) specifies the full wire protocol (VIIP), message envelope, delivery guarantees, and failure modes. [concept.md §2.4](../foundation/concept.md) specifies network-aware ECP semantics and confidence degradation.
+> **Design prerequisite:** [a2a-protocol.md](../spec/a2a-protocol.md) specifies the full wire protocol (ECP-over-A2A v1.0; replaces the deleted VIIP), message envelope, delivery guarantees, and failure modes. [concept.md §2.4](../foundation/concept.md) specifies network-aware ECP semantics and confidence degradation.
 
 **Purpose:** Extend ECP from stdio (local process) to network boundaries. Preserves epistemic semantics (confidence, evidence chains, falsifiability, temporal context) across the network — no existing protocol does this natively.
 
@@ -2436,17 +2436,17 @@ Before any Phase 5 sub-component, fix Phase 4 wiring gaps that affect Phase 5 fo
 - **Temporal context enforcement.** `temporal_context` (concept §13.2) becomes required on all cross-instance ECP messages. Receiving Orchestrator checks `valid_until` before trusting remote evidence. Stale evidence auto-degrades to `type: 'unknown'`.
 - **`deliberation_request` support.** Implement concept §13.1: engines signal insufficient reasoning depth and request additional compute. Maps to routing level escalation in the receiving instance.
 - **Instance discovery.** Static config (Phase 5 default) + `.well-known/vinyan.json` endpoint (concept §11.2). Declares oracle set, language coverage, domain tags, health, capacity.
-- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake per VIIP §2.3.
+- **Protocol versioning.** Extend `ECP_PROTOCOL_VERSION` (types.ts:24, currently `1`) with negotiation handshake per `a2a-protocol.md` §2.3.
 
 **Extends:** `oracle/runner.ts` (transport abstraction), `OracleConfig.command` (config/schema.ts:14), `ECP_PROTOCOL_VERSION` (types.ts:24)
 **Dependencies:** PH5.14 (Security — mTLS/signing), PH5.1 (shares HTTP/WebSocket infra)
 
 **Design decisions resolved (from gap analysis):**
-- Wire protocol: **WebSocket** (persistent, bidirectional) with HTTP/2 SSE fallback (VIIP §2.1)
+- Wire protocol: **HTTP POST + JSON-RPC 2.0** (Google A2A v1.0) with SSE for streaming (`a2a-protocol.md` §2.1)
 - Serialization: **JSON** (readable, debuggable) — optimize to MessagePack only if profiling shows bottleneck
-- Auth: **Ed25519 message signatures** + optional mTLS (VIIP §4)
-- Message ordering: **Causal per-instance** (UUIDv7 time-sortable), no global ordering (VIIP §6.2)
-- Delivery: **At-least-once with idempotency** — 10K message dedup window (VIIP §6.1)
+- Auth: **Ed25519 message signatures** + optional mTLS (`a2a-protocol.md` §4)
+- Message ordering: **Causal per-instance** (UUIDv7 time-sortable), no global ordering (`a2a-protocol.md` §6.2)
+- Delivery: **At-least-once with idempotency** — 10K message dedup window (`a2a-protocol.md` §6.1)
 
 ##### PH5.8 — Instance Coordinator `[XL]` (Research)
 
@@ -3089,3 +3089,122 @@ Phase 0 Gaps (P0-1..P0-5)
 | A2A Protocol Bridge (PH5.6) | Engineering | Medium | A2A spec is newer; ecosystem maturity uncertain. Confidence ceiling logic is novel. |
 | Polyglot oracle framework (PH5.10) | Engineering | Low | Runner generalization is a small change. Oracle binary contract already implicit. |
 | Network partition handling (PH5.8) | System | **High** | All multi-instance features must degrade gracefully to single-instance mode. Advisory-only coordination minimizes partition damage. |
+
+---
+
+## Wave 1–5 Roadmap (Messaging-Parity + Axiomatic Leap)
+
+> Generated: 2026-04-21. Companion spec: [w1-contracts.md](../spec/w1-contracts.md) (frozen contract surface for parallel tracks). Architectural decisions: D20–D23 in [decisions.md](../architecture/decisions.md).
+
+The waves below extend the Phase 0–5 plan with four concurrent tracks that build the **deployment surface**, **skills ecosystem**, **memory plugin architecture**, and **learning-loop amplification** needed to reach Hermes Agent (Nous Research) parity on user-visible capability — *while preserving and compounding Vinyan's verification moat* (Oracle Gate, tiered trust, PredictionError-as-learning-signal). The external Hermes Agent product gives us the comparison target; the axioms give us the differentiation. Every track ends with a capability Hermes Agent does not have because Hermes Agent has no epistemic substrate to attach it to.
+
+Status vocabulary is unchanged: ✅ Active · 🔧 Built · 📋 Designed.
+
+Flagship differentiators unlocked by completing W1–W5:
+
+1. **PredictionError-tagged trajectory dataset** — training data no other framework can produce because no other framework ledgers per-turn prediction error against verified outcomes (A7).
+2. **Oracle-gated Skills Hub** — upgrades the `agentskills.io` / `SKILL.md` ecosystem from security-scan gating to **epistemic verification** via the existing Oracle pipeline (A1, A5).
+3. **Dialectic USER.md** — a user model with falsifiable per-section predictions that flip to `type:'unknown'` on sustained disagreement (A2, A7).
+4. **Observable risk routing** — every L0/L1/L2/L3 decision renders its evidence chain ("Why L2? AST+Type+Test. Confidence: heuristic.") as a first-class UI surface (A3, A5).
+5. **Progressive-isolation backend ladder** — Local → Docker → SSH → Modal/Daytona, self-calibrating via its own PredictionError stream (A6, A7).
+
+### Wave 1 — Foundations (2 weeks) — 🔧 Built (partial)
+
+**Scope.** Freeze shared contracts, land profile isolation, ship MemoryProvider types, and prove trajectory export end-to-end on a single format. This is the "all four tracks can proceed without colliding" wave.
+
+| Track | Scope | Exit criterion | Status |
+|:------|:------|:---------------|:------:|
+| W1-0 — Shared contracts | `ConfidenceTier` enum at `src/core/confidence-tier.ts` + frozen RFC at `docs/spec/w1-contracts.md` | tsc clean, re-exported from `src/core/index.ts` | ✅ |
+| SK1 — Skills artifact | Define `SKILL.md` YAML frontmatter schema; parser + validator; round-trip tests | `parseSkillMd()` reads/writes sample skills with no information loss | 📋 |
+| H2 — Profile resolver | `vinyan -p <name>` CLI flag; profile-layered config merge; filesystem scoping under `$VINYAN_HOME/profiles/<name>/` | `resolveProfile()` + `loadLayeredConfig()` exported; 23 tests pass | 🔧 |
+| P1 — Memory types | `MemoryProvider` interface + `MemoryRecord` + tier-aware retrieval contract + `memory_records` + FTS5 migration (no impl yet) | Types exported from `src/memory/provider/types.ts`; 28 tests pass | 🔧 |
+| P1 — Trajectory MVP | Read-only exporter that joins `execution_traces ⋈ session_turns` into a single ShareGPT-shaped row with redaction-before-hash | One real session exports cleanly; manifest hash reproducible; 16 tests pass | 🔧 |
+
+**Axiom alignment.** A3 (deterministic governance — one `executeTask` entry point) + A4 (content-addressed — trajectory manifest hash) + A5 (tiered trust — ConfidenceTier is the one enum).
+
+**Depends on.** Nothing upstream. W1 *is* the unblocker for all later waves.
+**Blocks.** Every later wave. W2 cannot start until the "any two of PR#1–#4" rule in w1-contracts §7 is met — the minimum hinge for the Plugin Registry to begin.
+
+---
+
+### Wave 2 — Enable Ecosystem (3 weeks) — 📋 Designed
+
+**Scope.** Introduce the Plugin Registry (critical hinge), the messaging Gateway with Telegram as the first adapter, the default MemoryProvider + tiered ranker, and progressive disclosure (L0/L1/L2) inside skills. By end of W2, third parties can (in principle) ship a memory provider or a skill pack against stable interfaces.
+
+| Track | Scope | Exit criterion | Status |
+|:------|:------|:---------------|:------:|
+| SK2 — Progressive disclosure | L0 (metadata) / L1 (intent) / L2 (body) rendering inside the Perception step; budget-aware expansion | Skill body is read only when routing confidence or retrieval score warrants L2; measurable token savings on a representative set | 📋 |
+| H1 — Gateway + Telegram | Messaging Gateway abstraction; Telegram adapter; all inbound messages converge on `executeTask({source:'gateway-telegram', …})` | End-to-end demo: Telegram → Gateway → executeTask → reply envelope round-trips; adapter has zero execution privilege | 📋 |
+| P2 — MemoryProvider + ranker | Default built-in provider implements the W1 interface; fallback chain; retrieval ranker: `(similarity · tierWeight · recency − predErrorPenalty)` | A/B against pre-refactor retrieval shows no regression on answer relevance; ranker explains every top-k pick | 📋 |
+| P2 — Plugin Registry ★ | Formal registry with cardinality enforcement (memory:single, oracle:multi, backend:multi, etc. per w1-contracts §5); load/verify/activate audit trail | Registry refuses to activate a second `memory` plugin; `plugin_audit` migration 007 applied; hot-load is reversible | 📋 |
+
+★ = critical hinge. W3/W4/W5 all import from the registry.
+
+**Axiom alignment.** A1 (generator≠verifier — gateway adapters generate intent, core loop verifies) + A3 (one converged `executeTask`) + A5 (ranker weights by tier) + A6 (zero-trust-execution — adapters have no execution privilege).
+
+**Depends on.** W1 complete — specifically the ConfidenceTier export, profile column convention, and the MemoryProvider interface.
+**Blocks.** W3 Hub import (needs registry + disclosure), W3 WorkerBackend abstraction (needs registry), W4 plugin loader (needs registry), W4 ECP trajectory (needs memory provider to resolve retrieval context).
+
+---
+
+### Wave 3 — Depth (3 weeks) — 📋 Designed
+
+**Scope.** Add the capabilities that make each track *interesting*, not just *functional*: Skills Hub import via the Oracle Gate, natural-language cron, USER.md dialectic, and the WorkerBackend abstraction that later unlocks remote isolation backends.
+
+| Track | Scope | Exit criterion | Status |
+|:------|:------|:---------------|:------:|
+| SK3 — Hub import | Skills Hub import pipeline: fetch → signature check → quarantine → Oracle Gate dry-run → Critic eval → promote or reject | An unsigned hub skill is quarantined and cannot execute until Oracle Gate passes; promotion bumps tier from `speculative` to `heuristic` | 📋 |
+| H3 — NL cron | Natural-language scheduling parsed into a `ScheduledHypothesisTuple` row; scheduler fires into `executeTask({source:'gateway-cron',…})` | "Every weekday at 9am summarize the backlog" round-trips parse → tuple → fire → task; same governance applies | 📋 |
+| P3 — Critic + USER.md | Per-section dialectic USER.md: each section carries a falsifiable prediction; disagreement flips to `type:'unknown'` or triggers revise | Running 20 turns against a synthetic user produces at least one section flip; audit trail records prediction→outcome→revision | 📋 |
+| P3 — WorkerBackend | Abstract the worker spawn path behind `WorkerBackend`; Local backend is the first impl; keep existing behavior bit-exact | Existing worker tests pass unchanged on Local backend; spawn contract documented so Docker/SSH/Modal slot in without core changes | 📋 |
+
+**Axiom alignment.** A1 (Critic as verifier ≠ USER.md as generator) + A2 (first-class unknown — USER.md sections may hold `type:'unknown'`) + A5 (hub imports enter at `speculative`, promote on evidence) + A7 (USER.md dialectic *is* PredictionError on the user model).
+
+**Depends on.** W2 Plugin Registry (Hub import registers as `skill-registry:single`; WorkerBackend registers as `backend:multi`).
+**Blocks.** W4 autonomous skill creation (needs Hub import + promotion pipeline), W5 Modal/Daytona (needs WorkerBackend).
+
+---
+
+### Wave 4 — Differentiation (3 weeks) — 📋 Designed
+
+**Scope.** Ship the flagships. Autonomous skill creation gated on sustained PredictionError reduction, Slack + Discord adapters, plugin loader + session FTS5 search, observable risk-routing UI, and the ECP-enriched trajectory export that becomes Vinyan's signature data asset.
+
+| Track | Scope | Exit criterion | Status |
+|:------|:------|:---------------|:------:|
+| SK4 — Autonomous creation | When a cluster of similar tasks shows **sustained** PredictionError reduction (not raw success count), propose a skill draft → Critic dry-run → quarantine → promote | No skill promotes on a success streak alone; every promotion cites a PredictionError trend, an Oracle verdict, and a Critic verdict | 📋 |
+| H4 — Slack + Discord | Two more gateway adapters using the same envelope contract; reply routing via `originEnvelope` preserved through `executeTask` | Both adapters pass the Telegram acceptance suite with one small adapter-specific test each | 📋 |
+| P4 — Plugin loader + session_search | Runtime plugin loader honoring registry cardinality; `session_search` tool backed by FTS5 virtual table (`memory_records_fts`, migration 003) | `session_search("oracle timeout")` returns ranked hits across profiles; loader survives a bad plugin with rollback | 📋 |
+| P4 — Observable routing + ECP trajectory | Risk-routing explainer UI ("Why L2? AST+Type+Test. Confidence: heuristic"); ECP-enriched trajectory exporter with per-turn Brier/CRPS + OracleVerdict + evidence_chain | One real session exports as ECP-enriched JSONL; UI renders the explainer for every L-decision in that session; redaction is applied before hash (D23) | 📋 |
+
+**Axiom alignment.** A3 (routing explainer renders the *deterministic* inputs that selected the level) + A4 (trajectory manifest hash covers redacted payload) + A7 (skill creation gated on prediction-error delta, not streak).
+
+**Depends on.** W3 (Hub pipeline + Critic dialectic + WorkerBackend) and W2 (Plugin Registry).
+**Blocks.** W5 ACP adapter (needs ECP trajectory schema finalized), W5 nudges (needs observable routing to explain proactive actions).
+
+---
+
+### Wave 5 — Interop & Scale (3 weeks) — 📋 Designed
+
+**Scope.** Open the ring. Interrupt-and-redirect as an evidence-delta Perceive re-run, periodic nudges driven by the Sleep Cycle, ACP adapter (gateway-only — internal A2A stays ECP), and the first remote isolation backends (Modal, Daytona).
+
+| Track | Scope | Exit criterion | Status |
+|:------|:------|:---------------|:------:|
+| SK5 — Hardening | Skill signing, revocation lists, hub-import rate limits, backtest replays in CI | A revoked skill is unloaded within one Sleep Cycle; backtest replay catches a regression before promotion | 📋 |
+| H5 + H6 — Interrupt-redirect + remaining adapters | User interrupt → re-enter Perceive with evidence delta (NOT a new task); WhatsApp / Signal / Email adapters | Interrupt during a long task checkpoints the current ShadowJob, queues the delta, and resumes with updated perception — not a restart (per w1-contracts §4 crash-safety fence) | 📋 |
+| P5 — Nudges | Sleep Cycle publishes proactive follow-ups (expiring context, uncalibrated predictions, stale skills) through the Gateway | Nudge fires exactly once per cause; user dismissal is remembered across sessions; explains its trigger in the observable-routing vocabulary | 📋 |
+| P5 — ACP + Modal/Daytona | ACP inbound adapter (gateway-only; confidence clamped on intake); Modal and Daytona backends behind `WorkerBackend` | ACP-inbound task cannot bypass `executeTask`; Modal backend runs an L2 task with tier-appropriate isolation; PredictionError on remote backends feeds backend selection | 📋 |
+
+**Axiom alignment.** A2 (interrupt is *evidence-delta*, not a new task) + A6 (ACP inbound enters via gateway, never direct execution; Modal/Daytona isolated appropriately) + A7 (nudges and backend choice both calibrate on PredictionError).
+
+**Depends on.** All previous waves.
+**Blocks.** Nothing in this plan; subsequent roadmap items (self-hosted ENS extensions in Phase 5) consume these surfaces.
+
+---
+
+### Cross-wave invariants
+
+- **Single entry point.** Every path (CLI, API, gateway adapter, NL cron, ACP, A2A, MCP bridge) converges on `executeTask(TaskInput)` per [w1-contracts §4](../spec/w1-contracts.md). No wave introduces a shortcut.
+- **One tier enum.** `ConfidenceTier` lives at `src/core/confidence-tier.ts` and nowhere else. Intake from any external transport passes through `clampConfidenceToTier()` before touching a store (w1-contracts §1).
+- **Profile-column-at-birth.** Every new table in W1+ includes `profile TEXT NOT NULL DEFAULT 'default'` (w1-contracts §3). Retrofitting later is a 10× cost.
+- **Migration reservations.** Version numbers 002–007 are pre-assigned in w1-contracts §2. Waves must amend that table before using a new number.
+- **PredictionError is the universal feedback.** Skills promote, backends self-calibrate, and nudges fire on PredictionError deltas — not on raw success counts.

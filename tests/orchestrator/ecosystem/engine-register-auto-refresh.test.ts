@@ -1,21 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { createBus } from '../../../src/core/bus.ts';
 import { ReasoningEngineRegistry } from '../../../src/orchestrator/llm/llm-reasoning-engine.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
-import { migration031 } from '../../../src/db/migrations/031_add_agent_runtime.ts';
-import { migration032 } from '../../../src/db/migrations/032_add_commitments.ts';
-import { migration033 } from '../../../src/db/migrations/033_add_teams.ts';
-import { migration034 } from '../../../src/db/migrations/034_add_volunteer.ts';
 import type { ReasoningEngine, RERequest, REResponse } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration031.up(db);
-  migration032.up(db);
-  migration033.up(db);
-  migration034.up(db);
+  migration001.up(db);
   return db;
 }
 

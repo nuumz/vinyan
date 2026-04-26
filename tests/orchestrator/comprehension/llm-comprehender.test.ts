@@ -95,20 +95,8 @@ describe('LlmComprehender', () => {
         goal: 'ok',
         rootGoal: 'write a bedtime story',
         history: [
-          {
-            role: 'user',
-            content: 'write a bedtime story',
-            taskId: 't-0',
-            timestamp: 1,
-            tokenEstimate: 4,
-          },
-          {
-            role: 'assistant',
-            content: 'sure, what genre?',
-            taskId: 't-0',
-            timestamp: 2,
-            tokenEstimate: 4,
-          },
+          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'sure, what genre?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
         ],
       }),
     );

@@ -144,7 +144,9 @@ export function loadMcpJsonServers(workspace: string): LoadMcpJsonResult {
  * Pure function — no I/O. Exported for unit testing the precedence rules
  * without spinning up the full orchestrator factory.
  *
- * @param mcpJsonServers - parsed `.mcp.json` entries (default trust = remote)
+ * @param mcpJsonServers - parsed `.mcp.json` entries (`defaultTrust` is always
+ *                         `'untrusted'`; merged `trustLevel` is set from
+ *                         `defaultZone`)
  * @param vinyanClientServers - declared `network.mcp.client_servers` list
  * @param trustMap - mapping from `trust_level` string → McpSourceZone string
  *                  (factory.ts injects the canonical map; tests can pass any).

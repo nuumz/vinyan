@@ -1221,6 +1221,10 @@ async function prepareExecution(
         model: cfg.model,
         budgetTokens: cfg.budgetTokens,
         latencyBudgetMs: cfg.latencyBudgetMs,
+        // Symmetry with the soft-degrade path (3106862): also reset
+        // thinkingConfig so we don't end up with e.g. an L1 routing
+        // carrying L2/L3 thinking params when the hard cap is exceeded.
+        thinkingConfig: cfg.thinkingConfig,
       };
       deps.bus?.emit('economy:budget_degraded', {
         taskId: input.id,
@@ -1228,6 +1232,37 @@ async function prepareExecution(
         toLevel: degradeLevel,
         reason: 'Global budget pressure',
       });
+    } else if (budgetCheck.softDegradeToLevel !== undefined) {
+      // G6 soft degrade — preemptive downgrade fired by the 80% warning
+      // threshold when `budgets.degrade_on_warning` is enabled. Only applies
+      // when no hard `degradeToLevel` is in effect (the hard path always
+      // wins). This stretches the remaining budget across more tasks before
+      // the operator hits the actual cap.
+      const requestedSoftDegradeLevel = budgetCheck.softDegradeToLevel as RoutingLevel;
+      const effectiveSoftDegradeLevel =
+        understanding.toolRequirement === 'tool-needed' && requestedSoftDegradeLevel < 2
+          ? (2 as RoutingLevel)
+          : requestedSoftDegradeLevel;
+
+      if (routing.level > effectiveSoftDegradeLevel) {
+        const fromLevel = routing.level;
+        const degradeLevel = effectiveSoftDegradeLevel;
+        const cfg = LEVEL_CONFIG[degradeLevel];
+        routing = {
+          ...routing,
+          level: degradeLevel,
+          model: cfg.model,
+          budgetTokens: cfg.budgetTokens,
+          latencyBudgetMs: cfg.latencyBudgetMs,
+          thinkingConfig: cfg.thinkingConfig,
+        };
+        deps.bus?.emit('economy:budget_degraded', {
+          taskId: input.id,
+          fromLevel,
+          toLevel: degradeLevel,
+          reason: 'Soft degrade — budget warning threshold reached',
+        });
+      }
     }
   }
 

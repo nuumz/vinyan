@@ -12,6 +12,7 @@ import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
+import type { CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
 
 let tempDir: string;
@@ -469,5 +470,236 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     if (deliberationEscalations.length > 0) {
       expect(deliberationEscalations[0]!.reason).toBe('deliberation_request');
     }
+  });
+});
+
+// ── G6 soft-degrade routing integration tests ─────────────────────────────────
+// Verifies that softDegradeToLevel from BudgetEnforcer is consumed by core-loop
+// and produces the expected routing downgrade + bus event.
+
+function makeSoftDegradeEntry(computedUsd: number, idx: number): CostLedgerEntry {
+  return {
+    id: `soft-degrade-entry-${idx}`,
+    taskId: 'seed-task',
+    workerId: null,
+    engineId: 'claude-sonnet',
+    timestamp: Date.now(),
+    tokens_input: 1000,
+    tokens_output: 500,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    duration_ms: 5000,
+    oracle_invocations: 0,
+    computed_usd: computedUsd,
+    cost_tier: 'billing',
+    routing_level: 2,
+    task_type_signature: null,
+  };
+}
+
+describe('G6 soft-degrade routing integration', () => {
+  let softDegradeDir: string;
+
+  beforeEach(() => {
+    softDegradeDir = mkdtempSync(join(tmpdir(), 'vinyan-soft-degrade-'));
+    mkdirSync(join(softDegradeDir, 'src'), { recursive: true });
+    mkdirSync(join(softDegradeDir, '.vinyan'), { recursive: true });
+    writeFileSync(join(softDegradeDir, 'src', 'foo.ts'), 'export const x = 1;\n');
+    writeFileSync(join(softDegradeDir, 'src', 'foo.test.ts'), '// test coverage marker\n');
+  });
+
+  afterEach(() => {
+    rmSync(softDegradeDir, { recursive: true, force: true });
+  });
+
+  function makeSoftDegradeRegistry(responseContent?: string) {
+    const registry = new LLMProviderRegistry();
+    const content =
+      responseContent ??
+      JSON.stringify({
+        proposedMutations: [{ file: 'src/foo.ts', content: 'export const x = 2;\n', explanation: 'changed' }],
+        proposedToolCalls: [],
+        uncertainties: [],
+      });
+    registry.register(createMockProvider({ id: 'mock/fast', tier: 'fast', responseContent: content }));
+    registry.register(createMockProvider({ id: 'mock/balanced', tier: 'balanced', responseContent: content }));
+    registry.register(createMockProvider({ id: 'mock/powerful', tier: 'powerful', responseContent: content }));
+    return registry;
+  }
+
+  test('21. softDegradeToLevel downgrades L2 routing to L1 and emits economy:budget_degraded', async () => {
+    // Economy config: hourly_usd=1.0, degrade_on_warning=true, soft_degrade_level=1
+    // We pre-seed the ledger with 85% of the hourly limit so the warning threshold fires.
+    writeFileSync(
+      join(softDegradeDir, 'vinyan.json'),
+      JSON.stringify({
+        oracles: {
+          type: { enabled: false },
+          dep: { enabled: false },
+          ast: { enabled: false },
+          test: { enabled: false },
+          lint: { enabled: false },
+        },
+        economy: {
+          enabled: true,
+          budgets: {
+            hourly_usd: 1.0,
+            enforcement: 'warn',
+            degrade_on_warning: true,
+            soft_degrade_level: 1,
+          },
+        },
+      }),
+    );
+
+    const orchestrator = createOrchestrator({
+      workspace: softDegradeDir,
+      registry: makeSoftDegradeRegistry(),
+      useSubprocess: false,
+    });
+
+    // Seed ledger at 85% of the hourly_usd limit (below 100% — soft degrade, not hard block)
+    const ledger = orchestrator.costLedger;
+    expect(ledger).toBeDefined();
+    ledger!.record(makeSoftDegradeEntry(0.85, 0));
+
+    // Capture economy:budget_degraded events
+    const degradeEvents: Array<{ taskId: string; fromLevel: number; toLevel: number; reason: string }> = [];
+    orchestrator.bus.on('economy:budget_degraded', (e) => degradeEvents.push(e));
+
+    // MIN_ROUTING_LEVEL:2 forces the initial routing to L2 so the soft degrade has room to act
+    const result = await orchestrator.executeTask({
+      id: 'g6-soft-degrade',
+      source: 'cli',
+      goal: 'Fix the export value',
+      taskType: 'code',
+      budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
+      targetFiles: ['src/foo.ts'],
+      constraints: ['MIN_ROUTING_LEVEL:2'],
+    });
+
+    // The task should complete or escalate — not crash
+    expect(['completed', 'escalated', 'failed']).toContain(result.status);
+
+    // Soft degrade must have fired: economy:budget_degraded with soft-degrade reason
+    const softDegradeEvent = degradeEvents.find((e) => e.reason.includes('Soft degrade'));
+    expect(softDegradeEvent).toBeDefined();
+    expect(softDegradeEvent!.toLevel).toBe(1);
+    expect(softDegradeEvent!.fromLevel).toBeGreaterThan(1);
+
+    // The trace routing level should reflect the downgraded L1
+    expect(result.trace.routingLevel).toBeLessThanOrEqual(1);
+  });
+
+  test('22. softDegradeToLevel is clamped to L2 for tool-needed tasks (capability floor)', async () => {
+    // soft_degrade_level=1, but with TOOLS:enabled the task is tool-needed,
+    // so the effective degrade target must be clamped to L2 (the tool capability floor).
+    writeFileSync(
+      join(softDegradeDir, 'vinyan.json'),
+      JSON.stringify({
+        oracles: {
+          type: { enabled: false },
+          dep: { enabled: false },
+          ast: { enabled: false },
+          test: { enabled: false },
+          lint: { enabled: false },
+        },
+        economy: {
+          enabled: true,
+          budgets: {
+            hourly_usd: 1.0,
+            enforcement: 'warn',
+            degrade_on_warning: true,
+            soft_degrade_level: 1,
+          },
+        },
+      }),
+    );
+
+    const orchestrator = createOrchestrator({
+      workspace: softDegradeDir,
+      registry: makeSoftDegradeRegistry(),
+      useSubprocess: false,
+    });
+
+    // Seed at 85%
+    orchestrator.costLedger!.record(makeSoftDegradeEntry(0.85, 0));
+
+    const degradeEvents: Array<{ toLevel: number; reason: string }> = [];
+    orchestrator.bus.on('economy:budget_degraded', (e) => degradeEvents.push(e));
+
+    // MIN_ROUTING_LEVEL:3 + TOOLS:enabled — starts at L3, soft degrade wants L1 but cap is L2
+    const result = await orchestrator.executeTask({
+      id: 'g6-tool-needed-cap',
+      source: 'cli',
+      goal: 'Run a shell command',
+      taskType: 'code',
+      budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
+      targetFiles: ['src/foo.ts'],
+      constraints: ['MIN_ROUTING_LEVEL:3', 'TOOLS:enabled'],
+    });
+
+    expect(['completed', 'escalated', 'failed']).toContain(result.status);
+
+    // Soft degrade should fire but be clamped to L2 (not L1) to preserve tool availability
+    const softDegradeEvent = degradeEvents.find((e) => e.reason.includes('Soft degrade'));
+    expect(softDegradeEvent).toBeDefined();
+    expect(softDegradeEvent!.toLevel).toBe(2); // clamped — not allowed below L2 for tool-needed
+    expect(result.trace.routingLevel).toBeLessThanOrEqual(2);
+  });
+
+  test('23. softDegradeToLevel is a no-op when routing is already at or below the target', async () => {
+    // soft_degrade_level=2, but routing starts at L1 — no downgrade needed
+    writeFileSync(
+      join(softDegradeDir, 'vinyan.json'),
+      JSON.stringify({
+        oracles: {
+          type: { enabled: false },
+          dep: { enabled: false },
+          ast: { enabled: false },
+          test: { enabled: false },
+          lint: { enabled: false },
+        },
+        economy: {
+          enabled: true,
+          budgets: {
+            hourly_usd: 1.0,
+            enforcement: 'warn',
+            degrade_on_warning: true,
+            soft_degrade_level: 2,
+          },
+        },
+      }),
+    );
+
+    const orchestrator = createOrchestrator({
+      workspace: softDegradeDir,
+      registry: makeSoftDegradeRegistry(),
+      useSubprocess: false,
+    });
+
+    // Seed at 85% to trigger the warning
+    orchestrator.costLedger!.record(makeSoftDegradeEntry(0.85, 0));
+
+    const degradeEvents: Array<{ reason: string }> = [];
+    orchestrator.bus.on('economy:budget_degraded', (e) => degradeEvents.push(e));
+
+    // MIN_ROUTING_LEVEL:1 — routing starts at L1, soft degrade target is L2:
+    // currentLevel (1) <= targetLevel (2), so no downgrade occurs.
+    const result = await orchestrator.executeTask({
+      id: 'g6-no-op',
+      source: 'cli',
+      goal: 'Fix the export value',
+      taskType: 'code',
+      budget: { maxTokens: 10_000, maxDurationMs: 10_000, maxRetries: 1 },
+      targetFiles: ['src/foo.ts'],
+      constraints: ['MIN_ROUTING_LEVEL:1'],
+    });
+
+    expect(['completed', 'escalated', 'failed']).toContain(result.status);
+
+    // No soft-degrade event should have fired (routing was already below the target)
+    const softDegradeEvent = degradeEvents.find((e) => e.reason.includes('Soft degrade'));
+    expect(softDegradeEvent).toBeUndefined();
   });
 });

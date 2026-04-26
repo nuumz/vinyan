@@ -34,8 +34,10 @@ import { z } from 'zod/v4';
 
 /**
  * Subset of the Claude-Code `mcpServers` schema that Vinyan understands.
- * Unknown fields are tolerated (passthrough, with warning) so future Anthropic
- * extensions don't break Vinyan startup.
+ * Unknown fields are tolerated via Zod `passthrough` so future Anthropic
+ * extensions don't break Vinyan startup. Note: passthrough silently keeps
+ * unknown keys; the loader does NOT log per-key warnings — only top-level
+ * parse / schema failures emit a warning.
  */
 const McpServerEntrySchema = z
   .object({
@@ -55,8 +57,16 @@ export interface LoadedMcpServer {
   name: string;
   command: string;
   args?: string[];
-  /** Always `'untrusted'` for `.mcp.json` entries — declare in vinyan.json to upgrade. */
-  trustLevel: 'untrusted';
+  /**
+   * Default trust tier for `.mcp.json` entries — always `'untrusted'`. Declare
+   * the server in `vinyan.json` `network.mcp.client_servers` to upgrade.
+   *
+   * Named `defaultTrust` (not `trustLevel`) deliberately — the rest of the MCP
+   * stack uses `MCPClientConfig.trustLevel: McpSourceZone` (`'local' |
+   * 'network' | 'remote'`), and a field named `trustLevel` carrying a different
+   * vocabulary on this interface would be a footgun for future readers.
+   */
+  defaultTrust: 'untrusted';
   /** File path the entry came from — used for diagnostics. */
   source: string;
 }
@@ -110,7 +120,7 @@ export function loadMcpJsonServers(workspace: string): LoadMcpJsonResult {
         name,
         command: entry.command,
         ...(entry.args ? { args: entry.args } : {}),
-        trustLevel: 'untrusted',
+        defaultTrust: 'untrusted',
         source: path,
       });
     }
@@ -121,4 +131,50 @@ export function loadMcpJsonServers(workspace: string): LoadMcpJsonResult {
     attemptedPaths,
     invalidPaths,
   };
+}
+
+/**
+ * Merge `.mcp.json` servers (loaded above) with the vinyan.json
+ * `network.mcp.client_servers` list. Per-server fields are preserved across
+ * the merge — vinyan.json overrides only `command` and trust tier; `args`
+ * coming from `.mcp.json` are kept intact since the vinyan.json schema
+ * doesn't carry an `args` field today and silently dropping them would
+ * break entries like `npx -y @modelcontextprotocol/server-github`.
+ *
+ * Pure function — no I/O. Exported for unit testing the precedence rules
+ * without spinning up the full orchestrator factory.
+ *
+ * @param mcpJsonServers - parsed `.mcp.json` entries (default trust = remote)
+ * @param vinyanClientServers - declared `network.mcp.client_servers` list
+ * @param trustMap - mapping from `trust_level` string → McpSourceZone string
+ *                  (factory.ts injects the canonical map; tests can pass any).
+ */
+export function mergeMcpServerSources<TZone extends string>(
+  mcpJsonServers: readonly LoadedMcpServer[],
+  vinyanClientServers: ReadonlyArray<{ name: string; command: string; trust_level?: string }>,
+  trustMap: Readonly<Record<string, TZone>>,
+  defaultZone: TZone,
+): Array<{ name: string; command: string; args?: string[]; trustLevel: TZone }> {
+  const merged = new Map<string, { name: string; command: string; args?: string[]; trustLevel: TZone }>();
+
+  for (const s of mcpJsonServers) {
+    merged.set(s.name, {
+      name: s.name,
+      command: s.command,
+      ...(s.args ? { args: s.args } : {}),
+      trustLevel: defaultZone,
+    });
+  }
+
+  for (const s of vinyanClientServers) {
+    const existing = merged.get(s.name);
+    merged.set(s.name, {
+      name: s.name,
+      command: s.command,
+      ...(existing?.args ? { args: existing.args } : {}),
+      trustLevel: trustMap[s.trust_level ?? 'untrusted'] ?? defaultZone,
+    });
+  }
+
+  return Array.from(merged.values());
 }

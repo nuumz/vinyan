@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcpJsonServers } from '../../src/mcp/mcp-json-loader.ts';
+import { loadMcpJsonServers, mergeMcpServerSources } from '../../src/mcp/mcp-json-loader.ts';
 
 let workspace: string;
 
@@ -41,7 +41,7 @@ describe('loadMcpJsonServers', () => {
     expect(github).toBeDefined();
     expect(github?.command).toBe('npx');
     expect(github?.args).toEqual(['-y', '@modelcontextprotocol/server-github']);
-    expect(github?.trustLevel).toBe('untrusted');
+    expect(github?.defaultTrust).toBe('untrusted');
     expect(github?.source).toBe(join(workspace, '.mcp.json'));
     const fs = result.servers.find((s) => s.name === 'fs');
     expect(fs?.command).toBe('/usr/local/bin/mcp-fs');
@@ -109,10 +109,10 @@ describe('loadMcpJsonServers', () => {
     expect(result.servers[0]?.name).toBe('ok');
   });
 
-  test('always defaults trustLevel to untrusted (A5 safe default)', () => {
+  test('always defaults defaultTrust to untrusted (A5 safe default)', () => {
     writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { x: { command: 'x' } } }));
     const result = loadMcpJsonServers(workspace);
-    expect(result.servers[0]?.trustLevel).toBe('untrusted');
+    expect(result.servers[0]?.defaultTrust).toBe('untrusted');
   });
 
   test('attemptedPaths reports files that exist', () => {
@@ -121,5 +121,99 @@ describe('loadMcpJsonServers', () => {
     writeFileSync(join(workspace, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: {} }));
     const result = loadMcpJsonServers(workspace);
     expect(result.attemptedPaths).toEqual([join(workspace, '.mcp.json'), join(workspace, '.claude', 'mcp.json')]);
+  });
+});
+
+// ── mergeMcpServerSources ───────────────────────────────────────────────
+//
+// Pure-function tests for the merge precedence rules used by factory.ts.
+// Exercising this here (instead of through the full createOrchestrator
+// integration test) keeps the merge contract reproducible without spinning
+// up a SQLite db + every orchestrator dep.
+describe('mergeMcpServerSources', () => {
+  type Zone = 'local' | 'network' | 'remote';
+  const TrustMap: Record<string, Zone> = {
+    untrusted: 'remote',
+    provisional: 'network',
+    trusted: 'local',
+  };
+
+  function mcpJson(name: string, command: string, args?: string[]) {
+    return {
+      name,
+      command,
+      ...(args ? { args } : {}),
+      defaultTrust: 'untrusted' as const,
+      source: `/fake/${name}`,
+    };
+  }
+
+  test('mcp.json only — passes through with default zone', () => {
+    const merged = mergeMcpServerSources<Zone>([mcpJson('a', 'cmd-a', ['--foo'])], [], TrustMap, 'remote');
+    expect(merged).toEqual([{ name: 'a', command: 'cmd-a', args: ['--foo'], trustLevel: 'remote' }]);
+  });
+
+  test('vinyan.json only — passes through with mapped zone', () => {
+    const merged = mergeMcpServerSources<Zone>(
+      [],
+      [{ name: 'b', command: 'cmd-b', trust_level: 'trusted' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged).toEqual([{ name: 'b', command: 'cmd-b', trustLevel: 'local' }]);
+  });
+
+  test('vinyan.json overrides trust tier on name conflict and PRESERVES args from mcp.json', () => {
+    // The key regression we guard: vinyan.json's schema doesn't carry args,
+    // but a naive merge would drop them and break `npx -y …` style entries.
+    const merged = mergeMcpServerSources<Zone>(
+      [mcpJson('shared', 'npx', ['-y', '@modelcontextprotocol/server-foo'])],
+      [{ name: 'shared', command: 'npx', trust_level: 'trusted' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged).toEqual([
+      {
+        name: 'shared',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-foo'],
+        trustLevel: 'local', // upgraded from default 'remote'
+      },
+    ]);
+  });
+
+  test('vinyan.json command overrides mcp.json command on conflict', () => {
+    const merged = mergeMcpServerSources<Zone>(
+      [mcpJson('s', 'old-cmd')],
+      [{ name: 's', command: 'new-cmd', trust_level: 'trusted' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged[0]?.command).toBe('new-cmd');
+  });
+
+  test('unknown trust_level falls back to defaultZone', () => {
+    const merged = mergeMcpServerSources<Zone>(
+      [],
+      [{ name: 'q', command: 'cmd', trust_level: 'mystery-tier' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged[0]?.trustLevel).toBe('remote');
+  });
+
+  test('missing trust_level treated as untrusted (mapped to remote in default config)', () => {
+    const merged = mergeMcpServerSources<Zone>([], [{ name: 'q', command: 'cmd' }], TrustMap, 'remote');
+    expect(merged[0]?.trustLevel).toBe('remote');
+  });
+
+  test('order is preserved (mcp.json names first, then vinyan.json-only names)', () => {
+    const merged = mergeMcpServerSources<Zone>(
+      [mcpJson('first', 'a'), mcpJson('second', 'b')],
+      [{ name: 'third', command: 'c', trust_level: 'trusted' }],
+      TrustMap,
+      'remote',
+    );
+    expect(merged.map((s) => s.name)).toEqual(['first', 'second', 'third']);
   });
 });

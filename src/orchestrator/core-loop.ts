@@ -1250,6 +1250,7 @@ async function prepareExecution(
           model: cfg.model,
           budgetTokens: cfg.budgetTokens,
           latencyBudgetMs: cfg.latencyBudgetMs,
+          thinkingConfig: cfg.thinkingConfig,
         };
         deps.bus?.emit('economy:budget_degraded', {
           taskId: input.id,

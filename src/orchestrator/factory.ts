@@ -5,47 +5,37 @@
  * Source of truth: spec/tdd.md §16 (Core Loop)
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, resolve } from 'path';
+import { resolveInstanceId } from '../a2a/identity.ts';
 import { attachAuditListener } from '../bus/audit-listener.ts';
-import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
 import { attachComprehensionTraceListener } from '../bus/comprehension-trace-listener.ts';
+import { attachOracleAccuracyListener } from '../bus/oracle-accuracy-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
+import { AgentContextStore } from '../db/agent-context-store.ts';
+import { AgentProfileStore } from '../db/agent-profile-store.ts';
+import { ComprehensionStore } from '../db/comprehension-store.ts';
+import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
-import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
-import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
-import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
+import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { UserPreferenceStore } from '../db/user-preference-store.ts';
-import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 import { WorkerStore } from '../db/worker-store.ts';
-import { AgentContextStore } from '../db/agent-context-store.ts';
-import { AgentProfileStore } from '../db/agent-profile-store.ts';
-import { resolveInstanceId } from '../a2a/identity.ts';
-import { loadAgentRegistry } from './agents/registry.ts';
-import { createAgentRouter } from './agent-router.ts';
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { loadInstructionMemory } from './llm/instruction-loader.ts';
-import type { AgentProfile, AgentPreferences } from './types.ts';
-import { AgentContextBuilder } from './agent-context/context-builder.ts';
-import { AgentContextUpdater } from './agent-context/context-updater.ts';
-import { AgentEvolution } from './agent-context/agent-evolution.ts';
-import { SoulStore } from './agent-context/soul-store.ts';
-import { SoulReflector } from './agent-context/soul-reflector.ts';
 import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
 import { CostLedger } from '../economy/cost-ledger.ts';
 import { CostPredictor } from '../economy/cost-predictor.ts';
@@ -55,48 +45,41 @@ import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { setGateDeps } from '../gate/gate.ts';
+import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
+import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/scheduling/wiring.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
-import { loadMcpJsonServers } from '../mcp/mcp-json-loader.ts';
+import { loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
-import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
-import { FileWatcher } from '../world-graph/file-watcher.ts';
-import { WorldGraph } from '../world-graph/world-graph.ts';
-import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
-import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
-import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
-import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
-import { RoomStore } from '../db/room-store.ts';
-import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
-import { RoomDispatcher } from './room/room-dispatcher.ts';
-import { runAgentLoop } from './agent/agent-loop.ts';
-import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
-import {
-  type ScheduleRunnerHandle,
-  setupScheduleRunner,
-} from '../gateway/scheduling/wiring.ts';
-import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
-import { setupUserMdObserver } from './user-context/wiring.ts';
+import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import {
-  FailureClusterDetector,
-  type FailureCluster,
-  type FailureClusterConfig,
-} from './goal-satisfaction/failure-cluster-detector.ts';
-import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
-import { DecompositionLearner } from './replan/decomposition-learner.ts';
-import { buildFailurePatternLibrary } from './replan/failure-pattern-library.ts';
-import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
-import { WorkflowRegistry } from './workflows/workflow-registry.ts';
-import {
+  type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
   synthesizeReactiveRule,
   traceToReactiveSummary,
-  type ReactiveTraceSummary,
 } from '../sleep-cycle/reactive-cycle.ts';
+import { SleepCycleRunner } from '../sleep-cycle/sleep-cycle.ts';
+import { FileWatcher } from '../world-graph/file-watcher.ts';
+import { WorldGraph } from '../world-graph/world-graph.ts';
+import type { AgentLoopDeps } from './agent/agent-loop.ts';
+import { runAgentLoop } from './agent/agent-loop.ts';
+import { AgentEvolution } from './agent-context/agent-evolution.ts';
+import { AgentContextBuilder } from './agent-context/context-builder.ts';
+import { AgentContextUpdater } from './agent-context/context-updater.ts';
+import { SoulReflector } from './agent-context/soul-reflector.ts';
+import { SoulStore } from './agent-context/soul-store.ts';
+import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
+import { createAgentRouter } from './agent-router.ts';
+import { loadAgentRegistry } from './agents/registry.ts';
+import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
+import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
+import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
+import { executeTask, type OrchestratorDeps } from './core-loop.ts';
 import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
@@ -109,30 +92,41 @@ import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
 import { CapabilityModel } from './fleet/capability-model.ts';
 import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
-import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
-import { LocalOracleGates, type LocalOracleProfile } from './profile/local-oracle-gates.ts';
-import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
-import { FleetRegistry } from './profile/fleet-registry.ts';
 import { WorkerSelector } from './fleet/worker-selector.ts';
+import {
+  type FailureCluster,
+  type FailureClusterConfig,
+  FailureClusterDetector,
+} from './goal-satisfaction/failure-cluster-detector.ts';
+import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
-import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
+import { loadInstructionMemory } from './llm/instruction-loader.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
-import { OracleGateAdapter } from './oracle-gate-adapter.ts';
-import { PerceptionAssemblerImpl } from './perception.ts';
 import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
 import { RegressionMonitor } from './monitoring/regression-monitor.ts';
+import { OracleGateAdapter } from './oracle-gate-adapter.ts';
+import { PerceptionAssemblerImpl } from './perception.ts';
+import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
+import { ErrorAttributionBus } from './prediction/error-attribution-bus.ts';
 import { FileStatsCache } from './prediction/file-stats-cache.ts';
 import { ForwardPredictorImpl } from './prediction/forward-predictor.ts';
 import { PercentileCache } from './prediction/percentile-cache.ts';
 import { CalibratedSelfModel, SelfModelStub } from './prediction/self-model.ts';
+import { FleetRegistry } from './profile/fleet-registry.ts';
+import { LocalOracleGates, type LocalOracleProfile } from './profile/local-oracle-gates.ts';
+import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
 import { RemediationEngine } from './remediation-engine.ts';
+import { DecompositionLearner } from './replan/decomposition-learner.ts';
+import { buildFailurePatternLibrary } from './replan/failure-pattern-library.ts';
+import { DefaultReplanEngine, type ReplanEngineConfig } from './replan/replan-engine.ts';
 import { RiskRouterImpl } from './risk-router-adapter.ts';
+import { RoomDispatcher } from './room/room-dispatcher.ts';
 import { ShadowRunner } from './shadow-runner.ts';
 import { SkillManager } from './skill-manager.ts';
 import { TaskDecomposerImpl, TaskDecomposerStub } from './task-decomposer.ts';
@@ -142,10 +136,12 @@ import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
 import { ToolExecutor } from './tools/tool-executor.ts';
 import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
-import type { TaskInput, TaskResult, EngineProfile } from './types.ts';
+import type { AgentPreferences, AgentProfile, EngineProfile, TaskInput, TaskResult } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
-import type { AgentLoopDeps } from './agent/agent-loop.ts';
+import { UserInterestMiner } from './user-context/user-interest-miner.ts';
+import { setupUserMdObserver } from './user-context/wiring.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
+import { WorkflowRegistry } from './workflows/workflow-registry.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -682,54 +678,79 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // K2.5: MCP Client Pool — external tool access with oracle verification.
   //
-  // Sources merged in this order (last wins on name conflict):
+  // Sources merged in this order (later overrides earlier per-server, but
+  // FIELDS are preserved — vinyan.json overrides only the trust tier and the
+  // command, never silently strips `args` that came from `.mcp.json`):
   //   1. `.mcp.json` / `.claude/mcp.json` (G11 — Claude Code drop-in compat)
-  //   2. `vinyan.json` `network.mcp.client_servers` (Vinyan-native, more
-  //      explicit — wins so users can override trust_level for a server
-  //      already declared in `.mcp.json`).
+  //   2. `vinyan.json` `network.mcp.client_servers` (Vinyan-native — used to
+  //      upgrade trust tier for a server already declared in `.mcp.json`).
+  //
+  // Each source is read inside its own try/catch so a malformed `vinyan.json`
+  // can't suppress an otherwise-valid `.mcp.json`, and vice versa (review
+  // comment on PR #25:693).
   let mcpClientPool: MCPClientPool | undefined;
   try {
-    const vinyanConfig = loadConfig(workspace);
     const TRUST_MAP: Record<string, McpSourceZone> = {
       untrusted: 'remote',
       provisional: 'network',
       established: 'network',
       trusted: 'local',
     };
-    const merged = new Map<string, MCPServerConfig>();
 
     // 1. .mcp.json — all entries default to 'untrusted' / 'remote' zone.
-    const mcpJsonResult = loadMcpJsonServers(workspace);
-    for (const s of mcpJsonResult.servers) {
-      merged.set(s.name, {
-        name: s.name,
-        command: s.command,
-        ...(s.args ? { args: s.args } : {}),
-        trustLevel: 'remote' as McpSourceZone,
-      });
+    let mcpJsonResult: ReturnType<typeof loadMcpJsonServers> = {
+      servers: [],
+      attemptedPaths: [],
+      invalidPaths: [],
+    };
+    try {
+      mcpJsonResult = loadMcpJsonServers(workspace);
+    } catch (err) {
+      console.warn(
+        `[vinyan] .mcp.json read failed: ${err instanceof Error ? err.message : String(err)} — continuing without it`,
+      );
     }
 
-    // 2. vinyan.json — overrides on name conflict so projects can upgrade trust.
-    const mcpConfig = vinyanConfig.network?.mcp;
-    if (mcpConfig?.client_servers?.length) {
-      for (const s of mcpConfig.client_servers as Array<{
-        name: string;
-        command: string;
-        trust_level?: string;
-      }>) {
-        merged.set(s.name, {
-          name: s.name,
-          command: s.command,
-          trustLevel: TRUST_MAP[s.trust_level ?? 'untrusted'] ?? ('remote' as McpSourceZone),
-        });
-      }
+    // 2. vinyan.json — best-effort overrides on name conflict. Loaded in its
+    // own try/catch so a malformed vinyan.json doesn't suppress .mcp.json.
+    let mcpConfig: { client_servers?: Array<{ name: string; command: string; trust_level?: string }> } | undefined;
+    try {
+      const vinyanConfig = loadConfig(workspace);
+      mcpConfig = vinyanConfig.network?.mcp as typeof mcpConfig;
+    } catch (err) {
+      console.warn(
+        `[vinyan] vinyan.json read failed: ${err instanceof Error ? err.message : String(err)} — using .mcp.json only`,
+      );
     }
 
-    if (merged.size > 0) {
-      const serverConfigs = Array.from(merged.values());
+    const serverConfigs = mergeMcpServerSources<McpSourceZone>(
+      mcpJsonResult.servers,
+      mcpConfig?.client_servers ?? [],
+      TRUST_MAP,
+      'remote',
+    ) as MCPServerConfig[];
+
+    if (serverConfigs.length > 0) {
       mcpClientPool = new MCPClientPool(serverConfigs, bus);
+      // Distinguish .mcp.json from .claude/mcp.json in startup logs so
+      // operators aren't misled about which file was actually read (review
+      // comment on PR #25:732).
+      const workspaceRoot = resolve(workspace);
+      const mcpJsonPaths = Array.from(
+        new Set(
+          mcpJsonResult.attemptedPaths.map((p) =>
+            p.startsWith(`${workspaceRoot}/`) ? p.slice(workspaceRoot.length + 1) : p,
+          ),
+        ),
+      );
       const sources: string[] = [];
-      if (mcpJsonResult.servers.length > 0) sources.push(`.mcp.json: ${mcpJsonResult.servers.length}`);
+      if (mcpJsonResult.servers.length > 0) {
+        const label =
+          mcpJsonPaths.length > 0
+            ? `${mcpJsonPaths.join('+')}: ${mcpJsonResult.servers.length}`
+            : `mcp.json: ${mcpJsonResult.servers.length}`;
+        sources.push(label);
+      }
       if (mcpConfig?.client_servers?.length) sources.push(`vinyan.json: ${mcpConfig.client_servers.length}`);
       console.log(`[vinyan] MCP Client Pool: ${serverConfigs.length} server(s) configured (${sources.join(', ')})`);
     }
@@ -999,9 +1020,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // plugin-init; once init resolves we forward the entries into the live
       // ToolExecutor so `executeProposedTools` can dispatch them.
       const pluginToolRegistry = new Map<string, Tool>();
-      const vinyanHome =
-        process.env['VINYAN_HOME'] ??
-        join(process.env['HOME'] ?? workspace, '.vinyan');
+      const vinyanHome = process.env['VINYAN_HOME'] ?? join(process.env['HOME'] ?? workspace, '.vinyan');
       pluginsReady = initializePlugins({
         db: db.getDb(),
         profile: 'default',
@@ -1350,9 +1369,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // BEFORE `deps` construction so both can be injected.
   // Without these, the P2.C hybrid pipeline in core-loop is unreachable
   // (deps.llmComprehensionEngine stays undefined → stage 2 never runs).
-  const comprehensionCalibrator = comprehensionStore
-    ? new ComprehensionCalibrator(comprehensionStore)
-    : undefined;
+  const comprehensionCalibrator = comprehensionStore ? new ComprehensionCalibrator(comprehensionStore) : undefined;
   // Wire comprehension substrate into SleepCycleRunner for offline mining
   // (B1 engine-fit + label-drift, B2 stage-agreement, B3 attribution).
   // Substrate is optional — if either piece is missing, the mining step
@@ -1363,9 +1380,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let llmComprehensionEngine: import('./comprehension/types.ts').ComprehensionEngine | undefined;
   try {
     const llmProvider =
-      registry.selectByTier('balanced') ??
-      registry.selectByTier('fast') ??
-      registry.selectByTier('powerful');
+      registry.selectByTier('balanced') ?? registry.selectByTier('fast') ?? registry.selectByTier('powerful');
     if (llmProvider && comprehensionCalibrator) {
       llmComprehensionEngine = newLlmComprehender({
         provider: llmProvider,
@@ -1468,8 +1483,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           },
           // Ecosystem O1 + O3 — when the ecosystem is enabled, the selector
           // pre-filters by runtime state and department membership.
-          runtimeStateManager:
-            ecosystemConfig?.runtime_gate_selection !== false ? ecosystemBundle?.runtime : undefined,
+          runtimeStateManager: ecosystemConfig?.runtime_gate_selection !== false ? ecosystemBundle?.runtime : undefined,
           departmentIndex: ecosystemBundle?.departments,
           // Ecosystem O4 — volunteer fallback invoked only when market + wilson-LB
           // fail to produce a trusted pick. Scoring context comes from the trust
@@ -1492,8 +1506,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
                   // deadline only when facts are absent (legacy / out-of-band
                   // entry paths).
                   const facts = taskFactsRegistry.resolve(taskId);
-                  const deadlineMs =
-                    ecosystemConfig?.volunteer_fallback_deadline_ms ?? 600_000;
+                  const deadlineMs = ecosystemConfig?.volunteer_fallback_deadline_ms ?? 600_000;
                   const res = bundle.coordinator.attemptVolunteerFallback({
                     taskId,
                     goal: facts?.goal ?? `fallback:${taskId}`,
@@ -1533,9 +1546,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskFactsRegistry,
     // Wave 2: Replan Engine — only active when both goalLoop and replan are
     // enabled. Self-assembles L1 perception so outer-loop doesn't need routing.
-    replanEngine: goalLoopConfig?.enabled && replanConfig?.enabled
-      ? new DefaultReplanEngine({ decomposer, perception, bus, failurePatternLibrary: buildFailurePatternLibrary() }, replanConfig)
-      : undefined,
+    replanEngine:
+      goalLoopConfig?.enabled && replanConfig?.enabled
+        ? new DefaultReplanEngine(
+            { decomposer, perception, bus, failurePatternLibrary: buildFailurePatternLibrary() },
+            replanConfig,
+          )
+        : undefined,
     replanConfig,
     // Wave 6: Workflow registry — always instantiated with the 4 built-in
     // strategies. Additive and metadata-only; the core-loop uses it as a
@@ -1607,7 +1624,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         console.log(`[vinyan] ErrorAttribution: prediction recalibrate for ${taskId}, brier=${brierScore.toFixed(3)}`);
       },
       onHMSFailureInject: (taskId, riskScore, signal) => {
-        console.log(`[vinyan] ErrorAttribution: HMS failure inject for ${taskId}, risk=${riskScore.toFixed(2)}, signal=${signal}`);
+        console.log(
+          `[vinyan] ErrorAttribution: HMS failure inject for ${taskId}, risk=${riskScore.toFixed(2)}, signal=${signal}`,
+        );
       },
     });
     errorAttribution.start();
@@ -1643,9 +1662,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     bus.on('failure:cluster-detected', (payload) => {
       try {
         const traces = traceStore!.findByTaskType(payload.taskSignature, 20);
-        const summaries = traces
-          .map(traceToReactiveSummary)
-          .filter((s): s is ReactiveTraceSummary => s !== null);
+        const summaries = traces.map(traceToReactiveSummary).filter((s): s is ReactiveTraceSummary => s !== null);
         if (summaries.length < 2) {
           bus.emit('reactive:rule-skipped', {
             taskSignature: payload.taskSignature,
@@ -2005,7 +2022,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // but adapters may own their own fds/sockets).
       if (messagingLifecycle) {
         try {
-          await raceTimeout(messagingLifecycle.stopAll().then(() => undefined), 2_000);
+          await raceTimeout(
+            messagingLifecycle.stopAll().then(() => undefined),
+            2_000,
+          );
         } catch {
           /* best-effort */
         }
@@ -2047,13 +2067,25 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           /* best-effort */
         }
       }
-      try { llmProxy?.close(); } catch { /* best-effort */ }
-      try { worldGraph?.close(); } catch { /* best-effort */ }
+      try {
+        llmProxy?.close();
+      } catch {
+        /* best-effort */
+      }
+      try {
+        worldGraph?.close();
+      } catch {
+        /* best-effort */
+      }
       // Only close the db if we opened it. Injected handles belong to the caller
       // and may still be in use (e.g. serve.ts's sessionManager needs it for
       // suspendAll() after orchestrator.close()).
       if (ownsDb) {
-        try { db?.close(); } catch { /* best-effort */ }
+        try {
+          db?.close();
+        } catch {
+          /* best-effort */
+        }
       }
     },
   };
@@ -2209,11 +2241,7 @@ export async function createOrchestratorAsync(
  * display name, and VINYAN.md link. On subsequent calls: merges
  * `vinyan.json` agent.preferences into the DB (config-first precedence).
  */
-function bootstrapAgentProfile(
-  store: AgentProfileStore,
-  workspace: string,
-  config: OrchestratorConfig,
-): AgentProfile {
+function bootstrapAgentProfile(store: AgentProfileStore, workspace: string, config: OrchestratorConfig): AgentProfile {
   const instanceId = resolveInstanceId(workspace);
 
   // Read VINYAN.md path + hash if present (non-fatal if missing)
@@ -2231,16 +2259,18 @@ function bootstrapAgentProfile(
   }
 
   // Pull config overrides
-  let configAgent: {
-    display_name?: string;
-    description?: string;
-    preferences?: {
-      approval_mode?: AgentPreferences['approvalMode'];
-      verbosity?: AgentPreferences['verbosity'];
-      default_thinking_level?: AgentPreferences['defaultThinkingLevel'];
-      language?: AgentPreferences['language'];
-    };
-  } | undefined;
+  let configAgent:
+    | {
+        display_name?: string;
+        description?: string;
+        preferences?: {
+          approval_mode?: AgentPreferences['approvalMode'];
+          verbosity?: AgentPreferences['verbosity'];
+          default_thinking_level?: AgentPreferences['defaultThinkingLevel'];
+          language?: AgentPreferences['language'];
+        };
+      }
+    | undefined;
   try {
     const loaded = loadConfig(workspace);
     configAgent = (loaded as { agent?: typeof configAgent }).agent;

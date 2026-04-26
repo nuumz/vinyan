@@ -62,6 +62,15 @@ export class RiskRouterImpl implements RiskRouter {
   }
 
   async assessInitialLevel(input: TaskInput): Promise<RoutingDecision> {
+    // Parse MIN_ROUTING_LEVEL:N from constraints FIRST — if L0 is forced,
+    // skip expensive computations (dep-oracle, world-graph) and return L0 directly.
+    const minLevel = parseMinRoutingLevel(input.constraints);
+    if (minLevel === 0) {
+      const decision = routeByRisk(0.1, 0, this.thresholds, detectEnvironment(), undefined);
+      decision.riskScore = 0.1;
+      return decision;
+    }
+
     // Compute blast radius via dep-oracle
     let blastRadius = 0;
     if (input.targetFiles?.length) {
@@ -139,8 +148,9 @@ export class RiskRouterImpl implements RiskRouter {
       // L1 default: thinking disabled for clean answers. CLI --thinking overrides.
     }
 
-    // Parse MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)
-    const minLevel = parseMinRoutingLevel(input.constraints);
+    // Apply MIN_ROUTING_LEVEL:N from constraints (core-loop injects on escalation)
+    // Note: minLevel was already parsed at the top of this function for L0 fast-path.
+    // This block handles escalation-time re-routing to a higher minimum level.
     if (minLevel !== undefined && decision.level < minLevel) {
       // Re-route through routeByRisk to get correct model/budget/thinkingConfig for the new level
       const escalated = routeByRisk(

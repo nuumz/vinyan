@@ -1228,6 +1228,31 @@ async function prepareExecution(
         toLevel: degradeLevel,
         reason: 'Global budget pressure',
       });
+    } else if (
+      budgetCheck.softDegradeToLevel !== undefined &&
+      routing.level > budgetCheck.softDegradeToLevel
+    ) {
+      // G6 soft degrade — preemptive downgrade fired by the 80% warning
+      // threshold when `budgets.degrade_on_warning` is enabled. Only applies
+      // when no hard `degradeToLevel` is in effect (the hard path always
+      // wins). This stretches the remaining budget across more tasks before
+      // the operator hits the actual cap.
+      const fromLevel = routing.level;
+      const degradeLevel = budgetCheck.softDegradeToLevel as RoutingLevel;
+      const cfg = LEVEL_CONFIG[degradeLevel];
+      routing = {
+        ...routing,
+        level: degradeLevel,
+        model: cfg.model,
+        budgetTokens: cfg.budgetTokens,
+        latencyBudgetMs: cfg.latencyBudgetMs,
+      };
+      deps.bus?.emit('economy:budget_degraded', {
+        taskId: input.id,
+        fromLevel,
+        toLevel: degradeLevel,
+        reason: 'Soft degrade — budget warning threshold reached',
+      });
     }
   }
 

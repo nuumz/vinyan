@@ -51,6 +51,25 @@ function tierLabel(tierReliability?: number): string {
   return 'probabilistic';
 }
 
+/**
+ * G8 prefix-stable rendering: sort verifiedFacts so the rendered list is
+ * deterministic per fact set AND append-only stable (new facts land at the
+ * end, prefix bytes unchanged).
+ *
+ * Order: ascending `verified_at` (older first), tie-break by ascending `hash`
+ * (content-addressed under A4 — facts with identical content share a hash so
+ * we will never observe a true tie that needs a third key).
+ *
+ * Returns a NEW array; the input is not mutated. Callers slice and render.
+ */
+type VerifiableFact = { verified_at: number; hash: string };
+function sortFactsForStableRendering<T extends VerifiableFact>(facts: readonly T[]): T[] {
+  return [...facts].sort((a, b) => {
+    if (a.verified_at !== b.verified_at) return a.verified_at - b.verified_at;
+    return a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0;
+  });
+}
+
 export interface SectionContext {
   goal: string;
   perception: PerceptualHierarchy;
@@ -678,7 +697,14 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     priority: 250,
     render: (ctx) => {
       if (ctx.perception.verifiedFacts.length === 0) return null;
-      const facts = ctx.perception.verifiedFacts
+      // G8 prefix-stable rendering: sort by (verified_at, hash) so the rendered
+      // output is deterministic for the same fact set AND append-only stable —
+      // a newer fact lands at the end, leaving the prefix bytes byte-identical
+      // for downstream cache layers (Anthropic prompt cache, fixture diffs,
+      // trace reproducibility). The fact `hash` is content-addressed (A4),
+      // so ties on verified_at resolve deterministically by content.
+      const sortedFacts = sortFactsForStableRendering(ctx.perception.verifiedFacts);
+      const facts = sortedFacts
         .slice(0, 10)
         .map((f) => {
           const tier = tierLabel(f.tierReliability);

@@ -86,12 +86,22 @@ export function computeAdaptiveMultiplier(
 }
 
 /**
- * Apply the adaptive multiplier to a `ThinkingConfig`. Returns a new config
- * (does not mutate the input). When `enabled` (explicit budget), the budget
- * is multiplied. When `adaptive` (effort hint), the effort is bumped UP one
- * step on a high multiplier, DOWN one step on a low one. `disabled` is
- * passed through unchanged — disabling thinking is an explicit decision that
- * heuristics shouldn't override.
+ * Apply the adaptive multiplier to a `ThinkingConfig`.
+ *
+ * Returns either a NEW config (when the multiplier actually changes a field)
+ * or the ORIGINAL `config` object unchanged (identity short-circuit when
+ * `multiplier === 1`, or pass-through for `disabled` configs which the
+ * heuristic deliberately doesn't enable). Callers that need to mutate the
+ * result should `{ ...result }` it themselves; the function never mutates
+ * the input.
+ *
+ * Behaviour by config type:
+ *   - `enabled` (explicit budget) → budget multiplied + rounded.
+ *   - `adaptive` (effort hint) → effort bumped UP one rung when
+ *     `multiplier ≥ 1.5`, DOWN one rung when `≤ 0.7`, else unchanged
+ *     (and the original object is returned in the unchanged case).
+ *   - `disabled` → returned unchanged. Disabling thinking is an explicit
+ *     operator decision that heuristics shouldn't override.
  */
 export function applyAdaptiveThinkingBudget(config: ThinkingConfig, multiplier: number): ThinkingConfig {
   if (multiplier === 1) return config;

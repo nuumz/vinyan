@@ -129,7 +129,15 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               errorText.includes('context_length_exceeded') ||
               errorText.includes('too large')
             ) {
-              const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+              // When the caller passed `messages`, the provider sends those
+              // and IGNORES `userPrompt` (see body builder above). Estimating
+              // from `systemPrompt + userPrompt` would be wildly off in that
+              // case and starve compress-and-retry logic. Serialize the body
+              // messages instead when present.
+              const messagesText =
+                Array.isArray(body.messages) && body.messages.length > 0 ? JSON.stringify(body.messages) : undefined;
+              const estimateText = messagesText ?? `${request.systemPrompt}${request.userPrompt}`;
+              const estimate = Math.ceil(estimateText.length / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
             // Attach status for retry logic

@@ -1353,7 +1353,25 @@ export interface LLMRequest {
    * turn-volatile suffix is re-processed each request.
    */
   tiers?: import('./llm/prompt-assembler.ts').PromptCacheTiers;
+  /**
+   * G4 structured output enforcement: ask the provider to constrain output
+   * shape at the API level instead of relying on prompt engineering.
+   *
+   * - `tool_use_required`: emit `tool_choice: { type: 'tool', name }` so the
+   *   model MUST call the named tool. Anthropic-friendly. Caller must include
+   *   the matching tool definition in `tools[]`.
+   * - `json_schema`: provider-specific structured-output mode (OpenAI-compat
+   *   `response_format: { type: 'json_schema' }`). Anthropic providers fall
+   *   back to `tool_use_required` against a synthetic tool when this is set
+   *   without a paired tool definition.
+   */
+  responseFormat?: ResponseFormat;
 }
+
+/** G4 response format directive — see `LLMRequest.responseFormat`. */
+export type ResponseFormat =
+  | { type: 'tool_use_required'; toolName: string }
+  | { type: 'json_schema'; schema: Record<string, unknown>; name?: string };
 
 /**
  * G3 per-phase LLM config — overrides sampling parameters when the orchestrator

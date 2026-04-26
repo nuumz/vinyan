@@ -57,6 +57,7 @@ import { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { setGateDeps } from '../gate/gate.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
+import { loadMcpJsonServers } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
@@ -679,27 +680,58 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* engine registration is best-effort */
   }
 
-  // K2.5: MCP Client Pool — external tool access with oracle verification
+  // K2.5: MCP Client Pool — external tool access with oracle verification.
+  //
+  // Sources merged in this order (last wins on name conflict):
+  //   1. `.mcp.json` / `.claude/mcp.json` (G11 — Claude Code drop-in compat)
+  //   2. `vinyan.json` `network.mcp.client_servers` (Vinyan-native, more
+  //      explicit — wins so users can override trust_level for a server
+  //      already declared in `.mcp.json`).
   let mcpClientPool: MCPClientPool | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
+    const TRUST_MAP: Record<string, McpSourceZone> = {
+      untrusted: 'remote',
+      provisional: 'network',
+      established: 'network',
+      trusted: 'local',
+    };
+    const merged = new Map<string, MCPServerConfig>();
+
+    // 1. .mcp.json — all entries default to 'untrusted' / 'remote' zone.
+    const mcpJsonResult = loadMcpJsonServers(workspace);
+    for (const s of mcpJsonResult.servers) {
+      merged.set(s.name, {
+        name: s.name,
+        command: s.command,
+        ...(s.args ? { args: s.args } : {}),
+        trustLevel: 'remote' as McpSourceZone,
+      });
+    }
+
+    // 2. vinyan.json — overrides on name conflict so projects can upgrade trust.
     const mcpConfig = vinyanConfig.network?.mcp;
     if (mcpConfig?.client_servers?.length) {
-      const TRUST_MAP: Record<string, McpSourceZone> = {
-        untrusted: 'remote',
-        provisional: 'network',
-        established: 'network',
-        trusted: 'local',
-      };
-      const serverConfigs: MCPServerConfig[] = mcpConfig.client_servers.map(
-        (s: { name: string; command: string; trust_level?: string }) => ({
+      for (const s of mcpConfig.client_servers as Array<{
+        name: string;
+        command: string;
+        trust_level?: string;
+      }>) {
+        merged.set(s.name, {
           name: s.name,
           command: s.command,
           trustLevel: TRUST_MAP[s.trust_level ?? 'untrusted'] ?? ('remote' as McpSourceZone),
-        }),
-      );
+        });
+      }
+    }
+
+    if (merged.size > 0) {
+      const serverConfigs = Array.from(merged.values());
       mcpClientPool = new MCPClientPool(serverConfigs, bus);
-      console.log(`[vinyan] MCP Client Pool: ${serverConfigs.length} server(s) configured`);
+      const sources: string[] = [];
+      if (mcpJsonResult.servers.length > 0) sources.push(`.mcp.json: ${mcpJsonResult.servers.length}`);
+      if (mcpConfig?.client_servers?.length) sources.push(`vinyan.json: ${mcpConfig.client_servers.length}`);
+      console.log(`[vinyan] MCP Client Pool: ${serverConfigs.length} server(s) configured (${sources.join(', ')})`);
     }
   } catch {
     /* MCP client wiring is best-effort */

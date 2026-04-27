@@ -1025,18 +1025,11 @@ export async function runAgentLoop(
     }
 
     session = deps.createSession?.(proc) ?? new AgentSession(proc, (delta) => {
-      // Phase 2: forward LLM token deltas to bus as `agent:text_delta`.
-      // Observational only (A3) — no effect on verification/commit paths.
+      // Phase 2: forward LLM token deltas to bus as `llm:stream_delta`. The
+      // legacy `agent:text_delta` mirror was removed — content lives in the
+      // canonical event with `kind: 'content'`. Observational only (A3) —
+      // no effect on verification / commit paths.
       if (deps.streamingAssistantDelta) {
-        deps.bus?.emit('agent:text_delta', {
-          taskId: input.id,
-          turnId: delta.turnId,
-          text: delta.text,
-        });
-        // Mirror to the richer llm:stream_delta event so newer consumers
-        // (ChatStreamRenderer, SSE clients) get the superset shape. Content
-        // is the default kind — providers that later grow richer emissions
-        // (thinking / tool_use_*) can bypass this mirror and emit directly.
         deps.bus?.emit('llm:stream_delta', {
           taskId: input.id,
           turnId: delta.turnId,

@@ -43,10 +43,10 @@ const DEFAULT_STREAM_TIMEOUTS: Record<LLMProvider['tier'], StreamTimeouts> = {
 };
 
 const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {
-  fast: 'google/gemma-4-31b-it:free',
-  balanced: 'anthropic/claude-sonnet-4.6',
+  fast: 'google/gemma-4-26b-a4b-it:free',
+  balanced: 'google/gemma-4-31b-it:free',
   powerful: 'anthropic/claude-opus-4.6',
-  'tool-uses': 'anthropic/claude-haiku-4.5',
+  'tool-uses': 'nvidia/nemotron-3-super-120b-a12b:free',
 };
 
 export interface OpenRouterProviderConfig {
@@ -74,6 +74,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
     tier: config.tier,
 
     async generate(request: LLMRequest): Promise<LLMResponse> {
+      const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
       const body: Record<string, unknown> = {
         model,
         max_tokens: request.maxTokens,
@@ -219,7 +220,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           maxRetries: 3,
           baseDelayMs: 1_000,
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
-          timeoutMs,
+          timeoutMs: requestTimeoutMs,
           parseRetryAfter: (error: unknown) => {
             const header = (error as any)?.retryAfterHeader;
             if (!header) return undefined;
@@ -231,6 +232,13 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const effectiveStreamTimeouts = request.timeoutMs
+        ? {
+            connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
+            idleTimeoutMs: Math.max(streamTimeouts.idleTimeoutMs, request.timeoutMs),
+            wallClockMs: Math.max(streamTimeouts.wallClockMs, request.timeoutMs * 5),
+          }
+        : streamTimeouts;
       const body: Record<string, unknown> = {
         model,
         stream: true,
@@ -401,7 +409,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           maxRetries: 3,
           baseDelayMs: 1_000,
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
-          ...streamTimeouts,
+          ...effectiveStreamTimeouts,
           parseRetryAfter: (error: unknown) => {
             const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
             if (!header) return undefined;

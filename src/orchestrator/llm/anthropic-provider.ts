@@ -170,6 +170,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
     id: config.id ?? `anthropic/${model}`,
     tier: config.tier ?? 'balanced',
     async generate(request: LLMRequest): Promise<LLMResponse> {
+      const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
       // Build tool definitions for Anthropic format
       const tools = request.tools?.map((t) => ({
         name: t.name,
@@ -253,7 +254,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           maxRetries: 3,
           baseDelayMs: 1_000,
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
-          timeoutMs,
+          timeoutMs: requestTimeoutMs,
           isRetryableError: (error: Error) => {
             if (error.message.includes('timeout')) return true;
             const msg = error.message;
@@ -279,6 +280,13 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const effectiveStreamTimeouts = request.timeoutMs
+        ? {
+            connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
+            idleTimeoutMs: Math.max(streamTimeouts.idleTimeoutMs, request.timeoutMs),
+            wallClockMs: Math.max(streamTimeouts.wallClockMs, request.timeoutMs * 5),
+          }
+        : streamTimeouts;
       const tools = request.tools?.map((t) => ({
         name: t.name,
         description: t.description,
@@ -362,7 +370,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
           maxRetries: 3,
           baseDelayMs: 1_000,
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
-          ...streamTimeouts,
+          ...effectiveStreamTimeouts,
           isRetryableError: (error: Error) => {
             if (error.message.includes('timeout')) return true;
             const msg = error.message;

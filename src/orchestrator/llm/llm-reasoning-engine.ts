@@ -52,6 +52,7 @@ export class LLMReasoningEngine implements ReasoningEngine {
       systemPrompt: req.systemPrompt,
       userPrompt: req.userPrompt,
       maxTokens: req.maxTokens,
+      timeoutMs: req.timeoutMs,
       temperature: req.temperature,
       tools: req.tools,
       messages: req.messages,

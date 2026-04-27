@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 
 function makeInput(goal = 'test goal'): TaskInput {
   return {
@@ -27,6 +27,7 @@ describe('executeWorkflow', () => {
     let stepLLMCalled = false;
     let synthesizerCalled = false;
     const deltas: Array<{ event: string; payload: unknown }> = [];
+    const streamTimeouts: number[] = [];
 
     const validPlan = JSON.stringify({
       goal: 'analyze code',
@@ -54,12 +55,13 @@ describe('executeWorkflow', () => {
         return { content: `Result for: ${req.userPrompt.slice(0, 50)}`, tokensUsed: { input: 20, output: 40 } };
       },
       generateStream: async (
-        req: { systemPrompt: string; userPrompt: string },
+        req: { systemPrompt: string; userPrompt: string; timeoutMs?: number },
         onDelta: (delta: { text: string }) => void,
       ) => {
         if (req.systemPrompt.includes('workflow planner')) {
           return mockProvider.generate(req);
         }
+        if (req.timeoutMs !== undefined) streamTimeouts.push(req.timeoutMs);
         const response = await mockProvider.generate(req);
         onDelta({ text: response.content });
         return response;
@@ -67,7 +69,7 @@ describe('executeWorkflow', () => {
     };
     const bus = {
       emit: (event: string, payload: unknown) => {
-        if (event === 'agent:text_delta' || event === 'llm:stream_delta') deltas.push({ event, payload });
+        if (event === 'llm:stream_delta') deltas.push({ event, payload });
       },
     };
 
@@ -87,9 +89,10 @@ describe('executeWorkflow', () => {
     expect(plannerCalled).toBe(true);
     expect(stepLLMCalled).toBe(true);
     expect(synthesizerCalled).toBe(true);
-    expect(deltas.some((d) => d.event === 'agent:text_delta')).toBe(true);
     expect(deltas.some((d) => d.event === 'llm:stream_delta')).toBe(true);
     expect(deltas.every((d) => (d.payload as { taskId?: string }).taskId === 'task-wf-test')).toBe(true);
+    expect(streamTimeouts.length).toBeGreaterThan(0);
+    expect(streamTimeouts.every((timeoutMs) => timeoutMs >= 120_000)).toBe(true);
   });
 
   test('step with fallback strategy retries on failure', async () => {

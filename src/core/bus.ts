@@ -592,6 +592,49 @@ export interface VinyanBusEvents {
   };
   /** Cache hit — re-used a prior resolution without re-classifying. */
   'intent:cache_hit': { taskId: string; cacheKey: string };
+  /**
+   * Two-stage classifier: uncertainty detector triggered the focused binary
+   * verifier (A2 first-class uncertainty). `reasons` enumerates why the
+   * primary verdict was deemed not clear enough to commit.
+   */
+  'intent:verifier_invoked': {
+    taskId: string;
+    reasons: string[];
+    primaryStrategy: string;
+    primaryConfidence: number;
+  };
+  /**
+   * Verifier verdict caused the orchestrator to flip the primary classifier's
+   * strategy (typically conversational → agentic-workflow). Source of truth
+   * for measuring misclassification rate of the primary tier.
+   */
+  'intent:verifier_overrode': {
+    taskId: string;
+    fromStrategy: string;
+    toStrategy: string;
+    artifactKind?: string;
+    reason: string;
+  };
+  /**
+   * Persona inside the conversational shortcircuit emitted the escape
+   * sentinel; the orchestrator re-routed the task to agentic-workflow.
+   * Bound at one re-route per task via `TaskInput.intentEscapeAttempts`.
+   */
+  'intent:escape_sentinel_fired': {
+    taskId: string;
+    persona?: string;
+    reason: string;
+  };
+  /**
+   * Deterministic short-affirmative pre-classifier reconstructed intent from
+   * the immediately prior unfulfilled deliverable proposal. Avoids one LLM
+   * call and prevents the "ack-without-action" failure mode.
+   */
+  'intent:short_affirmative_matched': {
+    taskId: string;
+    reconstructedFromTurnSeq: number;
+    reason: string;
+  };
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };

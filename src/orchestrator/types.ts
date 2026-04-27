@@ -131,7 +131,18 @@ export type ToolRequirement = 'none' | 'tool-needed';
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
 /** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
-export type IntentReasoningSource = 'llm' | 'fallback' | 'cache' | 'deterministic' | 'merged';
+export type IntentReasoningSource =
+  | 'llm'
+  | 'fallback'
+  | 'cache'
+  | 'deterministic'
+  | 'merged'
+  // Two-stage classifier (A1: separate verifier overrode the primary classifier)
+  | 'verifier'
+  // Deterministic short-affirmative pre-classifier reconstructed intent from prior turns
+  | 'short-affirmative-continuation'
+  // Persona escape sentinel re-routed conversational shortcircuit to agentic-workflow
+  | 'persona-escape';
 
 /**
  * Epistemic state of an intent resolution — mirrors VerifiedClaim taxonomy.
@@ -511,6 +522,14 @@ export interface TaskInput {
     maxDurationMs: number; // Wall-clock timeout
     maxRetries: number; // Default: 3 per routing level
   };
+  /**
+   * Bound counter for the conversational-shortcircuit escape sentinel
+   * (`<<NEEDS_AGENTIC_WORKFLOW: ...>>`). Incremented to 1 when the persona
+   * emits the sentinel and the orchestrator re-routes to agentic-workflow.
+   * The detector ignores subsequent emissions on the same task to prevent
+   * re-entry loops — see `intent/escape-sentinel.ts`.
+   */
+  intentEscapeAttempts?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,6 +1384,12 @@ export interface LLMRequest {
   systemPrompt: string;
   userPrompt: string;
   maxTokens: number;
+  /**
+   * Provider-level timeout in ms. Non-streaming calls use it as the attempt
+   * wall-clock timeout; streaming calls use it as the idle timeout between
+   * chunks unless the provider documents a stricter policy.
+   */
+  timeoutMs?: number;
   temperature?: number;
   /**
    * G3 per-phase sampling: nucleus sampling parameter (0..1). When set,
@@ -1493,6 +1518,7 @@ export interface RERequest {
   systemPrompt: string;
   userPrompt: string;
   maxTokens: number;
+  timeoutMs?: number;
   temperature?: number;
   tools?: Array<{
     name: string;

@@ -158,6 +158,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           systemPrompt: '', // already in history[0]
           userPrompt: '', // already in history
           maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
+          timeoutMs: Math.max(60_000, Math.floor(init.budget.maxDurationMs / init.budget.maxTurns)),
           messages: history,
           tools: init.toolManifest.map((t) => ({
             name: t.name,

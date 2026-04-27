@@ -19,6 +19,7 @@ import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
+import { formatEscapeProtocolBlock, parseEscapeSentinel } from './intent/escape-sentinel.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
@@ -1456,11 +1457,23 @@ function resolveKnowledgeProviderOrder(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of the conversational shortcircuit. Either a final TaskResult, or a
+ * re-route signal that the persona emitted the escape sentinel and the task
+ * should be re-classified into agentic-workflow. The dispatch site at the
+ * end of the intent branch detects `kind: 'reroute'` and falls through to
+ * the agentic-workflow handler with the updated intent + input.
+ */
+type ConversationalOutcome =
+  | { kind: 'final'; result: TaskResult }
+  | { kind: 'reroute'; updatedIntent: IntentResolution; updatedInput: TaskInput };
+
 async function buildConversationalResult(
   input: TaskInput,
   intent: IntentResolution,
   deps: OrchestratorDeps,
-): Promise<TaskResult> {
+): Promise<ConversationalOutcome> {
+  const startTime = Date.now();
   const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
   const providerCount = deps.llmRegistry?.listProviders().length ?? 0;
 
@@ -1477,7 +1490,7 @@ async function buildConversationalResult(
       oracleVerdicts: {},
       modelUsed: 'none',
       tokensConsumed: 0,
-      durationMs: 0,
+      durationMs: Math.max(1, Date.now() - startTime),
       outcome: 'escalated',
       failureReason: 'No LLM provider configured',
       affectedFiles: [],
@@ -1493,7 +1506,7 @@ async function buildConversationalResult(
       notes: ['No LLM provider configured — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY'],
     };
     deps.bus?.emit('task:complete', { result });
-    return result;
+    return { kind: 'final', result };
   }
 
   // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
@@ -1548,9 +1561,9 @@ async function buildConversationalResult(
         deps.streamingAssistantDelta && provider.generateStream
           ? await provider.generateStream(llmReq, ({ text }) => {
               if (!text) return;
-              deps.bus?.emit('agent:text_delta', { taskId: input.id, text });
-              // Mirror to llm:stream_delta so newer UIs (ChatStreamRenderer,
-              // VS Code panel) see the superset shape too.
+              // `llm:stream_delta` is the canonical streaming event. The legacy
+              // `agent:text_delta` mirror was removed — consumers (CLI, vinyan-ui,
+              // VS Code panel) all listen to the richer shape now.
               deps.bus?.emit('llm:stream_delta', {
                 taskId: input.id,
                 kind: 'content',
@@ -1563,6 +1576,37 @@ async function buildConversationalResult(
       answer = intent.refinedGoal;
     }
   }
+
+  // Persona escape sentinel: the persona may have determined mid-generation
+  // that this request needs proper agentic-workflow dispatch (e.g. a multi-
+  // chapter creative deliverable that conversational cannot produce). Detect
+  // the sentinel and re-route the task. Bound at one re-route per task via
+  // `intentEscapeAttempts` — defensive belt-and-suspenders so a workflow
+  // sub-task that bounces back to conversational cannot loop forever; the
+  // second match falls through and the conversational answer is returned
+  // as-is (degraded-but-safe).
+  const escape = parseEscapeSentinel(answer);
+  if (escape.matched && (input.intentEscapeAttempts ?? 0) < 1) {
+    deps.bus?.emit('intent:escape_sentinel_fired', {
+      taskId: input.id,
+      persona: resolvedAgent?.id,
+      reason: escape.reason ?? 'unspecified',
+    });
+    const seededWorkflowPrompt = `${escape.reason ?? 'persona escaped conversational shortcircuit'}\nOriginal user request: ${input.goal}`;
+    const updatedIntent: IntentResolution = {
+      ...intent,
+      strategy: 'agentic-workflow',
+      workflowPrompt: seededWorkflowPrompt,
+      reasoningSource: 'persona-escape',
+      reasoning: `${intent.reasoning ?? ''} [persona-escape: ${escape.reason ?? 'unspecified'}]`.trim(),
+    };
+    return {
+      kind: 'reroute',
+      updatedIntent,
+      updatedInput: { ...input, intentEscapeAttempts: 1 },
+    };
+  }
+
   const trace: ExecutionTrace = {
     id: `trace-${input.id}-conversational`,
     taskId: input.id,
@@ -1576,7 +1620,7 @@ async function buildConversationalResult(
     oracleVerdicts: {},
     modelUsed: provider?.id ?? 'none',
     tokensConsumed: 0,
-    durationMs: 0,
+    durationMs: Math.max(1, Date.now() - startTime),
     outcome: 'success',
     affectedFiles: [],
   };
@@ -1584,7 +1628,7 @@ async function buildConversationalResult(
   deps.bus?.emit('trace:record', { trace });
   const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
   deps.bus?.emit('task:complete', { result });
-  return result;
+  return { kind: 'final', result };
 }
 
 /**
@@ -1623,25 +1667,34 @@ ${closing}`;
     lines.push(soul.trim());
   }
 
-  // Peer roster: list other specialists this agent can mention/recommend
-  // delegating to. Conversational path can't dispatch (no tool layer here),
-  // but knowing peers exist prevents the "I don't have specialist agents"
-  // misanswer that triggered this fix.
+  // Peer roster: list other specialists so the persona can answer "what
+  // can Vinyan do" honestly. NOTE: this conversational path has no dispatch
+  // mechanism — the persona MUST NOT promise to "forward" or "hand off" to
+  // peers from here. When a request actually needs another specialist to
+  // PRODUCE a deliverable, the persona must emit the escape sentinel
+  // documented in [ESCAPE PROTOCOL] below; the orchestrator then re-routes.
   const peers = (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id);
   if (peers.length > 0) {
     lines.push('');
-    lines.push('[CONSULTABLE AGENTS]');
+    lines.push('[PEER AGENTS — DO NOT PROMISE TO DISPATCH]');
     lines.push(
-      'Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:',
+      'Vinyan has these specialist agents. You may MENTION their existence when describing capabilities, but you have NO ability to dispatch work to them from this turn. Do NOT say "I will forward this to X" — see [ESCAPE PROTOCOL] for the correct response when a request needs a specialist.',
     );
     lines.push(
-      'For fiction/book/webtoon/story tasks, keep team recommendations within creative specialists unless the user explicitly asks for software or system work.',
+      'For fiction/book/webtoon/story tasks the relevant specialists are creative; keep mentions within creative roles unless the user explicitly asks for software or system work.',
     );
     lines.push('Only describe listed agents as Vinyan agents; do not invent agent ids.');
     for (const p of peers) {
       lines.push(`  - ${p.id}: ${p.description}`);
     }
   }
+
+  // Escape protocol: the persona's "I cannot answer this here" state. The
+  // sentinel parser in `buildConversationalResult` detects emission and
+  // re-routes the task into agentic-workflow (bounded at one re-route per
+  // task via `TaskInput.intentEscapeAttempts`).
+  lines.push('');
+  lines.push(formatEscapeProtocolBlock());
 
   lines.push('');
   lines.push(closing);
@@ -1977,7 +2030,10 @@ async function executeTaskCore(
     if ('status' in prep) return prep; // Early return (security rejection or budget block)
 
     // ── Strategy routing — short-circuit non-pipeline strategies ──
-    const intentResolution = prep.intentResolution;
+    // `let` (not `const`) because the conversational shortcircuit may emit
+    // the persona escape sentinel and re-route to agentic-workflow with an
+    // updated IntentResolution — see the `kind: 'reroute'` branch below.
+    let intentResolution = prep.intentResolution;
     if (intentResolution) {
       // ── Uncertain / contradictory intent → ask the user instead of guessing ──
       // A3 safety: when the resolver flagged epistemic failure, we refuse to
@@ -2036,7 +2092,16 @@ async function executeTaskCore(
         intentResolution.strategy = fallback as typeof intentResolution.strategy;
       }
       if (intentResolution.strategy === 'conversational') {
-        return buildConversationalResult(input, intentResolution, deps);
+        const conversationalOutcome = await buildConversationalResult(input, intentResolution, deps);
+        if (conversationalOutcome.kind === 'final') {
+          return conversationalOutcome.result;
+        }
+        // Persona escape sentinel fired: re-classify into agentic-workflow
+        // and fall through. `intentEscapeAttempts` is now 1 — the conversational
+        // path will not re-route a second time even if the workflow planner
+        // delegates back here.
+        intentResolution = conversationalOutcome.updatedIntent;
+        input = conversationalOutcome.updatedInput;
       }
       // Direct-tool: preserve the LLM-produced tool call when present.
       // Deterministic resolution is fallback-only when classification exists but
@@ -2960,6 +3025,9 @@ async function executeTaskCore(
                 status: 'completed',
                 mutations: [],
                 trace: { ...finalTrace, outcome: 'success' as const },
+                answer:
+                  workerResult.proposedContent ??
+                  `The selected worker is in probation, so ${workerResult.mutations.length} candidate change(s) were queued for shadow validation and not committed.`,
                 notes: ['probation-shadow-only: I10 — probation worker result not committed'],
               };
               deps.bus?.emit('task:complete', { result: probationResult });

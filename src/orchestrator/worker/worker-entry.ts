@@ -126,6 +126,7 @@ async function processTask(
     systemPrompt,
     userPrompt,
     maxTokens: input.budget.maxTokens,
+    timeoutMs: input.budget.timeoutMs,
     temperature,
   };
   const response =

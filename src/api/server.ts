@@ -9,6 +9,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;
 
+import { z } from 'zod/v4';
 import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
@@ -18,13 +19,12 @@ import type { WorkerStore } from '../db/worker-store.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
-import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { RunOracleOptions } from '../oracle/runner.ts';
+import type { ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
-import type { RunOracleOptions } from '../oracle/runner.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
-import { z } from 'zod/v4';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
 
@@ -1388,7 +1388,7 @@ export class VinyanAPIServer {
     const outcome = url.searchParams.get('outcome');
     const taskType = url.searchParams.get('taskType');
 
-    let traces;
+    let traces: ExecutionTrace[];
     if (taskType) {
       traces = store.findByTaskType(taskType, limit);
     } else if (outcome) {
@@ -2001,13 +2001,15 @@ export class VinyanAPIServer {
     // is safe — events emitted during the pipeline will be captured
     // and delivered to the client.
     if (stream === true) {
-      // Safety-net (10 min) for chat-style tasks managed inside the
-      // stream itself; the manual cleanupTimer below is for the .then/
-      // .catch fast-path so we don't wait 10 minutes when executeTask
-      // returns early.
+      // Safety-net for chat-style tasks managed inside the stream itself.
+      // Long agentic workflows can legitimately run longer than the default
+      // per-task budget because they execute multiple LLM steps; keep this
+      // comfortably above the workflow ceiling so a healthy stream does not
+      // close moments before task:complete.
+      const sseSafetyTimeoutMs = Math.max(900_000, input.budget.maxDurationMs * 6);
       let trackerSlot: (() => void) | null = null;
       const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id, {
-        safetyTimeoutMs: 600_000,
+        safetyTimeoutMs: sseSafetyTimeoutMs,
         onClose: () => {
           if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
         },

@@ -23,7 +23,6 @@ import {
   detectResearchCues,
   prependResearchStep,
 } from './research-step-builder.ts';
-import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 import type {
   WorkflowPlan,
   WorkflowResult,
@@ -31,10 +30,17 @@ import type {
   WorkflowStepResult,
   WorkflowStepStrategy,
 } from './types.ts';
+import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
+
+const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
+
+function workflowStepTimeoutMs(input: TaskInput, budgetFraction: number): number {
+  const fractionalBudget = Math.floor(input.budget.maxDurationMs * Math.max(budgetFraction, 0.25));
+  return Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, fractionalBudget);
+}
 
 function emitWorkflowTextDelta(deps: WorkflowExecutorDeps, taskId: string, text: string): void {
   if (!text) return;
-  deps.bus?.emit('agent:text_delta', { taskId, text });
   deps.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
 }
 
@@ -165,7 +171,16 @@ export async function executeWorkflow(
         stepsCompleted: completed.size,
         totalSteps: plan.steps.length,
       });
-      return buildResult(plan, input.id, stepResults, 'failed', performance.now() - startTime, totalTokens, deps);
+      return buildResult(
+        plan,
+        input.id,
+        input.budget.maxDurationMs,
+        stepResults,
+        'failed',
+        performance.now() - startTime,
+        totalTokens,
+        deps,
+      );
     }
 
     // Execute ready steps in parallel
@@ -192,7 +207,16 @@ export async function executeWorkflow(
     totalSteps: plan.steps.length,
   });
 
-  return buildResult(plan, input.id, stepResults, status, performance.now() - startTime, totalTokens, deps);
+  return buildResult(
+    plan,
+    input.id,
+    input.budget.maxDurationMs,
+    stepResults,
+    status,
+    performance.now() - startTime,
+    totalTokens,
+    deps,
+  );
 }
 
 async function executeStep(
@@ -315,6 +339,7 @@ async function dispatchStrategy(
           systemPrompt: 'You are a reasoning assistant. Analyze and respond concisely.',
           userPrompt: `${step.description}\n\nContext:\n${interpolatedInputs}`,
           maxTokens: Math.min(4000, Math.floor(input.budget.maxTokens * step.budgetFraction)),
+          timeoutMs: workflowStepTimeoutMs(input, step.budgetFraction),
         };
         const response = provider.generateStream
           ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, input.id, text))
@@ -392,6 +417,7 @@ function interpolateInputs(
 async function buildResult(
   plan: WorkflowPlan,
   taskId: string,
+  taskTimeoutMs: number,
   stepResults: Map<string, WorkflowStepResult>,
   status: WorkflowResult['status'],
   durationMs: number,
@@ -415,6 +441,7 @@ async function buildResult(
           systemPrompt: 'Synthesize multiple step results into a coherent final answer. Be concise.',
           userPrompt: `Goal: ${plan.goal}\n\nSynthesis instruction: ${plan.synthesisPrompt}\n\nStep results:\n${stepSummaries}`,
           maxTokens: 2000,
+          timeoutMs: Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, Math.floor(taskTimeoutMs * 0.25)),
         };
         const response = provider.generateStream
           ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, taskId, text))

@@ -400,7 +400,6 @@ export class WorkerPoolImpl implements WorkerPool {
   }
 
   private emitTextDelta(taskId: string, text: string): void {
-    this.bus?.emit('agent:text_delta', { taskId, text });
     this.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
   }
 
@@ -786,6 +785,7 @@ export class WorkerPoolImpl implements WorkerPool {
         systemPrompt,
         userPrompt,
         maxTokens: workerInput.budget.maxTokens,
+        timeoutMs: workerInput.budget.timeoutMs,
         temperature,
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),

@@ -217,9 +217,7 @@ console.log(JSON.stringify({
 `,
     );
     const bus = createBus();
-    const legacyDeltas: Array<{ taskId: string; text: string }> = [];
     const richDeltas: Array<{ taskId: string; kind: string; text?: string }> = [];
-    bus.on('agent:text_delta', (payload) => legacyDeltas.push(payload));
     bus.on('llm:stream_delta', (payload) => richDeltas.push(payload));
     const pool = new WorkerPoolImpl({
       registry: makeRegistry(),
@@ -235,7 +233,6 @@ console.log(JSON.stringify({
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(2));
 
     expect(result.tokensConsumed).toBe(1);
-    expect(legacyDeltas).toEqual([{ taskId: 't-1', text: 'hello' }]);
     expect(richDeltas).toEqual([{ taskId: 't-1', kind: 'content', text: 'hello' }]);
   });
 

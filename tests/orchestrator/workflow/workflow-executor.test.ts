@@ -95,6 +95,81 @@ describe('executeWorkflow', () => {
     expect(streamTimeouts.every((timeoutMs) => timeoutMs >= 120_000)).toBe(true);
   });
 
+  test('emits agent:plan_update on every step state transition', async () => {
+    // The chat UI's reducer keys off `agent:plan_update` to mark which step
+    // is currently running. Without per-transition emission the plan
+    // checklist freezes at the initial snapshot.
+    const validPlan = JSON.stringify({
+      goal: 'two-step run',
+      steps: [
+        { id: 'step1', description: 's1', strategy: 'llm-reasoning', budgetFraction: 0.5 },
+        {
+          id: 'step2',
+          description: 's2',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1'],
+          budgetFraction: 0.5,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: validPlan, tokensUsed: { input: 10, output: 10 } };
+        }
+        if (req.systemPrompt.includes('Synthesize')) {
+          return { content: 'OK', tokensUsed: { input: 10, output: 10 } };
+        }
+        return { content: 'step output', tokensUsed: { input: 10, output: 10 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+
+    type PlanUpdatePayload = {
+      taskId: string;
+      steps: Array<{ id: string; status: string }>;
+    };
+    const planUpdates: PlanUpdatePayload[] = [];
+    const bus = {
+      emit: (event: string, payload: unknown) => {
+        if (event === 'agent:plan_update') {
+          planUpdates.push(payload as PlanUpdatePayload);
+        }
+      },
+    };
+
+    const result = await executeWorkflow(makeInput('two-step run'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      bus: bus as any,
+    });
+
+    expect(result.status).toBe('completed');
+    // Expected sequence: initial seed (all pending) → step1 running →
+    // step1 done → step2 running → step2 done. That's 5 emissions for a
+    // 2-step sequential plan.
+    expect(planUpdates.length).toBeGreaterThanOrEqual(5);
+    expect(planUpdates[0]!.steps.every((s) => s.status === 'pending')).toBe(true);
+    const finalSnapshot = planUpdates[planUpdates.length - 1]!;
+    expect(finalSnapshot.steps.every((s) => s.status === 'done')).toBe(true);
+    // Somewhere in between we should see step1 running before step2 starts.
+    const sawStep1Running = planUpdates.some(
+      (u) =>
+        u.steps.find((s) => s.id === 'step1')?.status === 'running' &&
+        u.steps.find((s) => s.id === 'step2')?.status === 'pending',
+    );
+    expect(sawStep1Running).toBe(true);
+  });
+
   test('step with fallback strategy retries on failure', async () => {
     const plan = JSON.stringify({
       goal: 'test fallback',

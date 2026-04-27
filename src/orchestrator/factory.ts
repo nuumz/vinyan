@@ -294,6 +294,14 @@ export interface Orchestrator {
   marketScheduler?: import('../economy/market/market-scheduler.ts').MarketScheduler;
   /** Capability model — per-worker capability scores, for /engines deepen. */
   capabilityModel?: import('./fleet/capability-model.ts').CapabilityModel;
+  /**
+   * Live Reasoning Engine registry. Always populated when at least one LLM
+   * provider is configured. Surfaces to the API server so the /engines
+   * dashboard can list engines that exist NOW (registration time), distinct
+   * from `workerStore` which records engines that have appeared in past
+   * traces.
+   */
+  engineRegistry?: ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   approvalGate?: ApprovalGateImpl;
@@ -662,18 +670,23 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* workflow config is best-effort */
   }
 
-  // Non-LLM Reasoning Engines — Z3 constraint solver, human-in-the-loop bridge
+  // Reasoning Engine registry — built unconditionally so the API/dashboard can
+  // surface "what engines are available right now" even when the operator
+  // hasn't added an `engines:` block to vinyan.json. Without this, the
+  // dashboard's Engines page stayed empty until the first task ran (and even
+  // then it only showed historical workerStore entries, not the live LLM
+  // providers). Z3 / Human-ECP registration remains conditional on config.
   let engineRegistry = config.engineRegistry;
+  if (!engineRegistry) {
+    engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
+  }
+  // Wire bus so the ecosystem coordinator (built below) can observe
+  // engine:registered / engine:deregistered without touching the hot path.
+  engineRegistry.setBus(bus);
   try {
     const vinyanConfig = loadConfig(workspace);
     const enginesConfig = vinyanConfig.engines;
     if (enginesConfig) {
-      if (!engineRegistry) {
-        engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
-      }
-      // Wire bus so the ecosystem coordinator (built below) can observe
-      // engine:registered / engine:deregistered without touching the hot path.
-      engineRegistry.setBus(bus);
       if (enginesConfig.z3?.enabled) {
         engineRegistry.register(new Z3ReasoningEngine({ z3Path: enginesConfig.z3.path }));
         console.log('[vinyan] Z3 Constraint Solver engine registered');
@@ -2073,6 +2086,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     patternStore,
     shadowStore,
     workerStore,
+    engineRegistry,
     agentProfileStore,
     agentProfile,
     agentContextStore,

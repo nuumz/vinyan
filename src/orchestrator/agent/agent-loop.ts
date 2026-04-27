@@ -966,7 +966,25 @@ export async function runAgentLoop(
     // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
     // install new plan snapshots. The callback runs synchronously and returns
     // a validation result the tool propagates back as a tool-result status.
-    onPlanUpdate: (todos) => progress.recordPlanUpdate(todos),
+    // After a successful update we also re-emit `agent:plan_update` on the
+    // bus so the chat UI's streaming-turn reducer can refresh its checklist;
+    // without this the plan_update tool succeeds silently and the user never
+    // sees stepwise progress (mirrors workflow-executor's emit pattern).
+    onPlanUpdate: (todos) => {
+      const result = progress.recordPlanUpdate(todos);
+      if (result.ok && deps.bus) {
+        deps.bus.emit('agent:plan_update', {
+          taskId: input.id,
+          steps: progress.plan.map((t) => ({
+            id: String(t.id),
+            label: t.status === 'in_progress' ? t.activeForm : t.content,
+            status:
+              t.status === 'in_progress' ? 'running' : t.status === 'completed' ? 'done' : 'pending',
+          })),
+        });
+      }
+      return result;
+    },
   };
 
   try {

@@ -275,6 +275,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       traceStore: orchestrator.traceStore,
       ruleStore: orchestrator.ruleStore,
       workerStore: orchestrator.workerStore,
+      engineRegistry: orchestrator.engineRegistry,
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
       a2aManager,

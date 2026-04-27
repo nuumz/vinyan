@@ -20,7 +20,7 @@ import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
-import type { ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { EngineProfile, ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
@@ -43,6 +43,13 @@ export interface APIServerDeps {
   traceStore?: TraceStore;
   ruleStore?: RuleStore;
   workerStore?: WorkerStore;
+  /**
+   * Live Reasoning Engine registry — source of truth for "engines available
+   * right now". `/api/v1/workers` and `/api/v1/engines` merge this with
+   * `workerStore` (historical) so the dashboard never shows an empty list
+   * just because no task has run yet. Wired in `cli/serve.ts`.
+   */
+  engineRegistry?: import('../orchestrator/llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   a2aManager?: A2AManagerImpl;
@@ -424,8 +431,14 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path === '/api/v1/workers') {
-      const workers = this.deps.workerStore?.findAll() ?? [];
-      return jsonResponse({ workers });
+      return jsonResponse({ workers: this.composeEngineList() });
+    }
+
+    if (method === 'GET' && path === '/api/v1/engines') {
+      // Same payload shape as /api/v1/workers (the dashboard's "Engines" page
+      // expects `Worker[]`). Distinct route surface for future migration to a
+      // strictly-live engine view.
+      return jsonResponse({ engines: this.composeEngineList() });
     }
 
     if (method === 'GET' && path === '/api/v1/rules') {
@@ -526,7 +539,16 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path.match(/^\/api\/v1\/engines\/[^/]+$/)) {
-      const id = path.split('/').pop()!;
+      // Engine ids carry slashes ("openrouter/balanced/anthropic/<model>"),
+      // so the UI URL-encodes the id segment. Decode here so the registry
+      // and workerStore lookups receive the canonical form.
+      const encoded = path.split('/').pop()!;
+      let id: string;
+      try {
+        id = decodeURIComponent(encoded);
+      } catch {
+        id = encoded;
+      }
       return this.handleGetEngine(id);
     }
 
@@ -1315,7 +1337,11 @@ export class VinyanAPIServer {
   }
 
   private handleGetEngine(id: string): Response {
-    const worker = this.deps.workerStore?.findById(id);
+    const historical = this.deps.workerStore?.findById(id);
+    // Fall back to the live registry when the engine has never run a task
+    // (workerStore is populated lazily from trace records). Without this
+    // fallback, every engine 404s on a fresh server before the first task.
+    const worker = historical ?? this.engineFromRegistry(id);
     if (!worker) return jsonResponse({ error: `engine '${id}' not found` }, 404);
 
     const capModel = this.deps.capabilityModel;
@@ -1328,6 +1354,70 @@ export class VinyanAPIServer {
         : null;
 
     return jsonResponse({ worker, capabilities, providerTrust });
+  }
+
+  /**
+   * Map a live ReasoningEngine into the EngineProfile shape the dashboard
+   * expects. Returns `null` when the registry has no engine with that id.
+   */
+  private engineFromRegistry(id: string): EngineProfile | null {
+    const engine = this.deps.engineRegistry?.get(id);
+    if (!engine) return null;
+    return {
+      id: engine.id,
+      config: {
+        // Engine ids look like "openrouter/balanced/anthropic/claude-sonnet-4.6";
+        // for display/routing purposes, the full id IS the modelId — the
+        // dashboard renders it verbatim. Trim only the temperature value
+        // (engines don't carry a default temperature; runtime sets it
+        // per-call).
+        modelId: engine.id,
+        temperature: 0,
+        engineType: engine.engineType,
+        capabilitiesDeclared: engine.capabilities,
+        maxContextTokens: engine.maxContextTokens,
+      },
+      status: 'active',
+      createdAt: 0,
+      demotionCount: 0,
+    };
+  }
+
+  /**
+   * Build the unified engine list surfaced via /api/v1/workers and
+   * /api/v1/engines. Composition rules:
+   *   1. Start with every engine in the live registry — these are the
+   *      engines a request CAN dispatch to right now.
+   *   2. When workerStore has a record for the same id (engine has run
+   *      before), prefer the historical entry — it carries lifecycle status,
+   *      demotion count, and original createdAt that the registry doesn't.
+   *   3. Append historical workerStore entries that no longer exist in the
+   *      registry — useful for retrospective inspection of retired engines.
+   *
+   * Net effect: dashboard shows the live roster on a fresh server (instead
+   * of an empty list waiting for the first task to populate workerStore).
+   */
+  private composeEngineList(): EngineProfile[] {
+    const historical = this.deps.workerStore?.findAll() ?? [];
+    const historicalById = new Map(historical.map((w) => [w.id, w] as const));
+    const liveEngines = this.deps.engineRegistry?.listEngines() ?? [];
+    const seenIds = new Set<string>();
+
+    const merged: EngineProfile[] = [];
+    for (const engine of liveEngines) {
+      seenIds.add(engine.id);
+      const histEntry = historicalById.get(engine.id);
+      if (histEntry) {
+        merged.push(histEntry);
+      } else {
+        const fromReg = this.engineFromRegistry(engine.id);
+        if (fromReg) merged.push(fromReg);
+      }
+    }
+    for (const w of historical) {
+      if (!seenIds.has(w.id)) merged.push(w);
+    }
+    return merged;
   }
 
   private handleSessionClarifications(sessionId: string): Response {

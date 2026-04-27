@@ -60,7 +60,8 @@ export function approvalTimeoutMs(config: WorkflowConfig | undefined): number {
  * Wait for the user's approval decision. Resolves with:
  *   - 'approved' when `workflow:plan_approved` arrives for this taskId
  *   - 'rejected' when `workflow:plan_rejected` arrives
- *   - 'timeout' after `timeoutMs` with no decision (treated as rejection by callers)
+ *   - 'timeout' after `timeoutMs` with no decision (treated as implicit
+ *     approval by `workflow-executor` — an absent user defaults to allow)
  *
  * Subscription happens inline so callers MUST call this BEFORE emitting
  * `workflow:plan_ready` to avoid missing an approval event that races the

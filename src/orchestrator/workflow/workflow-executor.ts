@@ -124,18 +124,7 @@ export async function executeWorkflow(
       awaitingApproval: true,
     });
     const decision = await decisionPromise;
-    if (decision !== 'approved') {
-      const reason = decision === 'timeout'
-        ? `Approval timed out after ${timeoutMs}ms`
-        : 'User rejected workflow plan';
-      // Emit plan_rejected on timeout too. User-driven rejections already
-      // fire this from the API layer, but the timeout path resolves inside
-      // awaitApprovalDecision without touching the bus — and UIs subscribed
-      // to plan_ready/plan_approved/plan_rejected need a terminal signal to
-      // tear down the inline approval card.
-      if (decision === 'timeout') {
-        bus.emit('workflow:plan_rejected', { taskId: input.id, reason });
-      }
+    if (decision === 'rejected') {
       bus.emit('workflow:complete', {
         goal: plan.goal,
         status: 'failed',
@@ -145,10 +134,18 @@ export async function executeWorkflow(
       return {
         status: 'failed',
         stepResults: [],
-        synthesizedOutput: reason,
+        synthesizedOutput: 'User rejected workflow plan',
         totalTokensConsumed: 0,
         totalDurationMs: performance.now() - startTime,
       };
+    }
+    // `decision === 'timeout'` falls through to execution: an absent user is
+    // treated as implicit approval. Emit `workflow:plan_approved` so UIs
+    // subscribed to the gate events tear down the inline approval card and
+    // flip back to a normal running state instead of waiting for the next
+    // step event to arrive.
+    if (decision === 'timeout') {
+      bus.emit('workflow:plan_approved', { taskId: input.id });
     }
   } else {
     deps.bus?.emit('workflow:plan_ready', {
@@ -163,6 +160,31 @@ export async function executeWorkflow(
   const completed = new Set<string>();
   let totalTokens = 0;
 
+  // Live status mirror used to keep `agent:plan_update` in sync with the
+  // executor's per-step state machine. The chat UI's reducer keys off
+  // `agent:plan_update` to mark which step is running, so without re-emitting
+  // it on every state transition the plan checklist freezes after the
+  // initial snapshot from `phase-plan`.
+  type PlanStepStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+  const stepStatuses = new Map<string, PlanStepStatus>();
+  for (const s of plan.steps) stepStatuses.set(s.id, 'pending');
+  const emitPlanUpdate = () => {
+    if (!deps.bus) return;
+    deps.bus.emit('agent:plan_update', {
+      taskId: input.id,
+      steps: plan.steps.map((s) => ({
+        id: s.id,
+        label: s.description,
+        status: stepStatuses.get(s.id) ?? 'pending',
+      })),
+    });
+  };
+  // Seed the chat UI with the full plan checklist before any step runs. The
+  // executor already emits `workflow:plan_ready` with the steps, but the
+  // streaming-turn reducer drives its plan checklist off `agent:plan_update`
+  // so we emit one initial snapshot here.
+  emitPlanUpdate();
+
   // Topological execution — process steps whose dependencies are met
   const remaining = new Set(plan.steps.map((s) => s.id));
 
@@ -173,6 +195,8 @@ export async function executeWorkflow(
 
     if (ready.length === 0 && remaining.size > 0) {
       // Deadlock — circular dependency or missing step
+      for (const id of remaining) stepStatuses.set(id, 'failed');
+      emitPlanUpdate();
       deps.bus?.emit('workflow:complete', {
         goal: plan.goal,
         status: 'failed',
@@ -191,6 +215,11 @@ export async function executeWorkflow(
       );
     }
 
+    // Mark all ready steps as running before dispatching so the UI can show
+    // multiple parallel steps as in-flight when topology allows it.
+    for (const step of ready) stepStatuses.set(step.id, 'running');
+    emitPlanUpdate();
+
     // Execute ready steps in parallel
     const results = await Promise.all(
       ready.map((step) => executeStep(step, plan, stepResults, input, deps)),
@@ -201,7 +230,16 @@ export async function executeWorkflow(
       completed.add(result.stepId);
       remaining.delete(result.stepId);
       totalTokens += result.tokensConsumed;
+      stepStatuses.set(
+        result.stepId,
+        result.status === 'completed'
+          ? 'done'
+          : result.status === 'skipped'
+            ? 'skipped'
+            : 'failed',
+      );
     }
+    emitPlanUpdate();
   }
 
   const allCompleted = [...stepResults.values()].every((r) => r.status === 'completed');

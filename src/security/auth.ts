@@ -120,7 +120,7 @@ export function requiresAuth(method: string, path: string): boolean {
   // Read-only query endpoints + SSE event streams (diagnostic, read-only)
   if (
     method === 'GET' &&
-    (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/rules' ||
+    (path === '/api/v1/facts' || path === '/api/v1/workers' || path === '/api/v1/engines' || path === '/api/v1/rules' ||
      path === '/api/v1/economy' || path === '/api/v1/events' || path === '/api/v1/sessions' ||
      path === '/api/v1/tasks' || path === '/api/v1/agents' || path.startsWith('/api/v1/agents/') ||
      path === '/api/v1/skills' || path === '/api/v1/patterns' ||

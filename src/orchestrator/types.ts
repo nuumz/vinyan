@@ -139,6 +139,8 @@ export type IntentReasoningSource =
   | 'merged'
   // Deterministic short-affirmative pre-classifier reconstructed intent from prior turns
   | 'short-affirmative-continuation'
+  // Deterministic short-retry pre-classifier replayed prior request after a failed turn
+  | 'short-retry-continuation'
   // Persona escape sentinel re-routed conversational shortcircuit to agentic-workflow
   | 'persona-escape';
 
@@ -1636,6 +1638,12 @@ export interface EngineConfig {
   engineType?: REEngineType;
   /** Capabilities this engine declares (for capability-first routing). */
   capabilitiesDeclared?: string[];
+  /**
+   * Dispatch tier (LLM engines only). Surfaced so the dashboard / fleet
+   * tooling can group engines by class without re-parsing the id pattern.
+   * Optional — non-LLM engines (Z3, Human-ECP) leave this undefined.
+   */
+  tier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
 }
 
 /** Engine stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */

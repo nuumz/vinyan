@@ -24,6 +24,28 @@ let server: VinyanAPIServer;
 let db: Database;
 
 function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
+  if (input.goal === 'async timeout fail') {
+    return Promise.resolve({
+      id: input.id,
+      status: 'failed',
+      mutations: [],
+      trace: {
+        id: `trace-${input.id}`,
+        taskId: input.id,
+        timestamp: Date.now(),
+        routingLevel: 2,
+        approach: 'wall-clock-timeout',
+        modelUsed: 'claude-sonnet',
+        tokensConsumed: 0,
+        durationMs: 151_000,
+        outcome: 'timeout',
+        oracleVerdicts: {},
+        affectedFiles: [],
+      },
+      answer: 'Task timed out after 151s (budget: 120s) at routing level L2.',
+    } as TaskResult);
+  }
+
   return Promise.resolve({
     id: input.id,
     status: 'completed',
@@ -125,6 +147,28 @@ describe('API Server', () => {
     const poll = await server.handleRequest(req(`/api/v1/tasks/${data.taskId}`, { headers: authHeaders }));
     const pollData = (await poll.json()) as any;
     expect(pollData.status).toBe('completed');
+  });
+
+  test('GET /api/v1/tasks preserves async failed result status and goal', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks/async', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'async timeout fail' }),
+      }),
+    );
+
+    expect(res.status).toBe(202);
+    const data = (await res.json()) as any;
+
+    await new Promise((r) => setTimeout(r, 50));
+    const list = await server.handleRequest(req('/api/v1/tasks', { headers: authHeaders }));
+    const listData = (await list.json()) as any;
+    const task = listData.tasks.find((t: any) => t.taskId === data.taskId);
+
+    expect(task.status).toBe('failed');
+    expect(task.goal).toBe('async timeout fail');
+    expect(task.result.trace.outcome).toBe('timeout');
   });
 
   // ── Criterion 4: Session management ─────────────────────
@@ -409,5 +453,100 @@ describe('API Server', () => {
   test('unknown route returns 404', async () => {
     const res = await server.handleRequest(req('/api/v1/unknown', { headers: authHeaders }));
     expect(res.status).toBe(404);
+  });
+
+  // ── Round 5: manual retry endpoint ──────────────────────
+  test('POST /api/v1/tasks/:id/retry returns 404 for unknown task', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks/does-not-exist/retry', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test('POST /api/v1/tasks/:id/retry creates a parent-linked sibling task', async () => {
+    // First, submit and complete a parent task so SessionManager has it on file.
+    const parentRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'parent task to retry' }),
+      }),
+    );
+    expect(parentRes.status).toBe(200);
+    const parentData = (await parentRes.json()) as { result: { id: string } };
+    const parentId = parentData.result.id;
+
+    // Now hit the retry endpoint.
+    const retryRes = await server.handleRequest(
+      req(`/api/v1/tasks/${parentId}/retry`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ reason: 'manual-retry-test', maxDurationMs: 240_000 }),
+      }),
+    );
+    expect(retryRes.status).toBe(202);
+    const retryData = (await retryRes.json()) as {
+      taskId: string;
+      parentTaskId: string;
+      status: string;
+      budget: { maxDurationMs: number };
+    };
+    expect(retryData.taskId).toBeTruthy();
+    expect(retryData.taskId).not.toBe(parentId);
+    expect(retryData.parentTaskId).toBe(parentId);
+    expect(retryData.status).toBe('accepted');
+    expect(retryData.budget.maxDurationMs).toBe(240_000);
+
+    // The new task should land in /tasks once the mock executor resolves.
+    await new Promise((r) => setTimeout(r, 50));
+    const list = await server.handleRequest(req('/api/v1/tasks', { headers: authHeaders }));
+    const listData = (await list.json()) as { tasks: Array<{ taskId: string; goal?: string }> };
+    const child = listData.tasks.find((t) => t.taskId === retryData.taskId);
+    expect(child).toBeDefined();
+    expect(child?.goal).toBe('parent task to retry');
+  });
+
+  test('POST /api/v1/tasks/:id/retry emits task:retry_requested on the bus', async () => {
+    const parentRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'parent for bus emit check' }),
+      }),
+    );
+    const parentData = (await parentRes.json()) as { result: { id: string } };
+    const parentId = parentData.result.id;
+
+    // Subscribe BEFORE the retry call so the synchronous bus emit is captured.
+    const bus = (server as unknown as { deps: { bus: import('../../src/core/bus.ts').VinyanBus } }).deps.bus;
+    const captured: Array<{ taskId: string; parentTaskId: string; reason: string }> = [];
+    const off = bus.on('task:retry_requested', (e) => {
+      captured.push({ taskId: e.taskId, parentTaskId: e.parentTaskId, reason: e.reason });
+    });
+
+    try {
+      const retryRes = await server.handleRequest(
+        req(`/api/v1/tasks/${parentId}/retry`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ reason: 'unit-test-emit' }),
+        }),
+      );
+      expect(retryRes.status).toBe(202);
+      const retryData = (await retryRes.json()) as { taskId: string };
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toEqual({
+        taskId: retryData.taskId,
+        parentTaskId: parentId,
+        reason: 'unit-test-emit',
+      });
+    } finally {
+      off();
+    }
   });
 });

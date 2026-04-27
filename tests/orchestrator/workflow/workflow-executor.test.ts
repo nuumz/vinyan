@@ -47,7 +47,9 @@ describe('executeWorkflow', () => {
           plannerCalled = true;
           return { content: validPlan, tokensUsed: { input: 50, output: 100 } };
         }
-        if (req.systemPrompt.includes('Synthesize')) {
+        // Synthesizer prompt anchors on "final answer for the user" — the
+        // distinctive phrase in workflow-executor's buildResult system prompt.
+        if (req.systemPrompt.includes('final answer for the user')) {
           synthesizerCalled = true;
           return { content: 'Final synthesis', tokensUsed: { input: 30, output: 30 } };
         }
@@ -168,6 +170,72 @@ describe('executeWorkflow', () => {
         u.steps.find((s) => s.id === 'step2')?.status === 'pending',
     );
     expect(sawStep1Running).toBe(true);
+  });
+
+  test('llm-reasoning step user prompt includes prior session turns when present', async () => {
+    // Multi-turn coherence: when the same session has prior turns (e.g. user
+    // wrote "เขียนนิทาน 1 บท" earlier), the per-step LLM call MUST see those
+    // turns so a follow-up "เขียนต่อบทที่ 2" continues the same dragon story
+    // rather than starting fresh.
+    const validPlan = JSON.stringify({
+      goal: 'continue chapter 2',
+      steps: [
+        { id: 'step1', description: 'draft chapter 2', strategy: 'llm-reasoning', budgetFraction: 1.0 },
+      ],
+      synthesisPrompt: 'Return step1.',
+    });
+    let stepUserPromptCaptured = '';
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: validPlan, tokensUsed: { input: 10, output: 10 } };
+        }
+        // First non-planner call is the step. Capture its user prompt.
+        if (!stepUserPromptCaptured) stepUserPromptCaptured = req.userPrompt;
+        return { content: 'ok', tokensUsed: { input: 10, output: 10 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const sessionTurns = [
+      {
+        id: 'u0',
+        sessionId: 's1',
+        seq: 0,
+        role: 'user' as const,
+        blocks: [{ type: 'text' as const, text: 'เขียนนิทาน 1 บท เกี่ยวกับมังกรน้อย' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 'a1',
+        sessionId: 's1',
+        seq: 1,
+        role: 'assistant' as const,
+        blocks: [
+          {
+            type: 'text' as const,
+            text: 'บทที่ 1: มังกรน้อยตื่นมาเช้าวันนี้พบฟองสบู่สีรุ้ง...',
+          },
+        ],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
+    ];
+    await executeWorkflow(makeInput('continue chapter 2'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      sessionTurns,
+    });
+    expect(stepUserPromptCaptured).toContain('Prior conversation');
+    expect(stepUserPromptCaptured).toContain('มังกรน้อย');
+    expect(stepUserPromptCaptured).toContain('ฟองสบู่');
   });
 
   test('step with fallback strategy retries on failure', async () => {

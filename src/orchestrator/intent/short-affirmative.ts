@@ -133,3 +133,76 @@ export function detectShortAffirmativeContinuation(args: {
 
   return { matched: false };
 }
+
+/**
+ * The user's reply matches a short retry directive. Whitespace tolerated.
+ * Trailing punctuation optional. Examples covered: "retry", "try again",
+ * "do it again", "once more", "ลองใหม่", "ลองอีกที", "ลองอีกครั้ง",
+ * "อีกครั้ง", "ทำใหม่", "รอบใหม่".
+ *
+ * Tight by design — anything with additional context (e.g. "retry but use
+ * the other model") falls through.
+ */
+const RETRY_REGEX =
+  /^\s*(retry|try\s*again|do\s*it\s*again|once\s*more|run\s*again|ลอง\s*ใหม่(\s*อีก\s*ครั้ง)?|ลอง\s*อีก\s*(ที|ครั้ง)|อีก\s*ครั้ง|ทำ\s*ใหม่|รอบ\s*ใหม่|รัน\s*ใหม่)\s*[.!?]?\s*$/i;
+
+/**
+ * Markers in an assistant turn that suggest the prior task did NOT succeed
+ * — used to gate the retry detector. Without this gate "retry" right after
+ * a successful answer would silently re-run the original request, which is
+ * confusing. Covers explicit timeout/error/failure messages AND the
+ * conversational refusal pattern ("I can't access local files").
+ */
+const FAILURE_OR_REFUSAL_MARKERS =
+  /(task timed out|timed out|timeout|task failed|failed to|error:|exception:|cannot access|cannot read|don't have (access|tools)|do not have access|i can't (access|read|run|reach)|ไม่สำเร็จ|ผิดพลาด|ไม่สามารถ|เข้าไม่ถึง|ใช้.*ไม่ได้)/i;
+
+/**
+ * Detect short-retry continuation. When the user types just "retry" (or a
+ * Thai/English variant) and the immediately prior assistant turn looks like
+ * a failure or refusal, replay the user's request from before that failure.
+ *
+ * Same-shape contract as `detectShortAffirmativeContinuation` so callers can
+ * treat the two pre-classifiers uniformly. Conservative: requires both a
+ * tight retry regex AND a failure-marker on the prior assistant turn.
+ */
+export function detectRetryContinuation(args: {
+  goal: string;
+  turns: Turn[] | undefined;
+}): AffirmativeMatch {
+  const { goal, turns } = args;
+  if (!RETRY_REGEX.test(goal)) return { matched: false };
+  if (!turns || turns.length === 0) return { matched: false };
+
+  // Walk newest-to-oldest. The most recent assistant turn must look like a
+  // failure or refusal; the user turn immediately before it is what we replay.
+  const window = turns.slice(-8);
+  for (let i = window.length - 1; i >= 0; i--) {
+    const turn = window[i];
+    if (!turn || turn.role !== 'assistant') continue;
+    const text = turnText(turn);
+    if (!text) continue;
+    if (!FAILURE_OR_REFUSAL_MARKERS.test(text)) {
+      // Most recent assistant turn was not a failure — bail; the LLM
+      // classifier can decide what to do with a bare "retry".
+      return { matched: false };
+    }
+    const priorUser = window
+      .slice(0, i)
+      .reverse()
+      .find((t) => {
+        if (t.role !== 'user') return false;
+        const userText = turnText(t);
+        // Skip user turns that are themselves retry sentinels.
+        return userText.length > 0 && !RETRY_REGEX.test(userText);
+      });
+    if (!priorUser) return { matched: false };
+    const priorUserText = turnText(priorUser).trim();
+    return {
+      matched: true,
+      reconstructedWorkflowPrompt: `User asked to retry the prior request after it failed. Original request: ${priorUserText}`,
+      reason: `short retry "${goal.trim()}" reissues the prior user request at turn seq=${priorUser.seq} after a failed assistant turn`,
+      reconstructedFromTurnSeq: priorUser.seq,
+    };
+  }
+  return { matched: false };
+}

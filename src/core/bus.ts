@@ -151,8 +151,65 @@ export interface VinyanBusEvents {
 
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
-  'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
+  /**
+   * Stage-level progress snapshot — finer than `phase:timing`, complements it.
+   *
+   * `phase:timing` fires AFTER a phase completes (perceive/plan/generate/...).
+   * `task:stage_update` fires DURING a phase to surface what the orchestrator
+   * is doing right now (e.g. `planning:decomposing`, `planning:scoring`,
+   * `generation:agent-loop`, `verification:running-oracles`). UIs can render
+   * "Planning · Decomposing · retry 1/2" without having to diff bus traffic.
+   *
+   * Observational only (A1, A3): never used for routing decisions. Producers
+   * are free to emit no `task:stage_update` at all — consumers MUST treat
+   * absence as "phase-level granularity is enough".
+   */
+  'task:stage_update': {
+    taskId: string;
+    /** High-level phase this stage belongs to (perceive | spec | plan | generate | verify | learn). */
+    phase: string;
+    /** Free-form sub-stage label, e.g. `decomposing`, `scoring`, `approval-gate`, `ready`, `fallback`. */
+    stage: string;
+    /** Status of the stage transition. `entered` = just started; `progress` = mid-stage update; `exited` = stage finished. */
+    status: 'entered' | 'progress' | 'exited';
+    /** Attempt number for retryable stages (1-based). Optional — omit when not retrying. */
+    attempt?: number;
+    /** Optional human-readable reason — e.g. why a stage repeated, why a fallback fired. */
+    reason?: string;
+    /** Optional progress counts (e.g. plan steps done/total). */
+    progress?: { done: number; total: number };
+  };
+  'task:timeout': {
+    taskId: string;
+    elapsedMs: number;
+    budgetMs: number;
+    /** Routing level the timeout was attributed to (the level that actually consumed budget, not a post-escalation re-label). */
+    routingLevel?: number;
+    /** Optional human-readable explanation — e.g. "wall-clock budget exhausted before next attempt could start". */
+    reason?: string;
+    /** Last `phase:timing` event observed for this task before the timeout. */
+    lastPhase?: { phase: string; durationMs: number; ts: number };
+    /** Last `agent:tool_started` / `agent:tool_executed` event observed before the timeout. */
+    lastTool?: { name: string; ts: number; status: 'started' | 'executed'; isError?: boolean };
+    /** Most recent `agent:plan_update` snapshot — number of done/skipped over total steps. */
+    planProgress?: { done: number; total: number };
+    /** Latest `task:stage_update` snapshot — what sub-stage was running when the wall clock fired. */
+    currentStage?: { phase: string; stage: string; attempt?: number; ts: number };
+  };
   'task:budget-exceeded': { taskId: string; totalTokensConsumed: number; globalCap: number };
+
+  /**
+   * Manual retry request — emitted by the API server when an operator (or
+   * the chat UI) hits POST /api/v1/tasks/:id/retry. Observational only
+   * (A1, A3): governance never reads this; it exists so dashboards / SSE
+   * consumers can surface the parent → child chain.
+   */
+  'task:retry_requested': {
+    taskId: string;
+    parentTaskId: string;
+    reason: string;
+    sessionId?: string;
+  };
 
   // TestGenerator observability
   'testgen:error': { taskId: string; error: string };
@@ -608,6 +665,17 @@ export interface VinyanBusEvents {
    * call and prevents the "ack-without-action" failure mode.
    */
   'intent:short_affirmative_matched': {
+    taskId: string;
+    reconstructedFromTurnSeq: number;
+    reason: string;
+  };
+  /**
+   * Deterministic short-retry pre-classifier reconstructed intent from the
+   * immediately prior failed/refused assistant turn. Avoids re-routing a
+   * bare "retry" to conversational shortcircuit (which would lose the
+   * original goal entirely).
+   */
+  'intent:short_retry_matched': {
     taskId: string;
     reconstructedFromTurnSeq: number;
     reason: string;

@@ -108,7 +108,8 @@ import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
 import { loadInstructionMemory } from './llm/instruction-loader.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
-import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
+import { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
+import { workerIdForEngine } from './llm/engine-worker-binding.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
@@ -142,7 +143,7 @@ import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
 import { ToolExecutor } from './tools/tool-executor.ts';
 import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
-import type { AgentPreferences, AgentProfile, EngineProfile, TaskInput, TaskResult } from './types.ts';
+import type { AgentPreferences, AgentProfile, EngineProfile, ReasoningEngine, TaskInput, TaskResult } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
 import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { setupUserMdObserver } from './user-context/wiring.ts';
@@ -696,9 +697,38 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   if (!engineRegistry) {
     engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
   }
-  // Wire bus so the ecosystem coordinator (built below) can observe
-  // engine:registered / engine:deregistered without touching the hot path.
+  // Wire bus so the ecosystem coordinator (built below) AND the engine→worker
+  // lifecycle listener (next) can observe registry events.
   engineRegistry.setBus(bus);
+
+  // Live sync: every subsequent engineRegistry.register() / .deregister() call
+  // emits on the bus, and this listener mirrors the change into workerStore.
+  // Without it, engines added after autoRegisterWorkers ran (Z3, Human-ECP,
+  // synthetic agents, etc.) would have no worker profile, and the dashboard
+  // would surface them as phantom 'active' rows with no trust lifecycle.
+  // Attach BEFORE the Z3/Human-ECP register() calls below so those flow
+  // through the same path.
+  let detachEngineLifecycle: (() => void) | undefined;
+  if (workerStore) {
+    const policy = config.workerBootstrapPolicy ?? 'earn';
+    const probationMinTasks = fleetConfig?.probation_min_tasks ?? 30;
+    const resolveBootstrapStatus = (workerId: string): 'active' | 'probation' => {
+      if (policy === 'grandfather') return 'active';
+      try {
+        const stats = workerStore.getStats(workerId);
+        return stats.totalTasks >= probationMinTasks ? 'active' : 'probation';
+      } catch {
+        return 'probation';
+      }
+    };
+    detachEngineLifecycle = attachEngineLifecycleListener(engineRegistry, {
+      workerStore,
+      bus,
+      allowlist: config.workerModelAllowlist ?? DEFAULT_WORKER_MODEL_ALLOWLIST,
+      resolveBootstrapStatus,
+    });
+  }
+
   try {
     const vinyanConfig = loadConfig(workspace);
     const enginesConfig = vinyanConfig.engines;
@@ -711,18 +741,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         engineRegistry.register(new HumanECPBridge({ bus, timeoutMs: enginesConfig.human.timeout_ms }));
         console.log('[vinyan] Human-in-the-Loop ECP bridge registered');
       }
-      // Register non-LLM engines as workers (autoRegisterWorkers ran earlier with config.engineRegistry)
-      if (workerStore) {
-        autoRegisterWorkers(
-          registry,
-          workerStore,
-          bus,
-          config.workerModelAllowlist,
-          engineRegistry,
-          config.workerBootstrapPolicy ?? 'earn',
-          fleetConfig?.probation_min_tasks ?? 30,
-        );
-      }
+      // Z3 / Human-ECP registrations above flowed through `engineRegistry.register`,
+      // which fires `engine:registered` → the lifecycle listener creates the
+      // worker entries automatically. No second autoRegisterWorkers call needed.
     }
   } catch {
     /* engine registration is best-effort */
@@ -2488,6 +2509,124 @@ function collectDeclaredCapabilities(deps: {
   return caps;
 }
 
+/**
+ * Outcome of attempting to register a single engine as a worker. Surfaced
+ * for tests + observability so callers can distinguish "skipped because
+ * utility tier" from "skipped because allowlist" from "actually created".
+ */
+export type WorkerRegistrationOutcome =
+  | 'created'
+  | 'already-exists'
+  | 'excluded-utility-tier'
+  | 'excluded-by-allowlist';
+
+interface WorkerRegistrationDeps {
+  workerStore: WorkerStore;
+  bus: VinyanBus;
+  allowlist: string[];
+  resolveBootstrapStatus: (workerId: string) => 'active' | 'probation';
+}
+
+/**
+ * Build the canonical EngineProfile for a Reasoning Engine. Encapsulates
+ * the LLM-vs-non-LLM defaults so both startup batch and bus-driven post-
+ * startup registration produce identical row shapes.
+ */
+function buildEngineProfile(
+  engine: ReasoningEngine,
+  status: 'active' | 'probation',
+): EngineProfile {
+  const isLLM = engine.engineType === 'llm';
+  return {
+    id: workerIdForEngine(engine.id),
+    config: {
+      modelId: engine.id,
+      temperature: isLLM ? 0.7 : 0,
+      systemPromptTemplate: isLLM ? 'default' : 'none',
+      maxContextTokens: engine.maxContextTokens,
+      engineType: engine.engineType,
+      capabilitiesDeclared: engine.capabilities,
+      // Tier is exposed on the worker config so the dashboard can group/filter
+      // engines by their dispatch class without re-deriving from the id pattern.
+      tier: engine.tier,
+    },
+    status,
+    createdAt: Date.now(),
+    demotionCount: 0,
+  };
+}
+
+/**
+ * Register one engine as a worker profile. Idempotent: returns
+ * `'already-exists'` when the profile is already present so concurrent
+ * paths (startup batch + bus listener) can both call this safely.
+ *
+ * Honours two exclusions, kept consistent across paths:
+ *   - tool-uses tier: utility provider for intent resolver / remediation,
+ *     not a general worker. Existing entries get demoted with a fixed
+ *     reason so the dashboard surfaces the exclusion.
+ *   - model allowlist: operator-controlled (empty = no filter).
+ */
+export function tryRegisterEngineAsWorker(
+  engine: ReasoningEngine,
+  deps: WorkerRegistrationDeps,
+): WorkerRegistrationOutcome {
+  const workerId = workerIdForEngine(engine.id);
+
+  if (engine.tier === 'tool-uses') {
+    const stale = deps.workerStore.findById(workerId);
+    if (stale && stale.status !== 'demoted') {
+      deps.workerStore.updateStatus(workerId, 'demoted', 'tool-uses tier excluded from worker pool');
+    }
+    return 'excluded-utility-tier';
+  }
+
+  if (deps.allowlist.length > 0 && !deps.allowlist.some((p) => engine.id.startsWith(p))) {
+    console.warn(`[vinyan] Skipping worker registration for '${engine.id}' — not in model allowlist`);
+    return 'excluded-by-allowlist';
+  }
+
+  if (deps.workerStore.findById(workerId)) return 'already-exists';
+
+  const profile = buildEngineProfile(engine, deps.resolveBootstrapStatus(workerId));
+  deps.workerStore.insert(profile);
+  deps.bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+  return 'created';
+}
+
+/**
+ * Subscribe `workerStore` to the registry bus so engines registered
+ * post-startup (synthetic agents, dynamically-wired Z3, etc.) get a worker
+ * profile without waiting for the next process restart. Returns an
+ * unsubscribe handle that the orchestrator close path detaches.
+ *
+ * Symmetric: `engine:deregistered` marks the worker `retired` so the
+ * dashboard's lifecycle view stays accurate. Already-retired and demoted
+ * workers are left untouched.
+ */
+export function attachEngineLifecycleListener(
+  engineRegistry: ReasoningEngineRegistry,
+  deps: WorkerRegistrationDeps,
+): () => void {
+  const onRegistered = (event: { engineId: string }) => {
+    const engine = engineRegistry.get(event.engineId);
+    if (engine) tryRegisterEngineAsWorker(engine, deps);
+  };
+  const onDeregistered = (event: { engineId: string }) => {
+    const workerId = workerIdForEngine(event.engineId);
+    const worker = deps.workerStore.findById(workerId);
+    if (!worker) return;
+    if (worker.status === 'retired' || worker.status === 'demoted') return;
+    deps.workerStore.updateStatus(workerId, 'retired', 'engine deregistered');
+  };
+  const offRegistered = deps.bus.on('engine:registered', onRegistered);
+  const offDeregistered = deps.bus.on('engine:deregistered', onDeregistered);
+  return () => {
+    offRegistered();
+    offDeregistered();
+  };
+}
+
 function autoRegisterWorkers(
   registry: LLMProviderRegistry,
   workerStore: WorkerStore,
@@ -2507,67 +2646,22 @@ function autoRegisterWorkers(
       return 'probation';
     }
   };
-  // Register LLM providers from the legacy registry
+  const deps: WorkerRegistrationDeps = { workerStore, bus, allowlist, resolveBootstrapStatus };
+
+  // Wrap each LLM provider in an LLMReasoningEngine adapter so the LLM and
+  // non-LLM paths share a single registration helper. Functionally identical
+  // to constructing a profile inline — the wrapper only normalises the
+  // shape so `tryRegisterEngineAsWorker` doesn't need a discriminator.
   for (const provider of registry.listProviders()) {
-    // tool-uses tier is a utility tier (intent resolver, remediation) — not a general worker
-    if (provider.tier === 'tool-uses') {
-      // Clean up any stale worker profile from prior sessions
-      const staleId = `worker-${provider.id}`;
-      const stale = workerStore.findById(staleId);
-      if (stale && stale.status !== 'demoted') {
-        workerStore.updateStatus(staleId, 'demoted', 'tool-uses tier excluded from worker pool');
-      }
-      continue;
-    }
-
-    // M12: Validate engine against allowlist before registration. Empty allowlist = no filter.
-    if (allowlist.length > 0 && !allowlist.some((p) => provider.id.startsWith(p))) {
-      console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);
-      continue;
-    }
-
-    const workerId = `worker-${provider.id}`;
-    if (workerStore.findById(workerId)) continue;
-
-    const profile: EngineProfile = {
-      id: workerId,
-      config: {
-        modelId: provider.id,
-        temperature: 0.7,
-        systemPromptTemplate: 'default',
-        maxContextTokens: provider.maxContextTokens,
-      },
-      status: resolveBootstrapStatus(workerId),
-      createdAt: Date.now(),
-      demotionCount: 0,
-    };
-    workerStore.insert(profile);
-    bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+    tryRegisterEngineAsWorker(new LLMReasoningEngine(provider), deps);
   }
 
-  // Register non-LLM engines from engineRegistry (fleet governance visibility)
+  // Non-LLM engines from the unified registry. The shared helper handles the
+  // idempotency check so engines already covered above are no-ops here.
   if (engineRegistry) {
     for (const engine of engineRegistry.listEngines()) {
-      if (engine.engineType === 'llm') continue; // already registered via LLMProviderRegistry above
-      const workerId = `worker-${engine.id}`;
-      if (workerStore.findById(workerId)) continue;
-
-      const profile: EngineProfile = {
-        id: workerId,
-        config: {
-          modelId: engine.id, // engine.id as model identifier for non-LLM REs
-          temperature: 0, // not applicable for non-LLM
-          systemPromptTemplate: 'none',
-          maxContextTokens: engine.maxContextTokens,
-          engineType: engine.engineType,
-          capabilitiesDeclared: engine.capabilities,
-        },
-        status: resolveBootstrapStatus(workerId),
-        createdAt: Date.now(),
-        demotionCount: 0,
-      };
-      workerStore.insert(profile);
-      bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+      if (engine.engineType === 'llm') continue; // covered by the LLM loop above
+      tryRegisterEngineAsWorker(engine, deps);
     }
   }
 }

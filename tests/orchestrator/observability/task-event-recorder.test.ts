@@ -35,8 +35,8 @@ describe('TaskEventRecorder', () => {
   test('persists allow-listed events keyed by taskId', () => {
     handle = attachTaskEventRecorder(bus, store, { flushIntervalMs: 10_000 });
 
-    bus.emit('phase:timing', { taskId: 't-1', phase: 'plan', durationMs: 12 });
-    bus.emit('agent:thinking', { taskId: 't-1', content: 'hello' });
+    bus.emit('phase:timing', { taskId: 't-1', phase: 'plan', durationMs: 12, routingLevel: 2 });
+    bus.emit('agent:thinking', { taskId: 't-1', turnId: 'turn-1', rationale: 'hello' });
 
     handle.flush();
     const events = store.listForTask('t-1');
@@ -66,12 +66,12 @@ describe('TaskEventRecorder', () => {
   test('truncates oversized string payload fields', () => {
     handle = attachTaskEventRecorder(bus, store, { flushIntervalMs: 10_000, maxStringChars: 16 });
     const huge = 'x'.repeat(64);
-    bus.emit('agent:thinking', { taskId: 't-2', content: huge });
+    bus.emit('agent:thinking', { taskId: 't-2', turnId: 'turn-2', rationale: huge });
     handle.flush();
     const events = store.listForTask('t-2');
-    const content = (events[0]?.payload as { content: string }).content;
-    expect(content.length).toBeLessThan(huge.length);
-    expect(content).toContain('truncated');
+    const rationale = (events[0]?.payload as { rationale: string }).rationale;
+    expect(rationale.length).toBeLessThan(huge.length);
+    expect(rationale).toContain('truncated');
   });
 
   test('drops oldest buffered event on overflow (FIFO)', () => {
@@ -79,9 +79,9 @@ describe('TaskEventRecorder', () => {
       bufferLimit: 2,
       flushIntervalMs: 10_000,
     });
-    bus.emit('phase:timing', { taskId: 't-3', phase: 'a', durationMs: 1 });
-    bus.emit('phase:timing', { taskId: 't-3', phase: 'b', durationMs: 1 });
-    bus.emit('phase:timing', { taskId: 't-3', phase: 'c', durationMs: 1 });
+    bus.emit('phase:timing', { taskId: 't-3', phase: 'a', durationMs: 1, routingLevel: 2 });
+    bus.emit('phase:timing', { taskId: 't-3', phase: 'b', durationMs: 1, routingLevel: 2 });
+    bus.emit('phase:timing', { taskId: 't-3', phase: 'c', durationMs: 1, routingLevel: 2 });
     expect(handle.droppedCount()).toBe(1);
     handle.flush();
     const phases = store.listForTask('t-3').map((e) => (e.payload as { phase: string }).phase);

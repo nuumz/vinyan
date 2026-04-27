@@ -67,6 +67,7 @@ export const RECORDED_EVENTS: BusEventName[] = [
   // which we already persist in execution_traces).
   'task:escalate',
   'task:timeout',
+  'task:stage_update',
 ];
 
 export interface TaskEventRecorderOptions {

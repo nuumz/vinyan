@@ -37,7 +37,10 @@ import {
   LLM_UNCERTAIN_THRESHOLD,
   mergeDeterministicAndLLM,
 } from './intent/merge.ts';
-import { detectShortAffirmativeContinuation } from './intent/short-affirmative.ts';
+import {
+  detectRetryContinuation,
+  detectShortAffirmativeContinuation,
+} from './intent/short-affirmative.ts';
 import {
   buildClassifierUserPrompt,
   buildComprehensionBlock,
@@ -397,6 +400,51 @@ export async function resolveIntent(
         taskId: input.id,
         reconstructedFromTurnSeq: affirmative.reconstructedFromTurnSeq,
         reason: affirmative.reason ?? 'matched',
+      });
+    }
+    deps.bus?.emit('intent:resolved', {
+      taskId: input.id,
+      strategy: result.strategy,
+      confidence: result.confidence,
+      reasoning: result.reasoning,
+      type: 'known',
+      source: 'deterministic',
+    });
+    return result;
+  }
+
+  // [A.6] Short-retry pre-classifier. When the user types just "retry" /
+  // "ลองใหม่" right after a failed or refused assistant turn, treat it as
+  // re-issuing the prior user request — without this, the bare "retry"
+  // routes to conversational shortcircuit and the persona answers as if it
+  // were a new question, dropping the original intent entirely.
+  const retry = detectRetryContinuation({ goal: input.goal, turns: deps.turns });
+  if (retry.matched && retry.reconstructedWorkflowPrompt) {
+    const { agentId, agentSelectionReason } = resolveSelectedAgent(
+      input,
+      deps.agents,
+      deps.defaultAgentId,
+      undefined,
+      `short-retry continuation (${retry.reason ?? 'matched'})`,
+    );
+    const result: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: input.goal,
+      workflowPrompt: retry.reconstructedWorkflowPrompt,
+      confidence: 0.85,
+      reasoning: `Short-retry continuation: ${retry.reason ?? 'matched prior failed assistant turn'}.`,
+      reasoningSource: 'short-retry-continuation',
+      type: 'known',
+      agentId,
+      agentSelectionReason,
+    };
+    intentCache.set(cacheKey, result, now);
+    intentCache.prune(now);
+    if (typeof retry.reconstructedFromTurnSeq === 'number') {
+      deps.bus?.emit('intent:short_retry_matched', {
+        taskId: input.id,
+        reconstructedFromTurnSeq: retry.reconstructedFromTurnSeq,
+        reason: retry.reason ?? 'matched',
       });
     }
     deps.bus?.emit('intent:resolved', {

@@ -158,7 +158,14 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           systemPrompt: '', // already in history[0]
           userPrompt: '', // already in history
           maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
-          timeoutMs: Math.max(60_000, Math.floor(init.budget.maxDurationMs / init.budget.maxTurns)),
+          // Per-turn LLM timeout. Floor at 60s for realistic Sonnet calls, but
+          // never exceed the agent's remaining wall-clock budget — otherwise a
+          // single turn can overshoot the orchestrator's per-attempt cap and
+          // get attributed to the wrong routing level on the next retry.
+          timeoutMs: Math.min(
+            init.budget.maxDurationMs,
+            Math.max(60_000, Math.floor(init.budget.maxDurationMs / init.budget.maxTurns)),
+          ),
           messages: history,
           tools: init.toolManifest.map((t) => ({
             name: t.name,

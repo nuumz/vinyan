@@ -27,7 +27,9 @@ const SSE_EVENTS: BusEventName[] = [
   'task:complete',
   'task:escalate',
   'task:timeout',
+  'task:stage_update',
   'task:approval_required',
+  'task:retry_requested',
   // Pipeline timing
   'phase:timing',
   'trace:record',

@@ -11,11 +11,98 @@ import type {
   PerceptualHierarchy,
   RoutingDecision,
   SemanticTaskUnderstanding,
+  TaskDAG,
   TaskInput,
   TaskResult,
 } from '../types.ts';
 import type { PhaseContext, PhaseContinue, PhaseReturn, PlanResult } from './types.ts';
 import { Phase } from './types.ts';
+
+/**
+ * Bounded planning self-repair (Round 5 §3).
+ *
+ * `TaskDecomposerImpl.decompose` already runs a 3-attempt parse/validate
+ * loop internally and silently returns a single-node fallback DAG
+ * (`isFallback: true`) when every attempt fails. That fallback is
+ * accepted today even when the underlying cause was transient (rate
+ * limit, brief network glitch).
+ *
+ * This wrapper adds **at most one outer retry** when the decomposer
+ * returns a fallback. Constraints:
+ *   - bounded to 1 outer attempt — total cap = 6 LLM calls worst-case
+ *   - budget-gated: skip if remaining wall-clock < `REPAIR_HEADROOM_MS`
+ *   - shape-level only — never modifies LLM output (A3 / no-llm-output-postfilter)
+ *   - emits `task:stage_update` with `stage: 'repair'` so UIs can show
+ *     "Planning · Repair (attempt 1)" without inventing new event types
+ *
+ * `WorkingMemory.recordFailedApproach` is intentionally NOT called here:
+ * the decomposer renders `memory.failedApproaches` directly into its
+ * retry prompt (`task-decomposer.ts` `buildPrompt`); a generic
+ * "decomposer fell back" entry would degrade prompt quality without
+ * adding actionable signal.
+ */
+const REPAIR_HEADROOM_MS = 15_000;
+const REPAIR_BACKOFF_MS = 250;
+const MAX_REPAIR_ATTEMPTS = 1;
+
+async function decomposeWithRepair(
+  ctx: PhaseContext,
+  routing: RoutingDecision,
+  perception: PerceptualHierarchy,
+): Promise<TaskDAG> {
+  const { input, deps, workingMemory, startTime } = ctx;
+  let plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot(), routing);
+
+  for (let attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+    if (!plan.isFallback) return plan;
+
+    // Budget guard — never burn the user's wall-clock on a repair when
+    // there's not enough headroom left to actually run the plan.
+    const elapsed = Date.now() - startTime;
+    const remaining = input.budget.maxDurationMs - elapsed;
+    if (remaining < REPAIR_HEADROOM_MS) {
+      deps.bus?.emit('task:stage_update', {
+        taskId: input.id,
+        phase: 'plan',
+        stage: 'repair',
+        status: 'exited',
+        attempt,
+        reason: `budget-headroom:${Math.max(0, Math.round(remaining / 1000))}s`,
+      });
+      return plan;
+    }
+
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'repair',
+      status: 'entered',
+      attempt,
+      reason: 'decomposer-fallback',
+    });
+
+    if (REPAIR_BACKOFF_MS > 0) {
+      await new Promise((r) => setTimeout(r, REPAIR_BACKOFF_MS));
+    }
+
+    const retried = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot(), routing);
+    const isLastAttempt = attempt === MAX_REPAIR_ATTEMPTS;
+    const exitReason = retried.isFallback ? (isLastAttempt ? 'exhausted' : 'still-fallback') : 'succeeded';
+
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'repair',
+      status: 'exited',
+      attempt,
+      reason: exitReason,
+    });
+
+    plan = retried;
+  }
+
+  return plan;
+}
 
 export async function executePlanPhase(
   ctx: PhaseContext,
@@ -29,9 +116,25 @@ export async function executePlanPhase(
   // ── Step 3: PLAN (L2+ only) ──────────────────────────────────
   let plan: PlanResult['plan'];
   if (routing.level >= 2) {
-    plan = await deps.decomposer.decompose(input, perception, workingMemory.getSnapshot(), routing);
+    // Stage telemetry: surface the substage so UIs can render
+    // "Planning · Decomposing" instead of just "Planning". Observational
+    // only (A1, A3) — never used for routing.
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'decomposing',
+      status: 'entered',
+    });
+    plan = await decomposeWithRepair(ctx, routing, perception);
     if (plan.isFallback) {
       deps.bus?.emit('decomposer:fallback', { taskId: input.id });
+      deps.bus?.emit('task:stage_update', {
+        taskId: input.id,
+        phase: 'plan',
+        stage: 'fallback',
+        status: 'progress',
+        reason: 'decomposer-fallback',
+      });
     }
     // UI surface: emit a plan snapshot so chat clients can render a
     // Claude Code-style "session setup" checklist. Skip fallback DAGs
@@ -48,6 +151,13 @@ export async function executePlanPhase(
         })),
       });
     }
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'decomposing',
+      status: 'exited',
+      progress: plan ? { done: 0, total: plan.nodes.length } : undefined,
+    });
   }
 
   // Wave 5.2 (Phase A §7 seam #2 closure): if the decomposer emitted a
@@ -82,7 +192,19 @@ export async function executePlanPhase(
 
   // C2: Score plan nodes by causal risk → reorder for fail-fast
   if (plan && forwardPrediction) {
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'scoring',
+      status: 'entered',
+    });
     scorePlanByPrediction(plan, forwardPrediction);
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'scoring',
+      status: 'exited',
+    });
   }
 
   // Economy L2: Predict cost before dispatch (informational + feeds calibration)
@@ -99,11 +221,25 @@ export async function executePlanPhase(
 
   // ── Step 3.5: APPROVAL GATE (A6 — human-in-the-loop for high-risk tasks) ──
   if (deps.approvalGate && routing.riskScore != null && routing.riskScore >= 0.8) {
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'approval-gate',
+      status: 'entered',
+      reason: `risk=${routing.riskScore.toFixed(2)}`,
+    });
     const decision = await deps.approvalGate.requestApproval(
       input.id,
       routing.riskScore,
       `High risk (${routing.riskScore.toFixed(2)}) at L${routing.level}`,
     );
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'approval-gate',
+      status: 'exited',
+      reason: decision,
+    });
     if (decision === 'rejected') {
       const rejectedTrace: ExecutionTrace = {
         id: `trace-${input.id}-rejected`,
@@ -127,6 +263,19 @@ export async function executePlanPhase(
         escalationReason: 'Rejected by human approval gate',
       });
     }
+  }
+
+  // Plan phase complete — surface a "ready" stage marker so UIs can flip the
+  // header from "Planning · Decomposing" to "Planning · Ready" before the
+  // generate phase advances `currentPhase`. Observational only.
+  if (plan) {
+    deps.bus?.emit('task:stage_update', {
+      taskId: input.id,
+      phase: 'plan',
+      stage: 'ready',
+      status: 'exited',
+      progress: { done: 0, total: plan.nodes.length },
+    });
   }
 
   return Phase.continue({

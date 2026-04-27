@@ -20,6 +20,7 @@ import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
+import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
 import type { EngineProfile, ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
@@ -317,6 +318,12 @@ export class VinyanAPIServer {
     if (method === 'DELETE' && path.match(/^\/api\/v1\/tasks\/[^/]+$/)) {
       const taskId = path.split('/').pop()!;
       return this.handleCancelTask(taskId);
+    }
+
+    // ── Manual Retry (Round 5: stage-aware retry / timeout recovery) ──
+    if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/retry$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleRetryTask(taskId, req);
     }
 
     // ── Task Approval (A6) ──────────────────────────────────
@@ -900,7 +907,15 @@ export class VinyanAPIServer {
     for (const [id, result] of this.asyncResults) {
       if (seenIds.has(id)) continue;
       seenIds.add(id);
-      tasks.push({ taskId: id, status: 'completed', result });
+      const sessionTask = allSessionTasks.find((t) => t.taskId === id);
+      const status = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+      tasks.push({
+        taskId: id,
+        sessionId: sessionTask?.sessionId,
+        status,
+        goal: sessionTask?.goal,
+        result,
+      });
     }
 
     // Session-persisted tasks (from Chat)
@@ -996,6 +1011,102 @@ export class VinyanAPIServer {
       return jsonResponse({ taskId, status: 'cancelled' });
     }
     return jsonResponse({ error: 'Task not found or already completed' }, 404);
+  }
+
+  /**
+   * Manual retry — POST /api/v1/tasks/:id/retry
+   *
+   * Spawns a sibling task that preserves the original goal, sessionId,
+   * targetFiles, and constraints. Defaults to a generous 240s budget for
+   * timeout-recovery flows; callers may override via `body.budget` or
+   * `body.maxDurationMs`. Emits `task:retry_requested` for observability
+   * (UI can flip to "Retrying…" immediately) and dispatches via the
+   * standard async path so SSE consumers see normal `task:start`.
+   */
+  private async handleRetryTask(parentTaskId: string, req: Request): Promise<Response> {
+    if (this.inFlightTasks.has(parentTaskId)) {
+      return jsonResponse({ error: 'Task is still running' }, 409);
+    }
+
+    const parent = this.deps.sessionManager.getTaskById(parentTaskId);
+    if (!parent) {
+      return jsonResponse({ error: 'Parent task not found' }, 404);
+    }
+
+    let body: {
+      budget?: TaskInput['budget'];
+      maxDurationMs?: number;
+      reason?: string;
+      goal?: string;
+      constraints?: string[];
+    } = {};
+    try {
+      const text = await req.text();
+      if (text.length > 0) body = JSON.parse(text);
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+
+    // Default 240s for timeout-recovery; honour explicit overrides first.
+    const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
+    const budget: TaskInput['budget'] =
+      body.budget ??
+      (body.maxDurationMs
+        ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs }
+        : TIMEOUT_RETRY_BUDGET);
+
+    const newId = crypto.randomUUID();
+    const goal = body.goal ?? parent.input.goal;
+    const constraints = body.constraints ?? parent.input.constraints;
+
+    const input: TaskInput = {
+      ...parent.input,
+      id: newId,
+      goal,
+      ...(constraints && constraints.length > 0 ? { constraints } : {}),
+      budget,
+    };
+
+    // Track parent linkage on the bus so observability surfaces the chain.
+    // Observational only (A1, A3) — never used to alter routing.
+    this.deps.bus?.emit('task:retry_requested', {
+      taskId: newId,
+      parentTaskId,
+      reason: body.reason ?? 'manual-retry',
+      sessionId: parent.sessionId,
+    });
+
+    this.deps.sessionManager.addTask(parent.sessionId, input);
+
+    const promise = this.deps.executeTask(input);
+    this.inFlightTasks.set(input.id, {
+      promise,
+      cancel: () => {
+        this.deps.bus?.emit('task:timeout', { taskId: input.id, elapsedMs: 0, budgetMs: 0 });
+      },
+    });
+
+    promise
+      .then((result) => {
+        this.deps.sessionManager.completeTask(parent.sessionId, input.id, result);
+        this.asyncResults.set(input.id, result);
+        this.scheduleAsyncResultEviction(input.id);
+        this.inFlightTasks.delete(input.id);
+      })
+      .catch(() => {
+        this.inFlightTasks.delete(input.id);
+      });
+
+    return jsonResponse(
+      {
+        taskId: newId,
+        parentTaskId,
+        sessionId: parent.sessionId,
+        status: 'accepted',
+        budget,
+      },
+      202,
+    );
   }
 
   private async handleApproval(taskId: string, req: Request): Promise<Response> {
@@ -1364,26 +1475,31 @@ export class VinyanAPIServer {
   /**
    * Map a live ReasoningEngine into the EngineProfile shape the dashboard
    * expects. Returns `null` when the registry has no engine with that id.
+   *
+   * Used only as a fallback for engines registered AFTER the lifecycle
+   * listener attached (rare — the listener auto-creates worker rows for
+   * normal registrations). The id mirrors the worker convention so
+   * `engineRegistry.selectById` can resolve either form.
    */
   private engineFromRegistry(id: string): EngineProfile | null {
     const engine = this.deps.engineRegistry?.get(id);
     if (!engine) return null;
     return {
-      id: engine.id,
+      // Match the worker-id convention so the dashboard renders a stable
+      // identifier across registry-only and worker-backed entries.
+      id: workerIdForEngine(engine.id),
       config: {
-        // Engine ids look like "openrouter/balanced/anthropic/claude-sonnet-4.6";
-        // for display/routing purposes, the full id IS the modelId — the
-        // dashboard renders it verbatim. Trim only the temperature value
-        // (engines don't carry a default temperature; runtime sets it
-        // per-call).
         modelId: engine.id,
         temperature: 0,
         engineType: engine.engineType,
         capabilitiesDeclared: engine.capabilities,
         maxContextTokens: engine.maxContextTokens,
+        tier: engine.tier,
       },
       status: 'active',
-      createdAt: 0,
+      // Real timestamp — UI's `timeAgo(createdAt)` would otherwise render
+      // "55 years ago" for the epoch placeholder used previously.
+      createdAt: Date.now(),
       demotionCount: 0,
     };
   }
@@ -1391,36 +1507,60 @@ export class VinyanAPIServer {
   /**
    * Build the unified engine list surfaced via /api/v1/workers and
    * /api/v1/engines. Composition rules:
-   *   1. Start with every engine in the live registry — these are the
-   *      engines a request CAN dispatch to right now.
-   *   2. When workerStore has a record for the same id (engine has run
-   *      before), prefer the historical entry — it carries lifecycle status,
-   *      demotion count, and original createdAt that the registry doesn't.
-   *   3. Append historical workerStore entries that no longer exist in the
-   *      registry — useful for retrospective inspection of retired engines.
+   *   1. For every live engine in the registry, find its corresponding
+   *      worker profile in `workerStore`. The id mapping is
+   *      `worker.id === "worker-" + engine.id` — see `autoRegisterWorkers`
+   *      in factory.ts. We also fall back to matching by
+   *      `worker.config.modelId === engine.id` so future id-scheme drift
+   *      doesn't silently re-introduce duplicates.
+   *   2. When a match is found, the worker entry wins — it carries the
+   *      authoritative lifecycle status (probation/active/demoted),
+   *      demotionCount, and createdAt. The registry contributes nothing
+   *      not already on the worker.
+   *   3. When no match exists (rare — engine registered AFTER
+   *      autoRegisterWorkers ran, or registry-only engines like ephemeral
+   *      test fixtures), synthesise a row from the registry with status
+   *      'active'.
+   *   4. Append historical worker rows whose engine is no longer in the
+   *      live registry — useful for retrospective inspection of retired
+   *      engines.
    *
-   * Net effect: dashboard shows the live roster on a fresh server (instead
-   * of an empty list waiting for the first task to populate workerStore).
+   * Net effect: ONE row per engine. Dashboard shows the live roster on a
+   * fresh server, with worker-derived status (correct fleet behaviour) and
+   * no phantom duplicates.
    */
   private composeEngineList(): EngineProfile[] {
     const historical = this.deps.workerStore?.findAll() ?? [];
-    const historicalById = new Map(historical.map((w) => [w.id, w] as const));
-    const liveEngines = this.deps.engineRegistry?.listEngines() ?? [];
-    const seenIds = new Set<string>();
+    // Reverse-index by canonical engine id via the typed binding helper so
+    // any future change to the prefix scheme propagates through one source
+    // of truth (`engine-worker-binding.ts`) rather than ad-hoc string ops.
+    const historicalByEngineId = new Map<string, EngineProfile>();
+    for (const w of historical) {
+      historicalByEngineId.set(engineIdFromWorker(w.id), w);
+      // Belt-and-suspenders: also key by config.modelId so engines whose
+      // worker id was minted under a different scheme still match.
+      if (w.config.modelId && !historicalByEngineId.has(w.config.modelId)) {
+        historicalByEngineId.set(w.config.modelId, w);
+      }
+    }
 
+    const liveEngines = this.deps.engineRegistry?.listEngines() ?? [];
+    const consumedWorkerIds = new Set<string>();
     const merged: EngineProfile[] = [];
+
     for (const engine of liveEngines) {
-      seenIds.add(engine.id);
-      const histEntry = historicalById.get(engine.id);
+      const histEntry = historicalByEngineId.get(engine.id);
       if (histEntry) {
         merged.push(histEntry);
+        consumedWorkerIds.add(histEntry.id);
       } else {
         const fromReg = this.engineFromRegistry(engine.id);
         if (fromReg) merged.push(fromReg);
       }
     }
+    // Append retired/historical-only worker entries (no matching live engine).
     for (const w of historical) {
-      if (!seenIds.has(w.id)) merged.push(w);
+      if (!consumedWorkerIds.has(w.id)) merged.push(w);
     }
     return merged;
   }
@@ -2102,11 +2242,7 @@ export class VinyanAPIServer {
       profile: resolvedProfile.profile,
       ...(targetFiles?.length ? { targetFiles } : {}),
       ...(constraints.length > 0 ? { constraints } : {}),
-      budget: budget ?? {
-        maxTokens: 50_000,
-        maxDurationMs: 120_000,
-        maxRetries: 3,
-      },
+      budget: budget ?? DEFAULT_TASK_BUDGET,
     };
 
     // Track in session_tasks for audit / observability (mirrors handleSyncTask).
@@ -2450,6 +2586,12 @@ function deriveSessionTitle(content: string): string | null {
   return `${slice}…`;
 }
 
+const DEFAULT_TASK_BUDGET = {
+  maxTokens: 50_000,
+  maxDurationMs: 180_000,
+  maxRetries: 3,
+} as const;
+
 function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInput {
   return {
     id: partial.id ?? crypto.randomUUID(),
@@ -2459,11 +2601,7 @@ function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInpu
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
     ...(profile !== undefined ? { profile } : partial.profile !== undefined ? { profile: partial.profile } : {}),
-    budget: partial.budget ?? {
-      maxTokens: 50_000,
-      maxDurationMs: 60_000,
-      maxRetries: 3,
-    },
+    budget: partial.budget ?? DEFAULT_TASK_BUDGET,
     acceptanceCriteria: partial.acceptanceCriteria,
   };
 }

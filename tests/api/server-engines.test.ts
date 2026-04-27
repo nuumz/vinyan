@@ -16,7 +16,7 @@
  *     has never appeared in a trace.
  *   - Both endpoints are allowlisted (no auth required).
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -28,7 +28,8 @@ import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.t
 import { SessionStore } from '../../src/db/session-store.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../../src/orchestrator/llm/llm-reasoning-engine.ts';
 import { requiresAuth } from '../../src/security/auth.ts';
-import type { LLMProvider, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import { WorkerStore } from '../../src/db/worker-store.ts';
+import type { EngineProfile, LLMProvider, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-engines-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
@@ -57,7 +58,7 @@ function makeProvider(id: string, tier: LLMProvider['tier']): LLMProvider {
   };
 }
 
-function makeServer(opts: { withRegistry: boolean }) {
+function makeServer(opts: { withRegistry: boolean; workerStore?: WorkerStore }) {
   const bus = createBus();
   const sessionStore = new SessionStore(db);
   const sessionManager = new SessionManager(sessionStore);
@@ -81,8 +82,23 @@ function makeServer(opts: { withRegistry: boolean }) {
       executeTask: mockExecuteTask,
       sessionManager,
       engineRegistry,
+      workerStore: opts.workerStore,
     },
   );
+}
+
+/**
+ * Build a worker profile mirroring what `autoRegisterWorkers` produces — id
+ * pattern is `worker-${engine.id}` and config.modelId equals engine.id.
+ */
+function workerForEngine(engineId: string, status: EngineProfile['status']): EngineProfile {
+  return {
+    id: `worker-${engineId}`,
+    config: { modelId: engineId, temperature: 0.7 },
+    status,
+    createdAt: 1_700_000_000_000,
+    demotionCount: 0,
+  };
 }
 
 beforeAll(() => {
@@ -91,6 +107,13 @@ beforeAll(() => {
   db = new Database(':memory:');
   db.exec('PRAGMA journal_mode = WAL');
   new MigrationRunner().migrate(db, ALL_MIGRATIONS);
+});
+
+beforeEach(() => {
+  // The db is shared across tests for migration speed. Worker profiles
+  // accumulate via INSERT OR IGNORE, so wipe them to keep each test
+  // operating on a clean fixture.
+  db.exec('DELETE FROM worker_profiles');
 });
 
 afterAll(() => {
@@ -107,9 +130,14 @@ describe('GET /api/v1/workers — live engine merge', () => {
     expect(res.status).toBe(200);
     const data = (await res.json()) as { workers: Array<{ id: string; config: { modelId: string }; status: string }> };
     expect(data.workers.length).toBe(2);
+    // ids are minted via `workerIdForEngine` so they share the `worker-`
+    // prefix with worker-store rows — keeps a single canonical form.
     const ids = data.workers.map((w) => w.id).sort();
-    expect(ids).toContain('openrouter/balanced/anthropic/claude-sonnet-4.6');
-    expect(ids).toContain('openrouter/fast/google/gemma-4-31b-it');
+    expect(ids).toContain('worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
+    expect(ids).toContain('worker-openrouter/fast/google/gemma-4-31b-it');
+    // The underlying modelId is the engine id itself (no prefix).
+    const modelIds = data.workers.map((w) => w.config.modelId);
+    expect(modelIds).toContain('openrouter/balanced/anthropic/claude-sonnet-4.6');
     // Live-registry-derived workers are reported as 'active' so the UI's
     // status filter doesn't accidentally hide them.
     for (const w of data.workers) expect(w.status).toBe('active');
@@ -140,6 +168,74 @@ describe('GET /api/v1/engines — new list endpoint', () => {
   });
 });
 
+describe('engine list dedup — registry × workerStore', () => {
+  test('one row per engine when both registry and worker-${engine.id} exist; worker status wins', async () => {
+    // Reproduces the production screenshot anomaly: every engine appeared
+    // twice (once "active" from the registry, once "probation" from the
+    // worker entry created by autoRegisterWorkers). The fix is dedup via
+    // the `worker-${engine.id}` mapping.
+    const workerStore = new WorkerStore(db);
+    workerStore.insert(workerForEngine('openrouter/balanced/anthropic/claude-sonnet-4.6', 'probation'));
+    workerStore.insert(workerForEngine('openrouter/fast/google/gemma-4-31b-it', 'probation'));
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/workers'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { workers: Array<{ id: string; status: string; config: { modelId: string } }> };
+
+    // Exactly two engines — no phantom duplicates from the registry.
+    expect(data.workers.length).toBe(2);
+
+    // Worker entry wins — status reflects fleet "earn" policy lifecycle,
+    // not the registry's hardcoded 'active'.
+    for (const w of data.workers) expect(w.status).toBe('probation');
+
+    // Each engine appears at most once. Group by config.modelId to catch
+    // any future regression that re-introduces a duplicate via a different
+    // id scheme.
+    const byModel = new Map<string, number>();
+    for (const w of data.workers) {
+      byModel.set(w.config.modelId, (byModel.get(w.config.modelId) ?? 0) + 1);
+    }
+    for (const count of byModel.values()) expect(count).toBe(1);
+  });
+
+  test('registry-only engines (no matching worker) still appear, marked active', async () => {
+    // Edge case: an engine registered AFTER autoRegisterWorkers ran (or in
+    // tests that skip the seeder). Live entry should surface so the
+    // dashboard never goes blind to a real engine.
+    const workerStore = new WorkerStore(db);
+    // Only seed ONE of the two registry engines.
+    workerStore.insert(workerForEngine('openrouter/balanced/anthropic/claude-sonnet-4.6', 'probation'));
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/engines'));
+    const data = (await res.json()) as { engines: Array<{ id: string; status: string }> };
+    expect(data.engines.length).toBe(2);
+    const seeded = data.engines.find((e) => e.id === 'worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
+    // Live-only entries also get the canonical 'worker-' prefixed id
+    // synthesized by engineFromRegistry — single id form across both paths.
+    const liveOnly = data.engines.find((e) => e.id === 'worker-openrouter/fast/google/gemma-4-31b-it');
+    expect(seeded?.status).toBe('probation');
+    expect(liveOnly?.status).toBe('active');
+  });
+
+  test('historical-only engines (no matching live engine) appear at the end as retired view', async () => {
+    // Worker for an engine that is NOT in the current registry — e.g. a
+    // model that was decommissioned. Should still be visible for
+    // retrospective inspection.
+    const workerStore = new WorkerStore(db);
+    workerStore.insert(workerForEngine('openrouter/legacy/old-model', 'retired'));
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/engines'));
+    const data = (await res.json()) as { engines: Array<{ id: string; status: string }> };
+    // 2 live + 1 retired = 3 entries total.
+    expect(data.engines.length).toBe(3);
+    expect(data.engines.find((e) => e.id === 'worker-openrouter/legacy/old-model')?.status).toBe('retired');
+  });
+});
+
 describe('GET /api/v1/engines/:id — registry fallback', () => {
   test('returns 200 for a live engine with no historical trace record', async () => {
     const server = makeServer({ withRegistry: true });
@@ -151,8 +247,11 @@ describe('GET /api/v1/engines/:id — registry fallback', () => {
       new Request(`http://localhost/api/v1/engines/${id}`),
     );
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { worker: { id: string; status: string } };
-    expect(data.worker.id).toBe('openrouter/balanced/anthropic/claude-sonnet-4.6');
+    const data = (await res.json()) as { worker: { id: string; status: string; config: { modelId: string } } };
+    // Detail endpoint surfaces the canonical (prefixed) id; modelId carries
+    // the engine id without prefix.
+    expect(data.worker.id).toBe('worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
+    expect(data.worker.config.modelId).toBe('openrouter/balanced/anthropic/claude-sonnet-4.6');
     expect(data.worker.status).toBe('active');
   });
 

@@ -10,7 +10,9 @@
  */
 import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import type { Turn } from '../types.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
+import { formatSessionTranscript } from './session-transcript.ts';
 import { type WorkflowPlan, WorkflowPlanSchema } from './types.ts';
 
 export interface WorkflowPlannerDeps {
@@ -26,6 +28,14 @@ export interface PlannerOptions {
   constraints?: string[];
   acceptanceCriteria?: string[];
   intentWorkflowPrompt?: string;
+  /**
+   * Recent session turns (oldest → newest) so the planner can produce a plan
+   * that continues / extends prior assistant output rather than restarting
+   * from scratch on follow-up turns ("write chapter 2", "refine that"). When
+   * empty or omitted the planner sees the goal alone — same as the original
+   * single-turn behaviour.
+   */
+  sessionTurns?: Turn[];
 }
 
 const SYSTEM_PROMPT = `You are a workflow planner for the Vinyan autonomous agent orchestrator.
@@ -51,11 +61,17 @@ Output ONLY valid JSON matching this schema:
 
 Strategy selection rules:
 - "full-pipeline": code changes requiring file edits + oracle verification
-- "direct-tool": single shell command or file read
+- "direct-tool": single shell command or file read — INCLUDING filesystem inspection (ls/find/cat single file/grep), checking running processes (ps/lsof), and any goal asking to inspect, list, read, or run something on the user's machine. When the goal asks for filesystem/shell information, the workflow MUST start with a `direct-tool` step that produces the actual data; a subsequent `llm-reasoning` step can analyze that output.
 - "knowledge-query": lookup facts, prior approaches, or codebase structure
-- "llm-reasoning": analysis, summarization, decision-making (no side effects)
+- "llm-reasoning": analysis, summarization, decision-making (no side effects). Do NOT use this when the user asked for filesystem/shell data — the LLM cannot see the user's machine; pair it with a `direct-tool` step first.
 - "delegate-sub-agent": complex sub-tasks that need their own planning cycle
 - "human-input": when you genuinely cannot proceed without user clarification
+
+Worked examples for filesystem / shell goals:
+- Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='ls -la ~/Desktop', step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
+- Goal: "show contents of src/foo.ts" / "ดู src/foo.ts" → step1 strategy='direct-tool', description='cat src/foo.ts'.
+- Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='npm test'.
+- Never invent the contents of a file/directory in `llm-reasoning`; always read it first via `direct-tool`.
 
 Creative writing rules:
 - For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.
@@ -82,6 +98,18 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
   });
 
   let userPrompt = `Goal: ${opts.goal}`;
+  // Prior conversation block — placed BEFORE intent analysis / constraints so
+  // the planner reads it as the framing for the goal rather than a footnote.
+  // The transcript helper caps length aggressively to keep the planner's
+  // input budget intact.
+  const transcript = formatSessionTranscript(opts.sessionTurns);
+  if (transcript) {
+    userPrompt +=
+      '\n\nPrior conversation in this session (oldest → newest). The current ' +
+      'goal above continues from these turns; design the plan to extend or ' +
+      'build on prior assistant output rather than restarting from scratch:\n' +
+      transcript;
+  }
   if (opts.intentWorkflowPrompt) {
     userPrompt += `\n\nIntent analysis: ${opts.intentWorkflowPrompt}`;
   }

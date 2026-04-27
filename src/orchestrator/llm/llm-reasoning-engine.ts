@@ -10,11 +10,16 @@
  */
 import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
+import { engineIdFromWorker as engineIdFromWorkerImpl } from './engine-worker-binding.ts';
 import type { PromptCacheTiers } from './prompt-assembler.ts';
 import type { LLMProviderRegistry } from './provider-registry.ts';
 
 /** Default capabilities for LLM-class REs that don't declare their own. */
 const DEFAULT_LLM_CAPABILITIES = ['code-generation', 'reasoning', 'tool-use', 'text-generation'];
+
+// Re-exported for backward compatibility — the canonical home is
+// `engine-worker-binding.ts` to keep both registries cycle-free.
+export { engineIdFromWorker, WORKER_ID_PREFIX, workerIdForEngine } from './engine-worker-binding.ts';
 
 const LEVEL_TO_TIER: Record<RoutingLevel, LLMProvider['tier'] | null> = {
   0: null,
@@ -161,7 +166,7 @@ export class ReasoningEngineRegistry {
   selectById(id: string): ReasoningEngine | undefined {
     const exact = this.engines.get(id);
     if (exact) return exact;
-    const stripped = id.startsWith('worker-') ? id.slice(7) : id;
+    const stripped = engineIdFromWorkerImpl(id);
     const byStripped = this.engines.get(stripped);
     if (byStripped) return byStripped;
     for (const engine of this.engines.values()) {

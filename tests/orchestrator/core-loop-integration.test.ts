@@ -485,6 +485,55 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       expect(deliberationEscalations[0]!.reason).toBe('deliberation_request');
     }
   });
+
+  test('24. wall-clock timeout is attributed to the level that actually ran (not post-escalation)', async () => {
+    // Regression test for misleading "L3 timeout" diagnostic.
+    //
+    // Without the per-attempt cap + pre-escalation guard, a small
+    // wall-clock budget that is consumed entirely at L1/L2 would still
+    // emit `task:escalate` after retry exhaustion, then the next
+    // iteration's wall-clock check would label the timeout with the
+    // post-escalation level (e.g. L3) — even though L3 never ran.
+    //
+    // This test sets a 200ms budget with a 500ms-latency mock provider.
+    // The first L1 attempt blows the budget; the loop must report the
+    // timeout at L1 (or the pre-escalation guard must trigger), never
+    // at a higher level that never executed.
+    const registry = new LLMProviderRegistry();
+    registry.register(createMockProvider({ id: 'mock/fast', tier: 'fast', latencyMs: 500 }));
+    registry.register(createMockProvider({ id: 'mock/balanced', tier: 'balanced', latencyMs: 500 }));
+    registry.register(createMockProvider({ id: 'mock/powerful', tier: 'powerful', latencyMs: 500 }));
+
+    const escalateEvents: Array<{ fromLevel: number; toLevel: number }> = [];
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry,
+      useSubprocess: false,
+    });
+    orchestrator.bus.on('task:escalate', (p) => {
+      escalateEvents.push({ fromLevel: p.fromLevel, toLevel: p.toLevel });
+    });
+
+    const result = await orchestrator.executeTask(
+      makeInput({
+        targetFiles: ['src/foo.ts'],
+        constraints: ['MIN_ROUTING_LEVEL:1'],
+        budget: { maxTokens: 10_000, maxDurationMs: 200, maxRetries: 2 },
+      }),
+    );
+
+    // The trace must reflect a level that actually consumed budget.
+    // Specifically: it must NOT claim L3 if L3 never escalated to.
+    const reachedLevel = Math.max(0, ...escalateEvents.map((e) => e.toLevel));
+    expect(result.trace.routingLevel).toBeLessThanOrEqual(Math.max(1, reachedLevel));
+
+    // If the result is a timeout, the answer/failureReason must explain
+    // the actual cause (wall-clock or budget exhausted), not a phantom
+    // "L3 timeout" message.
+    if (result.status === 'failed' && result.trace.outcome === 'timeout') {
+      expect(result.answer ?? '').toMatch(/timed out|budget|exhausted/i);
+    }
+  });
 });
 
 // ── G6 soft-degrade routing integration tests ─────────────────────────────────

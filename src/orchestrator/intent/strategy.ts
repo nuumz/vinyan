@@ -211,16 +211,25 @@ export function composeDeterministicCandidate(
   const ruleStrategy = mapUnderstandingToStrategy(understanding);
   const directClass = classifyDirectTool(input.goal);
   const isInspection = INSPECTION_VERB_PATTERN.test(input.goal);
+  // Inspection verbs normally route to full-pipeline ("they want a textual
+  // report"). Exception: when the classifier produced a `shell_exec` with a
+  // pre-resolved concrete command (e.g. `ls -la ~/Desktop` for "ตรวจสอบไฟล์
+  // ~/Desktop/"), the inspection IS a direct shell call — running the
+  // command and showing its output is the report. Skipping this carve-out
+  // sends "ตรวจสอบไฟล์ <path>" through the full L2 workflow which then
+  // hallucinates "ผมเข้าถึงไฟล์ไม่ได้" because it's just one LLM call with
+  // no tools.
+  const isResolvedShellInspection =
+    !!directClass && directClass.type === 'shell_exec' && !!directClass.command;
 
   // Highest-confidence path: classifyDirectTool + rule-mapper both agree.
-  // Inspection verbs are excluded — they read as execute+tool-needed but
-  // want a textual report, not a side-effect.
   if (
     directClass &&
     directClass.confidence >= 0.85 &&
-    !isInspection &&
+    (!isInspection || isResolvedShellInspection) &&
     (ruleStrategy.strategy === 'direct-tool' ||
-      understanding.toolRequirement === 'tool-needed')
+      understanding.toolRequirement === 'tool-needed' ||
+      isResolvedShellInspection)
   ) {
     const command = resolveCommand(directClass, process.platform);
     if (command) {

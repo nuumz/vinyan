@@ -1512,6 +1512,11 @@ async function buildConversationalResult(
   // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
   // fall back to refinedGoal — this is a degraded-but-recoverable path, not a no-provider case.
   let answer = intent.refinedGoal;
+  // Track real token consumption so the trace recorded below carries actual
+  // values, not the hardcoded 0 that broke the dashboard's per-engine
+  // averages (every conversational task previously contributed 0 tokens
+  // and the column always showed "—").
+  let tokensConsumed = 0;
 
   // Multi-agent: resolve the specialist persona for this turn so the
   // short-circuit reply matches the same identity that worker-pool would
@@ -1572,6 +1577,7 @@ async function buildConversationalResult(
             })
           : await provider.generate(llmReq);
       answer = response.content;
+      tokensConsumed = (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
     } catch {
       answer = intent.refinedGoal;
     }
@@ -1619,7 +1625,7 @@ async function buildConversationalResult(
     approach: 'conversational-shortcircuit',
     oracleVerdicts: {},
     modelUsed: provider?.id ?? 'none',
-    tokensConsumed: 0,
+    tokensConsumed,
     durationMs: Math.max(1, Date.now() - startTime),
     outcome: 'success',
     affectedFiles: [],
@@ -2025,6 +2031,10 @@ async function executeTaskCore(
   // call `criticEngine.clearTask(taskId)` so DebateRouterCritic
   // releases its per-task budget counter when the task exits.
   const finalizedTaskId = input.id;
+  // Declared outside the try so the finally block can release subscriptions
+  // even on throw paths. Assigned inside the try once the bus reference is
+  // confirmed.
+  let detachActivity: (() => void) | undefined;
   try {
     const prep = await prepareExecution(input, deps, presetWorkingMemory);
     if ('status' in prep) return prep; // Early return (security rejection or budget block)
@@ -2199,6 +2209,25 @@ async function executeTaskCore(
         // to legacy goal-rewrite when planner unavailable or on any error.
         try {
           const { executeWorkflow } = await import('./workflow/workflow-executor.ts');
+          // Plumb the session turn history into the workflow path so the
+          // planner and synthesizer see prior assistant output for follow-up
+          // turns ("เขียนต่อบทที่ 2"). For first-turn or non-conversational
+          // dispatches the array is empty and the workflow behaves as before.
+          // Best-effort: a missing or unwired session manager simply omits
+          // the history block; the workflow still runs.
+          let sessionTurns: import('./types.ts').Turn[] | undefined;
+          if (input.sessionId && deps.sessionManager) {
+            try {
+              const mgr = deps.sessionManager as unknown as {
+                getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+              };
+              if (typeof mgr.getTurnsHistory === 'function') {
+                sessionTurns = mgr.getTurnsHistory(input.sessionId, 12);
+              }
+            } catch {
+              /* best-effort — multi-turn coherence is a nice-to-have, not a hard dep */
+            }
+          }
           const workflowResult = await executeWorkflow(input, {
             llmRegistry: deps.llmRegistry,
             worldGraph: deps.worldGraph,
@@ -2210,6 +2239,7 @@ async function executeTaskCore(
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
             intentWorkflowPrompt: intentResolution.workflowPrompt,
             workflowConfig: deps.workflowConfig,
+            sessionTurns,
           });
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,
@@ -2272,11 +2302,19 @@ async function executeTaskCore(
           latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
         };
       }
-      // Ensure wall-clock timeout fits at least one full agentic attempt
-      if (input.budget.maxDurationMs < routing.latencyBudgetMs * 1.5) {
+      // Ensure wall-clock timeout fits multi-step agentic execution. A single
+      // agent-loop attempt is bounded by `latencyBudgetMs`; multi-step tool
+      // runs (read + analyze + write + verify) need ~2.5× headroom so one
+      // slow tool call doesn't burn the whole budget. Bound by the existing
+      // BUDGET_CAP_MULTIPLIER downstream.
+      const AGENTIC_BUDGET_MULTIPLIER = 2.5;
+      if (input.budget.maxDurationMs < routing.latencyBudgetMs * AGENTIC_BUDGET_MULTIPLIER) {
         input = {
           ...input,
-          budget: { ...input.budget, maxDurationMs: Math.ceil(routing.latencyBudgetMs * 1.5) },
+          budget: {
+            ...input.budget,
+            maxDurationMs: Math.ceil(routing.latencyBudgetMs * AGENTIC_BUDGET_MULTIPLIER),
+          },
         };
       }
     }
@@ -2360,6 +2398,85 @@ async function executeTaskCore(
 
     deps.bus?.emit('task:start', { input, routing });
 
+    // ── Last-activity tracker ─────────────────────────────────────
+    // Captures the most recent phase / tool / plan-progress event for
+    // the current task so the wall-clock timeout branch can surface a
+    // diagnostic line ("last activity: read_directory 8s ago, plan 1/2")
+    // instead of an opaque "Task timed out" message. Bus-driven, no DB
+    // read on the hot path. Subscriptions are filtered by taskId and
+    // detached at every return path below alongside `detachCheckpoint`.
+    const activity: {
+      lastPhase: { phase: string; durationMs: number; ts: number } | null;
+      lastTool: { name: string; ts: number; status: 'started' | 'executed'; isError?: boolean } | null;
+      planProgress: { done: number; total: number } | null;
+      currentStage: { phase: string; stage: string; attempt?: number; ts: number } | null;
+    } = { lastPhase: null, lastTool: null, planProgress: null, currentStage: null };
+
+    const detachActivityLocal = deps.bus
+      ? (() => {
+          const offs: Array<() => void> = [];
+          offs.push(
+            deps.bus!.on('phase:timing', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastPhase = { phase: p.phase, durationMs: p.durationMs, ts: Date.now() };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:tool_started', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastTool = { name: p.toolName, ts: Date.now(), status: 'started' };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:tool_executed', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastTool = { name: p.toolName, ts: Date.now(), status: 'executed', isError: p.isError };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:plan_update', (p) => {
+              if (p.taskId !== input.id) return;
+              const total = p.steps.length;
+              const done = p.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length;
+              activity.planProgress = { done, total };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('task:stage_update', (p) => {
+              if (p.taskId !== input.id) return;
+              if (p.status === 'exited') {
+                // Keep the snapshot: an `exited` event is still a valid "latest
+                // known stage" for diagnostics. Update progress when supplied.
+                activity.currentStage = {
+                  phase: p.phase,
+                  stage: p.stage,
+                  attempt: p.attempt,
+                  ts: Date.now(),
+                };
+              } else {
+                activity.currentStage = {
+                  phase: p.phase,
+                  stage: p.stage,
+                  attempt: p.attempt,
+                  ts: Date.now(),
+                };
+              }
+              if (p.progress) activity.planProgress = p.progress;
+            }),
+          );
+          return () => {
+            for (const off of offs) {
+              try {
+                off();
+              } catch {
+                /* non-fatal */
+              }
+            }
+          };
+        })()
+      : undefined;
+    detachActivity = detachActivityLocal;
+
     // Crash Recovery: mark checkpoint complete/failed on task completion.
     // Agent Conversation: input-required is treated as completed from the
     // checkpoint's perspective — this turn's work is done; the agent just
@@ -2384,6 +2501,96 @@ async function executeTaskCore(
     const BUDGET_CAP_MULTIPLIER = 6;
     let totalTokensConsumed = 0;
     const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
+
+    // ── Wall-clock safety margin & helpers ────────────────────────────
+    // The orchestrator must refuse to start a new attempt that cannot
+    // plausibly finish before the wall-clock budget runs out, otherwise
+    // the L(n) attempt overruns and the timeout error is misleadingly
+    // attributed to whichever level was active when the wall clock fired
+    // (often L3 after late escalation). See audit.jsonl trace for task
+    // ccf700c2 (180s budget → 65s+90s+90s L2 retries → late L2→L3
+    // escalation → "L3 timeout after 266s" misdiagnosis).
+    //
+    // Margins are kept small so existing tests with tight budgets
+    // (5s/10s) still execute their first attempt. The primary defense
+    // is the per-attempt cap that flows remaining budget into
+    // routing.latencyBudgetMs so worker subprocess + LLM proxy
+    // timeouts respect the wall clock.
+    const WALL_CLOCK_SAFETY_MS = 250; // refuse to start with <250ms left
+    const ESCALATION_MIN_REMAINING_MS = 500; // don't escalate with <500ms left
+    const buildTimeoutResult = (
+      reason: string,
+    ): TaskResult => {
+      const elapsedMs = Date.now() - startTime;
+      const lastPhase = activity.lastPhase;
+      const lastTool = activity.lastTool;
+      const planProgress = activity.planProgress;
+      const currentStage = activity.currentStage;
+      const diagnosticsParts: string[] = [];
+      if (currentStage) {
+        const stageLabel =
+          currentStage.attempt && currentStage.attempt > 1
+            ? `${currentStage.phase}:${currentStage.stage} (attempt ${currentStage.attempt})`
+            : `${currentStage.phase}:${currentStage.stage}`;
+        diagnosticsParts.push(`stage: ${stageLabel}`);
+      }
+      if (lastTool) {
+        const ageS = Math.max(0, Math.round((Date.now() - lastTool.ts) / 1000));
+        diagnosticsParts.push(`last tool: ${lastTool.name} (${lastTool.status}, ${ageS}s ago)`);
+      } else if (lastPhase) {
+        diagnosticsParts.push(
+          `last phase: ${lastPhase.phase} (${Math.round(lastPhase.durationMs / 1000)}s)`,
+        );
+      }
+      if (planProgress && planProgress.total > 0) {
+        diagnosticsParts.push(`plan ${planProgress.done}/${planProgress.total}`);
+      }
+      const diagnosticsLine =
+        diagnosticsParts.length > 0 ? ` Last activity — ${diagnosticsParts.join('; ')}.` : '';
+      const timeoutTrace: ExecutionTrace = {
+        id: `trace-${input.id}-timeout`,
+        taskId: input.id,
+        workerId: routing.workerId ?? routing.model ?? 'unknown',
+        agentId: input.agentId,
+        timestamp: Date.now(),
+        routingLevel: routing.level,
+        approach: 'wall-clock-timeout',
+        oracleVerdicts: {},
+        modelUsed: routing.model ?? 'none',
+        tokensConsumed: 0,
+        durationMs: elapsedMs,
+        outcome: 'timeout',
+        failureReason: reason,
+        affectedFiles: input.targetFiles ?? [],
+        workerSelectionAudit: lastWorkerSelection,
+      };
+      void deps.traceCollector.record(timeoutTrace);
+      deps.bus?.emit('trace:record', { trace: timeoutTrace });
+      deps.bus?.emit('task:timeout', {
+        taskId: input.id,
+        elapsedMs,
+        budgetMs: input.budget.maxDurationMs,
+        routingLevel: routing.level,
+        reason,
+        lastPhase: lastPhase ?? undefined,
+        lastTool: lastTool ?? undefined,
+        planProgress: planProgress ?? undefined,
+        currentStage: currentStage ?? undefined,
+      });
+      const timeoutResult: TaskResult = {
+        id: input.id,
+        status: 'failed',
+        mutations: [],
+        trace: timeoutTrace,
+        answer:
+          `Task timed out after ${Math.round(elapsedMs / 1000)}s ` +
+          `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}.` +
+          diagnosticsLine +
+          ' Try narrowing the request, or raise --max-duration if the task legitimately needs more time.',
+      };
+      deps.bus?.emit('task:complete', { result: timeoutResult });
+      return timeoutResult;
+    };
 
     // Wave 5.2: `ctx` is declared with `let` so the plan phase can hand
     // back an `enhancedInput` (with the DAG's preamble merged into
@@ -2413,46 +2620,33 @@ async function executeTaskCore(
       // Inner loop: retry within current routing level
       for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
         // ── Wall-clock timeout check ──────────────────────────────────
-        if (Date.now() - startTime > input.budget.maxDurationMs) {
-          const timeoutTrace: ExecutionTrace = {
-            id: `trace-${input.id}-timeout`,
-            taskId: input.id,
-            workerId: routing.workerId ?? routing.model ?? 'unknown',
-            agentId: input.agentId,
-            timestamp: Date.now(),
-            routingLevel: routing.level,
-            approach: 'wall-clock-timeout',
-            oracleVerdicts: {},
-            modelUsed: routing.model ?? 'none',
-            tokensConsumed: 0,
-            durationMs: Date.now() - startTime,
-            outcome: 'timeout',
-            failureReason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
-            affectedFiles: input.targetFiles ?? [],
-            workerSelectionAudit: lastWorkerSelection,
-          };
-          await deps.traceCollector.record(timeoutTrace);
-          deps.bus?.emit('trace:record', { trace: timeoutTrace });
-          deps.bus?.emit('task:timeout', {
-            taskId: input.id,
-            elapsedMs: Date.now() - startTime,
-            budgetMs: input.budget.maxDurationMs,
-          });
-          const timeoutResult: TaskResult = {
-            id: input.id,
-            status: 'failed',
-            mutations: [],
-            trace: timeoutTrace,
-            // Surface a user-facing explanation so chat UIs don't render an
-            // empty "(no response)" bubble. The trace carries the full detail;
-            // this field is the TL;DR for clients that don't inspect traces.
-            answer:
-              `Task timed out after ${Math.round((Date.now() - startTime) / 1000)}s ` +
-              `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}. ` +
-              `Try narrowing the request, or raise --max-duration if the task legitimately needs more time.`,
-          };
-          deps.bus?.emit('task:complete', { result: timeoutResult });
-          return timeoutResult;
+        // Two-tier check:
+        //  (a) Budget already exhausted → emit timeout immediately.
+        //  (b) Less than WALL_CLOCK_SAFETY_MS remaining → refuse to
+        //      start a new attempt; the attempt cannot finish in time
+        //      and would just produce a worker timeout that gets
+        //      mis-attributed to a later level after escalation.
+        const elapsedMs = Date.now() - startTime;
+        const remainingMs = input.budget.maxDurationMs - elapsedMs;
+        if (remainingMs <= WALL_CLOCK_SAFETY_MS) {
+          return buildTimeoutResult(
+            remainingMs <= 0
+              ? `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`
+              : `Wall-clock budget exhausted before next attempt could start (${Math.max(0, remainingMs)}ms remaining)`,
+          );
+        }
+
+        // ── Per-attempt budget cap ────────────────────────────────────
+        // Cap routing.latencyBudgetMs to remaining wall-clock budget
+        // (minus safety margin) so the worker subprocess, agent contract,
+        // and LLM proxy timeouts all respect the user's budget. Without
+        // this, an L2 attempt with latencyBudgetMs=90s started 100s into
+        // a 180s budget would run for the full 90s, overshoot the 180s
+        // total, and the timeout would be reported at whatever level the
+        // escalation block jumped to next. See audit trace ccf700c2.
+        const usableMs = remainingMs - WALL_CLOCK_SAFETY_MS;
+        if (routing.latencyBudgetMs > usableMs) {
+          routing = { ...routing, latencyBudgetMs: Math.max(1_000, usableMs) };
         }
 
         // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
@@ -2717,6 +2911,28 @@ async function executeTaskCore(
         const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } =
           generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
+
+        // ── No-response worker rotation ──────────────────────────────
+        // When a worker produced no mutations and surfaced a timeout /
+        // crash uncertainty, the same workerId will keep timing out on
+        // subsequent retries (audit trace ccf700c2: 3× consecutive
+        // ~65–90s timeouts on the same OpenRouter free-tier worker).
+        // Clear `routing.workerId` so the next retry's worker selector
+        // can pick a different worker (or fall back to `routing.model`)
+        // before retry budget is exhausted.
+        const isNoResponseFailure =
+          workerResult.mutations.length === 0 &&
+          (workerResult.uncertainties ?? []).some((u) =>
+            /timeout|crash|no response received|proxy timeout/i.test(u),
+          );
+        if (isNoResponseFailure && routing.workerId) {
+          deps.bus?.emit('worker:error', {
+            taskId: input.id,
+            error: `No-response failure: ${(workerResult.uncertainties ?? []).slice(0, 2).join('; ')}`,
+            routing,
+          });
+          routing = { ...routing, workerId: undefined };
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Agent Conversation: input-required short-circuit
@@ -3208,6 +3424,22 @@ async function executeTaskCore(
         prep.softDegradeCap !== undefined ? Math.min(baseMaxLevel, prep.softDegradeCap) : baseMaxLevel;
       if (nextLevel > effectiveMaxLevel) break;
 
+      // ── Pre-escalation budget guard ────────────────────────────────
+      // Don't escalate to a higher routing level if the wall-clock
+      // budget cannot support a meaningful attempt at the next level.
+      // Without this, the loop emits `task:escalate` L2→L3 just to have
+      // the next iteration's wall-clock check fire immediately and
+      // attribute the timeout to L3 — even though L3 never actually
+      // executed any work. Returning a timeout here keeps the failure
+      // attributed to the level that actually consumed the budget.
+      const remainingForEscalation = input.budget.maxDurationMs - (Date.now() - startTime);
+      if (remainingForEscalation < ESCALATION_MIN_REMAINING_MS) {
+        return buildTimeoutResult(
+          `Wall-clock budget exhausted at L${routing.level}; refusing to escalate to L${nextLevel} ` +
+            `with only ${Math.max(0, remainingForEscalation)}ms remaining (need ≥${ESCALATION_MIN_REMAINING_MS}ms)`,
+        );
+      }
+
       deps.bus?.emit('task:escalate', {
         taskId: input.id,
         fromLevel: routing.level,
@@ -3275,6 +3507,14 @@ async function executeTaskCore(
       deps.criticEngine?.clearTask?.(finalizedTaskId);
     } catch {
       /* hook errors are swallowed — cleanup must not fail the task */
+    }
+    // Always release activity-tracker bus subscriptions on the way out
+    // (success, failure, escalation, throw). Mirrors detachCheckpoint
+    // but covers paths that don't reach the explicit detach call.
+    try {
+      detachActivity?.();
+    } catch {
+      /* non-fatal */
     }
   }
 }

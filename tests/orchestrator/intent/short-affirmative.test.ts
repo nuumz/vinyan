@@ -6,7 +6,10 @@
  * or regex internals.
  */
 import { describe, expect, it } from 'bun:test';
-import { detectShortAffirmativeContinuation } from '../../../src/orchestrator/intent/short-affirmative.ts';
+import {
+  detectRetryContinuation,
+  detectShortAffirmativeContinuation,
+} from '../../../src/orchestrator/intent/short-affirmative.ts';
 import type { Turn } from '../../../src/orchestrator/types.ts';
 
 function userTurn(seq: number, text: string): Turn {
@@ -104,5 +107,79 @@ describe('detectShortAffirmativeContinuation', () => {
     expect(
       detectShortAffirmativeContinuation({ goal: 'do it', turns }).matched,
     ).toBe(false);
+  });
+});
+
+describe('detectRetryContinuation', () => {
+  it('replays the prior user request after a timed-out assistant turn', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'ช่วยตรวจสอบไฟล์บน ~/Desktop/'),
+      assistantTurn(
+        1,
+        'Task timed out after 151s (budget: 120s) at routing level L2. Try narrowing the request, or raise --max-duration if the task legitimately needs more time.',
+      ),
+    ];
+    const out = detectRetryContinuation({ goal: 'retry', turns });
+    expect(out.matched).toBe(true);
+    expect(out.reconstructedWorkflowPrompt).toContain('~/Desktop/');
+    expect(out.reconstructedFromTurnSeq).toBe(0);
+    expect(out.reason).toContain('seq=0');
+  });
+
+  it('matches the Thai retry phrase "ลองใหม่"', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'list files in /tmp'),
+      assistantTurn(1, "I'm sorry, I cannot access your local filesystem from here."),
+    ];
+    const out = detectRetryContinuation({ goal: 'ลองใหม่', turns });
+    expect(out.matched).toBe(true);
+    expect(out.reconstructedWorkflowPrompt).toContain('/tmp');
+  });
+
+  it('matches "อีกครั้ง" and "try again" too', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'run npm test'),
+      assistantTurn(1, 'Error: tool timed out after 30s.'),
+    ];
+    expect(detectRetryContinuation({ goal: 'อีกครั้ง', turns }).matched).toBe(true);
+    expect(detectRetryContinuation({ goal: 'try again', turns }).matched).toBe(true);
+    expect(detectRetryContinuation({ goal: 'do it again', turns }).matched).toBe(true);
+  });
+
+  it('does NOT match when the prior assistant turn looks successful', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'what is 2+2'),
+      assistantTurn(1, '2 + 2 = 4'),
+    ];
+    expect(detectRetryContinuation({ goal: 'retry', turns }).matched).toBe(false);
+  });
+
+  it('does NOT match when there is no prior assistant turn at all', () => {
+    expect(detectRetryContinuation({ goal: 'retry', turns: [] }).matched).toBe(false);
+    expect(detectRetryContinuation({ goal: 'retry', turns: undefined }).matched).toBe(false);
+  });
+
+  it('does NOT match when the user adds context to retry', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'list files in /tmp'),
+      assistantTurn(1, 'Task timed out after 151s.'),
+    ];
+    expect(
+      detectRetryContinuation({ goal: 'retry but use a different model', turns }).matched,
+    ).toBe(false);
+  });
+
+  it('skips intermediate retry messages and replays the original request', () => {
+    const turns: Turn[] = [
+      userTurn(0, 'list files in /tmp'),
+      assistantTurn(1, 'Task timed out.'),
+      userTurn(2, 'retry'),
+      assistantTurn(3, "I'm sorry, I cannot access your local files from here."),
+    ];
+    const out = detectRetryContinuation({ goal: 'ลองใหม่', turns });
+    expect(out.matched).toBe(true);
+    expect(out.reconstructedWorkflowPrompt).toContain('/tmp');
+    // Prior user request at seq=0, not the seq=2 retry message itself.
+    expect(out.reconstructedFromTurnSeq).toBe(0);
   });
 });

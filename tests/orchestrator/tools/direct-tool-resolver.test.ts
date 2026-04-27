@@ -114,6 +114,66 @@ describe('classifyDirectTool', () => {
   test('question returns null', () => {
     expect(classifyDirectTool('อธิบายโค้ดส่วนนี้ให้หน่อย')).toBeNull();
   });
+
+  // ── Filesystem inspection (shell_exec) ──
+  describe('filesystem inspection', () => {
+    test('Thai "ตรวจสอบไฟล์ ~/Desktop/" → ls', () => {
+      const out = classifyDirectTool('ตรวจสอบไฟล์ ~/Desktop/');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.confidence).toBeGreaterThanOrEqual(0.85);
+      // `~/Desktop/` is shell-quoted by quoteArg because `~` falls outside
+      // the safe-char allowlist; both `ls -la ~/Desktop/` and the quoted
+      // form expand the same way under any POSIX shell.
+      expect(out?.command).toMatch(/^ls -la "?~\/Desktop\/"?$/);
+    });
+
+    test('English "list files in /tmp" → ls', () => {
+      const out = classifyDirectTool('list files in /tmp');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toBe('ls -la /tmp');
+    });
+
+    test('English "ls /var/log" → ls', () => {
+      const out = classifyDirectTool('ls /var/log');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toBe('ls -la /var/log');
+    });
+
+    test('Thai "ดู src/index.ts" → cat (single file by extension)', () => {
+      const out = classifyDirectTool('ดู src/index.ts');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toBe('cat src/index.ts');
+    });
+
+    test('English "show contents of ./README.md" → cat', () => {
+      const out = classifyDirectTool('show contents of ./README.md');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toBe('cat ./README.md');
+    });
+
+    test('"ตรวจสอบ" without a path returns null (no execution target)', () => {
+      expect(classifyDirectTool('ตรวจสอบ')).toBeNull();
+    });
+
+    test('"ตรวจสอบนิทาน" with no path-like tail returns null', () => {
+      expect(classifyDirectTool('ตรวจสอบนิทาน')).toBeNull();
+    });
+
+    test('"list improvements for the bedtime story" returns null (no path prefix)', () => {
+      expect(classifyDirectTool('list improvements for the bedtime story')).toBeNull();
+    });
+
+    test('quoted path is unwrapped and ls executed', () => {
+      const out = classifyDirectTool('ตรวจสอบ ~/Desktop/');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toMatch(/^ls -la "?~\/Desktop\/"?$/);
+    });
+
+    test('resolveCommand returns the pre-resolved shell_exec command verbatim', () => {
+      const cls = classifyDirectTool('list files in /tmp')!;
+      expect(resolveCommand(cls, 'darwin')).toBe('ls -la /tmp');
+    });
+  });
 });
 
 describe('resolveCommand', () => {

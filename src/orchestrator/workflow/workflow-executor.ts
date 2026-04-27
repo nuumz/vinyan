@@ -18,6 +18,7 @@ import {
   type WorkflowConfig,
 } from './approval-gate.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
+import { formatSessionTranscript } from './session-transcript.ts';
 import {
   buildResearchStep,
   detectResearchCues,
@@ -60,6 +61,14 @@ export interface WorkflowExecutorDeps {
   intentWorkflowPrompt?: string;
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
+  /**
+   * Recent session turns (oldest → newest) — caller-fetched from
+   * SessionManager.getTurnsHistory. Plumbed through to the planner and
+   * synthesizer so multi-turn workflows continue prior assistant output
+   * instead of restarting from scratch on follow-up turns. Skip / omit for
+   * single-turn or non-conversational invocations.
+   */
+  sessionTurns?: import('../types.ts').Turn[];
 }
 
 export async function executeWorkflow(
@@ -80,6 +89,7 @@ export async function executeWorkflow(
     constraints: input.constraints,
     acceptanceCriteria: input.acceptanceCriteria,
     intentWorkflowPrompt: deps.intentWorkflowPrompt,
+    sessionTurns: deps.sessionTurns,
   });
 
   // Phase C: prepend a deterministic research step for long-form creative /
@@ -283,7 +293,7 @@ async function executeStep(
   // Interpolate inputs from prior step results
   const interpolatedInputs = interpolateInputs(step.inputs, priorResults);
 
-  let result = await dispatchStrategy(step.strategy, step, interpolatedInputs, input, deps);
+  let result = await dispatchStrategy(step.strategy, step, plan, interpolatedInputs, input, deps);
 
   // Fallback on failure
   if (result.status === 'failed' && step.fallbackStrategy) {
@@ -292,7 +302,14 @@ async function executeStep(
       primaryStrategy: step.strategy,
       fallbackStrategy: step.fallbackStrategy,
     });
-    result = await dispatchStrategy(step.fallbackStrategy, step, interpolatedInputs, input, deps);
+    result = await dispatchStrategy(
+      step.fallbackStrategy,
+      step,
+      plan,
+      interpolatedInputs,
+      input,
+      deps,
+    );
     result.strategyUsed = step.fallbackStrategy;
   }
 
@@ -313,6 +330,7 @@ async function executeStep(
 async function dispatchStrategy(
   strategy: WorkflowStepStrategy,
   step: WorkflowStep,
+  plan: WorkflowPlan,
   interpolatedInputs: string,
   input: TaskInput,
   deps: WorkflowExecutorDeps,
@@ -381,9 +399,45 @@ async function dispatchStrategy(
       case 'llm-reasoning': {
         const provider = deps.llmRegistry?.selectByTier('balanced') ?? deps.llmRegistry?.selectByTier('fast');
         if (!provider) return { ...base, status: 'failed', output: 'No LLM provider available' };
+        // Step prompt is intentionally task-shaped, not assistant-shaped:
+        //   - The agent is doing one step of a multi-step workflow that the
+        //     user already approved. It should NOT re-greet the user, ask
+        //     clarifying questions, or apologize for not having context —
+        //     prior steps' outputs are in `interpolatedInputs`.
+        //   - Match the user's language by mirroring the goal verbatim in
+        //     the prompt; the model picks up Thai/EN/etc. implicitly.
+        //   - For creative work, "concise" is wrong — let the step produce
+        //     prose at the length its description implies.
+        // Tighter caps for per-step transcripts — each step pays the cost
+        // separately, so a 4-step workflow with 4000-char transcripts each
+        // would burn ~16k chars of repeated context. 2400 keeps headroom for
+        // step.description + interpolatedInputs without crowding maxTokens.
+        const stepTranscript = formatSessionTranscript(deps.sessionTurns, {
+          maxTurns: 4,
+          maxCharsPerTurn: 600,
+          maxTotalChars: 2400,
+        });
+        const userPrompt = [
+          `Overall goal: ${plan.goal}`,
+          stepTranscript
+            ? `Prior conversation in this session (oldest → newest). The current step continues from these turns; do not restart from scratch:\n${stepTranscript}`
+            : null,
+          `This step (${step.id}): ${step.description}`,
+          step.expectedOutput ? `Expected output: ${step.expectedOutput}` : null,
+          interpolatedInputs ? `Prior workflow step output:\n${interpolatedInputs}` : null,
+          '',
+          'Produce just this step\'s output. Match the user\'s language and register from the goal. Do not preface with meta-commentary about the workflow or the step number.',
+        ]
+          .filter((s): s is string => s !== null)
+          .join('\n\n');
         const request = {
-          systemPrompt: 'You are a reasoning assistant. Analyze and respond concisely.',
-          userPrompt: `${step.description}\n\nContext:\n${interpolatedInputs}`,
+          systemPrompt:
+            'You are completing one step of a multi-step workflow toward a goal the user already approved. ' +
+            'Stay focused on this step alone — do not anticipate later steps, do not summarize prior work, ' +
+            'do not greet, do not ask clarifying questions. Match the user\'s language and tone from the goal. ' +
+            'For creative writing tasks, write in narrative voice; for analytical tasks, be precise. ' +
+            'Output the step\'s deliverable directly with no meta-framing.',
+          userPrompt,
           maxTokens: Math.min(4000, Math.floor(input.budget.maxTokens * step.budgetFraction)),
           timeoutMs: workflowStepTimeoutMs(input, step.budgetFraction),
         };
@@ -480,13 +534,58 @@ async function buildResult(
     const provider = deps.llmRegistry?.selectByTier('fast');
     if (provider) {
       try {
-        const stepSummaries = allResults
-          .map((r) => `[${r.stepId}] (${r.strategyUsed}): ${r.output.slice(0, 300)}`)
-          .join('\n\n');
+        // Per-step input cap. The earlier 300-char slice was catastrophic for
+        // creative work where a single step might produce 2k+ chars of draft;
+        // the synthesizer would never see the full prose and emit a summary
+        // of summaries instead of the requested artifact. 3500 chars per step
+        // gives the model enough context while staying within ~32k input
+        // budgets across reasonable plan sizes.
+        const PER_STEP_CAP = 3500;
+        // Last step is privileged: in most plans it's the polished final
+        // draft / edit, and we want the synthesizer to anchor on its full
+        // content rather than a truncation. Earlier steps go through the
+        // normal cap because they're context (brainstorm, knowledge query).
+        const stepSections = allResults.map((r, idx) => {
+          const isLast = idx === allResults.length - 1;
+          const cap = isLast ? Math.max(PER_STEP_CAP, r.output.length) : PER_STEP_CAP;
+          const body =
+            r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
+          const tag = isLast ? `[${r.stepId} — FINAL DRAFT]` : `[${r.stepId}]`;
+          return `${tag} (${r.strategyUsed}):\n${body}`;
+        });
+        const stepSummaries = stepSections.join('\n\n---\n\n');
         const request = {
-          systemPrompt: 'Synthesize multiple step results into a coherent final answer. Be concise.',
-          userPrompt: `Goal: ${plan.goal}\n\nSynthesis instruction: ${plan.synthesisPrompt}\n\nStep results:\n${stepSummaries}`,
-          maxTokens: 2000,
+          systemPrompt:
+            'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
+            'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
+            'Choose the right shape for the goal: ' +
+            'creative work → output the prose / poem / story directly without bullet-pointing it; ' +
+            'analytical work → structured answer with the key findings; ' +
+            'instructional work → clear step-by-step. ' +
+            'When the last step\'s output is already a polished deliverable matching the goal, return it as-is ' +
+            '(or with light edits) — do NOT compress it into a summary. ' +
+            'Never narrate the workflow itself ("step 1 found…", "in this synthesis…"). ' +
+            'Do not include meta-commentary, headers like "Final answer", or framing about prior steps.',
+          userPrompt: (() => {
+            // Anchor the synthesis on prior conversation when the workflow is
+            // a follow-up turn ("write chapter 2"). Without this the
+            // synthesizer only sees the current goal + step outputs and can
+            // produce something that contradicts or restarts what the
+            // assistant already said in earlier turns.
+            const transcript = formatSessionTranscript(deps.sessionTurns);
+            const transcriptBlock = transcript
+              ? `Prior conversation (oldest → newest). The synthesised final ` +
+                `answer must be consistent with these turns and continue them ` +
+                `where the goal asks for a continuation:\n${transcript}\n\n`
+              : '';
+            return (
+              `User's goal: ${plan.goal}\n\n` +
+              transcriptBlock +
+              `Synthesis instruction (planner-suggested): ${plan.synthesisPrompt}\n\n` +
+              `Step outputs (the LAST step is usually the polished deliverable):\n\n${stepSummaries}`
+            );
+          })(),
+          maxTokens: 4000,
           timeoutMs: Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, Math.floor(taskTimeoutMs * 0.25)),
         };
         const response = provider.generateStream
@@ -495,10 +594,21 @@ async function buildResult(
         synthesizedOutput = response.content;
         totalTokens += (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
       } catch {
-        synthesizedOutput = allResults.map((r) => `## ${r.stepId}\n${r.output}`).join('\n\n');
+        // Fallback when the synthesizer LLM call fails: prefer the last step's
+        // raw output (usually the polished deliverable) over stitching every
+        // step together with headers — the latter looks like debug output.
+        const last = allResults[allResults.length - 1];
+        synthesizedOutput =
+          last?.output && last.output.trim().length > 0
+            ? last.output
+            : allResults.map((r) => r.output).join('\n\n');
       }
     } else {
-      synthesizedOutput = allResults.map((r) => `## ${r.stepId}\n${r.output}`).join('\n\n');
+      const last = allResults[allResults.length - 1];
+      synthesizedOutput =
+        last?.output && last.output.trim().length > 0
+          ? last.output
+          : allResults.map((r) => r.output).join('\n\n');
     }
   }
 

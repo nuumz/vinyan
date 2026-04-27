@@ -298,15 +298,53 @@ export class SessionManager {
           /* best effort */
         }
       }
+      const statusFromResult =
+        result && (result.status === 'completed' || result.status === 'input-required')
+          ? 'completed'
+          : result
+            ? 'failed'
+            : row.status;
 
       return {
         taskId: row.task_id,
         sessionId: row.session_id,
-        status: row.status,
+        status: statusFromResult,
         goal,
         result,
       };
     });
+  }
+
+  /**
+   * Look up a session-tracked task by id and return the original `TaskInput`
+   * along with `sessionId` and the recorded `TaskResult` (if completed).
+   *
+   * Used by the manual-retry endpoint so it can spawn a sibling task that
+   * preserves session, goal, target files, and constraints from the parent.
+   * Returns `null` if the task isn't tracked (in-memory async tasks fall
+   * back to the caller's own bookkeeping).
+   */
+  getTaskById(
+    taskId: string,
+  ): { sessionId: string; status: string; input: TaskInput; result?: TaskResult } | null {
+    const rows = this.sessionStore.listRecentTasks(500);
+    const row = rows.find((r) => r.task_id === taskId);
+    if (!row) return null;
+    let input: TaskInput;
+    try {
+      input = JSON.parse(row.task_input_json) as TaskInput;
+    } catch {
+      return null;
+    }
+    let result: TaskResult | undefined;
+    if (row.result_json) {
+      try {
+        result = JSON.parse(row.result_json) as TaskResult;
+      } catch {
+        /* best effort */
+      }
+    }
+    return { sessionId: row.session_id, status: row.status, input, result };
   }
 
   /**

@@ -995,7 +995,14 @@ export async function runAgentLoop(
     // exit before reading the init turn, leaving the parent stuck waiting
     // on an empty stdout (the smoke-test 98s timeout in known-issues #9/#10).
     // Surface the misconfiguration synchronously instead.
-    if (!deps.proxySocketPath) {
+    //
+    // Test injection escape hatch: when `deps.createSession` is provided,
+    // the caller bypasses subprocess spawn entirely (e.g. MockAgentSession
+    // in tests/orchestrator/agent-loop.test.ts). The proxy-socket
+    // precondition does not apply because no real worker subprocess will
+    // run. Without this guard, every agent-loop unit test would have to
+    // pass a fake socket path purely to satisfy the precondition.
+    if (!deps.createSession && !deps.proxySocketPath) {
       throw new Error(
         'agent-loop: deps.proxySocketPath is required to spawn the agent worker subprocess. ' +
           'Wire one in factory.ts (createOrchestrator) or use the in-process worker pool path for L0/L1.',
@@ -1005,44 +1012,50 @@ export async function runAgentLoop(
     // Compress perception before sending (fix #5)
     const compressedPerception = deps.compressPerception(perception, budget.toSnapshot().contextWindow);
 
-    // Spawn subprocess
-    const proc = Bun.spawn(['bun', 'run', deps.agentWorkerEntryPath], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: {
-        ...process.env,
-        VINYAN_ROUTING_LEVEL: String(routing.level),
-        VINYAN_MODEL: routing.model ?? '',
-        VINYAN_ORCHESTRATOR_PID: String(process.pid),
-        // Forward the selected worker's tier so subprocess uses the correct provider
-        VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
-        VINYAN_PROXY_SOCKET: deps.proxySocketPath,
-      },
-    }) as unknown as SubprocessHandle;
-
-    // Drain stderr in background for diagnostics — surface worker errors to orchestrator
+    // Spawn subprocess — skipped when `deps.createSession` is injected
+    // (test path uses a MockAgentSession that doesn't need a real proc).
+    let proc: SubprocessHandle | undefined;
     const stderrChunks: string[] = [];
-    const stderrDecoder = new TextDecoder();
-    const stderrReader = (proc as any).stderr?.getReader?.();
-    if (stderrReader) {
-      (async () => {
-        try {
-          while (true) {
-            const { done, value } = await stderrReader.read();
-            if (done) break;
-            const text = stderrDecoder.decode(value, { stream: true });
-            stderrChunks.push(text);
-            // Forward worker stderr to orchestrator stderr for visibility
-            process.stderr.write(`[worker:${input.id}] ${text}`);
+    if (!deps.createSession) {
+      proc = Bun.spawn(['bun', 'run', deps.agentWorkerEntryPath], {
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...process.env,
+          VINYAN_ROUTING_LEVEL: String(routing.level),
+          VINYAN_MODEL: routing.model ?? '',
+          VINYAN_ORCHESTRATOR_PID: String(process.pid),
+          // Forward the selected worker's tier so subprocess uses the correct provider
+          VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
+          // Non-null because the precondition above guarantees it when
+          // we reach the spawn branch.
+          VINYAN_PROXY_SOCKET: deps.proxySocketPath as string,
+        },
+      }) as unknown as SubprocessHandle;
+
+      // Drain stderr in background for diagnostics — surface worker errors to orchestrator
+      const stderrDecoder = new TextDecoder();
+      const stderrReader = (proc as any).stderr?.getReader?.();
+      if (stderrReader) {
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await stderrReader.read();
+              if (done) break;
+              const text = stderrDecoder.decode(value, { stream: true });
+              stderrChunks.push(text);
+              // Forward worker stderr to orchestrator stderr for visibility
+              process.stderr.write(`[worker:${input.id}] ${text}`);
+            }
+          } catch {
+            /* reader closed */
           }
-        } catch {
-          /* reader closed */
-        }
-      })();
+        })();
+      }
     }
 
-    session = deps.createSession?.(proc) ?? new AgentSession(proc, (delta) => {
+    session = deps.createSession?.(proc as SubprocessHandle) ?? new AgentSession(proc as SubprocessHandle, (delta) => {
       // Phase 2: forward LLM token deltas to bus as `llm:stream_delta`. The
       // legacy `agent:text_delta` mirror was removed — content lives in the
       // canonical event with `kind: 'content'`. Observational only (A3) —

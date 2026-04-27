@@ -137,8 +137,6 @@ export type IntentReasoningSource =
   | 'cache'
   | 'deterministic'
   | 'merged'
-  // Two-stage classifier (A1: separate verifier overrode the primary classifier)
-  | 'verifier'
   // Deterministic short-affirmative pre-classifier reconstructed intent from prior turns
   | 'short-affirmative-continuation'
   // Persona escape sentinel re-routed conversational shortcircuit to agentic-workflow
@@ -159,7 +157,11 @@ export interface IntentDeterministicCandidate {
   strategy: ExecutionStrategy;
   confidence: number;
   /** Which rule produced the candidate (observability). */
-  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed';
+  source:
+    | 'classifyDirectTool'
+    | 'mapUnderstandingToStrategy'
+    | 'composed'
+    | 'creative-deliverable-pattern';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }

@@ -138,6 +138,41 @@ const INSPECTION_VERB_PATTERN =
   /(?:ตรวจสอบ|เช็ค|ดูสถานะ|ดูการทำงาน|รายงาน|สรุปสถานะ)|\b(?:check|inspect|verify|audit|diagnose|review|status|report)\b/i;
 
 /**
+ * High-precision creative-deliverable detection. Matches an imperative
+ * authoring verb paired with a multi-section artifact noun within close
+ * proximity. Split into two regexes because JS `\b` is ASCII-only and gives
+ * no useful boundary between Thai code points — the Thai pattern relies on
+ * the verb prefix + the proximity gap as the structural anchor instead.
+ *
+ * When this fires we override the LLM-comprehender's STU classification.
+ * Rationale: the bedtime-story incident showed the comprehender labelling
+ * "ช่วยเขียนนิยายก่อนนอน...สัก2บท" as `taskDomain=conversational`, which
+ * cascaded into a `conversational-shortcircuit` that hallucinated delegation.
+ * Goals matching this pattern are structurally agentic-workflow regardless
+ * of how politely the user phrased them ("ช่วย", "could you").
+ *
+ * False-positive surface is deliberately small — verb + noun proximity is
+ * required, and inquiry verbs ("คือ", "is", "what") are not in the verb set.
+ * Bare nouns without an authoring verb ("นิยายคืออะไร", "what is a chapter")
+ * are NOT matched. The pattern is checked BEFORE STU mapping so it pre-empts
+ * wrong domain classification at the source.
+ */
+const CREATIVE_DELIVERABLE_THAI =
+  /(เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ออกแบบ)[^.!?]{0,40}(นิยาย|นิทาน|เรื่อง(?:สั้น|ราว|ยาว)?|บทความ|รายงาน|บท|ตอน|กลอน|สคริปต์)/i;
+
+const CREATIVE_DELIVERABLE_ENGLISH =
+  /\b(write|draft|compose|author|create|generate)\b[^.!?]{0,40}\b(story|stories|chapter|chapters|article|essay|report|poem|script|spec|outline|deck|novel|book)\b/i;
+
+/**
+ * True when the goal text is a structurally unambiguous creative-deliverable
+ * request. Used by `composeDeterministicCandidate` to short-circuit
+ * classification before the LLM advisory tier runs.
+ */
+function matchesCreativeDeliverable(text: string): boolean {
+  return CREATIVE_DELIVERABLE_THAI.test(text) || CREATIVE_DELIVERABLE_ENGLISH.test(text);
+}
+
+/**
  * Compose a deterministic candidate from STU + rule-based tool classifier.
  * Returns an `IntentResolution` skeleton with `reasoningSource='deterministic'`.
  *
@@ -149,6 +184,30 @@ export function composeDeterministicCandidate(
   input: TaskInput,
   understanding: SemanticTaskUnderstanding,
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
+  // Highest-priority pre-rule: explicit creative-deliverable pattern
+  // overrides STU classification entirely. See CREATIVE_DELIVERABLE_PATTERN
+  // doc for the rationale (bedtime-story comprehender mis-classification).
+  // Confidence is set above DETERMINISTIC_SKIP_THRESHOLD so the resolver
+  // bypasses the LLM advisory tier when the pattern matches — saves a
+  // round-trip and prevents the LLM from second-guessing a structural fact.
+  if (matchesCreativeDeliverable(input.goal)) {
+    return {
+      strategy: 'agentic-workflow',
+      refinedGoal: input.goal,
+      confidence: 0.9,
+      reasoning:
+        'Deterministic creative-deliverable pattern matched (verb + artifact noun proximity) — agentic-workflow forced regardless of STU classification.',
+      reasoningSource: 'deterministic',
+      type: 'known',
+      deterministicCandidate: {
+        strategy: 'agentic-workflow',
+        confidence: 0.9,
+        source: 'creative-deliverable-pattern',
+        ambiguous: false,
+      },
+    };
+  }
+
   const ruleStrategy = mapUnderstandingToStrategy(understanding);
   const directClass = classifyDirectTool(input.goal);
   const isInspection = INSPECTION_VERB_PATTERN.test(input.goal);

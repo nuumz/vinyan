@@ -18,9 +18,9 @@ import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
-import { runWithLLMTrace } from './llm/llm-trace-context.ts';
-import { formatEscapeProtocolBlock, parseEscapeSentinel } from './intent/escape-sentinel.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
+import { formatEscapeProtocolBlock, parseEscapeSentinel } from './intent/escape-sentinel.ts';
+import { runWithLLMTrace } from './llm/llm-trace-context.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
@@ -1585,20 +1585,20 @@ async function buildConversationalResult(
   // sub-task that bounces back to conversational cannot loop forever; the
   // second match falls through and the conversational answer is returned
   // as-is (degraded-but-safe).
-  const escape = parseEscapeSentinel(answer);
-  if (escape.matched && (input.intentEscapeAttempts ?? 0) < 1) {
+  const escapeSignal = parseEscapeSentinel(answer);
+  if (escapeSignal.matched && (input.intentEscapeAttempts ?? 0) < 1) {
     deps.bus?.emit('intent:escape_sentinel_fired', {
       taskId: input.id,
       persona: resolvedAgent?.id,
-      reason: escape.reason ?? 'unspecified',
+      reason: escapeSignal.reason ?? 'unspecified',
     });
-    const seededWorkflowPrompt = `${escape.reason ?? 'persona escaped conversational shortcircuit'}\nOriginal user request: ${input.goal}`;
+    const seededWorkflowPrompt = `${escapeSignal.reason ?? 'persona escaped conversational shortcircuit'}\nOriginal user request: ${input.goal}`;
     const updatedIntent: IntentResolution = {
       ...intent,
       strategy: 'agentic-workflow',
       workflowPrompt: seededWorkflowPrompt,
       reasoningSource: 'persona-escape',
-      reasoning: `${intent.reasoning ?? ''} [persona-escape: ${escape.reason ?? 'unspecified'}]`.trim(),
+      reasoning: `${intent.reasoning ?? ''} [persona-escape: ${escapeSignal.reason ?? 'unspecified'}]`.trim(),
     };
     return {
       kind: 'reroute',

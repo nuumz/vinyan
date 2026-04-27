@@ -50,17 +50,22 @@ Strategy definitions:
 
 CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
-1. CONVERSATIONAL test — Is this a SHORT, simple exchange?
-   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
-   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work", "นิยายเว็บตูนคืออะไร") → "conversational"
-   - Meta-questions about system capabilities → "conversational"
-   - DELIVERABLE META-RULE: If the answer would be a copy/paste/publishable ARTIFACT (novel chapter, full article, script, deck, application, website, report, summary) — regardless of the verb the user chose or whether they phrased it as a question — it is ALWAYS "agentic-workflow". A 1–3 sentence answer is NOT a deliverable; anything longer likely is.
-   - Semantic test (not keyword match): ask yourself "would a complete, satisfying answer fit in one short paragraph?" If NO → "agentic-workflow".
-   - Question FORM ≠ conversational INTENT. "ช่วยทำ X ได้ไหม", "can you build X?" — when X is a concrete deliverable, treat as REQUEST TO DO X → "agentic-workflow".
-   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation.
-   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization, NOT authoring). Read the verb + object semantically, not keywords in isolation.
+1. DELIVERABLE TEST — Apply FIRST. Overrides every other test.
+   Ask one question: "Would the user-acceptable answer be a publishable ARTIFACT — story chapter, full article, report, code module, slide deck, multi-paragraph prose ≥3 paragraphs, or anything the user would copy/paste/publish?"
+   If YES → "agentic-workflow". STOP. Do not consider conversational.
+   - Politeness words ("ช่วย", "could you", "please") DO NOT make a deliverable conversational.
+   - Question form ("can you write X?", "ช่วยเขียน X ได้ไหม") does NOT make a deliverable conversational when X is a concrete artifact.
+   - Quantity quantifiers ("สัก 2 บท", "5 chapters", "a long report") are unambiguous deliverable signals.
+   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed deliverable → "agentic-workflow" with workflowPrompt reconstructed from the conversation.
+   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization). The deliverable test is about what the ANSWER would look like, not what nouns appear in the goal.
 
-2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
+2. CONVERSATIONAL test — Apply only if the deliverable test said NO.
+   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
+   - Pure factual questions answerable in 1-3 sentences ("what is X", "นิยายเว็บตูนคืออะไร") → "conversational"
+   - Meta-questions about system capabilities → "conversational"
+   - If you cannot fit a complete, satisfying answer in one short paragraph, this is NOT conversational — go back to rule 1.
+
+3. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
    - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
    - If the user wants an ANSWER, SUMMARY, LIST, or REPORT → NEVER "direct-tool"
    - Words like "summarize", "list", "find all", "analyze", "report", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool"
@@ -73,19 +78,19 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - Example: "open Gmail" → shell_exec with a browser/open command for Gmail's web URL, NOT "open -a gmail" and NOT cross-platform fallback chains
    - Only use a native app launch when the target is clearly a desktop app
 
-3. FULL-PIPELINE test — Is this a focused code change?
+4. FULL-PIPELINE test — Is this a focused code change?
    - Has explicit file targets AND involves code modification → "full-pipeline"
    - Bug fix, implement feature, refactor specific module → "full-pipeline"
    - If it requires multi-file coordination OR exploration first → "agentic-workflow" instead
 
-4. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
+5. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
    - Multi-step tasks, research, analysis, synthesis
    - Creative generation: stories, essays, poems, scripts, long-form content
    - Tasks requiring exploration before action
    - Tasks spanning multiple files without clear targets
    - Any task where the output is substantial text (more than a short paragraph)
 
-5. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
+6. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
    - If user asks for a CATEGORY (e.g., "แอพ mail", "email app", "browser") and a preference exists → ALWAYS use the preferred app
    - Generate the directToolCall command for the PREFERRED app, not the platform default
    - Example: if user prefers "gmail" for "mail", then "เปิดแอพ mail" → open Gmail's URL, NOT "open -a Mail"

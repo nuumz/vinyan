@@ -128,6 +128,14 @@ export async function executeWorkflow(
       const reason = decision === 'timeout'
         ? `Approval timed out after ${timeoutMs}ms`
         : 'User rejected workflow plan';
+      // Emit plan_rejected on timeout too. User-driven rejections already
+      // fire this from the API layer, but the timeout path resolves inside
+      // awaitApprovalDecision without touching the bus — and UIs subscribed
+      // to plan_ready/plan_approved/plan_rejected need a terminal signal to
+      // tear down the inline approval card.
+      if (decision === 'timeout') {
+        bus.emit('workflow:plan_rejected', { taskId: input.id, reason });
+      }
       bus.emit('workflow:complete', {
         goal: plan.goal,
         status: 'failed',

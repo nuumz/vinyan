@@ -55,6 +55,14 @@ const SSE_EVENTS: BusEventName[] = [
   'agent:plan_update',
   'llm:stream_delta',
   'agent:clarification_requested',
+  // Phase E: workflow plan approval gate (long-form goals pause for user OK
+  // via `workflow:plan_ready` with `awaitingApproval: true`). Without these
+  // on the wire, the chat UI can't render the inline approval prompt and the
+  // workflow executor times out after `approvalTimeoutMs` (default 600s)
+  // returning "Approval timed out after 600000ms" as the synthesized result.
+  'workflow:plan_ready',
+  'workflow:plan_approved',
+  'workflow:plan_rejected',
   // Phase 0.5: surface guardrail signals through SSE so web/extension
   // clients see input-injection / bypass detections in real time.
   'guardrail:injection_detected',
@@ -379,6 +387,11 @@ export function createSessionSSEStream(
         'llm:stream_delta',
         'agent:clarification_requested',
         'agent:plan_update',
+        // Phase E: workflow approval gate — these all carry `taskId` so they
+        // pass the membership filter built from `task:start` above.
+        'workflow:plan_ready',
+        'workflow:plan_approved',
+        'workflow:plan_rejected',
       ];
 
       for (const eventName of membershipFilteredEvents) {

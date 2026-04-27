@@ -340,16 +340,12 @@ describe('resolveIntent (provider tier preference)', () => {
 
 describe('resolveIntent (structural features)', () => {
   test('renders length, question marker, and turn number into the user prompt', async () => {
-    // Capture ONLY the first call's prompt — the goal carries a deliverable
-    // signal so the two-stage classifier's verifier (D.5) will fire a
-    // second provider.generate() with its own focused prompt. We're testing
-    // the primary classifier's user-prompt assembly, not the verifier's.
     let captured = '';
     const provider: LLMProvider = {
       id: 'capture',
       tier: 'fast',
       async generate(req): Promise<LLMResponse> {
-        if (!captured) captured = req.userPrompt;
+        captured = req.userPrompt;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
           toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',

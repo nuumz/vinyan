@@ -51,12 +51,19 @@ describe('INTENT_SYSTEM_PROMPT', () => {
     }
   });
 
-  it('documents CRITICAL discrimination rules in order', () => {
-    const conversational = INTENT_SYSTEM_PROMPT.indexOf('1. CONVERSATIONAL test');
-    const directTool = INTENT_SYSTEM_PROMPT.indexOf('2. DIRECT-TOOL test');
-    const fullPipeline = INTENT_SYSTEM_PROMPT.indexOf('3. FULL-PIPELINE test');
-    const agentic = INTENT_SYSTEM_PROMPT.indexOf('4. AGENTIC-WORKFLOW');
-    expect(conversational).toBeGreaterThan(-1);
+  it('documents CRITICAL discrimination rules in order, with DELIVERABLE TEST first', () => {
+    // The DELIVERABLE TEST is rule #1 by design — it overrides every other
+    // test so deliverables (story chapters, articles, reports) can never be
+    // mis-classified as conversational regardless of polite framing. The
+    // bedtime-story bug was caused by the CONVERSATIONAL test being
+    // evaluated first; promoting DELIVERABLE TEST closes that hole.
+    const deliverable = INTENT_SYSTEM_PROMPT.indexOf('1. DELIVERABLE TEST');
+    const conversational = INTENT_SYSTEM_PROMPT.indexOf('2. CONVERSATIONAL test');
+    const directTool = INTENT_SYSTEM_PROMPT.indexOf('3. DIRECT-TOOL test');
+    const fullPipeline = INTENT_SYSTEM_PROMPT.indexOf('4. FULL-PIPELINE test');
+    const agentic = INTENT_SYSTEM_PROMPT.indexOf('5. AGENTIC-WORKFLOW');
+    expect(deliverable).toBeGreaterThan(-1);
+    expect(conversational).toBeGreaterThan(deliverable);
     expect(directTool).toBeGreaterThan(conversational);
     expect(fullPipeline).toBeGreaterThan(directTool);
     expect(agentic).toBeGreaterThan(fullPipeline);

@@ -39,15 +39,6 @@ import {
 } from './intent/merge.ts';
 import { detectShortAffirmativeContinuation } from './intent/short-affirmative.ts';
 import {
-  evaluateUncertainty,
-  hasDeliverableSignal,
-  VERIFIER_OVERRIDE_CONFIDENCE,
-} from './intent/uncertainty-detector.ts';
-import {
-  synthesizeWorkflowPromptFromGoal,
-  verifyDeliverable,
-} from './intent/deliverable-verifier.ts';
-import {
   buildClassifierUserPrompt,
   buildComprehensionBlock,
 } from './intent/prompt.ts';
@@ -427,28 +418,13 @@ export async function resolveIntent(
   // may contradict the deterministic candidate (which was computed on the
   // original, ambiguous goal). Defer to the LLM so it can honor the reply
   // via the ROUTING RULE emitted in the classifier prompt.
-  //
-  // Two-stage classifier guard: when the deterministic verdict is the
-  // cheapest class (conversational / direct-tool) BUT the goal carries a
-  // strong structural deliverable signal, skipping the LLM tier would deny
-  // the verifier (D.5) any chance to catch the misclassification. Force the
-  // LLM advisory path so the verifier can run downstream. Reproducer was
-  // the bedtime-story bug: STU/comprehender said `taskDomain=conversational`
-  // for "ช่วยเขียนนิยายก่อนนอน...สัก2บท" → high-confidence deterministic skip
-  // → no LLM call → conversational shortcircuit fired with hallucinated
-  // delegation. The override below routes such inputs through merge + verify.
   const isClarificationAnswer =
     deps.comprehension?.params.data?.state.isClarificationAnswer === true;
-  const skipSuppressedByDeliverableSignal =
-    deterministic !== null &&
-    (deterministic.strategy === 'conversational' || deterministic.strategy === 'direct-tool') &&
-    hasDeliverableSignal(input.goal);
   if (
     deterministic &&
     deterministic.confidence >= DETERMINISTIC_SKIP_THRESHOLD &&
     !deterministic.deterministicCandidate.ambiguous &&
-    !isClarificationAnswer &&
-    !skipSuppressedByDeliverableSignal
+    !isClarificationAnswer
   ) {
     return finalizeDeterministicSkip(input, deterministic, deps, cacheKey, now);
   }
@@ -482,73 +458,6 @@ export async function resolveIntent(
           },
           type: 'known',
         };
-
-  // [D.5] Two-stage classifier: uncertainty detector + focused verifier.
-  // Embodies A2 (first-class uncertainty) and A1 (separate verifier from
-  // generator). When the merged verdict is conversational/direct-tool but
-  // structural deliverable signals are present, ask a narrow binary verifier
-  // whether the goal expects a publishable artifact. On `yes`, flip to
-  // agentic-workflow with a synthesized workflow prompt.
-  //
-  // The detector NEVER fires when the merged strategy is already on the
-  // heavier branch — this is a safeguard against under-classification, not
-  // a re-litigator of correct verdicts.
-  if (mergeResult.type !== 'contradictory' || !isClarificationAnswer) {
-    const uncertainty = evaluateUncertainty({
-      merged: mergeResult.resolution,
-      llm: parsed,
-      deterministicCandidate: deterministic?.deterministicCandidate ?? null,
-      goal: input.goal,
-    });
-    if (uncertainty.uncertain) {
-      deps.bus?.emit('intent:verifier_invoked', {
-        taskId: input.id,
-        reasons: uncertainty.reasons,
-        primaryStrategy: mergeResult.resolution.strategy,
-        primaryConfidence: mergeResult.resolution.confidence,
-      });
-      try {
-        const verdict = await verifyDeliverable(deps.registry, input.goal, mergeResult.resolution.reasoning);
-        if (verdict.isDeliverable) {
-          const fromStrategy = mergeResult.resolution.strategy;
-          const synthesizedPrompt = synthesizeWorkflowPromptFromGoal(input.goal, {
-            artifactKind: verdict.artifactKind,
-            estimatedSections: verdict.estimatedSections,
-          });
-          // Confidence clamp: a NARROW binary verifier verdict is empirically
-          // more reliable than a wide multi-class primary verdict, so the
-          // override floor is higher than the merged confidence — this is
-          // not confidence fudging, it reflects the question's narrower scope.
-          const overrideConfidence = Math.max(
-            VERIFIER_OVERRIDE_CONFIDENCE,
-            mergeResult.resolution.confidence,
-          );
-          mergeResult = {
-            resolution: {
-              ...mergeResult.resolution,
-              strategy: 'agentic-workflow',
-              workflowPrompt: synthesizedPrompt,
-              confidence: overrideConfidence,
-              reasoning: `${mergeResult.resolution.reasoning} [verifier override: ${verdict.reason}]`,
-              reasoningSource: 'verifier',
-            },
-            type: 'known',
-          };
-          deps.bus?.emit('intent:verifier_overrode', {
-            taskId: input.id,
-            fromStrategy,
-            toStrategy: 'agentic-workflow',
-            artifactKind: verdict.artifactKind,
-            reason: verdict.reason,
-          });
-        }
-      } catch {
-        // Verifier failure is non-fatal — the original verdict survives.
-        // The bus event `intent:verifier_invoked` already fired so observers
-        // can still measure trigger rate.
-      }
-    }
-  }
 
   // [D.2] Clarification-answer bypass. When the comprehender flagged this
   // turn as an answer to a prior clarification, the user has JUST disambiguated

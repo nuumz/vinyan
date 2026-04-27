@@ -57,6 +57,11 @@ Strategy selection rules:
 - "delegate-sub-agent": complex sub-tasks that need their own planning cycle
 - "human-input": when you genuinely cannot proceed without user clarification
 
+Creative writing rules:
+- For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.
+- Use creative roles in step descriptions: creative-director, plot-architect, story-strategist, novelist, editor, critic when needed.
+- Do NOT use system-designer, ts-coder, test-coder, full-pipeline, direct-tool, code mutation, tests, or implementation steps unless the user explicitly asks for software/code.
+
 Guidelines:
 - Start with a knowledge-query step to gather context when the goal is broad
 - Use llm-reasoning for synthesis and analysis steps
@@ -106,7 +111,10 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
         maxTokens: 4000,
       });
 
-      const cleaned = response.content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      const cleaned = response.content
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '');
       const parsed = JSON.parse(cleaned);
       const plan = WorkflowPlanSchema.parse(parsed);
 

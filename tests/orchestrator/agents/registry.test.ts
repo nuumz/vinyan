@@ -1,8 +1,8 @@
 /**
  * AgentRegistry tests — verify built-in defaults, config overrides, disk soul loading.
  */
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
@@ -20,10 +20,24 @@ afterEach(() => {
 });
 
 describe('AgentRegistry', () => {
-  test('ships with 4 built-in agents when config is empty', () => {
+  test('ships with built-in coding and creative agents when config is empty', () => {
     const reg = loadAgentRegistry(workspace, undefined);
-    const ids = reg.listAgents().map((a) => a.id).sort();
-    expect(ids).toEqual(['secretary', 'system-designer', 'ts-coder', 'writer']);
+    const ids = reg
+      .listAgents()
+      .map((a) => a.id)
+      .sort();
+    expect(ids).toEqual([
+      'creative-director',
+      'critic',
+      'editor',
+      'novelist',
+      'plot-architect',
+      'secretary',
+      'story-strategist',
+      'system-designer',
+      'ts-coder',
+      'writer',
+    ]);
   });
 
   test('built-ins are marked builtin: true', () => {
@@ -64,8 +78,8 @@ describe('AgentRegistry', () => {
     const agent = reg.getAgent('ts-coder');
     expect(agent!.name).toBe('Custom TS Coder');
     expect(agent!.description).toBe('Our team style');
-    // Still 4 total (override, not addition)
-    expect(reg.listAgents().length).toBe(4);
+    // Still the same total (override, not addition)
+    expect(reg.listAgents().length).toBe(10);
   });
 
   test('soul file on disk overrides built-in soul (Phase 2 unified path)', () => {

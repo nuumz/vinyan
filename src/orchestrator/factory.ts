@@ -142,7 +142,7 @@ import { UnderstandingEngine } from './understanding/understanding-engine.ts';
 import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { setupUserMdObserver } from './user-context/wiring.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
-import { WorkflowRegistry } from './workflows/workflow-registry.ts';
+import { WorkflowRegistry } from './workflow/workflow-registry.ts';
 
 export interface OrchestratorConfig {
   workspace: string;

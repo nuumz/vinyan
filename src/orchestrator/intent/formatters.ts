@@ -81,8 +81,10 @@ export function formatAgentCatalog(
     lines.push(`  - ${a.id}: ${a.description}${hintsStr}`);
   }
   lines.push(
-    'Return the chosen agent id in the response `agentId` field, with a brief `agentSelectionReason`.',
+    'Creative writing rule: for novel, fiction, book, webtoon, story, plot, chapter, or prose tasks, choose creative-director for coordination or a creative specialist (plot-architect, story-strategist, novelist, editor, critic) for narrow requests. Do not choose code/system agents for fiction deliverables.',
   );
+  lines.push('Only return ids from this roster. Do not invent specialist agent ids.');
+  lines.push('Return the chosen agent id in the response `agentId` field, with a brief `agentSelectionReason`.');
   return `\n${lines.join('\n')}`;
 }
 

@@ -988,6 +988,20 @@ export async function runAgentLoop(
   };
 
   try {
+    // Bootstrap-precondition check: agent-worker-entry hard-requires
+    // VINYAN_PROXY_SOCKET (it calls back to the orchestrator's LLM via the
+    // proxy). When deps.proxySocketPath is absent the child would log
+    // "VINYAN_PROXY_SOCKET env var is required for subprocess bootstrap" and
+    // exit before reading the init turn, leaving the parent stuck waiting
+    // on an empty stdout (the smoke-test 98s timeout in known-issues #9/#10).
+    // Surface the misconfiguration synchronously instead.
+    if (!deps.proxySocketPath) {
+      throw new Error(
+        'agent-loop: deps.proxySocketPath is required to spawn the agent worker subprocess. ' +
+          'Wire one in factory.ts (createOrchestrator) or use the in-process worker pool path for L0/L1.',
+      );
+    }
+
     // Compress perception before sending (fix #5)
     const compressedPerception = deps.compressPerception(perception, budget.toSnapshot().contextWindow);
 
@@ -1003,7 +1017,7 @@ export async function runAgentLoop(
         VINYAN_ORCHESTRATOR_PID: String(process.pid),
         // Forward the selected worker's tier so subprocess uses the correct provider
         VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
-        ...(deps.proxySocketPath ? { VINYAN_PROXY_SOCKET: deps.proxySocketPath } : {}),
+        VINYAN_PROXY_SOCKET: deps.proxySocketPath,
       },
     }) as unknown as SubprocessHandle;
 

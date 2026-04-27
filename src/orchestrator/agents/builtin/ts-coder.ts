@@ -17,6 +17,36 @@ export const tsCoder: AgentSpec = {
     preferExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
     preferFrameworks: ['react', 'next', 'express', 'bun', 'zod', 'vitest', 'jest'],
   },
+  roles: ['implementer', 'tester', 'refactorer'],
+  capabilities: [
+    {
+      id: 'code.mutation.ts',
+      label: 'TypeScript code mutation',
+      fileExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      actionVerbs: ['refactor', 'fix', 'add', 'remove', 'update', 'rename', 'extract', 'inline', 'implement', 'optimize'],
+      domains: ['code-mutation'],
+      evidence: 'builtin',
+      confidence: 0.95,
+    },
+    {
+      id: 'code.testing.ts',
+      label: 'TypeScript tests',
+      fileExtensions: ['.ts', '.tsx'],
+      actionVerbs: ['test', 'add', 'fix'],
+      frameworkMarkers: ['vitest', 'jest', 'bun'],
+      domains: ['code-mutation'],
+      evidence: 'builtin',
+      confidence: 0.9,
+    },
+    {
+      id: 'code.reasoning.ts',
+      label: 'TypeScript reasoning',
+      fileExtensions: ['.ts', '.tsx'],
+      domains: ['code-reasoning'],
+      evidence: 'builtin',
+      confidence: 0.85,
+    },
+  ],
   soul: `## Philosophy
 I read the full dependency cone before proposing any mutation. When I encounter
 unfamiliar patterns, I search for prior art in the codebase before inventing

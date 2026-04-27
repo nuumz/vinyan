@@ -280,16 +280,20 @@ export async function executeVerifyPhase(
 
   const zeroMutationPass = workerResult.mutations.length === 0 && verification.passed;
 
-  // L0 + oracle rejection → return 'escalated' immediately (never commit when oracle says no)
-  // Must be checked BEFORE effectiveOutcome calculation to avoid setting outcome to 'failure'
-  if (routing.level === 0 && !verification.passed) {
+  // L0 + oracle rejection (terminal): only short-circuit when the caller has
+  // explicitly pinned routing to L0 via `MIN_ROUTING_LEVEL:0` — escalation is
+  // not allowed by user contract, so we surface an immediate `'escalated'`
+  // result instead of looping. Without that pin, fall through to the normal
+  // failure→retry→escalate path so the routing loop iterates L1→L2→L3 (which
+  // §16.4 criterion 3 requires).
+  const l0Pinned = input.constraints?.some((c) => c === 'MIN_ROUTING_LEVEL:0');
+  if (routing.level === 0 && !verification.passed && l0Pinned) {
     deps.bus?.emit('task:escalate', {
       taskId: input.id,
       fromLevel: routing.level,
       toLevel: (routing.level + 1) as RoutingLevel,
       reason: verification.reason ?? 'Oracle rejection at L0',
     });
-    // Build a minimal trace for the escalated result
     const escalatedTrace: ExecutionTrace = {
       id: `trace-${input.id}-${routing.level}-escalated`,
       taskId: input.id,

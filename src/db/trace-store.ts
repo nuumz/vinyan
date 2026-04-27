@@ -237,12 +237,25 @@ export class TraceStore {
 
   /** Update a trace's shadow validation result (called after async shadow processing). */
   updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
-    this.db
-      .prepare(
-        `UPDATE execution_traces SET shadow_validation = ?, validation_depth = 'structural_and_tests'
+    // Wrap in IMMEDIATE transaction so the writer claims the WAL lock up
+    // front. Bare auto-commit `.run()` racing with concurrent shadow:complete
+    // handlers caused SQLITE_IOERR_VNODE on macOS. busy_timeout (set on the
+    // connection in vinyan-db.ts) handles transient contention; this wrapping
+    // prevents partial-write interleaving.
+    const stmt = this.db.prepare(
+      `UPDATE execution_traces SET shadow_validation = ?, validation_depth = 'structural_and_tests'
        WHERE task_id = ?`,
-      )
-      .run(JSON.stringify(result), taskId);
+    );
+    const tx = this.db.transaction((payload: string, id: string) => {
+      stmt.run(payload, id);
+    });
+    try {
+      tx.immediate(JSON.stringify(result), taskId);
+    } catch (err) {
+      // Last-resort: shadow validation is best-effort metadata; a transient I/O
+      // failure must not propagate up and abort the active task. Log and swallow.
+      console.warn('[vinyan] updateShadowValidation failed (best-effort):', err);
+    }
   }
 }
 

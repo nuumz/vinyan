@@ -16,6 +16,24 @@ export const secretary: AgentSpec = {
     preferDomains: ['conversational', 'general-reasoning'],
     minLevel: 0,
   },
+  roles: ['assistant', 'summarizer'],
+  capabilities: [
+    {
+      id: 'conversation.qa',
+      label: 'Conversational Q&A',
+      domains: ['conversational'],
+      actionVerbs: ['summarize', 'lookup', 'answer'],
+      evidence: 'builtin',
+      confidence: 0.9,
+    },
+    {
+      id: 'reasoning.summarize',
+      label: 'Summarization & note-taking',
+      domains: ['general-reasoning', 'conversational'],
+      evidence: 'builtin',
+      confidence: 0.85,
+    },
+  ],
   // ACL: no code mutation privileges
   allowedTools: ['file_read', 'grep_search', 'file_search', 'web_fetch'],
   capabilityOverrides: {

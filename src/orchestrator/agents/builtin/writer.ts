@@ -16,6 +16,26 @@ export const writer: AgentSpec = {
     preferDomains: ['general-reasoning', 'conversational'],
     preferExtensions: ['.md', '.mdx', '.txt', '.rst'],
   },
+  roles: ['writer', 'documenter'],
+  capabilities: [
+    {
+      id: 'writing.docs',
+      label: 'Technical writing & documentation',
+      fileExtensions: ['.md', '.mdx', '.txt', '.rst'],
+      actionVerbs: ['add', 'update', 'rewrite', 'document', 'create'],
+      domains: ['general-reasoning'],
+      evidence: 'builtin',
+      confidence: 0.92,
+    },
+    {
+      id: 'writing.prose.short',
+      label: 'Short-form prose',
+      fileExtensions: ['.md', '.txt'],
+      domains: ['general-reasoning', 'conversational'],
+      evidence: 'builtin',
+      confidence: 0.85,
+    },
+  ],
   // ACL: can read + write markdown but no shell/network
   capabilityOverrides: {
     shell: false,

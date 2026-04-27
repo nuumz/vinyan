@@ -6,7 +6,7 @@ import {
   BUILT_IN_WORKFLOWS,
   WorkflowRegistry,
   type WorkflowMetadata,
-} from '../../../src/orchestrator/workflows/workflow-registry.ts';
+} from '../../../src/orchestrator/workflow/workflow-registry.ts';
 
 describe('WorkflowRegistry', () => {
   test('constructs with 4 built-in workflows by default', () => {

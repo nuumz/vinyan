@@ -331,6 +331,24 @@ const AgentRoutingHintsSchema = z.object({
 });
 
 /**
+ * Capability claim — what the agent advertises it can do. Drives
+ * task ⇄ agent matching by skills/roles instead of by id. Optional;
+ * agents without claims fall back to inferred capabilities from
+ * routing_hints at load time.
+ */
+const AgentCapabilitySchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9._-]*$/, 'capability id must be kebab/dot-case'),
+  label: z.string().optional(),
+  file_extensions: z.array(z.string()).optional(),
+  action_verbs: z.array(z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  framework_markers: z.array(z.string()).optional(),
+  role: z.string().optional(),
+  evidence: z.enum(['builtin', 'evolved', 'synthesized', 'inferred']).default('builtin'),
+  confidence: z.number().min(0).max(1).default(0.9),
+});
+
+/**
  * AgentSpec — specialist agent configuration. Multiple allowed per workspace.
  * Each spec has own persona (soul.md), ACL, and routing hints.
  * Distinct from the workspace singleton AgentProfile (id='local').
@@ -357,6 +375,14 @@ export const AgentSpecSchema = z.object({
     .optional(),
   /** Routing hints for the intent resolver. */
   routing_hints: AgentRoutingHintsSchema.optional(),
+  /**
+   * Capability claims — drives capability-first task ⇄ agent matching.
+   * Optional. Loader fills inferred capabilities from routing_hints when
+   * absent so existing config keeps working.
+   */
+  capabilities: z.array(AgentCapabilitySchema).optional(),
+  /** Coarse role tags (e.g. 'editor', 'researcher', 'planner'). */
+  roles: z.array(z.string()).optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),
 });

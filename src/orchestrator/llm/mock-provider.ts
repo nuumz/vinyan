@@ -60,13 +60,11 @@ export function createScriptedMockProvider(
 
 export function createMockProvider(options: MockProviderOptions = {}): LLMProvider {
   const buildResponse = (): LLMResponse => {
-    const content =
-      options.responseContent ??
-      JSON.stringify({
-        proposedMutations: [],
-        proposedToolCalls: options.responseToolCalls ?? [],
-        uncertainties: [],
-      });
+    const content = options.responseContent ?? JSON.stringify({
+      proposedMutations: [],
+      proposedToolCalls: options.responseToolCalls ?? [],
+      uncertainties: [],
+    });
     return {
       content,
       thinking: options.thinking,

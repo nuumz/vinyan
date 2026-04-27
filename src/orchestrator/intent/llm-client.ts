@@ -16,14 +16,9 @@
  */
 
 import type { z } from 'zod';
-import type { LLMProvider } from '../types.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
-import {
-  IntentResponseSchema,
-  normalizeDirectToolCall,
-  parseIntentResponse,
-  withTimeout,
-} from './parser.ts';
+import type { LLMProvider } from '../types.ts';
+import { type IntentResponseSchema, normalizeDirectToolCall, parseIntentResponse, withTimeout } from './parser.ts';
 
 /**
  * Canonical intent-classifier system prompt. Contains:
@@ -101,6 +96,7 @@ workflowPrompt guidelines (for "agentic-workflow" ONLY):
 - Include: what to accomplish, what approach to take, what success looks like
 - Be specific about outputs expected (e.g., "produce a bullet-point summary", "list all files matching X")
 - Do NOT include generic platitudes like "be careful" — give actionable steps
+- Creative writing rule: for novel/book/webtoon/story tasks, "write" means author prose, not code. Brief a creative team using these roles as needed: creative-director (team lead), plot-architect (plot options), story-strategist (plan/structure), novelist (draft prose), editor (revise), critic (review). Do NOT assign ts-coder, system-designer, test-coder, or software roles unless the user explicitly asks for software/code.
 
 Available tools (use ONLY these exact names — do NOT invent tool names):
 - shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }
@@ -176,10 +172,7 @@ export function pickPrimaryProvider(registry: LLMProviderRegistry): LLMProvider 
 }
 
 /** Pick a provider other than `excludeId` for the classify-again retry. */
-export function pickAlternateProvider(
-  registry: LLMProviderRegistry,
-  excludeId: string,
-): LLMProvider | null {
+export function pickAlternateProvider(registry: LLMProviderRegistry, excludeId: string): LLMProvider | null {
   for (const tier of TIER_PREFERENCE) {
     const p = registry.selectByTier(tier);
     if (p && p.id !== excludeId) return p;

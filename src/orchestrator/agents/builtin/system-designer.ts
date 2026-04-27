@@ -17,6 +17,31 @@ export const systemDesigner: AgentSpec = {
     preferDomains: ['code-reasoning', 'general-reasoning'],
     minLevel: 1,
   },
+  roles: ['architect', 'designer', 'planner'],
+  capabilities: [
+    {
+      id: 'design.api',
+      label: 'API & contract design',
+      domains: ['code-reasoning', 'general-reasoning'],
+      actionVerbs: ['design', 'add', 'refactor', 'plan'],
+      evidence: 'builtin',
+      confidence: 0.92,
+    },
+    {
+      id: 'design.architecture',
+      label: 'Architecture & module boundaries',
+      domains: ['code-reasoning', 'general-reasoning'],
+      evidence: 'builtin',
+      confidence: 0.9,
+    },
+    {
+      id: 'design.data-model',
+      label: 'Data modeling & schema design',
+      domains: ['code-reasoning'],
+      evidence: 'builtin',
+      confidence: 0.88,
+    },
+  ],
   // ACL: designers don't need destructive shell; read-heavy
   capabilityOverrides: {
     shell: false,

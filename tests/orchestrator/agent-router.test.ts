@@ -61,9 +61,7 @@ describe('AgentRouter', () => {
   test('.ts file routes to ts-coder via rule-match', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(
-        makeInput({ taskType: 'code', targetFiles: ['src/foo.ts'] }),
-      );
+      const decision = router.route(makeInput({ taskType: 'code', targetFiles: ['src/foo.ts'] }));
       expect(decision.agentId).toBe('ts-coder');
       expect(decision.reason).toBe('rule-match');
       expect(decision.score).toBeGreaterThan(0.4);
@@ -75,9 +73,7 @@ describe('AgentRouter', () => {
   test('.md file routes to writer via rule-match', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(
-        makeInput({ taskType: 'code', targetFiles: ['README.md'] }),
-      );
+      const decision = router.route(makeInput({ taskType: 'code', targetFiles: ['README.md'] }));
       expect(decision.agentId).toBe('writer');
       expect(decision.reason).toBe('rule-match');
     } finally {
@@ -88,11 +84,42 @@ describe('AgentRouter', () => {
   test('ambiguous task (no file, reasoning) signals needs-llm', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(
-        makeInput({ taskType: 'reasoning', goal: 'what is the meaning of life?' }),
-      );
+      const decision = router.route(makeInput({ taskType: 'reasoning', goal: 'what is the meaning of life?' }));
       // No file → no extension signal; reasoning domain could match multiple
       expect(decision.reason).toBe('needs-llm');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('long-form novel writing routes to the creative team lead, not code specialists', () => {
+    const { router, cleanup } = setupRouter();
+    try {
+      const decision = router.route(
+        makeInput({
+          taskType: 'reasoning',
+          goal: 'อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง',
+        }),
+      );
+      expect(decision.agentId).toBe('creative-director');
+      expect(decision.reason).toBe('rule-match');
+      expect(decision.agentId).not.toBe('system-designer');
+      expect(decision.agentId).not.toBe('ts-coder');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('specific creative requests route to the matching creative specialist', () => {
+    const { router, cleanup } = setupRouter();
+    try {
+      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยคิดพล็อตนิยายแฟนตาซี' })).agentId).toBe(
+        'plot-architect',
+      );
+      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยวางโครงเรื่องนิยาย 20 ตอน' })).agentId).toBe(
+        'story-strategist',
+      );
+      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยบรรณาธิการนิยายบทนี้' })).agentId).toBe('editor');
     } finally {
       cleanup();
     }
@@ -101,9 +128,7 @@ describe('AgentRouter', () => {
   test('runner-up metadata included for rule-match decisions', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(
-        makeInput({ taskType: 'code', targetFiles: ['src/foo.ts'] }),
-      );
+      const decision = router.route(makeInput({ taskType: 'code', targetFiles: ['src/foo.ts'] }));
       // With 4 built-ins, runner-up should exist
       if (decision.reason === 'rule-match') {
         expect(decision.runnerUp).toBeDefined();
@@ -123,19 +148,11 @@ describe('AgentRouter', () => {
       expect(sd).not.toBeNull();
       expect(sd!.routingHints?.minLevel).toBe(1);
 
-      const decisionL0 = router.route(
-        makeInput({ taskType: 'reasoning', goal: 'what is X?' }),
-        undefined,
-        0,
-      );
+      const decisionL0 = router.route(makeInput({ taskType: 'reasoning', goal: 'what is X?' }), undefined, 0);
       expect(decisionL0.agentId).not.toBe('system-designer');
 
       // Same task at L1+ — system-designer is eligible again.
-      const decisionL1 = router.route(
-        makeInput({ taskType: 'reasoning', goal: 'design an auth flow' }),
-        undefined,
-        1,
-      );
+      const decisionL1 = router.route(makeInput({ taskType: 'reasoning', goal: 'design an auth flow' }), undefined, 1);
       // rule-match may or may not pick system-designer (depends on
       // score/margin with the writer); the key invariant is that it's not
       // structurally blocked the way it was at L0.

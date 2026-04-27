@@ -1703,7 +1703,138 @@ export interface AgentSpec {
   allowedTools?: string[];
   capabilityOverrides?: AgentCapabilityOverrides;
   routingHints?: AgentRoutingHints;
+  /**
+   * Capability claims — what skills/roles/domains this agent advertises.
+   * The capability layer matches task `CapabilityRequirement` against these
+   * claims to pick a fit, instead of relying solely on `routingHints` keyword
+   * matching. Optional for backward compatibility; agents without claims
+   * fall back to inferred capabilities from `routingHints`.
+   */
+  capabilities?: CapabilityClaim[];
+  /**
+   * Coarse role tags for natural-language tasks (e.g. 'editor', 'critic',
+   * 'researcher', 'planner'). Independent from `id`. Used by the capability
+   * router when the task requests a role, so we are not coupled to specific
+   * agent ids.
+   */
+  roles?: string[];
   builtin?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Capability layer — task ⇄ agent matching by skills, not names
+// ---------------------------------------------------------------------------
+
+/**
+ * Source of a capability declaration. Used to weight confidence: builtin
+ * declarations are trusted as-is, evolved skills carry empirical confidence,
+ * inferred entries (from routingHints) are weakest, synthesized entries from
+ * a task-scoped agent are tentative until validated.
+ */
+export type CapabilityEvidence = 'builtin' | 'evolved' | 'synthesized' | 'inferred';
+
+/** A capability the agent claims to handle. */
+export interface CapabilityClaim {
+  /** Stable id, e.g. 'code.refactor.ts', 'writing.prose.long-form', 'design.api'. */
+  id: string;
+  /** Optional human-readable label for prompts/UI. */
+  label?: string;
+  /** File extensions this capability typically targets (lowercase, leading dot). */
+  fileExtensions?: string[];
+  /** Action verbs this capability handles (matches TaskFingerprint.actionVerb vocabulary). */
+  actionVerbs?: string[];
+  /** Coarse domains, e.g. 'code-mutation', 'creative-writing'. */
+  domains?: string[];
+  /** Framework markers this capability is tuned for. */
+  frameworkMarkers?: string[];
+  /** Coarse role tag, e.g. 'editor', 'planner'. */
+  role?: string;
+  /** Where the claim came from. Affects confidence weighting at routing time. */
+  evidence: CapabilityEvidence;
+  /** [0,1] confidence in this claim. Builtin defaults near 1; inferred ≤ 0.5. */
+  confidence: number;
+}
+
+/** A single capability the task is judged to need. */
+export interface CapabilityRequirement {
+  id: string;
+  /** [0,1] importance for the task. The router weights fit/gap by this. */
+  weight: number;
+  /** Optional structured signals so the router can match without re-parsing. */
+  fileExtensions?: string[];
+  actionVerbs?: string[];
+  domains?: string[];
+  frameworkMarkers?: string[];
+  /** Soft role hint when the task explicitly asks for one. */
+  role?: string;
+  /** How the requirement was derived. */
+  source: 'fingerprint' | 'router-hint' | 'llm-extract' | 'caller';
+}
+
+/** Agent-level fit summary for one task. */
+export interface CapabilityFit {
+  agentId: string;
+  /** [0,1] composite fit score across required capabilities. */
+  fitScore: number;
+  /** Capability ids the agent claims (and weight contribution). */
+  matched: Array<{ id: string; weight: number; confidence: number }>;
+  /** Capability ids the agent does NOT claim, with their weight. */
+  gap: Array<{ id: string; weight: number }>;
+}
+
+/**
+ * Output of capability analysis + matching for a task.
+ * Drives the router's recommended action (proceed / research / synthesize / fallback).
+ */
+export interface CapabilityGapAnalysis {
+  taskId: string;
+  required: CapabilityRequirement[];
+  /** Sorted by fitScore desc. First entry is the recommended agent. */
+  candidates: CapabilityFit[];
+  /** [0,1] sum of weight of UNMET requirements at the best candidate. 0 = perfect. */
+  gapNormalized: number;
+  /**
+   * Recommended action for the orchestrator. Determined by deterministic
+   * thresholds, never by LLM output. The router still emits a concrete
+   * agentId (best candidate or default) regardless.
+   */
+  recommendedAction: 'proceed' | 'research' | 'synthesize' | 'fallback';
+}
+
+/**
+ * Plan to construct a task-scoped synthetic agent when no existing agent
+ * fits well enough. The synthesis step is responsible for producing an
+ * AgentSpec whose ACL is an INTERSECTION of the routing-level defaults and
+ * any template caps — never widening privilege.
+ */
+export interface AgentSynthesisPlan {
+  taskId: string;
+  /** Suggested kebab-case id, e.g. 'task-<short>-researcher'. */
+  suggestedId: string;
+  /** Capability claims to attach to the synthesized agent. */
+  capabilities: CapabilityClaim[];
+  /** Roles to expose. */
+  roles: string[];
+  /** Soul template id to seed from, when known. */
+  soulTemplateId?: string;
+  /** Why synthesis is requested (gap summary for traces). */
+  rationale: string;
+}
+
+/**
+ * Request for external knowledge acquisition before/while the agent runs.
+ * The acquisition layer (web fetch, MCP, world-graph, docs) treats this as
+ * a search spec. Findings are attached as RESEARCH context — they NEVER
+ * rewrite the task goal or override LLM agentic output.
+ */
+export interface KnowledgeAcquisitionRequest {
+  taskId: string;
+  /** Capability ids this request is trying to fill. */
+  capabilities: string[];
+  /** Free-form queries the LLM/router formulated for retrieval providers. */
+  queries: string[];
+  /** Suggested provider order: 'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'. */
+  providers?: Array<'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'>;
 }
 
 // ---------------------------------------------------------------------------

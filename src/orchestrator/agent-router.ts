@@ -17,18 +17,23 @@
  * the caller (core-loop) can orchestrate the intent resolver call that's
  * already happening.
  */
-import type { AgentSpec, PerceptualHierarchy, TaskInput } from './types.ts';
+
 import type { AgentRegistry } from './agents/registry.ts';
+import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
+import { analyzeFit } from './capabilities/capability-router.ts';
+import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy, TaskInput } from './types.ts';
 
 export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default';
 
 export interface AgentRouteDecision {
   agentId: string;
   reason: AgentRouteReason;
-  /** Normalized [0,1] score from rule evaluation. 0 for override/default/needs-llm. */
+  /** Composite weighted fit score from capability evaluation. 0 for override/default/needs-llm. */
   score: number;
   /** Runner-up for observability (rule-match path only). */
   runnerUp?: { agentId: string; score: number };
+  /** Capability gap analysis attached when the router actually scored agents. */
+  capabilityAnalysis?: CapabilityGapAnalysis;
 }
 
 export interface AgentRouter {
@@ -49,11 +54,6 @@ export interface AgentRouter {
 const RULE_MIN_SCORE = 0.4;
 const RULE_MIN_MARGIN = 0.15;
 
-/** Weights from the approved plan. */
-const WEIGHT_EXTENSIONS = 0.5;
-const WEIGHT_FRAMEWORKS = 0.3;
-const WEIGHT_DOMAINS = 0.2;
-
 export interface DefaultAgentRouterDeps {
   registry: AgentRegistry;
 }
@@ -68,14 +68,20 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
         return { agentId: input.agentId, reason: 'override', score: 0 };
       }
 
-      // Step 2: rule-based scoring
-      const signals = extractSignals(input, perception);
+      // Step 2a: legacy creative-team rule routing. Kept transitional so we
+      // do not break creative tests during the capability-first migration.
+      // This is INPUT routing on raw goal text BEFORE the LLM runs — allowed
+      // by `.github/instructions/no-llm-output-postfilter.instructions.md`.
+      const creativeAgentId = matchCreativeSpecialist(input.goal, input);
+      if (creativeAgentId && registry.has(creativeAgentId)) {
+        return { agentId: creativeAgentId, reason: 'rule-match', score: 1 };
+      }
+
+      // Step 2b: capability-first scoring. Replaces the legacy extension /
+      // framework / domain weighted scorer — agents now compete on declared
+      // CapabilityClaims that the capability-analyzer can match against
+      // task requirements derived from the fingerprint.
       const allAgents = registry.listAgents();
-      // Enforce minLevel hint when a routing level is available — specialists
-      // that declare `minLevel:2` (e.g., system-designer when structural
-      // reasoning is mandatory) are excluded from L0/L1 tasks. The default
-      // agent is still the last-resort fallback below, so this never leaves
-      // the router without a choice.
       const agents =
         typeof routingLevel === 'number'
           ? allAgents.filter((a) => {
@@ -83,19 +89,24 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
               return min === undefined || routingLevel >= min;
             })
           : allAgents;
-      const scored = agents.map((a) => ({ agent: a, score: scoreAgent(a, signals) }));
-      scored.sort((a, b) => b.score - a.score);
 
-      const top = scored[0];
-      const runner = scored[1];
-      if (top && top.score >= RULE_MIN_SCORE) {
-        const margin = top.score - (runner?.score ?? 0);
+      const requirements: CapabilityRequirement[] = analyzeRequirements({
+        task: input,
+        perception,
+      });
+      const analysis = analyzeFit(input.id, agents, requirements);
+      const top = analysis.candidates[0];
+      const runner = analysis.candidates[1];
+
+      if (top && top.fitScore >= RULE_MIN_SCORE) {
+        const margin = top.fitScore - (runner?.fitScore ?? 0);
         if (margin >= RULE_MIN_MARGIN) {
           return {
-            agentId: top.agent.id,
+            agentId: top.agentId,
             reason: 'rule-match',
-            score: top.score,
-            runnerUp: runner ? { agentId: runner.agent.id, score: runner.score } : undefined,
+            score: top.fitScore,
+            runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+            capabilityAnalysis: analysis,
           };
         }
       }
@@ -107,60 +118,47 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       return {
         agentId: registry.defaultAgent().id,
         reason: 'needs-llm',
-        score: top?.score ?? 0,
-        runnerUp: runner ? { agentId: runner.agent.id, score: runner.score } : undefined,
+        score: top?.fitScore ?? 0,
+        runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+        capabilityAnalysis: analysis,
       };
     },
   };
 }
 
-// ── Signal extraction ──────────────────────────────────────────────────
+// ── Legacy creative-specialist rule routing ────────────────────────
+// Pre-LLM input routing on raw goal text. Stays in place during the
+// capability-first migration — its replacement is structured capability
+// requirements emitted by the LLM intent resolver, which will route via
+// the same `analyzeFit` path once those plumbing pieces land.
 
-interface TaskSignals {
-  extensions: Set<string>;
-  frameworks: Set<string>;
-  domains: Set<string>;
-}
+const CODE_CONTEXT_RE =
+  /\b(code|coding|bug|refactor|compile|typescript|javascript|python|api|schema|database|test suite)\b|โค้ด|บั๊ก|รีแฟกเตอร์/i;
+const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|java|go|rs|cs|cpp|c|h|sql|vue|svelte|astro)$/i;
+const CREATIVE_CONTEXT_RE =
+  /นิยาย|เว็บตูน|เรื่องสั้น|เรื่องยาว|หนังสือ|พล็อต|ตัวละคร|ฉาก|ตอนที่|บทที่|แต่งเรื่อง|novel|fiction|story|webtoon|book|plot|character|chapter|scene|screenplay|script/i;
 
-function extractSignals(input: TaskInput, perception?: PerceptualHierarchy): TaskSignals {
-  const extensions = new Set<string>();
-  for (const file of input.targetFiles ?? []) {
-    const idx = file.lastIndexOf('.');
-    if (idx >= 0) extensions.add(file.slice(idx).toLowerCase());
+function matchCreativeSpecialist(goal: string, input: Pick<TaskInput, 'taskType' | 'targetFiles'>): string | null {
+  const targetFiles = input.targetFiles ?? [];
+  if (targetFiles.some((file) => CODE_FILE_RE.test(file))) return null;
+  if (
+    input.taskType === 'code' &&
+    targetFiles.length > 0 &&
+    targetFiles.every((file) => !/\.(md|txt|rst)$/i.test(file))
+  ) {
+    return null;
   }
 
-  const frameworks = new Set<string>();
-  if (perception?.frameworkMarkers) {
-    for (const f of perception.frameworkMarkers) frameworks.add(f.toLowerCase());
-  }
+  const lower = goal.toLowerCase();
+  if (!CREATIVE_CONTEXT_RE.test(lower) || CODE_CONTEXT_RE.test(lower)) return null;
 
-  const domains = new Set<string>();
-  // Map TaskInput.taskType to a coarse domain signal.
-  if (input.taskType === 'code') {
-    domains.add(input.targetFiles?.length ? 'code-mutation' : 'code-reasoning');
-  } else {
-    domains.add('general-reasoning');
+  if (/บรรณาธิการ|แก้สำนวน|ปรับสำนวน|proofread|edit|line edit|copyedit/i.test(lower)) return 'editor';
+  if (/วิจารณ์|รีวิว|ประเมิน|review|critic|critique|publish-readiness/i.test(lower)) return 'critic';
+  if (/พล็อต|ไอเดีย|premise|plot|logline|twist|ตัวละคร/i.test(lower)) return 'plot-architect';
+  if (/วางแผน|กลยุทธ|กลยุทธ์|โครงเรื่อง|outline|strategy|structure|episode plan/i.test(lower)) {
+    return 'story-strategist';
   }
+  if (/ฉาก|บทที่|ตอนที่|chapter|scene|dialogue|draft this|rewrite this/i.test(lower)) return 'novelist';
 
-  return { extensions, frameworks, domains };
-}
-
-function scoreAgent(agent: AgentSpec, signals: TaskSignals): number {
-  const hints = agent.routingHints;
-  if (!hints) return 0;
-
-  let score = 0;
-  if (hints.preferExtensions && hints.preferExtensions.length > 0) {
-    const hits = hints.preferExtensions.filter((e) => signals.extensions.has(e.toLowerCase()));
-    if (hits.length > 0) score += WEIGHT_EXTENSIONS;
-  }
-  if (hints.preferFrameworks && hints.preferFrameworks.length > 0) {
-    const hits = hints.preferFrameworks.filter((f) => signals.frameworks.has(f.toLowerCase()));
-    if (hits.length > 0) score += WEIGHT_FRAMEWORKS;
-  }
-  if (hints.preferDomains && hints.preferDomains.length > 0) {
-    const hits = hints.preferDomains.filter((d) => signals.domains.has(d));
-    if (hits.length > 0) score += WEIGHT_DOMAINS;
-  }
-  return score;
+  return 'creative-director';
 }

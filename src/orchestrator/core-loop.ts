@@ -21,12 +21,11 @@ import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
-import type { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
-import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executePlanPhase } from './phases/phase-plan.ts';
 import { executePredictPhase } from './phases/phase-predict.ts';
+import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
 import type { PhaseContext } from './phases/types.ts';
 import type {
@@ -48,6 +47,7 @@ import type {
 import { coerceProfile } from './types.ts';
 import { checkComprehension, isComprehensionCheckDisabled } from './understanding/comprehension-check.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
+import type { WorkflowRegistry } from './workflow/workflow-registry.ts';
 import { WorkingMemory } from './working-memory.ts';
 
 // ---------------------------------------------------------------------------
@@ -640,7 +640,7 @@ async function prepareExecution(
       // from claiming deterministic/heuristic at face value.
       engineType: engine.engineType,
     });
-    let verdict = stage1Verdict;
+    const verdict = stage1Verdict;
 
     // P2.C.3 — HYBRID pipeline. Run the LLM comprehender only when:
     //   (a) stage 1 succeeded AND stage 1 explicitly flagged ambiguous referents
@@ -1458,6 +1458,10 @@ ${closing}`;
     lines.push(
       'Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:',
     );
+    lines.push(
+      'For fiction/book/webtoon/story tasks, keep team recommendations within creative specialists unless the user explicitly asks for software or system work.',
+    );
+    lines.push('Only describe listed agents as Vinyan agents; do not invent agent ids.');
     for (const p of peers) {
       lines.push(`  - ${p.id}: ${p.description}`);
     }

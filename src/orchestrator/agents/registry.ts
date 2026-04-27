@@ -7,7 +7,12 @@
  * Exposes read-only accessors for the core loop, intent resolver, CLI, and API.
  */
 import type { AgentSpecConfig } from '../../config/schema.ts';
-import type { AgentSpec, AgentCapabilityOverrides, AgentRoutingHints } from '../types.ts';
+import type {
+  AgentSpec,
+  AgentCapabilityOverrides,
+  AgentRoutingHints,
+  CapabilityClaim,
+} from '../types.ts';
 import { BUILTIN_AGENTS, DEFAULT_AGENT_ID } from './builtin/index.ts';
 import { loadAgentSoul } from './soul-loader.ts';
 
@@ -46,6 +51,8 @@ export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecCon
       allowedTools: cfg.allowed_tools ?? existing?.allowedTools,
       capabilityOverrides: fromConfigOverrides(cfg.capability_overrides) ?? existing?.capabilityOverrides,
       routingHints: fromConfigHints(cfg.routing_hints) ?? existing?.routingHints,
+      capabilities: fromConfigCapabilities(cfg.capabilities) ?? existing?.capabilities,
+      roles: cfg.roles ?? existing?.roles,
       builtin: existing?.builtin ?? false,
       // Preserve built-in soul string; soul file on disk takes precedence at load time
       soul: existing?.soul,
@@ -59,6 +66,16 @@ export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecCon
     if (diskSoul !== null) {
       byId.set(id, { ...agent, soul: diskSoul });
     }
+  }
+
+  // 4. Backfill inferred capabilities for agents that declare none. This keeps
+  //    the capability layer useful for legacy/custom agents without forcing
+  //    every config author to spell out claims. Inferred entries carry low
+  //    confidence so explicit declarations always win.
+  for (const [id, agent] of byId) {
+    if (agent.capabilities && agent.capabilities.length > 0) continue;
+    const inferred = inferCapabilitiesFromHints(agent);
+    if (inferred.length > 0) byId.set(id, { ...agent, capabilities: inferred });
   }
 
   const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : [...byId.keys()][0] ?? DEFAULT_AGENT_ID;
@@ -106,4 +123,47 @@ function fromConfigHints(cfg?: AgentSpecConfig['routing_hints']): AgentRoutingHi
   if (cfg.prefer_extensions) out.preferExtensions = cfg.prefer_extensions;
   if (cfg.prefer_frameworks) out.preferFrameworks = cfg.prefer_frameworks;
   return out;
+}
+
+function fromConfigCapabilities(cfg?: AgentSpecConfig['capabilities']): CapabilityClaim[] | undefined {
+  if (!cfg || cfg.length === 0) return undefined;
+  return cfg.map((c) => ({
+    id: c.id,
+    label: c.label,
+    fileExtensions: c.file_extensions,
+    actionVerbs: c.action_verbs,
+    domains: c.domains,
+    frameworkMarkers: c.framework_markers,
+    role: c.role,
+    evidence: c.evidence,
+    confidence: c.confidence,
+  }));
+}
+
+/**
+ * Synthesize a coarse capability set from `routingHints` for agents that
+ * have no explicit declarations. The intent is to keep capability-first
+ * routing meaningful for legacy/custom config without forcing migration.
+ *
+ * Uses evidence='inferred' and a low confidence so explicit claims always
+ * outweigh inferred ones during fit scoring.
+ */
+function inferCapabilitiesFromHints(agent: AgentSpec): CapabilityClaim[] {
+  const hints = agent.routingHints;
+  if (!hints) return [];
+  const exts = hints.preferExtensions ?? [];
+  const domains = hints.preferDomains ?? [];
+  const fws = hints.preferFrameworks ?? [];
+  if (exts.length === 0 && domains.length === 0 && fws.length === 0) return [];
+  return [
+    {
+      id: `inferred.${agent.id}`,
+      label: `${agent.name} (inferred)`,
+      fileExtensions: exts.length > 0 ? exts : undefined,
+      domains: domains.length > 0 ? domains : undefined,
+      frameworkMarkers: fws.length > 0 ? fws : undefined,
+      evidence: 'inferred',
+      confidence: 0.4,
+    },
+  ];
 }

@@ -29,6 +29,7 @@ function baseConfig(
     enabled: boolean;
     activateMemory: boolean;
     registerSkillTools: boolean;
+    registerSessionSearch: boolean;
     autoActivateMessagingAdapters: boolean;
     permissive: boolean;
   }>,
@@ -153,7 +154,13 @@ describe('initializePlugins', () => {
     const db = freshDb();
     const bus = createBus();
     const toolRegistry = new Map<string, Tool>();
-    const pluginConfig = baseConfig({ activateMemory: false, registerSkillTools: false });
+    // Disable session_search alongside memory/skills — that tool is otherwise
+    // auto-registered by initializePlugins (registerSessionSearch defaults true).
+    const pluginConfig = baseConfig({
+      activateMemory: false,
+      registerSkillTools: false,
+      registerSessionSearch: false,
+    });
     const profileRoot = mk('profile');
     const vinyanHome = mk('home');
 

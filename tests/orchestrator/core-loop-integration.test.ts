@@ -8,7 +8,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createOrchestrator } from '../../src/orchestrator/factory.ts';
+import { createOrchestrator as _createOrchestrator } from '../../src/orchestrator/factory.ts';
+
+// Test fixture: grandfather workers so freshly-registered mock providers
+// are not gated by the I10 probation path (which suppresses mutations from
+// untrusted workers). The factory's `workerBootstrapPolicy: 'grandfather'`
+// is documented as the test-fixture escape hatch in factory.ts.
+const createOrchestrator: typeof _createOrchestrator = (opts) =>
+  _createOrchestrator({ workerBootstrapPolicy: 'grandfather', ...opts });
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
@@ -119,9 +126,13 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     );
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
-    expect(traces[0]!.taskId).toBe('t-integration');
-    expect(traces[0]!.tokensConsumed).toBeGreaterThan(0); // LLM was called — tokens consumed
-    expect(traces[0]!.approach).toBeTruthy(); // approach text recorded from LLM response
+    // Pre-routing comprehension/understanding phases also record traces
+    // (with tokensConsumed:0). The contract asserted here is that *some*
+    // trace carries L1 LLM dispatch evidence — find it by routing level.
+    const workerTrace = traces.find((t) => t.taskId === 't-integration' && t.routingLevel >= 1);
+    expect(workerTrace).toBeDefined();
+    expect(workerTrace!.tokensConsumed).toBeGreaterThan(0); // LLM was called — tokens consumed
+    expect(workerTrace!.approach).toBeTruthy(); // approach text recorded from LLM response
   });
 
   test('5. escalation when oracle gate always rejects (A6 fail-closed)', async () => {
@@ -183,7 +194,10 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }),
     );
     const traces = orchestrator.traceCollector.getTraces();
-    const trace = traces[0]!;
+    // Find the L1+ worker trace explicitly (pre-routing comprehension traces
+    // carry routingLevel:0 + tokens:0 + modelUsed:'comprehension-engine-id').
+    const trace = traces.find((t) => t.taskId === 't-integration' && t.routingLevel >= 1)!;
+    expect(trace).toBeDefined();
     expect(trace.modelUsed).not.toBe('none'); // 'none' = L0 sentinel; a real model ID means LLM was called
     expect(trace.tokensConsumed).toBeGreaterThan(0); // mock returns 50 tokens — proves LLM dispatch occurred
     expect(trace.durationMs).toBeGreaterThanOrEqual(0);

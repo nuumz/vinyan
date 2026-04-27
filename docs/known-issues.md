@@ -75,14 +75,19 @@
 - **Fix**: Wrapped `createOrchestrator` with `workerBootstrapPolicy: 'grandfather'` and changed every assertion to use `traces.find((t) => t.qualityScore !== undefined)` instead of `traces[0]`.
 - **Status**: ✅ Fixed.
 
-## Open / Out of scope
+### 13. G6 soft-degrade routing cap (test 22) ✅
+- **File**: `tests/orchestrator/core-loop-integration.test.ts` (test 22, ~line 601), `src/orchestrator/core-loop.ts`
+- **Symptom**: `expect(result.trace.routingLevel).toBeLessThanOrEqual(2)` received `3` — soft-degrade fired and lowered routing to L2, but the routing loop's escalation walked it back up to L3.
+- **Root cause**: Two issues:
+  1. After soft-degrade lowered `routing.level` to L2, an oracle failure triggered the routing loop's escalation, which calls `riskRouter.assessInitialLevel({ ...input, constraints: [...input.constraints, MIN_ROUTING_LEVEL:nextLevel] })`. Since the original test set `MIN_ROUTING_LEVEL:3`, that constraint won the parser's first-match and re-routed to L3 — defeating the budget-saving purpose of soft-degrade.
+  2. The terminal "all levels exhausted" trace at `core-loop.ts:2983` hardcoded `routingLevel: MAX_ROUTING_LEVEL` (always 3), masking the actual capped level.
+- **Fix**:
+  - `prepareExecution` now returns a `softDegradeCap?: RoutingLevel` whenever soft-degrade fires.
+  - `executeTaskCore`'s `effectiveMaxLevel` is `Math.min(baseMaxLevel, prep.softDegradeCap)` so escalation breaks at the cap instead of walking back up.
+  - Terminal escalation trace's `routingLevel` is now `routing.level` (the actual last-attempted level), not hardcoded `MAX_ROUTING_LEVEL`.
+- **Status**: ✅ Fixed. Test 22 passes, no regressions in test 21 / 23 (G6 sister tests).
 
-### G6 soft-degrade routing test 22
-- **File**: `tests/orchestrator/core-loop-integration.test.ts` (test 22, ~line 601)
-- **Status**: ❌ Pre-existing assertion bug, exposed by the #10 fix.
-- **Symptom**: `expect(result.trace.routingLevel).toBeLessThanOrEqual(2)` receives `3`.
-- **Why now**: Before the agent-loop precondition fix, this test hung in the subprocess wait until the test runner killed it (the 114 s observed in the original triage). Bun reported it as a timeout, never as an assertion failure. With #10's synchronous precondition the agent-loop falls back to single-shot dispatch in milliseconds, the test runs to completion, and the soft-degrade-vs-escalation interaction surfaces as a real assertion mismatch.
-- **Not in this PR** because it is a separate G6 routing-cap design question (does soft-degrade-to-L2 prevent later oracle-driven escalation back to L3?). Track in a follow-up.
+## Open / Out of scope
 
 ### Smoke: real-LLM tests (env-gated)
 - **Files**: `tests/smoke/real-task.test.ts:83`, `:122`

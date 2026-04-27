@@ -369,6 +369,13 @@ async function prepareExecution(
        * from here; they fall back to the literal goal when absent.
        */
       comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
+      /**
+       * G6 soft-degrade routing cap. Set when budget-pressure soft-degrade
+       * lowered the initial routing level. The routing loop must respect this
+       * as the upper bound on escalation; otherwise oracle-driven escalation
+       * walks back up to the original level via MIN_ROUTING_LEVEL constraints.
+       */
+      softDegradeCap?: RoutingLevel;
     }
   | TaskResult
 > {
@@ -1188,6 +1195,10 @@ async function prepareExecution(
     }
   }
 
+  // G6: routing cap installed by soft-degrade (see below). Threaded back to
+  // executeTaskCore so the routing loop's escalation respects it.
+  let softDegradeCap: RoutingLevel | undefined;
+
   // Economy: Budget enforcement
   if (deps.budgetEnforcer) {
     const budgetCheck = deps.budgetEnforcer.canProceed();
@@ -1262,6 +1273,11 @@ async function prepareExecution(
           toLevel: degradeLevel,
           reason: 'Soft degrade — budget warning threshold reached',
         });
+        // G6 cap: budget pressure already triggered the downgrade, so the
+        // routing loop must not escalate back above this level on retry. The
+        // existing escalation path otherwise re-applies the original
+        // MIN_ROUTING_LEVEL constraint (e.g. L3) and undoes the saving.
+        softDegradeCap = degradeLevel;
       }
     }
   }
@@ -1273,6 +1289,7 @@ async function prepareExecution(
     explorationFlag,
     intentResolution,
     comprehension,
+    softDegradeCap,
   };
 }
 
@@ -2932,8 +2949,14 @@ async function executeTaskCore(
 
       // ── RETRY EXHAUSTED → escalate routing level ─────────────────
       const nextLevel = (routing.level + 1) as RoutingLevel;
-      const effectiveMaxLevel =
+      const baseMaxLevel =
         understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+      // G6: when budget-pressure soft-degrade lowered the initial level,
+      // escalation must respect that cap. Otherwise the first oracle failure
+      // re-routes via the inherited MIN_ROUTING_LEVEL constraint and walks
+      // back up to the original level, defeating the budget saving.
+      const effectiveMaxLevel =
+        prep.softDegradeCap !== undefined ? Math.min(baseMaxLevel, prep.softDegradeCap) : baseMaxLevel;
       if (nextLevel > effectiveMaxLevel) break;
 
       deps.bus?.emit('task:escalate', {
@@ -2956,7 +2979,10 @@ async function executeTaskCore(
       workerId: routing.workerId ?? routing.model ?? 'unknown',
       agentId: input.agentId,
       timestamp: Date.now(),
-      routingLevel: MAX_ROUTING_LEVEL,
+      // Reflect the actual last-attempted level, not the global maximum:
+      // when soft-degrade caps escalation at L2 the trace must say "L2", not
+      // "L3 attempted" (G6: known-issues #22).
+      routingLevel: routing.level,
       approach: 'all-levels-exhausted',
       oracleVerdicts: {},
       modelUsed: routing.model ?? 'none',

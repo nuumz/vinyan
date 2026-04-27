@@ -19,6 +19,7 @@ import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
+import { AgentProposalStore } from '../db/agent-proposal-store.ts';
 import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
@@ -275,6 +276,8 @@ export interface Orchestrator {
   agentProfile?: AgentProfile;
   /** AgentContextStore — per-agent episodic memory and learned skills. */
   agentContextStore?: AgentContextStore;
+  /** Pending persistent custom-agent proposals mined during sleep-cycle. */
+  agentProposalStore?: AgentProposalStore;
   /** AgentRegistry — merged built-in + config agent specs. */
   agentRegistry?: ReturnType<typeof loadAgentRegistry>;
   /** MCP client pool — exposed read-only for dashboard inspection. */
@@ -426,6 +429,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
+  let agentProposalStore: AgentProposalStore | undefined;
   let agentProfileStore: AgentProfileStore | undefined;
   let agentProfile: AgentProfile | undefined;
   if (db) {
@@ -439,6 +443,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
+    agentProposalStore = new AgentProposalStore(db.getDb());
 
     // AgentProfile — workspace-level Vinyan Agent identity (singleton)
     agentProfileStore = new AgentProfileStore(db.getDb());
@@ -954,6 +959,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           workerLifecycle,
           localOracleProfileStore,
           localOracleLifecycle,
+          agentProposalStore,
           costLedger,
           marketScheduler,
         })
@@ -2070,6 +2076,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     agentProfileStore,
     agentProfile,
     agentContextStore,
+    agentProposalStore,
     agentRegistry,
     mcpClientPool,
     oracleAccuracyStore,

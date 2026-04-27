@@ -10,7 +10,6 @@
 import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type {
   CachedSkill,
-  EngineProfile,
   EvolutionaryRule,
   ExecutionTrace,
   RoutingDecision,
@@ -97,6 +96,15 @@ export interface VinyanBusEvents {
     observationCount: number;
     taskTypeSignature: string;
   };
+  /** Phase 5: quarantined persistent custom-agent proposal created. */
+  'evolution:agentProposalCreated': {
+    proposalId: string;
+    suggestedAgentId: string;
+    taskTypeSignature: string;
+    unmetCapabilityIds: string[];
+    evidenceTraceIds: string[];
+    wilsonLowerBound: number;
+  };
 
   // Sleep Cycle (Phase 2.4)
   'sleep:cycleComplete': {
@@ -106,6 +114,7 @@ export interface VinyanBusEvents {
     skillsCreated: number;
     rulesPromoted: number;
     capabilitiesPromoted?: number;
+    agentProposalsCreated?: number;
   };
 
   // Self-Model (Phase 1C.1)

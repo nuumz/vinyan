@@ -18,6 +18,7 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import { simpleGlobMatch } from '../core/glob.ts';
+import type { AgentProposalStore } from '../db/agent-proposal-store.ts';
 import type { ComprehensionStore } from '../db/comprehension-store.ts';
 import type { PatternStore } from '../db/pattern-store.ts';
 import type { RuleStore } from '../db/rule-store.ts';
@@ -29,6 +30,7 @@ import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from 
 import { generateRule } from '../evolution/rule-generator.ts';
 import type { CommonSenseRegistry } from '../oracle/commonsense/registry.ts';
 import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
+import { minePersistentAgentProposals } from '../orchestrator/capabilities/agent-proposals.ts';
 import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
 import { mineComprehension } from '../orchestrator/comprehension/learning/miner.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
@@ -92,6 +94,8 @@ export interface SleepCycleResult {
    * stable agents in this cycle. Always 0 when no `agentRegistry` is wired.
    */
   capabilitiesPromoted: number;
+  /** Capability-First Phase 5 — pending persistent custom agent proposals created. */
+  agentProposalsCreated: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
   /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
@@ -123,6 +127,7 @@ export class SleepCycleRunner {
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
   private agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
+  private agentProposalStore?: AgentProposalStore;
   /** Optional comprehension substrate — when both present, the cycle
    *  emits `comprehension:mining_completed` with B1–B3 insights. */
   private comprehensionStore?: ComprehensionStore;
@@ -176,6 +181,8 @@ export class SleepCycleRunner {
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
     /** Capability-First Phase D: registry sink for statistically promoted capability claims. */
     agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
+    /** Capability-First Phase 5: quarantined custom-agent proposal sink. */
+    agentProposalStore?: AgentProposalStore;
     /** Comprehension substrate — pass BOTH to enable mining. Optional: if
      *  either is missing the mining step silently no-ops. */
     comprehensionStore?: ComprehensionStore;
@@ -212,6 +219,7 @@ export class SleepCycleRunner {
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
     this.agentRegistry = options.agentRegistry;
+    this.agentProposalStore = options.agentProposalStore;
     this.comprehensionStore = options.comprehensionStore;
     this.comprehensionCalibrator = options.comprehensionCalibrator;
     this.decayExperiment = createExperimentState();
@@ -237,16 +245,18 @@ export class SleepCycleRunner {
     this.agentRegistry = registry;
   }
 
+  /** Set custom-agent proposal store for post-construction wiring. */
+  setAgentProposalStore(store: AgentProposalStore): void {
+    this.agentProposalStore = store;
+  }
+
   /**
    * Post-construction wiring for the comprehension substrate. Factory
    * creates `ComprehensionCalibrator` after `SleepCycleRunner` (GAP#1
    * ordering), so this lets us attach the substrate without
    * reorganizing the whole factory.
    */
-  setComprehensionSubstrate(
-    store: ComprehensionStore,
-    calibrator: ComprehensionCalibrator,
-  ): void {
+  setComprehensionSubstrate(store: ComprehensionStore, calibrator: ComprehensionCalibrator): void {
     this.comprehensionStore = store;
     this.comprehensionCalibrator = calibrator;
   }
@@ -282,6 +292,7 @@ export class SleepCycleRunner {
         rulesPromoted: 0,
         commonsensePromoted: 0,
         capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'data-gate',
@@ -316,6 +327,7 @@ export class SleepCycleRunner {
         rulesPromoted: 0,
         commonsensePromoted: 0,
         capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'sentinel-dormant',
@@ -351,6 +363,7 @@ export class SleepCycleRunner {
         rulesPromoted,
         commonsensePromoted: 0,
         capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
       };
@@ -631,6 +644,27 @@ export class SleepCycleRunner {
       capabilitiesPromoted = result.promotedCount;
     }
 
+    // Capability-First Phase 5 — propose persistent custom agents from
+    // repeated task-scoped synthetic successes. This writes pending records
+    // only; it never activates an agent or mutates the live registry.
+    let agentProposalsCreated = 0;
+    if (this.agentProposalStore) {
+      const result = minePersistentAgentProposals(traces);
+      for (const proposal of result.proposals) {
+        const write = this.agentProposalStore.upsertPending(proposal);
+        if (!write.created) continue;
+        agentProposalsCreated++;
+        this.bus?.emit('evolution:agentProposalCreated', {
+          proposalId: proposal.id,
+          suggestedAgentId: proposal.suggestedAgentId,
+          taskTypeSignature: proposal.taskTypeSignature,
+          unmetCapabilityIds: proposal.unmetCapabilityIds,
+          evidenceTraceIds: proposal.evidenceTraceIds,
+          wilsonLowerBound: proposal.wilsonLowerBound,
+        });
+      }
+    }
+
     this.patternStore.recordCycleComplete(cycleId, traces.length, newPatterns.length);
 
     this.bus?.emit('sleep:cycleComplete', {
@@ -640,13 +674,16 @@ export class SleepCycleRunner {
       skillsCreated,
       rulesPromoted,
       capabilitiesPromoted,
+      agentProposalsCreated,
     });
 
     // Thinking readiness gate — evaluate A/B measurement readiness.
     // Pure observational gate: queries thinking-mode stats from TraceStore
     // and reports whether adaptive thinking selection should be unblocked.
     // Design: docs/design/extensible-thinking-system-design.md §9.
-    let thinkingReadinessVerdict: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict | undefined;
+    let thinkingReadinessVerdict:
+      | import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict
+      | undefined;
     try {
       const thinkingStats = this.traceStore.getSuccessRateByThinkingMode();
       if (thinkingStats.length > 0) {
@@ -657,7 +694,10 @@ export class SleepCycleRunner {
           status: thinkingReadinessVerdict.status,
           ...(thinkingReadinessVerdict.status === 'blocked' ? { reason: thinkingReadinessVerdict.reason } : {}),
           ...(thinkingReadinessVerdict.status === 'ready'
-            ? { bestMode: thinkingReadinessVerdict.bestMode, successRateDelta: thinkingReadinessVerdict.successRateDelta }
+            ? {
+                bestMode: thinkingReadinessVerdict.bestMode,
+                successRateDelta: thinkingReadinessVerdict.successRateDelta,
+              }
             : {}),
           totalTraces,
         });
@@ -715,7 +755,8 @@ export class SleepCycleRunner {
       skillsCreated > 0 ||
       costPatternsFound > 0 ||
       commonsensePromoted > 0 ||
-      capabilitiesPromoted > 0;
+      capabilitiesPromoted > 0 ||
+      agentProposalsCreated > 0;
     if (productive) {
       this.consecutiveNoopCycles = 0;
     } else {
@@ -733,6 +774,7 @@ export class SleepCycleRunner {
       rulesPromoted,
       commonsensePromoted,
       capabilitiesPromoted,
+      agentProposalsCreated,
       costPatternsFound,
       marketPhaseEvaluated,
       thinkingReadinessVerdict,

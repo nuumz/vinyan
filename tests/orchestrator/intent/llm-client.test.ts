@@ -4,7 +4,6 @@
  * Pure — stubs LLMProvider + LLMProviderRegistry. No real LLM calls.
  */
 import { describe, expect, it } from 'bun:test';
-import type { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
 import {
   classifyOnce,
   classifyWithFallback,
@@ -14,6 +13,7 @@ import {
   pickPrimaryProvider,
   TIER_PREFERENCE,
 } from '../../../src/orchestrator/intent/llm-client.ts';
+import type { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
 import type { LLMProvider } from '../../../src/orchestrator/types.ts';
 
 function stubProvider(id: string, tier: LLMProvider['tier']): LLMProvider {

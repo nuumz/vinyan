@@ -1058,13 +1058,7 @@ export interface EvolutionaryRule {
     riskAbove?: number;
     modelPattern?: string;
   };
-  action:
-    | 'escalate'
-    | 'require-oracle'
-    | 'prefer-model'
-    | 'adjust-threshold'
-    | 'assign-worker'
-    | 'promote-capability';
+  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker' | 'promote-capability';
   parameters: Record<string, unknown>;
   status: 'probation' | 'active' | 'retired';
   createdAt: number;
@@ -1902,6 +1896,39 @@ export interface AgentSynthesisPlan {
   soulTemplateId?: string;
   /** Why synthesis is requested (gap summary for traces). */
   rationale: string;
+}
+
+export type AgentProposalStatus = 'pending' | 'approved' | 'rejected' | 'retired';
+export type AgentProposalTrustTier = 'low' | 'medium' | 'high';
+
+/**
+ * Quarantined proposal for a persistent custom agent. Created offline from
+ * repeated task-scoped synthetic-agent successes; never activated directly.
+ */
+export interface AgentProposal {
+  id: string;
+  status: AgentProposalStatus;
+  suggestedAgentId: string;
+  name: string;
+  description: string;
+  taskTypeSignature: string;
+  unmetCapabilityIds: string[];
+  capabilityClaims: CapabilityClaim[];
+  roles: string[];
+  allowedTools: string[];
+  capabilityOverrides: AgentCapabilityOverrides;
+  sourceSyntheticAgentIds: string[];
+  evidenceTraceIds: string[];
+  observationCount: number;
+  successCount: number;
+  wilsonLowerBound: number;
+  trustTier: AgentProposalTrustTier;
+  provenance: string;
+  rationale: string;
+  createdAt: number;
+  updatedAt: number;
+  decidedAt?: number;
+  decisionReason?: string;
 }
 
 /**

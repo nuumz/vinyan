@@ -19,6 +19,7 @@ function resolveWorkerEntryPath(): string {
 }
 
 import type { VinyanBus } from '../../core/bus.ts';
+import type { AgentLoopDeps } from '../agent/agent-loop.ts';
 import type { WorkerPool } from '../core-loop.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
@@ -40,7 +41,6 @@ import {
   type WorkingMemoryState,
 } from '../types.ts';
 import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
-import type { AgentLoopDeps } from '../agent/agent-loop.ts';
 
 /** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
 type WorkerOutputWithCache = WorkerOutput & {
@@ -89,7 +89,8 @@ export interface WorkerPoolConfig {
   /**
    * Phase 2 realtime streaming. When true, WorkerInput.stream is set for
    * subprocess dispatch, workers emit `{type:"delta",...}` lines, and
-   * worker-pool forwards them as `agent:text_delta` bus events.
+    * worker-pool forwards them as legacy `agent:text_delta` plus rich
+    * `llm:stream_delta` content bus events.
    * Default false — the legacy non-streaming path is the opt-out baseline.
    */
   streaming?: boolean;
@@ -396,6 +397,11 @@ export class WorkerPoolImpl implements WorkerPool {
     this.runtimeStateManager = config.runtimeStateManager;
     this.useBackendAbstraction = config.useBackendAbstraction ?? false;
     this.backendSelector = config.backendSelector;
+  }
+
+  private emitTextDelta(taskId: string, text: string): void {
+    this.bus?.emit('agent:text_delta', { taskId, text });
+    this.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
   }
 
   /**
@@ -872,10 +878,7 @@ export class WorkerPoolImpl implements WorkerPool {
       }
 
       if (raw?.type === 'delta' && typeof raw.text === 'string') {
-        this.bus?.emit('agent:text_delta', {
-          taskId: String(raw.taskId ?? workerInput.taskId),
-          text: raw.text,
-        });
+        this.emitTextDelta(String(raw.taskId ?? workerInput.taskId), raw.text);
         continue;
       }
 
@@ -956,10 +959,7 @@ export class WorkerPoolImpl implements WorkerPool {
         let raw: any;
         try { raw = JSON.parse(line); } catch { continue; }
         if (raw?.type === 'delta' && typeof raw.text === 'string') {
-          this.bus?.emit('agent:text_delta', {
-            taskId: String(raw.taskId ?? workerInput.taskId),
-            text: raw.text,
-          });
+          this.emitTextDelta(String(raw.taskId ?? workerInput.taskId), raw.text);
           continue;
         }
         const candidate = WorkerOutputSchema.safeParse(raw);

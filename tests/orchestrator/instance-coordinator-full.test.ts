@@ -12,15 +12,15 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
-import type { EngineStats } from '../../src/orchestrator/types.ts';
+import { SandboxManager } from '../../src/orchestrator/agent/sandbox.ts';
+import { EventForwarder } from '../../src/orchestrator/event-forwarder.ts';
+import { FleetCoordinator } from '../../src/orchestrator/fleet/fleet-coordinator.ts';
 import {
   InstanceCoordinator,
   reduceWilsonLB,
   resolveRemoteConflict,
 } from '../../src/orchestrator/instance-coordinator.ts';
-import { EventForwarder } from '../../src/orchestrator/event-forwarder.ts';
-import { FleetCoordinator } from '../../src/orchestrator/fleet/fleet-coordinator.ts';
-import { SandboxManager } from '../../src/orchestrator/agent/sandbox.ts';
+import type { EngineStats } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -235,6 +235,7 @@ describe('EventForwarder', () => {
 
     expect(bus.listenerCount('sleep:cycleComplete')).toBe(1);
     expect(bus.listenerCount('evolution:rulePromoted')).toBe(1);
+    expect(bus.listenerCount('evolution:capabilityPromoted')).toBe(1);
     expect(bus.listenerCount('skill:outcome')).toBe(1);
 
     forwarder.stop();
@@ -252,6 +253,7 @@ describe('EventForwarder', () => {
 
     expect(bus.listenerCount('sleep:cycleComplete')).toBe(0);
     expect(bus.listenerCount('evolution:rulePromoted')).toBe(0);
+    expect(bus.listenerCount('evolution:capabilityPromoted')).toBe(0);
     expect(bus.listenerCount('skill:outcome')).toBe(0);
   });
 
@@ -279,7 +281,12 @@ describe('EventForwarder', () => {
     });
 
     const events = forwarder.getForwardedEvents();
-    expect(events).toEqual(['sleep:cycleComplete', 'evolution:rulePromoted', 'skill:outcome']);
+    expect(events).toEqual([
+      'sleep:cycleComplete',
+      'evolution:rulePromoted',
+      'evolution:capabilityPromoted',
+      'skill:outcome',
+    ]);
   });
 
   test('emits instance:eventForwarded on forward attempt', async () => {

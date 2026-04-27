@@ -79,6 +79,61 @@ describe('TraceStore', () => {
     expect(result.affectedFiles).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
   });
 
+  test('capability-first metadata roundtrips for sleep-cycle promotion', () => {
+    const trace = makeTrace({
+      agentId: 'ts-coder',
+      taskTypeSignature: 'review::ts',
+      capabilityRequirements: [
+        {
+          id: 'code.review.ts',
+          weight: 0.9,
+          source: 'llm-extract',
+          fileExtensions: ['.ts'],
+          actionVerbs: ['review'],
+        },
+      ],
+      capabilityAnalysis: {
+        taskId: 'task-001',
+        required: [
+          {
+            id: 'code.review.ts',
+            weight: 0.9,
+            source: 'llm-extract',
+          },
+        ],
+        candidates: [
+          {
+            agentId: 'ts-coder',
+            fitScore: 0.8,
+            matched: [{ id: 'code.refactor.ts', weight: 0.4, confidence: 0.9 }],
+            gap: [{ id: 'code.review.ts', weight: 0.9 }],
+          },
+        ],
+        gapNormalized: 0.2,
+        recommendedAction: 'proceed',
+      },
+      syntheticAgentId: 'synthetic-abc12345',
+      knowledgeUsed: [
+        {
+          source: 'workspace-docs',
+          capability: 'code.review.ts',
+          query: 'code review ts',
+          content: 'Review checklist',
+          reference: 'docs/review.md',
+          confidence: 0.4,
+          retrievedAt: 1234,
+        },
+      ],
+    });
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.capabilityRequirements).toEqual(trace.capabilityRequirements);
+    expect(result.capabilityAnalysis).toEqual(trace.capabilityAnalysis);
+    expect(result.syntheticAgentId).toBe('synthetic-abc12345');
+    expect(result.knowledgeUsed).toEqual(trace.knowledgeUsed);
+  });
+
   test('QualityScore denormalized into columns and reconstructed', () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);

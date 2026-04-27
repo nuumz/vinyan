@@ -74,7 +74,7 @@ export function loadAgentRegistry(
 
   // 1. Seed with built-in defaults
   for (const agent of BUILTIN_AGENTS) {
-    byId.set(agent.id, { ...agent });
+    byId.set(agent.id, cloneAgentSpec(agent));
   }
 
   // 2. Apply config overrides / additions
@@ -94,7 +94,7 @@ export function loadAgentRegistry(
       // Preserve built-in soul string; soul file on disk takes precedence at load time
       soul: existing?.soul,
     };
-    byId.set(cfg.id, agent);
+    byId.set(cfg.id, cloneAgentSpec(agent));
   }
 
   // 3. Soul resolution: disk file > extraSouls (AGENT.md body) > built-in string
@@ -129,14 +129,15 @@ export function loadAgentRegistry(
 
   return {
     getAgent(id: string): AgentSpec | null {
-      return byId.get(id) ?? null;
+      const agent = byId.get(id);
+      return agent ? cloneAgentSpec(agent) : null;
     },
     listAgents(): AgentSpec[] {
-      return [...byId.values()];
+      return [...byId.values()].map(cloneAgentSpec);
     },
     defaultAgent(): AgentSpec {
       const agent = byId.get(defaultId);
-      if (agent) return agent;
+      if (agent) return cloneAgentSpec(agent);
       // Last-resort fallback if registry is empty
       return {
         id: 'default',
@@ -157,7 +158,7 @@ export function loadAgentRegistry(
       if (spec.builtin === true) {
         throw new Error(`registerAgent: refusing to register '${spec.id}' with builtin=true`);
       }
-      byId.set(spec.id, { ...spec });
+      byId.set(spec.id, cloneAgentSpec(spec));
       if (opts?.taskId) syntheticByTask.set(spec.id, opts.taskId);
     },
     unregisterAgent(id: string): boolean {
@@ -183,14 +184,42 @@ export function loadAgentRegistry(
       if (claims.length === 0) return true;
       const merged = new Map<string, CapabilityClaim>();
       for (const existing of agent.capabilities ?? []) {
-        merged.set(existing.id, existing);
+        merged.set(existing.id, cloneCapabilityClaim(existing));
       }
       for (const incoming of claims) {
-        merged.set(incoming.id, incoming);
+        merged.set(incoming.id, cloneCapabilityClaim(incoming));
       }
       byId.set(agentId, { ...agent, capabilities: [...merged.values()] });
       return true;
     },
+  };
+}
+
+function cloneAgentSpec(agent: AgentSpec): AgentSpec {
+  return {
+    ...agent,
+    allowedTools: agent.allowedTools ? [...agent.allowedTools] : undefined,
+    capabilityOverrides: agent.capabilityOverrides ? { ...agent.capabilityOverrides } : undefined,
+    routingHints: agent.routingHints
+      ? {
+          minLevel: agent.routingHints.minLevel,
+          preferDomains: agent.routingHints.preferDomains ? [...agent.routingHints.preferDomains] : undefined,
+          preferExtensions: agent.routingHints.preferExtensions ? [...agent.routingHints.preferExtensions] : undefined,
+          preferFrameworks: agent.routingHints.preferFrameworks ? [...agent.routingHints.preferFrameworks] : undefined,
+        }
+      : undefined,
+    capabilities: agent.capabilities?.map(cloneCapabilityClaim),
+    roles: agent.roles ? [...agent.roles] : undefined,
+  };
+}
+
+function cloneCapabilityClaim(claim: CapabilityClaim): CapabilityClaim {
+  return {
+    ...claim,
+    fileExtensions: claim.fileExtensions ? [...claim.fileExtensions] : undefined,
+    actionVerbs: claim.actionVerbs ? [...claim.actionVerbs] : undefined,
+    domains: claim.domains ? [...claim.domains] : undefined,
+    frameworkMarkers: claim.frameworkMarkers ? [...claim.frameworkMarkers] : undefined,
   };
 }
 

@@ -327,7 +327,7 @@ export class VinyanAPIServer {
 
     // ── Sessions ──────────────────────────────────────────
     if (method === 'GET' && path === '/api/v1/sessions') {
-      return this.handleListSessions();
+      return this.handleListSessions(req);
     }
 
     if (method === 'POST' && path === '/api/v1/sessions') {
@@ -337,6 +337,31 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
       const sessionId = path.split('/').pop()!;
       return this.handleGetSession(sessionId);
+    }
+
+    if (method === 'PATCH' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
+      const sessionId = path.split('/').pop()!;
+      return this.handleUpdateSession(sessionId, req);
+    }
+
+    if (method === 'DELETE' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
+      const sessionId = path.split('/').pop()!;
+      return this.handleSoftDeleteSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/archive$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleArchiveSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/unarchive$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleUnarchiveSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/restore$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleRestoreSession(sessionId);
     }
 
     if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/compact$/)) {
@@ -862,8 +887,22 @@ export class VinyanAPIServer {
     return jsonResponse({ tasks });
   }
 
-  private handleListSessions(): Response {
-    const sessions = this.deps.sessionManager?.listSessions() ?? [];
+  private handleListSessions(req: Request): Response {
+    const url = new URL(req.url);
+    const stateParam = url.searchParams.get('state') ?? 'active';
+    const allowedStates = new Set(['active', 'archived', 'deleted', 'all']);
+    const state = (allowedStates.has(stateParam) ? stateParam : 'active') as
+      | 'active'
+      | 'archived'
+      | 'deleted'
+      | 'all';
+    const search = url.searchParams.get('search') ?? undefined;
+    const limitRaw = url.searchParams.get('limit');
+    const offsetRaw = url.searchParams.get('offset');
+    const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined;
+    const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : undefined;
+    const sessions =
+      this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
     return jsonResponse({ sessions });
   }
 
@@ -1416,6 +1455,7 @@ export class VinyanAPIServer {
     try {
       const { approveProposal } = await import('../orchestrator/memory/memory-proposals.ts');
       const result = approveProposal(workspace, body.handle, body.reviewer);
+      this.deps.bus.emit('memory:approved', { recordId: body.handle });
       return jsonResponse({ approved: result.consumedPending, learnedPath: result.learnedPath });
     } catch (err) {
       return jsonResponse(
@@ -1450,6 +1490,7 @@ export class VinyanAPIServer {
     try {
       const { rejectProposal } = await import('../orchestrator/memory/memory-proposals.ts');
       const result = rejectProposal(workspace, body.handle, body.reviewer, body.reason);
+      this.deps.bus.emit('memory:rejected', { recordId: body.handle });
       return jsonResponse({ rejected: result.consumedPending, rejectedPath: result.rejectedPath });
     } catch (err) {
       return jsonResponse(
@@ -1674,8 +1715,17 @@ export class VinyanAPIServer {
   // ── Session Handlers ────────────────────────────────────
 
   private async handleCreateSession(req: Request): Promise<Response> {
-    const body = (await req.json()) as { source?: string };
-    const session = this.deps.sessionManager.create(body.source ?? 'api');
+    let body: { source?: string; title?: string | null; description?: string | null } = {};
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      // Empty / non-JSON body — keep defaults (matches the prior behavior
+      // where create() ran with `body.source ?? 'api'` even on a missing body).
+    }
+    const session = this.deps.sessionManager.create(body.source ?? 'api', {
+      title: body.title ?? null,
+      description: body.description ?? null,
+    });
     // G2: Emit session bus event
     this.deps.bus.emit('session:created', { sessionId: session.id, source: body.source ?? 'api' });
     return jsonResponse({ session }, 201);
@@ -1684,6 +1734,72 @@ export class VinyanAPIServer {
   private handleGetSession(sessionId: string): Response {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    return jsonResponse({ session });
+  }
+
+  private async handleUpdateSession(sessionId: string, req: Request): Promise<Response> {
+    let body: { title?: string | null; description?: string | null } = {};
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    }
+    const patch: { title?: string | null; description?: string | null } = {};
+    if (body.title !== undefined) {
+      if (body.title !== null && typeof body.title !== 'string') {
+        return jsonResponse({ error: 'title must be string or null' }, 400);
+      }
+      if (typeof body.title === 'string' && body.title.length > 200) {
+        return jsonResponse({ error: 'title must be 200 characters or fewer' }, 400);
+      }
+      patch.title = body.title;
+    }
+    if (body.description !== undefined) {
+      if (body.description !== null && typeof body.description !== 'string') {
+        return jsonResponse({ error: 'description must be string or null' }, 400);
+      }
+      if (typeof body.description === 'string' && body.description.length > 4000) {
+        return jsonResponse({ error: 'description must be 4000 characters or fewer' }, 400);
+      }
+      patch.description = body.description;
+    }
+    if (patch.title === undefined && patch.description === undefined) {
+      return jsonResponse({ error: 'At least one of title or description is required' }, 400);
+    }
+    const session = this.deps.sessionManager.updateMetadata(sessionId, patch);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const fields: Array<'title' | 'description'> = [];
+    if (patch.title !== undefined) fields.push('title');
+    if (patch.description !== undefined) fields.push('description');
+    this.deps.bus.emit('session:updated', { sessionId, fields });
+    return jsonResponse({ session });
+  }
+
+  private handleArchiveSession(sessionId: string): Response {
+    const session = this.deps.sessionManager.archive(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    this.deps.bus.emit('session:archived', { sessionId });
+    return jsonResponse({ session });
+  }
+
+  private handleUnarchiveSession(sessionId: string): Response {
+    const session = this.deps.sessionManager.unarchive(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    this.deps.bus.emit('session:unarchived', { sessionId });
+    return jsonResponse({ session });
+  }
+
+  private handleSoftDeleteSession(sessionId: string): Response {
+    const session = this.deps.sessionManager.softDelete(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    this.deps.bus.emit('session:deleted', { sessionId });
+    return jsonResponse({ session });
+  }
+
+  private handleRestoreSession(sessionId: string): Response {
+    const session = this.deps.sessionManager.restore(sessionId);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    this.deps.bus.emit('session:restored', { sessionId });
     return jsonResponse({ session });
   }
 
@@ -1804,7 +1920,25 @@ export class VinyanAPIServer {
     // present, otherwise reasoning (matching chat.ts).
     const inferredType: 'code' | 'reasoning' = taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
 
-    const constraints: string[] = [...(showThinking ? ['THINKING:enabled'] : []), ...clarificationConstraints];
+    // Operator-supplied session metadata reaches the agent as a strictly
+    // auxiliary SESSION_CONTEXT pipeline constraint. The agent worker
+    // renders it as a `## Session Context` XML block (see
+    // src/orchestrator/agent/agent-worker-entry.ts). We do NOT mutate
+    // input.goal and do not feed this into routing/governance \u2014 it is
+    // grounding only (A1, A3).
+    const sessionContextConstraints: string[] = [];
+    if (session.title || session.description) {
+      const payload: { title?: string; description?: string } = {};
+      if (session.title) payload.title = session.title;
+      if (session.description) payload.description = session.description;
+      sessionContextConstraints.push(`SESSION_CONTEXT:${JSON.stringify(payload)}`);
+    }
+
+    const constraints: string[] = [
+      ...(showThinking ? ['THINKING:enabled'] : []),
+      ...sessionContextConstraints,
+      ...clarificationConstraints,
+    ];
 
     const input: TaskInput = {
       id: crypto.randomUUID(),

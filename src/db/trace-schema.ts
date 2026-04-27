@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   understanding_intent   TEXT,
   resolved_entities      TEXT,
   understanding_verified INTEGER DEFAULT 0,
-  understanding_primary_action TEXT
+  understanding_primary_action TEXT,
+  capability_requirements TEXT,
+  capability_analysis     TEXT,
+  synthetic_agent_id      TEXT,
+  knowledge_used          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);

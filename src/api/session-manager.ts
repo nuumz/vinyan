@@ -6,7 +6,13 @@
  *
  * Source of truth: spec/tdd.md §22.3, §22.4
  */
-import type { SessionRow, SessionStore } from '../db/session-store.ts';
+import type {
+  ListSessionsOptions,
+  SessionMetadataPatch,
+  SessionRow,
+  SessionRowWithCount,
+  SessionStore,
+} from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
 import type { ContentBlock, TaskInput, TaskResult, Turn, TurnTokenCount } from '../orchestrator/types.ts';
@@ -22,7 +28,17 @@ export interface Session {
   source: string;
   status: SessionRow['status'];
   createdAt: number;
+  updatedAt: number;
   taskCount: number;
+  title: string | null;
+  description: string | null;
+  archivedAt: number | null;
+  deletedAt: number | null;
+}
+
+export interface CreateSessionOptions {
+  title?: string | null;
+  description?: string | null;
 }
 
 export interface CompactionResult {
@@ -81,9 +97,11 @@ export class SessionManager {
     this.userMdObserver = observer;
   }
 
-  create(source: string): Session {
+  create(source: string, options: CreateSessionOptions = {}): Session {
     const id = crypto.randomUUID();
     const now = Date.now();
+    const title = normalizeMetadata(options.title);
+    const description = normalizeMetadata(options.description);
 
     this.sessionStore.insertSession({
       id,
@@ -93,34 +111,87 @@ export class SessionManager {
       working_memory_json: null,
       compaction_json: null,
       updated_at: now,
+      title,
+      description,
+      archived_at: null,
+      deleted_at: null,
     });
 
-    return { id, source, status: 'active', createdAt: now, taskCount: 0 };
-  }
-
-  listSessions(): Session[] {
-    const active = this.sessionStore.listActiveSessions();
-    const suspended = this.sessionStore.listSuspendedSessions();
-    return [...active, ...suspended].map((row) => ({
-      id: row.id,
-      source: row.source,
-      status: row.status as Session['status'],
-      createdAt: row.created_at,
+    return {
+      id,
+      source,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
       taskCount: 0,
-    }));
+      title,
+      description,
+      archivedAt: null,
+      deletedAt: null,
+    };
   }
 
+  listSessions(options: ListSessionsOptions = {}): Session[] {
+    const rows = this.sessionStore.listSessions(options);
+    return rows.map(rowWithCountToSession);
+  }
+
+  /**
+   * Read a session row by id WITHOUT applying the visibility filter — the
+   * UI needs to be able to navigate to archived/trashed sessions to
+   * unarchive or restore them. Callers that should hide deleted sessions
+   * must check `deletedAt` themselves.
+   */
   get(sessionId: string): Session | undefined {
     const row = this.sessionStore.getSession(sessionId);
     if (!row) return undefined;
+    return rowToSession(row, this.sessionStore.countSessionTasks(sessionId));
+  }
 
-    return {
-      id: row.id,
-      source: row.source,
-      status: row.status,
-      createdAt: row.created_at,
-      taskCount: this.sessionStore.countSessionTasks(sessionId),
-    };
+  /**
+   * Patch operator-supplied metadata. Pass `null` to clear a field; pass
+   * `undefined` (omit) to leave it unchanged. Returns the updated session
+   * or `undefined` when no row matched.
+   */
+  updateMetadata(sessionId: string, patch: SessionMetadataPatch): Session | undefined {
+    const normalized: SessionMetadataPatch = {};
+    if (patch.title !== undefined) normalized.title = normalizeMetadata(patch.title);
+    if (patch.description !== undefined) normalized.description = normalizeMetadata(patch.description);
+    if (Object.keys(normalized).length === 0) return this.get(sessionId);
+    const ok = this.sessionStore.updateSessionMetadata(sessionId, normalized);
+    if (!ok) return undefined;
+    return this.get(sessionId);
+  }
+
+  archive(sessionId: string): Session | undefined {
+    if (!this.sessionStore.archiveSession(sessionId)) {
+      // Either missing or already archived/deleted — surface the current row
+      // for callers that want to render the latest state.
+      return this.get(sessionId);
+    }
+    return this.get(sessionId);
+  }
+
+  unarchive(sessionId: string): Session | undefined {
+    if (!this.sessionStore.unarchiveSession(sessionId)) {
+      return this.get(sessionId);
+    }
+    return this.get(sessionId);
+  }
+
+  /** Soft-delete — audit trail (turns/tasks/traces) is preserved. */
+  softDelete(sessionId: string): Session | undefined {
+    if (!this.sessionStore.softDeleteSession(sessionId)) {
+      return this.get(sessionId);
+    }
+    return this.get(sessionId);
+  }
+
+  restore(sessionId: string): Session | undefined {
+    if (!this.sessionStore.restoreSession(sessionId)) {
+      return this.get(sessionId);
+    }
+    return this.get(sessionId);
   }
 
   addTask(sessionId: string, taskInput: TaskInput): void {
@@ -246,13 +317,9 @@ export class SessionManager {
     for (const row of suspended) {
       this.sessionStore.updateSessionStatus(row.id, 'active');
     }
-    return suspended.map((row) => ({
-      id: row.id,
-      source: row.source,
-      status: 'active' as const,
-      createdAt: row.created_at,
-      taskCount: this.sessionStore.countSessionTasks(row.id),
-    }));
+    return suspended.map((row) =>
+      rowToSession({ ...row, status: 'active' }, this.sessionStore.countSessionTasks(row.id)),
+    );
   }
 
   /**
@@ -528,6 +595,31 @@ export class SessionManager {
       timestamp: t.createdAt,
     }));
   }
+}
+
+function normalizeMetadata(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+function rowToSession(row: SessionRow, taskCount: number): Session {
+  return {
+    id: row.id,
+    source: row.source,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    taskCount,
+    title: row.title,
+    description: row.description,
+    archivedAt: row.archived_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function rowWithCountToSession(row: SessionRowWithCount): Session {
+  return rowToSession(row, row.task_count);
 }
 
 /**

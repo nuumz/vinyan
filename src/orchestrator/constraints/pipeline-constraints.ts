@@ -42,6 +42,7 @@ export const PIPELINE_CONSTRAINT_PREFIXES = [
   'MEMORY_CONTEXT:',
   'MIN_ROUTING_LEVEL:',
   'RESEARCH_CONTEXT:',
+  'SESSION_CONTEXT:',
   'TOOLS:',
   // Note: 'THINKING:enabled' is a bare token, not a prefix — handled
   // below by exact match.

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
 import { clearSoulCache } from '../../../src/orchestrator/agents/soul-loader.ts';
+import type { CapabilityClaim } from '../../../src/orchestrator/types.ts';
 
 let workspace: string;
 
@@ -123,5 +124,30 @@ describe('AgentRegistry', () => {
     const agent = reg.getAgent('restricted');
     expect(agent!.capabilityOverrides?.shell).toBe(false);
     expect(agent!.capabilityOverrides?.network).toBe(false);
+  });
+
+  test('returns defensive snapshots so capability claims mutate only through registry API', () => {
+    const reg = loadAgentRegistry(workspace, undefined);
+
+    const snapshot = reg.getAgent('ts-coder')!;
+    snapshot.capabilities = snapshot.capabilities ?? [];
+    snapshot.capabilities.push({ id: 'poisoned.external', evidence: 'evolved', confidence: 1 });
+    expect(reg.getAgent('ts-coder')!.capabilities?.some((claim) => claim.id === 'poisoned.external')).toBe(false);
+
+    const incoming: CapabilityClaim = {
+      id: 'code.review.ts',
+      evidence: 'evolved',
+      confidence: 0.72,
+      fileExtensions: ['.ts'],
+    };
+    expect(reg.mergeCapabilityClaims('ts-coder', [incoming])).toBe(true);
+
+    incoming.fileExtensions!.push('.poison');
+    const stored = reg.getAgent('ts-coder')!.capabilities!.find((claim) => claim.id === 'code.review.ts')!;
+    expect(stored.fileExtensions).toEqual(['.ts']);
+
+    stored.fileExtensions!.push('.mutated-snapshot');
+    const reread = reg.getAgent('ts-coder')!.capabilities!.find((claim) => claim.id === 'code.review.ts')!;
+    expect(reread.fileExtensions).toEqual(['.ts']);
   });
 });

@@ -10,7 +10,14 @@ import { z } from 'zod/v4';
 
 // ── EvolutionaryRule row schema ──────────────────────────────────────────
 
-const RuleActionSchema = z.enum(['escalate', 'require-oracle', 'prefer-model', 'adjust-threshold', 'assign-worker']);
+const RuleActionSchema = z.enum([
+  'escalate',
+  'require-oracle',
+  'prefer-model',
+  'adjust-threshold',
+  'assign-worker',
+  'promote-capability',
+]);
 
 const RuleStatusSchema = z.enum(['probation', 'active', 'retired']);
 
@@ -106,6 +113,7 @@ export const ExecutionTraceRowSchema = z.object({
   task_id: z.string(),
   session_id: z.string().nullable().optional(),
   worker_id: z.string().nullable().optional(),
+  agent_id: z.string().nullable().optional(),
   timestamp: z.number(),
   routing_level: z.number(),
   task_type_signature: z.string().nullable().optional(),
@@ -134,4 +142,8 @@ export const ExecutionTraceRowSchema = z.object({
   confidence_decision: z.string().nullable().optional(),
   transcript_gzip: z.instanceof(Buffer).or(z.instanceof(Uint8Array)).nullable().optional(),
   transcript_turns: z.number().nullable().optional(),
+  capability_requirements: z.string().nullable().optional(),
+  capability_analysis: z.string().nullable().optional(),
+  synthetic_agent_id: z.string().nullable().optional(),
+  knowledge_used: z.string().nullable().optional(),
 });

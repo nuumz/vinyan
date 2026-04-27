@@ -46,6 +46,7 @@ const EVENT_STYLES: Record<string, { icon: string; color: string; category: stri
 
   'evolution:rulePromoted': { icon: '*', color: ANSI.green, category: 'evolution' },
   'evolution:ruleRetired': { icon: '-', color: ANSI.yellow, category: 'evolution' },
+  'evolution:capabilityPromoted': { icon: '+', color: ANSI.green, category: 'evolution' },
 
   'sleep:cycleComplete': { icon: 'z', color: ANSI.magenta, category: 'sleep' },
 
@@ -85,7 +86,9 @@ function summarizePayload(event: string, payload: unknown): string {
     case 'worker:error':
       return `error="${String(p.error ?? '').slice(0, 50)}"`;
     case 'sleep:cycleComplete':
-      return `patterns=${p.patternsFound ?? 0} rules=${p.rulesGenerated ?? 0}`;
+      return `patterns=${p.patternsFound ?? 0} rules=${p.rulesGenerated ?? 0} caps=${p.capabilitiesPromoted ?? 0}`;
+    case 'evolution:capabilityPromoted':
+      return `agent=${p.agentId ?? '?'} capability=${p.capabilityId ?? '?'} confidence=${p.confidence ?? '?'}`;
     case 'peer:connected':
       return `peer=${p.peerId ?? '?'}`;
     case 'a2a:knowledgeImported':
@@ -130,6 +133,7 @@ export class EventRenderer {
       'profile:retired',
       'evolution:rulePromoted',
       'evolution:ruleRetired',
+      'evolution:capabilityPromoted',
       'sleep:cycleComplete',
       'peer:connected',
       'peer:disconnected',

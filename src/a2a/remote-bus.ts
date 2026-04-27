@@ -27,6 +27,7 @@ export const DEFAULT_FORWARDED_EVENTS: BusEventName[] = [
   'sleep:cycleComplete',
   'evolution:rulePromoted',
   'evolution:ruleRetired',
+  'evolution:capabilityPromoted',
   'skill:outcome',
   'file:hashChanged',
 ];

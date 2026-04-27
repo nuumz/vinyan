@@ -65,6 +65,8 @@ describe('AgentRouter', () => {
       expect(decision.agentId).toBe('ts-coder');
       expect(decision.reason).toBe('rule-match');
       expect(decision.score).toBeGreaterThan(0.4);
+      expect(decision.capabilityAnalysis?.candidates[0]?.profileId).toBe('ts-coder');
+      expect(decision.capabilityAnalysis?.candidates[0]?.profileSource).toBe('registry');
     } finally {
       cleanup();
     }

@@ -10,7 +10,8 @@
  *     proceed (small gap), research (mid gap), synthesize (large/no fit)
  */
 import { describe, expect, test } from 'bun:test';
-import { analyzeFit, scoreFit } from '../../../src/orchestrator/capabilities/capability-router.ts';
+import { analyzeFit, analyzeProfileFit, scoreFit, scoreProfile } from '../../../src/orchestrator/capabilities/capability-router.ts';
+import { buildAgentCapabilityProfile } from '../../../src/orchestrator/capabilities/profile-adapter.ts';
 import type { AgentSpec, CapabilityRequirement } from '../../../src/orchestrator/types.ts';
 
 function makeAgent(overrides: Partial<AgentSpec> & { id: string }): AgentSpec {
@@ -65,6 +66,23 @@ describe('scoreFit', () => {
     const fit = scoreFit(agent, reqs);
     expect(fit.matched).toHaveLength(1);
     expect(fit.fitScore).toBeCloseTo(0.4, 5);
+  });
+
+  test('profile scoring returns route target and profile provenance', () => {
+    const profile = buildAgentCapabilityProfile(
+      makeAgent({
+        id: 'synthetic-abc12345',
+        capabilities: [{ id: 'code.audit.jwt', evidence: 'synthesized', confidence: 0.7 }],
+      }),
+      { taskId: 'task-1' },
+    );
+    const fit = scoreProfile(profile, [{ id: 'code.audit.jwt', weight: 1, source: 'llm-extract' }]);
+
+    expect(fit.agentId).toBe('synthetic-abc12345');
+    expect(fit.profileId).toBe('synthetic-abc12345');
+    expect(fit.profileSource).toBe('synthetic');
+    expect(fit.trustTier).toBe('probabilistic');
+    expect(fit.fitScore).toBeCloseTo(0.7, 5);
   });
 
   test('unmet requirement is recorded in `gap`', () => {
@@ -140,5 +158,18 @@ describe('analyzeFit', () => {
     const analysis = analyzeFit('t1', [], reqs);
     expect(analysis.recommendedAction).toBe('fallback');
     expect(analysis.candidates).toHaveLength(0);
+  });
+
+  test('analyzeProfileFit ranks profiles without requiring AgentSpec identity fields', () => {
+    const weaker = buildAgentCapabilityProfile(
+      makeAgent({ id: 'a', capabilities: [{ id: 'x', evidence: 'builtin', confidence: 0.4 }] }),
+    );
+    const stronger = buildAgentCapabilityProfile(
+      makeAgent({ id: 'b', capabilities: [{ id: 'x', evidence: 'builtin', confidence: 0.9 }] }),
+    );
+    const analysis = analyzeProfileFit('t1', [weaker, stronger], [{ id: 'x', weight: 1, source: 'llm-extract' }]);
+
+    expect(analysis.candidates[0]?.agentId).toBe('b');
+    expect(analysis.candidates[0]?.profileSource).toBe('registry');
   });
 });

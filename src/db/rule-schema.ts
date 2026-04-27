@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS evolutionary_rules (
   id              TEXT PRIMARY KEY,
   source          TEXT NOT NULL CHECK(source IN ('sleep-cycle', 'manual')),
   condition       TEXT NOT NULL,
-  action          TEXT NOT NULL CHECK(action IN ('escalate', 'require-oracle', 'prefer-model', 'adjust-threshold', 'assign-worker')),
+  action          TEXT NOT NULL CHECK(action IN ('escalate', 'require-oracle', 'prefer-model', 'adjust-threshold', 'assign-worker', 'promote-capability')),
   parameters      TEXT NOT NULL,
   status          TEXT NOT NULL CHECK(status IN ('probation', 'active', 'retired')),
   created_at      INTEGER NOT NULL,

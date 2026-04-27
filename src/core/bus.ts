@@ -105,6 +105,7 @@ export interface VinyanBusEvents {
     rulesGenerated: number;
     skillsCreated: number;
     rulesPromoted: number;
+    capabilitiesPromoted?: number;
   };
 
   // Self-Model (Phase 1C.1)
@@ -377,6 +378,13 @@ export interface VinyanBusEvents {
   'api:response': { method: string; path: string; status: number; durationMs: number };
   'session:created': { sessionId: string; source: string };
   'session:compacted': { sessionId: string; taskCount: number };
+  'session:updated': { sessionId: string; fields: Array<'title' | 'description'> };
+  'session:archived': { sessionId: string };
+  'session:unarchived': { sessionId: string };
+  'session:deleted': { sessionId: string };
+  'session:restored': { sessionId: string };
+  'memory:approved': { recordId: string; key?: string };
+  'memory:rejected': { recordId: string; key?: string };
 
   // Phase E: File invalidation relay
   'file:hashChanged': { filePath: string; newHash: string; previousHash?: string };

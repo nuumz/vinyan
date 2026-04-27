@@ -20,6 +20,9 @@ import { migration008 } from './008_skill_trust_ledger.ts';
 import { migration009 } from './009_user_md_dialectic.ts';
 import { migration010 } from './010_commonsense_rules.ts';
 import { migration011 } from './011_commonsense_rule_telemetry.ts';
+import { migration012 } from './012_capability_trace_metadata.ts';
+import { migration013 } from './013_rule_promote_capability_action.ts';
+import { migration014 } from './014_session_metadata.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -34,4 +37,7 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration009,
   migration010,
   migration011,
+  migration012,
+  migration013,
+  migration014,
 ];

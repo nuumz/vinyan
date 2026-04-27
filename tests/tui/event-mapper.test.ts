@@ -77,9 +77,28 @@ describe('summarizeEvent', () => {
       patternsFound: 5,
       rulesGenerated: 2,
       skillsCreated: 1,
+      capabilitiesPromoted: 3,
     });
     expect(summary).toContain('patterns=5');
     expect(summary).toContain('rules=2');
+    expect(summary).toContain('caps=3');
+  });
+
+  test('evolution:capabilityPromoted shows agent and capability', () => {
+    const style = getEventStyle('evolution:capabilityPromoted');
+    expect(style.domain).toBe('evolve');
+    expect(style.defaultVisible).toBe(true);
+
+    const summary = summarizeEvent('evolution:capabilityPromoted', {
+      agentId: 'ts-coder',
+      capabilityId: 'code.review.ts',
+      confidence: 0.72,
+      observationCount: 30,
+      taskTypeSignature: 'review::ts',
+    });
+    expect(summary).toContain('ts-coder');
+    expect(summary).toContain('code.review.ts');
+    expect(summary).toContain('n=30');
   });
 
   test('peer:connected shows peer ID and URL', () => {

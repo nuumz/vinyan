@@ -59,6 +59,25 @@ const SSE_EVENTS: BusEventName[] = [
   // clients see input-injection / bypass detections in real time.
   'guardrail:injection_detected',
   'guardrail:bypass_detected',
+  // Knowledge surface — keep the operator console live for skills,
+  // patterns, evolutionary rules, world-graph facts, sleep cycle.
+  'skill:outcome',
+  'evolution:rulesApplied',
+  'evolution:rulePromoted',
+  'evolution:ruleRetired',
+  'sleep:cycleComplete',
+  'graph:fact',
+  // Session lifecycle (create/compact + metadata + archive/delete/restore).
+  'session:created',
+  'session:compacted',
+  'session:updated',
+  'session:archived',
+  'session:unarchived',
+  'session:deleted',
+  'session:restored',
+  // Memory review outcomes (approve/reject of proposals).
+  'memory:approved',
+  'memory:rejected',
 ];
 
 interface SSEStreamOptions {

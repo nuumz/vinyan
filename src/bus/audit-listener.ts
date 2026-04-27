@@ -38,6 +38,7 @@ const ALL_EVENTS: BusEventName[] = [
   'evolution:rulesApplied',
   'evolution:rulePromoted',
   'evolution:ruleRetired',
+  'evolution:capabilityPromoted',
   'sleep:cycleComplete',
   'tools:executed',
   // Phase 1 — verification & governance

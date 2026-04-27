@@ -28,7 +28,7 @@ import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
 import { generateRule } from '../evolution/rule-generator.ts';
 import type { CommonSenseRegistry } from '../oracle/commonsense/registry.ts';
-import { promoteAllPatterns } from './promotion.ts';
+import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
 import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
 import { mineComprehension } from '../orchestrator/comprehension/learning/miner.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
@@ -43,6 +43,7 @@ import {
   getActiveDecayFunction,
   recordCycleScore,
 } from './decay-experiment.ts';
+import { promoteAllPatterns, promoteCapabilityClaims } from './promotion.ts';
 import { wilsonLowerBound } from './wilson.ts';
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
@@ -52,6 +53,9 @@ const DEFAULT_CONFIG: SleepCycleConfig = {
   patternMinConfidence: 0.6,
   decayHalfLifeSessions: 50,
 };
+
+const PROMOTE_CAPABILITY_RULE_RETIRE_REASON =
+  'I12: promote-capability rules are sleep-cycle-only; capability claims are promoted by promoteCapabilityClaims()';
 
 /**
  * Book-integration Wave 2.3: termination sentinel defaults.
@@ -83,6 +87,11 @@ export interface SleepCycleResult {
    * Always 0 when no `commonsenseRegistry` is wired.
    */
   commonsensePromoted: number;
+  /**
+   * Capability-First Phase D — number of capability claims promoted onto
+   * stable agents in this cycle. Always 0 when no `agentRegistry` is wired.
+   */
+  capabilitiesPromoted: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
   /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
@@ -113,6 +122,7 @@ export class SleepCycleRunner {
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+  private agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
   /** Optional comprehension substrate — when both present, the cycle
    *  emits `comprehension:mining_completed` with B1–B3 insights. */
   private comprehensionStore?: ComprehensionStore;
@@ -164,6 +174,8 @@ export class SleepCycleRunner {
     marketScheduler?: MarketScheduler;
     /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+    /** Capability-First Phase D: registry sink for statistically promoted capability claims. */
+    agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
     /** Comprehension substrate — pass BOTH to enable mining. Optional: if
      *  either is missing the mining step silently no-ops. */
     comprehensionStore?: ComprehensionStore;
@@ -199,6 +211,7 @@ export class SleepCycleRunner {
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
+    this.agentRegistry = options.agentRegistry;
     this.comprehensionStore = options.comprehensionStore;
     this.comprehensionCalibrator = options.comprehensionCalibrator;
     this.decayExperiment = createExperimentState();
@@ -217,6 +230,11 @@ export class SleepCycleRunner {
   /** Set agent evolution for post-construction wiring (when capabilityModel is available). */
   setAgentEvolution(evolution: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution): void {
     this.agentEvolution = evolution;
+  }
+
+  /** Set stable-agent registry for post-construction wiring (factory loads agents later). */
+  setAgentRegistry(registry: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>): void {
+    this.agentRegistry = registry;
   }
 
   /**
@@ -263,6 +281,7 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted: 0,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'data-gate',
@@ -296,6 +315,7 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted: 0,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'sentinel-dormant',
@@ -330,6 +350,7 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
       };
@@ -423,6 +444,16 @@ export class SleepCycleRunner {
       const { backtestRule, backtestWorkerAssignment } = await import('../evolution/backtester.ts');
       const activeRules = this.ruleStore.findActive();
       for (const rule of activeRules) {
+        if (rule.action === 'promote-capability') {
+          this.ruleStore.retire(rule.id);
+          rulesRetired++;
+          this.bus?.emit('evolution:ruleRetired', {
+            ruleId: rule.id,
+            reason: PROMOTE_CAPABILITY_RULE_RETIRE_REASON,
+          });
+          continue;
+        }
+
         const bt = this.getTracesForBacktest(rule);
         if (bt.length < 5) continue;
         const result = rule.action === 'assign-worker' ? backtestWorkerAssignment(rule, bt) : backtestRule(rule, bt);
@@ -587,6 +618,19 @@ export class SleepCycleRunner {
       commonsensePromoted = results.filter((r) => r.promoted).length;
     }
 
+    // Capability-First Phase D — promote statistically proven capabilities
+    // onto stable agents from persisted traces. This is intentionally in the
+    // offline sleep-cycle path, not the online core loop: promotion is a
+    // deterministic governance decision based on repeated outcomes (A3/A7).
+    let capabilitiesPromoted = 0;
+    if (this.agentRegistry) {
+      const result = promoteCapabilityClaims(traces, {
+        agentRegistry: this.agentRegistry,
+        bus: this.bus,
+      });
+      capabilitiesPromoted = result.promotedCount;
+    }
+
     this.patternStore.recordCycleComplete(cycleId, traces.length, newPatterns.length);
 
     this.bus?.emit('sleep:cycleComplete', {
@@ -595,6 +639,7 @@ export class SleepCycleRunner {
       rulesGenerated,
       skillsCreated,
       rulesPromoted,
+      capabilitiesPromoted,
     });
 
     // Thinking readiness gate — evaluate A/B measurement readiness.
@@ -669,7 +714,8 @@ export class SleepCycleRunner {
       rulesRetired > 0 ||
       skillsCreated > 0 ||
       costPatternsFound > 0 ||
-      commonsensePromoted > 0;
+      commonsensePromoted > 0 ||
+      capabilitiesPromoted > 0;
     if (productive) {
       this.consecutiveNoopCycles = 0;
     } else {
@@ -686,6 +732,7 @@ export class SleepCycleRunner {
       decayedPatterns: decayedCount,
       rulesPromoted,
       commonsensePromoted,
+      capabilitiesPromoted,
       costPatternsFound,
       marketPhaseEvaluated,
       thinkingReadinessVerdict,
@@ -935,6 +982,15 @@ export class SleepCycleRunner {
 
     let promoted = 0;
     for (const rule of probationRules) {
+      if (rule.action === 'promote-capability') {
+        this.ruleStore.retire(rule.id);
+        this.bus?.emit('evolution:ruleRetired', {
+          ruleId: rule.id,
+          reason: PROMOTE_CAPABILITY_RULE_RETIRE_REASON,
+        });
+        continue;
+      }
+
       const backtestTraces = this.getTracesForBacktest(rule);
       if (backtestTraces.length < 5) continue;
 

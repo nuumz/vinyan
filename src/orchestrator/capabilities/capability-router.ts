@@ -13,12 +13,14 @@
  * enough that synthesizing a task-scoped agent should be considered.
  */
 import type {
+  AgentCapabilityProfile,
   AgentSpec,
   CapabilityClaim,
   CapabilityFit,
   CapabilityGapAnalysis,
   CapabilityRequirement,
 } from '../types.ts';
+import { buildAgentCapabilityProfile, buildAgentCapabilityProfiles } from './profile-adapter.ts';
 
 /**
  * Action thresholds. Tuned so:
@@ -32,10 +34,18 @@ const RESEARCH_MAX = 0.7;
 
 /** Score a single agent against a list of requirements. */
 export function scoreFit(agent: AgentSpec, requirements: readonly CapabilityRequirement[]): CapabilityFit {
+  return scoreProfile(buildAgentCapabilityProfile(agent), requirements);
+}
+
+/** Score a single capability profile against a list of requirements. */
+export function scoreProfile(
+  profile: AgentCapabilityProfile,
+  requirements: readonly CapabilityRequirement[],
+): CapabilityFit {
   const matched: CapabilityFit['matched'] = [];
   const gap: CapabilityFit['gap'] = [];
-  const claims = agent.capabilities ?? [];
-  const agentRoles = new Set(agent.roles ?? []);
+  const claims = profile.claims;
+  const agentRoles = new Set(profile.roles);
 
   let weightedScore = 0;
   for (const req of requirements) {
@@ -68,7 +78,10 @@ export function scoreFit(agent: AgentSpec, requirements: readonly CapabilityRequ
   }
 
   return {
-    agentId: agent.id,
+    agentId: profile.routeTargetId,
+    profileId: profile.id,
+    profileSource: profile.source,
+    trustTier: profile.trustTier,
     fitScore: weightedScore,
     matched,
     gap,
@@ -119,7 +132,16 @@ export function analyzeFit(
   agents: readonly AgentSpec[],
   requirements: readonly CapabilityRequirement[],
 ): CapabilityGapAnalysis {
-  const candidates = agents.map((a) => scoreFit(a, requirements)).sort((a, b) => b.fitScore - a.fitScore);
+  return analyzeProfileFit(taskId, buildAgentCapabilityProfiles(agents), requirements);
+}
+
+/** Rank capability profiles by fit and emit a `CapabilityGapAnalysis`. */
+export function analyzeProfileFit(
+  taskId: string,
+  profiles: readonly AgentCapabilityProfile[],
+  requirements: readonly CapabilityRequirement[],
+): CapabilityGapAnalysis {
+  const candidates = profiles.map((profile) => scoreProfile(profile, requirements)).sort((a, b) => b.fitScore - a.fitScore);
 
   const totalWeight = requirements.reduce((s, r) => s + r.weight, 0);
   const best = candidates[0];

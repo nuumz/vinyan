@@ -20,7 +20,8 @@
 
 import type { AgentRegistry } from './agents/registry.ts';
 import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
-import { analyzeFit } from './capabilities/capability-router.ts';
+import { analyzeProfileFit } from './capabilities/capability-router.ts';
+import { buildAgentCapabilityProfiles } from './capabilities/profile-adapter.ts';
 import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy, TaskInput } from './types.ts';
 
 export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
@@ -82,21 +83,21 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       // CapabilityClaims, which the capability-analyzer matches against
       // task requirements derived from the fingerprint and (optionally)
       // LLM-extracted requirements forwarded by the caller.
-      const allAgents = registry.listAgents();
-      const agents =
+      const allProfiles = buildAgentCapabilityProfiles(registry.listAgents());
+      const profiles =
         typeof routingLevel === 'number'
-          ? allAgents.filter((a) => {
-              const min = a.routingHints?.minLevel;
+          ? allProfiles.filter((profile) => {
+              const min = profile.routingHints?.minLevel;
               return min === undefined || routingLevel >= min;
             })
-          : allAgents;
+          : allProfiles;
 
       const analyzed: CapabilityRequirement[] = analyzeRequirements({
         task: input,
         perception,
         requirements,
       });
-      const analysis = analyzeFit(input.id, agents, analyzed);
+      const analysis = analyzeProfileFit(input.id, profiles, analyzed);
       const top = analysis.candidates[0];
       const runner = analysis.candidates[1];
 

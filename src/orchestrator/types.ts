@@ -1812,9 +1812,39 @@ export interface CapabilityRequirement {
   source: 'fingerprint' | 'router-hint' | 'llm-extract' | 'caller';
 }
 
+export type AgentCapabilityProfileSource = 'registry' | 'synthetic' | 'peer' | 'external';
+
+export type CapabilityProfileTrustTier = 'deterministic' | 'heuristic' | 'probabilistic';
+
+export interface AgentCapabilityProfile {
+  /** Stable profile id. For local registry agents this matches `AgentSpec.id`. */
+  id: string;
+  /** Runtime route target id. Local profiles route back to an AgentSpec id. */
+  routeTargetId: string;
+  displayName?: string;
+  source: AgentCapabilityProfileSource;
+  provenance: string;
+  trustTier: CapabilityProfileTrustTier;
+  taskScope?: { taskId: string };
+  claims: CapabilityClaim[];
+  roles: string[];
+  acl: {
+    allowedTools?: string[];
+    readAny?: boolean;
+    writeAny?: boolean;
+    network?: boolean;
+    shell?: boolean;
+  };
+  routingHints?: AgentRoutingHints;
+}
+
 /** Agent-level fit summary for one task. */
 export interface CapabilityFit {
   agentId: string;
+  /** Capability profile scored to produce this fit. Defaults to agentId for legacy callers. */
+  profileId?: string;
+  profileSource?: AgentCapabilityProfileSource;
+  trustTier?: CapabilityProfileTrustTier;
   /** [0,1] composite fit score across required capabilities. */
   fitScore: number;
   /** Capability ids the agent claims (and weight contribution). */

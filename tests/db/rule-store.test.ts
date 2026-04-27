@@ -46,6 +46,20 @@ describe('RuleStore', () => {
     expect(matched[0]!.id).toBe('r1');
   });
 
+  test('promote-capability rows deserialize but never match online rule context', () => {
+    store.insert(
+      makeRule({
+        id: 'cap-promote',
+        condition: { filePattern: '*.ts' },
+        action: 'promote-capability',
+        parameters: { agentId: 'ts-coder', capabilityId: 'code.review.ts' },
+      }),
+    );
+
+    expect(store.findByStatus('active')[0]!.action).toBe('promote-capability');
+    expect(store.findMatching({ filePattern: 'auth.ts' })).toEqual([]);
+  });
+
   test('retire sets status and superseded_by', () => {
     store.insert(makeRule({ id: 'r1' }));
     store.retire('r1', 'r2');

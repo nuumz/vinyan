@@ -15,6 +15,34 @@ export interface SessionRow {
   working_memory_json: string | null;
   compaction_json: string | null;
   updated_at: number;
+  /** Operator-supplied human-friendly title (added by migration 014). */
+  title: string | null;
+  /** Operator-supplied longer description / context (added by migration 014). */
+  description: string | null;
+  /** Epoch-ms; non-null means archived (hidden from default list). */
+  archived_at: number | null;
+  /** Epoch-ms; non-null means soft-deleted (Trash). */
+  deleted_at: number | null;
+}
+
+/** Visibility filter for `listSessions` — driven by archive/delete columns. */
+export type SessionListState = 'active' | 'archived' | 'deleted' | 'all';
+
+export interface ListSessionsOptions {
+  state?: SessionListState;
+  /** Case-insensitive substring match against id, source, title, description. */
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SessionRowWithCount extends SessionRow {
+  task_count: number;
+}
+
+export interface SessionMetadataPatch {
+  title?: string | null;
+  description?: string | null;
 }
 
 export interface SessionTaskRow {
@@ -47,8 +75,8 @@ export class SessionStore {
 
   insertSession(session: SessionRow): void {
     this.db.run(
-      `INSERT INTO session_store (id, source, created_at, status, working_memory_json, compaction_json, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_store (id, source, created_at, status, working_memory_json, compaction_json, updated_at, title, description, archived_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         session.id,
         session.source,
@@ -57,6 +85,10 @@ export class SessionStore {
         session.working_memory_json,
         session.compaction_json,
         session.updated_at,
+        session.title,
+        session.description,
+        session.archived_at,
+        session.deleted_at,
       ],
     );
   }
@@ -87,14 +119,121 @@ export class SessionStore {
 
   listActiveSessions(): SessionRow[] {
     return this.db
-      .query("SELECT * FROM session_store WHERE status = 'active' ORDER BY created_at DESC")
+      .query(
+        "SELECT * FROM session_store WHERE status = 'active' AND archived_at IS NULL AND deleted_at IS NULL ORDER BY created_at DESC",
+      )
       .all() as SessionRow[];
   }
 
   listSuspendedSessions(): SessionRow[] {
     return this.db
-      .query("SELECT * FROM session_store WHERE status = 'suspended' ORDER BY created_at DESC")
+      .query(
+        "SELECT * FROM session_store WHERE status = 'suspended' AND archived_at IS NULL AND deleted_at IS NULL ORDER BY created_at DESC",
+      )
       .all() as SessionRow[];
+  }
+
+  /**
+   * Filtered list with task counts joined in a single query. The visibility
+   * filter (`state`) maps onto the archived_at / deleted_at columns so the
+   * existing lifecycle `status` (active/suspended/compacted/closed) stays
+   * untouched and the SQLite CHECK constraint on it is preserved.
+   */
+  listSessions(options: ListSessionsOptions = {}): SessionRowWithCount[] {
+    const { state = 'active', search, limit, offset } = options;
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (state === 'active') {
+      where.push('s.deleted_at IS NULL', 's.archived_at IS NULL');
+    } else if (state === 'archived') {
+      where.push('s.deleted_at IS NULL', 's.archived_at IS NOT NULL');
+    } else if (state === 'deleted') {
+      where.push('s.deleted_at IS NOT NULL');
+    }
+    // 'all' adds no visibility filter.
+
+    if (search && search.trim().length > 0) {
+      const like = `%${search.trim().toLowerCase()}%`;
+      where.push(
+        '(LOWER(s.id) LIKE ? OR LOWER(COALESCE(s.title, \'\')) LIKE ? OR LOWER(COALESCE(s.description, \'\')) LIKE ? OR LOWER(s.source) LIKE ?)',
+      );
+      params.push(like, like, like, like);
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limitClause = typeof limit === 'number' && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : '';
+    const offsetClause = typeof offset === 'number' && offset > 0 ? ` OFFSET ${Math.floor(offset)}` : '';
+
+    return this.db
+      .query(
+        `SELECT s.*, COALESCE(t.cnt, 0) AS task_count
+         FROM session_store s
+         LEFT JOIN (
+           SELECT session_id, COUNT(*) AS cnt FROM session_tasks GROUP BY session_id
+         ) t ON t.session_id = s.id
+         ${whereClause}
+         ORDER BY s.updated_at DESC, s.created_at DESC${limitClause}${offsetClause}`,
+      )
+      .all(...params) as SessionRowWithCount[];
+  }
+
+  updateSessionMetadata(id: string, patch: SessionMetadataPatch): boolean {
+    const sets: string[] = [];
+    const params: (string | number | null)[] = [];
+    if (patch.title !== undefined) {
+      sets.push('title = ?');
+      params.push(patch.title);
+    }
+    if (patch.description !== undefined) {
+      sets.push('description = ?');
+      params.push(patch.description);
+    }
+    if (sets.length === 0) return false;
+    sets.push('updated_at = ?');
+    params.push(Date.now());
+    params.push(id);
+    const res = this.db.run(
+      `UPDATE session_store SET ${sets.join(', ')} WHERE id = ?`,
+      params,
+    );
+    return res.changes > 0;
+  }
+
+  archiveSession(id: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_store SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND deleted_at IS NULL',
+      [now, now, id],
+    );
+    return res.changes > 0;
+  }
+
+  unarchiveSession(id: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_store SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL AND deleted_at IS NULL',
+      [now, id],
+    );
+    return res.changes > 0;
+  }
+
+  softDeleteSession(id: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_store SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+      [now, now, id],
+    );
+    return res.changes > 0;
+  }
+
+  restoreSession(id: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_store SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL',
+      [now, id],
+    );
+    return res.changes > 0;
   }
 
   // ── Session Tasks ───────────────────────────────────────

@@ -9,8 +9,9 @@
 
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
+import { migration013 } from '../../src/db/migrations/013_rule_promote_capability_action.ts';
+import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import type { Migration } from '../../src/db/migrations/migration-runner.ts';
 
 /**
@@ -162,6 +163,46 @@ describe('MigrationRunner', () => {
     const verdicts = JSON.parse(trace.oracle_verdicts);
     expect(verdicts.ast.fileHashes['src/a.ts']).toBe('sha256:abc123');
     expect(JSON.parse(trace.affected_files)).toEqual(['src/a.ts']);
+  });
+
+  test('migration013 allows promote-capability action while preserving existing rules', () => {
+    db.exec(`
+      CREATE TABLE evolutionary_rules (
+        id            TEXT PRIMARY KEY,
+        source        TEXT NOT NULL CHECK(source IN ('sleep-cycle','manual')),
+        condition     TEXT NOT NULL,
+        action        TEXT NOT NULL CHECK(action IN ('escalate','require-oracle','prefer-model','adjust-threshold','assign-worker')),
+        parameters    TEXT NOT NULL,
+        status        TEXT NOT NULL CHECK(status IN ('probation','active','retired')),
+        created_at    INTEGER NOT NULL,
+        effectiveness REAL NOT NULL DEFAULT 0.0,
+        specificity   INTEGER NOT NULL DEFAULT 0,
+        superseded_by TEXT,
+        origin        TEXT CHECK(origin IN ('local','a2a','mcp')) DEFAULT 'local'
+      );
+      CREATE INDEX IF NOT EXISTS idx_rules_status ON evolutionary_rules(status);
+      CREATE INDEX IF NOT EXISTS idx_rules_action ON evolutionary_rules(action);
+    `);
+    db.run(
+      `INSERT INTO evolutionary_rules (id, source, condition, action, parameters, status, created_at, effectiveness, specificity, superseded_by, origin)
+       VALUES (?, 'sleep-cycle', '{}', 'escalate', '{"toLevel":2}', 'active', ?, 0.5, 0, NULL, 'local')`,
+      ['existing-rule', Date.now()],
+    );
+
+    migration013.up(db);
+
+    db.run(
+      `INSERT INTO evolutionary_rules (id, source, condition, action, parameters, status, created_at, effectiveness, specificity, superseded_by, origin)
+       VALUES (?, 'sleep-cycle', '{}', 'promote-capability', '{"agentId":"ts-coder"}', 'retired', ?, 0, 0, NULL, 'local')`,
+      ['cap-rule', Date.now()],
+    );
+    const rows = db
+      .query('SELECT id, action FROM evolutionary_rules ORDER BY id')
+      .all() as Array<{ id: string; action: string }>;
+    expect(rows).toEqual([
+      { id: 'cap-rule', action: 'promote-capability' },
+      { id: 'existing-rule', action: 'escalate' },
+    ]);
   });
 
   // ── getCurrentVersion ───────────────────────────────────

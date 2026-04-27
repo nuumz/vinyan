@@ -127,6 +127,14 @@ export function checkSafetyInvariants(rule: EvolutionaryRule): SafetyCheckResult
     }
   }
 
+  // Invariant 12: Capability promotion is offline-only.
+  // The online core loop may see historical EvolutionaryRule rows, but it
+  // must not mutate agent capability claims during task routing. The sleep
+  // cycle promotes via promoteCapabilityClaims() using persisted traces.
+  if (rule.action === 'promote-capability') {
+    violations.push('I12: promote-capability is sleep-cycle-only; online rule execution cannot mutate agents');
+  }
+
   return {
     safe: violations.length === 0,
     violations,

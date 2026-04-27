@@ -1411,6 +1411,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
   const agentRouter = agentRegistry ? createAgentRouter({ registry: agentRegistry }) : undefined;
+  if (agentRegistry && sleepCycleRunner) sleepCycleRunner.setAgentRegistry(agentRegistry);
 
   // User-interest miner — live aggregation from traces + session messages.
   // Noop when traceStore is missing; session-message keywords require SessionManager.

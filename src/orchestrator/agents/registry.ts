@@ -8,9 +8,9 @@
  */
 import type { AgentSpecConfig } from '../../config/schema.ts';
 import type {
-  AgentSpec,
   AgentCapabilityOverrides,
   AgentRoutingHints,
+  AgentSpec,
   CapabilityClaim,
 } from '../types.ts';
 import { BUILTIN_AGENTS, DEFAULT_AGENT_ID } from './builtin/index.ts';
@@ -30,9 +30,18 @@ export interface AgentRegistry {
 /**
  * Build the runtime registry by merging built-in defaults with user config.
  * Config agents with the same id as a built-in REPLACE the built-in.
- * Soul files on disk override built-in soul strings.
+ *
+ * Soul resolution precedence (highest wins):
+ *   1. Disk soul file (`.vinyan/agents/<id>/soul.md` or explicit `soul_path`)
+ *   2. `extraSouls.get(id)` — used by `markdown-loader` to thread an
+ *      AGENT.md body in as the soul without writing to disk.
+ *   3. Built-in soul string (compiled-in default).
  */
-export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecConfig[]): AgentRegistry {
+export function loadAgentRegistry(
+  workspace: string,
+  configAgents?: AgentSpecConfig[],
+  extraSouls?: ReadonlyMap<string, string>,
+): AgentRegistry {
   const byId = new Map<string, AgentSpec>();
 
   // 1. Seed with built-in defaults
@@ -60,11 +69,13 @@ export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecCon
     byId.set(cfg.id, agent);
   }
 
-  // 3. Load soul files from disk (overrides built-in soul strings)
+  // 3. Soul resolution: disk file > extraSouls (AGENT.md body) > built-in string
   for (const [id, agent] of byId) {
     const diskSoul = loadAgentSoul(workspace, id, agent.soulPath);
     if (diskSoul !== null) {
       byId.set(id, { ...agent, soul: diskSoul });
+    } else if (extraSouls?.has(id)) {
+      byId.set(id, { ...agent, soul: extraSouls.get(id)! });
     }
   }
 
@@ -78,7 +89,7 @@ export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecCon
     if (inferred.length > 0) byId.set(id, { ...agent, capabilities: inferred });
   }
 
-  const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : [...byId.keys()][0] ?? DEFAULT_AGENT_ID;
+  const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : ([...byId.keys()][0] ?? DEFAULT_AGENT_ID);
 
   return {
     getAgent(id: string): AgentSpec | null {
@@ -103,9 +114,7 @@ export function loadAgentRegistry(workspace: string, configAgents?: AgentSpecCon
   };
 }
 
-function fromConfigOverrides(
-  cfg?: AgentSpecConfig['capability_overrides'],
-): AgentCapabilityOverrides | undefined {
+function fromConfigOverrides(cfg?: AgentSpecConfig['capability_overrides']): AgentCapabilityOverrides | undefined {
   if (!cfg) return undefined;
   const out: AgentCapabilityOverrides = {};
   if (cfg.read_any !== undefined) out.readAny = cfg.read_any;

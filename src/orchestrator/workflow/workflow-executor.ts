@@ -32,6 +32,12 @@ import type {
   WorkflowStepStrategy,
 } from './types.ts';
 
+function emitWorkflowTextDelta(deps: WorkflowExecutorDeps, taskId: string, text: string): void {
+  if (!text) return;
+  deps.bus?.emit('agent:text_delta', { taskId, text });
+  deps.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
+}
+
 export interface WorkflowExecutorDeps {
   llmRegistry?: LLMProviderRegistry;
   worldGraph?: WorldGraph;
@@ -159,7 +165,7 @@ export async function executeWorkflow(
         stepsCompleted: completed.size,
         totalSteps: plan.steps.length,
       });
-      return buildResult(plan, stepResults, 'failed', performance.now() - startTime, totalTokens, deps);
+      return buildResult(plan, input.id, stepResults, 'failed', performance.now() - startTime, totalTokens, deps);
     }
 
     // Execute ready steps in parallel
@@ -186,7 +192,7 @@ export async function executeWorkflow(
     totalSteps: plan.steps.length,
   });
 
-  return buildResult(plan, stepResults, status, performance.now() - startTime, totalTokens, deps);
+  return buildResult(plan, input.id, stepResults, status, performance.now() - startTime, totalTokens, deps);
 }
 
 async function executeStep(
@@ -305,11 +311,14 @@ async function dispatchStrategy(
       case 'llm-reasoning': {
         const provider = deps.llmRegistry?.selectByTier('balanced') ?? deps.llmRegistry?.selectByTier('fast');
         if (!provider) return { ...base, status: 'failed', output: 'No LLM provider available' };
-        const response = await provider.generate({
+        const request = {
           systemPrompt: 'You are a reasoning assistant. Analyze and respond concisely.',
           userPrompt: `${step.description}\n\nContext:\n${interpolatedInputs}`,
           maxTokens: Math.min(4000, Math.floor(input.budget.maxTokens * step.budgetFraction)),
-        });
+        };
+        const response = provider.generateStream
+          ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, input.id, text))
+          : await provider.generate(request);
         return {
           ...base,
           output: response.content,
@@ -382,6 +391,7 @@ function interpolateInputs(
 
 async function buildResult(
   plan: WorkflowPlan,
+  taskId: string,
   stepResults: Map<string, WorkflowStepResult>,
   status: WorkflowResult['status'],
   durationMs: number,
@@ -401,11 +411,14 @@ async function buildResult(
         const stepSummaries = allResults
           .map((r) => `[${r.stepId}] (${r.strategyUsed}): ${r.output.slice(0, 300)}`)
           .join('\n\n');
-        const response = await provider.generate({
+        const request = {
           systemPrompt: 'Synthesize multiple step results into a coherent final answer. Be concise.',
           userPrompt: `Goal: ${plan.goal}\n\nSynthesis instruction: ${plan.synthesisPrompt}\n\nStep results:\n${stepSummaries}`,
           maxTokens: 2000,
-        });
+        };
+        const response = provider.generateStream
+          ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, taskId, text))
+          : await provider.generate(request);
         synthesizedOutput = response.content;
         totalTokens += (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
       } catch {

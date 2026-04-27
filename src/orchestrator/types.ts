@@ -1417,6 +1417,13 @@ export interface LLMRequest {
    *   contract to the caller.
    */
   responseFormat?: ResponseFormat;
+  /**
+   * Optional trace metadata forwarded to providers that support broadcast /
+   * trace data (currently OpenRouter — see `llm/llm-trace-context.ts`).
+   * Per-request override; missing fields inherit from the ambient context
+   * established by `runWithLLMTrace(...)`.
+   */
+  trace?: import('./llm/llm-trace-context.ts').LLMTraceMetadata;
 }
 
 /** G4 response format directive — see `LLMRequest.responseFormat`. */

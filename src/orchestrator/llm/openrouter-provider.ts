@@ -9,16 +9,37 @@
 
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
+import { clampOpenRouterId, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, retryWithBackoff } from './retry.ts';
+import { DEFAULT_RETRYABLE_STATUSES, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+/**
+ * Wall-clock timeout for non-streaming `generate()` calls. Generous because the
+ * caller has no progress signal during the request — the provider holds the
+ * connection open until the full response is composed. Streaming callers use
+ * `DEFAULT_STREAM_TIMEOUTS` (idle-timer based) instead.
+ */
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
-  fast: 15_000,
-  balanced: 60_000,
-  powerful: 60_000,
-  'tool-uses': 15_000,
+  fast: 30_000,
+  balanced: 180_000,
+  powerful: 180_000,
+  'tool-uses': 30_000,
+};
+
+interface StreamTimeouts {
+  connectTimeoutMs: number;
+  idleTimeoutMs: number;
+  wallClockMs: number;
+}
+
+const DEFAULT_STREAM_TIMEOUTS: Record<LLMProvider['tier'], StreamTimeouts> = {
+  fast: { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
+  balanced: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
+  powerful: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
+  'tool-uses': { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
 };
 
 const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {
@@ -33,6 +54,7 @@ export interface OpenRouterProviderConfig {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
+  streamTimeouts?: Partial<StreamTimeouts>;
 }
 
 export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMProvider | null {
@@ -42,6 +64,10 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
   const envModelKey = `OPENROUTER_${config.tier.toUpperCase().replace(/-/g, '_')}_MODEL`;
   const model = config.model ?? process.env[envModelKey] ?? DEFAULT_MODELS[config.tier];
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS[config.tier];
+  const streamTimeouts: StreamTimeouts = {
+    ...DEFAULT_STREAM_TIMEOUTS[config.tier],
+    ...config.streamTimeouts,
+  };
 
   return {
     id: `openrouter/${config.tier}/${model}`,
@@ -108,16 +134,19 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         }
       }
 
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://github.com/vinyan-agent',
+        'X-Title': 'Vinyan Agent',
+      };
+      applyTraceMetadata(body, headers, request.trace);
+
       return retryWithBackoff(
         async (signal) => {
           const response = await fetch(OPENROUTER_BASE_URL, {
             method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://github.com/vinyan-agent',
-              'X-Title': 'Vinyan Agent',
-            },
+            headers,
             body: JSON.stringify(body),
             signal,
           });
@@ -245,124 +274,142 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
         }
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        'HTTP-Referer': 'https://github.com/vinyan-agent',
+        'X-Title': 'Vinyan Agent',
+      };
+      applyTraceMetadata(body, headers, request.trace);
 
-      let response: Response;
-      try {
-        response = await fetch(OPENROUTER_BASE_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-            'HTTP-Referer': 'https://github.com/vinyan-agent',
-            'X-Title': 'Vinyan Agent',
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        clearTimeout(timer);
-        // Fall back to non-streaming path on transport error.
-        return this.generate(request);
-      }
+      return retryStreamWithBackoff(
+        async (signal, hooks) => {
+          const response = await fetch(OPENROUTER_BASE_URL, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal,
+          });
 
-      if (!response.ok || !response.body) {
-        clearTimeout(timer);
-        const errorText = await response.text().catch(() => '');
-        if (response.status === 413 || errorText.includes('context_length_exceeded')) {
-          const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
-          throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
-        }
-        // Transient error — fall back to non-streaming retry path.
-        return this.generate(request);
-      }
+          // Headers received → connection is alive. Idle timer takes over from
+          // here; the connect timer is cancelled by firstByte().
+          hooks.firstByte();
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let contentAcc = '';
-      const toolArgAcc: Map<number, { id: string; name: string; args: string }> = new Map();
-      let finishReason: string | undefined;
-      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
-      let modelId: string | undefined;
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(':')) continue;
-            if (!trimmed.startsWith('data:')) continue;
-            const data = trimmed.slice(5).trim();
-            if (data === '[DONE]') continue;
-            let chunk: any;
-            try {
-              chunk = JSON.parse(data);
-            } catch {
-              continue;
+          if (!response.ok || !response.body) {
+            const errorText = await response.text().catch(() => '');
+            if (response.status === 413 || errorText.includes('context_length_exceeded')) {
+              const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+              throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            if (chunk.model) modelId = chunk.model;
-            if (chunk.usage) usage = chunk.usage;
-            const choice = chunk.choices?.[0];
-            if (!choice) continue;
-            if (choice.finish_reason) finishReason = choice.finish_reason;
-            const delta = choice.delta;
-            if (!delta) continue;
-            if (typeof delta.content === 'string' && delta.content.length > 0) {
-              contentAcc += delta.content;
-              onDelta({ text: delta.content });
-            }
-            if (Array.isArray(delta.tool_calls)) {
-              for (const tc of delta.tool_calls) {
-                const idx = tc.index ?? 0;
-                const existing = toolArgAcc.get(idx) ?? { id: '', name: '', args: '' };
-                if (tc.id) existing.id = tc.id;
-                if (tc.function?.name) existing.name = tc.function.name;
-                if (tc.function?.arguments) existing.args += tc.function.arguments;
-                toolArgAcc.set(idx, existing);
+            const err = new Error(`OpenRouter stream error ${response.status}: ${errorText}`);
+            (err as { status?: number }).status = response.status;
+            const retryAfter = response.headers.get('retry-after');
+            if (retryAfter) (err as { retryAfterHeader?: string }).retryAfterHeader = retryAfter;
+            throw err;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let contentAcc = '';
+          const toolArgAcc: Map<number, { id: string; name: string; args: string }> = new Map();
+          let finishReason: string | undefined;
+          let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
+          let modelId: string | undefined;
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              // Any bytes off the wire — content, ping, or empty heartbeat —
+              // count as activity. This is the contract that prevents a
+              // healthy-but-slow stream from being killed.
+              hooks.activity();
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() ?? '';
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith(':')) continue;
+                if (!trimmed.startsWith('data:')) continue;
+                const data = trimmed.slice(5).trim();
+                if (data === '[DONE]') continue;
+                let chunk: any;
+                try {
+                  chunk = JSON.parse(data);
+                } catch {
+                  continue;
+                }
+                if (chunk.model) modelId = chunk.model;
+                if (chunk.usage) usage = chunk.usage;
+                const choice = chunk.choices?.[0];
+                if (!choice) continue;
+                if (choice.finish_reason) finishReason = choice.finish_reason;
+                const delta = choice.delta;
+                if (!delta) continue;
+                if (typeof delta.content === 'string' && delta.content.length > 0) {
+                  contentAcc += delta.content;
+                  onDelta({ text: delta.content });
+                }
+                if (Array.isArray(delta.tool_calls)) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index ?? 0;
+                    const existing = toolArgAcc.get(idx) ?? { id: '', name: '', args: '' };
+                    if (tc.id) existing.id = tc.id;
+                    if (tc.function?.name) existing.name = tc.function.name;
+                    if (tc.function?.arguments) existing.args += tc.function.arguments;
+                    toolArgAcc.set(idx, existing);
+                  }
+                }
               }
             }
+          } finally {
+            try {
+              reader.releaseLock();
+            } catch {
+              /* ignore */
+            }
           }
-        }
-      } finally {
-        clearTimeout(timer);
-        try {
-          reader.releaseLock();
-        } catch {
-          /* ignore */
-        }
-      }
 
-      const toolCalls: ToolCall[] = [];
-      for (const { id, name, args } of toolArgAcc.values()) {
-        if (!name) continue;
-        let params: Record<string, unknown> = {};
-        try {
-          params = args ? JSON.parse(args) : {};
-        } catch {
-          /* use empty */
-        }
-        toolCalls.push({ id: id || `tc_${name}`, tool: name, parameters: params });
-      }
-      const stopReason: LLMResponse['stopReason'] =
-        finishReason === 'tool_calls' ? 'tool_use' : finishReason === 'length' ? 'max_tokens' : 'end_turn';
+          const toolCalls: ToolCall[] = [];
+          for (const { id, name, args } of toolArgAcc.values()) {
+            if (!name) continue;
+            let params: Record<string, unknown> = {};
+            try {
+              params = args ? JSON.parse(args) : {};
+            } catch {
+              /* use empty */
+            }
+            toolCalls.push({ id: id || `tc_${name}`, tool: name, parameters: params });
+          }
+          const stopReason: LLMResponse['stopReason'] =
+            finishReason === 'tool_calls' ? 'tool_use' : finishReason === 'length' ? 'max_tokens' : 'end_turn';
 
-      return {
-        content: contentAcc,
-        toolCalls,
-        tokensUsed: {
-          input: usage?.prompt_tokens ?? 0,
-          output: usage?.completion_tokens ?? 0,
+          return {
+            content: contentAcc,
+            toolCalls,
+            tokensUsed: {
+              input: usage?.prompt_tokens ?? 0,
+              output: usage?.completion_tokens ?? 0,
+            },
+            model: modelId ?? model,
+            stopReason,
+          };
         },
-        model: modelId ?? model,
-        stopReason,
-      };
+        {
+          maxRetries: 3,
+          baseDelayMs: 1_000,
+          retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
+          ...streamTimeouts,
+          parseRetryAfter: (error: unknown) => {
+            const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
+            if (!header) return undefined;
+            const parsed = parseInt(header, 10);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
+          },
+        },
+      );
     },
   };
 }
@@ -381,6 +428,41 @@ export function registerOpenRouterProviders(
     }
   }
   return count;
+}
+
+/**
+ * Resolve ambient + per-request trace metadata and write it onto the
+ * outbound payload using OpenRouter's broadcast/trace conventions:
+ *   - top-level `session_id` and `user` (max 128 chars)
+ *   - top-level `trace` object (free-form key/value)
+ *   - `x-session-id` header as a redundant transport hint
+ *
+ * https://openrouter.ai/docs/guides/features/broadcast/overview
+ */
+function applyTraceMetadata(
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  explicit: LLMTraceMetadata | undefined,
+): void {
+  const trace = resolveLLMTrace(explicit);
+  if (!trace) return;
+
+  const sessionId = clampOpenRouterId(trace.sessionId);
+  const userId = clampOpenRouterId(trace.userId);
+  if (sessionId) {
+    body.session_id = sessionId;
+    headers['x-session-id'] = sessionId;
+  }
+  if (userId) body.user = userId;
+
+  const traceObj: Record<string, unknown> = { ...(trace.extra ?? {}) };
+  if (trace.traceId) traceObj.trace_id = trace.traceId;
+  if (trace.traceName) traceObj.trace_name = trace.traceName;
+  if (trace.spanName) traceObj.span_name = trace.spanName;
+  if (trace.generationName) traceObj.generation_name = trace.generationName;
+  if (trace.parentSpanId) traceObj.parent_span_id = trace.parentSpanId;
+  if (trace.environment) traceObj.environment = trace.environment;
+  if (Object.keys(traceObj).length > 0) body.trace = traceObj;
 }
 
 // ── OpenRouter response types ────────────────────────────────────────

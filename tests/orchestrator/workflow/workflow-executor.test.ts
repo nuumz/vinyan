@@ -26,6 +26,7 @@ describe('executeWorkflow', () => {
     let plannerCalled = false;
     let stepLLMCalled = false;
     let synthesizerCalled = false;
+    const deltas: Array<{ event: string; payload: unknown }> = [];
 
     const validPlan = JSON.stringify({
       goal: 'analyze code',
@@ -52,12 +53,29 @@ describe('executeWorkflow', () => {
         stepLLMCalled = true;
         return { content: `Result for: ${req.userPrompt.slice(0, 50)}`, tokensUsed: { input: 20, output: 40 } };
       },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (delta: { text: string }) => void,
+      ) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return mockProvider.generate(req);
+        }
+        const response = await mockProvider.generate(req);
+        onDelta({ text: response.content });
+        return response;
+      },
+    };
+    const bus = {
+      emit: (event: string, payload: unknown) => {
+        if (event === 'agent:text_delta' || event === 'llm:stream_delta') deltas.push({ event, payload });
+      },
     };
 
     const result = await executeWorkflow(makeInput('analyze code'), {
       llmRegistry: {
         selectByTier: () => mockProvider,
       } as any,
+      bus: bus as any,
     });
 
     expect(result.status).toBe('completed');
@@ -69,6 +87,9 @@ describe('executeWorkflow', () => {
     expect(plannerCalled).toBe(true);
     expect(stepLLMCalled).toBe(true);
     expect(synthesizerCalled).toBe(true);
+    expect(deltas.some((d) => d.event === 'agent:text_delta')).toBe(true);
+    expect(deltas.some((d) => d.event === 'llm:stream_delta')).toBe(true);
+    expect(deltas.every((d) => (d.payload as { taskId?: string }).taskId === 'task-wf-test')).toBe(true);
   });
 
   test('step with fallback strategy retries on failure', async () => {

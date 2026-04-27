@@ -11,13 +11,32 @@ import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig,
 import { PromptTooLargeError } from '../types.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, retryWithBackoff } from './retry.ts';
+import { DEFAULT_RETRYABLE_STATUSES, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
 
+/**
+ * Wall-clock timeout for non-streaming `generate()`. Long because the caller
+ * has no progress signal during the request — Anthropic holds the connection
+ * open until thinking + output are both fully composed. Streaming callers use
+ * `DEFAULT_STREAM_TIMEOUTS` (idle-timer based) instead.
+ */
 const DEFAULT_TIMEOUT_MS: Record<LLMProvider['tier'], number> = {
   fast: 30_000,
-  balanced: 60_000,
-  powerful: 60_000,
+  balanced: 180_000,
+  powerful: 180_000,
   'tool-uses': 30_000,
+};
+
+interface StreamTimeouts {
+  connectTimeoutMs: number;
+  idleTimeoutMs: number;
+  wallClockMs: number;
+}
+
+const DEFAULT_STREAM_TIMEOUTS: Record<LLMProvider['tier'], StreamTimeouts> = {
+  fast: { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
+  balanced: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
+  powerful: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
+  'tool-uses': { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
 };
 
 /** Anthropic content block with optional cache marker — used for both system and user paths. */
@@ -123,6 +142,7 @@ export interface AnthropicProviderConfig {
   model?: string;
   apiKey?: string;
   timeoutMs?: number;
+  streamTimeouts?: Partial<StreamTimeouts>;
 }
 
 export function createAnthropicProvider(config: AnthropicProviderConfig = {}): LLMProvider | null {
@@ -139,7 +159,12 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
 
   const client = new Anthropic({ apiKey });
   const model = config.model ?? 'claude-sonnet-4-20250514';
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS[config.tier ?? 'balanced'];
+  const tier = config.tier ?? 'balanced';
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS[tier];
+  const streamTimeouts: StreamTimeouts = {
+    ...DEFAULT_STREAM_TIMEOUTS[tier],
+    ...config.streamTimeouts,
+  };
 
   return {
     id: config.id ?? `anthropic/${model}`,
@@ -265,69 +290,101 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
       const thinkingEnabled = isThinkingEnabled(request.thinking);
       const systemBlocks = buildSystemBlocks(request);
 
-      try {
-        const stream = await client.messages.stream({
-          model,
-          max_tokens: request.maxTokens,
-          system: systemBlocks,
-          messages,
-          ...(tools?.length ? { tools } : {}),
-          ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
-          // G3 per-phase sampling — same forwarding as the non-streaming path.
-          ...(request.topP !== undefined ? { top_p: request.topP } : {}),
-          ...(request.topK !== undefined ? { top_k: request.topK } : {}),
-          ...(request.stopSequences && request.stopSequences.length > 0
-            ? { stop_sequences: request.stopSequences }
-            : {}),
-          // G4 structured output — same tool_choice enforcement as the
-          // non-streaming path so callers that opt into responseFormat get
-          // the same shape guarantee on streaming.
-          ...buildAnthropicToolChoice(request.responseFormat),
-          ...buildThinkingParams(request.thinking),
-        });
+      return retryStreamWithBackoff(
+        async (signal, hooks) => {
+          const stream = client.messages.stream(
+            {
+              model,
+              max_tokens: request.maxTokens,
+              system: systemBlocks,
+              messages,
+              ...(tools?.length ? { tools } : {}),
+              ...(!thinkingEnabled && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+              // G3 per-phase sampling — same forwarding as the non-streaming path.
+              ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+              ...(request.topK !== undefined ? { top_k: request.topK } : {}),
+              ...(request.stopSequences && request.stopSequences.length > 0
+                ? { stop_sequences: request.stopSequences }
+                : {}),
+              // G4 structured output — same tool_choice enforcement as the
+              // non-streaming path so callers that opt into responseFormat get
+              // the same shape guarantee on streaming.
+              ...buildAnthropicToolChoice(request.responseFormat),
+              ...buildThinkingParams(request.thinking),
+            },
+            { signal },
+          );
 
-        stream.on('text', (textDelta: string) => {
-          if (textDelta) onDelta({ text: textDelta });
-        });
+          // Every event off the wire — text delta, ping, content_block_start,
+          // anything — counts as activity so the idle timer doesn't fire
+          // mid-stream on a slow-but-healthy generation.
+          stream.on('streamEvent', () => hooks.activity());
+          stream.on('text', (textDelta: string) => {
+            if (textDelta) onDelta({ text: textDelta });
+          });
 
-        const final = await stream.finalMessage();
-        const toolCalls: ToolCall[] = [];
-        let textContent = '';
-        let thinking: string | undefined;
-        for (const block of final.content) {
-          if (block.type === 'text') textContent += block.text;
-          else if (block.type === 'tool_use') {
-            toolCalls.push({
-              id: block.id,
-              tool: block.name,
-              parameters: block.input as Record<string, unknown>,
-            });
-          } else if ((block as any).type === 'thinking') {
-            thinking = thinking ? `${thinking}\n---\n${(block as any).thinking}` : (block as any).thinking;
+          const final = await stream.finalMessage();
+          const toolCalls: ToolCall[] = [];
+          let textContent = '';
+          let thinking: string | undefined;
+          for (const block of final.content) {
+            if (block.type === 'text') textContent += block.text;
+            else if (block.type === 'tool_use') {
+              toolCalls.push({
+                id: block.id,
+                tool: block.name,
+                parameters: block.input as Record<string, unknown>,
+              });
+            } else if ((block as any).type === 'thinking') {
+              thinking = thinking ? `${thinking}\n---\n${(block as any).thinking}` : (block as any).thinking;
+            }
           }
-        }
-        return {
-          content: textContent,
-          thinking,
-          toolCalls,
-          tokensUsed: {
-            input: final.usage.input_tokens,
-            output: final.usage.output_tokens,
-            cacheRead: (final.usage as any).cache_read_input_tokens,
-            cacheCreation: (final.usage as any).cache_creation_input_tokens,
+          return {
+            content: textContent,
+            thinking,
+            toolCalls,
+            tokensUsed: {
+              input: final.usage.input_tokens,
+              output: final.usage.output_tokens,
+              cacheRead: (final.usage as any).cache_read_input_tokens,
+              cacheCreation: (final.usage as any).cache_creation_input_tokens,
+            },
+            model: final.model,
+            stopReason:
+              final.stop_reason === 'tool_use'
+                ? 'tool_use'
+                : final.stop_reason === 'max_tokens'
+                  ? 'max_tokens'
+                  : 'end_turn',
+          };
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 1_000,
+          retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
+          ...streamTimeouts,
+          isRetryableError: (error: Error) => {
+            if (error.message.includes('timeout')) return true;
+            const msg = error.message;
+            return msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
           },
-          model: final.model,
-          stopReason:
-            final.stop_reason === 'tool_use'
-              ? 'tool_use'
-              : final.stop_reason === 'max_tokens'
-                ? 'max_tokens'
-                : 'end_turn',
-        };
-      } catch (err) {
-        // Fall back to non-streaming on any streaming error — preserves availability.
-        return this.generate(request);
-      }
+          parseRetryAfter: (error: unknown) => {
+            if (error instanceof PromptTooLargeError) return undefined;
+            const status = (error as { status?: number })?.status;
+            const msg = (error as Error)?.message ?? '';
+            if (status === 413 || msg.includes('too large') || msg.includes('maximum context length')) {
+              const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
+              throw new PromptTooLargeError(estimate, `anthropic/${model}`, error);
+            }
+            const retryAfter = (error as { headers?: { get?: (k: string) => string | null } })?.headers?.get?.(
+              'retry-after',
+            );
+            if (!retryAfter) return undefined;
+            const parsed = parseInt(retryAfter, 10);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
+          },
+        },
+      );
     },
   };
 }

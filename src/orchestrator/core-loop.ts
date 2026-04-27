@@ -18,6 +18,7 @@ import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
+import { runWithLLMTrace } from './llm/llm-trace-context.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
@@ -1881,6 +1882,22 @@ function quoteArgForDiscovery(s: string): string {
  *   - Default: delegate to executeTaskCore for byte-identical legacy behavior
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
+  // Establish ambient LLM trace context so providers that support broadcast
+  // metadata (currently OpenRouter — `llm/llm-trace-context.ts`) can group
+  // every LLM call inside this task under a stable session_id and trace_id
+  // without threading the values through every layer.
+  return runWithLLMTrace(
+    {
+      sessionId: input.sessionId,
+      traceId: input.id,
+      traceName: input.goal?.slice(0, 64),
+      environment: process.env.VINYAN_ENV ?? process.env.NODE_ENV ?? undefined,
+    },
+    () => executeTaskWithTrace(input, deps),
+  );
+}
+
+async function executeTaskWithTrace(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
   // Profile coercion (W1 PR #1 consumer wiring).
   //
   // Every task enters the governance pipeline through this function, so

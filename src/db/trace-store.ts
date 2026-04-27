@@ -29,7 +29,10 @@ export class TraceStore {
         thinking_mode, thinking_tokens_used, thinking_meta,
         understanding_depth, understanding_intent, resolved_entities,
         understanding_verified, understanding_primary_action,
-        capability_requirements, capability_analysis, synthetic_agent_id, knowledge_used
+        agent_selection_reason, capability_requirements, capability_analysis,
+        selected_capability_profile_id, selected_capability_profile_source,
+        selected_capability_profile_trust_tier, capability_fit_score,
+        unmet_capability_ids, synthetic_agent_id, knowledge_used
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $agent_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -44,7 +47,10 @@ export class TraceStore {
         $thinking_mode, $thinking_tokens_used, $thinking_meta,
         $understanding_depth, $understanding_intent, $resolved_entities,
         $understanding_verified, $understanding_primary_action,
-        $capability_requirements, $capability_analysis, $synthetic_agent_id, $knowledge_used
+        $agent_selection_reason, $capability_requirements, $capability_analysis,
+        $selected_capability_profile_id, $selected_capability_profile_source,
+        $selected_capability_profile_trust_tier, $capability_fit_score,
+        $unmet_capability_ids, $synthetic_agent_id, $knowledge_used
       )
     `);
   }
@@ -93,8 +99,14 @@ export class TraceStore {
       $resolved_entities: trace.resolvedEntities ?? null,
       $understanding_verified: trace.understandingVerified ?? null,
       $understanding_primary_action: trace.understandingPrimaryAction ?? null,
+      $agent_selection_reason: trace.agentSelectionReason ?? null,
       $capability_requirements: trace.capabilityRequirements ? JSON.stringify(trace.capabilityRequirements) : null,
       $capability_analysis: trace.capabilityAnalysis ? JSON.stringify(trace.capabilityAnalysis) : null,
+      $selected_capability_profile_id: trace.selectedCapabilityProfileId ?? null,
+      $selected_capability_profile_source: trace.selectedCapabilityProfileSource ?? null,
+      $selected_capability_profile_trust_tier: trace.selectedCapabilityProfileTrustTier ?? null,
+      $capability_fit_score: trace.capabilityFitScore ?? null,
+      $unmet_capability_ids: trace.unmetCapabilityIds ? JSON.stringify(trace.unmetCapabilityIds) : null,
       $synthetic_agent_id: trace.syntheticAgentId ?? null,
       $knowledge_used: trace.knowledgeUsed ? JSON.stringify(trace.knowledgeUsed) : null,
     });
@@ -322,8 +334,14 @@ function rowToTrace(row: any): ExecutionTrace {
     resolvedEntities: row.resolved_entities ?? undefined,
     understandingVerified: row.understanding_verified ?? undefined,
     understandingPrimaryAction: row.understanding_primary_action ?? undefined,
+    agentSelectionReason: row.agent_selection_reason ?? undefined,
     capabilityRequirements: row.capability_requirements ? JSON.parse(row.capability_requirements) : undefined,
     capabilityAnalysis: row.capability_analysis ? JSON.parse(row.capability_analysis) : undefined,
+    selectedCapabilityProfileId: row.selected_capability_profile_id ?? undefined,
+    selectedCapabilityProfileSource: row.selected_capability_profile_source ?? undefined,
+    selectedCapabilityProfileTrustTier: row.selected_capability_profile_trust_tier ?? undefined,
+    capabilityFitScore: row.capability_fit_score ?? undefined,
+    unmetCapabilityIds: row.unmet_capability_ids ? JSON.parse(row.unmet_capability_ids) : undefined,
     syntheticAgentId: row.synthetic_agent_id ?? undefined,
     knowledgeUsed: row.knowledge_used ? JSON.parse(row.knowledge_used) : undefined,
   };

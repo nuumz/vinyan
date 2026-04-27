@@ -5,12 +5,18 @@
  * cost predictor. Compresses transcript and records understanding snapshot.
  */
 
-import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, SelfModelPrediction } from '../types.ts';
-import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { VerificationResult } from './types.ts';
-import type { PhaseContext, LearnResult } from './types.ts';
+import type { OutcomePrediction } from '../forward-predictor-types.ts';
+import type {
+  CapabilityFit,
+  ExecutionTrace,
+  IntentResolution,
+  RoutingDecision,
+  SelfModelPrediction,
+  SemanticTaskUnderstanding,
+} from '../types.ts';
 import { mapTraceToFPOutcome } from './generate-helpers.ts';
+import type { LearnResult, PhaseContext, VerificationResult } from './types.ts';
 
 interface LearnInput {
   routing: RoutingDecision;
@@ -21,6 +27,57 @@ interface LearnInput {
   trace: ExecutionTrace;
   isAgenticResult: boolean;
   lastAgentResult: WorkerLoopResult | null;
+}
+
+type CapabilityTraceAudit = Pick<
+  ExecutionTrace,
+  | 'agentSelectionReason'
+  | 'selectedCapabilityProfileId'
+  | 'selectedCapabilityProfileSource'
+  | 'selectedCapabilityProfileTrustTier'
+  | 'capabilityFitScore'
+  | 'unmetCapabilityIds'
+>;
+
+export function deriveCapabilityTraceAudit(intentResolution?: IntentResolution): CapabilityTraceAudit {
+  if (!intentResolution) return {};
+
+  const selectedFit = selectCapabilityFit(intentResolution);
+  const audit: CapabilityTraceAudit = {};
+
+  if (intentResolution.agentSelectionReason) {
+    audit.agentSelectionReason = intentResolution.agentSelectionReason;
+  }
+
+  if (intentResolution.syntheticAgentId) {
+    audit.selectedCapabilityProfileId = intentResolution.syntheticAgentId;
+    audit.selectedCapabilityProfileSource = 'synthetic';
+    audit.selectedCapabilityProfileTrustTier = 'probabilistic';
+  }
+
+  if (selectedFit) {
+    audit.selectedCapabilityProfileId ??= selectedFit.profileId ?? selectedFit.agentId;
+    if (selectedFit.profileSource) {
+      audit.selectedCapabilityProfileSource ??= selectedFit.profileSource;
+    }
+    if (selectedFit.trustTier) {
+      audit.selectedCapabilityProfileTrustTier ??= selectedFit.trustTier;
+    }
+    audit.capabilityFitScore = selectedFit.fitScore;
+    audit.unmetCapabilityIds = selectedFit.gap.map((gap) => gap.id);
+  }
+
+  return audit;
+}
+
+function selectCapabilityFit(intentResolution: IntentResolution): CapabilityFit | undefined {
+  const candidates = intentResolution.capabilityAnalysis?.candidates ?? [];
+  if (candidates.length === 0) return undefined;
+  return (
+    candidates.find(
+      (candidate) => candidate.agentId === intentResolution.agentId || candidate.profileId === intentResolution.agentId,
+    ) ?? candidates[0]
+  );
 }
 
 export async function executeLearnPhase(
@@ -209,6 +266,7 @@ export async function executeLearnPhase(
   // No LLM in this path — pure copy of resolver output (A3).
   const ir = ctx.intentResolution;
   if (ir) {
+    Object.assign(trace, deriveCapabilityTraceAudit(ir));
     if (ir.capabilityRequirements && ir.capabilityRequirements.length > 0) {
       trace.capabilityRequirements = ir.capabilityRequirements;
     }

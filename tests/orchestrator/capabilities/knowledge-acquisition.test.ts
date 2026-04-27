@@ -12,15 +12,18 @@
  *   - Empty acquisition → null constraint (no empty section in prompt)
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Fact } from '../../../src/core/types.ts';
 import {
   acquireKnowledge,
   buildResearchContextConstraint,
+  createWorkspaceDocsKnowledgeProvider,
+  createWorldGraphKnowledgeProvider,
+  type KnowledgeProvider,
   planFromGapForResearch,
 } from '../../../src/orchestrator/capabilities/knowledge-acquisition.ts';
-import type { Fact } from '../../../src/core/types.ts';
 import type {
   CapabilityFit,
   CapabilityGapAnalysis,
@@ -110,6 +113,12 @@ describe('planFromGapForResearch', () => {
     });
     const plan = planFromGapForResearch('t-1', a)!;
     expect(plan.queries.sort()).toEqual(['crawl', 'investigate', 'react', 'research.web']);
+  });
+
+  test('accepts provider order from the orchestrator dependency surface', () => {
+    const plan = planFromGapForResearch('t-1', makeAnalysis(), { providers: ['peer', 'web'] })!;
+
+    expect(plan.providers).toEqual(['peer', 'web']);
   });
 });
 
@@ -236,6 +245,97 @@ describe('acquireKnowledge', () => {
         { worldGraph: wg, workspace: dir },
       );
       expect(ctxs.find((c) => c.source === 'workspace-docs')).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('custom providers only run when requested by provider id', async () => {
+    const webProvider: KnowledgeProvider = {
+      id: 'web',
+      collect(req, ctx) {
+        return [
+          {
+            source: 'web',
+            capability: req.capabilities[0],
+            query: req.queries[0]!,
+            content: 'adapter-normalized web evidence',
+            reference: 'https://example.test/evidence',
+            confidence: 0.35,
+            retrievedAt: ctx.now(),
+          },
+        ];
+      },
+    };
+
+    const skipped = await acquireKnowledge(
+      { taskId: 't-1', capabilities: ['cap.web'], queries: ['cap.web'], providers: ['docs'] },
+      { knowledgeProviders: [webProvider] },
+    );
+    expect(skipped).toEqual([]);
+
+    const ctxs = await acquireKnowledge(
+      { taskId: 't-1', capabilities: ['cap.web'], queries: ['cap.web'], providers: ['web'] },
+      { knowledgeProviders: [webProvider] },
+    );
+    expect(ctxs).toHaveLength(1);
+    expect(ctxs[0]!.source).toBe('web');
+    expect(ctxs[0]!.confidence).toBe(0.35);
+  });
+
+  test('custom provider failure is isolated from later requested providers', async () => {
+    const failingProvider: KnowledgeProvider = {
+      id: 'web',
+      collect() {
+        throw new Error('remote provider failed');
+      },
+    };
+    const peerProvider: KnowledgeProvider = {
+      id: 'peer',
+      collect(req, ctx) {
+        return [
+          {
+            source: 'peer',
+            capability: req.capabilities[0],
+            query: req.queries[0]!,
+            content: 'peer evidence with ECP semantics already adapted',
+            reference: 'peer:local-lab',
+            confidence: 0.55,
+            retrievedAt: ctx.now(),
+          },
+        ];
+      },
+    };
+
+    const ctxs = await acquireKnowledge(
+      { taskId: 't-1', capabilities: ['cap.peer'], queries: ['cap.peer'], providers: ['web', 'peer'] },
+      { knowledgeProviders: [failingProvider, peerProvider] },
+    );
+
+    expect(ctxs).toHaveLength(1);
+    expect(ctxs[0]!.source).toBe('peer');
+    expect(ctxs[0]!.content).toContain('ECP');
+  });
+
+  test('exported local provider factories preserve world-graph and docs behavior', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vinyan-doc-'));
+    try {
+      writeFileSync(join(dir, 'README.md'), 'provider.factory appears in local docs');
+      const wg = {
+        queryFacts: (target: string) =>
+          target === 'provider.factory' ? [fakeFact('f-provider', 'provider.factory', 'factory fact', 0.7)] : [],
+      } as never;
+
+      const ctxs = await acquireKnowledge(
+        { taskId: 't-1', capabilities: ['provider.factory'], queries: ['provider.factory'] },
+        {
+          knowledgeProviders: [createWorldGraphKnowledgeProvider(wg), createWorkspaceDocsKnowledgeProvider(dir)],
+        },
+      );
+
+      expect(ctxs.map((ctx) => ctx.source)).toEqual(['world-graph', 'workspace-docs']);
+      expect(ctxs[0]!.reference).toBe('f-provider');
+      expect(ctxs[1]!.reference).toBe('README.md');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -48,8 +48,14 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   resolved_entities      TEXT,
   understanding_verified INTEGER DEFAULT 0,
   understanding_primary_action TEXT,
+  agent_selection_reason TEXT,
   capability_requirements TEXT,
   capability_analysis     TEXT,
+  selected_capability_profile_id TEXT,
+  selected_capability_profile_source TEXT,
+  selected_capability_profile_trust_tier TEXT,
+  capability_fit_score REAL,
+  unmet_capability_ids TEXT,
   synthetic_agent_id      TEXT,
   knowledge_used          TEXT
 );

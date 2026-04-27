@@ -1165,6 +1165,8 @@ export interface ExecutionTrace {
   understandingVerified?: number;
   /** STU Phase D: Denormalized primaryAction for indexed queries. */
   understandingPrimaryAction?: string;
+  /** Capability route audit: resolver/router rationale for the selected agent. */
+  agentSelectionReason?: string;
   // ── Capability-First Orchestration (Phase D) ─────────────────────────
   /**
    * Structured capability requirements the resolver/router judged the task
@@ -1180,6 +1182,16 @@ export interface ExecutionTrace {
    * the chosen agent. Useful for evolution + dashboard observability.
    */
   capabilityAnalysis?: CapabilityGapAnalysis;
+  /** Capability profile id selected by the router/analysis path. */
+  selectedCapabilityProfileId?: string;
+  /** Provenance of the selected capability profile. */
+  selectedCapabilityProfileSource?: AgentCapabilityProfileSource;
+  /** Trust tier of the selected capability profile. */
+  selectedCapabilityProfileTrustTier?: CapabilityProfileTrustTier;
+  /** Fit score of the selected capability candidate that drove routing. */
+  capabilityFitScore?: number;
+  /** Capability ids still unmet by the selected capability candidate. */
+  unmetCapabilityIds?: string[];
   /** Synthesized agent id used for this task, if synthesis fired. */
   syntheticAgentId?: string;
   /** Local-first knowledge contexts surfaced for this task, when research fired. */
@@ -1907,6 +1919,8 @@ export interface KnowledgeAcquisitionRequest {
   /** Suggested provider order: 'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'. */
   providers?: Array<'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'>;
 }
+
+export type KnowledgeAcquisitionProviderId = NonNullable<KnowledgeAcquisitionRequest['providers']>[number];
 
 /**
  * A single piece of evidence returned by the knowledge acquisition layer.

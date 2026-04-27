@@ -1,14 +1,16 @@
 /**
- * Knowledge Acquisition (Phase C1 — local-first).
+ * Knowledge Acquisition (Phase 3 — provider-based, local-first default).
  *
  * When the capability router decides `recommendedAction === 'research'`,
  * the orchestrator calls `acquireKnowledge` to gather *context* — never
  * authoritative facts, never goal rewrites.
  *
- * Sources, in order of trust:
+ * Built-in local providers, in order of trust:
  *   1. WorldGraph facts          — deterministic, content-addressed (A4)
  *   2. Workspace docs (README/.md) — heuristic; tier=heuristic (A5)
- *   3. (C2) MCP / web providers   — config-gated; not implemented here
+ *   3. External providers (MCP/web) must be adapters at the edge; their
+ *      output is parsed and converted into KnowledgeContext before it reaches
+ *      this orchestrator path. Internal peer providers use ECP/A2A, not MCP.
  *
  * Everything is local I/O. No network. The function is best-effort:
  * source failures degrade silently and do NOT block routing.
@@ -24,6 +26,7 @@ import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type {
   CapabilityGapAnalysis,
   CapabilityRequirement,
+  KnowledgeAcquisitionProviderId,
   KnowledgeAcquisitionRequest,
   KnowledgeContext,
 } from '../types.ts';
@@ -44,10 +47,30 @@ export interface AcquireKnowledgeDeps {
   worldGraph?: WorldGraph;
   /** Workspace root for doc grep. Absent → docs source skipped. */
   workspace?: string;
+  /** Provider adapters beyond the built-in local sources. */
+  knowledgeProviders?: readonly KnowledgeProvider[];
   /** Per-source cap. Defaults to DEFAULT_MAX_PER_SOURCE. */
   maxPerSource?: number;
   /** Total cap across all sources. Defaults to DEFAULT_MAX_TOTAL. */
   maxTotal?: number;
+}
+
+export type KnowledgeProviderId = KnowledgeAcquisitionProviderId;
+
+export interface KnowledgeProviderContext {
+  maxPerSource: number;
+  now: () => number;
+}
+
+export interface KnowledgeProvider {
+  /** Provider id used by KnowledgeAcquisitionRequest.providers. */
+  readonly id: KnowledgeProviderId;
+  /** Best-effort evidence collection. Throwing providers are isolated by acquireKnowledge(). */
+  collect(req: KnowledgeAcquisitionRequest, ctx: KnowledgeProviderContext): Promise<KnowledgeContext[]> | KnowledgeContext[];
+}
+
+export interface ResearchPlanningOptions {
+  providers?: readonly KnowledgeProviderId[];
 }
 
 /**
@@ -63,6 +86,7 @@ export interface AcquireKnowledgeDeps {
 export function planFromGapForResearch(
   taskId: string,
   analysis: CapabilityGapAnalysis,
+  options: ResearchPlanningOptions = {},
 ): KnowledgeAcquisitionRequest | null {
   if (analysis.recommendedAction !== 'research') return null;
   if (!analysis.required || analysis.required.length === 0) return null;
@@ -79,7 +103,7 @@ export function planFromGapForResearch(
     taskId,
     capabilities: unmet.map((r) => r.id),
     queries,
-    providers: ['world-graph', 'docs'],
+    providers: [...(options.providers ?? ['world-graph', 'docs'])],
   };
 }
 
@@ -118,27 +142,20 @@ export async function acquireKnowledge(
   if (req.queries.length === 0) return [];
   const maxPerSource = deps.maxPerSource ?? DEFAULT_MAX_PER_SOURCE;
   const maxTotal = deps.maxTotal ?? DEFAULT_MAX_TOTAL;
-  const providers = req.providers ?? ['world-graph', 'docs'];
+  const providerOrder = req.providers ?? ['world-graph', 'docs'];
+  const providers = buildProviderRegistry(deps);
+  const providerCtx: KnowledgeProviderContext = { maxPerSource, now: () => Date.now() };
   const out: KnowledgeContext[] = [];
 
-  // We only know how to fill 'world-graph' and 'docs' locally. Other
-  // providers (mcp/web/peer) belong to phase C2 and are skipped here.
-  for (const p of providers) {
+  for (const providerId of providerOrder) {
     if (out.length >= maxTotal) break;
-    if (p === 'world-graph' && deps.worldGraph) {
-      try {
-        const hits = collectFromWorldGraph(req, deps.worldGraph, maxPerSource);
-        out.push(...hits);
-      } catch {
-        /* defensive — best effort */
-      }
-    } else if (p === 'docs' && deps.workspace) {
-      try {
-        const hits = await collectFromWorkspaceDocs(req, deps.workspace, maxPerSource);
-        out.push(...hits);
-      } catch {
-        /* defensive — best effort */
-      }
+    const provider = providers.get(providerId);
+    if (!provider) continue;
+    try {
+      const hits = await provider.collect(req, providerCtx);
+      out.push(...hits);
+    } catch {
+      /* defensive — best effort */
     }
   }
 
@@ -159,14 +176,46 @@ export async function acquireKnowledge(
   return out.slice(0, maxTotal);
 }
 
+function buildProviderRegistry(deps: AcquireKnowledgeDeps): Map<KnowledgeProviderId, KnowledgeProvider> {
+  const providers = new Map<KnowledgeProviderId, KnowledgeProvider>();
+  if (deps.worldGraph) {
+    providers.set('world-graph', createWorldGraphKnowledgeProvider(deps.worldGraph));
+  }
+  if (deps.workspace) {
+    providers.set('docs', createWorkspaceDocsKnowledgeProvider(deps.workspace));
+  }
+  for (const provider of deps.knowledgeProviders ?? []) {
+    providers.set(provider.id, provider);
+  }
+  return providers;
+}
+
+export function createWorldGraphKnowledgeProvider(worldGraph: WorldGraph): KnowledgeProvider {
+  return {
+    id: 'world-graph',
+    collect(req, ctx) {
+      return collectFromWorldGraph(req, worldGraph, ctx.maxPerSource, ctx.now());
+    },
+  };
+}
+
+export function createWorkspaceDocsKnowledgeProvider(workspace: string): KnowledgeProvider {
+  return {
+    id: 'docs',
+    collect(req, ctx) {
+      return collectFromWorkspaceDocs(req, workspace, ctx.maxPerSource, ctx.now());
+    },
+  };
+}
+
 function collectFromWorldGraph(
   req: KnowledgeAcquisitionRequest,
   wg: WorldGraph,
   maxPerSource: number,
+  retrievedAt: number,
 ): KnowledgeContext[] {
   const seen = new Set<string>();
   const out: KnowledgeContext[] = [];
-  const now = Date.now();
   for (const q of req.queries) {
     if (out.length >= maxPerSource * req.queries.length) break;
     const facts = wg.queryFacts(q) ?? [];
@@ -187,7 +236,7 @@ function collectFromWorldGraph(
         // context is *evidence*, not verdict (A1). The verifier still
         // owns the final word.
         confidence: clamp01(Math.min(0.9, f.confidence ?? 0.6)),
-        retrievedAt: now,
+        retrievedAt,
       });
       perQuery++;
     }
@@ -199,12 +248,12 @@ async function collectFromWorkspaceDocs(
   req: KnowledgeAcquisitionRequest,
   workspace: string,
   maxPerSource: number,
+  retrievedAt: number,
 ): Promise<KnowledgeContext[]> {
   const docFiles = await listDocFiles(workspace, 4);
   if (docFiles.length === 0) return [];
   const seen = new Set<string>();
   const out: KnowledgeContext[] = [];
-  const now = Date.now();
   for (const q of req.queries) {
     const needle = q.toLowerCase();
     if (needle.length < 2) continue;
@@ -232,7 +281,7 @@ async function collectFromWorkspaceDocs(
         reference: relative(workspace, file),
         // Heuristic tier (A5) — substring grep is a coarse signal.
         confidence: 0.4,
-        retrievedAt: now,
+        retrievedAt,
       });
       perQuery++;
     }

@@ -167,6 +167,10 @@ export interface OrchestratorDeps {
   workerLifecycle?: import('./fleet/worker-lifecycle.ts').WorkerLifecycle;
   /** WorldGraph for committing verified facts (A4: content-addressed truth). */
   worldGraph?: import('../world-graph/world-graph.ts').WorldGraph;
+  /** Capability research provider adapters. External adapters normalize at the boundary. */
+  knowledgeProviders?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProvider[];
+  /** Optional deterministic provider order for capability research. */
+  knowledgeProviderOrder?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[];
   /** CriticEngine — L2+ semantic verification (§17.6). Skip gracefully if absent. */
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
   /** TestGenerator — L2+ generative verification (§17.7). Skip gracefully if absent. */
@@ -1055,7 +1059,7 @@ async function prepareExecution(
           }
         } else if (
           reroute.capabilityAnalysis?.recommendedAction === 'research' &&
-          (deps.worldGraph || deps.workspace)
+          (deps.worldGraph || deps.workspace || (deps.knowledgeProviders?.length ?? 0) > 0)
         ) {
           // Capability-first research (Phase C1, local-first). The router
           // decided we have a partial fit but missing knowledge: gather
@@ -1067,11 +1071,14 @@ async function prepareExecution(
           try {
             const { acquireKnowledge, planFromGapForResearch, buildResearchContextConstraint } =
               await import('./capabilities/knowledge-acquisition.ts');
-            const req = planFromGapForResearch(input.id, reroute.capabilityAnalysis);
+            const req = planFromGapForResearch(input.id, reroute.capabilityAnalysis, {
+              providers: resolveKnowledgeProviderOrder(deps),
+            });
             if (req && req.queries.length > 0) {
               const contexts = await acquireKnowledge(req, {
                 worldGraph: deps.worldGraph,
                 workspace: deps.workspace,
+                knowledgeProviders: deps.knowledgeProviders,
               });
               const constraintLine = buildResearchContextConstraint(contexts);
               if (constraintLine) {
@@ -1424,6 +1431,22 @@ async function prepareExecution(
     comprehension,
     softDegradeCap,
   };
+}
+
+function resolveKnowledgeProviderOrder(
+  deps: Pick<OrchestratorDeps, 'worldGraph' | 'workspace' | 'knowledgeProviders' | 'knowledgeProviderOrder'>,
+): import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[] | undefined {
+  if (deps.knowledgeProviderOrder && deps.knowledgeProviderOrder.length > 0) {
+    return Array.from(new Set(deps.knowledgeProviderOrder));
+  }
+
+  const providers: import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[] = [];
+  if (deps.worldGraph) providers.push('world-graph');
+  if (deps.workspace) providers.push('docs');
+  for (const provider of deps.knowledgeProviders ?? []) {
+    providers.push(provider.id);
+  }
+  return providers.length > 0 ? Array.from(new Set(providers)) : undefined;
 }
 
 // ---------------------------------------------------------------------------

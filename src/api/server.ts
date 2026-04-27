@@ -1916,6 +1916,31 @@ export class VinyanAPIServer {
     // includes it.
     this.deps.sessionManager.recordUserTurn(sessionId, content);
 
+    // Auto-name session from the first user message if no title was set.
+    // We use task count rather than turn count because a clarification
+    // round counts as a turn but not a task — re-naming on a follow-up
+    // would feel surprising. The truncated single-line title is a cheap
+    // deterministic placeholder; the user can edit it inline at any time
+    // from the chat header. Failures here are non-fatal: titling is a
+    // convenience, not a correctness path.
+    if (!session.title && session.taskCount === 0) {
+      const derived = deriveSessionTitle(content);
+      if (derived) {
+        try {
+          const updated = this.deps.sessionManager.updateMetadata(sessionId, { title: derived });
+          if (updated) {
+            this.deps.bus.emit('session:updated', {
+              sessionId,
+              fields: ['title'],
+            });
+          }
+        } catch (err) {
+          // Swallow — auto-naming must never block message handling.
+          console.warn('[server] auto-name session failed', err);
+        }
+      }
+    }
+
     // Infer taskType when the client didn't specify: code if targetFiles
     // present, otherwise reasoning (matching chat.ts).
     const inferredType: 'code' | 'reasoning' = taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
@@ -2252,6 +2277,41 @@ function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string,
       ...extraHeaders,
     },
   });
+}
+
+/**
+ * Derive a short, single-line title from a free-form user message.
+ * Used by `handleSessionMessage` to auto-name fresh sessions on the
+ * first task. Operators can override the result via PATCH /sessions/:id.
+ *
+ * Rules:
+ *   - Collapse all whitespace (newlines, tabs) into single spaces.
+ *   - Drop common imperative prefixes ("please", "help me", etc.) for a
+ *     tighter label, but only when they appear at the start.
+ *   - Hard cap at 60 characters; cut on a word boundary if possible.
+ *   - Returns `null` for empty / whitespace-only input so the caller
+ *     can skip the update entirely.
+ */
+function deriveSessionTitle(content: string): string | null {
+  const collapsed = content.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return null;
+  let stripped = collapsed.replace(
+    /^(please|pls|kindly|could you|can you|would you|help me|i need to|i want to|let's|lets)\s+/i,
+    '',
+  );
+  if (!stripped) stripped = collapsed;
+  // Title-case the first letter for visual polish; do not touch the rest
+  // (preserves identifiers, code, etc.).
+  stripped = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+  const MAX = 60;
+  if (stripped.length <= MAX) return stripped;
+  const slice = stripped.slice(0, MAX);
+  const lastSpace = slice.lastIndexOf(' ');
+  // Cut on a word boundary when one is reasonably close to the limit;
+  // otherwise hard-cut and append an ellipsis so the truncation is
+  // visually obvious.
+  if (lastSpace > MAX * 0.6) return `${slice.slice(0, lastSpace)}…`;
+  return `${slice}…`;
 }
 
 function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInput {

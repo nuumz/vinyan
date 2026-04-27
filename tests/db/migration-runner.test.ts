@@ -113,6 +113,20 @@ describe('MigrationRunner', () => {
     expect(first.current).toBe(highestVersion);
   });
 
+  test('capability route audit columns are available after migrations', () => {
+    runner.migrate(db, ALL_MIGRATIONS);
+
+    const columns = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('agent_selection_reason')).toBe(true);
+    expect(names.has('selected_capability_profile_id')).toBe(true);
+    expect(names.has('selected_capability_profile_source')).toBe(true);
+    expect(names.has('selected_capability_profile_trust_tier')).toBe(true);
+    expect(names.has('capability_fit_score')).toBe(true);
+    expect(names.has('unmet_capability_ids')).toBe(true);
+  });
+
   // ── Acceptance Criterion 3: Failed migration rolls back ─
   test('failed migration rolls back that migration only', () => {
     const failingMigration: Migration = {

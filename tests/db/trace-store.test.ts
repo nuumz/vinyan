@@ -104,6 +104,9 @@ describe('TraceStore', () => {
         candidates: [
           {
             agentId: 'ts-coder',
+            profileId: 'ts-coder',
+            profileSource: 'registry',
+            trustTier: 'deterministic',
             fitScore: 0.8,
             matched: [{ id: 'code.refactor.ts', weight: 0.4, confidence: 0.9 }],
             gap: [{ id: 'code.review.ts', weight: 0.9 }],
@@ -112,6 +115,12 @@ describe('TraceStore', () => {
         gapNormalized: 0.2,
         recommendedAction: 'proceed',
       },
+      agentSelectionReason: 'capability-router override (score 0.80)',
+      selectedCapabilityProfileId: 'ts-coder',
+      selectedCapabilityProfileSource: 'registry',
+      selectedCapabilityProfileTrustTier: 'deterministic',
+      capabilityFitScore: 0.8,
+      unmetCapabilityIds: ['code.review.ts'],
       syntheticAgentId: 'synthetic-abc12345',
       knowledgeUsed: [
         {
@@ -130,6 +139,12 @@ describe('TraceStore', () => {
     const result = store.findRecent(1)[0]!;
     expect(result.capabilityRequirements).toEqual(trace.capabilityRequirements);
     expect(result.capabilityAnalysis).toEqual(trace.capabilityAnalysis);
+    expect(result.agentSelectionReason).toBe('capability-router override (score 0.80)');
+    expect(result.selectedCapabilityProfileId).toBe('ts-coder');
+    expect(result.selectedCapabilityProfileSource).toBe('registry');
+    expect(result.selectedCapabilityProfileTrustTier).toBe('deterministic');
+    expect(result.capabilityFitScore).toBe(0.8);
+    expect(result.unmetCapabilityIds).toEqual(['code.review.ts']);
     expect(result.syntheticAgentId).toBe('synthetic-abc12345');
     expect(result.knowledgeUsed).toEqual(trace.knowledgeUsed);
   });

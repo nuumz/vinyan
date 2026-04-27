@@ -233,6 +233,10 @@ export interface OrchestratorConfig {
   commandApprovalGate?: import('./tools/command-approval-gate.ts').CommandApprovalGate;
   /** Enable background workspace watching for WorldGraph invalidation (default: true). */
   watchWorkspace?: boolean;
+  /** Capability research provider adapters. External adapters normalize at the boundary. */
+  knowledgeProviders?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProvider[];
+  /** Optional deterministic provider order for capability research. */
+  knowledgeProviderOrder?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[];
 }
 
 export interface Orchestrator {
@@ -1468,6 +1472,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerLifecycle,
     fleetRegistry,
     worldGraph,
+    knowledgeProviders: config.knowledgeProviders,
+    knowledgeProviderOrder: config.knowledgeProviderOrder,
     criticEngine,
     testGenerator,
     // Disable exploration in test mode for deterministic routing (A3)

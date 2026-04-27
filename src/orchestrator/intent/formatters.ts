@@ -72,19 +72,41 @@ export function formatAgentCatalog(
 
   const lines: string[] = [];
   lines.push('Available specialist agents (pick the best-fit for this task):');
+  const capabilityVocabulary = new Set<string>();
   for (const a of agents) {
     const hints: string[] = [];
     if (a.routingHints?.preferDomains) hints.push(`domains: ${a.routingHints.preferDomains.join(',')}`);
     if (a.routingHints?.preferExtensions) hints.push(`ext: ${a.routingHints.preferExtensions.join(',')}`);
     if (a.routingHints?.preferFrameworks) hints.push(`frameworks: ${a.routingHints.preferFrameworks.join(',')}`);
     const hintsStr = hints.length > 0 ? ` [${hints.join(' | ')}]` : '';
-    lines.push(`  - ${a.id}: ${a.description}${hintsStr}`);
+    const capabilityIds = (a.capabilities ?? []).map((c) => c.id);
+    for (const id of capabilityIds) capabilityVocabulary.add(id);
+    const capStr = capabilityIds.length > 0 ? ` (capabilities: ${capabilityIds.join(', ')})` : '';
+    const rolesStr = a.roles && a.roles.length > 0 ? ` (roles: ${a.roles.join(', ')})` : '';
+    lines.push(`  - ${a.id}: ${a.description}${hintsStr}${capStr}${rolesStr}`);
   }
-  lines.push(
-    'Creative writing rule: for novel, fiction, book, webtoon, story, plot, chapter, or prose tasks, choose creative-director for coordination or a creative specialist (plot-architect, story-strategist, novelist, editor, critic) for narrow requests. Do not choose code/system agents for fiction deliverables.',
-  );
   lines.push('Only return ids from this roster. Do not invent specialist agent ids.');
   lines.push('Return the chosen agent id in the response `agentId` field, with a brief `agentSelectionReason`.');
+  if (capabilityVocabulary.size > 0) {
+    const vocab = Array.from(capabilityVocabulary).sort().join(', ');
+    lines.push('');
+    lines.push('Capability extraction (drives deterministic routing — do this honestly):');
+    lines.push(
+      `  - Emit \`capabilityRequirements\` as an array of { id, weight (0-1), fileExtensions?, actionVerbs?, domains?, frameworkMarkers?, role? }.`,
+    );
+    lines.push(
+      `  - Use ONLY these ids (closed vocabulary, derived from the roster above): ${vocab}`,
+    );
+    lines.push(
+      `  - Weight reflects importance to the task. Use multiple requirements when a task spans concerns (e.g. plot + drafting).`,
+    );
+    lines.push(
+      `  - Omit \`capabilityRequirements\` (or return []) when the task is purely conversational or you have no confident signal — the deterministic router will fall back to its own analysis.`,
+    );
+    lines.push(
+      `  - Do NOT invent ids; an unknown id will be silently ignored by the router and the task will mis-route.`,
+    );
+  }
   return `\n${lines.join('\n')}`;
 }
 

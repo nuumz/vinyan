@@ -56,6 +56,13 @@ export interface PhaseContext {
    * Access the raw id via `ctx.input.agentId`.
    */
   readonly agentProfile?: import('../types.ts').AgentSpec;
+  /**
+   * Capability-First (Phase D): intent-resolver output carrying
+   * `capabilityRequirements`, `capabilityAnalysis`, `syntheticAgentId`,
+   * `knowledgeUsed`. Phase Learn copies these onto the canonical
+   * ExecutionTrace so sleep-cycle promotion can group by capabilities.
+   */
+  readonly intentResolution?: import('../types.ts').IntentResolution;
 }
 
 // ---------------------------------------------------------------------------

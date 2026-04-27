@@ -177,6 +177,12 @@ export interface IntentResolution {
   /** Resolver's reasoning for agent selection (observability). */
   agentSelectionReason?: string;
   /**
+   * Structured capability requirements the LLM extracted from the goal.
+   * Forwarded to AgentRouter.route() with source `'llm-extract'`. Allows
+   * routing of creative/research/design intents without regex on goal text.
+   */
+  capabilityRequirements?: CapabilityRequirement[];
+  /**
    * Epistemic state — `known` when deterministic+LLM agree (or one is confident alone),
    * `uncertain` for low-confidence / ambiguous inputs, `contradictory` when rule and LLM
    * disagree. The core-loop dispatches `uncertain`/`contradictory` to the clarification
@@ -194,6 +200,16 @@ export interface IntentResolution {
   originalGoal?: string;
   /** Rule-based candidate produced before the LLM ran, for observability. */
   deterministicCandidate?: IntentDeterministicCandidate;
+  /**
+   * Capability-First (Phase D): when post-LLM re-routing performed gap
+   * analysis, the result is stashed here so downstream phases (trace
+   * recording, evolution promotion) can read it without re-running.
+   */
+  capabilityAnalysis?: CapabilityGapAnalysis;
+  /** Synthesized agent id when the synthesize branch fired, for trace + cleanup. */
+  syntheticAgentId?: string;
+  /** Local-first knowledge contexts when the research branch surfaced evidence. */
+  knowledgeUsed?: KnowledgeContext[];
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */
@@ -1042,7 +1058,13 @@ export interface EvolutionaryRule {
     riskAbove?: number;
     modelPattern?: string;
   };
-  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker';
+  action:
+    | 'escalate'
+    | 'require-oracle'
+    | 'prefer-model'
+    | 'adjust-threshold'
+    | 'assign-worker'
+    | 'promote-capability';
   parameters: Record<string, unknown>;
   status: 'probation' | 'active' | 'retired';
   createdAt: number;
@@ -1143,6 +1165,25 @@ export interface ExecutionTrace {
   understandingVerified?: number;
   /** STU Phase D: Denormalized primaryAction for indexed queries. */
   understandingPrimaryAction?: string;
+  // ── Capability-First Orchestration (Phase D) ─────────────────────────
+  /**
+   * Structured capability requirements the resolver/router judged the task
+   * to need. Recorded so sleep-cycle can group traces by `(taskTypeSignature,
+   * agentId)` and promote claims for capabilities the agent consistently
+   * succeeds on. Optional — present only on traces that flowed through the
+   * capability-aware routing path.
+   */
+  capabilityRequirements?: CapabilityRequirement[];
+  /**
+   * Output of capability gap analysis. Includes recommended action
+   * (proceed/research/synthesize/fallback) and the fit/gap breakdown for
+   * the chosen agent. Useful for evolution + dashboard observability.
+   */
+  capabilityAnalysis?: CapabilityGapAnalysis;
+  /** Synthesized agent id used for this task, if synthesis fired. */
+  syntheticAgentId?: string;
+  /** Local-first knowledge contexts surfaced for this task, when research fired. */
+  knowledgeUsed?: KnowledgeContext[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,6 +1876,32 @@ export interface KnowledgeAcquisitionRequest {
   queries: string[];
   /** Suggested provider order: 'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'. */
   providers?: Array<'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'>;
+}
+
+/**
+ * A single piece of evidence returned by the knowledge acquisition layer.
+ * Findings are CONTEXT, never authoritative — they reach the LLM as a
+ * `[RESEARCH CONTEXT]` block and are explicitly tagged probabilistic so
+ * the agent treats them as weak hints, not facts (A2, A5).
+ *
+ * Producers MUST set `confidence` and `source` from a closed enum so
+ * downstream rendering / promotion stays deterministic.
+ */
+export interface KnowledgeContext {
+  /** Where the evidence came from. Closed vocabulary by design. */
+  source: 'world-graph' | 'workspace-docs' | 'mcp' | 'web' | 'peer' | 'trace-cache';
+  /** Capability id this evidence is meant to fill, when known. */
+  capability?: string;
+  /** The query string that produced this hit (for trace replay). */
+  query: string;
+  /** The actual evidence text — already truncated by the producer. */
+  content: string;
+  /** Pointer back to source: file path, fact id, URL, etc. */
+  reference?: string;
+  /** [0, 1] — producer-assigned, never read from external sources. */
+  confidence: number;
+  /** Wall-clock ms epoch — bound retrievals to a time window. */
+  retrievedAt: number;
 }
 
 // ---------------------------------------------------------------------------

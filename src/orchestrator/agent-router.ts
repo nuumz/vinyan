@@ -23,7 +23,7 @@ import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
 import { analyzeFit } from './capabilities/capability-router.ts';
 import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy, TaskInput } from './types.ts';
 
-export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default';
+export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
 
 export interface AgentRouteDecision {
   agentId: string;
@@ -46,8 +46,18 @@ export interface AgentRouter {
    * is not considered for reflex-tier L0 tasks. When the hint is absent the
    * router keeps pre-multi-agent behaviour (minLevel ignored) so callers
    * that don't know the routing level yet still get a deterministic choice.
+   *
+   * `requirements` lets the caller inject extra CapabilityRequirements
+   * (e.g. LLM-extracted via the intent resolver). They are merged with the
+   * fingerprint-derived requirements by the analyzer and contribute to the
+   * deterministic fit scoring — they do NOT bypass scoring.
    */
-  route(input: TaskInput, perception?: PerceptualHierarchy, routingLevel?: number): AgentRouteDecision;
+  route(
+    input: TaskInput,
+    perception?: PerceptualHierarchy,
+    routingLevel?: number,
+    requirements?: CapabilityRequirement[],
+  ): AgentRouteDecision;
 }
 
 /** Thresholds for rule-based selection. Tuned for 4 built-ins. */
@@ -60,7 +70,7 @@ export interface DefaultAgentRouterDeps {
 
 export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
   return {
-    route(input, perception, routingLevel) {
+    route(input, perception, routingLevel, requirements) {
       const registry = deps.registry;
 
       // Step 1: CLI override — user selected the specialist explicitly
@@ -68,19 +78,10 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
         return { agentId: input.agentId, reason: 'override', score: 0 };
       }
 
-      // Step 2a: legacy creative-team rule routing. Kept transitional so we
-      // do not break creative tests during the capability-first migration.
-      // This is INPUT routing on raw goal text BEFORE the LLM runs — allowed
-      // by `.github/instructions/no-llm-output-postfilter.instructions.md`.
-      const creativeAgentId = matchCreativeSpecialist(input.goal, input);
-      if (creativeAgentId && registry.has(creativeAgentId)) {
-        return { agentId: creativeAgentId, reason: 'rule-match', score: 1 };
-      }
-
-      // Step 2b: capability-first scoring. Replaces the legacy extension /
-      // framework / domain weighted scorer — agents now compete on declared
-      // CapabilityClaims that the capability-analyzer can match against
-      // task requirements derived from the fingerprint.
+      // Step 2: capability-first scoring. Agents compete on declared
+      // CapabilityClaims, which the capability-analyzer matches against
+      // task requirements derived from the fingerprint and (optionally)
+      // LLM-extracted requirements forwarded by the caller.
       const allAgents = registry.listAgents();
       const agents =
         typeof routingLevel === 'number'
@@ -90,11 +91,12 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
             })
           : allAgents;
 
-      const requirements: CapabilityRequirement[] = analyzeRequirements({
+      const analyzed: CapabilityRequirement[] = analyzeRequirements({
         task: input,
         perception,
+        requirements,
       });
-      const analysis = analyzeFit(input.id, agents, requirements);
+      const analysis = analyzeFit(input.id, agents, analyzed);
       const top = analysis.candidates[0];
       const runner = analysis.candidates[1];
 
@@ -124,41 +126,4 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       };
     },
   };
-}
-
-// ── Legacy creative-specialist rule routing ────────────────────────
-// Pre-LLM input routing on raw goal text. Stays in place during the
-// capability-first migration — its replacement is structured capability
-// requirements emitted by the LLM intent resolver, which will route via
-// the same `analyzeFit` path once those plumbing pieces land.
-
-const CODE_CONTEXT_RE =
-  /\b(code|coding|bug|refactor|compile|typescript|javascript|python|api|schema|database|test suite)\b|โค้ด|บั๊ก|รีแฟกเตอร์/i;
-const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|java|go|rs|cs|cpp|c|h|sql|vue|svelte|astro)$/i;
-const CREATIVE_CONTEXT_RE =
-  /นิยาย|เว็บตูน|เรื่องสั้น|เรื่องยาว|หนังสือ|พล็อต|ตัวละคร|ฉาก|ตอนที่|บทที่|แต่งเรื่อง|novel|fiction|story|webtoon|book|plot|character|chapter|scene|screenplay|script/i;
-
-function matchCreativeSpecialist(goal: string, input: Pick<TaskInput, 'taskType' | 'targetFiles'>): string | null {
-  const targetFiles = input.targetFiles ?? [];
-  if (targetFiles.some((file) => CODE_FILE_RE.test(file))) return null;
-  if (
-    input.taskType === 'code' &&
-    targetFiles.length > 0 &&
-    targetFiles.every((file) => !/\.(md|txt|rst)$/i.test(file))
-  ) {
-    return null;
-  }
-
-  const lower = goal.toLowerCase();
-  if (!CREATIVE_CONTEXT_RE.test(lower) || CODE_CONTEXT_RE.test(lower)) return null;
-
-  if (/บรรณาธิการ|แก้สำนวน|ปรับสำนวน|proofread|edit|line edit|copyedit/i.test(lower)) return 'editor';
-  if (/วิจารณ์|รีวิว|ประเมิน|review|critic|critique|publish-readiness/i.test(lower)) return 'critic';
-  if (/พล็อต|ไอเดีย|premise|plot|logline|twist|ตัวละคร/i.test(lower)) return 'plot-architect';
-  if (/วางแผน|กลยุทธ|กลยุทธ์|โครงเรื่อง|outline|strategy|structure|episode plan/i.test(lower)) {
-    return 'story-strategist';
-  }
-  if (/ฉาก|บทที่|ตอนที่|chapter|scene|dialogue|draft this|rewrite this/i.test(lower)) return 'novelist';
-
-  return 'creative-director';
 }

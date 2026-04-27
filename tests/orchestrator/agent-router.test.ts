@@ -92,14 +92,23 @@ describe('AgentRouter', () => {
     }
   });
 
-  test('long-form novel writing routes to the creative team lead, not code specialists', () => {
+  test('LLM-extracted capabilityRequirements route long-form novel work to the creative team lead', () => {
     const { router, cleanup } = setupRouter();
     try {
+      // Phase A: regex on goal text is gone. The LLM (or any caller) is now
+      // responsible for emitting structured CapabilityRequirements; the
+      // router scores deterministically against agent CapabilityClaims.
       const decision = router.route(
         makeInput({
           taskType: 'reasoning',
           goal: 'อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง',
         }),
+        undefined,
+        undefined,
+        [
+          { id: 'creative.lead', weight: 1, source: 'llm-extract' },
+          { id: 'creative.strategy', weight: 0.5, source: 'llm-extract' },
+        ],
       );
       expect(decision.agentId).toBe('creative-director');
       expect(decision.reason).toBe('rule-match');
@@ -110,16 +119,32 @@ describe('AgentRouter', () => {
     }
   });
 
-  test('specific creative requests route to the matching creative specialist', () => {
+  test('LLM-extracted capabilityRequirements route specific creative requests to the matching specialist', () => {
     const { router, cleanup } = setupRouter();
     try {
-      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยคิดพล็อตนิยายแฟนตาซี' })).agentId).toBe(
-        'plot-architect',
+      const plot = router.route(
+        makeInput({ taskType: 'reasoning', goal: 'ช่วยคิดพล็อตนิยายแฟนตาซี' }),
+        undefined,
+        undefined,
+        [{ id: 'creative.plot', weight: 1, source: 'llm-extract' }],
       );
-      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยวางโครงเรื่องนิยาย 20 ตอน' })).agentId).toBe(
-        'story-strategist',
+      expect(plot.agentId).toBe('plot-architect');
+
+      const strat = router.route(
+        makeInput({ taskType: 'reasoning', goal: 'ช่วยวางโครงเรื่องนิยาย 20 ตอน' }),
+        undefined,
+        undefined,
+        [{ id: 'creative.strategy', weight: 1, source: 'llm-extract' }],
       );
-      expect(router.route(makeInput({ taskType: 'reasoning', goal: 'ช่วยบรรณาธิการนิยายบทนี้' })).agentId).toBe('editor');
+      expect(strat.agentId).toBe('story-strategist');
+
+      const edit = router.route(
+        makeInput({ taskType: 'reasoning', goal: 'ช่วยบรรณาธิการนิยายบทนี้' }),
+        undefined,
+        undefined,
+        [{ id: 'creative.editing', weight: 1, source: 'llm-extract' }],
+      );
+      expect(edit.agentId).toBe('editor');
     } finally {
       cleanup();
     }

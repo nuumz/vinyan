@@ -25,6 +25,34 @@ export interface AgentRegistry {
   defaultAgent(): AgentSpec;
   /** Check if agent exists. */
   has(id: string): boolean;
+  /**
+   * Register a runtime-synthesized agent. Throws when:
+   *   - the id is already taken (built-in or another synthetic)
+   *   - the id collides with a known builtin id (defense in depth)
+   *
+   * Synthesized agents must carry `builtin: false`. The registry tags
+   * them by `taskId` (when supplied) so `unregisterAgentsForTask` can
+   * sweep them at task end without the caller tracking ids itself.
+   */
+  registerAgent(spec: AgentSpec, opts?: { taskId?: string }): void;
+  /** Remove a previously registered synthetic agent. Returns true if removed. */
+  unregisterAgent(id: string): boolean;
+  /**
+   * Sweep every synthetic agent registered with `taskId`. Returns the ids
+   * that were actually removed. Safe to call multiple times — idempotent.
+   */
+  unregisterAgentsForTask(taskId: string): string[];
+  /**
+   * Phase D — Capability promotion: merge `claims` onto the agent's
+   * `capabilities` list, replacing any prior claim with the same `id`.
+   * Returns true when the agent exists and the merge was applied.
+   *
+   * Used by the sleep-cycle evolution path to attach `evidence:'evolved'`
+   * claims with statistically-bounded confidence (Wilson LB). Refuses to
+   * mutate task-scoped synthetic agents (they are ephemeral) — those are
+   * cleaned up at task end via `unregisterAgentsForTask`.
+   */
+  mergeCapabilityClaims(agentId: string, claims: CapabilityClaim[]): boolean;
 }
 
 /**
@@ -91,6 +119,14 @@ export function loadAgentRegistry(
 
   const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : ([...byId.keys()][0] ?? DEFAULT_AGENT_ID);
 
+  // Set of ids that exist as built-ins or shipped config — registerAgent
+  // refuses to overwrite these. Captured BEFORE returning so later calls
+  // to registerAgent cannot poison this snapshot.
+  const protectedIds = new Set<string>(byId.keys());
+  // Map syntheticId → taskId so we can sweep on task completion. Built-ins
+  // and config agents are never tracked here.
+  const syntheticByTask = new Map<string, string>();
+
   return {
     getAgent(id: string): AgentSpec | null {
       return byId.get(id) ?? null;
@@ -110,6 +146,50 @@ export function loadAgentRegistry(
     },
     has(id: string): boolean {
       return byId.has(id);
+    },
+    registerAgent(spec, opts) {
+      if (protectedIds.has(spec.id)) {
+        throw new Error(`registerAgent: cannot overwrite protected agent '${spec.id}'`);
+      }
+      if (byId.has(spec.id)) {
+        throw new Error(`registerAgent: id '${spec.id}' is already registered`);
+      }
+      if (spec.builtin === true) {
+        throw new Error(`registerAgent: refusing to register '${spec.id}' with builtin=true`);
+      }
+      byId.set(spec.id, { ...spec });
+      if (opts?.taskId) syntheticByTask.set(spec.id, opts.taskId);
+    },
+    unregisterAgent(id: string): boolean {
+      if (protectedIds.has(id)) return false;
+      const removed = byId.delete(id);
+      if (removed) syntheticByTask.delete(id);
+      return removed;
+    },
+    unregisterAgentsForTask(taskId: string): string[] {
+      const removed: string[] = [];
+      for (const [id, owner] of syntheticByTask) {
+        if (owner !== taskId) continue;
+        if (byId.delete(id)) removed.push(id);
+        syntheticByTask.delete(id);
+      }
+      return removed;
+    },
+    mergeCapabilityClaims(agentId: string, claims: CapabilityClaim[]): boolean {
+      const agent = byId.get(agentId);
+      if (!agent) return false;
+      // Refuse to mutate task-scoped synthetic agents — they are ephemeral.
+      if (syntheticByTask.has(agentId)) return false;
+      if (claims.length === 0) return true;
+      const merged = new Map<string, CapabilityClaim>();
+      for (const existing of agent.capabilities ?? []) {
+        merged.set(existing.id, existing);
+      }
+      for (const incoming of claims) {
+        merged.set(incoming.id, incoming);
+      }
+      byId.set(agentId, { ...agent, capabilities: [...merged.values()] });
+      return true;
     },
   };
 }

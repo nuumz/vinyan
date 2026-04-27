@@ -203,6 +203,26 @@ export async function executeLearnPhase(
       : undefined;
   trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
 
+  // ── Capability-First (Phase D): record capability requirements + gap
+  // analysis + synthetic agent id + knowledge contexts on the trace so
+  // sleep-cycle promotion can group/promote by (taskTypeSignature, agentId).
+  // No LLM in this path — pure copy of resolver output (A3).
+  const ir = ctx.intentResolution;
+  if (ir) {
+    if (ir.capabilityRequirements && ir.capabilityRequirements.length > 0) {
+      trace.capabilityRequirements = ir.capabilityRequirements;
+    }
+    if (ir.capabilityAnalysis) {
+      trace.capabilityAnalysis = ir.capabilityAnalysis;
+    }
+    if (ir.syntheticAgentId) {
+      trace.syntheticAgentId = ir.syntheticAgentId;
+    }
+    if (ir.knowledgeUsed && ir.knowledgeUsed.length > 0) {
+      trace.knowledgeUsed = ir.knowledgeUsed;
+    }
+  }
+
   // ── Agent Context Layer: update persistent agent identity/memory/skills ──
   // Phase 2: key by specialist agent id (ts-coder/writer/...), NOT engine workerId.
   // Falls back to registry default, then finally to workerId for legacy callers.

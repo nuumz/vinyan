@@ -369,6 +369,10 @@ export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200
 export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const { workspace } = config;
   const bus = config.bus ?? createBus();
+  const factoryBusUnsubs: Array<() => void> = [];
+  const trackBusListener = (unsubscribe: () => void) => {
+    factoryBusUnsubs.push(unsubscribe);
+  };
 
   // Cleanup stale overlay directories from crashed sessions
   const staleCount = cleanupStaleOverlays(workspace);
@@ -591,26 +595,33 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
-        bus.on('market:settlement_accurate', ({ provider, capability }) => {
-          providerTrustStore!.recordOutcome(provider, true, capability ?? '*');
-        });
-        bus.on('market:settlement_inaccurate', ({ provider, capability }) => {
-          providerTrustStore!.recordOutcome(provider, false, capability ?? '*');
-        });
+        const trustStore = providerTrustStore;
+        trackBusListener(
+          bus.on('market:settlement_accurate', ({ provider, capability }) => {
+            trustStore.recordOutcome(provider, true, capability ?? '*');
+          }),
+        );
+        trackBusListener(
+          bus.on('market:settlement_inaccurate', ({ provider, capability }) => {
+            trustStore.recordOutcome(provider, false, capability ?? '*');
+          }),
+        );
       }
       // Economy L4: federation cost relay — broadcast costs to A2A peers
       if (economyConfig.federation?.cost_sharing_enabled) {
         const relay = new FederationCostRelay(bus);
-        bus.on('economy:cost_recorded', ({ taskId, computed_usd }) => {
-          relay.broadcastCost({
-            instanceId: 'local',
-            taskId,
-            computed_usd,
-            rate_card_id: 'auto',
-            cost_tier: 'billing',
-            timestamp: Date.now(),
-          });
-        });
+        trackBusListener(
+          bus.on('economy:cost_recorded', ({ taskId, computed_usd }) => {
+            relay.broadcastCost({
+              instanceId: 'local',
+              taskId,
+              computed_usd,
+              rate_card_id: 'auto',
+              cost_tier: 'billing',
+              timestamp: Date.now(),
+            });
+          }),
+        );
       }
       console.log('[vinyan] Economy OS: cost tracking + prediction enabled');
     }
@@ -1296,10 +1307,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (economyConfig?.federation?.cost_sharing_enabled) {
         const fraction = economyConfig.federation.shared_pool_fraction ?? 0.1;
         federationBudgetPool = new FederationBudgetPool(fraction, bus);
+        const budgetPool = federationBudgetPool;
         // Contribute to pool from local task completions
-        bus.on('economy:cost_recorded', ({ computed_usd }) => {
-          federationBudgetPool!.contribute(computed_usd);
-        });
+        trackBusListener(
+          bus.on('economy:cost_recorded', ({ computed_usd }) => {
+            budgetPool.contribute(computed_usd);
+          }),
+        );
       }
       instanceCoordinator = new InstanceCoordinator({
         peerUrls: instancesConfig.peers.map((p: { url: string }) => p.url),
@@ -1687,61 +1701,67 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // disabled, NO listeners are attached so there's zero runtime cost.
   if (reactiveLearningConfig?.enabled && ruleStore && traceStore) {
     const detector = new FailureClusterDetector(reactiveLearningConfig, bus);
+    const reactiveRuleStore = ruleStore;
+    const reactiveTraceStore = traceStore;
 
-    bus.on('task:complete', ({ result }) => {
-      // `input-required` is a pause for clarification, not a terminal failure.
-      if (result.status === 'input-required') return;
-      const sig = result.trace?.taskTypeSignature;
-      if (!sig) return;
-      detector.observe({
-        taskSignature: sig,
-        outcome: result.status === 'completed' ? 'success' : 'failure',
-        timestamp: Date.now(),
-        taskId: result.id,
-      });
-    });
+    trackBusListener(
+      bus.on('task:complete', ({ result }) => {
+        // `input-required` is a pause for clarification, not a terminal failure.
+        if (result.status === 'input-required') return;
+        const sig = result.trace?.taskTypeSignature;
+        if (!sig) return;
+        detector.observe({
+          taskSignature: sig,
+          outcome: result.status === 'completed' ? 'success' : 'failure',
+          timestamp: Date.now(),
+          taskId: result.id,
+        });
+      }),
+    );
 
-    bus.on('failure:cluster-detected', (payload) => {
-      try {
-        const traces = traceStore!.findByTaskType(payload.taskSignature, 20);
-        const summaries = traces.map(traceToReactiveSummary).filter((s): s is ReactiveTraceSummary => s !== null);
-        if (summaries.length < 2) {
+    trackBusListener(
+      bus.on('failure:cluster-detected', (payload) => {
+        try {
+          const traces = reactiveTraceStore.findByTaskType(payload.taskSignature, 20);
+          const summaries = traces.map(traceToReactiveSummary).filter((s): s is ReactiveTraceSummary => s !== null);
+          if (summaries.length < 2) {
+            bus.emit('reactive:rule-skipped', {
+              taskSignature: payload.taskSignature,
+              reason: 'insufficient-failure-summaries',
+            });
+            return;
+          }
+          const cluster: FailureCluster = {
+            taskSignature: payload.taskSignature,
+            failureCount: payload.failureCount,
+            taskIds: payload.taskIds,
+            windowStart: 0,
+            windowEnd: Date.now(),
+          };
+          const proposed = synthesizeReactiveRule(cluster, summaries);
+          if (!proposed) {
+            bus.emit('reactive:rule-skipped', {
+              taskSignature: payload.taskSignature,
+              reason: 'no-actionable-pattern',
+            });
+            return;
+          }
+          const evolutionary = reactiveRuleToEvolutionary(proposed);
+          reactiveRuleStore.insert(evolutionary);
+          bus.emit('reactive:rule-generated', {
+            ruleId: evolutionary.id,
+            taskSignature: payload.taskSignature,
+            action: evolutionary.action,
+            specificity: evolutionary.specificity,
+          });
+        } catch (err) {
           bus.emit('reactive:rule-skipped', {
             taskSignature: payload.taskSignature,
-            reason: 'insufficient-failure-summaries',
+            reason: `error:${err instanceof Error ? err.message : String(err)}`,
           });
-          return;
         }
-        const cluster: FailureCluster = {
-          taskSignature: payload.taskSignature,
-          failureCount: payload.failureCount,
-          taskIds: payload.taskIds,
-          windowStart: 0,
-          windowEnd: Date.now(),
-        };
-        const proposed = synthesizeReactiveRule(cluster, summaries);
-        if (!proposed) {
-          bus.emit('reactive:rule-skipped', {
-            taskSignature: payload.taskSignature,
-            reason: 'no-actionable-pattern',
-          });
-          return;
-        }
-        const evolutionary = reactiveRuleToEvolutionary(proposed);
-        ruleStore!.insert(evolutionary);
-        bus.emit('reactive:rule-generated', {
-          ruleId: evolutionary.id,
-          taskSignature: payload.taskSignature,
-          action: evolutionary.action,
-          specificity: evolutionary.specificity,
-        });
-      } catch (err) {
-        bus.emit('reactive:rule-skipped', {
-          taskSignature: payload.taskSignature,
-          reason: `error:${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    });
+      }),
+    );
   }
 
   // Phase 6.4: Late-bind delegation deps to worker pool
@@ -1895,48 +1915,81 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // A7: Cache predictions for shadow feedback loop (prediction is not persisted to DB)
   const predictionCache = new Map<string, import('./types.ts').SelfModelPrediction>();
-  bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
-    predictionCache.set(prediction.taskId, prediction);
-    // Keep cache bounded
-    if (predictionCache.size > 200) {
-      const oldest = predictionCache.keys().next().value;
-      if (oldest) predictionCache.delete(oldest);
-    }
-  });
+  trackBusListener(
+    bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
+      predictionCache.set(prediction.taskId, prediction);
+      // Keep cache bounded
+      if (predictionCache.size > 200) {
+        const oldest = predictionCache.keys().next().value;
+        if (oldest) predictionCache.delete(oldest);
+      }
+    }),
+  );
 
   // Shadow validation listener — update trace store and feed back to Self-Model (H3 + A7)
   if (shadowRunner && traceStore) {
-    bus.on('shadow:complete', ({ result }) => {
-      traceStore.updateShadowValidation(result.taskId, result);
-      // A7: Feed shadow outcome back to Self-Model for calibration
-      const cached = predictionCache.get(result.taskId);
-      if (cached && 'calibrate' in selfModel) {
-        try {
-          const shadowTrace = {
-            taskId: result.taskId,
-            outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
-            durationMs: result.durationMs,
-            qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
-          } as import('./types.ts').ExecutionTrace;
-          selfModel.calibrate(cached, shadowTrace);
-        } catch {
-          /* best-effort calibration */
+    trackBusListener(
+      bus.on('shadow:complete', ({ result }) => {
+        traceStore.updateShadowValidation(result.taskId, result);
+        // A7: Feed shadow outcome back to Self-Model for calibration
+        const cached = predictionCache.get(result.taskId);
+        if (cached && 'calibrate' in selfModel) {
+          try {
+            const shadowTrace = {
+              taskId: result.taskId,
+              outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
+              durationMs: result.durationMs,
+              qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
+            } as import('./types.ts').ExecutionTrace;
+            selfModel.calibrate(cached, shadowTrace);
+          } catch {
+            /* best-effort calibration */
+          }
         }
-      }
-      predictionCache.delete(result.taskId);
-    });
+        predictionCache.delete(result.taskId);
+      }),
+    );
   }
 
   // Session counter — triggers sleep cycle at interval (H1)
   let sessionCount = 0;
 
   // Shadow background loop — safety net for missed fire-and-forget calls (P3.2)
-  let shadowInterval: ReturnType<typeof setInterval> | undefined;
+  const SHADOW_POLL_ACTIVE_INTERVAL_MS = 10_000;
+  const SHADOW_POLL_MAX_IDLE_INTERVAL_MS = 60_000;
+  let shadowTimer: ReturnType<typeof setTimeout> | undefined;
+  let shadowIdlePolls = 0;
+  let shadowPollRunning = false;
+  let shadowPollRequested = false;
+  let shadowPollStopped = false;
   if (shadowRunner) {
-    shadowInterval = setInterval(async () => {
+    const scheduleShadowPoll = (delayMs: number) => {
+      if (shadowPollStopped) return;
+      if (shadowTimer) clearTimeout(shadowTimer);
+      shadowTimer = setTimeout(runShadowPoll, delayMs);
+      (shadowTimer as { unref?: () => void }).unref?.();
+    };
+    const nextShadowDelay = (processedJob: boolean) => {
+      if (processedJob || shadowPollRequested) return 0;
+      return Math.min(
+        SHADOW_POLL_ACTIVE_INTERVAL_MS * 2 ** Math.max(0, shadowIdlePolls - 1),
+        SHADOW_POLL_MAX_IDLE_INTERVAL_MS,
+      );
+    };
+    const runShadowPoll = async () => {
+      if (shadowPollStopped) return;
+      if (shadowPollRunning) {
+        shadowPollRequested = true;
+        return;
+      }
+      shadowPollRunning = true;
+      shadowPollRequested = false;
+      let processedJob = false;
       try {
         const result = await shadowRunner.processNext();
         if (result) {
+          processedJob = true;
+          shadowIdlePolls = 0;
           bus.emit('shadow:complete', {
             job: {
               id: '',
@@ -1948,14 +2001,25 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             },
             result,
           });
+        } else {
+          shadowIdlePolls = Math.min(shadowIdlePolls + 1, 16);
         }
       } catch {
+        shadowIdlePolls = Math.min(shadowIdlePolls + 1, 16);
         /* best-effort background processing */
+      } finally {
+        shadowPollRunning = false;
+        scheduleShadowPoll(nextShadowDelay(processedJob));
       }
-    }, 10_000);
-    // unref() so this timer alone does not hold the process alive when
-    // the API server shuts down. close() also clears it explicitly.
-    (shadowInterval as { unref?: () => void }).unref?.();
+    };
+    trackBusListener(
+      bus.on('shadow:enqueue', () => {
+        shadowIdlePolls = 0;
+        shadowPollRequested = true;
+        scheduleShadowPoll(0);
+      }),
+    );
+    scheduleShadowPoll(SHADOW_POLL_ACTIVE_INTERVAL_MS);
   }
 
   const orchestrator: Orchestrator = {
@@ -2032,13 +2096,21 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       //      briefly outlive us.
       //   4. Close LLM proxy, world graph, DB — in increasing order
       //      of "holds file locks for long time".
-      if (shadowInterval) clearInterval(shadowInterval);
+      shadowPollStopped = true;
+      if (shadowTimer) clearTimeout(shadowTimer);
       detachGapH();
       detachMetrics();
       traceListenerHandle.detach();
       comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
+      for (const unsub of factoryBusUnsubs.splice(0)) {
+        try {
+          unsub();
+        } catch {
+          /* best-effort */
+        }
+      }
       approvalGate.clear();
 
       // Kill warm worker subprocesses FIRST — without this, their stdin

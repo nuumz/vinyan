@@ -60,6 +60,7 @@ import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
+  CapabilityRequirement,
   ExecutionStrategy,
   IntentDeterministicCandidate,
   IntentResolution,
@@ -224,6 +225,38 @@ const DETERMINISTIC_SKIP_THRESHOLD = 0.85;
 // LLM_UNCERTAIN_THRESHOLD moved to `src/orchestrator/intent/merge.ts` and
 // imported at the top. The finalize* helpers stay here — they mutate the
 // module-level intentCache and emit orchestrator-scoped bus events.
+
+/**
+ * Map LLM-extracted capability requirements (from IntentResponseSchema) into
+ * the internal `CapabilityRequirement` shape with `source: 'llm-extract'`.
+ * Returns undefined when the LLM emitted nothing — keeps the field optional
+ * so deterministic / no-LLM paths stay byte-identical.
+ */
+function mapLLMCapabilityRequirements(
+  raw:
+    | Array<{
+        id: string;
+        weight: number;
+        fileExtensions?: string[];
+        actionVerbs?: string[];
+        domains?: string[];
+        frameworkMarkers?: string[];
+        role?: string;
+      }>
+    | undefined,
+): CapabilityRequirement[] | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  return raw.map((r) => ({
+    id: r.id,
+    weight: r.weight,
+    fileExtensions: r.fileExtensions,
+    actionVerbs: r.actionVerbs,
+    domains: r.domains,
+    frameworkMarkers: r.frameworkMarkers,
+    role: r.role,
+    source: 'llm-extract' as const,
+  }));
+}
 
 /** [B.skip] Finalize + emit a pure-deterministic resolution (no LLM consulted). */
 function finalizeDeterministicSkip(
@@ -419,6 +452,7 @@ export async function resolveIntent(
     type: mergeResult.type,
     agentId,
     agentSelectionReason,
+    capabilityRequirements: mapLLMCapabilityRequirements(parsed.capabilityRequirements),
   };
 
   // [E] Cache write + bus emit.

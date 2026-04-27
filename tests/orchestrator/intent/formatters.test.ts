@@ -92,9 +92,27 @@ describe('formatAgentCatalog', () => {
     );
     expect(rendered).toContain('ts-coder: TypeScript specialist');
     expect(rendered).toContain('writer: prose + ideation');
-    expect(rendered).toContain('Creative writing rule');
-    expect(rendered).toContain('Do not choose code/system agents for fiction deliverables');
     expect(rendered).toContain('Do not invent specialist agent ids');
+  });
+
+  it('emits the capability vocabulary block when agents declare capabilities', () => {
+    const withCaps: AgentSpec = {
+      id: 'creative-director',
+      name: 'creative-director',
+      description: 'leads creative work',
+      capabilities: [
+        { id: 'creative.lead', evidence: 'builtin', confidence: 0.9 },
+        { id: 'creative.strategy', evidence: 'builtin', confidence: 0.85 },
+      ],
+      roles: ['lead', 'coordinator'],
+    };
+    const rendered = formatAgentCatalog([withCaps], false);
+    expect(rendered).toContain('capabilities: creative.lead, creative.strategy');
+    expect(rendered).toContain('roles: lead, coordinator');
+    expect(rendered).toContain('Capability extraction');
+    expect(rendered).toContain('creative.lead');
+    expect(rendered).toContain('creative.strategy');
+    expect(rendered).toContain('closed vocabulary');
   });
 
   it('includes routing hints when present', () => {

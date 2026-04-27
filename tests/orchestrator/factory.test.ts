@@ -162,7 +162,7 @@ describe('autoRegisterWorkers logic', () => {
 });
 
 describe('createOrchestrator workspace watching', () => {
-  test('skips file watcher startup when watchWorkspace=false', () => {
+  test('skips file watcher startup when watchWorkspace=false', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-watch-off-'));
     const startSpy = spyOn(FileWatcher.prototype, 'start').mockImplementation(() => {});
 
@@ -174,7 +174,7 @@ describe('createOrchestrator workspace watching', () => {
         watchWorkspace: false,
       });
 
-      orchestrator.close();
+      await orchestrator.close();
       expect(startSpy).not.toHaveBeenCalled();
     } finally {
       startSpy.mockRestore();
@@ -182,7 +182,7 @@ describe('createOrchestrator workspace watching', () => {
     }
   });
 
-  test('starts file watcher by default', () => {
+  test('starts file watcher by default', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-watch-on-'));
     const startSpy = spyOn(FileWatcher.prototype, 'start').mockImplementation(() => {});
 
@@ -193,11 +193,66 @@ describe('createOrchestrator workspace watching', () => {
         useSubprocess: false,
       });
 
-      orchestrator.close();
+      await orchestrator.close();
       expect(startSpy).toHaveBeenCalledTimes(1);
     } finally {
       startSpy.mockRestore();
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('createOrchestrator lifecycle cleanup', () => {
+  test('close detaches factory-owned bus listeners', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-listeners-'));
+    const bus = createBus();
+
+    try {
+      const orchestrator = createOrchestrator({
+        workspace,
+        bus,
+        registry: new LLMProviderRegistry(),
+        useSubprocess: false,
+        watchWorkspace: false,
+      });
+
+      expect(bus.listenerCount('selfmodel:predict')).toBeGreaterThan(0);
+      expect(bus.listenerCount('shadow:complete')).toBeGreaterThan(0);
+      expect(bus.listenerCount('shadow:enqueue')).toBeGreaterThan(0);
+
+      await orchestrator.close();
+
+      expect(bus.listenerCount('selfmodel:predict')).toBe(0);
+      expect(bus.listenerCount('shadow:complete')).toBe(0);
+      expect(bus.listenerCount('shadow:enqueue')).toBe(0);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('repeated create/close cycles do not accumulate listeners on a shared bus', async () => {
+    const bus = createBus();
+
+    for (let i = 0; i < 3; i++) {
+      const workspace = mkdtempSync(join(tmpdir(), `vinyan-factory-cycle-${i}-`));
+      try {
+        const orchestrator = createOrchestrator({
+          workspace,
+          bus,
+          registry: new LLMProviderRegistry(),
+          useSubprocess: false,
+          watchWorkspace: false,
+        });
+
+        expect(bus.listenerCount('selfmodel:predict')).toBeGreaterThan(0);
+        await orchestrator.close();
+
+        expect(bus.listenerCount('selfmodel:predict')).toBe(0);
+        expect(bus.listenerCount('shadow:complete')).toBe(0);
+        expect(bus.listenerCount('shadow:enqueue')).toBe(0);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
     }
   });
 });

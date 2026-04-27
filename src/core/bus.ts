@@ -89,6 +89,14 @@ export interface VinyanBusEvents {
   'evolution:rulesApplied': { taskId: string; rules: EvolutionaryRule[] };
   'evolution:rulePromoted': { ruleId: string; taskSig: string };
   'evolution:ruleRetired': { ruleId: string; reason: string };
+  /** Phase D: capability claim promoted onto a stable agent. */
+  'evolution:capabilityPromoted': {
+    agentId: string;
+    capabilityId: string;
+    confidence: number;
+    observationCount: number;
+    taskTypeSignature: string;
+  };
 
   // Sleep Cycle (Phase 2.4)
   'sleep:cycleComplete': {
@@ -1024,8 +1032,43 @@ export interface VinyanBusEvents {
   'agent:routed': {
     taskId: string;
     agentId: string;
-    reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
+    reason: 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
     score: number;
+  };
+  /**
+   * Phase B (capability-first): a task-scoped synthetic agent was built
+   * because no existing specialist's CapabilityClaims covered the task's
+   * required capabilities. The agent is registered for the lifetime of
+   * the task and unregistered in `executeTask`'s finally.
+   */
+  'agent:synthesized': {
+    taskId: string;
+    agentId: string;
+    rationale: string;
+    capabilities: string[];
+  };
+  /** Synthesis attempted but failed (registration collision, etc.). Non-fatal. */
+  'agent:synthesis-failed': {
+    taskId: string;
+    suggestedId: string;
+    reason: string;
+  };
+  /**
+   * Phase C1 (capability-first research): the orchestrator gathered local
+   * knowledge (world-graph facts + workspace docs) for an unmet capability
+   * and injected it into the worker prompt as `[RESEARCH CONTEXT]`. The
+   * task goal is NEVER rewritten (A1); findings are evidence, not verdict.
+   */
+  'agent:capability-research': {
+    taskId: string;
+    capabilities: string[];
+    contextCount: number;
+    sources: string[];
+  };
+  /** Acquisition attempted but failed. Non-fatal — task proceeds without context. */
+  'agent:capability-research-failed': {
+    taskId: string;
+    reason: string;
   };
   /**
    * Gateway inbound (W2 H1). A messaging adapter received a message

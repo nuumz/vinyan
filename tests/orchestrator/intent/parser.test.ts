@@ -191,4 +191,38 @@ describe('IntentResponseSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts capabilityRequirements with structured signals', () => {
+    const parsed = IntentResponseSchema.parse({
+      strategy: 'agentic-workflow',
+      refinedGoal: 'x',
+      reasoning: 'y',
+      capabilityRequirements: [
+        { id: 'creative.lead', weight: 1 },
+        {
+          id: 'creative.strategy',
+          weight: 0.7,
+          fileExtensions: ['md'],
+          actionVerbs: ['plan'],
+          domains: ['fiction'],
+          frameworkMarkers: [],
+          role: 'planner',
+        },
+      ],
+    });
+    expect(parsed.capabilityRequirements).toHaveLength(2);
+    expect(parsed.capabilityRequirements?.[0]?.id).toBe('creative.lead');
+    expect(parsed.capabilityRequirements?.[1]?.weight).toBe(0.7);
+  });
+
+  it('rejects capabilityRequirements with weight outside [0, 1]', () => {
+    expect(() =>
+      IntentResponseSchema.parse({
+        strategy: 'agentic-workflow',
+        refinedGoal: 'x',
+        reasoning: 'y',
+        capabilityRequirements: [{ id: 'creative.lead', weight: 1.5 }],
+      }),
+    ).toThrow();
+  });
 });

@@ -970,6 +970,139 @@ async function prepareExecution(
       if (intentResolution.agentId) {
         input.agentId = intentResolution.agentId;
       }
+      // Capability-first re-route (A1+A3): when the LLM extracted structured
+      // CapabilityRequirements, give the deterministic router a second pass.
+      // - rule-match: OVERRIDE the LLM's free-form `agentId` pick.
+      // - synthesize: if no existing agent fits, build a task-scoped synthetic
+      //   agent (zero-trust ACL) and register it on the registry so worker
+      //   dispatch and prompt assembly find it. Cleanup is handled in
+      //   `executeTask`'s finally via `unregisterAgentsForTask`.
+      // Generation (LLM) and verification (rule-based router/synthesis) are
+      // separated even at the agent-selection layer.
+      if (
+        deps.agentRouter &&
+        intentResolution.capabilityRequirements &&
+        intentResolution.capabilityRequirements.length > 0
+      ) {
+        // Strip any pre-set agentId so the router doesn't short-circuit on
+        // the LLM's pick (which we treat as a candidate, not a verdict).
+        const llmPickedAgentId = input.agentId;
+        const stripped: TaskInput = { ...input, agentId: undefined };
+        const reroute = deps.agentRouter.route(
+          stripped,
+          undefined,
+          undefined,
+          intentResolution.capabilityRequirements,
+        );
+        if (reroute.reason === 'rule-match' && reroute.agentId !== llmPickedAgentId) {
+          input.agentId = reroute.agentId;
+          intentResolution = {
+            ...intentResolution,
+            agentId: reroute.agentId,
+            agentSelectionReason: `capability-router override (LLM picked '${llmPickedAgentId ?? 'none'}', score ${reroute.score.toFixed(2)})`,
+            capabilityAnalysis: reroute.capabilityAnalysis ?? intentResolution.capabilityAnalysis,
+          };
+          deps.bus?.emit('agent:routed', {
+            taskId: input.id,
+            agentId: reroute.agentId,
+            reason: 'rule-match',
+            score: reroute.score,
+          });
+        } else if (
+          deps.agentRegistry &&
+          reroute.capabilityAnalysis?.recommendedAction === 'synthesize' &&
+          reroute.score < 0.4
+        ) {
+          // Build a task-scoped synthetic agent. Pure functions; no I/O.
+          const { planFromGap, synthesizeAgent } = await import('./capabilities/agent-synthesis.ts');
+          const plan = planFromGap(input.id, reroute.capabilityAnalysis, {
+            goal: input.goal,
+          });
+          if (plan && !deps.agentRegistry.has(plan.suggestedId)) {
+            try {
+              const spec = synthesizeAgent(plan);
+              deps.agentRegistry.registerAgent(spec, { taskId: input.id });
+              input.agentId = spec.id;
+              intentResolution = {
+                ...intentResolution,
+                agentId: spec.id,
+                agentSelectionReason: `synthesized task-scoped agent (gap=${reroute.capabilityAnalysis.gapNormalized.toFixed(2)})`,
+                capabilityAnalysis: reroute.capabilityAnalysis,
+                syntheticAgentId: spec.id,
+              };
+              deps.bus?.emit('agent:synthesized', {
+                taskId: input.id,
+                agentId: spec.id,
+                rationale: plan.rationale,
+                capabilities: spec.capabilities?.map((c) => c.id) ?? [],
+              });
+              deps.bus?.emit('agent:routed', {
+                taskId: input.id,
+                agentId: spec.id,
+                reason: 'synthesized',
+                score: 1,
+              });
+            } catch (err) {
+              // Synthesis failure is non-fatal — keep LLM's pick. Note for
+              // observability so dropouts don't disappear silently.
+              const reason = err instanceof Error ? err.message : String(err);
+              deps.bus?.emit('agent:synthesis-failed', {
+                taskId: input.id,
+                suggestedId: plan.suggestedId,
+                reason,
+              });
+            }
+          }
+        } else if (
+          reroute.capabilityAnalysis?.recommendedAction === 'research' &&
+          (deps.worldGraph || deps.workspace)
+        ) {
+          // Capability-first research (Phase C1, local-first). The router
+          // decided we have a partial fit but missing knowledge: gather
+          // local evidence (world-graph facts + workspace docs) and inject
+          // it into the worker prompt as `[RESEARCH CONTEXT]` (rendered as
+          // `## Research Context (probabilistic)`). Goal stays untouched
+          // (A1) and findings are tagged probabilistic (A5) — agents must
+          // verify before acting.
+          try {
+            const { acquireKnowledge, planFromGapForResearch, buildResearchContextConstraint } =
+              await import('./capabilities/knowledge-acquisition.ts');
+            const req = planFromGapForResearch(input.id, reroute.capabilityAnalysis);
+            if (req && req.queries.length > 0) {
+              const contexts = await acquireKnowledge(req, {
+                worldGraph: deps.worldGraph,
+                workspace: deps.workspace,
+              });
+              const constraintLine = buildResearchContextConstraint(contexts);
+              if (constraintLine) {
+                understanding = {
+                  ...understanding,
+                  constraints: [...(understanding.constraints ?? []), constraintLine],
+                };
+                intentResolution = {
+                  ...intentResolution,
+                  capabilityAnalysis: reroute.capabilityAnalysis,
+                  knowledgeUsed: contexts,
+                };
+                deps.bus?.emit('agent:capability-research', {
+                  taskId: input.id,
+                  capabilities: req.capabilities,
+                  contextCount: contexts.length,
+                  sources: Array.from(new Set(contexts.map((c) => c.source))),
+                });
+              }
+            }
+          } catch (err) {
+            // Acquisition failure is non-fatal — task proceeds without
+            // research context. Surface for observability only.
+            const reason = err instanceof Error ? err.message : String(err);
+            deps.bus?.emit('agent:capability-research-failed', {
+              taskId: input.id,
+              reason,
+            });
+          }
+        }
+      }
       // resolveIntent now emits 'intent:resolved' itself with richer payload
       // (type, source). Legacy emit kept for listeners that haven't migrated —
       // but only when resolver didn't already emit (cache hit path). Skipping
@@ -1767,6 +1900,10 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
   } finally {
     deps.agentMemory?.endTask(input.id);
     deps.taskFactsRegistry?.unregister(input.id);
+    // Sweep any task-scoped synthetic agents registered during this task
+    // (Phase B: capability-first synthesis). Idempotent — no-op when the
+    // task did not synthesize anything.
+    deps.agentRegistry?.unregisterAgentsForTask?.(input.id);
   }
 }
 
@@ -2158,6 +2295,7 @@ async function executeTaskCore(
       // from the ContextRetriever (E5) with recency/turn-store fallback.
       turns: sessionTurns,
       agentProfile,
+      intentResolution: prep.intentResolution,
     };
 
     // Outer loop: routing level escalation

@@ -18,6 +18,22 @@ import { z } from 'zod';
 
 // Mirror of the IntentResponseSchema owned by intent-resolver.ts. Kept as a
 // named export so downstream code can validate without re-declaring.
+//
+// Capability vocabulary (capabilityRequirements[].id) is intentionally a
+// free-form string here. The agent-router silently scores unknown ids as 0,
+// so an invented id is harmless — it falls back to needs-llm. This keeps the
+// schema decoupled from the in-tree builtin agent ids and lets users register
+// custom agents via vinyan.json without recompiling the parser.
+const CapabilityRequirementResponseSchema = z.object({
+  id: z.string().min(1),
+  weight: z.number().min(0).max(1),
+  fileExtensions: z.array(z.string()).optional(),
+  actionVerbs: z.array(z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  frameworkMarkers: z.array(z.string()).optional(),
+  role: z.string().optional(),
+});
+
 export const IntentResponseSchema = z.object({
   strategy: z.enum(['full-pipeline', 'direct-tool', 'conversational', 'agentic-workflow']),
   refinedGoal: z.string(),
@@ -33,6 +49,13 @@ export const IntentResponseSchema = z.object({
   /** Multi-agent: id of specialist best-fit for this task. */
   agentId: z.string().optional(),
   agentSelectionReason: z.string().optional(),
+  /**
+   * Structured capability requirements the LLM extracted from the goal.
+   * Forwarded to AgentRouter.route() as `source: 'llm-extract'`. Replaces
+   * the legacy `matchCreativeSpecialist` regex — the LLM is now the
+   * generator (A1) and the deterministic capability router is the verifier.
+   */
+  capabilityRequirements: z.array(CapabilityRequirementResponseSchema).optional(),
 });
 
 export type IntentResponse = z.infer<typeof IntentResponseSchema>;

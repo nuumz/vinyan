@@ -866,6 +866,19 @@ export function buildInitUserMessage(
         trustTier: string;
         content: string;
       }> = [];
+      // Phase C1 (capability-first research): evidence the orchestrator
+      // gathered locally (world-graph facts, workspace docs grep) when the
+      // capability router decided `recommendedAction === 'research'`.
+      // Always rendered as `## Research Context (trust=probabilistic)` so
+      // the LLM treats it as weak evidence, not authoritative fact (A2/A5).
+      let researchContextEntries: Array<{
+        source: string;
+        capability?: string;
+        query: string;
+        content: string;
+        reference?: string;
+        confidence: number;
+      }> = [];
       for (const c of rawConstraints) {
         if (c.startsWith('CLARIFIED:')) {
           const body = c.slice('CLARIFIED:'.length);
@@ -972,6 +985,49 @@ export function buildInitUserMessage(
           c === 'TOOLS:enabled' ||
           c.startsWith('COMPREHENSION_CHECK:')
         ) {
+        } else if (c.startsWith('RESEARCH_CONTEXT:')) {
+          // Local-first knowledge acquisition payload from
+          // `src/orchestrator/capabilities/knowledge-acquisition.ts`.
+          // Strict validation — malformed entries fall back to the User
+          // Constraints bucket so nothing is silently dropped.
+          const raw = c.slice('RESEARCH_CONTEXT:'.length);
+          let accepted = false;
+          try {
+            const parsed = JSON.parse(raw) as { entries?: unknown };
+            if (Array.isArray(parsed.entries)) {
+              const validated = (parsed.entries as unknown[])
+                .map((e) => {
+                  if (!e || typeof e !== 'object') return null;
+                  const r = e as Record<string, unknown>;
+                  if (
+                    typeof r.source !== 'string' ||
+                    typeof r.query !== 'string' ||
+                    typeof r.content !== 'string' ||
+                    typeof r.confidence !== 'number'
+                  ) {
+                    return null;
+                  }
+                  return {
+                    source: r.source,
+                    capability: typeof r.capability === 'string' ? r.capability : undefined,
+                    query: r.query,
+                    content: r.content,
+                    reference: typeof r.reference === 'string' ? r.reference : undefined,
+                    confidence: r.confidence,
+                  };
+                })
+                .filter((e): e is NonNullable<typeof e> => e !== null);
+              if (validated.length > 0) {
+                researchContextEntries = validated;
+                accepted = true;
+              }
+            }
+          } catch {
+            /* falls through */
+          }
+          if (!accepted) {
+            otherConstraints.push(c);
+          }
         } else {
           otherConstraints.push(c);
         }
@@ -1025,6 +1081,30 @@ export function buildInitUserMessage(
         }
         parts.push('</user-memory>');
         sections.push(`## Relevant User Memory\n${parts.join('\n')}`);
+      }
+
+      if (researchContextEntries.length > 0) {
+        // Local-first research evidence (world-graph + workspace docs).
+        // Tagged probabilistic so the LLM treats it as weak hint, not
+        // authoritative fact (A2/A5). XML wrapping makes the trust tier a
+        // parseable attribute, mirroring the user-memory block.
+        const parts: string[] = [
+          '<research-context source="capability-research" aggregate-trust="probabilistic">',
+          '  <guidance>Use these findings as WEAK EVIDENCE while planning. Each entry is tagged with its source confidence. Prefer oracle verdicts and current-task evidence on conflict. Do NOT treat any entry as a fact; verify before acting.</guidance>',
+        ];
+        for (const e of researchContextEntries) {
+          const conf = e.confidence.toFixed(2);
+          const cap = e.capability ? ` capability="${escapeXmlAttr(e.capability)}"` : '';
+          const ref = e.reference ? ` reference="${escapeXmlAttr(e.reference)}"` : '';
+          parts.push(
+            `  <entry source="${escapeXmlAttr(e.source)}" confidence="${conf}"${cap}${ref}>`,
+          );
+          parts.push(`    <query>${escapeXmlText(e.query)}</query>`);
+          parts.push(`    <content>${escapeXmlText(e.content)}</content>`);
+          parts.push('  </entry>');
+        }
+        parts.push('</research-context>');
+        sections.push(`## Research Context\n${parts.join('\n')}`);
       }
 
       if (clarified.length > 0 || batches.length > 0) {

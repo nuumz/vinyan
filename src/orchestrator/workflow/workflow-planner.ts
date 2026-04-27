@@ -59,7 +59,8 @@ Strategy selection rules:
 
 Creative writing rules:
 - For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.
-- Use creative roles in step descriptions: creative-director, plot-architect, story-strategist, novelist, editor, critic when needed.
+- Internal creative roles are routing hints, not user-facing instructions. Step descriptions should describe the work (brief, plot options, structure, draft prose, edit, critique) rather than telling the user to contact or wait for a named internal role.
+- If the plan delegates internally, the final synthesis must present the result or the necessary clarification questions to the user; do not leak handoff mechanics.
 - Do NOT use system-designer, ts-coder, test-coder, full-pipeline, direct-tool, code mutation, tests, or implementation steps unless the user explicitly asks for software/code.
 
 Guidelines:

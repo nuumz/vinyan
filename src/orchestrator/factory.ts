@@ -1604,6 +1604,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    skillHintsConfig,
     // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
     // goal/targetFiles/deadlineAt synchronously when an auction completes.
     taskFactsRegistry,

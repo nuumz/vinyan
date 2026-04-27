@@ -7,9 +7,12 @@
  */
 
 import { createContract } from '../../core/agent-contract.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { DAGExecutionResult, NodeDispatcher } from '../dag-executor.ts';
 import { executeDAG } from '../dag-executor.ts';
+import { resolveRuntimeSkillHintConstraints } from '../skill-hints.ts';
 import type {
+  EngineSelectionResult,
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
@@ -18,10 +21,8 @@ import type {
   TaskInput,
   TaskResult,
   ToolCall,
-  EngineSelectionResult,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { PhaseContext, GenerateResult, WorkerResult, PhaseContinue, PhaseReturn, PhaseRetry, PhaseThrow } from './types.ts';
+import type { GenerateResult, PhaseContext, PhaseContinue, PhaseRetry, PhaseReturn, PhaseThrow, WorkerResult } from './types.ts';
 import { Phase } from './types.ts';
 
 interface GenerateInput {
@@ -33,6 +34,7 @@ interface GenerateInput {
   budgetCapMultiplier: number;
   workerSelection?: EngineSelectionResult;
   lastWorkerSelection?: EngineSelectionResult;
+  matchedSkill?: import('../types.ts').CachedSkill | null;
   retry: number;
 }
 
@@ -41,7 +43,7 @@ export async function executeGeneratePhase(
   gi: GenerateInput,
 ): Promise<PhaseContinue<GenerateResult> | PhaseReturn | PhaseRetry | PhaseThrow> {
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
-  const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry } = gi;
+  const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry, matchedSkill } = gi;
   let { totalTokensConsumed } = gi;
   const turns = ctx.turns;
 
@@ -111,6 +113,13 @@ export async function executeGeneratePhase(
     if (routing.level >= 2 && !hasAgentDeps) {
       console.warn('[vinyan] L2+ task but agentLoopDeps unavailable — degraded to single-shot dispatch');
     }
+    const dispatchUnderstanding = await buildDispatchUnderstanding(
+      ctx,
+      understanding,
+      routing,
+      matchedSkill ?? null,
+      hasAgentDeps,
+    );
     if (routing.level <= 1 || !hasAgentDeps) {
       // L0-L1 or no agent deps: single-shot or DAG dispatch
       if (plan && !plan.isFallback && plan.nodes.length > 1) {
@@ -123,7 +132,16 @@ export async function executeGeneratePhase(
             targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
             goal: node.description || input.goal,
           };
-          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, turns);
+          const result = await deps.workerPool.dispatch(
+            nodeInput,
+            perception,
+            memSnapshot,
+            plan,
+            routing,
+            dispatchUnderstanding,
+            contract,
+            turns,
+          );
           return {
             nodeId,
             mutations: result.mutations,
@@ -159,7 +177,7 @@ export async function executeGeneratePhase(
           workingMemory.getSnapshot(),
           plan,
           routing,
-          understanding,
+          dispatchUnderstanding,
           contract,
           turns,
         );
@@ -465,4 +483,33 @@ export async function executeGeneratePhase(
     totalTokensConsumed,
     roomId,
   });
+}
+
+async function buildDispatchUnderstanding(
+  ctx: PhaseContext,
+  understanding: SemanticTaskUnderstanding,
+  routing: RoutingDecision,
+  matchedSkill: import('../types.ts').CachedSkill | null,
+  hasAgentLoopDeps: boolean,
+): Promise<SemanticTaskUnderstanding> {
+  const { input, deps } = ctx;
+
+  // Agentic-loop workers already inject skill hints in their init turn. This
+  // path covers single-shot dispatch and L2+ degraded single-shot fallback.
+  if (routing.level >= 2 && hasAgentLoopDeps) {
+    return understanding;
+  }
+
+  const resolved = await resolveRuntimeSkillHintConstraints({
+    input,
+    config: deps.skillHintsConfig,
+    agentMemory: deps.agentMemory,
+    matchedSkill,
+  });
+  if (resolved.constraints.length === 0) return understanding;
+
+  return {
+    ...understanding,
+    constraints: [...(understanding.constraints ?? []), ...resolved.constraints],
+  };
 }

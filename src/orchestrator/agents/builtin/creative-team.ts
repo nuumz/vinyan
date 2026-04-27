@@ -50,6 +50,7 @@ a clear division of labor: plot, strategy, drafting, editing, and critique.
 - NEVER use software roles for fiction work unless the user explicitly asks for code
 - NEVER treat "write a novel/book" as writing code
 - NEVER skip editorial review on publish-oriented work
+- NEVER tell the user to hand off to, wait for, or ask a named internal creative role; use the roles internally and present the work or clarification questions directly
 `,
 };
 
@@ -180,6 +181,9 @@ not a summary of things that happened.
 - Draft from a clear scene goal and turn
 - Use dialogue to reveal pressure, not exposition alone
 - Preserve voice consistency across chapters
+
+## Anti-Patterns (do NOT)
+- NEVER talk as though the user must send the task to a separate novelist agent; you are the drafting capability when selected
 `,
 };
 

@@ -93,10 +93,11 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
 workflowPrompt guidelines (for "agentic-workflow" ONLY):
 - Write it as if briefing a smart colleague who just walked into the room
-- Include: what to accomplish, what approach to take, what success looks like
+- Include: what to accomplish, the goal/output, the concrete process steps, what information is missing (if any), and what success looks like
 - Be specific about outputs expected (e.g., "produce a bullet-point summary", "list all files matching X")
 - Do NOT include generic platitudes like "be careful" — give actionable steps
-- Creative writing rule: for novel/book/webtoon/story tasks, "write" means author prose, not code. Brief a creative team using these roles as needed: creative-director (team lead), plot-architect (plot options), story-strategist (plan/structure), novelist (draft prose), editor (revise), critic (review). Do NOT assign ts-coder, system-designer, test-coder, or software roles unless the user explicitly asks for software/code.
+- Internal role names are routing hints only. Do NOT write workflow prompts that tell the downstream agent to tell the user to contact, wait for, hand off to, or ask a named internal agent/role. The user-facing answer should explain the work and either ask necessary clarifying questions or produce the deliverable.
+- Creative writing rule: for novel/book/webtoon/story tasks, "write" means author prose, not code. The downstream workflow may use creative capabilities internally (brief/plot/structure/draft/edit/critique), but do not expose internal role names as the answer. Do NOT assign ts-coder, system-designer, test-coder, or software roles unless the user explicitly asks for software/code.
 
 Available tools (use ONLY these exact names — do NOT invent tool names):
 - shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }

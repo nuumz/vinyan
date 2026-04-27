@@ -1923,12 +1923,14 @@ export class VinyanAPIServer {
     // deterministic placeholder; the user can edit it inline at any time
     // from the chat header. Failures here are non-fatal: titling is a
     // convenience, not a correctness path.
-    if (!session.title && session.taskCount === 0) {
+    let effectiveSessionTitle = session.title;
+    if (!effectiveSessionTitle && session.taskCount === 0) {
       const derived = deriveSessionTitle(content);
       if (derived) {
         try {
           const updated = this.deps.sessionManager.updateMetadata(sessionId, { title: derived });
           if (updated) {
+            effectiveSessionTitle = updated.title;
             this.deps.bus.emit('session:updated', {
               sessionId,
               fields: ['title'],
@@ -1952,9 +1954,9 @@ export class VinyanAPIServer {
     // input.goal and do not feed this into routing/governance \u2014 it is
     // grounding only (A1, A3).
     const sessionContextConstraints: string[] = [];
-    if (session.title || session.description) {
+    if (effectiveSessionTitle || session.description) {
       const payload: { title?: string; description?: string } = {};
-      if (session.title) payload.title = session.title;
+      if (effectiveSessionTitle) payload.title = effectiveSessionTitle;
       if (session.description) payload.description = session.description;
       sessionContextConstraints.push(`SESSION_CONTEXT:${JSON.stringify(payload)}`);
     }

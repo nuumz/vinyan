@@ -73,6 +73,12 @@ describe('INTENT_SYSTEM_PROMPT', () => {
     expect(INTENT_SYSTEM_PROMPT).toContain('เว็บตูน'); // keyword-collision guard
     expect(INTENT_SYSTEM_PROMPT).toContain('fix type error');
   });
+
+  it('keeps internal roles out of user-facing workflow prompts', () => {
+    expect(INTENT_SYSTEM_PROMPT).toContain('Internal role names are routing hints only');
+    expect(INTENT_SYSTEM_PROMPT).toContain('Do NOT write workflow prompts that tell the downstream agent to tell the user');
+    expect(INTENT_SYSTEM_PROMPT).toContain('do not expose internal role names as the answer');
+  });
 });
 
 describe('pickPrimaryProvider', () => {

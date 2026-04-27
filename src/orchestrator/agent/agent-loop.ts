@@ -16,14 +16,14 @@ import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } fro
 import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
 import type { HookConfig } from '../hooks/hook-schema.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
-import { computeTaskSignature } from '../prediction/self-model.ts';
-import type { CachedSkill } from '../types.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
 import { countPendingProposals } from '../memory/memory-proposals.ts';
 import { evaluatePermission } from '../permissions/permission-checker.ts';
 import type { PermissionConfig } from '../permissions/permission-schema.ts';
+import { computeTaskSignature } from '../prediction/self-model.ts';
 import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { formatSkillHintConstraints } from '../skill-hints.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import type { Tool, ToolContext } from '../tools/tool-interface.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
@@ -676,25 +676,7 @@ export async function runWave4GoalCheck(
   }
 }
 
-/**
- * Wave 5b: format top-k CachedSkills as a constraint block the worker
- * prompt assembler will render under "Constraints". Each entry shows the
- * proven approach + success rate. Bounded to avoid token bloat.
- */
-export function formatSkillHintConstraints(skills: CachedSkill[]): string[] {
-  if (skills.length === 0) return [];
-  const out: string[] = [
-    `[SKILL HINTS] ${skills.length} proven approach(es) for similar prior tasks (reference only, not mandates):`,
-  ];
-  for (let i = 0; i < skills.length; i++) {
-    const s = skills[i]!;
-    const pct = Math.round((s.successRate ?? 0) * 100);
-    // Bound per-hint length so a single verbose approach can't dominate the block.
-    const approach = s.approach.length > 200 ? `${s.approach.slice(0, 200)}…` : s.approach;
-    out.push(`  ${i + 1}. ${approach} (success: ${pct}%, uses: ${s.usageCount ?? 0})`);
-  }
-  return out;
-}
+export { formatSkillHintConstraints } from '../skill-hints.ts';
 
 export async function handleDelegation(
   request: DelegationRequest,

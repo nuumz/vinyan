@@ -118,6 +118,8 @@ describe('planWorkflow', () => {
 
     expect(capturedSystemPrompt).toContain('Creative writing rules');
     expect(capturedSystemPrompt).toContain('write" means author creative text, not write code');
+    expect(capturedSystemPrompt).toContain('Internal creative roles are routing hints');
+    expect(capturedSystemPrompt).toContain('do not leak handoff mechanics');
     expect(descriptions).toContain('creative-director');
     expect(descriptions).toContain('novelist');
     expect(plan.steps).toHaveLength(2);

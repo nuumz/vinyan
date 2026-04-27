@@ -238,6 +238,8 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /** Wave 5b/Capability-First Phase 4: runtime skill hints in worker execution context. */
+  skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
   /**
    * Ecosystem: dispatch-scoped task facts registry. When present,
    * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
@@ -2618,6 +2620,7 @@ async function executeTaskCore(
           budgetCapMultiplier: BUDGET_CAP_MULTIPLIER,
           workerSelection,
           lastWorkerSelection,
+          matchedSkill,
           retry,
         });
         if (generateOutcome.action === 'return') return generateOutcome.result;

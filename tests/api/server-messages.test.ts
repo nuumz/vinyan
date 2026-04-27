@@ -223,6 +223,27 @@ describe('API Server — Agent Conversation messages', () => {
     expect(capturedInputs[0]!.goal).toBe('what is 2 + 2?');
   });
 
+  test('first message auto-names the session and exposes the title in SESSION_CONTEXT', async () => {
+    const sessionId = await createSession();
+    mockBehavior = (input) => completedResult(input, 'started');
+
+    const res = await server.handleRequest(
+      req(`/api/v1/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ content: 'please help plan a bedtime story for kids' }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedInputs).toHaveLength(1);
+    const context = (capturedInputs[0]!.constraints ?? []).find((c) => c.startsWith('SESSION_CONTEXT:'));
+    expect(context).toBeDefined();
+    const payload = JSON.parse(context!.slice('SESSION_CONTEXT:'.length)) as { title?: string };
+    expect(payload.title).toBe('Help plan a bedtime story for kids');
+    expect(sessionManager.get(sessionId)?.title).toBe('Help plan a bedtime story for kids');
+  });
+
   test('POST /messages on unknown session returns 404', async () => {
     const res = await server.handleRequest(
       req('/api/v1/sessions/does-not-exist/messages', {

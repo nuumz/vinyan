@@ -65,7 +65,7 @@ export class SessionManager {
    */
   constructor(
     private sessionStore: SessionStore,
-    _traceStore?: TraceStore,
+    private traceStore?: TraceStore,
     private retriever?: ContextRetriever,
   ) {}
 
@@ -595,6 +595,118 @@ export class SessionManager {
       timestamp: t.createdAt,
     }));
   }
+
+  /**
+   * Detailed counterpart to `getConversationHistoryText`. Returns the same
+   * `{role, content, taskId, timestamp}` triple PLUS:
+   *   - `thinking`:      concatenated text of all `thinking` blocks (LLM
+   *                      extended thinking output) for this turn.
+   *   - `toolsUsed`:     compact summary of every `tool_use` block — name +
+   *                      truncated input — so the chat UI can render a
+   *                      "tools called" chip without re-fetching the trace.
+   *   - `traceSummary`:  selected fields from the matching ExecutionTrace
+   *                      (model, routing level, duration, tokens, oracle
+   *                      verdicts) when a TraceStore is wired.
+   *
+   * Powers `GET /api/v1/sessions/:id/messages` — the historical-process
+   * card on the frontend reads these fields directly. Loss-free w.r.t. the
+   * legacy text view: callers that only need text can ignore the extras.
+   */
+  getConversationHistoryDetailed(
+    sessionId: string,
+    maxTurns = 1000,
+  ): Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    taskId: string;
+    timestamp: number;
+    thinking?: string;
+    toolsUsed?: Array<{ id: string; name: string; inputPreview: string }>;
+    traceSummary?: {
+      routingLevel: number;
+      modelUsed: string;
+      durationMs: number;
+      tokensConsumed: number;
+      outcome: string;
+      approach?: string;
+      oracleVerdictCount: number;
+      affectedFiles: string[];
+    };
+  }> {
+    const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    return turns.map((t) => {
+      const textParts: string[] = [];
+      const thinkingParts: string[] = [];
+      const tools: Array<{ id: string; name: string; inputPreview: string }> = [];
+      for (const b of t.blocks) {
+        if (b.type === 'text') textParts.push(b.text);
+        else if (b.type === 'thinking') thinkingParts.push(b.thinking);
+        else if (b.type === 'tool_use') {
+          tools.push({
+            id: b.id,
+            name: b.name,
+            inputPreview: previewToolInput(b.input),
+          });
+        }
+      }
+      const taskId = t.taskId ?? '';
+      let traceSummary: ReturnType<typeof toTraceSummary> | undefined;
+      if (taskId && this.traceStore) {
+        try {
+          const trace = this.traceStore.findByTaskId(taskId);
+          if (trace) traceSummary = toTraceSummary(trace);
+        } catch (err) {
+          // Best-effort: a corrupted trace row must not break listing the
+          // conversation. Log and continue without traceSummary.
+          console.warn('[vinyan] traceStore.findByTaskId failed:', err);
+        }
+      }
+      return {
+        role: t.role,
+        content: textParts.join('\n'),
+        taskId,
+        timestamp: t.createdAt,
+        ...(thinkingParts.length > 0 ? { thinking: thinkingParts.join('\n') } : {}),
+        ...(tools.length > 0 ? { toolsUsed: tools } : {}),
+        ...(traceSummary ? { traceSummary } : {}),
+      };
+    });
+  }
+}
+
+/** Truncate a tool input for compact transport in /messages payloads. */
+function previewToolInput(input: unknown, maxChars = 240): string {
+  let str: string;
+  try {
+    str = typeof input === 'string' ? input : JSON.stringify(input);
+  } catch {
+    return '[unserializable]';
+  }
+  if (str.length <= maxChars) return str;
+  return `${str.slice(0, maxChars)}…`;
+}
+
+/** Project an ExecutionTrace into the slim summary shape used by the chat UI. */
+function toTraceSummary(trace: import('../orchestrator/types.ts').ExecutionTrace): {
+  routingLevel: number;
+  modelUsed: string;
+  durationMs: number;
+  tokensConsumed: number;
+  outcome: string;
+  approach?: string;
+  oracleVerdictCount: number;
+  affectedFiles: string[];
+} {
+  return {
+    routingLevel: trace.routingLevel,
+    modelUsed: trace.modelUsed,
+    durationMs: trace.durationMs,
+    tokensConsumed: trace.tokensConsumed,
+    outcome: trace.outcome,
+    approach: trace.approach,
+    oracleVerdictCount: Array.isArray(trace.oracleVerdicts) ? trace.oracleVerdicts.length : 0,
+    affectedFiles: trace.affectedFiles ?? [],
+  };
 }
 
 function normalizeMetadata(value: string | null | undefined): string | null {

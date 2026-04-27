@@ -25,6 +25,7 @@ import { migration013 } from './013_rule_promote_capability_action.ts';
 import { migration014 } from './014_session_metadata.ts';
 import { migration015 } from './015_capability_route_audit.ts';
 import { migration016 } from './016_agent_proposals.ts';
+import { migration017 } from './017_task_events.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -44,4 +45,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration014,
   migration015,
   migration016,
+  migration017,
 ];

@@ -34,6 +34,7 @@ import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
+import { TaskEventStore } from '../db/task-event-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { UserPreferenceStore } from '../db/user-preference-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
@@ -114,6 +115,7 @@ import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
 import { RegressionMonitor } from './monitoring/regression-monitor.ts';
+import { attachTaskEventRecorder } from './observability/task-event-recorder.ts';
 import { OracleGateAdapter } from './oracle-gate-adapter.ts';
 import { PerceptionAssemblerImpl } from './perception.ts';
 import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
@@ -265,6 +267,8 @@ export interface Orchestrator {
   fleetRegistry?: import('./profile/fleet-registry.ts').FleetRegistry;
   // Exposed stores for API server (G7)
   traceStore?: TraceStore;
+  /** Per-task durable event log for historical UI process replay. */
+  taskEventStore?: TaskEventStore;
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
   patternStore?: PatternStore;
@@ -424,6 +428,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     oracleAccuracyStore = new OracleAccuracyStore(db.getDb());
   } catch {
     // SQLite unavailable — fall back to in-memory only
+  }
+
+  // Per-task bus event log for historical UI replay (process timeline,
+  // plan, tool calls, oracle verdicts after page reload). Optional — the
+  // recorder is attached only when DB is healthy.
+  let taskEventStore: TaskEventStore | undefined;
+  if (db) {
+    try {
+      taskEventStore = new TaskEventStore(db.getDb());
+    } catch {
+      // Best-effort; missing migration shouldn't break orchestrator boot.
+    }
   }
 
   // Phase 2 stores — all use same db instance
@@ -1935,6 +1951,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
+  // Persist curated bus events per task for historical UI process replay.
+  const taskEventRecorderHandle = taskEventStore ? attachTaskEventRecorder(bus, taskEventStore) : undefined;
 
   // GAP-H failure mode detection (G5: was dead code, now live)
   const gapHDetector = new GapHDetector(bus);
@@ -2081,6 +2099,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     fleetRegistry,
     // Exposed stores for API server wiring (G7)
     traceStore,
+    taskEventStore,
     ruleStore,
     skillStore,
     patternStore,
@@ -2133,6 +2152,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
+      taskEventRecorderHandle?.detach();
       for (const unsub of factoryBusUnsubs.splice(0)) {
         try {
           unsub();

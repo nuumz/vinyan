@@ -41,6 +41,8 @@ export interface APIServerDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   sessionManager: SessionManager;
   traceStore?: TraceStore;
+  /** Per-task durable event log for historical UI process replay (`/tasks/:id/events`). */
+  taskEventStore?: import('../db/task-event-store.ts').TaskEventStore;
   ruleStore?: RuleStore;
   workerStore?: WorkerStore;
   /**
@@ -330,6 +332,14 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/events$/)) {
       const taskId = path.split('/')[4]!;
       return this.handleSSE(taskId);
+    }
+
+    // Persisted bus event log for a task — JSON replay used by the chat UI
+    // to reconstruct historical process timelines after page reload. Distinct
+    // from `/events` (above) which is the live SSE stream.
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/event-history$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleTaskEventHistory(taskId, req);
     }
 
     // ── Sessions ──────────────────────────────────────────
@@ -913,18 +923,13 @@ export class VinyanAPIServer {
     const url = new URL(req.url);
     const stateParam = url.searchParams.get('state') ?? 'active';
     const allowedStates = new Set(['active', 'archived', 'deleted', 'all']);
-    const state = (allowedStates.has(stateParam) ? stateParam : 'active') as
-      | 'active'
-      | 'archived'
-      | 'deleted'
-      | 'all';
+    const state = (allowedStates.has(stateParam) ? stateParam : 'active') as 'active' | 'archived' | 'deleted' | 'all';
     const search = url.searchParams.get('search') ?? undefined;
     const limitRaw = url.searchParams.get('limit');
     const offsetRaw = url.searchParams.get('offset');
     const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined;
     const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : undefined;
-    const sessions =
-      this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
+    const sessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
     return jsonResponse({ sessions });
   }
 
@@ -1802,6 +1807,37 @@ export class VinyanAPIServer {
     });
   }
 
+  /**
+   * GET /api/v1/tasks/:id/event-history
+   *
+   * Returns the persisted bus event log for a task in chronological order.
+   * Powers the chat UI's "Process" card on past assistant messages — same
+   * event shape that was streamed live via `/events` SSE, just replayed from
+   * `task_events` storage. Supports `?since=<seq>` for incremental fetch.
+   *
+   * Returns 404 when no recorder is wired (no DB) — clients fall back to
+   * showing only the trace summary in that case.
+   */
+  private handleTaskEventHistory(taskId: string, req: Request): Response {
+    const store = this.deps.taskEventStore;
+    if (!store) {
+      return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
+    }
+    const url = new URL(req.url);
+    const sinceParam = url.searchParams.get('since');
+    const limitParam = url.searchParams.get('limit');
+    const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
+    const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
+    const events = store.listForTask(taskId, { since, limit });
+    const last = events.length > 0 ? events[events.length - 1] : undefined;
+    return jsonResponse({
+      taskId,
+      events,
+      // Convenience cursor for incremental polling.
+      lastSeq: last ? last.seq : (since ?? 0),
+    });
+  }
+
   // ── Session Handlers ────────────────────────────────────
 
   private async handleCreateSession(req: Request): Promise<Response> {
@@ -2208,7 +2244,13 @@ export class VinyanAPIServer {
     // Use a generous token budget so we return entries verbatim, not the
     // compacted summary. Clients that want compaction should call the
     // separate POST /api/v1/sessions/:id/compact endpoint.
-    const history = this.deps.sessionManager.getConversationHistoryText(sessionId, 1_000_000);
+    //
+    // `getConversationHistoryDetailed` is a superset of the legacy text
+    // view: every field on the old shape is preserved, with optional
+    // `thinking`, `toolsUsed`, and `traceSummary` fields added so the
+    // chat UI can render historical process cards without re-fetching the
+    // trace.
+    const history = this.deps.sessionManager.getConversationHistoryDetailed(sessionId, 1_000_000);
     const messages = limit !== undefined ? history.slice(-limit) : history;
     const pendingClarifications = this.deps.sessionManager.getPendingClarifications(sessionId);
 

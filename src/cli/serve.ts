@@ -97,10 +97,7 @@ export interface ServeOptions {
 
 export function nextParentWatchdogIntervalMs(currentMs: number, uptimeMs: number): number {
   if (uptimeMs < PARENT_WATCHDOG_BACKOFF_AFTER_MS) return PARENT_WATCHDOG_INITIAL_INTERVAL_MS;
-  return Math.min(
-    Math.max(currentMs * 2, PARENT_WATCHDOG_INITIAL_INTERVAL_MS),
-    PARENT_WATCHDOG_MAX_INTERVAL_MS,
-  );
+  return Math.min(Math.max(currentMs * 2, PARENT_WATCHDOG_INITIAL_INTERVAL_MS), PARENT_WATCHDOG_MAX_INTERVAL_MS);
 }
 
 export async function serve(workspace: string, opts: ServeOptions = {}): Promise<void> {
@@ -273,6 +270,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       executeTask: (input) => taskQueue.enqueue(() => orchestrator.executeTask(input)),
       sessionManager,
       traceStore: orchestrator.traceStore,
+      taskEventStore: orchestrator.taskEventStore,
       ruleStore: orchestrator.ruleStore,
       workerStore: orchestrator.workerStore,
       engineRegistry: orchestrator.engineRegistry,

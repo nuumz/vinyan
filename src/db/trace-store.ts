@@ -144,6 +144,19 @@ export class TraceStore {
     return rows.map(rowToTrace);
   }
 
+  /**
+   * Look up the (single) trace for a given task. The task→trace relation is
+   * 1:1 in the current schema, so we return the most recent row defensively
+   * in case a task ever gets re-traced. Used by the chat history API to
+   * attach a trace summary onto each persisted assistant message.
+   */
+  findByTaskId(taskId: string): ExecutionTrace | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM execution_traces WHERE task_id = ? ORDER BY timestamp DESC LIMIT 1`)
+      .get(taskId);
+    return row ? rowToTrace(row) : undefined;
+  }
+
   findByTimeRange(from: number, to: number): ExecutionTrace[] {
     const rows = this.db
       .prepare(`SELECT * FROM execution_traces WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`)
@@ -237,12 +250,12 @@ export class TraceStore {
          GROUP BY mode`,
       )
       .all() as Array<{
-        mode: string;
-        total: number;
-        successes: number;
-        failures: number;
-        avg_quality: number | null;
-      }>;
+      mode: string;
+      total: number;
+      successes: number;
+      failures: number;
+      avg_quality: number | null;
+    }>;
     return rows.map((r) => ({
       thinkingMode: r.mode,
       total: r.total,
@@ -323,9 +336,10 @@ function rowToTrace(row: any): ExecutionTrace {
     exploration: row.exploration === 1 ? true : undefined,
     frameworkMarkers: row.framework_markers ? JSON.parse(row.framework_markers) : undefined,
     workerSelectionAudit: row.worker_selection_audit ? JSON.parse(row.worker_selection_audit) : undefined,
-    pipelineConfidence: row.pipeline_confidence_composite != null
-      ? { composite: row.pipeline_confidence_composite, formula: '' }
-      : undefined,
+    pipelineConfidence:
+      row.pipeline_confidence_composite != null
+        ? { composite: row.pipeline_confidence_composite, formula: '' }
+        : undefined,
     confidenceDecision: row.confidence_decision ? JSON.parse(row.confidence_decision) : undefined,
     transcriptGzip: row.transcript_gzip ?? undefined,
     transcriptTurns: row.transcript_turns ?? undefined,

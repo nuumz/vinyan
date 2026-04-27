@@ -195,6 +195,34 @@ export async function executeWorkflow(
   // so we emit one initial snapshot here.
   emitPlanUpdate();
 
+  // Record a failed-approach entry into the rejected-approach store so future
+  // planners that call `queryFailedApproaches` can avoid the same path. All
+  // call sites are best-effort (try/catch swallow) — recording is
+  // observability, not a correctness gate. We skip recording on the explicit
+  // user-rejection path (line 127-141) and on the auto-approve-on-timeout
+  // path (line 147-149) — those are not bad approaches, they're user
+  // choices / infra signals.
+  const recordFailure = async (failureOracle: string, failedSteps: string[]) => {
+    if (!deps.agentMemory?.recordFailedApproach) return;
+    try {
+      const approach = `agentic-workflow:${plan.steps.map((s) => s.strategy).join(',')}`;
+      const actionVerb = (input.goal.match(/^\s*(\w+)/)?.[1] ?? '').toLowerCase();
+      await deps.agentMemory.recordFailedApproach({
+        taskId: input.id,
+        taskType: input.taskType,
+        approach: failedSteps.length > 0
+          ? `${approach}|failed:${failedSteps.join(',')}`
+          : approach,
+        failureOracle,
+        routingLevel: 2,
+        fileTarget: input.targetFiles?.[0] ?? '',
+        actionVerb: actionVerb || undefined,
+      });
+    } catch {
+      /* best-effort — failed-approach recording is observability, not a hard dep */
+    }
+  };
+
   // Topological execution — process steps whose dependencies are met
   const remaining = new Set(plan.steps.map((s) => s.id));
 
@@ -207,6 +235,7 @@ export async function executeWorkflow(
       // Deadlock — circular dependency or missing step
       for (const id of remaining) stepStatuses.set(id, 'failed');
       emitPlanUpdate();
+      await recordFailure('workflow-deadlock', [...remaining]);
       deps.bus?.emit('workflow:complete', {
         goal: plan.goal,
         status: 'failed',
@@ -255,6 +284,16 @@ export async function executeWorkflow(
   const allCompleted = [...stepResults.values()].every((r) => r.status === 'completed');
   const anyFailed = [...stepResults.values()].some((r) => r.status === 'failed');
   const status = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
+
+  // Record approach failure when at least one step failed. `partial` covers
+  // the "some succeeded, some failed" case — still useful signal for the
+  // planner to know this strategy mix is unreliable for this task type.
+  if (anyFailed) {
+    const failedStepIds = [...stepResults.values()]
+      .filter((r) => r.status === 'failed')
+      .map((r) => r.stepId);
+    await recordFailure('workflow-step-failed', failedStepIds);
+  }
 
   deps.bus?.emit('workflow:complete', {
     goal: plan.goal,

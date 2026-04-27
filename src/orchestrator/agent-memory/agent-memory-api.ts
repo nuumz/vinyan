@@ -70,4 +70,29 @@ export interface AgentMemoryAPI {
 
   /** Write a fact update through to WorldGraph. Invalidates affected cache. */
   recordFactUpdate?(fact: Fact): void;
+
+  /**
+   * Persist a failed-approach record into RejectedApproachStore. Closes the
+   * write side of the loop so future planners that call
+   * `queryFailedApproaches` actually see what failed last time.
+   *
+   * Optional: callers degrade gracefully when the store is unwired (mirrors
+   * the existing `recordLearnedPattern?` / `recordFactUpdate?` shape). All
+   * implementations must be best-effort — recording is observability, not a
+   * correctness gate.
+   */
+  recordFailedApproach?(entry: {
+    taskId: string;
+    taskType: string;
+    /** Compact descriptor of the strategy that failed (e.g. "agentic-workflow:llm-reasoning,llm-reasoning"). */
+    approach: string;
+    /** Discriminator for filtering: 'workflow-step-failed', 'workflow-deadlock', 'workflow-timeout'. */
+    failureOracle: string;
+    /** Routing level the failure occurred at (2 for workflow path). */
+    routingLevel: number;
+    /** First targetFile, when present — drives file+type matching at query time. */
+    fileTarget?: string;
+    /** Action verb extracted from the goal — drives verb-aware cross-task matching. */
+    actionVerb?: string;
+  }): Promise<void>;
 }

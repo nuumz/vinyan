@@ -61,9 +61,9 @@ Output ONLY valid JSON matching this schema:
 
 Strategy selection rules:
 - "full-pipeline": code changes requiring file edits + oracle verification
-- "direct-tool": single shell command or file read — INCLUDING filesystem inspection (ls/find/cat single file/grep), checking running processes (ps/lsof), and any goal asking to inspect, list, read, or run something on the user's machine. When the goal asks for filesystem/shell information, the workflow MUST start with a `direct-tool` step that produces the actual data; a subsequent `llm-reasoning` step can analyze that output.
+- "direct-tool": single shell command or file read — INCLUDING filesystem inspection (ls/find/cat single file/grep), checking running processes (ps/lsof), and any goal asking to inspect, list, read, or run something on the user's machine. When the goal asks for filesystem/shell information, the workflow MUST start with a \`direct-tool\` step that produces the actual data; a subsequent \`llm-reasoning\` step can analyze that output.
 - "knowledge-query": lookup facts, prior approaches, or codebase structure
-- "llm-reasoning": analysis, summarization, decision-making (no side effects). Do NOT use this when the user asked for filesystem/shell data — the LLM cannot see the user's machine; pair it with a `direct-tool` step first.
+- "llm-reasoning": analysis, summarization, decision-making (no side effects). Do NOT use this when the user asked for filesystem/shell data — the LLM cannot see the user's machine; pair it with a \`direct-tool\` step first.
 - "delegate-sub-agent": complex sub-tasks that need their own planning cycle
 - "human-input": when you genuinely cannot proceed without user clarification
 
@@ -71,7 +71,7 @@ Worked examples for filesystem / shell goals:
 - Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='ls -la ~/Desktop', step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
 - Goal: "show contents of src/foo.ts" / "ดู src/foo.ts" → step1 strategy='direct-tool', description='cat src/foo.ts'.
 - Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='npm test'.
-- Never invent the contents of a file/directory in `llm-reasoning`; always read it first via `direct-tool`.
+- Never invent the contents of a file/directory in \`llm-reasoning\`; always read it first via \`direct-tool\`.
 
 Creative writing rules:
 - For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.

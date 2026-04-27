@@ -326,4 +326,65 @@ describe('executeWorkflow', () => {
     expect(result.status).toBe('completed');
     expect(result.stepResults[0]!.output).toBe('Sub-agent result');
   });
+
+  test('records a failed approach when at least one step fails', async () => {
+    // 2-step plan: step1 = direct-tool (no toolExecutor wired → fails),
+    // step2 depends on step1 (so it never runs / completes as 'failed' with
+    // dependencies). That gives us a failed step → workflow status='partial'
+    // → recordFailedApproach should fire with failureOracle='workflow-step-failed'.
+    const plan = JSON.stringify({
+      goal: 'inspect repo state and analyze',
+      steps: [
+        { id: 'step1', description: 'ls -la /tmp', strategy: 'direct-tool', budgetFraction: 0.5 },
+        {
+          id: 'step2',
+          description: 'analyze the listing',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1'],
+          inputs: { listing: '$step1.result' },
+          budgetFraction: 0.5,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 10, output: 10 } };
+        }
+        return { content: 'analyzed', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const recorded: Array<unknown> = [];
+    const agentMemory = {
+      recordFailedApproach: async (entry: unknown) => {
+        recorded.push(entry);
+      },
+    } as any;
+    await executeWorkflow(makeInput('inspect repo state and analyze'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      // No toolExecutor wired → step1 (direct-tool) fails.
+      agentMemory,
+    });
+    expect(recorded.length).toBeGreaterThanOrEqual(1);
+    const entry = recorded[0] as {
+      taskId: string;
+      failureOracle: string;
+      routingLevel: number;
+      approach: string;
+    };
+    expect(entry.failureOracle).toBe('workflow-step-failed');
+    expect(entry.routingLevel).toBe(2);
+    expect(entry.approach).toContain('agentic-workflow');
+    expect(entry.approach).toMatch(/failed:step\d+/);
+  });
 });

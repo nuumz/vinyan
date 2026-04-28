@@ -149,6 +149,58 @@ describe('TraceStore', () => {
     expect(result.knowledgeUsed).toEqual(trace.knowledgeUsed);
   });
 
+  test('A8 governance provenance roundtrips and denormalizes audit columns', () => {
+    const trace = makeTrace({
+      governanceProvenance: {
+        decisionId: 'route-task-001-L2',
+        policyVersion: 'risk-router:v1',
+        attributedTo: 'riskRouter',
+        wasGeneratedBy: 'assessInitialLevel',
+        wasDerivedFrom: [
+          {
+            kind: 'file',
+            source: 'src/auth.ts',
+            contentHash: 'sha256:abc123',
+            observedAt: 1_777_400_000_000,
+            summary: 'blastRadius=3',
+          },
+          {
+            kind: 'routing-factor',
+            source: 'risk-score',
+            summary: 'riskScore=0.72',
+          },
+        ],
+        decidedAt: 1_777_400_001_000,
+        evidenceObservedAt: 1_777_400_000_000,
+        reason: 'riskScore=0.72 -> L2',
+        escalationPath: [0, 1, 2],
+      },
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.governanceProvenance).toEqual(trace.governanceProvenance);
+
+    const row = db
+      .query(
+        'SELECT routing_decision_id, policy_version, governance_actor, decision_timestamp, evidence_observed_at FROM execution_traces WHERE id = ?',
+      )
+      .get(trace.id) as Record<string, unknown>;
+    expect(row.routing_decision_id).toBe('route-task-001-L2');
+    expect(row.policy_version).toBe('risk-router:v1');
+    expect(row.governance_actor).toBe('riskRouter');
+    expect(row.decision_timestamp).toBe(1_777_400_001_000);
+    expect(row.evidence_observed_at).toBe(1_777_400_000_000);
+  });
+
+  test('legacy traces without governance provenance remain readable', () => {
+    store.insert(makeTrace());
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.governanceProvenance).toBeUndefined();
+  });
+
   test('QualityScore denormalized into columns and reconstructed', () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);

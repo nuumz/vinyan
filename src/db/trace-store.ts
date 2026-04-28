@@ -32,7 +32,9 @@ export class TraceStore {
         agent_selection_reason, capability_requirements, capability_analysis,
         selected_capability_profile_id, selected_capability_profile_source,
         selected_capability_profile_trust_tier, capability_fit_score,
-        unmet_capability_ids, synthetic_agent_id, knowledge_used
+        unmet_capability_ids, synthetic_agent_id, knowledge_used,
+        governance_provenance, routing_decision_id, policy_version,
+        governance_actor, decision_timestamp, evidence_observed_at
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $agent_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -50,13 +52,16 @@ export class TraceStore {
         $agent_selection_reason, $capability_requirements, $capability_analysis,
         $selected_capability_profile_id, $selected_capability_profile_source,
         $selected_capability_profile_trust_tier, $capability_fit_score,
-        $unmet_capability_ids, $synthetic_agent_id, $knowledge_used
+        $unmet_capability_ids, $synthetic_agent_id, $knowledge_used,
+        $governance_provenance, $routing_decision_id, $policy_version,
+        $governance_actor, $decision_timestamp, $evidence_observed_at
       )
     `);
   }
 
   insert(trace: ExecutionTrace): void {
     const qs = trace.qualityScore;
+    const governance = trace.governanceProvenance;
     this.insertStmt.run({
       $id: trace.id,
       $task_id: trace.taskId,
@@ -109,6 +114,12 @@ export class TraceStore {
       $unmet_capability_ids: trace.unmetCapabilityIds ? JSON.stringify(trace.unmetCapabilityIds) : null,
       $synthetic_agent_id: trace.syntheticAgentId ?? null,
       $knowledge_used: trace.knowledgeUsed ? JSON.stringify(trace.knowledgeUsed) : null,
+      $governance_provenance: governance ? JSON.stringify(governance) : null,
+      $routing_decision_id: governance?.decisionId ?? null,
+      $policy_version: governance?.policyVersion ?? null,
+      $governance_actor: governance?.attributedTo ?? null,
+      $decision_timestamp: governance?.decidedAt ?? null,
+      $evidence_observed_at: governance?.evidenceObservedAt ?? null,
     });
   }
 
@@ -297,7 +308,6 @@ function rowToTrace(row: any): ExecutionTrace {
   if (!validated.success) {
     console.warn('[vinyan] TraceStore: row failed Zod validation, using fallback', validated.error.message);
   }
-  const r = row;
   return {
     id: row.id,
     taskId: row.task_id,
@@ -358,5 +368,6 @@ function rowToTrace(row: any): ExecutionTrace {
     unmetCapabilityIds: row.unmet_capability_ids ? JSON.parse(row.unmet_capability_ids) : undefined,
     syntheticAgentId: row.synthetic_agent_id ?? undefined,
     knowledgeUsed: row.knowledge_used ? JSON.parse(row.knowledge_used) : undefined,
+    governanceProvenance: row.governance_provenance ? JSON.parse(row.governance_provenance) : undefined,
   };
 }

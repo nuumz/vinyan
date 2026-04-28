@@ -28,6 +28,7 @@ import { migration016 } from './016_agent_proposals.ts';
 import { migration017 } from './017_task_events.ts';
 import { migration018 } from './018_retire_legacy_builtins.ts';
 import { migration019 } from './019_skill_outcomes.ts';
+import { migration020 } from './020_a8_governance_provenance.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -50,4 +51,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration017,
   migration018,
   migration019,
+  migration020,
 ];

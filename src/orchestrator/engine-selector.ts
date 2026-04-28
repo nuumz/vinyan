@@ -328,8 +328,7 @@ export class DefaultEngineSelector implements EngineSelector {
     // re-introduce a provider that is dormant or at capacity. We compute
     // the same Wilson-LB ranking inline so behavior matches `priority-router`
     // for the unfiltered case.
-    const filterApplied =
-      this.runtimeStateManager !== undefined || options?.departmentId !== undefined;
+    const filterApplied = this.runtimeStateManager !== undefined || options?.departmentId !== undefined;
     let selection: { provider: string; trustScore: number; basis: 'wilson_lb' | 'cold_start' };
     if (filterApplied) {
       let bestProvider = defaultModel ?? 'unknown';

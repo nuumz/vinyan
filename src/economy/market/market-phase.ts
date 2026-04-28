@@ -88,8 +88,7 @@ export function evaluateMarketPhase(current: MarketPhaseState, stats: MarketPhas
     if (stats.auctionCount >= 50 && stats.dominantWinRate > 0.9) {
       const familyAuctions = stats.auctionsByFamily;
       const hasFamilySpread = familyAuctions && Object.keys(familyAuctions).length > 1;
-      const totalFamilyAuctions =
-        familyAuctions != null ? Object.values(familyAuctions).reduce((a, b) => a + b, 0) : 0;
+      const totalFamilyAuctions = familyAuctions != null ? Object.values(familyAuctions).reduce((a, b) => a + b, 0) : 0;
       const maxFamilyShare =
         familyAuctions != null && totalFamilyAuctions > 0
           ? Math.max(...Object.values(familyAuctions)) / totalFamilyAuctions

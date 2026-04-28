@@ -12,7 +12,17 @@ import type { HypothesisTuple } from '../core/types.ts';
 import { calculateRiskScore, detectEnvironment, type RoutingThresholds, routeByRisk } from '../gate/risk-router.ts';
 import type { RiskRouter } from './core-loop.ts';
 import { computeTaskSignature } from './prediction/self-model.ts';
-import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, TaskInput } from './types.ts';
+import type {
+  EpistemicAdjustment,
+  GovernanceEvidenceReference,
+  GovernanceProvenance,
+  RiskFactors,
+  RoutingDecision,
+  RoutingLevel,
+  TaskInput,
+} from './types.ts';
+
+export const RISK_ROUTER_POLICY_VERSION = 'risk-router:v1' as const;
 
 type DepVerify = (hypothesis: HypothesisTuple) => Promise<{ evidence: { file: string }[] }>;
 
@@ -62,13 +72,14 @@ export class RiskRouterImpl implements RiskRouter {
   }
 
   async assessInitialLevel(input: TaskInput): Promise<RoutingDecision> {
+    const observedAt = Date.now();
     // Parse MIN_ROUTING_LEVEL:N from constraints FIRST — if L0 is forced,
     // skip expensive computations (dep-oracle, world-graph) and return L0 directly.
     const minLevel = parseMinRoutingLevel(input.constraints);
     if (minLevel === 0) {
       const decision = routeByRisk(0.1, 0, this.thresholds, detectEnvironment(), undefined);
       decision.riskScore = 0.1;
-      return decision;
+      return attachGovernanceProvenance(input, decision, undefined, observedAt);
     }
 
     // Compute blast radius via dep-oracle
@@ -164,8 +175,118 @@ export class RiskRouterImpl implements RiskRouter {
       decision.thinkingConfig = escalated.thinkingConfig;
     }
 
-    return decision;
+    return attachGovernanceProvenance(input, decision, factors, observedAt);
   }
+}
+
+function attachGovernanceProvenance(
+  input: TaskInput,
+  decision: RoutingDecision,
+  factors: RiskFactors | undefined,
+  evidenceObservedAt: number,
+): RoutingDecision {
+  return {
+    ...decision,
+    governanceProvenance: buildRiskRouterProvenance(input, decision, factors, evidenceObservedAt),
+  };
+}
+
+function buildRiskRouterProvenance(
+  input: TaskInput,
+  decision: RoutingDecision,
+  factors: RiskFactors | undefined,
+  evidenceObservedAt: number,
+): GovernanceProvenance {
+  return {
+    decisionId: `risk-router:${input.id}:L${decision.level}`,
+    policyVersion: RISK_ROUTER_POLICY_VERSION,
+    attributedTo: 'riskRouter',
+    wasGeneratedBy: 'RiskRouterImpl.assessInitialLevel',
+    wasDerivedFrom: buildRiskRouterEvidence(input, decision, factors, evidenceObservedAt),
+    decidedAt: Date.now(),
+    evidenceObservedAt,
+    reason: formatRiskRouterReason(decision),
+    escalationPath: decision.isEscalated ? [decision.level] : undefined,
+  };
+}
+
+function buildRiskRouterEvidence(
+  input: TaskInput,
+  decision: RoutingDecision,
+  factors: RiskFactors | undefined,
+  observedAt: number,
+): GovernanceEvidenceReference[] {
+  const evidence: GovernanceEvidenceReference[] = [
+    {
+      kind: 'task-input',
+      source: input.id,
+      observedAt,
+      summary: `taskType=${input.taskType}; source=${input.source}`,
+    },
+  ];
+
+  for (const file of input.targetFiles ?? []) {
+    evidence.push({ kind: 'file', source: file, observedAt, summary: 'routing target file' });
+  }
+
+  for (const constraint of input.constraints ?? []) {
+    if (constraint.startsWith('MIN_ROUTING_LEVEL:')) {
+      evidence.push({ kind: 'policy', source: 'task-constraint', observedAt, summary: constraint });
+    }
+  }
+
+  evidence.push({
+    kind: 'routing-factor',
+    source: 'risk-score',
+    observedAt,
+    summary: `riskScore=${formatNumber(decision.riskScore ?? 0)}`,
+  });
+
+  if (!factors) return evidence;
+
+  evidence.push(
+    { kind: 'routing-factor', source: 'blast-radius', observedAt, summary: `blastRadius=${factors.blastRadius}` },
+    { kind: 'routing-factor', source: 'test-coverage', observedAt, summary: `testCoverage=${formatNumber(factors.testCoverage)}` },
+    {
+      kind: 'routing-factor',
+      source: 'file-volatility',
+      observedAt,
+      summary: `fileVolatility=${formatNumber(factors.fileVolatility)}`,
+    },
+    {
+      kind: 'routing-factor',
+      source: 'irreversibility',
+      observedAt,
+      summary: `irreversibility=${formatNumber(factors.irreversibility)}`,
+    },
+    {
+      kind: 'routing-factor',
+      source: 'environment',
+      observedAt,
+      summary: `environment=${factors.environmentType}`,
+    },
+  );
+
+  if (factors.avgTierReliability != null) {
+    evidence.push({
+      kind: 'routing-factor',
+      source: 'tier-reliability',
+      observedAt,
+      summary: `avgTierReliability=${formatNumber(factors.avgTierReliability)}`,
+    });
+  }
+
+  return evidence;
+}
+
+function formatRiskRouterReason(decision: RoutingDecision): string {
+  const risk = formatNumber(decision.riskScore ?? 0);
+  const deescalated = decision.epistemicDeescalated ? '; epistemicDeescalated=true' : '';
+  return `riskScore=${risk} -> L${decision.level}${deescalated}`;
+}
+
+function formatNumber(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(3) : 'unknown';
 }
 
 /** Extract minimum routing level from constraints array. */

@@ -21,7 +21,7 @@
 import type { AgentRegistry } from './agents/registry.ts';
 import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
 import { analyzeProfileFit } from './capabilities/capability-router.ts';
-import { buildAgentCapabilityProfiles } from './capabilities/profile-adapter.ts';
+import { buildAgentCapabilityProfilesFromRegistry } from './capabilities/profile-adapter.ts';
 import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy, TaskInput } from './types.ts';
 
 export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
@@ -83,7 +83,14 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       // CapabilityClaims, which the capability-analyzer matches against
       // task requirements derived from the fingerprint and (optionally)
       // LLM-extracted requirements forwarded by the caller.
-      const allProfiles = buildAgentCapabilityProfiles(registry.listAgents());
+      //
+      // Phase-2 wiring: profiles are built via the registry helper so each
+      // agent's skill-derived claims and skill-narrowed ACL flow into the
+      // routing layer. Without a skill resolver wired, derivation returns
+      // raw spec data and behavior is unchanged.
+      const allProfiles = buildAgentCapabilityProfilesFromRegistry(registry.listAgents(), (id) =>
+        registry.getDerivedCapabilities(id),
+      );
       const profiles =
         typeof routingLevel === 'number'
           ? allProfiles.filter((profile) => {

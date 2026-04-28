@@ -89,8 +89,7 @@ export function scoreBid(
   // Cost efficiency. Skill-card prompt overhead is included so a heavily-
   // loaded persona is not silently disadvantaged on cost — and so the budget
   // cap below funds the actual prompt size, not the bare task tokens.
-  const estimatedTokens =
-    bid.estimatedTokensInput + bid.estimatedTokensOutput + (bid.skillTokenOverhead ?? 0);
+  const estimatedTokens = bid.estimatedTokensInput + bid.estimatedTokensOutput + (bid.skillTokenOverhead ?? 0);
   const costRatio = taskBudgetTokens > 0 ? Math.min(estimatedTokens / taskBudgetTokens, 1.0) : 0;
   const costEfficiency = Math.max(0.1, 1 - costRatio);
 

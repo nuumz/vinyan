@@ -10,7 +10,12 @@
  *     proceed (small gap), research (mid gap), synthesize (large/no fit)
  */
 import { describe, expect, test } from 'bun:test';
-import { analyzeFit, analyzeProfileFit, scoreFit, scoreProfile } from '../../../src/orchestrator/capabilities/capability-router.ts';
+import {
+  analyzeFit,
+  analyzeProfileFit,
+  scoreFit,
+  scoreProfile,
+} from '../../../src/orchestrator/capabilities/capability-router.ts';
 import { buildAgentCapabilityProfile } from '../../../src/orchestrator/capabilities/profile-adapter.ts';
 import type { AgentSpec, CapabilityRequirement } from '../../../src/orchestrator/types.ts';
 
@@ -23,7 +28,7 @@ function makeAgent(overrides: Partial<AgentSpec> & { id: string }): AgentSpec {
 }
 
 describe('scoreFit', () => {
-  test('exact id match scores claim.confidence × req.weight', () => {
+  test('exact id match scores effectiveTrust(claim) × overlap × req.weight', () => {
     const agent = makeAgent({
       id: 'a',
       capabilities: [{ id: 'code.refactor.ts', evidence: 'builtin', confidence: 0.9 }],
@@ -32,7 +37,12 @@ describe('scoreFit', () => {
     const fit = scoreFit(agent, reqs);
     expect(fit.matched).toHaveLength(1);
     expect(fit.gap).toHaveLength(0);
-    expect(fit.fitScore).toBeCloseTo(0.9 * 0.5, 5);
+    // Phase-1 fix: fitScore now uses effectiveTrust, not raw confidence.
+    // For builtin evidence + confidence 0.9: tier defaults to 'heuristic' (0.7),
+    //   evidence_weight['builtin'] = 0.7, wilson cold-start uses static
+    //   confidence so wilson = max(0.5, 0.9) = 0.9.
+    //   effectiveTrust = 0.7 × 0.9 × 0.7 = 0.441; × overlap 1 × weight 0.5 = 0.2205.
+    expect(fit.fitScore).toBeCloseTo(0.441 * 0.5, 3);
   });
 
   test('extension-only requirement matches a claim that declares the extension', () => {
@@ -82,7 +92,11 @@ describe('scoreFit', () => {
     expect(fit.profileId).toBe('synthetic-abc12345');
     expect(fit.profileSource).toBe('synthetic');
     expect(fit.trustTier).toBe('probabilistic');
-    expect(fit.fitScore).toBeCloseTo(0.7, 5);
+    // Phase-1 fix: fitScore uses effectiveTrust. For 'synthesized' evidence
+    // + confidence 0.7: default tier 'probabilistic' (0.4), evidence_weight 0.5,
+    //   wilson = max(0.5, 0.7) = 0.7 → effectiveTrust = 0.4 × 0.7 × 0.5 = 0.14.
+    //   × overlap 1 × weight 1 = 0.14.
+    expect(fit.fitScore).toBeCloseTo(0.14, 3);
   });
 
   test('unmet requirement is recorded in `gap`', () => {

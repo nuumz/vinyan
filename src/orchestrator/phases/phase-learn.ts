@@ -39,6 +39,12 @@ type CapabilityTraceAudit = Pick<
   | 'unmetCapabilityIds'
 >;
 
+type GovernanceTraceAudit = Pick<ExecutionTrace, 'governanceProvenance'>;
+
+export function deriveGovernanceTraceAudit(routing: RoutingDecision): GovernanceTraceAudit {
+  return routing.governanceProvenance ? { governanceProvenance: routing.governanceProvenance } : {};
+}
+
 export function deriveCapabilityTraceAudit(intentResolution?: IntentResolution): CapabilityTraceAudit {
   if (!intentResolution) return {};
 
@@ -264,6 +270,8 @@ export async function executeLearnPhase(
   // analysis + synthetic agent id + knowledge contexts on the trace so
   // sleep-cycle promotion can group/promote by (taskTypeSignature, agentId).
   // No LLM in this path — pure copy of resolver output (A3).
+  Object.assign(trace, deriveGovernanceTraceAudit(routing));
+
   const ir = ctx.intentResolution;
   if (ir) {
     Object.assign(trace, deriveCapabilityTraceAudit(ir));

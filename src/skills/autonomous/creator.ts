@@ -19,24 +19,13 @@
  * shared with SK4. Bare re-exports live in `./index.ts`.
  */
 import { containsBypassAttempt, detectPromptInjection } from '../../guardrails/index.ts';
+import type { SkillArtifactStore } from '../artifact-store.ts';
+import type { ImporterCriticFn, ImporterCriticVerdict, ImporterGateFn, ImporterGateVerdict } from '../hub/importer.ts';
 import { computeContentHash } from '../skill-md/hash.ts';
 import type { SkillMdRecord } from '../skill-md/schema.ts';
-import type { SkillArtifactStore } from '../artifact-store.ts';
-import type {
-  ImporterCriticFn,
-  ImporterCriticVerdict,
-  ImporterGateFn,
-  ImporterGateVerdict,
-} from '../hub/importer.ts';
 import { buildWindowState, DEFAULT_WINDOW_POLICY } from './prediction-window.ts';
-import type { CachedSkillLike, SkillStoreLike, PredictionLedgerLike } from './store-adapters.ts';
-import type {
-  DraftDecision,
-  DraftGenerator,
-  PredictionErrorSample,
-  WindowPolicy,
-  WindowState,
-} from './types.ts';
+import type { CachedSkillLike, PredictionLedgerLike, SkillStoreLike } from './store-adapters.ts';
+import type { DraftDecision, DraftGenerator, PredictionErrorSample, WindowPolicy, WindowState } from './types.ts';
 
 export interface AutonomousSkillCreatorDeps {
   /** Read-only access to the prediction ledger for signature-scoped history. */
@@ -56,6 +45,17 @@ export interface AutonomousSkillCreatorDeps {
    * the Hub importer's `HUB_IMPORT_GATE_CONFIDENCE_FLOOR`. Below this → reject.
    */
   readonly gateConfidenceFloor?: number;
+  /**
+   * Phase-4 risk-C3 enforcement: engine identity for the draft generator.
+   * When supplied alongside `criticEngineId`, the constructor refuses to
+   * wire the creator if both ids match — A1 forbids generator and critic
+   * sharing an engine. Optional for backwards compatibility; without ids,
+   * the wiring proceeds and the engine-separation invariant is the caller's
+   * responsibility.
+   */
+  readonly generatorEngineId?: string;
+  /** Phase-4 — engine identity for the critic. See `generatorEngineId`. */
+  readonly criticEngineId?: string;
 }
 
 export const AUTONOMOUS_DRAFT_RULE_ID = 'autonomous-draft-v1';
@@ -77,6 +77,18 @@ export class AutonomousSkillCreator {
   private readonly gateFloor: number;
 
   constructor(deps: AutonomousSkillCreatorDeps) {
+    // Phase-4 risk C3: A1 Epistemic Separation forbids the same engine from
+    // both drafting AND critiquing a skill. When both engine ids are
+    // supplied at wire time, refuse construction on equality. The check is
+    // opt-in (both ids must be supplied) so legacy callers without engine
+    // metadata still work, but production wiring should always declare both.
+    if (deps.generatorEngineId && deps.criticEngineId && deps.generatorEngineId === deps.criticEngineId) {
+      throw new Error(
+        `[autonomous-creator] A1 violation: generator and critic engine ids match ('${deps.generatorEngineId}'). ` +
+          'Wire different engines for the draft and critic paths — generation ≠ verification at the engine layer.',
+      );
+    }
+
     this.deps = deps;
     this.policy = { ...DEFAULT_WINDOW_POLICY, ...(deps.policy ?? {}) };
     this.clock = deps.clock ?? (() => Date.now());
@@ -299,7 +311,10 @@ function buildScanText(record: SkillMdRecord): string {
 
 function isGateVerified(verdict: ImporterGateVerdict, floor: number): boolean {
   if (verdict.epistemicDecision === 'block') return false;
-  if (verdict.decision === 'block' && (verdict.epistemicDecision == null || verdict.epistemicDecision !== 'allow-with-caveats')) {
+  if (
+    verdict.decision === 'block' &&
+    (verdict.epistemicDecision == null || verdict.epistemicDecision !== 'allow-with-caveats')
+  ) {
     // block without an allow-with-caveats override is a hard reject
     if (verdict.epistemicDecision !== 'allow') return false;
   }

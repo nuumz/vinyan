@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { RiskRouterImpl } from '../../src/orchestrator/risk-router-adapter.ts';
+import { RISK_ROUTER_POLICY_VERSION, RiskRouterImpl } from '../../src/orchestrator/risk-router-adapter.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
 
 function makeInput(overrides?: Partial<TaskInput>): TaskInput {
@@ -72,6 +72,27 @@ describe('RiskRouterImpl', () => {
     expect(typeof decision.model).toBe('string');
     expect(decision.budgetTokens).toBeGreaterThan(0);
     expect(decision.latencyBudgetMs).toBeGreaterThan(0);
+  });
+
+  test('attaches A8 governance provenance to routing decisions', async () => {
+    const router = new RiskRouterImpl(mockDepVerify(3));
+    const decision = await router.assessInitialLevel(
+      makeInput({ targetFiles: ['src/auth.ts'], constraints: ['MIN_ROUTING_LEVEL:2'] }),
+    );
+
+    expect(decision.governanceProvenance?.decisionId).toBe(`risk-router:t-1:L${decision.level}`);
+    expect(decision.governanceProvenance?.policyVersion).toBe(RISK_ROUTER_POLICY_VERSION);
+    expect(decision.governanceProvenance?.attributedTo).toBe('riskRouter');
+    expect(decision.governanceProvenance?.wasGeneratedBy).toBe('RiskRouterImpl.assessInitialLevel');
+    expect(decision.governanceProvenance?.reason).toContain(`L${decision.level}`);
+    expect(decision.governanceProvenance?.wasDerivedFrom).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'task-input', source: 't-1' }),
+        expect.objectContaining({ kind: 'file', source: 'src/auth.ts' }),
+        expect.objectContaining({ kind: 'policy', source: 'task-constraint', summary: 'MIN_ROUTING_LEVEL:2' }),
+        expect.objectContaining({ kind: 'routing-factor', source: 'risk-score' }),
+      ]),
+    );
   });
 
   test('selfModel epistemic signal is passed to routeByRisk', async () => {

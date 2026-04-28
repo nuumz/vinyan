@@ -93,6 +93,7 @@ describe('effectiveTrust', () => {
     const inferred: CapabilityClaim = makeClaim({ evidence: 'inferred', confidence: 0.4 });
     const synthesized: CapabilityClaim = makeClaim({ evidence: 'synthesized', confidence: 0.5 });
     const builtin: CapabilityClaim = makeClaim({ evidence: 'builtin', confidence: 0.8 });
+    // Pinning all to the same tier so we isolate the evidence weight ordering.
     const inferredScore = effectiveTrust(inferred, null, 'speculative');
     const synthesizedScore = effectiveTrust(synthesized, null, 'speculative');
     const builtinScore = effectiveTrust(builtin, null, 'speculative');
@@ -100,11 +101,14 @@ describe('effectiveTrust', () => {
     expect(synthesizedScore).toBeLessThanOrEqual(builtinScore);
   });
 
-  test('defaults to speculative tier when none is supplied', () => {
-    const claim = makeClaim({ evidence: 'builtin', confidence: 0.9 });
-    const explicit = effectiveTrust(claim, null, 'speculative');
-    const implicit = effectiveTrust(claim, null);
-    expect(implicit).toBe(explicit);
+  test('default tier is evidence-aware (builtin → heuristic, inferred → speculative)', () => {
+    const builtin = makeClaim({ evidence: 'builtin', confidence: 0.8 });
+    const inferred = makeClaim({ evidence: 'inferred', confidence: 0.4 });
+    // builtin defaults to heuristic tier (sensible curated default), not speculative
+    expect(effectiveTrust(builtin)).toBe(effectiveTrust(builtin, null, 'heuristic'));
+    expect(effectiveTrust(inferred)).toBe(effectiveTrust(inferred, null, 'speculative'));
+    // builtin (heuristic default) must outrank inferred (speculative default)
+    expect(effectiveTrust(builtin)).toBeGreaterThan(effectiveTrust(inferred));
   });
 
   test('static confidence carries through when outcomes are absent', () => {

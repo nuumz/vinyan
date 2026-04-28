@@ -166,23 +166,43 @@ export function loadAgentRegistry(
     byId.set(cfg.id, cloneAgentSpec(agent));
   }
 
-  // 3. Soul resolution: disk file > extraSouls (AGENT.md body) > built-in string
+  // 3. Soul resolution: disk file > extraSouls (AGENT.md body) > built-in string.
+  //    Track which agents picked up a non-builtin soul so the lint below can
+  //    distinguish "shipped soul" (must pass — A1 non-negotiable) from
+  //    "user-overridden soul" (warn — user controls their own files).
+  const userAuthoredSoulIds = new Set<string>();
   for (const [id, agent] of byId) {
     const diskSoul = loadAgentSoul(workspace, id, agent.soulPath);
     if (diskSoul !== null) {
       byId.set(id, { ...agent, soul: diskSoul });
+      userAuthoredSoulIds.add(id);
     } else if (extraSouls?.has(id)) {
       byId.set(id, { ...agent, soul: extraSouls.get(id)! });
+      userAuthoredSoulIds.add(id);
     }
   }
 
   // 4. A1 soul lint — reject Generator-class personas whose soul contains a
   //    first-person verification verb. The Reviewer persona is exempt.
-  //    Failure here is a warn, not a throw, so user-authored souls keep
-  //    loading; the warn surfaces the violation immediately.
+  //
+  //    Shipped built-in souls: A1 is non-negotiable for personas we ship.
+  //    A violating built-in is a code bug we want to fail loud about, not
+  //    silently warn on. THROW — registry construction aborts.
+  //
+  //    User-authored / disk-overridden souls: warn-only. Their souls evolve
+  //    independently and may pre-date this lint; throwing would crash every
+  //    workspace with a custom soul. Surface the violation so the user sees
+  //    it, but keep the registry usable.
   for (const agent of byId.values()) {
     const violation = lintSoulForA1(agent);
-    if (violation) console.warn(`[agent:soul-lint] ${violation}`);
+    if (!violation) continue;
+    const isShippedBuiltin = agent.builtin === true && !userAuthoredSoulIds.has(agent.id);
+    if (isShippedBuiltin) {
+      throw new Error(
+        `[agent:soul-lint] Built-in persona '${agent.id}' violates A1 Epistemic Separation. ${violation}`,
+      );
+    }
+    console.warn(`[agent:soul-lint] ${violation}`);
   }
 
   const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : ([...byId.keys()][0] ?? DEFAULT_AGENT_ID);

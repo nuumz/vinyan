@@ -475,11 +475,37 @@ async function dispatchStrategy(
         // and may be a natural-language sentence that would error as a shell
         // command. Legacy plans without `command` fall back to `description`.
         const command = step.command?.trim() || step.description;
+        // Wrap the tool call with the same `agent:tool_started` /
+        // `agent:tool_executed` pair the autonomous agent-loop emits, so
+        // the chat UI's PlanSurface can render a tool card under this
+        // step. Without this, direct-tool workflow steps showed an empty
+        // "Tool activity" section even when a shell command ran.
+        const toolCallId = `wf-${step.id}`;
+        const toolStart = performance.now();
+        // `turnId` is synthetic: the workflow runner has no LLM-style turn,
+        // so we anchor every workflow-emitted tool event to the step id.
+        const turnId = `workflow-${step.id}`;
+        deps.bus?.emit('agent:tool_started', {
+          taskId: input.id,
+          turnId,
+          toolCallId,
+          toolName: 'shell_exec',
+          args: { command },
+        });
         const results = await deps.toolExecutor.executeProposedTools(
-          [{ id: `wf-${step.id}`, tool: 'shell_exec', parameters: { command } }],
+          [{ id: toolCallId, tool: 'shell_exec', parameters: { command } }],
           { workspace: deps.workspace ?? '.', allowedPaths: [], routingLevel: 2 },
         );
         const toolResult = results[0];
+        const toolDurationMs = Math.round(performance.now() - toolStart);
+        deps.bus?.emit('agent:tool_executed', {
+          taskId: input.id,
+          turnId,
+          toolCallId,
+          toolName: 'shell_exec',
+          isError: toolResult?.status !== 'success',
+          durationMs: toolDurationMs,
+        });
         if (toolResult?.status === 'success') {
           // Fence stdout so the chat UI (ReactMarkdown) preserves whitespace
           // and columns. Without this, `ls -la` style multi-line output

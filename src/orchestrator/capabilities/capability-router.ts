@@ -12,6 +12,7 @@
  * the best agent's gap is small (proceed), moderate (research), or large
  * enough that synthesizing a task-scoped agent should be considered.
  */
+import { effectiveTrust } from '../capability-trust.ts';
 import type {
   AgentCapabilityProfile,
   AgentSpec,
@@ -62,7 +63,14 @@ export function scoreProfile(
     for (const claim of claims) {
       const overlap = signalOverlap(req, claim);
       if (overlap === 0) continue;
-      const m = overlap * claim.confidence;
+      // Phase-1 fix: gate the fit score on `effectiveTrust(claim)`, not raw
+      // `claim.confidence`. This restores A5 ordering at the actual decision
+      // point — a 'builtin' claim can no longer outrank an 'evolved' claim
+      // just by self-asserting a high static confidence, because evidence
+      // weight + tier are now folded into the multiplier. `bestConfidence`
+      // stays raw for downstream consumers that depend on the legacy field.
+      const trust = effectiveTrust(claim);
+      const m = overlap * trust;
       if (m > bestMatch) {
         bestMatch = m;
         bestConfidence = claim.confidence;
@@ -141,7 +149,9 @@ export function analyzeProfileFit(
   profiles: readonly AgentCapabilityProfile[],
   requirements: readonly CapabilityRequirement[],
 ): CapabilityGapAnalysis {
-  const candidates = profiles.map((profile) => scoreProfile(profile, requirements)).sort((a, b) => b.fitScore - a.fitScore);
+  const candidates = profiles
+    .map((profile) => scoreProfile(profile, requirements))
+    .sort((a, b) => b.fitScore - a.fitScore);
 
   const totalWeight = requirements.reduce((s, r) => s + r.weight, 0);
   const best = candidates[0];

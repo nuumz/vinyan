@@ -97,8 +97,14 @@ export class SessionStore {
     return this.db.query('SELECT * FROM session_store WHERE id = ?').get(id) as SessionRow | undefined;
   }
 
+  /**
+   * Lifecycle bookkeeping only — used by suspend-all-on-shutdown and
+   * recover-on-startup. Intentionally does NOT touch `updated_at`: a server
+   * bounce is not user activity, and bumping it here resets every active
+   * session's "Updated" timestamp on every restart.
+   */
   updateSessionStatus(id: string, status: SessionRow['status']): void {
-    this.db.run('UPDATE session_store SET status = ?, updated_at = ? WHERE id = ?', [status, Date.now(), id]);
+    this.db.run('UPDATE session_store SET status = ? WHERE id = ?', [status, id]);
   }
 
   updateSessionCompaction(id: string, compactionJson: string): void {

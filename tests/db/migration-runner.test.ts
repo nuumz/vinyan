@@ -127,6 +127,27 @@ describe('MigrationRunner', () => {
     expect(names.has('unmet_capability_ids')).toBe(true);
   });
 
+  test('A8 governance provenance columns and indexes are available after migrations', () => {
+    runner.migrate(db, ALL_MIGRATIONS);
+
+    const columns = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('governance_provenance')).toBe(true);
+    expect(names.has('routing_decision_id')).toBe(true);
+    expect(names.has('policy_version')).toBe(true);
+    expect(names.has('governance_actor')).toBe(true);
+    expect(names.has('decision_timestamp')).toBe(true);
+    expect(names.has('evidence_observed_at')).toBe(true);
+
+    const indexes = db.query("PRAGMA index_list('execution_traces')").all() as Array<{ name: string }>;
+    const indexNames = new Set(indexes.map((index) => index.name));
+    expect(indexNames.has('idx_et_routing_decision_id')).toBe(true);
+    expect(indexNames.has('idx_et_policy_version')).toBe(true);
+    expect(indexNames.has('idx_et_governance_actor')).toBe(true);
+    expect(indexNames.has('idx_et_decision_timestamp')).toBe(true);
+  });
+
   // ── Acceptance Criterion 3: Failed migration rolls back ─
   test('failed migration rolls back that migration only', () => {
     const failingMigration: Migration = {

@@ -91,7 +91,7 @@ Three additional invariants are under evaluation as core axioms. They are docume
 
 **Why exactly three.** Adversarial robustness is intentionally NOT a separate axiom — it is a **corollary of A6 + A8 + A9** (zero-trust execution + replayable accountability + graceful degradation under attack). Causal/counterfactual reasoning is intentionally NOT a separate axiom — it is treated as a research-grade extension of **A7** (prediction error → causal attribution), not a near-term invariant.
 
-**Status as of 2026-04**: Documented. Code slices not yet landed. The official axiom set remains A1–A7.
+**Status as of 2026-04**: Documented. A8 persistence MVP has landed (`governanceProvenance` trace envelope + SQLite round-trip), and risk-router decisions now populate the envelope for learn-phase traces. Broader runtime coverage and A9/A10 slices remain pending. The official axiom set remains A1–A7.
 ---
 
 ## 2. Epistemic Communication Protocol (ECP)

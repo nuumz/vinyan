@@ -2149,6 +2149,26 @@ async function executeTaskCore(
   // confirmed.
   let detachActivity: (() => void) | undefined;
   try {
+    // ── Preliminary task:start (all strategies) ───────────────────
+    // The full-pipeline branch emits its OWN `task:start` later (line ~2526)
+    // with the resolved routing decision. But conversational, direct-tool,
+    // and agentic-workflow short-circuit BEFORE that point, so without this
+    // preliminary emit the UI never sees `task:start` for those strategies
+    // — meaning routingLevel/engineId stay blank, the global SSE consumer
+    // never invalidates the session-messages query, and cross-tab chat
+    // refreshes lag until the next polling cycle.
+    //
+    // The full-pipeline emit later refines this with the real routing data
+    // (the reducer treats `task:start` as upsert — see `task:start` case
+    // in vinyan-ui/src/hooks/use-streaming-turn.ts).
+    const preliminaryRouting: RoutingDecision = {
+      level: 0,
+      model: 'pending',
+      budgetTokens: input.budget.maxTokens,
+      latencyBudgetMs: input.budget.maxDurationMs,
+    };
+    deps.bus?.emit('task:start', { input, routing: preliminaryRouting });
+
     const prep = await prepareExecution(input, deps, presetWorkingMemory);
     if ('status' in prep) return prep; // Early return (security rejection or budget block)
 

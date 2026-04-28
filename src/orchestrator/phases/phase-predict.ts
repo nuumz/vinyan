@@ -5,16 +5,17 @@
  * reasoning policy, thinking policy compilation, and worker selection.
  */
 
+import { applyPredictionEscalation } from '../../gate/risk-router.ts';
+import { buildPersonaBidContext } from '../agents/persona-context-builder.ts';
 import type {
+  EngineSelectionResult,
   PerceptualHierarchy,
   RoutingDecision,
   RoutingLevel,
   SemanticTaskUnderstanding,
   TaskResult,
-  EngineSelectionResult,
 } from '../types.ts';
-import { applyPredictionEscalation } from '../../gate/risk-router.ts';
-import type { PhaseContext, PredictResult, PhaseContinue, PhaseReturn } from './types.ts';
+import type { PhaseContext, PhaseContinue, PhaseReturn, PredictResult } from './types.ts';
 import { Phase } from './types.ts';
 
 export async function executePredictPhase(
@@ -99,8 +100,7 @@ export async function executePredictPhase(
     });
 
     const compiledThinking = compiledPolicy.thinking;
-    const shouldKeepRouting = compiledThinking.type === 'disabled'
-      && routing.thinkingConfig?.type !== 'disabled';
+    const shouldKeepRouting = compiledThinking.type === 'disabled' && routing.thinkingConfig?.type !== 'disabled';
     routing = {
       ...routing,
       thinkingPolicy: compiledPolicy,
@@ -202,13 +202,28 @@ export async function executePredictPhase(
     // commitment-bridge lookup, volunteer-fallback, and `engine:selected`
     // events all key off `TaskInput.id`. `taskType` flows through
     // SelectOptions for cost prediction / auction scoring.
-    const engineSelection = deps.engineSelector.select(
-      routing.level,
-      input.id,
-      undefined,
-      undefined,
-      { taskType: input.taskType },
-    );
+    //
+    // Phase-4 wiring activation: when an agent is resolved for this task and
+    // the registry can derive its skill loadout, build a PersonaBidContext so
+    // every generated bid carries the persona id, loaded skill ids, declared
+    // capabilities, and prompt-overhead estimate. The auction's Phase-3
+    // `skillMatch` factor consumes these — without this wiring it stays
+    // 1.0 and persona-aware scoring is dead.
+    // `capabilityRequirements` rides on TaskUnderstanding's passthrough index
+    // signature (see `TaskUnderstanding[key: string]: unknown`). When the
+    // intent resolver populated it, the runtime shape matches CapabilityRequirement[];
+    // when it didn't, the cast resolves to undefined and Phase-3 skillMatch
+    // defaults to 1.0. Either way no LLM is in this code path — A3.
+    const requirements = understanding.capabilityRequirements as
+      | import('../types.ts').CapabilityRequirement[]
+      | undefined;
+    const personaContext = deps.agentRegistry
+      ? buildPersonaBidContext(deps.agentRegistry, input.agentId, requirements)
+      : null;
+    const engineSelection = deps.engineSelector.select(routing.level, input.id, undefined, undefined, {
+      taskType: input.taskType,
+      personaContext: personaContext ?? undefined,
+    });
     if (engineSelection.provider !== 'unknown') {
       routing = { ...routing, model: engineSelection.provider };
       deps.bus?.emit('engine:selected', {

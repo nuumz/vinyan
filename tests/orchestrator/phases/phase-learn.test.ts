@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { deriveCapabilityTraceAudit } from '../../../src/orchestrator/phases/phase-learn.ts';
-import type { IntentResolution } from '../../../src/orchestrator/types.ts';
+import {
+  deriveCapabilityTraceAudit,
+  deriveGovernanceTraceAudit,
+} from '../../../src/orchestrator/phases/phase-learn.ts';
+import type { IntentResolution, RoutingDecision } from '../../../src/orchestrator/types.ts';
 
 function makeIntentResolution(overrides: Partial<IntentResolution> = {}): IntentResolution {
   return {
@@ -86,5 +89,37 @@ describe('deriveCapabilityTraceAudit', () => {
     expect(audit.selectedCapabilityProfileTrustTier).toBe('probabilistic');
     expect(audit.capabilityFitScore).toBe(0.2);
     expect(audit.unmetCapabilityIds).toEqual(['code.audit.jwt']);
+  });
+});
+
+describe('deriveGovernanceTraceAudit', () => {
+  test('copies routing governance provenance onto the trace audit payload', () => {
+    const routing: RoutingDecision = {
+      level: 2,
+      model: 'claude-sonnet',
+      budgetTokens: 50_000,
+      latencyBudgetMs: 90_000,
+      governanceProvenance: {
+        decisionId: 'risk-router:t-1:L2',
+        policyVersion: 'risk-router:v1',
+        attributedTo: 'riskRouter',
+        wasGeneratedBy: 'RiskRouterImpl.assessInitialLevel',
+        wasDerivedFrom: [{ kind: 'routing-factor', source: 'risk-score', summary: 'riskScore=0.420' }],
+        decidedAt: 1_777_400_001_000,
+      },
+    };
+
+    expect(deriveGovernanceTraceAudit(routing)).toEqual({ governanceProvenance: routing.governanceProvenance });
+  });
+
+  test('returns an empty audit payload when routing has no provenance', () => {
+    const routing: RoutingDecision = {
+      level: 1,
+      model: 'claude-haiku',
+      budgetTokens: 10_000,
+      latencyBudgetMs: 15_000,
+    };
+
+    expect(deriveGovernanceTraceAudit(routing)).toEqual({});
   });
 });

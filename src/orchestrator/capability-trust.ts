@@ -43,6 +43,29 @@ export const EVIDENCE_WEIGHT: Record<CapabilityEvidence, number> = {
 };
 
 /**
+ * Default ConfidenceTier when a claim does not carry an explicit `skillTier`.
+ *
+ * Pre-fix this defaulted to `'speculative'` for everything, which was too
+ * harsh: a curated `'builtin'` claim from a persona without a skill backing
+ * scored ~0.084 (TIER_WEIGHT 0.15 × confidence × evidence_weight), well below
+ * any reasonable routing threshold. The fix maps evidence → a sensible default
+ * that matches the implied trust strength of the source:
+ *
+ *   - `'evolved'` / `'builtin'` → `'heuristic'` (curated or empirical, generally trustworthy)
+ *   - `'synthesized'`           → `'probabilistic'` (external skill or task-scoped synthesis)
+ *   - `'inferred'`              → `'speculative'` (routing-hint synthesis, weakest)
+ *
+ * Skill-derived claims override this by passing the skill's actual
+ * `confidence_tier` into `effectiveTrust(claim, outcomes, skillTier)`.
+ */
+export const DEFAULT_TIER_BY_EVIDENCE: Record<CapabilityEvidence, ConfidenceTier> = {
+  evolved: 'heuristic',
+  builtin: 'heuristic',
+  synthesized: 'probabilistic',
+  inferred: 'speculative',
+};
+
+/**
  * Optional per-claim outcome counts. Callers that have wired Wilson outcome
  * tracking (sleep-cycle, agent-proposal-store) supply `successes` and `total`
  * so cold-start can be detected. Callers without outcome data omit the field
@@ -89,7 +112,7 @@ export function effectiveTrust(
   outcomes?: ClaimOutcomes | null,
   skillTier?: ConfidenceTier,
 ): number {
-  const tier: ConfidenceTier = skillTier ?? 'speculative';
+  const tier: ConfidenceTier = skillTier ?? DEFAULT_TIER_BY_EVIDENCE[claim.evidence];
   const tierWeight = TIER_WEIGHT[tier];
   const provenanceWeight = EVIDENCE_WEIGHT[claim.evidence];
   // When outcomes are supplied, the Wilson LB drives the score. When absent,

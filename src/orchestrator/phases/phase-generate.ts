@@ -22,7 +22,15 @@ import type {
   TaskResult,
   ToolCall,
 } from '../types.ts';
-import type { GenerateResult, PhaseContext, PhaseContinue, PhaseRetry, PhaseReturn, PhaseThrow, WorkerResult } from './types.ts';
+import type {
+  GenerateResult,
+  PhaseContext,
+  PhaseContinue,
+  PhaseRetry,
+  PhaseReturn,
+  PhaseThrow,
+  WorkerResult,
+} from './types.ts';
 import { Phase } from './types.ts';
 
 interface GenerateInput {
@@ -48,12 +56,16 @@ export async function executeGeneratePhase(
   const turns = ctx.turns;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
-  // Phase 2: intersect agent's ACL overlay with routing-level capabilities.
-  // Never widens — `writer` denied `shell_exec` at L2, `ts-coder` still gets it.
+  // Phase-2 redesign wiring: ACL overlay comes from `getDerivedCapabilities`
+  // when the registry can compute it, so skill-narrowed ACL (persona ∩
+  // ⋂(skill ACL), A6 intersection rule) actually bites at dispatch time.
+  // Falls back to the raw `agent.capabilityOverrides` when derivation is
+  // unavailable (legacy registry, no skill resolver wired) so existing
+  // deployments are unaffected.
   const agent = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) : undefined;
-  const agentAcl = agent
-    ? { allowedTools: agent.allowedTools, capabilityOverrides: agent.capabilityOverrides }
-    : undefined;
+  const derived = input.agentId ? deps.agentRegistry?.getDerivedCapabilities(input.agentId) : undefined;
+  const effectiveOverrides = derived?.effectiveAcl ?? agent?.capabilityOverrides;
+  const agentAcl = agent ? { allowedTools: agent.allowedTools, capabilityOverrides: effectiveOverrides } : undefined;
   const contract = createContract(input, routing, agentAcl);
 
   // Crash Recovery: persist checkpoint before dispatch
@@ -311,7 +323,7 @@ export async function executeGeneratePhase(
         id: `trace-${input.id}-non-retryable`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+        agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'non-retryable-error',
@@ -346,7 +358,7 @@ export async function executeGeneratePhase(
       // Check 1: Instruction echo detection
       const echoFragments = [
         'do not use json',
-        'match the user\'s language',
+        "match the user's language",
         'never fabricate facts',
         'answer directly and concisely',
         'code blocks for your answer',
@@ -381,12 +393,11 @@ export async function executeGeneratePhase(
 
       // Check 2: A6 defense-in-depth — strip mutating tool calls from non-mutation domains
       // Exception: tool-needed tasks explicitly require tool execution (e.g. "open Chrome", CLI commands)
-      const shouldFilterTools = understanding.taskDomain !== 'code-mutation' && understanding.toolRequirement !== 'tool-needed';
+      const shouldFilterTools =
+        understanding.taskDomain !== 'code-mutation' && understanding.toolRequirement !== 'tool-needed';
       if (shouldFilterTools && workerResult.proposedToolCalls.length > 0) {
         const { READONLY_TOOLS } = await import('../types.ts');
-        workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter(
-          (tc) => READONLY_TOOLS.has(tc.tool),
-        );
+        workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter((tc) => READONLY_TOOLS.has(tc.tool));
       }
     }
 
@@ -398,7 +409,7 @@ export async function executeGeneratePhase(
         id: `trace-${input.id}-budget-exceeded`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+        agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'global-budget-exceeded',
@@ -437,7 +448,7 @@ export async function executeGeneratePhase(
       id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+      agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: routing.level,
       approach: 'dispatch-error',

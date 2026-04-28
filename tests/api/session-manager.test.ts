@@ -250,4 +250,18 @@ describe('Session Recovery', () => {
     expect(recovered[0]!.id).toBe(s1.id);
     expect(recovered[0]!.status).toBe('active');
   });
+
+  test('suspend/recover cycle does not bump updated_at (server restart is not user activity)', async () => {
+    const s = manager.create('api');
+    const originalUpdatedAt = sessionStore.getSession(s.id)!.updated_at;
+
+    // Sleep long enough that Date.now() would visibly differ if the cycle
+    // were touching updated_at.
+    await new Promise((r) => setTimeout(r, 5));
+
+    manager.suspendAll();
+    manager.recover();
+
+    expect(sessionStore.getSession(s.id)!.updated_at).toBe(originalUpdatedAt);
+  });
 });

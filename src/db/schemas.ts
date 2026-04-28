@@ -106,7 +106,7 @@ export const AgentProfileRowSchema = z.object({
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────
 
-const TraceOutcomeSchema = z.enum(['success', 'failure', 'timeout', 'escalated']);
+const TraceOutcomeSchema = z.enum(['success', 'failure', 'timeout', 'escalated', 'partial']);
 
 export const ExecutionTraceRowSchema = z.object({
   id: z.string(),
@@ -152,4 +152,10 @@ export const ExecutionTraceRowSchema = z.object({
   unmet_capability_ids: z.string().nullable().optional(),
   synthetic_agent_id: z.string().nullable().optional(),
   knowledge_used: z.string().nullable().optional(),
+  governance_provenance: z.string().nullable().optional(),
+  routing_decision_id: z.string().nullable().optional(),
+  policy_version: z.string().nullable().optional(),
+  governance_actor: z.string().nullable().optional(),
+  decision_timestamp: z.number().nullable().optional(),
+  evidence_observed_at: z.number().nullable().optional(),
 });

@@ -50,6 +50,8 @@ export interface RoutingDecision {
    * existing call sites stay bit-exact when no config is supplied.
    */
   phaseConfigs?: Partial<Record<PhaseName, PhaseLLMConfig>>;
+  /** A8 RFC: provenance for the governance decision that produced this route. */
+  governanceProvenance?: GovernanceProvenance;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -1099,6 +1101,34 @@ export interface EvolutionaryRule {
 // Execution traces (→ TDD §12B)
 // ---------------------------------------------------------------------------
 
+export interface GovernanceEvidenceReference {
+  kind:
+    | 'task-input'
+    | 'file'
+    | 'oracle-verdict'
+    | 'routing-factor'
+    | 'policy'
+    | 'tool-result'
+    | 'trace'
+    | 'other';
+  source: string;
+  contentHash?: string;
+  observedAt?: number;
+  summary?: string;
+}
+
+export interface GovernanceProvenance {
+  decisionId: string;
+  policyVersion: string;
+  attributedTo: string;
+  wasGeneratedBy: string;
+  wasDerivedFrom: GovernanceEvidenceReference[];
+  decidedAt: number;
+  evidenceObservedAt?: number;
+  reason?: string;
+  escalationPath?: RoutingLevel[];
+}
+
 /** Recorded after each task for Self-Model calibration and Evolution Engine */
 export interface ExecutionTrace {
   id: string;
@@ -1217,6 +1247,8 @@ export interface ExecutionTrace {
   syntheticAgentId?: string;
   /** Local-first knowledge contexts surfaced for this task, when research fired. */
   knowledgeUsed?: KnowledgeContext[];
+  /** A8 RFC: replayable governance/action/verdict provenance for this trace. */
+  governanceProvenance?: GovernanceProvenance;
 }
 
 // ---------------------------------------------------------------------------

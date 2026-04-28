@@ -129,3 +129,42 @@ function rowToRecord(row: SkillOutcomeRow): SkillOutcomeRecord {
     lastOutcomeAt: row.last_outcome_at,
   };
 }
+
+/**
+ * Fan one task outcome out to every loaded skill on a persona-aware bid.
+ *
+ * Phase-3 schema enables per-(persona, skill, taskSig) attribution; Phase-4
+ * autonomous skill creator will read this signal to trigger drafts. The
+ * helper exists at the db layer so settlement / phase-learn callers can wire
+ * it without re-deriving the loadout themselves — they pass the bid (which
+ * already carries `personaId` + `loadedSkillIds`), the task signature, and
+ * the outcome.
+ *
+ * No-op when `personaId` is absent or `loadedSkillIds` is empty. This makes
+ * the helper safe to call unconditionally — legacy non-persona bids do not
+ * record anything, no errors emitted.
+ *
+ * Equal credit: every loaded skill receives the same outcome counter. A more
+ * accurate per-skill attribution scheme (only credit skills whose `whenToUse`
+ * fingerprint matched the task) is a Phase-4 refinement — risk M2.
+ */
+export interface PersonaBidLike {
+  personaId?: string;
+  loadedSkillIds?: readonly string[];
+}
+
+export function recordSkillOutcomesFromBid(
+  store: SkillOutcomeStore,
+  bid: PersonaBidLike,
+  taskSignature: string,
+  outcome: SkillOutcome,
+  now = Date.now(),
+): number {
+  const personaId = bid.personaId;
+  const skills = bid.loadedSkillIds ?? [];
+  if (!personaId || skills.length === 0) return 0;
+  for (const skillId of skills) {
+    store.recordOutcome({ personaId, skillId, taskSignature }, outcome, now);
+  }
+  return skills.length;
+}

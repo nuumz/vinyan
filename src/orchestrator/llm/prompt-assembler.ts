@@ -73,10 +73,7 @@ export interface PromptCacheTiers {
  * non-Anthropic models, the test mock) silently ignore the markers, so this
  * is safe to attach unconditionally at call sites.
  */
-export function frozenSystemTier(
-  systemPrompt: string,
-  userPrompt: string,
-): PromptCacheTiers {
+export function frozenSystemTier(systemPrompt: string, userPrompt: string): PromptCacheTiers {
   const sysLen = systemPrompt.length;
   return {
     system: { frozenEnd: sysLen, sessionEnd: sysLen, totalEnd: sysLen },
@@ -136,10 +133,18 @@ export function assemblePrompt(
   agentContext?: AgentContext,
   /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
   soulContent?: string,
-  /** Multi-agent: the specialist assigned to this task (ts-coder, writer, etc.). */
+  /** Multi-agent: the specialist assigned to this task (developer, author, etc.). */
   agentProfile?: AgentSpec,
   /** Multi-agent: consultable peer agents (for agent-peers section). */
   peerAgents?: AgentSpec[],
+  /**
+   * Phase-2 wiring activation: skill cards from the persona's `DerivedCapabilities`.
+   * When supplied, the `agent-skill-cards` prompt section renders each card
+   * inside an integrity envelope (`<skill-card hash="..." tier="...">`). Empty
+   * or undefined → section is omitted, prompt unchanged. Callers compute via
+   * `derived.loadedSkills.map(toSkillCardView)`.
+   */
+  loadedSkillCards?: import('../agents/derive-persona-capabilities.ts').SkillCardView[],
 ): AssembledPrompt {
   const ctx: SectionContext = {
     goal,
@@ -155,6 +160,7 @@ export function assemblePrompt(
     soulContent,
     agentProfile,
     peerAgents,
+    loadedSkillCards,
   };
 
   // Gap 4A: Reasoning tasks now use composable section registry

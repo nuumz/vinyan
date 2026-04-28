@@ -948,7 +948,20 @@ export class VinyanAPIServer {
     const offsetRaw = url.searchParams.get('offset');
     const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined;
     const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : undefined;
-    const sessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
+    // `?source=ui|api|all` — by default the chat Sessions page hides
+    // sessions auto-created by the async-task API (`source='api'`). Those
+    // sessions are task containers only — they never receive
+    // recordAssistantTurn, so opening them shows an empty chat which
+    // confuses users. Observability tools that want EVERY session can
+    // pass `?source=all`. `?source=api` returns api-only.
+    const sourceParam = url.searchParams.get('source') ?? 'ui';
+    const allowedSources = new Set(['ui', 'api', 'all']);
+    const sourceFilter = allowedSources.has(sourceParam) ? sourceParam : 'ui';
+    const allSessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
+    const sessions =
+      sourceFilter === 'all'
+        ? allSessions
+        : allSessions.filter((s) => s.source === sourceFilter);
     return jsonResponse({ sessions });
   }
 

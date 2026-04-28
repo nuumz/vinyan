@@ -35,7 +35,7 @@ export class MarketScheduler {
   private accuracyTracker: BidAccuracyTracker;
   private phaseState: MarketPhaseState;
   private bus: VinyanBus | undefined;
-  private auctionHistory: Array<{ bidSpread: number }> = [];
+  private auctionHistory: Array<{ bidSpread: number; distinctPersonaCount?: number }> = [];
   /**
    * Tick hooks registered via {@link registerTickHook}. Invoked on every
    * {@link tick} call after the scheduler's own work completes. See
@@ -112,12 +112,16 @@ export class MarketScheduler {
   /**
    * Run an auction for a task. Returns null if auction not applicable
    * (falls back to direct selection).
+   *
+   * Phase-3: optional `requiredCapabilities` is forwarded to `runAuction` so
+   * the scorer's `skillMatch` factor attenuates bids by capability coverage.
    */
   allocate(
     taskId: string,
     bids: EngineBid[],
     contexts: Map<string, BidderContext>,
     taskBudgetTokens: number,
+    requiredCapabilities?: ReadonlyArray<{ id: string; weight: number }>,
   ): AuctionResult | null {
     if (!this.isActive()) return null;
     if (bids.length < this.config.min_bidders) {
@@ -138,14 +142,29 @@ export class MarketScheduler {
       ctx.bidAccuracy = this.accuracyTracker.getAccuracy(bidderId);
     }
 
-    const result = runAuction(auctionId, taskId, validBids, contexts, taskBudgetTokens, this.phaseState.currentPhase);
+    const result = runAuction(
+      auctionId,
+      taskId,
+      validBids,
+      contexts,
+      taskBudgetTokens,
+      this.phaseState.currentPhase,
+      requiredCapabilities,
+    );
     if (!result) return null;
 
-    // Track bid spread for collusion detection
+    // Track bid spread for collusion detection. Phase-3: also count distinct
+    // personas so the detector can skip auctions where all bidders are running
+    // the same persona/skill loadout (tight spread is expected, not collusion
+    // — risk H7).
     const spread = computeBidSpread(
       validBids.map((b) => ({ estimatedTokens: b.estimatedTokensInput + b.estimatedTokensOutput })),
     );
-    this.auctionHistory.push({ bidSpread: spread });
+    const personaIds = validBids
+      .map((b) => b.personaId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const distinctPersonaCount = personaIds.length > 0 ? new Set(personaIds).size : undefined;
+    this.auctionHistory.push({ bidSpread: spread, distinctPersonaCount });
     if (this.auctionHistory.length > 100) this.auctionHistory.shift();
 
     // Check for collusion

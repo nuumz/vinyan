@@ -184,7 +184,7 @@ export interface IntentResolution {
   /** Which classifier produced the decision (llm | heuristic pre-filter | regex fallback). */
   reasoningSource?: IntentReasoningSource;
   /**
-   * Multi-agent: selected specialist agent id (e.g., 'ts-coder', 'writer').
+   * Multi-agent: selected specialist agent id (e.g., 'developer', 'author').
    * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
    * Overridden by `input.agentId` (CLI --agent flag).
    */
@@ -514,7 +514,7 @@ export interface TaskInput {
    */
   subagentType?: 'explore' | 'plan' | 'general-purpose';
   /**
-   * Specialist agent ID (e.g., 'ts-coder', 'writer'). Set by:
+   * Specialist agent ID (e.g., 'developer', 'author'). Set by:
    *   1. CLI `--agent=<id>` (user override, skips auto-classification)
    *   2. Intent resolver auto-classification (when not pre-set)
    *   3. Registry default (fallback)
@@ -1064,7 +1064,7 @@ export interface CachedSkill {
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
   composedOf?: string[]; // PH5 D2: ordered list of sub-skill task signatures
   /**
-   * Multi-agent: owning specialist agent id (e.g., 'ts-coder').
+   * Multi-agent: owning specialist agent id (e.g., 'developer').
    * NULL/undefined = legacy shared skill (readable by any agent).
    * New skills are written with the creating agent's id.
    */
@@ -1105,7 +1105,7 @@ export interface ExecutionTrace {
   taskId: string;
   sessionId?: string; // Session grouping for multi-step tasks
   workerId?: string; // Which worker (oracle/engine) executed this step
-  /** Multi-agent: specialist id (e.g., 'ts-coder') — distinct from workerId (oracle). */
+  /** Multi-agent: specialist id (e.g., 'developer') — distinct from workerId (oracle). */
   agentId?: string;
   timestamp: number;
   routingLevel: RoutingLevel;
@@ -1704,7 +1704,7 @@ export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
 export interface AgentProfile {
   /**
    * Agent id. 'local' = workspace host (Phase 1 singleton, preserved for backward compat).
-   * Phase 2+ allows specialist ids ('ts-coder', 'writer', etc.) from the registry.
+   * Phase 2+ allows specialist ids ('developer', 'reviewer', etc.) from the registry.
    */
   id: string;
   /** A2A instance UUID — reused from `.vinyan/instance-id`. */
@@ -1779,19 +1779,30 @@ export interface AgentRoutingHints {
  * ACL (allowed tools + capability overrides), and routing hints.
  *
  * Fields:
- *   - id: kebab-case unique identifier (e.g., 'ts-coder', 'writer')
+ *   - id: kebab-case unique identifier (e.g., 'developer', 'reviewer')
  *   - name: human-readable display name
  *   - description: one-line role summary for intent resolver
+ *   - role: canonical PersonaRole (Phase 1 redesign) — drives planner-level A1
+ *     enforcement (Generator≠Verifier on L2/L3 code-mutation) and ACL defaults.
  *   - soul: pre-loaded soul.md content (persona + philosophy + strategies)
  *   - allowedTools: tool allowlist (intersection with routing defaults)
  *   - capabilityOverrides: capability restrictions (never widens)
  *   - routingHints: advisory hints for auto-classification
+ *   - baseSkills: skills loaded at registration (Phase 2 wires these)
+ *   - acquirableSkillTags: tag globs that bound runtime skill auto-binding
  *   - builtin: true if shipped with Vinyan
  */
 export interface AgentSpec {
   id: string;
   name: string;
   description: string;
+  /**
+   * Canonical persona role for the redesigned roster. Used by the planner to
+   * enforce A1 (Generator≠Verifier persona class on L2/L3 code-mutation) and
+   * by the capability router as a coarse pre-filter. Optional for backward
+   * compatibility with user-authored agents that pre-date the redesign.
+   */
+  role?: PersonaRole;
   soul?: string;
   soulPath?: string;
   allowedTools?: string[];
@@ -1812,7 +1823,74 @@ export interface AgentSpec {
    * agent ids.
    */
   roles?: string[];
+  /**
+   * Skills loaded at agent registration (base scope). Phase 1 leaves this
+   * empty for shipped personas — skill packs ship in Phase 2/4. The capability
+   * layer treats `baseSkills` as the skill loadout that always travels with
+   * the persona, distinct from `bound` (per-workspace persistence) and
+   * `acquired` (per-task runtime binding) scopes added in later phases.
+   */
+  baseSkills?: SkillRef[];
+  /**
+   * Tag globs that bound which skills the runtime may auto-bind to this
+   * persona via the gap → hub-import path. Example: a `developer` persona
+   * carries `['language:*', 'framework:*']` so it can acquire any language
+   * or framework skill on demand, while `reviewer` carries `['review:*']`
+   * to keep its scope narrow. Empty/unset disables auto-binding.
+   */
+  acquirableSkillTags?: string[];
   builtin?: boolean;
+}
+
+/**
+ * Canonical persona roles for the redesigned agent roster.
+ *
+ * Personas are *archetypes of cognition*, not file-extension owners. Domain
+ * specialization (TypeScript, fiction, API design) lives in skill packs, not
+ * in the persona itself. The role drives:
+ *   - planner-level A1 enforcement: Generator-class personas (`developer`,
+ *     `architect`, `author`, `researcher`) cannot self-verify on L2/L3
+ *     code-mutation tasks; a Verifier-class persona (`reviewer`) is required.
+ *   - default ACL floor (e.g. `mentor` is read-only by default, `developer`
+ *     gets code-mutation tools, `researcher` gets read+network).
+ *   - capability router pre-filter (a code task prefers `developer` over
+ *     `author` when no explicit override is given).
+ *
+ * Cognitive role coverage:
+ *   - Generate (artifact production): developer, architect, author, researcher
+ *   - Verify (artifact judgement):    reviewer
+ *   - Coordinate (route work):        coordinator
+ *   - Reflex Q&A:                     assistant
+ *   - Investigate (deep synthesis):   researcher
+ *   - Guide (dialogue/coaching):      mentor
+ *   - Personal logistics:             concierge
+ */
+export type PersonaRole =
+  | 'coordinator'
+  | 'developer'
+  | 'architect'
+  | 'author'
+  | 'reviewer'
+  | 'assistant'
+  | 'researcher'
+  | 'mentor'
+  | 'concierge';
+
+/**
+ * Reference to a runtime skill (SKILL.md artifact) loaded by an agent.
+ *
+ * `pinnedVersion` and `contentHash` are A4 (content-addressed truth) anchors:
+ * a SkillRef with both fields set freezes the agent's view of the skill so
+ * later hub upgrades don't silently change behavior. Phase 1 ships only the
+ * type — runtime resolution is Phase 2.
+ */
+export interface SkillRef {
+  /** Stable skill id, matches SkillMdFrontmatter.id. */
+  id: string;
+  /** Optional semver pin. When set, resolver refuses non-matching versions. */
+  pinnedVersion?: string;
+  /** Optional sha256 pin (A4). When set, resolver refuses non-matching hashes. */
+  contentHash?: string;
 }
 
 // ---------------------------------------------------------------------------

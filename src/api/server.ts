@@ -905,21 +905,18 @@ export class VinyanAPIServer {
       });
     }
 
-    // Async API results (not from session)
+    // Async API results (not from session). Pass through the orchestrator's
+    // TaskResult.status verbatim so the UI can distinguish escalated /
+    // uncertain / partial from completed and failed (the StatusBadge has
+    // dedicated tones for each — collapsing them here loses observability).
     for (const [id, result] of this.asyncResults) {
       if (seenIds.has(id)) continue;
       seenIds.add(id);
       const sessionTask = allSessionTasks.find((t) => t.taskId === id);
-      const status =
-        result.status === 'completed' ||
-        result.status === 'input-required' ||
-        result.status === 'partial'
-          ? 'completed'
-          : 'failed';
       tasks.push({
         taskId: id,
         sessionId: sessionTask?.sessionId,
-        status,
+        status: result.status,
         goal: sessionTask?.goal,
         result,
       });

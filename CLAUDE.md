@@ -22,6 +22,18 @@ Code capability is Vinyan's first and most critical capability — not because V
 | A6 | Zero-Trust Execution | Workers propose; Orchestrator disposes. Zero execution privileges for workers. |
 | A7 | Prediction Error as Learning | Improvement = delta(predicted, actual), not just success/failure. |
 
+### Proposed Core Extensions (RFC, staged — not yet load-bearing)
+
+Three additional invariants are under evaluation as official axioms. They are documented here so design work can begin referencing them, but they are NOT yet binding contracts. Promotion to A8-A10 official requires landing the minimum runtime slice for each (trace-level provenance for A8, declared degradation strategy for A9, runtime re-grounding hooks for A10).
+
+| # | Proposed Axiom | Principle | Status |
+|---|----------------|-----------|--------|
+| A8 | Traceable Accountability | Every governance/action/verdict must be replayable from evidence, provenance link, actor identity, policy version, and timestamp. Decision-level provenance, not just file-level hashes. | Proposed — depends on A4 derivation links + trace-store schema extension |
+| A9 | Resilient Degradation | Component failure must degrade capability, not corrupt state or cascade. Fallback, circuit breaker, retry, and SLO behavior are governance contracts, not ad-hoc per-call defenses. | Proposed — depends on existing oracle circuit breaker + bus events |
+| A10 | Goal-and-Time Grounding | Every execution phase must remain bound to root intent and evidence freshness. Stale or goal-drifted state downgrades confidence or triggers re-grounding/clarification. | Proposed — depends on Goal Alignment Oracle + temporal-decay |
+
+Adversarial robustness remains a **corollary** of A6 + A8 + A9, not a separate axiom.
+
 Use axioms to resolve architectural conflicts — not as a checklist for every line edit.
 
 ## Tech Stack

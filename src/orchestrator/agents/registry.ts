@@ -7,14 +7,32 @@
  * Exposes read-only accessors for the core loop, intent resolver, CLI, and API.
  */
 import type { AgentSpecConfig } from '../../config/schema.ts';
-import type {
-  AgentCapabilityOverrides,
-  AgentRoutingHints,
-  AgentSpec,
-  CapabilityClaim,
-} from '../types.ts';
-import { BUILTIN_AGENTS, DEFAULT_AGENT_ID } from './builtin/index.ts';
+import type { AgentCapabilityOverrides, AgentRoutingHints, AgentSpec, CapabilityClaim, SkillRef } from '../types.ts';
+import { BUILTIN_AGENTS, DEFAULT_AGENT_ID, RETIRED_LEGACY_AGENT_IDS } from './builtin/index.ts';
+import {
+  type DerivedCapabilities,
+  derivePersonaCapabilities,
+  type SyncSkillResolver,
+} from './derive-persona-capabilities.ts';
+import { loadBoundSkills } from './persona-skill-loader.ts';
 import { loadAgentSoul } from './soul-loader.ts';
+
+/**
+ * First-person verification verbs that should not appear in a Generator-class
+ * persona's soul. The pattern enforces A1 Epistemic Separation at the prompt
+ * boundary: a Developer or Author whose soul says "I check my work" is doing
+ * self-verification inside the Generator, which is exactly what A1 forbids.
+ * Only the Reviewer persona is allowed to use these verbs in its soul.
+ */
+const SELF_VERIFICATION_PATTERN = /\bI (?:check|verify|review|audit|evaluate|validate|assess|critique)\b/i;
+
+function lintSoulForA1(spec: AgentSpec): string | null {
+  if (!spec.soul) return null;
+  if (spec.role === 'reviewer') return null;
+  const match = spec.soul.match(SELF_VERIFICATION_PATTERN);
+  if (!match) return null;
+  return `Soul for agent '${spec.id}' (role=${spec.role ?? 'unknown'}) contains a first-person verification verb '${match[0]}'. Move self-verification to a Reviewer persona — A1 Epistemic Separation forbids generators from evaluating their own output. Either remove the phrase or set role='reviewer'.`;
+}
 
 export interface AgentRegistry {
   /** Get agent by id. Returns null if not found. */
@@ -53,6 +71,22 @@ export interface AgentRegistry {
    * cleaned up at task end via `unregisterAgentsForTask`.
    */
   mergeCapabilityClaims(agentId: string, claims: CapabilityClaim[]): boolean;
+  /**
+   * Phase 2 — Capability derivation: resolve the persona's loaded skills
+   * (base + bound) into an effective claim list and composed ACL.
+   *
+   * Returns null when the agent is unknown. Returns a derivation with empty
+   * skill arrays when no skill resolver was provided at registry construction
+   * (Phase 2 feature flag off, or the workspace has no skills configured) —
+   * callers can treat the returned `capabilities` as equivalent to the raw
+   * `AgentSpec.capabilities` plus any bound-skill claims.
+   *
+   * The derivation is computed on-demand and not cached: skill bindings can
+   * change at runtime through CLI bind/unbind, and the registry must reflect
+   * the current `.vinyan/agents/<id>/skills.json` snapshot when the next
+   * routing decision is made.
+   */
+  getDerivedCapabilities(agentId: string): DerivedCapabilities | null;
 }
 
 /**
@@ -65,16 +99,45 @@ export interface AgentRegistry {
  *      AGENT.md body in as the soul without writing to disk.
  *   3. Built-in soul string (compiled-in default).
  */
+/**
+ * Optional dependencies that wire skill composition into the registry. When
+ * `skillResolver` is omitted, `getDerivedCapabilities` still returns a result —
+ * but the result includes no skill-derived claims and no ACL composition.
+ * Phase 2 callers pass a resolver backed by `SkillArtifactStore`.
+ */
+export interface AgentRegistryOptions {
+  /** Resolves a SkillRef → SkillMdRecord. Pass a sync wrapper around the artifact store. */
+  skillResolver?: SyncSkillResolver;
+  /** Phase-2 feature flag. When false, skill composition is skipped entirely. */
+  enableSkillComposition?: boolean;
+}
+
 export function loadAgentRegistry(
   workspace: string,
   configAgents?: AgentSpecConfig[],
   extraSouls?: ReadonlyMap<string, string>,
+  options: AgentRegistryOptions = {},
 ): AgentRegistry {
   const byId = new Map<string, AgentSpec>();
 
   // 1. Seed with built-in defaults
   for (const agent of BUILTIN_AGENTS) {
     byId.set(agent.id, cloneAgentSpec(agent));
+  }
+
+  // Detect config references to retired legacy persona ids — Phase-1 hard-cut
+  // migration. We log once per stale id so users see the migration cost up
+  // front rather than silently inheriting the default. There is intentionally
+  // no alias resolution: the user must adopt the new role-pure roster.
+  const retiredSet = new Set<string>(RETIRED_LEGACY_AGENT_IDS);
+  const seenLegacy = new Set<string>();
+  for (const cfg of configAgents ?? []) {
+    if (retiredSet.has(cfg.id) && !seenLegacy.has(cfg.id)) {
+      seenLegacy.add(cfg.id);
+      console.warn(
+        `[agent:legacy-id] config references retired persona '${cfg.id}'. The Phase-1 redesign hard-cut the prior roster — move this entry to one of: ${BUILTIN_AGENTS.map((a) => a.id).join(', ')}. See CHANGELOG for the migration rationale.`,
+      );
+    }
   }
 
   // 2. Apply config overrides / additions
@@ -84,12 +147,18 @@ export function loadAgentRegistry(
       id: cfg.id,
       name: cfg.name,
       description: cfg.description,
+      // Preserve role/baseSkills/acquirableSkillTags from existing builtin.
+      // Phase 1 does not yet expose these on the config-side schema; users
+      // who override a builtin keep the persona's role tagging by default.
+      role: existing?.role,
       soulPath: cfg.soul_path ?? existing?.soulPath,
       allowedTools: cfg.allowed_tools ?? existing?.allowedTools,
       capabilityOverrides: fromConfigOverrides(cfg.capability_overrides) ?? existing?.capabilityOverrides,
       routingHints: fromConfigHints(cfg.routing_hints) ?? existing?.routingHints,
       capabilities: fromConfigCapabilities(cfg.capabilities) ?? existing?.capabilities,
       roles: cfg.roles ?? existing?.roles,
+      baseSkills: existing?.baseSkills,
+      acquirableSkillTags: existing?.acquirableSkillTags,
       builtin: existing?.builtin ?? false,
       // Preserve built-in soul string; soul file on disk takes precedence at load time
       soul: existing?.soul,
@@ -107,14 +176,13 @@ export function loadAgentRegistry(
     }
   }
 
-  // 4. Backfill inferred capabilities for agents that declare none. This keeps
-  //    the capability layer useful for legacy/custom agents without forcing
-  //    every config author to spell out claims. Inferred entries carry low
-  //    confidence so explicit declarations always win.
-  for (const [id, agent] of byId) {
-    if (agent.capabilities && agent.capabilities.length > 0) continue;
-    const inferred = inferCapabilitiesFromHints(agent);
-    if (inferred.length > 0) byId.set(id, { ...agent, capabilities: inferred });
+  // 4. A1 soul lint — reject Generator-class personas whose soul contains a
+  //    first-person verification verb. The Reviewer persona is exempt.
+  //    Failure here is a warn, not a throw, so user-authored souls keep
+  //    loading; the warn surfaces the violation immediately.
+  for (const agent of byId.values()) {
+    const violation = lintSoulForA1(agent);
+    if (violation) console.warn(`[agent:soul-lint] ${violation}`);
   }
 
   const defaultId = byId.has(DEFAULT_AGENT_ID) ? DEFAULT_AGENT_ID : ([...byId.keys()][0] ?? DEFAULT_AGENT_ID);
@@ -192,6 +260,30 @@ export function loadAgentRegistry(
       byId.set(agentId, { ...agent, capabilities: [...merged.values()] });
       return true;
     },
+    getDerivedCapabilities(agentId: string): DerivedCapabilities | null {
+      const agent = byId.get(agentId);
+      if (!agent) return null;
+      const compositionEnabled = options.enableSkillComposition !== false;
+      const baseRefs: SkillRef[] = agent.baseSkills ?? [];
+      // Bound skills are stored per-workspace at .vinyan/agents/<id>/skills.json
+      // and are reloaded on each call so live CLI bind/unbind takes effect
+      // without re-instantiating the registry.
+      const boundRefs: SkillRef[] = compositionEnabled ? loadBoundSkills(workspace, agentId) : [];
+      const allRefs = [...baseRefs, ...boundRefs];
+      // Defensive: if no resolver was wired or composition is disabled,
+      // return the persona's claims/ACL unchanged so callers get a
+      // semantically valid `DerivedCapabilities`.
+      if (!compositionEnabled || !options.skillResolver) {
+        return {
+          capabilities: (agent.capabilities ?? []).map(cloneCapabilityClaim),
+          effectiveAcl: { ...(agent.capabilityOverrides ?? {}) },
+          loadedSkills: [],
+          resolvedRefs: [],
+          skipped: [],
+        };
+      }
+      return derivePersonaCapabilities(agent, allRefs, options.skillResolver);
+    },
   };
 }
 
@@ -210,6 +302,8 @@ function cloneAgentSpec(agent: AgentSpec): AgentSpec {
       : undefined,
     capabilities: agent.capabilities?.map(cloneCapabilityClaim),
     roles: agent.roles ? [...agent.roles] : undefined,
+    baseSkills: agent.baseSkills ? agent.baseSkills.map((s) => ({ ...s })) : undefined,
+    acquirableSkillTags: agent.acquirableSkillTags ? [...agent.acquirableSkillTags] : undefined,
   };
 }
 
@@ -256,32 +350,4 @@ function fromConfigCapabilities(cfg?: AgentSpecConfig['capabilities']): Capabili
     evidence: c.evidence,
     confidence: c.confidence,
   }));
-}
-
-/**
- * Synthesize a coarse capability set from `routingHints` for agents that
- * have no explicit declarations. The intent is to keep capability-first
- * routing meaningful for legacy/custom config without forcing migration.
- *
- * Uses evidence='inferred' and a low confidence so explicit claims always
- * outweigh inferred ones during fit scoring.
- */
-function inferCapabilitiesFromHints(agent: AgentSpec): CapabilityClaim[] {
-  const hints = agent.routingHints;
-  if (!hints) return [];
-  const exts = hints.preferExtensions ?? [];
-  const domains = hints.preferDomains ?? [];
-  const fws = hints.preferFrameworks ?? [];
-  if (exts.length === 0 && domains.length === 0 && fws.length === 0) return [];
-  return [
-    {
-      id: `inferred.${agent.id}`,
-      label: `${agent.name} (inferred)`,
-      fileExtensions: exts.length > 0 ? exts : undefined,
-      domains: domains.length > 0 ? domains : undefined,
-      frameworkMarkers: fws.length > 0 ? fws : undefined,
-      evidence: 'inferred',
-      confidence: 0.4,
-    },
-  ];
 }

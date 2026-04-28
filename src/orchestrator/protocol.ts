@@ -654,7 +654,7 @@ export const DelegationRequestSchema = z.object({
   subagentType: SubagentTypeSchema.optional(),
   /**
    * Multi-agent: route the delegated subtask to a specific peer agent
-   * (e.g., 'system-designer', 'writer'). The child inherits that peer's
+   * (e.g., 'architect', 'author'). The child inherits that peer's
    * persona, ACL, and skills. Governance rules (depth, budget, scope) are
    * unchanged — this only selects which specialist does the work.
    */

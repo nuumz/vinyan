@@ -55,28 +55,14 @@ function buildConfig(project: ProjectInfo): VinyanConfig {
     oracles.python = { enabled: true, command: 'python -m py_compile', tier: 'heuristic', timeout_behavior: 'warn' };
   }
 
-  // Phase 2: seed specialist agents based on detected project type.
-  // Built-in registry always provides defaults; writing to vinyan.json makes
-  // them visible/editable by users (e.g., `vinyan agent create` appends here).
-  const agents: VinyanConfig['agents'] = [];
-  if (project.hasTypeScript) {
-    agents.push({
-      id: 'ts-coder',
-      name: 'TypeScript Coder',
-      description: 'TypeScript/JavaScript specialist — refactoring, bug fixes, test generation.',
-    });
-  }
-  // Writer is always seeded for documentation/README tasks
-  agents.push({
-    id: 'writer',
-    name: 'Writer',
-    description: 'Writing specialist — docs, creative content, README/blog generation.',
-  });
-
+  // The built-in role-pure persona roster (coordinator, developer, architect,
+  // author, reviewer, assistant) is provided by the registry without needing
+  // entries in vinyan.json. Users add custom agents via `vinyan agent create`
+  // or by editing vinyan.json directly. Domain specialization (TypeScript,
+  // fiction, etc.) arrives via skill packs, not new persona ids.
   return {
     version: 1,
     oracles,
-    agents: agents.length > 0 ? agents : undefined,
   };
 }
 

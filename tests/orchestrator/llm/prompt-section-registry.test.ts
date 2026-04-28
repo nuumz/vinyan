@@ -71,9 +71,12 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 24 sections', () => {
+  it('registers 25 sections', () => {
+    // Phase-2 redesign added `agent-skill-cards` (system, priority 130) so
+    // SKILL.md cards can be injected with an integrity envelope right after
+    // `agent-soul`. Bumped from 24.
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(24);
+    expect(registry.getSectionIds()).toHaveLength(25);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {

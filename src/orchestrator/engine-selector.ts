@@ -115,6 +115,34 @@ export interface SelectOptions {
    * (phase-predict) should pass the real `TaskInput.taskType`.
    */
   taskType?: string;
+  /**
+   * Phase-3 — persona-aware bidding. When the dispatcher has resolved a
+   * persona for this task, it forwards the persona's loaded skills and
+   * declared capabilities here so each generated bid carries the same
+   * persona identity. The auction's `skillMatch` factor consumes
+   * `declaredCapabilityIds`; the per-skill outcome attribution path keys on
+   * `personaId` × `loadedSkillIds` × taskSignature. Optional — legacy callers
+   * (no persona resolved) leave this undefined and bids stay provider-only.
+   */
+  personaContext?: PersonaBidContext;
+}
+
+/**
+ * Persona dispatch context passed into the auction. Built by the agent
+ * registry's `getDerivedCapabilities` consumer in the core-loop / dispatch
+ * path. Phase 3 uses every field; Phase 4 layers per-skill outcome attribution
+ * on top.
+ */
+export interface PersonaBidContext {
+  personaId: string;
+  loadedSkillIds: string[];
+  declaredCapabilityIds: string[];
+  /** sha256 hex of sorted `loadedSkillIds`. Caller computes; selector forwards. */
+  skillFingerprint?: string;
+  /** Tokens consumed by the persona's skill-card prompt overhead. */
+  skillTokenOverhead?: number;
+  /** Required capabilities for this task — drives `skillMatch` in scoreBid. */
+  requiredCapabilities?: ReadonlyArray<{ id: string; weight: number }>;
 }
 
 /**
@@ -279,6 +307,7 @@ export class DefaultEngineSelector implements EngineSelector {
         routingLevel,
         qualified,
         defaultModel ?? 'unknown',
+        options?.personaContext,
       );
       if (auctionResult) {
         this.bus?.emit('engine:selected', {
@@ -374,6 +403,11 @@ export class DefaultEngineSelector implements EngineSelector {
   /**
    * Build bids from qualified providers and run a Vickrey auction.
    * Returns null if auction fails (falls back to Wilson LB).
+   *
+   * Phase-3: when `personaContext` is supplied, every generated bid is
+   * stamped with the persona id, loaded skills, and declared capabilities
+   * so the auction's `skillMatch` factor can attenuate scores by required-
+   * capability coverage. `requiredCapabilities` is forwarded to the scheduler.
    */
   private attemptAuction(
     taskId: string,
@@ -381,6 +415,7 @@ export class DefaultEngineSelector implements EngineSelector {
     routingLevel: RoutingLevel,
     qualified: Array<{ provider: string; successes: number; failures: number }>,
     defaultModel: string,
+    personaContext?: PersonaBidContext,
   ): EngineSelection | null {
     if (!this.marketScheduler) return null;
 
@@ -412,6 +447,14 @@ export class DefaultEngineSelector implements EngineSelector {
         acceptsTokenBudget: budgetTokens,
         acceptsTimeLimitMs: LEVEL_CONFIG[routingLevel]?.latencyBudgetMs ?? 10_000,
         submittedAt: now,
+        // Phase-3 persona attribution. Same persona/skill loadout is shared
+        // across every provider bidding for this task — the auction picks
+        // *which provider* runs the persona, not which persona to run.
+        personaId: personaContext?.personaId,
+        loadedSkillIds: personaContext?.loadedSkillIds,
+        declaredCapabilityIds: personaContext?.declaredCapabilityIds,
+        skillFingerprint: personaContext?.skillFingerprint,
+        skillTokenOverhead: personaContext?.skillTokenOverhead,
       });
 
       contexts.set(p.provider, {
@@ -422,7 +465,13 @@ export class DefaultEngineSelector implements EngineSelector {
       });
     }
 
-    const result = this.marketScheduler.allocate(taskId, bids, contexts, budgetTokens);
+    const result = this.marketScheduler.allocate(
+      taskId,
+      bids,
+      contexts,
+      budgetTokens,
+      personaContext?.requiredCapabilities,
+    );
     if (!result) {
       this.bus?.emit('market:fallback_to_selector', {
         taskId,

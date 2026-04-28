@@ -354,7 +354,7 @@ const AgentCapabilitySchema = z.object({
  * Distinct from the workspace singleton AgentProfile (id='local').
  */
 export const AgentSpecSchema = z.object({
-  /** Unique agent identifier (e.g., 'ts-coder', 'writer', 'ceo'). */
+  /** Unique agent identifier (e.g., 'developer', 'author', 'coordinator'). */
   id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'agent id must be kebab-case'),
   /** Human-readable name shown in CLI and prompts. */
   name: z.string(),
@@ -835,6 +835,24 @@ export const VinyanConfigSchema = z.object({
    * affected until the operator flips both switches.
    */
   gateway: GatewayConfigSchema.optional(),
+  /**
+   * Experimental feature flags. These guard in-flight redesigns so partial
+   * landings can ship behind a config gate without breaking default behavior.
+   * Flags may be removed at any time once the work graduates — never rely on
+   * a flag being present in long-lived config.
+   */
+  experimental: z
+    .object({
+      /**
+       * Persona+skill composition (Phase 1–4 redesign). Phase 1 lands the
+       * role-pure persona roster and `effectiveTrust` scoring with no skill
+       * consumers, so default ON has no behavior change. Later phases wire
+       * skill loading, ACL composition, auction skill awareness, and the
+       * planner-level A1 enforcement under this same flag.
+       */
+      persona_skill_composition: z.boolean().default(true),
+    })
+    .optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

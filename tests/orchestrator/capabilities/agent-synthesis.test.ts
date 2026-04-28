@@ -181,7 +181,7 @@ describe('AgentRegistry mutation (synthesis support)', () => {
     try {
       const a = makeAnalysis();
       const plan = planFromGap('t-1', a)!;
-      const spec = { ...synthesizeAgent(plan), id: 'ts-coder' };
+      const spec = { ...synthesizeAgent(plan), id: 'developer' };
       expect(() => registry.registerAgent(spec)).toThrow(/protected/);
     } finally {
       cleanup();
@@ -223,8 +223,8 @@ describe('AgentRegistry mutation (synthesis support)', () => {
       expect(registry.unregisterAgent(spec.id)).toBe(true);
       expect(registry.has(spec.id)).toBe(false);
       // builtin id is left alone
-      expect(registry.unregisterAgent('ts-coder')).toBe(false);
-      expect(registry.has('ts-coder')).toBe(true);
+      expect(registry.unregisterAgent('developer')).toBe(false);
+      expect(registry.has('developer')).toBe(true);
     } finally {
       cleanup();
     }

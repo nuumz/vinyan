@@ -5,20 +5,19 @@
  * returns a PhaseOutcome that the coordinator interprets.
  */
 
-import type { AgentContract } from '../../core/agent-contract.ts';
-import type { VinyanBus } from '../../core/bus.ts';
 import type { OracleVerdict, QualityScore } from '../../core/types.ts';
 import type { EpistemicGateDecision } from '../../gate/epistemic-decision.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { OrchestratorDeps } from '../core-loop.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { ConfidenceDecision } from '../pipeline-confidence.ts';
 import type {
-  CachedSkill,
+  EngineSelectionResult,
   ExecutionTrace,
+  GoalGroundingCheck,
   PerceptualHierarchy,
   RoutingDecision,
-  RoutingLevel,
   SelfModelPrediction,
   SemanticTaskUnderstanding,
   TaskDAG,
@@ -26,10 +25,7 @@ import type {
   TaskResult,
   ToolCall,
   VerificationHint,
-  EngineSelectionResult,
-  WorkingMemoryState,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { WorkingMemory } from '../working-memory.ts';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +59,8 @@ export interface PhaseContext {
    * ExecutionTrace so sleep-cycle promotion can group by capabilities.
    */
   readonly intentResolution?: import('../types.ts').IntentResolution;
+  /** A10: phase-boundary goal/time grounding checks accumulated for trace audit. */
+  readonly goalGroundingChecks?: GoalGroundingCheck[];
 }
 
 // ---------------------------------------------------------------------------

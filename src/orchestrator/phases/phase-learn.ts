@@ -7,6 +7,7 @@
 
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
+import { applyGoalGroundingConfidenceDowngrade } from '../goal-grounding.ts';
 import type {
   CapabilityFit,
   ExecutionTrace,
@@ -269,6 +270,10 @@ export async function executeLearnPhase(
   // sleep-cycle promotion can group/promote by (taskTypeSignature, agentId).
   // No LLM in this path — pure copy of resolver output (A3).
   Object.assign(trace, deriveGovernanceTraceAudit(routing));
+  if (ctx.goalGroundingChecks && ctx.goalGroundingChecks.length > 0) {
+    trace.goalGrounding = ctx.goalGroundingChecks;
+    applyGoalGroundingConfidenceDowngrade(trace, ctx.goalGroundingChecks);
+  }
 
   const ir = ctx.intentResolution;
   if (ir) {

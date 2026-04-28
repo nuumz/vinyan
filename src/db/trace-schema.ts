@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   policy_version          TEXT,
   governance_actor        TEXT,
   decision_timestamp      INTEGER,
-  evidence_observed_at    INTEGER
+  evidence_observed_at    INTEGER,
+  goal_grounding          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);

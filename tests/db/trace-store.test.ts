@@ -201,6 +201,43 @@ describe('TraceStore', () => {
     expect(result.governanceProvenance).toBeUndefined();
   });
 
+  test('A10 goal grounding checks roundtrip as trace audit metadata', () => {
+    const trace = makeTrace({
+      goalGrounding: [
+        {
+          taskId: 'task-001',
+          phase: 'verify',
+          routingLevel: 2,
+          policyVersion: 'goal-time-grounding:v1',
+          checkedAt: 1_777_400_002_000,
+          action: 'downgrade-confidence',
+          reason: 'Temporal grounding found 1 stale or low-confidence fact(s)',
+          rootGoalHash: 'sha256:root',
+          currentGoalHash: 'sha256:root',
+          goalDrift: false,
+          freshnessDowngraded: true,
+          factCount: 2,
+          staleFactCount: 1,
+          minFactConfidence: 0.2,
+          evidence: [
+            {
+              kind: 'other',
+              source: 'fact-low',
+              contentHash: 'sha256:abc',
+              observedAt: 1_777_400_000_000,
+              summary: 'fact=src/auth.ts; confidence=0.200; validUntil=1777400001000',
+            },
+          ],
+        },
+      ],
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.goalGrounding).toEqual(trace.goalGrounding);
+  });
+
   test('QualityScore denormalized into columns and reconstructed', () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);

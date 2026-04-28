@@ -34,7 +34,8 @@ export class TraceStore {
         selected_capability_profile_trust_tier, capability_fit_score,
         unmet_capability_ids, synthetic_agent_id, knowledge_used,
         governance_provenance, routing_decision_id, policy_version,
-        governance_actor, decision_timestamp, evidence_observed_at
+        governance_actor, decision_timestamp, evidence_observed_at,
+        goal_grounding
       ) VALUES (
         $id, $task_id, $session_id, $worker_id, $agent_id, $timestamp, $routing_level,
         $task_type_signature, $approach, $approach_description, $risk_score,
@@ -54,7 +55,8 @@ export class TraceStore {
         $selected_capability_profile_trust_tier, $capability_fit_score,
         $unmet_capability_ids, $synthetic_agent_id, $knowledge_used,
         $governance_provenance, $routing_decision_id, $policy_version,
-        $governance_actor, $decision_timestamp, $evidence_observed_at
+        $governance_actor, $decision_timestamp, $evidence_observed_at,
+        $goal_grounding
       )
     `);
   }
@@ -120,6 +122,7 @@ export class TraceStore {
       $governance_actor: governance?.attributedTo ?? null,
       $decision_timestamp: governance?.decidedAt ?? null,
       $evidence_observed_at: governance?.evidenceObservedAt ?? null,
+      $goal_grounding: trace.goalGrounding ? JSON.stringify(trace.goalGrounding) : null,
     });
   }
 
@@ -369,5 +372,6 @@ function rowToTrace(row: any): ExecutionTrace {
     syntheticAgentId: row.synthetic_agent_id ?? undefined,
     knowledgeUsed: row.knowledge_used ? JSON.parse(row.knowledge_used) : undefined,
     governanceProvenance: row.governance_provenance ? JSON.parse(row.governance_provenance) : undefined,
+    goalGrounding: row.goal_grounding ? JSON.parse(row.goal_grounding) : undefined,
   };
 }

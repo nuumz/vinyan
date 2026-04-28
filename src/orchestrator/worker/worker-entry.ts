@@ -117,6 +117,10 @@ async function processTask(
     input.agentProfile,
     // peerAgents — subprocess path does not ship peer list
     undefined,
+    // Phase-5B: skill cards pre-computed by orchestrator and forwarded
+    // through IPC. When present, the `agent-skill-cards` section renders
+    // identically to the in-process worker path.
+    input.loadedSkillCards,
   );
 
   const startTime = performance.now();

@@ -85,8 +85,15 @@ export interface AgentRegistry {
    * change at runtime through CLI bind/unbind, and the registry must reflect
    * the current `.vinyan/agents/<id>/skills.json` snapshot when the next
    * routing decision is made.
+   *
+   * Phase-5B: `options.extraRefs` is the **acquired-scope** mechanism —
+   * caller-managed per-task skills that augment base+bound for ONE call only.
+   * The registry does not retain extras between calls. Callers (the future
+   * skill-acquisition path) own the extras' lifecycle and pass them on each
+   * derivation that needs them. This avoids registry-side per-task state
+   * and mirrors how synthetic agents are scoped to a taskId.
    */
-  getDerivedCapabilities(agentId: string): DerivedCapabilities | null;
+  getDerivedCapabilities(agentId: string, options?: { extraRefs?: readonly SkillRef[] }): DerivedCapabilities | null;
 }
 
 /**
@@ -280,7 +287,10 @@ export function loadAgentRegistry(
       byId.set(agentId, { ...agent, capabilities: [...merged.values()] });
       return true;
     },
-    getDerivedCapabilities(agentId: string): DerivedCapabilities | null {
+    getDerivedCapabilities(
+      agentId: string,
+      callOpts?: { extraRefs?: readonly SkillRef[] },
+    ): DerivedCapabilities | null {
       const agent = byId.get(agentId);
       if (!agent) return null;
       const compositionEnabled = options.enableSkillComposition !== false;
@@ -289,7 +299,11 @@ export function loadAgentRegistry(
       // and are reloaded on each call so live CLI bind/unbind takes effect
       // without re-instantiating the registry.
       const boundRefs: SkillRef[] = compositionEnabled ? loadBoundSkills(workspace, agentId) : [];
-      const allRefs = [...baseRefs, ...boundRefs];
+      // Phase-5B acquired scope — caller-managed runtime refs. Always merged
+      // last so dedupe-by-last semantics in `derivePersonaCapabilities` let
+      // an acquired skill override a stale bound skill of the same id.
+      const extraRefs: readonly SkillRef[] = compositionEnabled ? (callOpts?.extraRefs ?? []) : [];
+      const allRefs = [...baseRefs, ...boundRefs, ...extraRefs];
       // Defensive: if no resolver was wired or composition is disabled,
       // return the persona's claims/ACL unchanged so callers get a
       // semantically valid `DerivedCapabilities`.

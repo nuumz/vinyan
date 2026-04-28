@@ -17,6 +17,7 @@ import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
+import { buildGoalGroundingClarificationQuestions, evaluateGoalGrounding } from './goal-grounding.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
@@ -34,6 +35,7 @@ import type { PhaseContext } from './phases/types.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
+  GoalGroundingPhase,
   IntentResolution,
   PerceptualHierarchy,
   PredictionError,
@@ -2960,6 +2962,12 @@ async function executeTaskCore(
         });
         const { perception } = perceiveResult.value;
         understanding = perceiveResult.value.understanding;
+        const perceiveGrounding = await enforceGoalGroundingBoundary(ctx, 'perceive', routing, understanding, lastWorkerSelection);
+        ctx = perceiveGrounding.ctx;
+        if (perceiveGrounding.result) {
+          deps.bus?.emit('task:complete', { result: perceiveGrounding.result });
+          return perceiveGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Agent Conversation: Comprehension Gate (orchestrator-driven)
@@ -3076,6 +3084,12 @@ async function executeTaskCore(
             input = specOutcome.value.enhancedInput;
           }
         }
+        const specGrounding = await enforceGoalGroundingBoundary(ctx, 'spec', routing, understanding, lastWorkerSelection);
+        ctx = specGrounding.ctx;
+        if (specGrounding.result) {
+          deps.bus?.emit('task:complete', { result: specGrounding.result });
+          return specGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 2: PREDICT + SELECT WORKER
@@ -3127,6 +3141,12 @@ async function executeTaskCore(
           ctx = { ...ctx, input: enhancedInput };
           input = enhancedInput;
         }
+        const planGrounding = await enforceGoalGroundingBoundary(ctx, 'plan', routing, understanding, lastWorkerSelection);
+        ctx = planGrounding.ctx;
+        if (planGrounding.result) {
+          deps.bus?.emit('task:complete', { result: planGrounding.result });
+          return planGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 4: GENERATE
@@ -3156,6 +3176,12 @@ async function executeTaskCore(
         const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } =
           generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
+        const generateGrounding = await enforceGoalGroundingBoundary(ctx, 'generate', routing, understanding, lastWorkerSelection);
+        ctx = generateGrounding.ctx;
+        if (generateGrounding.result) {
+          deps.bus?.emit('task:complete', { result: generateGrounding.result });
+          return generateGrounding.result;
+        }
 
         // ── No-response worker rotation ──────────────────────────────
         // When a worker produced no mutations and surfaced a timeout /
@@ -3294,6 +3320,12 @@ async function executeTaskCore(
           shouldCommit,
           trace,
         } = verifyOutcome.value;
+        const verifyGrounding = await enforceGoalGroundingBoundary(ctx, 'verify', routing, understanding, lastWorkerSelection);
+        ctx = verifyGrounding.ctx;
+        if (verifyGrounding.result) {
+          deps.bus?.emit('task:complete', { result: verifyGrounding.result });
+          return verifyGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 6: LEARN
@@ -3762,6 +3794,81 @@ async function executeTaskCore(
       /* non-fatal */
     }
   }
+}
+
+interface GoalGroundingBoundaryResult {
+  ctx: PhaseContext;
+  result?: TaskResult;
+}
+
+async function enforceGoalGroundingBoundary(
+  ctx: PhaseContext,
+  phase: GoalGroundingPhase,
+  routing: RoutingDecision,
+  understanding: SemanticTaskUnderstanding,
+  workerSelectionAudit?: import('./types.ts').EngineSelectionResult,
+): Promise<GoalGroundingBoundaryResult> {
+  const groundingInput = ctx.intentResolution?.originalGoal ? { ...ctx.input, goal: ctx.intentResolution.originalGoal } : ctx.input;
+  const check = evaluateGoalGrounding({
+    input: groundingInput,
+    understanding,
+    routing,
+    phase,
+    startedAt: ctx.startTime,
+    worldGraph: ctx.deps.worldGraph,
+  });
+  if (!check) return { ctx };
+
+  ctx.deps.bus?.emit('grounding:checked', check);
+  const nextCtx = {
+    ...ctx,
+    goalGroundingChecks: [...(ctx.goalGroundingChecks ?? []), check],
+  };
+  if (check.action !== 'request-clarification') return { ctx: nextCtx };
+
+  const questions = buildGoalGroundingClarificationQuestions(check);
+  const trace = applyRoutingGovernance({
+    id: `trace-${ctx.input.id}-goal-grounding-clarify`,
+    taskId: ctx.input.id,
+    sessionId: ctx.input.sessionId,
+    workerId: 'orchestrator',
+    agentId: ctx.input.agentId,
+    timestamp: Date.now(),
+    routingLevel: routing.level,
+    approach: 'goal-grounding-clarification',
+    approachDescription: check.reason,
+    oracleVerdicts: { 'goal-grounding': false },
+    modelUsed: 'orchestrator',
+    tokensConsumed: 0,
+    durationMs: Date.now() - ctx.startTime,
+    outcome: 'success',
+    affectedFiles: ctx.input.targetFiles ?? [],
+    workerSelectionAudit,
+    goalGrounding: nextCtx.goalGroundingChecks,
+  }, routing);
+  await ctx.deps.traceCollector.record(trace);
+  ctx.deps.bus?.emit('trace:record', { trace });
+
+  const { liftStringsToStructured } = await import('../core/clarification.ts');
+  ctx.deps.bus?.emit('agent:clarification_requested', {
+    taskId: ctx.input.id,
+    sessionId: ctx.input.sessionId,
+    questions,
+    structuredQuestions: liftStringsToStructured(questions),
+    routingLevel: routing.level,
+    source: 'orchestrator',
+  });
+
+  return {
+    ctx: nextCtx,
+    result: {
+      id: ctx.input.id,
+      status: 'input-required',
+      mutations: [],
+      trace,
+      clarificationNeeded: questions,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

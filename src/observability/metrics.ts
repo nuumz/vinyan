@@ -219,6 +219,10 @@ export class MetricsCollector {
         this.inc(`degradation.failure.${failureType}`);
         this.inc(`degradation.action.${action}`);
       }),
+      bus.on('grounding:checked', ({ action }) => {
+        this.inc('grounding.checked');
+        this.inc(`grounding.action.${action}`);
+      }),
       // Phase 5: Observability, API, and GAP-H events (G3)
       bus.on('observability:alert', () => this.inc('observability.alert')),
       bus.on('memory:eviction_warning', () => this.inc('memory.eviction')),

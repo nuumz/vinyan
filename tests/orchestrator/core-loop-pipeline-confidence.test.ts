@@ -4,11 +4,11 @@
  * Tests that pipeline confidence is computed for L1+ tasks and that
  * L0 tasks continue to use binary verification decisions.
  */
-import { describe, test, expect } from 'bun:test';
-import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
-import type { TaskInput, RoutingDecision, ExecutionTrace, PerceptualHierarchy } from '../../src/orchestrator/types.ts';
-import type { OracleVerdict } from '../../src/core/types.ts';
+import { describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
+import type { Fact, OracleVerdict } from '../../src/core/types.ts';
+import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
+import type { ExecutionTrace, PerceptualHierarchy, RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -61,6 +61,7 @@ function makeDeps(overrides: {
   aggregateConfidence?: number;
   epistemicDecision?: string;
   bus?: VinyanBus;
+  worldGraphFacts?: Fact[];
 }): OrchestratorDeps {
   const level = overrides.routingLevel ?? 0;
   const passed = overrides.verificationPassed ?? true;
@@ -123,8 +124,30 @@ function makeDeps(overrides: {
     traceCollector: {
       record: async () => {},
     },
+    worldGraph: overrides.worldGraphFacts
+      ? ({
+          queryFacts: () => overrides.worldGraphFacts ?? [],
+        } as unknown as OrchestratorDeps['worldGraph'])
+      : undefined,
     bus: overrides.bus,
     explorationEpsilon: 0, // disable exploration for deterministic tests
+  };
+}
+
+function makeFact(overrides: Partial<Fact> = {}): Fact {
+  return {
+    id: 'fact-low',
+    target: 'src/foo.ts',
+    pattern: 'understanding-verified',
+    evidence: [{ file: 'src/foo.ts', line: 1, snippet: 'x = 1' }],
+    oracleName: 'understanding-verifier',
+    fileHash: 'sha256:abc',
+    sourceFile: 'src/foo.ts',
+    verifiedAt: 100,
+    confidence: 0.2,
+    validUntil: 10_000,
+    decayModel: 'linear',
+    ...overrides,
   };
 }
 
@@ -178,6 +201,24 @@ describe('Pipeline Confidence — L1+ Computation', () => {
     expect(result.trace.verificationConfidence).toBeDefined();
     expect(result.trace.confidenceDecision).toBeDefined();
     expect(result.trace.confidenceDecision!.action).toBe('allow');
+  });
+
+  test('A10 temporal downgrade lowers final trace confidence decision', async () => {
+    const deps = makeDeps({
+      routingLevel: 2,
+      verificationPassed: true,
+      aggregateConfidence: 0.95,
+      worldGraphFacts: [makeFact()],
+    });
+    const result = await executeTask(makeInput({ constraints: ['COMPREHENSION_CHECK:off'] }), deps);
+
+    expect(result.status).toBe('completed');
+    expect(result.trace.goalGrounding?.some((check) => check.action === 'downgrade-confidence')).toBe(true);
+    expect(result.trace.confidenceDecision).toMatchObject({
+      action: 're-verify',
+      confidence: 0.2,
+    });
+    expect(result.trace.pipelineConfidence?.composite).toBe(0.2);
   });
 
   test('L1 task with high verification confidence gets allow decision', async () => {

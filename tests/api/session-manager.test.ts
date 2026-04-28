@@ -486,3 +486,138 @@ describe('Hard delete', () => {
     expect(sessionStore.countSessionTasks(keep.id)).toBe(1);
   });
 });
+
+describe('Activity state — waiting-input', () => {
+  test('latest assistant turn with [INPUT-REQUIRED] surfaces waiting-input on get()', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'write a story');
+    insertInputRequiredAssistant(s.id, ['Genre?']);
+
+    const reread = manager.get(s.id)!;
+    expect(reread.activityState).toBe('waiting-input');
+  });
+
+  test('user reply after [INPUT-REQUIRED] clears waiting-input', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'write a story');
+    insertInputRequiredAssistant(s.id, ['Genre?']);
+    manager.recordUserTurn(s.id, 'romance');
+
+    const reread = manager.get(s.id)!;
+    // Latest turn is now a user reply — pending clarification cleared.
+    expect(reread.activityState).not.toBe('waiting-input');
+  });
+
+  test('listSessions surfaces waiting-input via the inline window-function join', () => {
+    const waiting = manager.create('api');
+    const idleS = manager.create('api');
+    manager.recordUserTurn(waiting.id, 'write a story');
+    insertInputRequiredAssistant(waiting.id, ['Genre?']);
+    manager.recordUserTurn(idleS.id, 'hi');
+    manager.addTask(idleS.id, makeTaskInput('completed-1'));
+    manager.completeTask(idleS.id, 'completed-1', makeTaskResult('completed-1', 'completed'));
+
+    const sessions = manager.listSessions({ state: 'active' });
+    const w = sessions.find((s) => s.id === waiting.id)!;
+    const i = sessions.find((s) => s.id === idleS.id)!;
+    expect(w.activityState).toBe('waiting-input');
+    expect(i.activityState).not.toBe('waiting-input');
+  });
+
+  test('in-progress beats waiting-input when both apply (live work dominates)', () => {
+    const s = manager.create('api');
+    manager.recordUserTurn(s.id, 'first');
+    insertInputRequiredAssistant(s.id, ['Genre?']);
+    // Operator started a NEW task on top of the open clarification — the
+    // dominant state is "agent is working", not "waiting for me".
+    manager.addTask(s.id, makeTaskInput('new-task'));
+
+    const reread = manager.get(s.id)!;
+    expect(reread.activityState).toBe('in-progress');
+  });
+});
+
+describe('updated_at bumps on activity', () => {
+  test('addTask bumps the parent session updated_at', async () => {
+    const s = manager.create('api');
+    const t0 = sessionStore.getSession(s.id)!.updated_at;
+    await new Promise((r) => setTimeout(r, 5));
+
+    manager.addTask(s.id, makeTaskInput('t-1'));
+
+    const t1 = sessionStore.getSession(s.id)!.updated_at;
+    expect(t1).toBeGreaterThan(t0);
+  });
+
+  test('completeTask bumps updated_at', async () => {
+    const s = manager.create('api');
+    manager.addTask(s.id, makeTaskInput('t-1'));
+    const t0 = sessionStore.getSession(s.id)!.updated_at;
+    await new Promise((r) => setTimeout(r, 5));
+
+    manager.completeTask(s.id, 't-1', makeTaskResult('t-1', 'completed'));
+
+    expect(sessionStore.getSession(s.id)!.updated_at).toBeGreaterThan(t0);
+  });
+
+  test('recordUserTurn bumps updated_at', async () => {
+    const s = manager.create('api');
+    const t0 = sessionStore.getSession(s.id)!.updated_at;
+    await new Promise((r) => setTimeout(r, 5));
+
+    manager.recordUserTurn(s.id, 'hi');
+
+    expect(sessionStore.getSession(s.id)!.updated_at).toBeGreaterThan(t0);
+  });
+
+  test('listSessions ORDER BY updated_at surfaces recently-active session first', async () => {
+    const older = manager.create('api');
+    await new Promise((r) => setTimeout(r, 5));
+    const newer = manager.create('api');
+    // Older session gets fresh activity → should bubble above the
+    // chronologically-newer-but-idle session.
+    await new Promise((r) => setTimeout(r, 5));
+    manager.recordUserTurn(older.id, 'hi');
+
+    const sessions = manager.listSessions({ state: 'active' });
+    expect(sessions[0]!.id).toBe(older.id);
+    expect(sessions[1]!.id).toBe(newer.id);
+  });
+});
+
+describe('Empty Trash (bulk hard-delete)', () => {
+  test('emptyTrash on empty trash returns deleted=0', () => {
+    const result = manager.emptyTrash();
+    expect(result.deleted).toBe(0);
+    expect(result.sessionIds).toEqual([]);
+  });
+
+  test('emptyTrash hard-deletes every trashed session, leaves active ones alone', () => {
+    const a = manager.create('api');
+    const b = manager.create('api');
+    const c = manager.create('api');
+    manager.addTask(b.id, makeTaskInput('b-1'));
+    manager.addTask(c.id, makeTaskInput('c-1'));
+    // a stays active, b + c go to trash
+    manager.softDelete(b.id);
+    manager.softDelete(c.id);
+
+    const result = manager.emptyTrash();
+
+    expect(result.deleted).toBe(2);
+    expect(new Set(result.sessionIds)).toEqual(new Set([b.id, c.id]));
+    expect(manager.get(a.id)).toBeTruthy();
+    expect(manager.get(b.id)).toBeUndefined();
+    expect(manager.get(c.id)).toBeUndefined();
+    // Tasks under purged sessions are gone too.
+    expect(sessionStore.countSessionTasks(b.id)).toBe(0);
+    expect(sessionStore.countSessionTasks(c.id)).toBe(0);
+  });
+
+  test('emptyTrash does not touch archived (non-trashed) sessions', () => {
+    const archived = manager.create('api');
+    manager.archive(archived.id);
+    expect(manager.emptyTrash().deleted).toBe(0);
+    expect(manager.get(archived.id)?.lifecycleState).toBe('archived');
+  });
+});

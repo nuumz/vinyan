@@ -40,6 +40,18 @@ export interface SessionRowWithCount extends SessionRow {
   task_count: number;
   /** Tasks currently in 'pending' or 'running' state — drives the in-progress badge. */
   running_task_count: number;
+  /**
+   * Role of the most recent turn in the session, joined inline so the
+   * activityState 'waiting-input' badge can be computed without an N+1
+   * fanout per row. NULL when the session has no turns yet.
+   */
+  latest_turn_role: 'user' | 'assistant' | null;
+  /**
+   * Blocks JSON of the most recent turn — same row as `latest_turn_role`.
+   * Carried verbatim so the activity classifier can scan for the
+   * `[INPUT-REQUIRED]` sentinel without re-querying the turns table.
+   */
+  latest_turn_blocks: string | null;
 }
 
 export interface SessionMetadataPatch {
@@ -177,7 +189,9 @@ export class SessionStore {
       .query(
         `SELECT s.*,
                 COALESCE(t.cnt, 0) AS task_count,
-                COALESCE(t.running_cnt, 0) AS running_task_count
+                COALESCE(t.running_cnt, 0) AS running_task_count,
+                lt.role AS latest_turn_role,
+                lt.blocks_json AS latest_turn_blocks
          FROM session_store s
          LEFT JOIN (
            SELECT session_id,
@@ -185,10 +199,30 @@ export class SessionStore {
                   SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS running_cnt
            FROM session_tasks GROUP BY session_id
          ) t ON t.session_id = s.id
+         LEFT JOIN (
+           SELECT session_id, role, blocks_json,
+                  ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq DESC) AS rn
+           FROM session_turns
+         ) lt ON lt.session_id = s.id AND lt.rn = 1
          ${whereClause}
          ORDER BY s.updated_at DESC, s.created_at DESC${limitClause}${offsetClause}`,
       )
       .all(...params) as SessionRowWithCount[];
+  }
+
+  /**
+   * Latest turn's role + blocks for a single session — used by `get()` to
+   * derive the same `waiting-input` activity state that `listSessions`
+   * computes via window function. NULL when there are no turns.
+   */
+  getLatestTurnRoleAndBlocks(
+    sessionId: string,
+  ): { role: 'user' | 'assistant'; blocks_json: string } | undefined {
+    return this.db
+      .query(
+        'SELECT role, blocks_json FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT 1',
+      )
+      .get(sessionId) as { role: 'user' | 'assistant'; blocks_json: string } | undefined;
   }
 
   /** Count tasks currently in 'pending' or 'running' state for a single session. */
@@ -272,6 +306,18 @@ export class SessionStore {
    * before dropping the turns. Wrapped in a single transaction so a
    * failure between steps cannot leave half-deleted state.
    */
+  /**
+   * List ids of every trashed session — drives the "Empty Trash" bulk
+   * action. Read-only; the caller decides whether to hard-delete the
+   * entire batch or a slice of it.
+   */
+  listTrashedSessionIds(): string[] {
+    const rows = this.db
+      .query('SELECT id FROM session_store WHERE deleted_at IS NOT NULL ORDER BY deleted_at ASC')
+      .all() as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   hardDeleteSession(id: string): boolean {
     const turnIds = this.db
       .query('SELECT id FROM session_turns WHERE session_id = ?')
@@ -306,12 +352,27 @@ export class SessionStore {
 
   // ── Session Tasks ───────────────────────────────────────
 
+  /**
+   * Touch the parent session's `updated_at` to the given timestamp.
+   *
+   * Real activity (a new task, a new turn, a task transitioning to
+   * completed/failed) needs to bubble the session up the recency-sorted
+   * list. Lifecycle bookkeeping (suspend/recover) intentionally avoids
+   * touching this — see `updateSessionStatus`. Callers pass the same
+   * timestamp they used for the child row so the parent and child stay
+   * synchronized in test assertions.
+   */
+  private touchSessionUpdatedAt(sessionId: string, ts: number): void {
+    this.db.run('UPDATE session_store SET updated_at = ? WHERE id = ?', [ts, sessionId]);
+  }
+
   insertTask(task: SessionTaskRow): void {
     this.db.run(
       `INSERT INTO session_tasks (session_id, task_id, task_input_json, status, result_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [task.session_id, task.task_id, task.task_input_json, task.status, task.result_json, task.created_at],
     );
+    this.touchSessionUpdatedAt(task.session_id, task.created_at);
   }
 
   getTask(sessionId: string, taskId: string): SessionTaskRow | undefined {
@@ -327,6 +388,10 @@ export class SessionStore {
       sessionId,
       taskId,
     ]);
+    // A task transitioning state (running → completed / failed / cancelled)
+    // is meaningful activity — the session should rise on the recency list
+    // even if the next caller never explicitly bumps `updated_at`.
+    this.touchSessionUpdatedAt(sessionId, Date.now());
   }
 
   listSessionTasks(sessionId: string): SessionTaskRow[] {
@@ -403,6 +468,8 @@ export class SessionStore {
         row.created_at,
       ],
     );
+    // Conversation turn = real activity. Bubble the session up.
+    this.touchSessionUpdatedAt(row.session_id, row.created_at);
 
     return { ...turn, seq };
   }

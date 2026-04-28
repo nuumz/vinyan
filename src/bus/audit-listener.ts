@@ -19,6 +19,7 @@ const ALL_EVENTS: BusEventName[] = [
   'oracle:verdict',
   'trace:record',
   'trace:write_failed',
+  'grounding:checked',
   'selfmodel:predict',
   // Forward Predictor (A7)
   'prediction:generated',

@@ -23,8 +23,8 @@
  *   - A9 (proposed): missing/malformed skill is non-fatal — collected into
  *     `missingSkills` and logged, never throws.
  */
-import type { ConfidenceTier } from '../../core/confidence-tier.ts';
-import { TIER_CONFIDENCE_CEILING } from '../../core/confidence-tier.ts';
+import { z } from 'zod/v4';
+import { CONFIDENCE_TIERS, type ConfidenceTier, TIER_CONFIDENCE_CEILING } from '../../core/confidence-tier.ts';
 import type { SkillMdFrontmatter, SkillMdRecord } from '../../skills/skill-md/index.ts';
 import type { AgentCapabilityOverrides, AgentSpec, CapabilityClaim, CapabilityEvidence, SkillRef } from '../types.ts';
 
@@ -239,6 +239,21 @@ export interface SkillCardView {
   /** Pre-rendered L0 view text (excludes envelope). */
   body: string;
 }
+
+/**
+ * Zod schema mirroring `SkillCardView`. Used by the IPC layer (`WorkerInput`)
+ * to validate skill cards crossing the worker subprocess boundary — the
+ * structured envelope is preserved across IPC instead of pre-rendering to
+ * strings, so the receiving side can apply the same `MAX_SKILL_CARD_CHARS`
+ * skip logic and `<skill-card hash="..." tier="...">` envelope wrapping.
+ */
+export const SkillCardViewSchema = z.object({
+  source: z.string().min(1),
+  hash: z.string().nullable(),
+  tier: z.enum(CONFIDENCE_TIERS),
+  status: z.enum(['probation', 'active', 'demoted', 'quarantined', 'retired']),
+  body: z.string(),
+});
 
 /** Build a card view from a parsed skill record. The body is the L0 catalog text. */
 export function toSkillCardView(skill: SkillMdRecord): SkillCardView {

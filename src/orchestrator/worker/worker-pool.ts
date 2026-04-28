@@ -20,6 +20,7 @@ function resolveWorkerEntryPath(): string {
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { AgentLoopDeps } from '../agent/agent-loop.ts';
+import { type SkillCardView, toSkillCardView } from '../agents/derive-persona-capabilities.ts';
 import type { WorkerPool } from '../core-loop.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
@@ -675,6 +676,18 @@ export class WorkerPoolImpl implements WorkerPool {
     const agentContext =
       input.agentId && this.agentContextBuilder ? this.agentContextBuilder.buildContext(input.agentId) : undefined;
 
+    // Phase-5B: also resolve persona's loaded skill cards so the subprocess
+    // worker renders the same `agent-skill-cards` section as the in-process
+    // path. The worker has no registry access, so cards are pre-computed
+    // here and shipped through the IPC payload as `loadedSkillCards`.
+    let loadedSkillCards: SkillCardView[] | undefined;
+    if (input.agentId && this.agentRegistry) {
+      const derived = this.agentRegistry.getDerivedCapabilities(input.agentId);
+      if (derived && derived.loadedSkills.length > 0) {
+        loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
+      }
+    }
+
     return {
       taskId: input.id,
       goal: input.goal,
@@ -703,6 +716,9 @@ export class WorkerPoolImpl implements WorkerPool {
       // Plan commit A: Turn-model history. Subprocess workers prefer this over
       // any legacy conversationHistory shipped separately — blocks are verbatim.
       ...(turns && turns.length > 0 ? { turns } : {}),
+      // Phase-5B: skill cards forwarded so subprocess prompts render the
+      // `agent-skill-cards` section identically to the in-process path.
+      ...(loadedSkillCards && loadedSkillCards.length > 0 ? { loadedSkillCards } : {}),
     };
   }
 
@@ -749,11 +765,13 @@ export class WorkerPoolImpl implements WorkerPool {
     // prompt as integrity-stamped `<skill-card>` envelopes. Without this
     // wiring, the `agent-skill-cards` section stays empty and skill-aware
     // routing benefits don't show up in the prompt itself.
-    let loadedSkillCards: import('../agents/derive-persona-capabilities.ts').SkillCardView[] | undefined;
-    if (agentProfile && this.agentRegistry) {
+    //
+    // Phase-5B: subprocess dispatch ships these via WorkerInput.loadedSkillCards
+    // (see buildWorkerInput) so worker-entry.ts renders the same section.
+    let loadedSkillCards: SkillCardView[] | undefined = workerInput.loadedSkillCards;
+    if (!loadedSkillCards && agentProfile && this.agentRegistry) {
       const derived = this.agentRegistry.getDerivedCapabilities(agentProfile.id);
       if (derived && derived.loadedSkills.length > 0) {
-        const { toSkillCardView } = await import('../agents/derive-persona-capabilities.ts');
         loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
       }
     }

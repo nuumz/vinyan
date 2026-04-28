@@ -43,11 +43,21 @@ export type SessionLifecycleState =
 
 /**
  * Activity state — what the session is "doing" right now.
- *  - 'in-progress' : at least one task is pending or running
- *  - 'idle'        : has finished tasks but nothing in flight
- *  - 'empty'       : no tasks recorded yet
+ *  - 'in-progress'   : at least one task is pending or running
+ *  - 'waiting-input' : agent finished a turn with an [INPUT-REQUIRED] block
+ *                      and has not yet received the user's reply. This is
+ *                      the operator-attention signal the dashboard needs
+ *                      most — without it the only way to spot a stalled
+ *                      clarification is to open every session.
+ *  - 'idle'          : has finished tasks but nothing in flight
+ *  - 'empty'         : no tasks recorded yet
+ *
+ * Priority when multiple apply: in-progress > waiting-input > idle/empty.
+ * `in-progress` wins because a live task means the agent is still working;
+ * a stale [INPUT-REQUIRED] from an earlier turn is no longer the dominant
+ * state.
  */
-export type SessionActivityState = 'in-progress' | 'idle' | 'empty';
+export type SessionActivityState = 'in-progress' | 'waiting-input' | 'idle' | 'empty';
 
 export interface Session {
   id: string;
@@ -189,6 +199,7 @@ export class SessionManager {
       },
       0,
       0,
+      null,
     );
   }
 
@@ -206,10 +217,12 @@ export class SessionManager {
   get(sessionId: string): Session | undefined {
     const row = this.sessionStore.getSession(sessionId);
     if (!row) return undefined;
+    const latest = this.sessionStore.getLatestTurnRoleAndBlocks(sessionId);
     return rowToSession(
       row,
       this.sessionStore.countSessionTasks(sessionId),
       this.sessionStore.countRunningTasks(sessionId),
+      latest ? { role: latest.role, blocksJson: latest.blocks_json } : null,
     );
   }
 
@@ -296,6 +309,29 @@ export class SessionManager {
     }
     const ok = this.sessionStore.hardDeleteSession(sessionId);
     return { applied: ok, session: null };
+  }
+
+  /**
+   * Empty Trash — hard-delete every currently-trashed session in one call.
+   *
+   * Each row is removed via `hardDeleteSession`, so each session keeps its
+   * own transactional cleanup of tasks/turns/embeddings. We deliberately
+   * do NOT wrap the loop in a single outer transaction: a malformed row
+   * deep in the batch should not roll back the rows that already deleted
+   * cleanly, and the operator can rerun the call to retry stragglers.
+   *
+   * Returns the ids that actually disappeared so HTTP can fan out one
+   * `session:purged` bus event per session — UI subscribers (Sessions
+   * list, Trash badge) get a precise removal stream rather than a single
+   * "trash emptied" broadcast they'd have to interpret.
+   */
+  emptyTrash(): { deleted: number; sessionIds: string[] } {
+    const ids = this.sessionStore.listTrashedSessionIds();
+    const removed: string[] = [];
+    for (const id of ids) {
+      if (this.sessionStore.hardDeleteSession(id)) removed.push(id);
+    }
+    return { deleted: removed.length, sessionIds: removed };
   }
 
   addTask(sessionId: string, taskInput: TaskInput): void {
@@ -459,13 +495,15 @@ export class SessionManager {
     for (const row of suspended) {
       this.sessionStore.updateSessionStatus(row.id, 'active');
     }
-    return suspended.map((row) =>
-      rowToSession(
+    return suspended.map((row) => {
+      const latest = this.sessionStore.getLatestTurnRoleAndBlocks(row.id);
+      return rowToSession(
         { ...row, status: 'active' },
         this.sessionStore.countSessionTasks(row.id),
         this.sessionStore.countRunningTasks(row.id),
-      ),
-    );
+        latest ? { role: latest.role, blocksJson: latest.blocks_json } : null,
+      );
+    });
   }
 
   /**
@@ -957,7 +995,23 @@ function normalizeMetadata(value: string | null | undefined): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function rowToSession(row: SessionRow, taskCount: number, runningTaskCount: number): Session {
+/**
+ * Optional latest-turn snapshot used to detect 'waiting-input'. Pass
+ * `null` when the session has no turns yet, or `undefined` when the
+ * caller has not loaded turn data (the activity classifier degrades to
+ * the task-count heuristic in that case).
+ */
+interface LatestTurnSnapshot {
+  role: 'user' | 'assistant';
+  blocksJson: string;
+}
+
+function rowToSession(
+  row: SessionRow,
+  taskCount: number,
+  runningTaskCount: number,
+  latestTurn: LatestTurnSnapshot | null,
+): Session {
   return {
     id: row.id,
     source: row.source,
@@ -971,12 +1025,16 @@ function rowToSession(row: SessionRow, taskCount: number, runningTaskCount: numb
     archivedAt: row.archived_at,
     deletedAt: row.deleted_at,
     lifecycleState: deriveLifecycleState(row),
-    activityState: deriveActivityState(taskCount, runningTaskCount),
+    activityState: deriveActivityState(taskCount, runningTaskCount, latestTurn),
   };
 }
 
 function rowWithCountToSession(row: SessionRowWithCount): Session {
-  return rowToSession(row, row.task_count, row.running_task_count);
+  const latestTurn: LatestTurnSnapshot | null =
+    row.latest_turn_role !== null && row.latest_turn_blocks !== null
+      ? { role: row.latest_turn_role, blocksJson: row.latest_turn_blocks }
+      : null;
+  return rowToSession(row, row.task_count, row.running_task_count, latestTurn);
 }
 
 /**
@@ -992,10 +1050,31 @@ function deriveLifecycleState(row: SessionRow): SessionLifecycleState {
   return row.status;
 }
 
-function deriveActivityState(taskCount: number, runningTaskCount: number): SessionActivityState {
-  if (taskCount === 0) return 'empty';
+function deriveActivityState(
+  taskCount: number,
+  runningTaskCount: number,
+  latestTurn: LatestTurnSnapshot | null,
+): SessionActivityState {
+  // Live work wins — a stale [INPUT-REQUIRED] from a previous turn is no
+  // longer the operator's primary concern when a fresh task is running.
   if (runningTaskCount > 0) return 'in-progress';
+  if (latestTurn && latestTurn.role === 'assistant' && hasInputRequiredBlock(latestTurn.blocksJson)) {
+    return 'waiting-input';
+  }
+  if (taskCount === 0) return 'empty';
   return 'idle';
+}
+
+/**
+ * Cheap text scan over a turn's blocks JSON for the `[INPUT-REQUIRED]`
+ * sentinel. We avoid a full JSON.parse here so listSessions can call this
+ * once per row without inflating the latency budget — `recordAssistantTurn`
+ * always writes the marker as a literal substring inside a `text` block, so
+ * a substring check is sound (false positives would only occur if a tool
+ * input echoed the sentinel verbatim, which is not a real-world scenario).
+ */
+function hasInputRequiredBlock(blocksJson: string): boolean {
+  return blocksJson.includes('[INPUT-REQUIRED]');
 }
 
 /**

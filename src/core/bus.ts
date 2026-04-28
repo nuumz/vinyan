@@ -12,6 +12,7 @@ import type {
   CachedSkill,
   EvolutionaryRule,
   ExecutionTrace,
+  GoalGroundingCheck,
   RoutingDecision,
   SelfModelPrediction,
   ShadowJob,
@@ -70,6 +71,7 @@ export interface VinyanBusEvents {
   };
   'trace:record': { trace: ExecutionTrace };
   'trace:write_failed': { taskId: string; traceId: string; error: string };
+  'grounding:checked': GoalGroundingCheck;
 
   // Worker lifecycle
   'worker:complete': { taskId: string; output: WorkerOutput; durationMs: number };

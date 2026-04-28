@@ -33,6 +33,7 @@ const SSE_EVENTS: BusEventName[] = [
   // Pipeline timing
   'phase:timing',
   'trace:record',
+  'grounding:checked',
   'degradation:triggered',
   // Worker / oracle
   'worker:dispatch',

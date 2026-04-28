@@ -136,6 +136,26 @@ export class VinyanAPIServer {
   private wsClients = new Set<{ ws: unknown; authenticated: boolean }>();
   /** Dedup map: key = "sessionId:content" → timestamp of last submission. */
   private recentMessageDedup = new Map<string, number>();
+  /**
+   * Per-session promise chain — serializes message handling within one
+   * session so a 2nd send can't race the 1st. Without this, two POSTs
+   * arriving 100ms apart both:
+   *   (a) record their user turn (DB),
+   *   (b) load the conversation history INCLUDING each other's user
+   *       message (because record happened first),
+   *   (c) dispatch executeTask in parallel with overlapping context,
+   *   (d) the LLM answers BOTH questions in BOTH responses — duplicate
+   *       assistant turns, identical content, polluted plan/tool state.
+   *
+   * Live-confirmed by sending "11+11?" then "22+22?" 100ms apart in the
+   * same chat — got two assistant turns each containing both answers.
+   *
+   * The chain key is sessionId; the value is the tail-Promise. Each new
+   * send awaits the previous tail before kicking off, preserving the
+   * user's typing order. Inter-session concurrency is unaffected (different
+   * sessions still run in parallel up to the global taskQueue cap).
+   */
+  private sessionTaskChain = new Map<string, Promise<unknown>>();
   /** Async result retention before eviction. Long enough for clients to poll, bounded for memory. */
   private static readonly ASYNC_RESULT_TTL_MS = 3_600_000; // 1 hour
   /** Rate-limit bucket idle window — buckets idle longer than this are evicted. */
@@ -358,6 +378,14 @@ export class VinyanAPIServer {
 
     if (method === 'POST' && path === '/api/v1/sessions') {
       return this.handleCreateSession(req);
+    }
+
+    // Bulk "Empty Trash" — must come BEFORE the generic /sessions/:id
+    // pattern below, otherwise `_trash` would be parsed as a session id.
+    // The underscore prefix keeps this off the UUID-shape /:id space and
+    // signals at the URL level that this is a collection-level action.
+    if (method === 'POST' && path === '/api/v1/sessions/_trash/empty') {
+      return this.handleEmptyTrash();
     }
 
     if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
@@ -2200,6 +2228,22 @@ export class VinyanAPIServer {
     return jsonResponse({ deleted: true, sessionId });
   }
 
+  /**
+   * POST /api/v1/sessions/_trash/empty
+   *
+   * Bulk hard-delete every currently-trashed session. Returns the count
+   * and the list of removed ids; emits one `session:purged` per session
+   * so SSE subscribers (Sessions list, Trash badge) can update precisely
+   * instead of polling. An empty trash returns 200 with `deleted: 0`.
+   */
+  private handleEmptyTrash(): Response {
+    const result = this.deps.sessionManager.emptyTrash();
+    for (const sessionId of result.sessionIds) {
+      this.deps.bus.emit('session:purged', { sessionId });
+    }
+    return jsonResponse(result);
+  }
+
   private handleCompactSession(sessionId: string): Response {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session) return jsonResponse({ error: 'Session not found' }, 404);
@@ -2311,7 +2355,15 @@ export class VinyanAPIServer {
     // Record the user turn BEFORE dispatching the task so the
     // conversation history (loaded by core-loop.ts via sessionManager)
     // includes it.
-    this.deps.sessionManager.recordUserTurn(sessionId, content);
+    //
+    // Per-session chain consideration: in the streaming branch below
+    // recordUserTurn is REPLAYED inside the chain so the prior task's
+    // assistant turn is already recorded when this task reads history.
+    // Doing it twice would duplicate the user turn — so for the
+    // streaming path we skip the eager record and let the chain own it.
+    if (stream !== true) {
+      this.deps.sessionManager.recordUserTurn(sessionId, content);
+    }
 
     // Auto-name session from the first user message if no title was set.
     // We use task count rather than turn count because a clarification
@@ -2417,8 +2469,25 @@ export class VinyanAPIServer {
       // manually emitting task:complete to close the stream (real
       // executeTask would normally emit this itself, but a bare throw
       // bypasses the normal emit path).
-      this.deps
-        .executeTask(input)
+      //
+      // Per-session serialization: chain this task behind any prior
+      // in-flight task in the same session so two rapid sends don't share
+      // overlapping conversation history. See `sessionTaskChain` docstring
+      // above for the failure mode this prevents.
+      //
+      // recordUserTurn lives INSIDE the chain so the prior task's
+      // assistant turn is already persisted when THIS task reads history.
+      // Otherwise both rapid POSTs record their user turns synchronously
+      // and the first task's history snapshot would still see the second
+      // user message — defeating the chain. (Eager-record was suppressed
+      // above for the streaming path so we don't double-write.)
+      const prevTail = this.sessionTaskChain.get(sessionId) ?? Promise.resolve();
+      const taskPromise = prevTail.catch(() => undefined).then(() => {
+        this.deps.sessionManager.recordUserTurn(sessionId, content);
+        return this.deps.executeTask(input);
+      });
+      this.sessionTaskChain.set(sessionId, taskPromise);
+      taskPromise
         .then((result) => {
           this.deps.sessionManager.completeTask(sessionId, input.id, result);
           this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
@@ -2455,6 +2524,14 @@ export class VinyanAPIServer {
           // task:complete seen for this task id, so no risk of a double
           // close if the real pipeline had already emitted one.
           this.deps.bus.emit('task:complete', { result: failedResult });
+        })
+        .finally(() => {
+          // Release the per-session chain slot ONLY if we're still the
+          // tail. A later send may have already replaced it; in that case
+          // the new tail awaits us anyway, so the chain stays correct.
+          if (this.sessionTaskChain.get(sessionId) === taskPromise) {
+            this.sessionTaskChain.delete(sessionId);
+          }
         });
 
       return new Response(sseStream, {

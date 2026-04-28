@@ -8,6 +8,7 @@
  */
 import { z } from 'zod/v4';
 import { EvidenceSchema } from '../oracle/protocol.ts';
+import { SkillCardViewSchema } from './agents/derive-persona-capabilities.ts';
 import type { InstructionMemory } from './llm/instruction-hierarchy.ts';
 import type { EnvironmentInfo } from './llm/shared-prompt-sections.ts';
 import type { Turn } from './types.ts';
@@ -331,12 +332,7 @@ const ContentBlockSchema = z.custom<Turn['blocks'][number]>(
   (value) => {
     if (value == null || typeof value !== 'object') return false;
     const v = value as { type?: unknown };
-    return (
-      v.type === 'text' ||
-      v.type === 'thinking' ||
-      v.type === 'tool_use' ||
-      v.type === 'tool_result'
-    );
+    return v.type === 'text' || v.type === 'thinking' || v.type === 'tool_use' || v.type === 'tool_result';
   },
   { message: 'Expected Anthropic-native ContentBlock' },
 );
@@ -403,6 +399,14 @@ export const WorkerInputSchema = z.object({
    * tool_result blocks verbatim.
    */
   turns: z.array(TurnSchema).optional(),
+  /**
+   * Phase-2 + 5B: persona's loaded SKILL.md cards, computed by the
+   * orchestrator (in-process) and forwarded across the subprocess boundary.
+   * The worker passes them straight into `assemblePrompt` so the
+   * `agent-skill-cards` section renders identically in both dispatch paths.
+   * Empty/undefined → no cards, prompt unchanged.
+   */
+  loadedSkillCards: z.array(SkillCardViewSchema).optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────

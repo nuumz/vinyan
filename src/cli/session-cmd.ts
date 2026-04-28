@@ -38,9 +38,10 @@ export async function runSessionCommand(argv: string[]): Promise<void> {
         }
         console.log(`\n  Sessions (${sessions.length})\n`);
         for (const s of sessions) {
-          const status = s.status === 'active' ? '\x1b[32mactive\x1b[0m' : '\x1b[33msuspended\x1b[0m';
-          const date = new Date(s.createdAt).toLocaleString();
-          console.log(`  ${s.id}  ${status}  tasks=${s.taskCount}  ${date}  source=${s.source}`);
+          const lifecycle = colorizeLifecycle(s.lifecycleState);
+          const activity = colorizeActivity(s.activityState, s.runningTaskCount, s.taskCount);
+          const date = new Date(s.updatedAt).toLocaleString();
+          console.log(`  ${s.id}  ${lifecycle}  ${activity}  ${date}  source=${s.source}`);
         }
         console.log();
         break;
@@ -94,4 +95,42 @@ function parseSingleFlag(argv: string[], flag: string): string | undefined {
   const idx = argv.indexOf(flag);
   if (idx === -1 || idx + 1 >= argv.length) return undefined;
   return argv[idx + 1];
+}
+
+const ANSI_RESET = '\x1b[0m';
+const ANSI = {
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  blue: '\x1b[34m',
+  gray: '\x1b[90m',
+  magenta: '\x1b[35m',
+} as const;
+
+function colorizeLifecycle(state: string): string {
+  switch (state) {
+    case 'trashed':
+      return `${ANSI.red}trashed${ANSI_RESET}`;
+    case 'archived':
+      return `${ANSI.gray}archived${ANSI_RESET}`;
+    case 'compacted':
+      return `${ANSI.magenta}compacted${ANSI_RESET}`;
+    case 'suspended':
+      return `${ANSI.yellow}suspended${ANSI_RESET}`;
+    default:
+      return `${ANSI.green}${state}${ANSI_RESET}`;
+  }
+}
+
+function colorizeActivity(state: string, running: number, total: number): string {
+  switch (state) {
+    case 'in-progress':
+      return `${ANSI.blue}running ${running}/${total}${ANSI_RESET}`;
+    case 'waiting-input':
+      return `${ANSI.yellow}awaiting-input${ANSI_RESET}`;
+    case 'idle':
+      return `${ANSI.gray}idle (${total} tasks)${ANSI_RESET}`;
+    default:
+      return `${ANSI.gray}empty${ANSI_RESET}`;
+  }
 }

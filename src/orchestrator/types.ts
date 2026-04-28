@@ -161,11 +161,7 @@ export interface IntentDeterministicCandidate {
   strategy: ExecutionStrategy;
   confidence: number;
   /** Which rule produced the candidate (observability). */
-  source:
-    | 'classifyDirectTool'
-    | 'mapUnderstandingToStrategy'
-    | 'composed'
-    | 'creative-deliverable-pattern';
+  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed' | 'creative-deliverable-pattern';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }
@@ -1102,15 +1098,7 @@ export interface EvolutionaryRule {
 // ---------------------------------------------------------------------------
 
 export interface GovernanceEvidenceReference {
-  kind:
-    | 'task-input'
-    | 'file'
-    | 'oracle-verdict'
-    | 'routing-factor'
-    | 'policy'
-    | 'tool-result'
-    | 'trace'
-    | 'other';
+  kind: 'task-input' | 'file' | 'oracle-verdict' | 'routing-factor' | 'policy' | 'tool-result' | 'trace' | 'other';
   source: string;
   contentHash?: string;
   observedAt?: number;
@@ -1127,6 +1115,27 @@ export interface GovernanceProvenance {
   evidenceObservedAt?: number;
   reason?: string;
   escalationPath?: RoutingLevel[];
+}
+
+export type GoalGroundingPhase = 'perceive' | 'spec' | 'plan' | 'generate' | 'verify';
+export type GoalGroundingAction = 'continue' | 'downgrade-confidence' | 'request-clarification';
+
+export interface GoalGroundingCheck {
+  taskId: string;
+  phase: GoalGroundingPhase;
+  routingLevel: RoutingLevel;
+  policyVersion: string;
+  checkedAt: number;
+  action: GoalGroundingAction;
+  reason: string;
+  rootGoalHash: string;
+  currentGoalHash: string;
+  goalDrift: boolean;
+  freshnessDowngraded: boolean;
+  factCount: number;
+  staleFactCount: number;
+  minFactConfidence?: number;
+  evidence: GovernanceEvidenceReference[];
 }
 
 /** Recorded after each task for Self-Model calibration and Evolution Engine */
@@ -1249,6 +1258,8 @@ export interface ExecutionTrace {
   knowledgeUsed?: KnowledgeContext[];
   /** A8 RFC: replayable governance/action/verdict provenance for this trace. */
   governanceProvenance?: GovernanceProvenance;
+  /** A10 RFC: phase-boundary root-goal and temporal freshness grounding checks. */
+  goalGrounding?: GoalGroundingCheck[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,6 +1365,13 @@ export interface WorkerInput {
    * prior parameters.
    */
   turns?: Turn[];
+  /**
+   * Phase-2 + 5B: persona's loaded SKILL.md cards, computed by the
+   * orchestrator (in-process) and forwarded across the subprocess boundary.
+   * The worker passes them straight into `assemblePrompt` so the
+   * `agent-skill-cards` section renders identically in both dispatch paths.
+   */
+  loadedSkillCards?: import('./agents/derive-persona-capabilities.ts').SkillCardView[];
 }
 
 /** Output from a worker process */

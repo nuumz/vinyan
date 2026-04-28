@@ -148,6 +148,15 @@ describe('MigrationRunner', () => {
     expect(indexNames.has('idx_et_decision_timestamp')).toBe(true);
   });
 
+  test('A10 goal grounding audit column is available after migrations', () => {
+    runner.migrate(db, ALL_MIGRATIONS);
+
+    const columns = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('goal_grounding')).toBe(true);
+  });
+
   // ── Acceptance Criterion 3: Failed migration rolls back ─
   test('failed migration rolls back that migration only', () => {
     const failingMigration: Migration = {

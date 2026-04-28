@@ -687,6 +687,18 @@ export interface VinyanBusEvents {
     reason: string;
   };
   /**
+   * Persona's conversational answer claimed delegation in plain prose
+   * ("I forwarded this to X agent") without emitting the escape sentinel.
+   * Defense-in-depth detector — same re-route consequence as the sentinel.
+   * Bound at one re-route per task via `TaskInput.intentEscapeAttempts`.
+   */
+  'intent:hallucinated_delegation_detected': {
+    taskId: string;
+    persona?: string;
+    snippet?: string;
+    locale?: 'thai' | 'english';
+  };
+  /**
    * Deterministic short-affirmative pre-classifier reconstructed intent from
    * the immediately prior unfulfilled deliverable proposal. Avoids one LLM
    * call and prevents the "ack-without-action" failure mode.
@@ -997,6 +1009,34 @@ export interface VinyanBusEvents {
     declaredCount: number;
     viewedCount: number;
     viewedRatio: number;
+  };
+
+  /**
+   * Phase-13: emitted by the workflow-executor's `delegate-sub-agent` path
+   * when A1 Epistemic Separation forced the sub-task onto the canonical
+   * Verifier persona instead of inheriting the parent's agentId. Producer:
+   * `selectVerifierForDelegation` returning a non-null id. Useful for
+   * observability — confirms the A1 guard fired without inspecting the
+   * sub-task's resulting trace.
+   */
+  'workflow:a1_verifier_routed': {
+    taskId: string;
+    stepId: string;
+    generatorAgentId: string | null;
+    verifierAgentId: string;
+  };
+
+  /**
+   * Phase-14 (Item 4): emitted by the agent-loop's `handleDelegation` path
+   * when A1 forced the delegated sub-task to the canonical Verifier persona.
+   * Mirrors `workflow:a1_verifier_routed` but for the agent-loop (LLM-driven
+   * delegate tool) dispatch surface — closes the parallel-dispatch A1 hole.
+   */
+  'delegation:a1_verifier_routed': {
+    taskId: string;
+    parentAgentId: string | null;
+    verifierAgentId: string;
+    requestedTargetAgentId: string | null;
   };
 
   // Crash Recovery: task checkpoint events

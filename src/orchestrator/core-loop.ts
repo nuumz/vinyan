@@ -25,7 +25,11 @@ import {
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
-import { formatEscapeProtocolBlock, parseEscapeSentinel } from './intent/escape-sentinel.ts';
+import {
+  detectHallucinatedDelegation,
+  formatEscapeProtocolBlock,
+  parseEscapeSentinel,
+} from './intent/escape-sentinel.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
@@ -1652,10 +1656,45 @@ async function buildConversationalResult(
     };
   }
 
+  // Defense-in-depth: detect hallucinated delegation in the answer text when
+  // the persona did NOT emit the escape sentinel. Smaller free-tier models
+  // sometimes ignore the "do not promise to dispatch" rule and fabricate
+  // delegation prose ("ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor"), leaving
+  // the user with a fake acknowledgment and zero sub-tasks. When detected,
+  // re-route as if the sentinel had fired so the work actually happens. Same
+  // re-route budget as the sentinel path to prevent loops.
+  if ((input.intentEscapeAttempts ?? 0) < 1) {
+    const halluc = detectHallucinatedDelegation(answer);
+    if (halluc.matched) {
+      deps.bus?.emit('intent:hallucinated_delegation_detected', {
+        taskId: input.id,
+        persona: resolvedAgent?.id,
+        snippet: halluc.snippet,
+        locale: halluc.locale,
+      });
+      const seededWorkflowPrompt =
+        `Persona claimed delegation in conversational mode without dispatch capability. Snippet: "${halluc.snippet}". ` +
+        `Original user request: ${input.goal}`;
+      const updatedIntent: IntentResolution = {
+        ...intent,
+        strategy: 'agentic-workflow',
+        workflowPrompt: seededWorkflowPrompt,
+        reasoningSource: 'persona-escape',
+        reasoning:
+          `${intent.reasoning ?? ''} [hallucinated-delegation: ${halluc.locale ?? 'unknown'}]`.trim(),
+      };
+      return {
+        kind: 'reroute',
+        updatedIntent,
+        updatedInput: { ...input, intentEscapeAttempts: 1 },
+      };
+    }
+  }
+
   const trace: ExecutionTrace = {
     id: `trace-${input.id}-conversational`,
     taskId: input.id,
-    // Multi-agent: attribute the trace to the resolved specialist (e.g. 'secretary')
+    // Multi-agent: attribute the trace to the resolved persona (e.g. 'coordinator')
     // so context-builder/agent-evolution count this episode against the right agent.
     // Falls back to 'intent-resolver' for the legacy no-registry path.
     workerId: resolvedAgent?.id ?? 'intent-resolver',
@@ -2498,6 +2537,7 @@ async function executeTaskCore(
             bus: deps.bus,
             workspace: deps.workspace,
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
+            agentRegistry: deps.agentRegistry,
             intentWorkflowPrompt: intentResolution.workflowPrompt,
             workflowConfig: deps.workflowConfig,
             sessionTurns,
@@ -2937,8 +2977,9 @@ async function executeTaskCore(
         }
 
         // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
-        // Phase 3: skill lookup is scoped by specialist agent. A ts-coder task
-        // sees ts-coder's skills (+ legacy shared), never writer's private skills.
+        // Phase 3: skill lookup is scoped by persona. A `developer` task sees
+        // developer-owned skills (+ legacy shared), never another persona's
+        // private skills.
         if (deps.skillManager && routing.level <= 1) {
           const fp = (input.targetFiles ?? []).sort().join(',') || '*';
           const taskSig = `${input.goal.slice(0, 50)}::${fp}`;

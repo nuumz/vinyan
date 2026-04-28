@@ -311,7 +311,7 @@ const AgentConfigSchema = z.object({
   preferences: AgentPreferencesConfigSchema.optional(),
 });
 
-// ─── Specialist agents (fleet of roles: ts-coder, writer, etc.) ────────
+// ─── Persona agents (role-pure templates: developer, author, coordinator, etc.) ───
 
 /**
  * Routing hints for specialist agent selection.
@@ -381,6 +381,15 @@ export const AgentSpecSchema = z.object({
   capabilities: z.array(AgentCapabilitySchema).optional(),
   /** Coarse role tags (e.g. 'editor', 'researcher', 'planner'). */
   roles: z.array(z.string()).optional(),
+  /**
+   * Phase-1 redesign: canonical persona role for the role-pure roster.
+   * Drives A1 enforcement (Generator≠Verifier) and persona class taxonomy.
+   * Distinct from the legacy `roles[]` tags. Optional for backward-compat
+   * with config that pre-dates the redesign.
+   */
+  role: z
+    .enum(['coordinator', 'developer', 'architect', 'author', 'reviewer', 'assistant', 'researcher', 'mentor', 'concierge'])
+    .optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),
 });

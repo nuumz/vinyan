@@ -60,6 +60,56 @@ export function parseEscapeSentinel(answer: string): EscapeSignal {
 }
 
 /**
+ * Heuristic for detecting hallucinated delegation in a persona answer that
+ * did NOT emit the escape sentinel. The conversational shortcircuit cannot
+ * dispatch sub-agents, but smaller free-tier models sometimes ignore the
+ * "do not promise to forward" rule and produce text claiming the work has
+ * been routed to a peer agent (incident: session 44c83a53, where the
+ * coordinator told the user "ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor
+ * แล้วครับ" without any sub-task being created).
+ *
+ * When this detector fires, the caller should treat it as if the escape
+ * sentinel had been emitted: re-route to agentic-workflow so the
+ * delegation actually happens. This is defense-in-depth — the strategy
+ * pre-rule (intent/strategy.ts MULTI_AGENT_DELEGATION) catches the goal
+ * upstream; this catches the answer downstream when the upstream classifier
+ * misses an edge case.
+ *
+ * False-positive surface kept narrow: requires a delegation/dispatch verb
+ * AND a reference to an "agent" / specialist role within the same clause.
+ * Bare mentions ("the agent ecosystem is great") and forward-looking
+ * questions ("should I send this to a specialist?") do not match.
+ */
+const HALLUCINATED_DELEGATION_THAI =
+  /(?:ส่ง|ส่งต่อ|ฝาก|มอบหมาย|กระจายงาน|ส่งโจทย์|ส่งคำถาม)[^.!?\n]{0,40}(?:ไป|ให้|ยัง|to)[^.!?\n]{0,40}(?:agent|developer|architect|author|researcher|mentor|reviewer|assistant|concierge|specialist|ผู้เชี่ยวชาญ)/i;
+
+const HALLUCINATED_DELEGATION_ENGLISH =
+  /\b(?:I(?:'ve|'ll| have| will| am| just)?|now|currently)\s+(?:sent|sending|forwarded|forwarding|dispatched|dispatching|delegated|delegating|handed(?:\s+off)?|routed|routing|passed(?:\s+along)?)\s+[^.!?\n]{0,40}\bto\s+[^.!?\n]{0,40}\b(?:agent|developer|architect|author|researcher|mentor|reviewer|assistant|concierge|specialist|team)\b/i;
+
+export interface HallucinatedDelegationSignal {
+  matched: boolean;
+  /** Short snippet from the answer that triggered the match (debug/log). */
+  snippet?: string;
+  /** Locale flag — useful for logging which pattern fired. */
+  locale?: 'thai' | 'english';
+}
+
+/**
+ * Returns `{ matched: true }` when the answer text contains a
+ * delegation-promise pattern but NO escape sentinel. Caller is expected to
+ * have already checked the sentinel separately (see `parseEscapeSentinel`).
+ */
+export function detectHallucinatedDelegation(answer: string): HallucinatedDelegationSignal {
+  const thai = HALLUCINATED_DELEGATION_THAI.exec(answer);
+  if (thai) return { matched: true, snippet: thai[0].trim().slice(0, 200), locale: 'thai' };
+  const english = HALLUCINATED_DELEGATION_ENGLISH.exec(answer);
+  if (english) {
+    return { matched: true, snippet: english[0].trim().slice(0, 200), locale: 'english' };
+  }
+  return { matched: false };
+}
+
+/**
  * The protocol stanza injected into a persona system prompt so the persona
  * knows when and how to emit the sentinel. Centralized so changes to the
  * sentinel format propagate without grep'ing string literals across personas.

@@ -2139,6 +2139,23 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }),
   );
 
+  // Phase-12: route `bid:overclaim_detected` events to the persona-keyed
+  // overclaim ledger on the live MarketScheduler. The ledger surfaces a
+  // multiplicative penalty into `scoreBid` on the persona's next bid,
+  // closing the producer/consumer loop. Best-effort — never propagate.
+  if (marketScheduler) {
+    const tracker = marketScheduler.getPersonaOverclaimTracker();
+    trackBusListener(
+      bus.on('bid:overclaim_detected', ({ agentId }: { agentId: string }) => {
+        try {
+          tracker.recordOverclaim(agentId);
+        } catch {
+          /* observational */
+        }
+      }),
+    );
+  }
+
   const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
@@ -2165,6 +2182,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       // ratio < threshold and ≥2 skills were declared, emit
       // `bid:overclaim_detected`. Always clears the per-task tracker
       // entry to keep memory bounded across long-running orchestrators.
+      //
+      // Phase-12: when the evaluation actually ran (≥2 declared skills),
+      // also record an observation on the live MarketScheduler's persona
+      // overclaim tracker — observations are the denominator of the bid
+      // penalty so they MUST increment for every eligible task, not just
+      // flagged ones. Without this, a persona with one overclaim and one
+      // clean run would be punished as if it had 100% overclaim.
       if (deps.agentRegistry && input.agentId) {
         try {
           const derived = deps.agentRegistry.getDerivedCapabilities(input.agentId);
@@ -2172,6 +2196,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             const loadedSkillIds = derived.loadedSkills.map((s) => s.frontmatter.id);
             const viewed = skillUsageTracker.getViewed(input.id);
             const evaluation = evaluateOverclaim(loadedSkillIds, viewed);
+            if (evaluation.reason === 'evaluated' && marketScheduler) {
+              try {
+                marketScheduler.getPersonaOverclaimTracker().recordObservation(input.agentId);
+              } catch {
+                /* tracker is observational */
+              }
+            }
             if (evaluation.flagged) {
               bus.emit('bid:overclaim_detected', {
                 taskId: input.id,

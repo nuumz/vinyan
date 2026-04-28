@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   ESCAPE_SENTINEL_CLOSE,
   ESCAPE_SENTINEL_OPEN,
+  detectHallucinatedDelegation,
   formatEscapeProtocolBlock,
   parseEscapeSentinel,
 } from '../../../src/orchestrator/intent/escape-sentinel.ts';
@@ -74,5 +75,60 @@ describe('formatEscapeProtocolBlock', () => {
     const parsed = parseEscapeSentinel(exampleMatch![0]);
     expect(parsed.matched).toBe(true);
     expect(parsed.reason).toBeDefined();
+  });
+});
+
+describe('detectHallucinatedDelegation', () => {
+  // Defense-in-depth detector. The original incident (session 44c83a53)
+  // showed the coordinator persona claiming "ขณะนี้โจทย์ถูกส่งไปยัง Developer
+  // และ Mentor แล้วครับ" without using the escape sentinel — no actual
+  // delegation happened. This detector catches that pattern so the caller
+  // can re-route the task to agentic-workflow.
+  it('matches the original incident phrasing (Thai)', () => {
+    const answer =
+      'ขอบคุณครับ ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor แล้วครับ รอผลการแข่งขันสักครู่';
+    const out = detectHallucinatedDelegation(answer);
+    expect(out.matched).toBe(true);
+    expect(out.locale).toBe('thai');
+    expect(out.snippet).toContain('Developer');
+  });
+
+  it('matches Thai "ส่งให้ X agent"', () => {
+    const out = detectHallucinatedDelegation('ผมจะส่งงานนี้ให้ Architect agent ดำเนินการต่อ');
+    expect(out.matched).toBe(true);
+  });
+
+  it('matches English "I have forwarded this to the developer agent"', () => {
+    const out = detectHallucinatedDelegation(
+      "I've forwarded the request to the developer agent so they can take it from here.",
+    );
+    expect(out.matched).toBe(true);
+    expect(out.locale).toBe('english');
+  });
+
+  it('matches English "I just delegated this to the architect"', () => {
+    const out = detectHallucinatedDelegation(
+      'I just delegated this analysis to the architect specialist.',
+    );
+    expect(out.matched).toBe(true);
+  });
+
+  it('does NOT match a forward-looking question ("should I send this to a specialist?")', () => {
+    const out = detectHallucinatedDelegation(
+      'Would you like me to send this to a specialist agent? I can route it for you.',
+    );
+    expect(out.matched).toBe(false);
+  });
+
+  it('does NOT match a bare mention ("the agent ecosystem is great")', () => {
+    const out = detectHallucinatedDelegation(
+      'Vinyan has an agent ecosystem with developer, architect, and reviewer roles.',
+    );
+    expect(out.matched).toBe(false);
+  });
+
+  it('does NOT match user-facing send ("I will send you the answer")', () => {
+    const out = detectHallucinatedDelegation('I will send you the answer in a moment.');
+    expect(out.matched).toBe(false);
   });
 });

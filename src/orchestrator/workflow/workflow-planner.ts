@@ -12,6 +12,7 @@ import type { VinyanBus } from '../../core/bus.ts';
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
+import type { AgentRegistry } from '../agents/registry.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
 import { type WorkflowPlan, WorkflowPlanSchema } from './types.ts';
@@ -20,6 +21,15 @@ export interface WorkflowPlannerDeps {
   llmRegistry?: LLMProviderRegistry;
   knowledgeDeps: KnowledgeContextDeps;
   bus?: VinyanBus;
+  /**
+   * Optional roster source. When supplied, the planner emits the registered
+   * agent IDs + descriptions into its user prompt so the LLM can assign
+   * `delegate-sub-agent` steps to specific personas (e.g. "have developer
+   * answer step1, architect answer step2"). Without this the planner has no
+   * idea which agent IDs are valid and falls back to leaving `agentId`
+   * unset, which routes every delegate to the default coordinator.
+   */
+  agentRegistry?: AgentRegistry;
 }
 
 export interface PlannerOptions {
@@ -52,6 +62,7 @@ Output ONLY valid JSON matching this schema:
       "description": "what this step does (human-readable)",
       "command": "OPTIONAL — required when strategy='direct-tool'; the exact shell command to execute (e.g. 'ls -la ~/Desktop'). Omit for non-direct-tool steps.",
       "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input",
+      "agentId": "OPTIONAL — required when strategy='delegate-sub-agent' AND the goal asks for a specific persona / multi-agent diversity; the exact agent id from the [AVAILABLE AGENTS] roster (e.g. 'developer', 'architect'). Omit for non-delegate steps or when any persona will do.",
       "dependencies": ["step IDs this depends on"],
       "inputs": { "key": "$stepN.result — reference to a prior step's output" },
       "expectedOutput": "what this step should produce",
@@ -81,6 +92,14 @@ Creative writing rules:
 - Internal creative roles are routing hints, not user-facing instructions. Step descriptions should describe the work (brief, plot options, structure, draft prose, edit, critique) rather than telling the user to contact or wait for a named internal role.
 - If the plan delegates internally, the final synthesis must present the result or the necessary clarification questions to the user; do not leak handoff mechanics.
 - Do NOT use developer, architect, reviewer, full-pipeline, direct-tool, code mutation, tests, or implementation steps unless the user explicitly asks for software/code.
+
+Multi-agent rules (when the user asks for "N agents" / "have agents debate/compete/collaborate" / "แบ่ง agent N ตัว"):
+- Produce N \`delegate-sub-agent\` steps, ONE per requested persona.
+- EACH delegate step MUST set \`agentId\` to a distinct id from the [AVAILABLE AGENTS] roster shown below — DO NOT invent ids and DO NOT reuse the same id across multiple steps in the same multi-agent plan.
+- If the user asks for a specific persona ("ให้ developer ตอบ", "have the architect answer"), match that persona name to the closest \`agentId\` in the roster.
+- If the user only specifies a count ("3 agents") without naming personas, pick N agents from the roster whose roles are diverse enough to make the comparison meaningful (e.g. one Generator, one Verifier, one Guide rather than three Generators).
+- A single \`llm-reasoning\` step that internally role-plays "Agent A says X, Agent B says Y" is FORBIDDEN for multi-agent goals — that produces fake diversity from one model. Use \`delegate-sub-agent\` so each persona actually runs in its own sub-task.
+- Add a final \`llm-reasoning\` synthesis step (depends on all delegate steps) that combines the distinct agent outputs into the comparison/debate the user asked for.
 
 Guidelines:
 - Start with a knowledge-query step to gather context when the goal is broad
@@ -135,6 +154,18 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
     userPrompt += `\n\nKnowledge context (from Vinyan's memory):\n${knowledgeContext}`;
   }
 
+  // Roster of agent personas the planner can target via `delegate-sub-agent`.
+  // Required for multi-agent goals — without it the planner does not know
+  // which `agentId` values are valid and the resulting plan either omits
+  // agentId (everything routes to coordinator) or invents non-existent ids
+  // (delegate fails). Capped to keep the planner prompt budget tidy.
+  if (deps.agentRegistry) {
+    const roster = formatAgentRoster(deps.agentRegistry);
+    if (roster) {
+      userPrompt += `\n\n[AVAILABLE AGENTS] (use these ids verbatim in step.agentId for delegate-sub-agent steps):\n${roster}`;
+    }
+  }
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const response = await provider.generate({
@@ -169,6 +200,26 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
   }
 
   return fallbackPlan(opts.goal);
+}
+
+/**
+ * Render the agent registry as a compact roster the planner LLM can read.
+ * Bullet list of `id — description` lines, capped at 12 agents to keep the
+ * prompt budget bounded (typical roster is ~9 personas).
+ */
+function formatAgentRoster(registry: AgentRegistry): string {
+  let agents: ReadonlyArray<{ id: string; description?: string }>;
+  try {
+    agents = registry.listAgents();
+  } catch {
+    return '';
+  }
+  if (!agents || agents.length === 0) return '';
+  const MAX_AGENTS = 12;
+  const lines = agents
+    .slice(0, MAX_AGENTS)
+    .map((a) => `  - ${a.id}: ${a.description ?? '(no description)'}`);
+  return lines.join('\n');
 }
 
 function fallbackPlan(goal: string): WorkflowPlan {

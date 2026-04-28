@@ -31,6 +31,14 @@ export interface WorkflowStep {
   inputs: Record<string, string>;
   expectedOutput: string;
   budgetFraction: number;
+  /**
+   * Optional persona assignment for `delegate-sub-agent` steps. Mirrors the
+   * Zod schema field so TypeScript callers see the same shape `WorkflowPlanSchema.parse`
+   * produces. Phase-13 A1 enforcement at the executor overrides this with the
+   * canonical Verifier persona when a verify-style step delegates from a
+   * code-mutation parent — see `selectVerifierForDelegation`.
+   */
+  agentId?: string;
   fallbackStrategy?: WorkflowStepStrategy;
 }
 
@@ -73,6 +81,15 @@ export const WorkflowStepSchema = z.object({
   inputs: z.record(z.string(), z.string()).default({}),
   expectedOutput: z.string().default(''),
   budgetFraction: z.number().min(0).max(1).default(0.2),
+  /**
+   * Optional agent assignment for `delegate-sub-agent` steps. When set, the
+   * sub-task runs under the specified persona (e.g. 'developer', 'architect')
+   * instead of falling through to the default `coordinator`. Required for
+   * "have N agents X" workflows where each step must run under a distinct
+   * persona — without it every delegate goes to the same default agent and
+   * the workflow degenerates into one model role-playing N personas.
+   */
+  agentId: z.string().optional(),
   fallbackStrategy: z
     .enum([
       'full-pipeline',

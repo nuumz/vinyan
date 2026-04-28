@@ -16,6 +16,7 @@
  * Pure: no LLM, no I/O, no caching.
  */
 
+import { classifyDirectTool, resolveCommand } from '../tools/direct-tool-resolver.ts';
 import type {
   ExecutionStrategy,
   IntentDeterministicCandidate,
@@ -23,7 +24,6 @@ import type {
   SemanticTaskUnderstanding,
   TaskInput,
 } from '../types.ts';
-import { classifyDirectTool, resolveCommand } from '../tools/direct-tool-resolver.ts';
 
 /**
  * Plain fallback mapping used when the LLM tier is unavailable or when

@@ -14,6 +14,7 @@ import {
   derivePersonaCapabilities,
   type SyncSkillResolver,
 } from './derive-persona-capabilities.ts';
+import { assertA1Compatible, CANONICAL_VERIFIER_ROLE, personaClassOf } from './persona-class.ts';
 import { loadBoundSkills } from './persona-skill-loader.ts';
 import { loadAgentSoul } from './soul-loader.ts';
 
@@ -28,7 +29,11 @@ const SELF_VERIFICATION_PATTERN = /\bI (?:check|verify|review|audit|evaluate|val
 
 function lintSoulForA1(spec: AgentSpec): string | null {
   if (!spec.soul) return null;
-  if (spec.role === 'reviewer') return null;
+  // Verifier-class personas are exactly the ones permitted to use these
+  // verbs. Phase-13: use the explicit taxonomy instead of `role === 'reviewer'`
+  // so user-authored Verifier personas with non-canonical ids (`role: 'reviewer'`,
+  // `id: 'my-custom-reviewer'`) also pass the lint.
+  if (personaClassOf(spec.role) === 'verifier') return null;
   const match = spec.soul.match(SELF_VERIFICATION_PATTERN);
   if (!match) return null;
   return `Soul for agent '${spec.id}' (role=${spec.role ?? 'unknown'}) contains a first-person verification verb '${match[0]}'. Move self-verification to a Reviewer persona — A1 Epistemic Separation forbids generators from evaluating their own output. Either remove the phrase or set role='reviewer'.`;
@@ -94,6 +99,23 @@ export interface AgentRegistry {
    * and mirrors how synthetic agents are scoped to a taskId.
    */
   getDerivedCapabilities(agentId: string, options?: { extraRefs?: readonly SkillRef[] }): DerivedCapabilities | null;
+  /**
+   * Phase-13 — A1 Epistemic Separation surface. Returns the canonical
+   * Verifier-class persona (`reviewer`) registered with this registry, or
+   * `null` when no Verifier-class persona exists (e.g. user removed the
+   * built-in `reviewer` from `vinyan.json`). Callers wiring delegation should
+   * fall back to a `'mixed'`-class persona (e.g. coordinator) when this
+   * returns null.
+   */
+  findCanonicalVerifier(): AgentSpec | null;
+  /**
+   * Phase-13 — A1 pair guard. Returns `{ ok: true }` when the (generator,
+   * verifier) pair satisfies A1, otherwise `{ ok: false, reason }`. Looks up
+   * each agent by id and runs `assertA1Compatible`. Unknown ids return
+   * `{ ok: false }` so callers refusing the dispatch are alerted to a
+   * misconfigured registry rather than silently routing.
+   */
+  assertA1Pair(generatorId: string, verifierId: string): { ok: boolean; reason?: string };
 }
 
 /**
@@ -154,10 +176,11 @@ export function loadAgentRegistry(
       id: cfg.id,
       name: cfg.name,
       description: cfg.description,
-      // Preserve role/baseSkills/acquirableSkillTags from existing builtin.
-      // Phase 1 does not yet expose these on the config-side schema; users
-      // who override a builtin keep the persona's role tagging by default.
-      role: existing?.role,
+      // Phase-13: config can specify the canonical persona role explicitly.
+      // Falls back to the existing builtin's role when overriding (so a user
+      // tweaking the builtin reviewer's name without re-stating the role
+      // doesn't accidentally drop A1 classification).
+      role: cfg.role ?? existing?.role,
       soulPath: cfg.soul_path ?? existing?.soulPath,
       allowedTools: cfg.allowed_tools ?? existing?.allowedTools,
       capabilityOverrides: fromConfigOverrides(cfg.capability_overrides) ?? existing?.capabilityOverrides,
@@ -317,6 +340,25 @@ export function loadAgentRegistry(
         };
       }
       return derivePersonaCapabilities(agent, allRefs, options.skillResolver);
+    },
+    findCanonicalVerifier(): AgentSpec | null {
+      // Prefer the canonical-by-role match (`role === 'reviewer'`); fall back
+      // to id match for legacy / user-authored personas that haven't set the
+      // `role` field. Returns the FIRST match by registration order — the
+      // builtin `reviewer` ships before any user-config personas, so the
+      // builtin wins by default.
+      for (const agent of byId.values()) {
+        if (agent.role === CANONICAL_VERIFIER_ROLE) return cloneAgentSpec(agent);
+      }
+      const byCanonicalId = byId.get(CANONICAL_VERIFIER_ROLE);
+      return byCanonicalId ? cloneAgentSpec(byCanonicalId) : null;
+    },
+    assertA1Pair(generatorId: string, verifierId: string) {
+      const gen = byId.get(generatorId);
+      const ver = byId.get(verifierId);
+      if (!gen) return { ok: false, reason: `unknown generator persona '${generatorId}'` };
+      if (!ver) return { ok: false, reason: `unknown verifier persona '${verifierId}'` };
+      return assertA1Compatible(gen.role, gen.id, ver.role, ver.id);
     },
   };
 }

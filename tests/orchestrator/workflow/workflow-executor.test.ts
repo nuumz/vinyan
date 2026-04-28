@@ -561,4 +561,255 @@ describe('executeWorkflow', () => {
     expect(step2.status).toBe('completed');
     expect(result.synthesizedOutput).toContain('step2');
   });
+
+  test('A2 honesty: when ALL steps fail, synthesizer is NOT called and output is a deterministic failure report', async () => {
+    // Free-tier 429 incident on session 44c83a53: workflow dispatched 3
+    // delegated sub-agents which all 429'd. Synthesizer LLM was given the
+    // failed step outputs and confabulated the agents' answers ("จำลอง
+    // สถานการณ์การแข่งขัน") instead of admitting failure. Fast-path now
+    // refuses to invoke the synthesizer when zero steps succeeded — the
+    // only safe output is a structured failure report.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'two failing things',
+      steps: [
+        {
+          id: 'step1',
+          description: 'shell that cannot run',
+          command: 'will-not-run',
+          strategy: 'direct-tool',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'shell that cannot run either',
+          command: 'also-cannot',
+          strategy: 'direct-tool',
+          budgetFraction: 0.5,
+        },
+      ],
+      synthesisPrompt: 'Combine outputs.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'fabricated success', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'noop', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+
+    const result = await executeWorkflow(makeInput('two failing things'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      // No toolExecutor → both direct-tool steps fail.
+    });
+
+    expect(result.status).toBe('partial');
+    expect(result.stepResults.every((r) => r.status === 'failed' || r.status === 'skipped')).toBe(
+      true,
+    );
+    // The honesty fast-path must not call the synthesizer.
+    expect(synthesizerCalled).toBe(false);
+    expect(result.synthesizedOutput).not.toContain('fabricated success');
+    expect(result.synthesizedOutput).toMatch(/could not produce|step\(s\) failed or were skipped/i);
+    expect(result.synthesizedOutput).toContain('step1');
+  });
+
+  test('A2 honesty: zero-step plan also refuses synthesis (planner produced no usable steps)', async () => {
+    // Forces the executor to reach buildResult with zero stepResults by
+    // returning a plan that has only one step which fails at dispatch
+    // (executeTask not provided → delegate fails). Earlier version of the
+    // guard required `length > 0` and let the synthesizer run on empty
+    // step summaries → fabricated entire multi-agent simulation from the
+    // goal alone (incident: session 46e730ed).
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'multi-agent debate',
+      steps: [
+        {
+          id: 'step1',
+          description: 'developer answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'developer',
+          budgetFraction: 1,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'fabricated', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'noop', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const result = await executeWorkflow(makeInput('multi-agent debate'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      // No executeTask → delegate-sub-agent step fails at dispatch.
+    });
+    expect(synthesizerCalled).toBe(false);
+    expect(result.synthesizedOutput).not.toContain('fabricated');
+    expect(result.synthesizedOutput).toMatch(/could not produce|step\(s\) failed/i);
+  });
+
+  test('delegate-sub-agent step.agentId is plumbed through to the sub-task', async () => {
+    // Multi-agent fix: planner-assigned `agentId` MUST reach the sub-task's
+    // TaskInput so each delegate runs under a distinct persona. Without
+    // this every delegate falls through to the default coordinator and
+    // "have 3 agents debate" degenerates into one persona role-playing
+    // three (incident: session 46e730ed).
+    const dispatchedAgentIds: Array<string | undefined> = [];
+    const plan = JSON.stringify({
+      goal: 'have developer and architect debate microservices',
+      steps: [
+        {
+          id: 'step1',
+          description: 'developer perspective',
+          strategy: 'delegate-sub-agent',
+          agentId: 'developer',
+          budgetFraction: 0.4,
+        },
+        {
+          id: 'step2',
+          description: 'architect perspective',
+          strategy: 'delegate-sub-agent',
+          agentId: 'architect',
+          budgetFraction: 0.4,
+        },
+        {
+          id: 'step3',
+          description: 'synthesize debate',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1', 'step2'],
+          budgetFraction: 0.2,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'reasoning result', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      dispatchedAgentIds.push(subInput.agentId);
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} answer`,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(
+      makeInput('have developer and architect debate microservices'),
+      {
+        llmRegistry: { selectByTier: () => mockProvider } as any,
+        executeTask,
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(dispatchedAgentIds).toContain('developer');
+    expect(dispatchedAgentIds).toContain('architect');
+    expect(dispatchedAgentIds.length).toBe(2);
+  });
+
+  test('honesty contract is included in the synthesizer system prompt when failures exist', async () => {
+    // Mixed case: one step succeeds, one fails. Synthesizer IS invoked
+    // (we still have something real to deliver) but the honesty contract
+    // must be present in the system prompt and step tags must mark the
+    // failed step. Without this the synthesizer can fabricate around the
+    // failure (the original 429 vector at lower amplitude).
+    let capturedSystemPrompt = '';
+    let capturedUserPrompt = '';
+    const plan = JSON.stringify({
+      goal: 'mixed',
+      steps: [
+        {
+          id: 'step1',
+          description: 'shell that cannot run',
+          command: 'will-not-run',
+          strategy: 'direct-tool',
+          budgetFraction: 0.5,
+        },
+        { id: 'step2', description: 'reason', strategy: 'llm-reasoning', budgetFraction: 0.5 },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          capturedSystemPrompt = req.systemPrompt;
+          capturedUserPrompt = req.userPrompt;
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'step2 result', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+
+    const result = await executeWorkflow(makeInput('mixed'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+    });
+
+    expect(result.status).toBe('partial');
+    expect(capturedSystemPrompt).toContain('HONESTY CONTRACT');
+    expect(capturedSystemPrompt).toMatch(/Do NOT invent|fabricat/i);
+    // Failed step must be tagged so the synthesizer can apply the contract.
+    expect(capturedUserPrompt).toContain('— FAILED');
+    expect(capturedUserPrompt).toContain('[STEP STATUS]');
+  });
 });

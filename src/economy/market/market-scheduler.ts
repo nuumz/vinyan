@@ -14,6 +14,7 @@ import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
 import { BidAccuracyTracker } from './bid-accuracy-tracker.ts';
 import { FamilyStatsTracker } from './family-stats-tracker.ts';
+import { PersonaOverclaimTracker } from './persona-overclaim-tracker.ts';
 import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } from './market-phase.ts';
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
@@ -44,6 +45,15 @@ export class MarketScheduler {
    */
   private familyStats: import('./family-stats-tracker.ts').FamilyStatsTracker;
   /**
+   * Phase-12: persona-keyed overclaim ledger. Increments on every
+   * `bid:overclaim_detected` event the factory routes here, and increments
+   * `observations` on every executeTask completion where the persona had
+   * ≥2 declared skills (the threshold that makes overclaim meaningful).
+   * `allocate()` injects the resulting penalty multiplier into each bid's
+   * `BidderContext` so `scoreBid` attenuates habitually-overclaiming personas.
+   */
+  private personaOverclaimTracker: PersonaOverclaimTracker;
+  /**
    * Tick hooks registered via {@link registerTickHook}. Invoked on every
    * {@link tick} call after the scheduler's own work completes. See
    * `docs/spec/w1-contracts.md` §9.A3.
@@ -56,6 +66,7 @@ export class MarketScheduler {
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
     this.familyStats = new FamilyStatsTracker();
+    this.personaOverclaimTracker = new PersonaOverclaimTracker();
   }
 
   /**
@@ -118,6 +129,16 @@ export class MarketScheduler {
   }
 
   /**
+   * Phase-12: get the persona-keyed overclaim tracker. The factory subscribes
+   * to `bid:overclaim_detected` and `recordObservation`s every executeTask
+   * completion with ≥2 declared skills via this surface; tests inspect the
+   * record state through it as well.
+   */
+  getPersonaOverclaimTracker(): PersonaOverclaimTracker {
+    return this.personaOverclaimTracker;
+  }
+
+  /**
    * Run an auction for a task. Returns null if auction not applicable
    * (falls back to direct selection).
    *
@@ -155,6 +176,18 @@ export class MarketScheduler {
     // Inject accuracy data into contexts
     for (const [bidderId, ctx] of contexts) {
       ctx.bidAccuracy = this.accuracyTracker.getAccuracy(bidderId);
+    }
+
+    // Phase-12: inject per-bid persona overclaim penalty. Looked up by the
+    // bid's `personaId` (NOT bidderId — overclaim is a persona-level signal,
+    // not a provider-level one). Defaults to 1.0 when the bid carries no
+    // persona attribution or the persona is in cold-start.
+    for (const bid of validBids) {
+      const ctx = contexts.get(bid.bidderId);
+      if (!ctx) continue;
+      ctx.personaOverclaimPenalty = bid.personaId
+        ? this.personaOverclaimTracker.getPenaltyMultiplier(bid.personaId)
+        : 1.0;
     }
 
     const result = runAuction(

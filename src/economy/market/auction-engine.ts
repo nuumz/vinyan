@@ -20,6 +20,14 @@ export interface BidderContext {
   failures: number;
   capabilityScore: number;
   bidAccuracy: BidAccuracyRecord | null;
+  /**
+   * Phase-12 — multiplicative attenuator from `PersonaOverclaimTracker`,
+   * looked up by `bid.personaId`. Defaults to 1.0 (no penalty) when the
+   * caller hasn't supplied it, when `bid.personaId` is unset (legacy bid),
+   * or when the persona is still in cold-start (< 10 observations). Range
+   * is `[1 - MAX_PENALTY_DEPTH, 1.0]` = `[0.5, 1.0]`.
+   */
+  personaOverclaimPenalty?: number;
 }
 
 export interface ScoredBid {
@@ -67,11 +75,17 @@ export function computeSkillMatch(
 /**
  * Score a single bid. A3: deterministic formula.
  *
- * score = trust² × capability² × costEfficiency^0.5 × accuracyPremium × skillMatch × remotePenalty
+ * score = trust² × capability² × costEfficiency^0.5 × accuracyPremium
+ *       × skillMatch × overclaimPenalty × remotePenalty
  *
  * `skillMatch` is the Phase-3 addition: required-capability coverage as a
  * multiplicative attenuator. A bid that misses every required capability
  * scores 0 (skillMatch=0), regardless of trust/capability/cost.
+ *
+ * `overclaimPenalty` is the Phase-12 addition: persona-keyed attenuator
+ * driven by `PersonaOverclaimTracker`. Defaults to 1.0 when the caller
+ * doesn't inject a value (legacy bids, cold-start, no persona). Closes the
+ * Phase-11 producer/consumer loop on `bid:overclaim_detected`.
  */
 export function scoreBid(
   bid: EngineBid,
@@ -109,10 +123,23 @@ export function scoreBid(
   // advertise the required capabilities cannot win on trust+cost alone.
   const skillMatch = computeSkillMatch(bid.declaredCapabilityIds, requiredCapabilities);
 
+  // Phase-12: persona overclaim penalty. Default 1.0 keeps legacy callers /
+  // cold-start personas neutral. Past cold-start, ratios above 0 chip away
+  // up to `1 - MAX_PENALTY_DEPTH` = 0.5x.
+  const overclaimPenalty = context.personaOverclaimPenalty ?? 1.0;
+
   // Remote bidders get a trust penalty (A5: prefer local evidence)
   const remotePenalty = bid.bidderType === 'remote' ? 0.9 : 1.0;
 
-  return trust ** 2 * capability ** 2 * costEfficiency ** 0.5 * accuracyPremium * skillMatch * remotePenalty;
+  return (
+    trust ** 2 *
+    capability ** 2 *
+    costEfficiency ** 0.5 *
+    accuracyPremium *
+    skillMatch *
+    overclaimPenalty *
+    remotePenalty
+  );
 }
 
 /**

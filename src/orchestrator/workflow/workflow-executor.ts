@@ -12,6 +12,7 @@ import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
+import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import {
   approvalTimeoutMs,
   awaitApprovalDecision,
@@ -74,6 +75,15 @@ export interface WorkflowExecutorDeps {
   bus?: VinyanBus;
   workspace?: string;
   executeTask?: (subInput: TaskInput) => Promise<TaskResult>;
+  /**
+   * Phase-13 — agent registry handle. Used by the `delegate-sub-agent`
+   * dispatch path to enforce A1 Epistemic Separation: when a sub-task is
+   * delegated for verification work on a code-mutation parent, the executor
+   * forces the canonical Verifier-class persona (typically `reviewer`)
+   * instead of letting the sub-task inherit the parent's agentId. Optional —
+   * when omitted, A1 enforcement is skipped (legacy / test paths).
+   */
+  agentRegistry?: import('../agents/registry.ts').AgentRegistry;
   intentWorkflowPrompt?: string;
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
@@ -97,6 +107,13 @@ export async function executeWorkflow(
     llmRegistry: deps.llmRegistry,
     knowledgeDeps: { agentMemory: deps.agentMemory, worldGraph: deps.worldGraph },
     bus: deps.bus,
+    // Plumb the agent roster into the planner so multi-agent goals can be
+    // mapped to specific personas via `step.agentId`. Without this the
+    // planner has no idea which ids exist and degenerates into a single
+    // role-playing llm-reasoning step (incident: session 46e730ed —
+    // "แบ่ง Agent 3ตัว แข่งกันถามตอบ" produced one model role-playing 3
+    // personas instead of three distinct delegate-sub-agent dispatches).
+    agentRegistry: deps.agentRegistry,
   };
 
   const rawPlan = await planWorkflow(plannerDeps, {
@@ -602,6 +619,29 @@ async function dispatchStrategy(
 
       case 'delegate-sub-agent': {
         if (!deps.executeTask) return { ...base, status: 'failed', output: 'executeTask not available' };
+        // Phase-13 A1 Epistemic Separation. When the parent task is a
+        // code-mutation (the binding domain per the original Phase 1 plan)
+        // AND the sub-step description reads as verification work, the
+        // dispatcher MUST hand the work to a Verifier-class persona — never
+        // inherit the parent's generator persona. Skip when the registry
+        // isn't wired or no canonical verifier is registered (forgiveness
+        // for legacy / minimal setups).
+        const verifierAgentId = deps.agentRegistry
+          ? selectVerifierForDelegation(
+              {
+                description: step.description,
+                parentTaskType: input.taskType,
+                parentAgentId: input.agentId,
+              },
+              deps.agentRegistry,
+            )
+          : null;
+        // Resolution order: A1-verifier override (code-mutation contract) >
+        // planner-assigned step.agentId (multi-agent workflows) > inherit
+        // parent agent / default. Verifier wins when both are set because the
+        // A1 separation contract is a hard invariant; planner-assigned IDs
+        // are advisory.
+        const resolvedAgentId = verifierAgentId ?? step.agentId ?? undefined;
         const subInput: TaskInput = {
           id: `${input.id}-delegate-${step.id}`,
           source: input.source,
@@ -613,7 +653,20 @@ async function dispatchStrategy(
             maxDurationMs: Math.floor(input.budget.maxDurationMs * step.budgetFraction),
             maxRetries: input.budget.maxRetries,
           },
+          ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
+          // Preserve session linkage so the sub-task's trace lands in the
+          // parent's session and downstream observability stays connected.
+          ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+          parentTaskId: input.id,
         };
+        if (verifierAgentId) {
+          deps.bus?.emit('workflow:a1_verifier_routed', {
+            taskId: input.id,
+            stepId: step.id,
+            generatorAgentId: input.agentId ?? null,
+            verifierAgentId,
+          });
+        }
         const taskResult = await deps.executeTask(subInput);
         return {
           ...base,
@@ -674,6 +727,51 @@ async function buildResult(
   deps: WorkflowExecutorDeps,
 ): Promise<WorkflowResult> {
   const allResults = [...stepResults.values()];
+  const failedSteps = allResults.filter((r) => r.status === 'failed');
+  const skippedSteps = allResults.filter((r) => r.status === 'skipped');
+  const completedSteps = allResults.filter((r) => r.status === 'completed');
+
+  // A2 honesty fast-path: when no step succeeded, refuse to call the
+  // synthesizer LLM at all. Free-tier 429 incident on session 44c83a53
+  // showed that handing failed step outputs ("429 error") to the
+  // synthesizer with a "produce the final answer" prompt causes the model
+  // to FABRICATE the missing content (it confabulated three agents'
+  // answers to complete the requested simulation). A deterministic
+  // failure report is the only safe output when there is nothing real to
+  // synthesize from. Also catches the zero-step edge case (planner /
+  // executor exited before producing any results) — without this guard
+  // the synthesizer ran with empty step summaries and fabricated an
+  // entire multi-agent comparison from the goal text alone (incident:
+  // session 46e730ed — "ไม่เห็นแบ่ง Agent 3ตัว แข่งกันถามตอบเลย มันไป
+  // จำลองสมมติ 3agent ใน request เดียวเฉยๆ").
+  if (allResults.length === 0 || completedSteps.length === 0) {
+    const body =
+      allResults.length === 0
+        ? `The workflow produced no step results — the planner or executor exited before any step ran. ` +
+          `No synthesis was attempted: there is nothing real to aggregate, and asking the LLM to ` +
+          `"answer the goal anyway" would fabricate content the workflow never produced.`
+        : (() => {
+            const failureLines = allResults
+              .map((r) => {
+                const snippet = r.output.trim().slice(0, 240) || '(no output)';
+                return `- ${r.stepId} [${r.status}]: ${snippet}`;
+              })
+              .join('\n');
+            return (
+              `The workflow could not produce an answer — all ${allResults.length} step(s) ` +
+              `failed or were skipped:\n\n${failureLines}\n\n` +
+              `No synthesis was attempted: aggregating from zero successful steps would ` +
+              `risk fabricating content that was never produced.`
+            );
+          })();
+    return {
+      status,
+      stepResults: allResults,
+      synthesizedOutput: body,
+      totalTokensConsumed: totalTokens,
+      totalDurationMs: Math.round(durationMs),
+    };
+  }
 
   // Synthesize final output
   let synthesizedOutput: string;
@@ -699,10 +797,26 @@ async function buildResult(
           const cap = isLast ? Math.max(PER_STEP_CAP, r.output.length) : PER_STEP_CAP;
           const body =
             r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
-          const tag = isLast ? `[${r.stepId} — FINAL DRAFT]` : `[${r.stepId}]`;
-          return `${tag} (${r.strategyUsed}):\n${body}`;
+          // Status tag is load-bearing: it marks failed/skipped steps so the
+          // synthesizer cannot silently treat their error text as if it were
+          // a real step output. See A2 honesty contract clause in the system
+          // prompt below — failed/skipped tags are required for that contract
+          // to be enforceable.
+          const statusTag =
+            r.status === 'failed'
+              ? ' — FAILED'
+              : r.status === 'skipped'
+                ? ' — SKIPPED'
+                : isLast
+                  ? ' — FINAL DRAFT'
+                  : '';
+          return `[${r.stepId}${statusTag}] (${r.strategyUsed}):\n${body}`;
         });
         const stepSummaries = stepSections.join('\n\n---\n\n');
+        const failureNotice =
+          failedSteps.length > 0 || skippedSteps.length > 0
+            ? `\n\n[STEP STATUS] ${completedSteps.length} succeeded, ${failedSteps.length} failed, ${skippedSteps.length} skipped. Honor the honesty contract for failed/skipped steps.`
+            : '';
         const synthesizerSystemPrompt =
           'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
           'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
@@ -717,7 +831,13 @@ async function buildResult(
           'the relevant subset, still inside a fence). NEVER inline shell output as prose; the user needs ' +
           'the column structure. ' +
           'Never narrate the workflow itself ("step 1 found…", "in this synthesis…"). ' +
-          'Do not include meta-commentary, headers like "Final answer", or framing about prior steps.';
+          'Do not include meta-commentary, headers like "Final answer", or framing about prior steps. ' +
+          'HONESTY CONTRACT (non-negotiable): when a step is tagged "— FAILED" or "— SKIPPED", you MUST ' +
+          'tell the user that step did not produce real output. Do NOT invent, simulate, or fabricate the ' +
+          'missing content to make the answer look complete. Surface failures plainly (e.g., ' +
+          '"I could not run X because of an error" / "ขั้นตอน X ไม่สำเร็จ") and only deliver content ' +
+          'derived from the COMPLETED steps. Fabricating to fill gaps is forbidden, even if the user ' +
+          'goal asks for a complete deliverable.';
         const synthesizerUserPrompt = (() => {
           // Anchor the synthesis on prior conversation when the workflow is
           // a follow-up turn ("write chapter 2"). Without this the
@@ -734,7 +854,7 @@ async function buildResult(
             `User's goal: ${plan.goal}\n\n` +
             transcriptBlock +
             `Synthesis instruction (planner-suggested): ${plan.synthesisPrompt}\n\n` +
-            `Step outputs (the LAST step is usually the polished deliverable):\n\n${stepSummaries}`
+            `Step outputs (the LAST step is usually the polished deliverable):\n\n${stepSummaries}${failureNotice}`
           );
         })();
         const request = {

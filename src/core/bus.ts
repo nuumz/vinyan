@@ -208,6 +208,7 @@ export interface VinyanBusEvents {
       | 'oracle-unavailable'
       | 'llm-provider-failure'
       | 'tool-timeout'
+      | 'tool-failure'
       | 'rate-limit'
       | 'peer-unavailable'
       | 'trace-store-write-failure'
@@ -978,6 +979,26 @@ export interface VinyanBusEvents {
   // K2.2: Engine selection events
   'engine:selected': { taskId: string; provider: string; trustScore: number; reason: string };
 
+  // Phase-11: skill usage instrumentation. `skill:viewed` is emitted by
+  // ToolExecutor when the LLM invokes the `skill_view` tool with a skill id.
+  // SkillUsageTracker subscribes and aggregates per-task viewed sets so the
+  // overclaim comparator can flag bids that loaded more skills than they used.
+  'skill:viewed': { taskId: string; skillId: string };
+  /**
+   * Phase-11: emitted at task completion when a bid's loaded-skill loadout
+   * exceeded what the LLM actually viewed during execution. Producer:
+   * factory's executeTask wrapper after recordTaskOutcomeForPersona. M1
+   * mitigation — fills the long-reserved `overclaim_violations` counter
+   * surface with real data.
+   */
+  'bid:overclaim_detected': {
+    taskId: string;
+    agentId: string;
+    declaredCount: number;
+    viewedCount: number;
+    viewedRatio: number;
+  };
+
   // Crash Recovery: task checkpoint events
   'task:recovered': { taskId: string; input: TaskInput; abandoned: boolean };
 
@@ -1005,6 +1026,27 @@ export interface VinyanBusEvents {
     basis: string;
     passedChecks: string[];
     failedChecks: string[];
+    accountabilityGrade?: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+  };
+  'goal-loop:accountability-block': {
+    taskId: string;
+    iteration: number;
+    score: number;
+    blockers: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').GoalBlocker[];
+  };
+  /**
+   * Slice 4 Gap B (A7): emitted when the worker self-graded and the
+   * deterministic evaluator computed its own grade. Pure observation —
+   * the orchestrator does not act on this directly; it is consumed by
+   * dashboards and the calibration ledger to track over/underconfidence.
+   */
+  'goal-loop:prediction-error': {
+    taskId: string;
+    iteration: number;
+    selfGrade: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+    deterministicGrade: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+    magnitude: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').PredictionErrorMagnitude;
+    direction: 'aligned' | 'overconfident' | 'underconfident';
   };
   'goal-loop:exhausted': { taskId: string; iteration: number };
   'goal-loop:no-replan': { taskId: string; iteration: number };

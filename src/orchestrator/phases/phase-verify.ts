@@ -12,6 +12,7 @@ import type { DAGExecutionResult } from '../dag-executor.ts';
 import { classifyAllFailures } from '../failure-classifier.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import { applyRoutingGovernance } from '../governance-provenance.ts';
+import { deriveOracleIndependenceAudit } from '../oracle-independence.ts';
 import {
   type ConfidenceDecision,
   computePipelineConfidence,
@@ -365,6 +366,11 @@ export async function executeVerifyPhase(
     frameworkMarkers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
     verificationConfidence: routing.level > 0 ? verificationConfidence : undefined,
     epistemicDecision: verification.epistemicDecision,
+    oracleIndependence: deriveOracleIndependenceAudit({
+      verdicts: verification.verdicts,
+      aggregateConfidence: verification.aggregateConfidence,
+      passed: verification.passed,
+    }),
     confidenceDecision: confidenceDecision
       ? { action: confidenceDecision, confidence: pipelineConf?.composite ?? 0, reason: pipelineConf?.formula }
       : undefined,

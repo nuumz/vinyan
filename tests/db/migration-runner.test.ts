@@ -157,6 +157,15 @@ describe('MigrationRunner', () => {
     expect(names.has('goal_grounding')).toBe(true);
   });
 
+  test('A5 oracle independence audit column is available after migrations', () => {
+    runner.migrate(db, ALL_MIGRATIONS);
+
+    const columns = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('oracle_independence')).toBe(true);
+  });
+
   // ── Acceptance Criterion 3: Failed migration rolls back ─
   test('failed migration rolls back that migration only', () => {
     const failingMigration: Migration = {

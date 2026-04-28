@@ -4,15 +4,17 @@ import {
   EdgeCaseSchema,
   isSpecApproved,
   SPEC_ARTIFACT_VERSION,
+  type SpecArtifact,
+  type SpecArtifactCode,
   SpecArtifactSchema,
   specToAcceptanceCriteriaList,
   specToConstraintsList,
-  type SpecArtifact,
 } from '../../../src/orchestrator/spec/spec-artifact.ts';
 
-function makeSpec(overrides: Partial<SpecArtifact> = {}): SpecArtifact {
-  const base: SpecArtifact = {
+function makeSpec(overrides: Partial<SpecArtifactCode> = {}): SpecArtifactCode {
+  const base: SpecArtifactCode = {
     version: SPEC_ARTIFACT_VERSION,
+    variant: 'code' as const,
     summary: 'Add budget tracker for per-task cost accounting.',
     acceptanceCriteria: [
       { id: 'ac-1', description: 'Cost ledger writes a row per task', testable: true, oracle: 'test' },
@@ -123,5 +125,81 @@ describe('isSpecApproved', () => {
 
   test('false when only approvedBy is set', () => {
     expect(isSpecApproved(makeSpec({ approvedBy: 'human' }))).toBe(false);
+  });
+});
+
+// Gap C (2026-04-28): reasoning variant schema + projection.
+describe('reasoning variant', () => {
+  const baseReasoning: SpecArtifact = {
+    version: SPEC_ARTIFACT_VERSION,
+    variant: 'reasoning',
+    summary: 'Compare three caching strategies for the order service.',
+    acceptanceCriteria: [
+      { id: 'ac-1', description: 'Each strategy listed with pros/cons', testable: true, oracle: 'goal-alignment' },
+      { id: 'ac-2', description: 'Recommendation justified', testable: true, oracle: 'critic' },
+    ],
+    expectedDeliverables: [
+      { kind: 'comparison', audience: 'platform engineer', format: 'table' },
+    ],
+    scopeBoundaries: {
+      outOfScope: ['client-side caching'],
+      assumptions: ['p95 read latency target is 50ms'],
+    },
+    edgeCases: [],
+    openQuestions: [],
+  };
+
+  test('schema accepts a well-formed reasoning spec', () => {
+    expect(SpecArtifactSchema.safeParse(baseReasoning).success).toBe(true);
+  });
+
+  test('reasoning variant rejects mechanical oracles (ast / type / test / lint / dep)', () => {
+    const bad = {
+      ...baseReasoning,
+      acceptanceCriteria: [
+        { id: 'ac-1', description: 'Pass tests', testable: true, oracle: 'test' as const },
+      ],
+    };
+    expect(SpecArtifactSchema.safeParse(bad).success).toBe(false);
+  });
+
+  test('reasoning variant caps acceptance criteria at 7', () => {
+    const tooMany = Array.from({ length: 8 }, (_, i) => ({
+      id: `ac-${i}`,
+      description: `criterion ${i}`,
+      testable: true,
+      oracle: 'goal-alignment' as const,
+    }));
+    const result = SpecArtifactSchema.safeParse({ ...baseReasoning, acceptanceCriteria: tooMany });
+    expect(result.success).toBe(false);
+  });
+
+  test('schema preprocess defaults missing variant to "code" for backwards compat', () => {
+    const persisted = {
+      version: SPEC_ARTIFACT_VERSION,
+      // variant intentionally omitted — simulates pre-Gap C persisted spec
+      summary: 'Legacy spec without variant field',
+      acceptanceCriteria: [
+        { id: 'ac-1', description: 'Does the thing', testable: true, oracle: 'test' as const },
+      ],
+      apiShape: [],
+      dataContracts: [],
+      edgeCases: [],
+      openQuestions: [],
+    };
+    const result = SpecArtifactSchema.safeParse(persisted);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.variant).toBe('code');
+  });
+
+  test('specToConstraintsList projects out-of-scope and assumptions for reasoning variant', () => {
+    const constraints = specToConstraintsList(baseReasoning);
+    expect(constraints).toContain('MUST: out-of-scope: client-side caching');
+    expect(constraints).toContain('ASSUME: p95 read latency target is 50ms');
+  });
+
+  test('specToAcceptanceCriteriaList works variant-agnostically', () => {
+    const list = specToAcceptanceCriteriaList(baseReasoning);
+    expect(list).toEqual(['Each strategy listed with pros/cons', 'Recommendation justified']);
   });
 });

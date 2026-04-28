@@ -249,3 +249,55 @@ describe('composeDeterministicCandidate — creative-deliverable pre-rule', () =
     expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
   });
 });
+
+describe('composeDeterministicCandidate — multi-agent delegation pre-rule', () => {
+  // Pre-rule from session 44c83a53 incident — coordinator at routing level 0
+  // hallucinated delegation because `delegate_task` requires L2+. Pattern
+  // catches plural/numbered "agents" + delegation/competition verb and forces
+  // agentic-workflow.
+  it('catches "แบ่ง Agent 3ตัว แข่งกันถามตอบ" regardless of STU domain', () => {
+    const result = composeDeterministicCandidate(
+      input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.type).toBe('known');
+    expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+    expect(result.deterministicCandidate.ambiguous).toBe(false);
+  });
+
+  it('catches English "have 3 agents debate"', () => {
+    const result = composeDeterministicCandidate(
+      input('have 3 agents debate the merits of microservices'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+  });
+
+  it('catches "split into multiple agents"', () => {
+    const result = composeDeterministicCandidate(
+      input('split this into multiple agents and let them compete'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+  });
+
+  it('does NOT trigger on singular "what is an agent"', () => {
+    const result = composeDeterministicCandidate(
+      input('what is an agent in vinyan'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+  });
+
+  it('does NOT trigger on conversational mention "the agent helped me"', () => {
+    const result = composeDeterministicCandidate(
+      input('the agent helped me find the answer yesterday'),
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+  });
+});

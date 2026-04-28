@@ -35,9 +35,13 @@ import type { GatewayConfig, PluginsConfig } from '../config/schema.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import { GatewayIdentityStore } from '../db/gateway-identity-store.ts';
 import { PluginAuditStore } from '../db/plugin-audit-store.ts';
+import { DiscordAdapter } from '../gateway/adapters/discord.ts';
+import { SlackAdapter } from '../gateway/adapters/slack.ts';
 import { TelegramAdapter } from '../gateway/adapters/telegram.ts';
 import { GatewayDispatcher } from '../gateway/dispatcher.ts';
 import { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
+import { registerDiscordAdapter } from '../gateway/register-discord.ts';
+import { registerSlackAdapter } from '../gateway/register-slack.ts';
 import { registerTelegramAdapter } from '../gateway/register-telegram.ts';
 import { GatewayRateLimiter, type RateLimitConfig } from '../gateway/security/rate-limiter.ts';
 import type { GatewayInboundEnvelopeMinimal } from '../gateway/types.ts';
@@ -47,10 +51,6 @@ import { discoverPlugins } from '../plugin/discovery.ts';
 import { InprocLoader } from '../plugin/loader.ts';
 import { PluginRegistry } from '../plugin/registry.ts';
 import type { TrustConfig } from '../plugin/signature.ts';
-import { DiscordAdapter } from '../gateway/adapters/discord.ts';
-import { SlackAdapter } from '../gateway/adapters/slack.ts';
-import { registerDiscordAdapter } from '../gateway/register-discord.ts';
-import { registerSlackAdapter } from '../gateway/register-slack.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
 import { registerSessionSearchTool } from './tools/register-session-search.ts';
 import { registerSkillTools } from './tools/register-skill-tools.ts';
@@ -177,7 +177,7 @@ export async function initializePlugins(opts: PluginInitOptions): Promise<Plugin
       });
       registerSkillTools({
         toolRegistry: opts.toolRegistry,
-        deps: { artifactStore },
+        deps: { artifactStore, bus: opts.bus },
       });
       skillToolsRegistered = true;
     } catch (err) {

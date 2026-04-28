@@ -13,14 +13,16 @@ import {
   isSpecPhaseForceDisabled,
   isSpecPhaseForceEnabled,
   projectSpecIntoInput,
-  shouldRunSpecPhase,
   SPEC_PHASE_CONSTRAINTS,
   type SpecDrafter,
+  selectSpecVariant,
+  shouldRunSpecPhase,
 } from '../../../src/orchestrator/phases/phase-spec.ts';
 import type { PhaseContext } from '../../../src/orchestrator/phases/types.ts';
 import {
   SPEC_ARTIFACT_VERSION,
   type SpecArtifact,
+  type SpecArtifactCode,
 } from '../../../src/orchestrator/spec/spec-artifact.ts';
 import type {
   RoutingDecision,
@@ -28,9 +30,10 @@ import type {
   TaskInput,
 } from '../../../src/orchestrator/types.ts';
 
-function makeSpec(overrides: Partial<SpecArtifact> = {}): SpecArtifact {
+function makeSpec(overrides: Partial<SpecArtifactCode> = {}): SpecArtifactCode {
   return {
     version: SPEC_ARTIFACT_VERSION,
+    variant: 'code' as const,
     summary: 'Add cost ledger feature',
     acceptanceCriteria: [
       { id: 'ac-1', description: 'Ledger writes a row per task', testable: true, oracle: 'test' },
@@ -124,17 +127,21 @@ describe('shouldRunSpecPhase — gating rules', () => {
     expect(shouldRunSpecPhase(makeInput(), makeUnderstanding(), makeRouting(0))).toBe(false);
   });
 
-  test('disabled by default for code-mutation domain (Phase A — opt-in)', () => {
-    // Phase A ships opt-in to avoid regressing existing core-loop tests.
-    // Phase B will flip this default; the test documents the current contract.
+  test('enabled by default for code-mutation domain at L1+', () => {
     expect(
       shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'code-mutation' }), makeRouting(2)),
+    ).toBe(true);
+  });
+
+  test('disabled by default for conversational domain at all levels', () => {
+    expect(
+      shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'conversational' }), makeRouting(2)),
     ).toBe(false);
   });
 
-  test('disabled by default for non-code-mutation domains', () => {
+  test('disabled by default for reasoning domains below L2', () => {
     expect(
-      shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'general-reasoning' }), makeRouting(2)),
+      shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'general-reasoning' }), makeRouting(1)),
     ).toBe(false);
   });
 
@@ -280,6 +287,91 @@ describe('executeSpecPhase — behavior', () => {
     if (outcome.action === 'continue' && outcome.value.spec) {
       expect(outcome.value.spec.approvedBy).toBe('human');
       expect(outcome.value.spec.approvedAt).toBeGreaterThan(0);
+    }
+  });
+});
+
+// Gap C (2026-04-28): reasoning-variant Spec phase for non-code tasks.
+describe('Gap C — reasoning variant', () => {
+  test('selectSpecVariant returns "code" for code-mutation, "reasoning" otherwise', () => {
+    expect(selectSpecVariant(makeUnderstanding({ taskDomain: 'code-mutation' }))).toBe('code');
+    expect(selectSpecVariant(makeUnderstanding({ taskDomain: 'code-reasoning' }))).toBe('reasoning');
+    expect(selectSpecVariant(makeUnderstanding({ taskDomain: 'general-reasoning' }))).toBe('reasoning');
+    expect(selectSpecVariant(makeUnderstanding({ taskDomain: 'conversational' }))).toBe('reasoning');
+  });
+
+  test('shouldRunSpecPhase: code-reasoning at L2+ runs, but L1 does not', () => {
+    const reasoning = makeUnderstanding({ taskDomain: 'code-reasoning' });
+    expect(shouldRunSpecPhase(makeInput(), reasoning, makeRouting(1))).toBe(false);
+    expect(shouldRunSpecPhase(makeInput(), reasoning, makeRouting(2))).toBe(true);
+    expect(shouldRunSpecPhase(makeInput(), reasoning, makeRouting(3))).toBe(true);
+  });
+
+  test('shouldRunSpecPhase: general-reasoning at L2+ runs', () => {
+    const general = makeUnderstanding({ taskDomain: 'general-reasoning' });
+    expect(shouldRunSpecPhase(makeInput(), general, makeRouting(2))).toBe(true);
+  });
+
+  test('shouldRunSpecPhase: conversational never runs by default', () => {
+    const conv = makeUnderstanding({ taskDomain: 'conversational' });
+    expect(shouldRunSpecPhase(makeInput(), conv, makeRouting(0))).toBe(false);
+    expect(shouldRunSpecPhase(makeInput(), conv, makeRouting(3))).toBe(false);
+  });
+
+  test('shouldRunSpecPhase: SPEC_PHASE:on still wins for L0 reasoning', () => {
+    const input = makeInput({ constraints: [SPEC_PHASE_CONSTRAINTS.enable] });
+    const reasoning = makeUnderstanding({ taskDomain: 'general-reasoning' });
+    expect(shouldRunSpecPhase(input, reasoning, makeRouting(0))).toBe(true);
+  });
+
+  test('reasoning drafter path produces an approved spec with scope-boundary constraints projected', async () => {
+    const reasoningSpec: SpecArtifact = {
+      version: SPEC_ARTIFACT_VERSION,
+      variant: 'reasoning',
+      summary: 'Compare three caching strategies for the order service.',
+      acceptanceCriteria: [
+        { id: 'ac-1', description: 'Each strategy listed with pros/cons', testable: true, oracle: 'goal-alignment' },
+        { id: 'ac-2', description: 'Final recommendation is justified', testable: true, oracle: 'critic' },
+      ],
+      expectedDeliverables: [
+        { kind: 'comparison', audience: 'platform engineer', format: 'table' },
+      ],
+      scopeBoundaries: {
+        outOfScope: ['client-side caching', 'database replication'],
+        assumptions: ['p95 read latency target is 50ms'],
+      },
+      edgeCases: [],
+      openQuestions: [],
+    };
+    const input = makeInput({ constraints: [SPEC_PHASE_CONSTRAINTS.enable] });
+    const drafter: SpecDrafter = { draft: async () => reasoningSpec };
+    const { ctx, bus } = makeContext(input, drafter);
+    let drafted = false;
+    bus.on('spec:drafted', () => {
+      drafted = true;
+    });
+    const outcome = await executeSpecPhase(
+      ctx,
+      makeRouting(2),
+      makeUnderstanding({ taskDomain: 'general-reasoning' }),
+      { drafter },
+    );
+    expect(drafted).toBe(true);
+    expect(outcome.action).toBe('continue');
+    if (outcome.action === 'continue') {
+      expect(outcome.value.skipped).toBe(false);
+      expect(outcome.value.spec?.variant).toBe('reasoning');
+      // Acceptance criteria projected to enhancedInput
+      expect(outcome.value.enhancedInput?.acceptanceCriteria).toContain(
+        'Each strategy listed with pros/cons',
+      );
+      // Scope-boundary projection — the topical guardrail from §5 of the design doc
+      expect(outcome.value.enhancedInput?.constraints).toContain(
+        'MUST: out-of-scope: client-side caching',
+      );
+      expect(outcome.value.enhancedInput?.constraints).toContain(
+        'ASSUME: p95 read latency target is 50ms',
+      );
     }
   });
 });

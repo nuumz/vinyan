@@ -98,6 +98,23 @@ describe('manifestFor', () => {
     expect(byName.get('plan_update')!.toolKind).toBe('control');
   });
 
+  test('attempt_completion exposes selfAssessment with grade enum', () => {
+    const manifest = manifestFor(routing(3));
+    const byName = new Map(manifest.map((d) => [d.name, d]));
+    const ac = byName.get('attempt_completion')!;
+    const props = ac.inputSchema.properties as Record<string, unknown>;
+    expect(props.selfAssessment).toBeDefined();
+    const sa = props.selfAssessment as {
+      type: string;
+      properties: { grade: { enum: string[]; type: string } };
+      required: string[];
+    };
+    expect(sa.type).toBe('object');
+    expect(sa.properties.grade.type).toBe('string');
+    expect(sa.properties.grade.enum).toEqual(['A', 'B', 'C']);
+    expect(sa.required).toContain('grade');
+  });
+
   test('all descriptors have toolKind set', () => {
     const manifest = manifestFor(routing(3));
     for (const d of manifest) {

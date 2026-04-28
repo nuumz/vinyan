@@ -58,6 +58,36 @@ export interface CriticResult {
 export interface CriticContext {
   riskScore?: number;
   routingLevel?: number;
+  /**
+   * Accountability slice 4: previous outer-loop iteration's deterministic
+   * accountability grade (A/B/C) computed by `DefaultGoalEvaluator`. When
+   * present, the critic prompt surfaces it so the reviewer is anchored on
+   * what the orchestrator's verifier already concluded — avoiding the
+   * "first impression" failure mode where the critic re-approves work
+   * that was just rejected for the same reason.
+   *
+   * A1-safe: this is data threaded between iterations, not a verdict the
+   * critic adopts. The critic still produces its own independent review.
+   */
+  priorAccountabilityGrade?: 'A' | 'B' | 'C';
+  /** Blocker categories from the previous iteration's grade (≤ 6, deduped). */
+  priorBlockerCategories?: string[];
+  /**
+   * Slice 4 follow-up: previous iteration's worker self-grade vs. the
+   * deterministic grade. When the worker was overconfident (self > eval),
+   * the critic prompt surfaces a calibration warning telling the reviewer
+   * to be skeptical of self-graded A's lacking strong evidence.
+   *
+   * A1-safe: data only. The critic still produces its own independent
+   * verdict; this just primes scrutiny on the dimension that already
+   * failed once.
+   */
+  priorPredictionError?: {
+    selfGrade: 'A' | 'B' | 'C';
+    deterministicGrade: 'A' | 'B' | 'C';
+    magnitude: 'aligned' | 'minor' | 'severe';
+    direction: 'aligned' | 'overconfident' | 'underconfident';
+  };
 }
 
 /** CriticEngine interface — implemented by LLMCriticImpl */

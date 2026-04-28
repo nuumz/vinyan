@@ -72,6 +72,14 @@ export interface WorkerLoopResult {
    * status='input-required' (no retry, no escalation).
    */
   needsUserInput?: boolean;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `done` or `uncertain` turn. Forwarded to the orchestrator's GoalEvaluator
+   * so it can compute prediction-error vs the deterministic grade (A7).
+   * Optional — agents that don't comply with the accountability contract
+   * simply omit this and the evaluator skips prediction-error scoring.
+   */
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 export interface AgentLoopDeps {
@@ -548,6 +556,7 @@ function buildUncertainResult(
   needsUserInput?: boolean,
   cacheReadTokens?: number,
   cacheCreationTokens?: number,
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] },
 ): WorkerLoopResult {
   return {
     mutations,
@@ -562,6 +571,7 @@ function buildUncertainResult(
     proposedToolCalls: [],
     nonRetryableError,
     ...(needsUserInput ? { needsUserInput: true } : {}),
+    ...(selfAssessment ? { selfAssessment } : {}),
   };
 }
 
@@ -951,6 +961,7 @@ export async function runAgentLoop(
     allowedPaths: input.targetFiles ?? [],
     workspace: deps.workspace,
     overlayDir: overlay.dir,
+    taskId: input.id,
     onDelegate:
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)
@@ -1533,6 +1544,7 @@ export async function runAgentLoop(
           transcript,
           isUncertain: false,
           proposedToolCalls: [],
+          ...(turn.selfAssessment ? { selfAssessment: turn.selfAssessment } : {}),
         };
       } else if (turn.type === 'uncertain') {
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
@@ -1567,6 +1579,7 @@ export async function runAgentLoop(
           needsUserInput,
           cacheReadTokens > 0 ? cacheReadTokens : undefined,
           cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
+          turn.selfAssessment,
         );
       }
     }

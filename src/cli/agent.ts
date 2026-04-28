@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { loadConfig } from '../config/index.ts';
+import { loadBoundSkills } from '../orchestrator/agents/persona-skill-loader.ts';
 import { loadAgentRegistry } from '../orchestrator/agents/registry.ts';
 import { resolveSoulPath } from '../orchestrator/agents/soul-loader.ts';
 
@@ -45,19 +46,26 @@ function runList(workspace: string): void {
   const agents = registry.listAgents();
   const defaultId = registry.defaultAgent().id;
 
-  console.log(`=== Specialist Agents (${agents.length}) ===\n`);
+  console.log(`=== Specialist Personas (${agents.length}) ===\n`);
   for (const a of agents) {
     const tag = a.builtin ? 'built-in' : 'custom';
     const def = a.id === defaultId ? ' ★' : '';
-    console.log(`  ${a.id}${def}  [${tag}]`);
+    const role = a.role ? `role=${a.role}` : 'role=—';
+    console.log(`  ${a.id}${def}  [${tag}]  ${role}`);
     console.log(`    ${a.name}`);
     console.log(`    ${a.description}`);
     if (a.routingHints?.preferDomains) {
       console.log(`    domains: ${a.routingHints.preferDomains.join(', ')}`);
     }
+    // Phase-9: surface bound skills so users can see the persona+skill state.
+    const bound = loadBoundSkills(workspace, a.id);
+    if (bound.length > 0) {
+      const labels = bound.map((r) => (r.pinnedVersion ? `${r.id}@${r.pinnedVersion}` : r.id));
+      console.log(`    bound skills: ${labels.join(', ')}`);
+    }
     console.log('');
   }
-  console.log('★ = default agent (selected when no --agent flag and classifier unsure)');
+  console.log('★ = default persona (selected when no --agent flag and classifier unsure)');
 }
 
 function runShow(id: string | undefined, workspace: string): void {
@@ -84,8 +92,10 @@ function runShow(id: string | undefined, workspace: string): void {
     console.log('\nRouting hints:');
     if (agent.routingHints.minLevel !== undefined) console.log(`  min level:  ${agent.routingHints.minLevel}`);
     if (agent.routingHints.preferDomains) console.log(`  domains:    ${agent.routingHints.preferDomains.join(', ')}`);
-    if (agent.routingHints.preferExtensions) console.log(`  extensions: ${agent.routingHints.preferExtensions.join(', ')}`);
-    if (agent.routingHints.preferFrameworks) console.log(`  frameworks: ${agent.routingHints.preferFrameworks.join(', ')}`);
+    if (agent.routingHints.preferExtensions)
+      console.log(`  extensions: ${agent.routingHints.preferExtensions.join(', ')}`);
+    if (agent.routingHints.preferFrameworks)
+      console.log(`  frameworks: ${agent.routingHints.preferFrameworks.join(', ')}`);
   }
 
   if (agent.allowedTools?.length) {
@@ -117,7 +127,8 @@ function printAgentContextSummary(workspace: string, agentId: string): void {
     if (!existsSync(dbPath)) return;
     // Lazy import to avoid DB dependency in --help paths
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    const { AgentContextStore } = require('../db/agent-context-store.ts') as typeof import('../db/agent-context-store.ts');
+    const { AgentContextStore } =
+      require('../db/agent-context-store.ts') as typeof import('../db/agent-context-store.ts');
     const db = new Database(dbPath);
     try {
       const store = new AgentContextStore(db);
@@ -147,9 +158,9 @@ function printAgentSkillCount(workspace: string, agentId: string): void {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     const db = new Database(dbPath);
     try {
-      const row = db
-        .prepare(`SELECT COUNT(*) AS n FROM cached_skills WHERE agent_id = ?`)
-        .get(agentId) as { n: number };
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM cached_skills WHERE agent_id = ?`).get(agentId) as {
+        n: number;
+      };
       if (row.n > 0) console.log(`  skills:      ${row.n}`);
     } finally {
       db.close();
@@ -215,9 +226,7 @@ function runAdd(argv: string[], workspace: string): void {
       writeFileSync(soulPath, buildSoulTemplate(id, name, desc), 'utf-8');
       console.log(`Scaffolded ${soulPath} — fill in the persona / philosophy / strategies sections.`);
     } catch (err) {
-      console.warn(
-        `Could not write soul template at ${soulPath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.warn(`Could not write soul template at ${soulPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {
     console.log(`Soul file already exists at ${soulPath} — left unchanged.`);

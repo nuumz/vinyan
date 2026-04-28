@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { Fact } from '../core/types.ts';
+import { buildShortCircuitProvenance } from './governance-provenance.ts';
 import type {
   ExecutionTrace,
   GoalGroundingAction,
   GoalGroundingCheck,
   GoalGroundingPhase,
   GovernanceEvidenceReference,
+  GovernanceProvenance,
   RoutingDecision,
   SemanticTaskUnderstanding,
   TaskInput,
@@ -28,12 +30,13 @@ interface GoalGroundingInput {
   routing: RoutingDecision;
   phase: GoalGroundingPhase;
   startedAt: number;
+  rootGoal?: string;
   worldGraph?: WorldGraphReader;
   now?: number;
 }
 
-export function shouldRunGoalGrounding(args: Pick<GoalGroundingInput, 'input' | 'routing' | 'startedAt'>): boolean {
-  const elapsedMs = Date.now() - args.startedAt;
+export function shouldRunGoalGrounding(args: Pick<GoalGroundingInput, 'input' | 'routing' | 'startedAt' | 'now'>): boolean {
+  const elapsedMs = (args.now ?? Date.now()) - args.startedAt;
   return (
     args.routing.level >= 2 ||
     (args.routing.riskScore ?? 0) >= HIGH_RISK_SCORE ||
@@ -46,7 +49,8 @@ export function evaluateGoalGrounding(args: GoalGroundingInput): GoalGroundingCh
   if (!shouldRunGoalGrounding(args)) return undefined;
 
   const now = args.now ?? Date.now();
-  const rootGoal = normalizeGoal(stripReplanDirective(args.understanding.rawGoal || args.input.goal));
+  const rootGoalSource = args.rootGoal ?? (args.understanding.rawGoal || args.input.goal);
+  const rootGoal = normalizeGoal(stripReplanDirective(rootGoalSource));
   const currentGoal = normalizeGoal(stripReplanDirective(args.input.goal));
   const goalDrift = hasGoalDrift(rootGoal, currentGoal);
   const targets = collectGroundingTargets(args.input, args.understanding);
@@ -79,6 +83,25 @@ export function buildGoalGroundingClarificationQuestions(check: GoalGroundingChe
   return [
     `A10 goal grounding detected possible goal drift during ${check.phase}: ${check.reason}. Should I continue with the current execution goal, or re-ground to the original intent?`,
   ];
+}
+
+export function buildGoalGroundingProvenance(input: TaskInput, check: GoalGroundingCheck): GovernanceProvenance {
+  return buildShortCircuitProvenance({
+    input,
+    decisionId: `goal-grounding-${check.action}`,
+    attributedTo: 'goalGroundingPolicy',
+    wasGeneratedBy: 'evaluateGoalGrounding',
+    reason: check.reason,
+    evidence: [
+      {
+        kind: 'other',
+        source: 'goal-grounding-check',
+        observedAt: check.checkedAt,
+        summary: `phase=${check.phase}; action=${check.action}; goalDrift=${check.goalDrift}; freshnessDowngraded=${check.freshnessDowngraded}`,
+      },
+      ...check.evidence,
+    ],
+  });
 }
 
 export function applyGoalGroundingConfidenceDowngrade<T extends ExecutionTrace>(
@@ -178,7 +201,72 @@ function isStaleForGrounding(fact: Fact, now: number): boolean {
 function hasGoalDrift(rootGoal: string, currentGoal: string): boolean {
   if (!rootGoal || !currentGoal) return false;
   if (rootGoal === currentGoal) return false;
-  return !rootGoal.includes(currentGoal) && !currentGoal.includes(rootGoal);
+  // Containment fast-path: a refinement (current ⊆ root or root ⊆ current) is
+  // not drift — it is the same intent at a different specificity level.
+  if (rootGoal.includes(currentGoal) || currentGoal.includes(rootGoal)) return false;
+  // Token-Jaccard drift detection: when the goals share insufficient content
+  // vocabulary, treat as drift. Rule-based (A3 safe) — no LLM in the path.
+  // Returns 1.0 when either side has no content tokens, so we never flag a
+  // "drift" purely because we couldn't extract enough vocabulary.
+  return tokenJaccard(rootGoal, currentGoal) < GOAL_DRIFT_OVERLAP_THRESHOLD;
+}
+
+/**
+ * A10 broader grounding (2026-04-28): replaces the earlier substring-only
+ * check. Threshold deliberately conservative — drift triggers a clarification
+ * pause, so over-flagging is more disruptive than missing subtle drift.
+ *
+ * Tunable via const (no runtime knob yet); revisit if dashboards show
+ * pause noise.
+ */
+const GOAL_DRIFT_OVERLAP_THRESHOLD = 0.3;
+
+/** Common English stopwords stripped before Jaccard scoring. Kept small +
+ *  literal — large stopword lists tend to drop content tokens like "user". */
+const GOAL_TOKEN_STOPWORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'to',
+  'for',
+  'of',
+  'in',
+  'on',
+  'at',
+  'with',
+  'and',
+  'or',
+  'is',
+  'are',
+  'be',
+  'that',
+  'this',
+  'it',
+  'as',
+  'by',
+  'from',
+  'into',
+  'when',
+  'then',
+]);
+
+function tokenizeGoal(goal: string): string[] {
+  return goal
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length >= 3 && !GOAL_TOKEN_STOPWORDS.has(token));
+}
+
+function tokenJaccard(a: string, b: string): number {
+  const ta = new Set(tokenizeGoal(a));
+  const tb = new Set(tokenizeGoal(b));
+  if (ta.size === 0 || tb.size === 0) return 1;
+  let intersection = 0;
+  for (const token of ta) {
+    if (tb.has(token)) intersection++;
+  }
+  const union = ta.size + tb.size - intersection;
+  return union === 0 ? 1 : intersection / union;
 }
 
 function stripReplanDirective(goal: string): string {

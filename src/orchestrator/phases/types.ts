@@ -195,6 +195,13 @@ export interface WorkerResult {
    * this flag to short-circuit into a TaskResult with status='input-required'.
    */
   needsUserInput?: boolean;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `attempt_completion` call. Forwarded unchanged to TaskResult so the
+   * deterministic GoalEvaluator can score prediction error against its own
+   * grade (A7). Optional — not all worker types or older agents emit it.
+   */
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 export interface VerificationResult {

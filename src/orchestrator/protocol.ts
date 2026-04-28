@@ -585,7 +585,7 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
      * Safe no-op when false or when the provider lacks streaming support.
      */
     stream: z.boolean().optional(),
-    /** Multi-agent: specialist id selected for this task (ts-coder, writer, ...). */
+    /** Multi-agent: specialist id selected for this task (developer, author, ...). */
     agentId: z.string().optional(),
     /** Multi-agent: specialist persona/ACL/hints shipped across the subprocess boundary. */
     agentProfile: AgentSpecSchema.optional(),
@@ -608,6 +608,15 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
 export type OrchestratorTurn = z.infer<typeof OrchestratorTurnSchema>;
 
 /** Worker → Orchestrator turns (ndjson) */
+// Slice 4 Gap B: workers reporting `done` or `uncertain` may attach a
+// self-assessment so the orchestrator's deterministic GoalEvaluator can
+// compute prediction error (A7). The orchestrator never trusts this for
+// the verdict — it is data, not authority.
+const SelfAssessmentSchema = z.object({
+  grade: z.enum(['A', 'B', 'C']),
+  gaps: z.array(z.string()).optional(),
+});
+
 export const WorkerTurnSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_calls'),
@@ -623,6 +632,7 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     tokensConsumed: z.number().optional(),
     cacheReadTokens: z.number().optional(),
     cacheCreationTokens: z.number().optional(),
+    selfAssessment: SelfAssessmentSchema.optional(),
   }),
   z.object({
     type: z.literal('uncertain'),
@@ -639,6 +649,7 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
      * clarification request instead of retrying/escalating. Default false.
      */
     needsUserInput: z.boolean().optional(),
+    selfAssessment: SelfAssessmentSchema.optional(),
   }),
 ]);
 export type WorkerTurn = z.infer<typeof WorkerTurnSchema>;

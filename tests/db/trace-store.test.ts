@@ -238,6 +238,27 @@ describe('TraceStore', () => {
     expect(result.goalGrounding).toEqual(trace.goalGrounding);
   });
 
+  test('A5 oracle independence audit metadata roundtrips', () => {
+    const trace = makeTrace({
+      oracleIndependence: {
+        policyVersion: 'oracle-independence:v1',
+        compositionMethod: 'oracle-gate-aggregate-confidence',
+        assumption: 'shared-evidence',
+        oracleCount: 2,
+        deterministicOracleCount: 1,
+        heuristicOracleCount: 1,
+        primaryOracles: ['ast'],
+        corroboratingOracles: ['lint'],
+        sharedEvidenceWarnings: ['shared evidence sha256:abc used by ast,lint'],
+      },
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.oracleIndependence).toEqual(trace.oracleIndependence);
+  });
+
   test('QualityScore denormalized into columns and reconstructed', () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);

@@ -135,6 +135,52 @@ describe('skill_view', () => {
     const res = await tool.execute({ callId: 'c1', id: 'a/ret' }, makeContext());
     expect(res.status).toBe('denied');
   });
+
+  test('Phase-11: emits skill:viewed when bus + taskId present', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: Array<{ taskId: string; skillId: string }> = [];
+    bus.on('skill:viewed', (ev) => events.push(ev));
+
+    await store.write(makeRecord({ id: 'refactor/observed' }));
+    const tool = createSkillViewTool({ artifactStore: store, bus });
+    const ctx: ToolContext = { ...makeContext(), taskId: 'task-xyz' };
+    const res = await tool.execute({ callId: 'c1', id: 'refactor/observed' }, ctx);
+    expect(res.status).toBe('success');
+    expect(events).toEqual([{ taskId: 'task-xyz', skillId: 'refactor/observed' }]);
+  });
+
+  test('Phase-11: silent when bus omitted', async () => {
+    await store.write(makeRecord({ id: 'refactor/silent' }));
+    const tool = createSkillViewTool({ artifactStore: store });
+    const ctx: ToolContext = { ...makeContext(), taskId: 'task-zzz' };
+    const res = await tool.execute({ callId: 'c1', id: 'refactor/silent' }, ctx);
+    expect(res.status).toBe('success'); // no throw → no bus required
+  });
+
+  test('Phase-11: silent when taskId missing on context', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: unknown[] = [];
+    bus.on('skill:viewed', (ev) => events.push(ev));
+    await store.write(makeRecord({ id: 'refactor/no-task' }));
+    const tool = createSkillViewTool({ artifactStore: store, bus });
+    await tool.execute({ callId: 'c1', id: 'refactor/no-task' }, makeContext()); // no taskId
+    expect(events).toEqual([]);
+  });
+
+  test('Phase-11: denied skill does NOT emit skill:viewed', async () => {
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    const events: unknown[] = [];
+    bus.on('skill:viewed', (ev) => events.push(ev));
+    await store.write(makeRecord({ id: 'a/quar2', status: 'quarantined' }));
+    const tool = createSkillViewTool({ artifactStore: store, bus });
+    const ctx: ToolContext = { ...makeContext(), taskId: 'task-q' };
+    const res = await tool.execute({ callId: 'c1', id: 'a/quar2' }, ctx);
+    expect(res.status).toBe('denied');
+    expect(events).toEqual([]);
+  });
 });
 
 describe('skill_view_file', () => {

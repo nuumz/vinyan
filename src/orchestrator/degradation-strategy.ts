@@ -17,6 +17,7 @@ const DEFAULT_STRATEGY: Record<DegradationFailureType, DegradationStrategyEntry>
   'oracle-unavailable': { action: 'fallback', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
   'llm-provider-failure': { action: 'retry', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
   'tool-timeout': { action: 'retry', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
+  'tool-failure': { action: 'retry', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
   'rate-limit': { action: 'degrade', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
   'peer-unavailable': { action: 'degrade', capabilityImpact: 'reduced', retryable: true, severity: 'warning' },
   'trace-store-write-failure': {
@@ -88,6 +89,15 @@ export function attachDegradationEventBridge(bus: VinyanBus): { detach: () => vo
         sourceEvent: 'task:timeout',
       });
     }),
+    bus.on('tool:failure_classified', ({ taskId, type, recoverable, error }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: classifyToolFailure(type),
+        component: 'tool-runtime',
+        reason: `${recoverable ? 'Recoverable' : 'Unrecoverable'} tool failure: ${error}`,
+        sourceEvent: 'tool:failure_classified',
+      });
+    }),
     bus.on('task:budget-exceeded', ({ taskId, totalTokensConsumed, globalCap }) => {
       emitDegradation(bus, {
         taskId,
@@ -106,6 +116,24 @@ export function attachDegradationEventBridge(bus: VinyanBus): { detach: () => vo
         sourceEvent: 'decomposer:fallback',
       });
     }),
+    bus.on('spec:drafting_failed', ({ taskId, reason }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'llm-provider-failure',
+        component: 'spec-refinement',
+        reason,
+        sourceEvent: 'spec:drafting_failed',
+      });
+    }),
+    bus.on('brainstorm:drafting_failed', ({ taskId, reason }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'llm-provider-failure',
+        component: 'brainstorm',
+        reason,
+        sourceEvent: 'brainstorm:drafting_failed',
+      });
+    }),
     bus.on('peer:disconnected', ({ peerId, reason }) => {
       emitDegradation(bus, {
         failureType: 'peer-unavailable',
@@ -121,6 +149,57 @@ export function attachDegradationEventBridge(bus: VinyanBus): { detach: () => vo
         component: 'trace-store',
         reason: `Trace ${traceId} failed to persist: ${error}`,
         sourceEvent: 'trace:write_failed',
+      });
+    }),
+    // A9 broader failure-class coverage (2026-04-28): bridge the remaining
+    // failure events that previously emitted but were never normalized into
+    // the A9 degradation contract.
+    bus.on('shadow:failed', ({ job, error }) => {
+      emitDegradation(bus, {
+        taskId: job.taskId,
+        // Shadow is a post-commit verification subsystem; treat its failure
+        // as a verification-side oracle outage so dashboards group it with
+        // other oracle-unavailable signals.
+        failureType: 'oracle-unavailable',
+        component: 'shadow-runner',
+        reason: `Shadow job ${job.id} failed: ${error}`,
+        sourceEvent: 'shadow:failed',
+      });
+    }),
+    bus.on('tool:remediation_failed', ({ taskId, reason }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'tool-failure',
+        component: 'tool-remediation',
+        reason: `Tool auto-remediation exhausted: ${reason}`,
+        sourceEvent: 'tool:remediation_failed',
+      });
+    }),
+    bus.on('testgen:error', ({ taskId, error }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'llm-provider-failure',
+        component: 'test-generator',
+        reason: `Test generation failed: ${error}`,
+        sourceEvent: 'testgen:error',
+      });
+    }),
+    bus.on('selfmodel:calibration_error', ({ taskId, error }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'llm-provider-failure',
+        component: 'self-model-calibration',
+        reason: `Self-model calibration failed: ${error}`,
+        sourceEvent: 'selfmodel:calibration_error',
+      });
+    }),
+    bus.on('agent:synthesis-failed', ({ taskId, suggestedId, reason }) => {
+      emitDegradation(bus, {
+        taskId,
+        failureType: 'llm-provider-failure',
+        component: `agent-synthesis:${suggestedId}`,
+        reason: `Agent synthesis failed: ${reason}`,
+        sourceEvent: 'agent:synthesis-failed',
       });
     }),
   ];
@@ -143,4 +222,8 @@ export function classifyWorkerFailure(error: string): DegradationFailureType {
     return 'rate-limit';
   }
   return 'llm-provider-failure';
+}
+
+export function classifyToolFailure(type: string): DegradationFailureType {
+  return type.toLowerCase().includes('timeout') ? 'tool-timeout' : 'tool-failure';
 }

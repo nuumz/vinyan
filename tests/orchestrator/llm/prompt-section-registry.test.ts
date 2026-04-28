@@ -71,12 +71,12 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 25 sections', () => {
+  it('registers 26 sections', () => {
     // Phase-2 redesign added `agent-skill-cards` (system, priority 130) so
     // SKILL.md cards can be injected with an integrity envelope right after
     // `agent-soul`. Bumped from 24.
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(25);
+    expect(registry.getSectionIds()).toHaveLength(26);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {
@@ -89,6 +89,17 @@ describe('createDefaultRegistry', () => {
     expect(system).toContain('[BEHAVIORAL RULES]');
     expect(system).toContain('[AVAILABLE TOOLS]');
     expect(system).toContain('[ORACLE VERIFICATION CAPABILITIES]');
+  });
+
+  it('system prompt contains the accountability contract rubric', () => {
+    const registry = createDefaultRegistry();
+    const system = registry.renderTarget('system', makeContext());
+
+    expect(system).toContain('[ACCOUNTABILITY CONTRACT]');
+    expect(system).toContain('Definition of Done');
+    expect(system).toContain('Propose completion only for A or B');
+    expect(system).toContain('senior engineer');
+    expect(system).toContain('selfAssessment.grade');
   });
 
   it('BEHAVIORAL RULES section contains anti-hallucination directives', () => {

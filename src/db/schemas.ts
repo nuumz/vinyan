@@ -159,4 +159,5 @@ export const ExecutionTraceRowSchema = z.object({
   decision_timestamp: z.number().nullable().optional(),
   evidence_observed_at: z.number().nullable().optional(),
   goal_grounding: z.string().nullable().optional(),
+  oracle_independence: z.string().nullable().optional(),
 });

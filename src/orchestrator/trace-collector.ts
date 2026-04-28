@@ -18,6 +18,22 @@ import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { TraceCollector } from './core-loop.ts';
 import type { ExecutionTrace } from './types.ts';
 
+export class TracePersistenceError extends Error {
+  readonly trace: ExecutionTrace;
+  override readonly cause: unknown;
+
+  constructor(trace: ExecutionTrace, cause: unknown) {
+    super(`Trace ${trace.id} failed durable persistence`);
+    this.name = 'TracePersistenceError';
+    this.trace = trace;
+    this.cause = cause;
+  }
+}
+
+export function isTracePersistenceError(error: unknown): error is TracePersistenceError {
+  return error instanceof TracePersistenceError;
+}
+
 export class TraceCollectorImpl implements TraceCollector {
   private traces: ExecutionTrace[] = [];
   private worldGraph?: WorldGraph;
@@ -25,6 +41,17 @@ export class TraceCollectorImpl implements TraceCollector {
   private costLedger?: CostLedger;
   private rateCards?: Record<string, RateCardEntry>;
   private bus?: VinyanBus;
+  /**
+   * In-flight delegation registry — `taskId → parentTaskId`. Populated
+   * by `executeTaskCore` at entry from `input.parentTaskId`, cleared in
+   * the finally. When a trace is recorded for one of these tasks and the
+   * builder didn't set `parentTaskId` on its own, we fill it from the
+   * registry. Centralising the lookup here means individual trace
+   * construction sites (security-rejection, intent-clarify,
+   * conversational-shortcircuit, full-pipeline workflow) don't each have
+   * to remember the propagation.
+   */
+  private pendingParentTaskIds = new Map<string, string>();
 
   constructor(worldGraph?: WorldGraph, traceStore?: TraceStore, bus?: VinyanBus) {
     this.worldGraph = worldGraph;
@@ -45,22 +72,32 @@ export class TraceCollectorImpl implements TraceCollector {
     if (bus) this.bus = bus;
   }
 
-  async record(trace: ExecutionTrace): Promise<void> {
-    this.traces.push(trace);
+  /**
+   * Track that `taskId` is a delegated child of `parentTaskId`. Subsequent
+   * `record()` calls for traces with this `taskId` will inherit the
+   * parent linkage automatically. Idempotent. Caller MUST `clearParent`
+   * in a finally block — otherwise the map grows unbounded.
+   */
+  registerParent(taskId: string, parentTaskId: string): void {
+    this.pendingParentTaskIds.set(taskId, parentTaskId);
+  }
 
-    // Persist to SQLite if store is available
-    if (this.traceStore) {
-      try {
-        this.traceStore.insert(trace);
-      } catch (err) {
-        this.bus?.emit('trace:write_failed', {
-          taskId: trace.taskId,
-          traceId: trace.id,
-          error: String(err),
-        });
-        console.warn('[vinyan] Trace INSERT failed:', err);
+  clearParent(taskId: string): void {
+    this.pendingParentTaskIds.delete(taskId);
+  }
+
+  async record(trace: ExecutionTrace): Promise<void> {
+    // Auto-fill parentTaskId from the registry if the trace builder
+    // didn't set it. Individual trace sites can still override (e.g. a
+    // synthetic recovery trace might set its own parent linkage).
+    if (!trace.parentTaskId) {
+      const parent = this.pendingParentTaskIds.get(trace.taskId);
+      if (parent) {
+        trace = { ...trace, parentTaskId: parent };
       }
     }
+    this.traces.push(trace);
+    this.persistTrace(trace);
 
     // Extensible Thinking: emit a measurement event pairing the
     // thinking mode that was used with the actual task outcome. This is
@@ -155,6 +192,27 @@ export class TraceCollectorImpl implements TraceCollector {
     }
     return this.traces.length;
   }
+
+  private persistTrace(trace: ExecutionTrace): void {
+    if (!this.traceStore) return;
+    try {
+      this.traceStore.insert(trace);
+    } catch (err) {
+      this.bus?.emit('trace:write_failed', {
+        taskId: trace.taskId,
+        traceId: trace.id,
+        error: String(err),
+      });
+      console.warn('[vinyan] Trace INSERT failed:', err);
+      if (requiresDurablePersistence(trace)) {
+        throw new TracePersistenceError(trace, err);
+      }
+    }
+  }
+}
+
+function requiresDurablePersistence(trace: ExecutionTrace): boolean {
+  return trace.governanceProvenance !== undefined;
 }
 
 /**

@@ -17,7 +17,11 @@ import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
-import { buildGoalGroundingClarificationQuestions, evaluateGoalGrounding } from './goal-grounding.ts';
+import {
+  buildGoalGroundingClarificationQuestions,
+  buildGoalGroundingProvenance,
+  evaluateGoalGrounding,
+} from './goal-grounding.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
@@ -32,6 +36,7 @@ import { executePredictPhase } from './phases/phase-predict.ts';
 import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
 import type { PhaseContext } from './phases/types.ts';
+import { isTracePersistenceError } from './trace-collector.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
@@ -205,6 +210,13 @@ export interface OrchestratorDeps {
    * after every task. Feeds Phase-6 autonomous skill promotion via Wilson LB.
    */
   skillOutcomeStore?: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+  /**
+   * Phase-6: runtime skill acquirer. When present, the worker pool checks
+   * task gaps before dispatch and asks the acquirer to fill them with
+   * skills already cached in `.vinyan/skills/`. Defaults to NullSkillAcquirer
+   * (no-op) when the factory has no artifact store wired.
+   */
+  skillAcquirer?: import('./agents/skill-acquirer.ts').SkillAcquirer;
   /** Economy: Cost ledger for persistent cost tracking. */
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   /** Economy: Budget enforcer for global budget cap enforcement. */
@@ -287,7 +299,7 @@ export interface OrchestratorDeps {
   /** Store for reading/updating the singleton AgentProfile at runtime. */
   agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
   /**
-   * Multi-agent: specialist registry (ts-coder, writer, etc.).
+   * Multi-agent: specialist registry (developer, author, reviewer, etc.).
    * Built from vinyan.json `agents[]` + built-in defaults by the factory.
    * Intent resolver uses this for auto-classification; prompt assembly for persona injection.
    */
@@ -2171,6 +2183,23 @@ async function executeTaskWithTrace(input: TaskInput, deps: OrchestratorDeps): P
       });
     }
     return await executeTaskCore(input, deps);
+  } catch (err) {
+    if (!isTracePersistenceError(err)) throw err;
+
+    const failureTrace: ExecutionTrace = {
+      ...err.trace,
+      outcome: 'failure',
+      failureReason: `A9 fail-closed: ${err.message}`,
+    };
+    const result: TaskResult = {
+      id: input.id,
+      status: 'failed',
+      mutations: [],
+      trace: failureTrace,
+      escalationReason: failureTrace.failureReason,
+    };
+    deps.bus?.emit('task:complete', { result });
+    return result;
   } finally {
     deps.agentMemory?.endTask(input.id);
     deps.taskFactsRegistry?.unregister(input.id);
@@ -2208,6 +2237,17 @@ async function executeTaskCore(
   // even on throw paths. Assigned inside the try once the bus reference is
   // confirmed.
   let detachActivity: (() => void) | undefined;
+  // Delegation observability: register parent linkage with the trace
+  // collector at task entry so EVERY trace recorded by this task (and any
+  // sub-phases) inherits parentTaskId without each construction site
+  // having to remember. Cleared in finally — the collector's map would
+  // grow unbounded otherwise.
+  if (input.parentTaskId) {
+    (deps.traceCollector as { registerParent?: (id: string, p: string) => void })?.registerParent?.(
+      input.id,
+      input.parentTaskId,
+    );
+  }
   try {
     // ── Preliminary task:start (all strategies) ───────────────────
     // The full-pipeline branch emits its OWN `task:start` later (line ~2526)
@@ -2962,7 +3002,13 @@ async function executeTaskCore(
         });
         const { perception } = perceiveResult.value;
         understanding = perceiveResult.value.understanding;
-        const perceiveGrounding = await enforceGoalGroundingBoundary(ctx, 'perceive', routing, understanding, lastWorkerSelection);
+        const perceiveGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'perceive',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
         ctx = perceiveGrounding.ctx;
         if (perceiveGrounding.result) {
           deps.bus?.emit('task:complete', { result: perceiveGrounding.result });
@@ -3025,6 +3071,22 @@ async function executeTaskCore(
               outcome: 'success',
               affectedFiles: input.targetFiles ?? [],
               workerSelectionAudit: lastWorkerSelection,
+              governanceProvenance: buildShortCircuitProvenance({
+                input,
+                decisionId: 'comprehension-pause',
+                attributedTo: 'orchestrator',
+                wasGeneratedBy: 'executeTaskCore.comprehensionCheck',
+                reason: `comprehension check requested clarification: ${verdict.failedChecks
+                  .map((c) => c.check)
+                  .join(', ')}`,
+                evidence: [
+                  {
+                    kind: 'other',
+                    source: 'checkComprehension',
+                    summary: `confident=${verdict.confident}; questions=${verdict.questions.length}`,
+                  },
+                ],
+              }),
             };
             await deps.traceCollector.record(comprehensionTrace);
             deps.bus?.emit('trace:record', { trace: comprehensionTrace });
@@ -3084,7 +3146,13 @@ async function executeTaskCore(
             input = specOutcome.value.enhancedInput;
           }
         }
-        const specGrounding = await enforceGoalGroundingBoundary(ctx, 'spec', routing, understanding, lastWorkerSelection);
+        const specGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'spec',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
         ctx = specGrounding.ctx;
         if (specGrounding.result) {
           deps.bus?.emit('task:complete', { result: specGrounding.result });
@@ -3141,7 +3209,13 @@ async function executeTaskCore(
           ctx = { ...ctx, input: enhancedInput };
           input = enhancedInput;
         }
-        const planGrounding = await enforceGoalGroundingBoundary(ctx, 'plan', routing, understanding, lastWorkerSelection);
+        const planGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'plan',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
         ctx = planGrounding.ctx;
         if (planGrounding.result) {
           deps.bus?.emit('task:complete', { result: planGrounding.result });
@@ -3176,7 +3250,13 @@ async function executeTaskCore(
         const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } =
           generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
-        const generateGrounding = await enforceGoalGroundingBoundary(ctx, 'generate', routing, understanding, lastWorkerSelection);
+        const generateGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'generate',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
         ctx = generateGrounding.ctx;
         if (generateGrounding.result) {
           deps.bus?.emit('task:complete', { result: generateGrounding.result });
@@ -3243,6 +3323,20 @@ async function executeTaskCore(
             outcome: 'success',
             affectedFiles: input.targetFiles ?? [],
             workerSelectionAudit: lastWorkerSelection,
+            governanceProvenance: buildShortCircuitProvenance({
+              input,
+              decisionId: 'input-required-pause',
+              attributedTo: 'agenticWorker',
+              wasGeneratedBy: 'executeTaskCore.agentClarificationPause',
+              reason: 'agent requested user clarification before committing mutations',
+              evidence: [
+                {
+                  kind: 'other',
+                  source: 'attempt_completion.needsUserInput',
+                  summary: `questions=${lastAgentResult.uncertainties.length}`,
+                },
+              ],
+            }),
           };
           await deps.traceCollector.record(inputRequiredTrace);
           deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
@@ -3320,7 +3414,13 @@ async function executeTaskCore(
           shouldCommit,
           trace,
         } = verifyOutcome.value;
-        const verifyGrounding = await enforceGoalGroundingBoundary(ctx, 'verify', routing, understanding, lastWorkerSelection);
+        const verifyGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'verify',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
         ctx = verifyGrounding.ctx;
         if (verifyGrounding.result) {
           deps.bus?.emit('task:complete', { result: verifyGrounding.result });
@@ -3358,9 +3458,23 @@ async function executeTaskCore(
               // earlier `(task as unknown as { riskScore? }).riskScore` cast.
               // DebateRouterCritic reads `context.riskScore` directly; the
               // baseline critic and the 3-seat debate both accept-and-ignore.
+              //
+              // Accountability slice 4: also surface the previous outer-loop
+              // iteration's deterministic accountability grade + blocker
+              // categories so the critic anchors on what was already wrong.
+              // Empty/undefined on iteration 1.
+              const priorGrade = workingMemory.getLastAccountabilityGrade();
+              const priorBlockers = workingMemory.getLastBlockerCategories();
+              // Slice 4 follow-up: also thread the previous iteration's
+              // worker self-grade vs deterministic verdict so the critic
+              // gets a calibration warning when the worker was overconfident.
+              const priorPredictionError = workingMemory.getLastPredictionError();
               const criticContext = {
                 riskScore: routing.riskScore,
                 routingLevel: routing.level,
+                ...(priorGrade ? { priorAccountabilityGrade: priorGrade } : {}),
+                ...(priorBlockers.length > 0 ? { priorBlockerCategories: priorBlockers } : {}),
+                ...(priorPredictionError ? { priorPredictionError } : {}),
               };
               const criticResult = await deps.criticEngine.review(
                 proposal,
@@ -3455,6 +3569,7 @@ async function executeTaskCore(
               workspace: deps.workspace ?? process.cwd(),
               allowedPaths: input.targetFiles ?? [],
               routingLevel: routing.level,
+              taskId: input.id,
             } as import('./tools/tool-interface.ts').ToolContext;
             const mutatingResults = await deps.toolExecutor.executeProposedTools(mutatingToolCalls, toolContext);
             deps.bus?.emit('tools:executed', { taskId: input.id, results: mutatingResults });
@@ -3612,6 +3727,10 @@ async function executeTaskCore(
               : undefined,
             contradictions,
             plan,
+            // Slice 4 Gap B: forward worker self-assessment so the
+            // GoalEvaluator can score prediction error against its own
+            // deterministic accountability grade.
+            ...(workerResult.selfAssessment ? { workerSelfAssessment: workerResult.selfAssessment } : {}),
           };
 
           // ── Shadow Enqueue (Phase 2.2) ──
@@ -3720,11 +3839,35 @@ async function executeTaskCore(
         toLevel: nextLevel,
         reason: `Exhausted ${input.budget.maxRetries} retries at L${routing.level}`,
       });
+      // A8 broader provenance (2026-04-28): preserve the cumulative
+      // escalationPath across re-routes. The new RoutingDecision's provenance
+      // is built by RiskRouterImpl with `escalationPath:[newLevel]` only when
+      // isEscalated=true, but that's set AFTER assessInitialLevel returns —
+      // so the provenance is always missing the chain. We patch it here so
+      // every escalation transition is queryable from the routing's
+      // governance envelope.
+      const priorEscalationPath = routing.governanceProvenance?.escalationPath ?? [routing.level];
+      const priorRoutingLevel = routing.level;
       routing = await deps.riskRouter.assessInitialLevel({
         ...input,
         constraints: [...(input.constraints ?? []), `MIN_ROUTING_LEVEL:${nextLevel}`],
       });
-      routing = { ...routing, isEscalated: true };
+      const cumulativeEscalationPath: RoutingLevel[] = priorEscalationPath.includes(routing.level)
+        ? [...priorEscalationPath]
+        : [...priorEscalationPath, routing.level];
+      routing = {
+        ...routing,
+        isEscalated: true,
+        ...(routing.governanceProvenance
+          ? {
+              governanceProvenance: {
+                ...routing.governanceProvenance,
+                escalationPath: cumulativeEscalationPath,
+                reason: `${routing.governanceProvenance.reason ?? 'risk-router decision'}; escalated from L${priorRoutingLevel}`,
+              },
+            }
+          : {}),
+      };
     }
 
     // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
@@ -3785,6 +3928,14 @@ async function executeTaskCore(
     } catch {
       /* hook errors are swallowed — cleanup must not fail the task */
     }
+    // Release the trace collector's delegation registry slot. Idempotent
+    // (no-op if no parent was registered). Without this the map grows
+    // unbounded over time as tasks come and go.
+    try {
+      (deps.traceCollector as { clearParent?: (id: string) => void })?.clearParent?.(finalizedTaskId);
+    } catch {
+      /* hook errors are swallowed — cleanup must not fail the task */
+    }
     // Always release activity-tracker bus subscriptions on the way out
     // (success, failure, escalation, throw). Mirrors detachCheckpoint
     // but covers paths that don't reach the explicit detach call.
@@ -3808,13 +3959,13 @@ async function enforceGoalGroundingBoundary(
   understanding: SemanticTaskUnderstanding,
   workerSelectionAudit?: import('./types.ts').EngineSelectionResult,
 ): Promise<GoalGroundingBoundaryResult> {
-  const groundingInput = ctx.intentResolution?.originalGoal ? { ...ctx.input, goal: ctx.intentResolution.originalGoal } : ctx.input;
   const check = evaluateGoalGrounding({
-    input: groundingInput,
+    input: ctx.input,
     understanding,
     routing,
     phase,
     startedAt: ctx.startTime,
+    rootGoal: ctx.intentResolution?.originalGoal,
     worldGraph: ctx.deps.worldGraph,
   });
   if (!check) return { ctx };
@@ -3827,7 +3978,7 @@ async function enforceGoalGroundingBoundary(
   if (check.action !== 'request-clarification') return { ctx: nextCtx };
 
   const questions = buildGoalGroundingClarificationQuestions(check);
-  const trace = applyRoutingGovernance({
+  const trace: ExecutionTrace = {
     id: `trace-${ctx.input.id}-goal-grounding-clarify`,
     taskId: ctx.input.id,
     sessionId: ctx.input.sessionId,
@@ -3845,7 +3996,8 @@ async function enforceGoalGroundingBoundary(
     affectedFiles: ctx.input.targetFiles ?? [],
     workerSelectionAudit,
     goalGrounding: nextCtx.goalGroundingChecks,
-  }, routing);
+    governanceProvenance: buildGoalGroundingProvenance(ctx.input, check),
+  };
   await ctx.deps.traceCollector.record(trace);
   ctx.deps.bus?.emit('trace:record', { trace });
 

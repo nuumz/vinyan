@@ -128,6 +128,27 @@ export class SleepCycleRunner {
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
   private agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
   private agentProposalStore?: AgentProposalStore;
+  private skillPromoterDeps?: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    workspace: string;
+    registry: AgentRegistry;
+  };
+  /**
+   * Phase-10: optional autonomous skill creator hook. When set, every
+   * scheduled `run()` (a) feeds the creator's persona-keyed windows from
+   * SkillOutcomeStore via `feedSkillOutcomesToCreator`, then (b) iterates
+   * unique (persona, taskSignature) pairs and invokes `creator.tryDraftFor`
+   * for each — opportunity for autonomous skill drafts when windows qualify.
+   *
+   * Phase-10 ships only the scheduling machinery; Phase-11 will wire a real
+   * `DraftGenerator` (LLM) + `critic` (different engine) so drafts actually
+   * fire and pass through the gate/critic/promotion-rule pipeline.
+   */
+  private autonomousCreatorDeps?: {
+    creator: import('../skills/autonomous/creator.ts').AutonomousSkillCreator;
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+  };
   /** Optional comprehension substrate — when both present, the cycle
    *  emits `comprehension:mining_completed` with B1–B3 insights. */
   private comprehensionStore?: ComprehensionStore;
@@ -248,6 +269,38 @@ export class SleepCycleRunner {
   /** Set custom-agent proposal store for post-construction wiring. */
   setAgentProposalStore(store: AgentProposalStore): void {
     this.agentProposalStore = store;
+  }
+
+  /**
+   * Phase-7: attach the skill-promoter dependencies. When set, every
+   * scheduled `run()` invokes `proposeAcquiredToBoundPromotions` and
+   * applies the proposals (acquired→bound promotion). Failures are
+   * swallowed — promotion is observational, never fails a sleep cycle.
+   */
+  setSkillPromoter(deps: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    workspace: string;
+    registry: AgentRegistry;
+  }): void {
+    this.skillPromoterDeps = deps;
+  }
+
+  /**
+   * Phase-10: attach the autonomous skill creator hook. When set, every
+   * scheduled `run()` feeds creator windows from SkillOutcomeStore and
+   * iterates persona-keyed (persona, taskSignature) pairs, calling
+   * `creator.tryDraftFor()` per pair. Best-effort: any failure is swallowed.
+   *
+   * Phase-10 ships only this hook. Production wiring of a real
+   * `DraftGenerator` (LLM) lives in Phase 11; until then the factory leaves
+   * `autonomousCreatorDeps` unset and the hook is inert.
+   */
+  setAutonomousSkillCreator(deps: {
+    creator: import('../skills/autonomous/creator.ts').AutonomousSkillCreator;
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+  }): void {
+    this.autonomousCreatorDeps = deps;
   }
 
   /**
@@ -544,6 +597,70 @@ export class SleepCycleRunner {
       }
     }
 
+    // Phase-7: skill promoter — propose acquired→bound for any (persona, skill)
+    // pair whose Wilson LB on success rate clears the threshold. Best-effort:
+    // any failure here is swallowed so the sleep cycle keeps running.
+    if (this.skillPromoterDeps) {
+      try {
+        const { proposeAcquiredToBoundPromotions, applyPromotions } = await import(
+          '../orchestrator/agents/skill-promoter.ts'
+        );
+        const proposals = proposeAcquiredToBoundPromotions(
+          this.skillPromoterDeps.skillOutcomeStore,
+          this.skillPromoterDeps.registry,
+          this.skillPromoterDeps.workspace,
+        );
+        if (proposals.length > 0) {
+          applyPromotions(this.skillPromoterDeps.workspace, proposals);
+        }
+      } catch {
+        /* Promotion is observational — never disrupts sleep cycle */
+      }
+    }
+
+    // Phase-10: autonomous skill creator hook. Two-step flow per cycle:
+    //   1. Feed creator windows from SkillOutcomeStore (persona-keyed samples)
+    //   2. Iterate unique (persona, taskSig) pairs and call tryDraftFor —
+    //      the creator's own qualification gates (window qualifies, no
+    //      existing skill, cooldown elapsed) decide whether a draft fires.
+    //
+    // The feeder is idempotent on identical store state because samples
+    // carry deterministic taskIds, but the creator's `observe()` doesn't
+    // dedupe. In production this is acceptable because the cycle interval
+    // is hours-to-days and outcome growth between cycles dominates the
+    // re-feed cost. A future optimisation could track a "high water mark"
+    // ts so the feeder only emits new samples.
+    if (this.autonomousCreatorDeps) {
+      try {
+        const { feedSkillOutcomesToCreator } = await import('../orchestrator/agents/skill-outcome-feeder.ts');
+        const { creator, skillOutcomeStore, registry } = this.autonomousCreatorDeps;
+        feedSkillOutcomesToCreator(creator, skillOutcomeStore, registry);
+        // Enumerate unique (persona, taskSig) pairs and try each. Best-effort
+        // per-pair: a failing tryDraftFor for one pair must not block others.
+        const seen = new Set<string>();
+        for (const persona of registry.listAgents()) {
+          let rows: ReturnType<typeof skillOutcomeStore.listForPersona>;
+          try {
+            rows = skillOutcomeStore.listForPersona(persona.id);
+          } catch {
+            continue;
+          }
+          for (const row of rows) {
+            const key = `${row.personaId}::${row.taskSignature}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            try {
+              await creator.tryDraftFor(row.taskSignature, row.personaId);
+            } catch {
+              /* Per-pair best-effort — never disrupts other pairs */
+            }
+          }
+        }
+      } catch {
+        /* Creator hook is observational — never disrupts sleep cycle */
+      }
+    }
+
     // Economy OS: Cost pattern mining (E2.4 → Sleep Cycle integration)
     let costPatternsFound = 0;
     if (this.costLedger) {
@@ -600,16 +717,24 @@ export class SleepCycleRunner {
         perEngine.set(entry.engineId, (perEngine.get(entry.engineId) ?? 0) + 1);
       }
       const minTasksPerEngine = perEngine.size > 0 ? Math.min(...perEngine.values()) : 0;
+      // Phase-8: pull real auction stats from the scheduler's family-stats
+      // tracker instead of the pre-Phase-8 hardcoded zeros. `dominantWinRate`,
+      // `auctionsByFamily`, and `dominantWinRateByFamily` are now populated
+      // from the live tracker so `evaluateMarketPhase` can apply the H6
+      // stratified regression rule meaningfully.
+      const family = this.marketScheduler.getFamilyStats();
       this.marketScheduler.evaluatePhase({
         activeEngines: engineIds.size,
         minTasksPerEngine,
         totalTraces: entries.length,
-        auctionCount: this.marketScheduler.getPhase().auctionCount,
+        auctionCount: family.auctionCount > 0 ? family.auctionCount : this.marketScheduler.getPhase().auctionCount,
         trustedRemotePeers: 0,
         minRemotePeerTasks: 0,
         distinctEnginesWithBids: 0,
         minSettledBidsPerEngine: 0,
-        dominantWinRate: 0,
+        dominantWinRate: family.dominantWinRate,
+        dominantWinRateByFamily: family.dominantWinRateByFamily,
+        auctionsByFamily: family.auctionsByFamily,
       });
       marketPhaseEvaluated = true;
     }

@@ -464,12 +464,16 @@ export class DefaultEngineSelector implements EngineSelector {
       });
     }
 
+    // Phase-8: forward `costKey` (= TaskInput.taskType) as the auction's
+    // task-type-family. The MarketScheduler records winners per family so
+    // `evaluateMarketPhase` can apply the H6 stratified regression rule.
     const result = this.marketScheduler.allocate(
       taskId,
       bids,
       contexts,
       budgetTokens,
       personaContext?.requiredCapabilities,
+      costKey,
     );
     if (!result) {
       this.bus?.emit('market:fallback_to_selector', {

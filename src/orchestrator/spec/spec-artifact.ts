@@ -83,13 +83,34 @@ export const EdgeCaseSchema = z.object({
 });
 export type EdgeCase = z.infer<typeof EdgeCaseSchema>;
 
+// ── Reasoning-variant fields (Gap C, 2026-04-28) ─────────────────────
+
+/** Output shape for non-code reasoning tasks — replaces apiShape + dataContracts. */
+export const ExpectedDeliverableSchema = z.object({
+  kind: z.enum(['answer', 'plan', 'analysis', 'recommendation', 'comparison']),
+  audience: z.string().min(1),
+  format: z.enum(['prose', 'list', 'table', 'diagram-spec']),
+  minDepth: z.enum(['shallow', 'deep']).optional(),
+});
+export type ExpectedDeliverable = z.infer<typeof ExpectedDeliverableSchema>;
+
+/** Explicit topical-scope guard — the reasoning analogue to invariants. */
+export const ScopeBoundariesSchema = z.object({
+  outOfScope: z.array(z.string()).max(5).default([]),
+  assumptions: z.array(z.string()).max(5).default([]),
+});
+export type ScopeBoundaries = z.infer<typeof ScopeBoundariesSchema>;
+
 // ── Spec artifact ────────────────────────────────────────────────────
 
 /** Frozen artifact version. Bumping requires a migration in spec-to-goal-oracle. */
 export const SPEC_ARTIFACT_VERSION = '1' as const;
 
-export const SpecArtifactSchema = z.object({
+/** Code-mutation variant (existing). `variant` defaults to 'code' for
+ *  backwards compatibility with persisted artifacts that predate Gap C. */
+export const SpecArtifactCodeSchema = z.object({
   version: z.literal(SPEC_ARTIFACT_VERSION),
+  variant: z.literal('code').default('code'),
   summary: z.string().min(5).max(280),
   acceptanceCriteria: z.array(AcceptanceCriterionSchema).min(1).max(20),
   apiShape: z.array(ApiShapeSchema).default([]),
@@ -100,7 +121,47 @@ export const SpecArtifactSchema = z.object({
   approvedBy: z.string().optional(),
   approvedAt: z.number().optional(),
 });
-export type SpecArtifact = z.infer<typeof SpecArtifactSchema>;
+export type SpecArtifactCode = z.infer<typeof SpecArtifactCodeSchema>;
+
+/** Reasoning / analysis / planning variant (Gap C). Tighter caps reflect the
+ *  fact that reasoning specs without mechanical oracles need a smaller
+ *  surface to stay verifiable by goal-alignment + critic alone. */
+export const SpecArtifactReasoningSchema = z.object({
+  version: z.literal(SPEC_ARTIFACT_VERSION),
+  variant: z.literal('reasoning'),
+  summary: z.string().min(5).max(280),
+  acceptanceCriteria: z
+    .array(
+      AcceptanceCriterionSchema.extend({
+        oracle: z.enum(['goal-alignment', 'critic', 'manual']),
+      }),
+    )
+    .min(1)
+    .max(7),
+  expectedDeliverables: z.array(ExpectedDeliverableSchema).min(1).max(3),
+  scopeBoundaries: ScopeBoundariesSchema.default({ outOfScope: [], assumptions: [] }),
+  edgeCases: z.array(EdgeCaseSchema).max(4).default([]),
+  openQuestions: z.array(z.string()).default([]),
+  approvedBy: z.string().optional(),
+  approvedAt: z.number().optional(),
+});
+export type SpecArtifactReasoning = z.infer<typeof SpecArtifactReasoningSchema>;
+
+/**
+ * Top-level discriminated union. Existing persisted artifacts (no `variant`
+ * field) parse through the code branch via the schema's default. New
+ * reasoning specs MUST set `variant: 'reasoning'` explicitly.
+ */
+export const SpecArtifactSchema = z.preprocess(
+  (raw) => {
+    if (raw && typeof raw === 'object' && !('variant' in raw)) {
+      return { ...(raw as object), variant: 'code' };
+    }
+    return raw;
+  },
+  z.discriminatedUnion('variant', [SpecArtifactCodeSchema, SpecArtifactReasoningSchema]),
+);
+export type SpecArtifact = SpecArtifactCode | SpecArtifactReasoning;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -109,6 +170,9 @@ export type SpecArtifact = z.infer<typeof SpecArtifactSchema>;
  * compatible with TaskInput.acceptanceCriteria. Used by phase-spec to
  * populate the enhancedInput so the existing GoalEvaluator C5 coverage
  * check picks them up without further refactoring (A3-safe seam).
+ *
+ * Variant-agnostic: both code and reasoning variants share the
+ * AcceptanceCriterion shape (id/description/testable/oracle).
  */
 export function specToAcceptanceCriteriaList(spec: SpecArtifact): string[] {
   return spec.acceptanceCriteria
@@ -120,12 +184,25 @@ export function specToAcceptanceCriteriaList(spec: SpecArtifact): string[] {
  * Project the spec's edge-case scenarios into a constraints list. Edge cases
  * become additional constraints the worker must respect. Blocker-severity
  * cases are prefixed with `MUST:` to elevate them in prompt assembly.
+ *
+ * Reasoning variants ALSO emit `MUST: out-of-scope: …` items and
+ * `ASSUME: …` items so phase-generate can guard against topical drift —
+ * the failure mode A10 token-Jaccard catches imperfectly for prose tasks.
  */
 export function specToConstraintsList(spec: SpecArtifact): string[] {
-  return spec.edgeCases.map((ec) => {
+  const out: string[] = spec.edgeCases.map((ec) => {
     const prefix = ec.severity === 'blocker' ? 'MUST: ' : '';
     return `${prefix}${ec.scenario} → ${ec.expected}`;
   });
+  if (spec.variant === 'reasoning') {
+    for (const item of spec.scopeBoundaries.outOfScope) {
+      out.push(`MUST: out-of-scope: ${item}`);
+    }
+    for (const item of spec.scopeBoundaries.assumptions) {
+      out.push(`ASSUME: ${item}`);
+    }
+  }
+  return out;
 }
 
 /** True when the spec has been approved (has approvedBy + approvedAt). */

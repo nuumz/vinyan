@@ -594,6 +594,15 @@ describe('buildInitUserMessage', () => {
     expect(msg).toContain('- [ ] Function exported');
   });
 
+  test('includes accountability protocol in the agent system prompt', () => {
+    const prompt = buildSystemPrompt(2, 'code');
+    expect(prompt).toContain('## Accountability Protocol');
+    expect(prompt).toContain('Definition of Done');
+    expect(prompt).toContain('senior engineer');
+    expect(prompt).toContain('selfAssessment.grade');
+    expect(prompt).toContain("grade='C'");
+  });
+
   test('includes failed approaches when provided', () => {
     const msg = buildInitUserMessage(
       'Fix the bug',

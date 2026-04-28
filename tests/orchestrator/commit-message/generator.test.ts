@@ -5,6 +5,7 @@ import { SPEC_ARTIFACT_VERSION, type SpecArtifact } from '../../../src/orchestra
 function makeSpec(summary: string): SpecArtifact {
   return {
     version: SPEC_ARTIFACT_VERSION,
+    variant: 'code' as const,
     summary,
     acceptanceCriteria: [
       { id: 'ac-1', description: 'Cost ledger writes a row per task', testable: true, oracle: 'test' },

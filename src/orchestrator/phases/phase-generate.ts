@@ -299,6 +299,9 @@ export async function executeGeneratePhase(
           proposedContent: lastAgentResult.proposedContent,
           nonRetryableError: lastAgentResult.nonRetryableError,
           needsUserInput: lastAgentResult.needsUserInput,
+          // Slice 4 Gap B: forward the agent's self-grade (if any) so the
+          // GoalEvaluator can later compare it with the deterministic grade.
+          selfAssessment: lastAgentResult.selfAssessment,
         };
 
         // Agent Conversation: when the agent paused to ask the user, do NOT
@@ -476,6 +479,7 @@ export async function executeGeneratePhase(
       workspace: deps.workspace ?? process.cwd(),
       allowedPaths: input.targetFiles ?? [],
       routingLevel: routing.level,
+      taskId: input.id,
     } as import('../tools/tool-interface.ts').ToolContext;
 
     const { readOnly, mutating } = deps.toolExecutor.partitionBySideEffect(workerResult.proposedToolCalls);

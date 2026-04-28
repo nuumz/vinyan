@@ -13,13 +13,13 @@ export class LLMCriticImpl implements CriticEngine {
     task: TaskInput,
     perception: PerceptualHierarchy,
     acceptanceCriteria?: string[],
-    // Wave 5.1: accepted but ignored — the baseline LLMCriticImpl runs
-    // the same review regardless of routing context. The debate mode
-    // wrapper (DebateRouterCritic) is the consumer that reads this.
-    _context?: CriticContext,
+    // Wave 5.1: accepted by the baseline; consumed by debate-mode wrapper.
+    // Slice 4: now also consumed here to render the [PRIOR ITERATION RESULT]
+    // block when the outer loop has already evaluated a previous attempt.
+    context?: CriticContext,
   ): Promise<CriticResult> {
     const systemPrompt = buildCriticSystemPrompt();
-    const userPrompt = buildCriticUserPrompt(proposal, task, perception, acceptanceCriteria);
+    const userPrompt = buildCriticUserPrompt(proposal, task, perception, acceptanceCriteria, context);
 
     const request: LLMRequest = {
       systemPrompt,
@@ -90,6 +90,13 @@ Respond with a single JSON object matching this exact structure:
 - completeness: Are there missing edge cases, error handling, or incomplete implementations?
 - consistency: Are the changes consistent with the existing codebase patterns and conventions?
 
+[ACCOUNTABILITY RUBRIC]
+- Grade A: all Definition of Done criteria are addressed, verification evidence exists, and no critical uncertainty remains.
+- Grade B: core goal is achieved with minor disclosed caveats that do not violate constraints.
+- Grade C: any missing criterion, failed/absent verification, scope drift, hidden uncertainty, or unsafe side effect.
+- Reject Grade C proposals. Requirement coverage and logic correctness failures are always Grade C.
+- Do not treat the generator's confidence or explanation as evidence; use proposed mutations, task criteria, and context.
+
 [RULES]
 - Set "approved" to false if ANY critical aspect fails (logic_correctness or requirement_coverage).
 - Set "approved" to true only if the proposal is safe to commit.
@@ -102,6 +109,7 @@ function buildCriticUserPrompt(
   task: TaskInput,
   perception: PerceptualHierarchy,
   acceptanceCriteria?: string[],
+  context?: CriticContext,
 ): string {
   const sections: string[] = [];
 
@@ -110,6 +118,33 @@ function buildCriticUserPrompt(
   if (acceptanceCriteria && acceptanceCriteria.length > 0) {
     const criteria = acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
     sections.push(`[ACCEPTANCE CRITERIA]\n${criteria}`);
+  }
+
+  // Slice 4: surface the previous iteration's deterministic verdict so the
+  // reviewer is anchored on what was already wrong. Only emitted when the
+  // outer loop has actually evaluated a prior attempt (iteration ≥ 2).
+  if (context?.priorAccountabilityGrade) {
+    const blockerLine =
+      context.priorBlockerCategories && context.priorBlockerCategories.length > 0
+        ? `\nBlocker categories: ${context.priorBlockerCategories.join(', ')}`
+        : '';
+    sections.push(
+      `[PRIOR ITERATION RESULT]\nDeterministic accountability grade: ${context.priorAccountabilityGrade}${blockerLine}\nIf this proposal does not address those blockers, it CANNOT be Grade A or B. Reject if the same failure pattern is repeated.`,
+    );
+  }
+
+  // Slice 4 follow-up: when the worker was overconfident on the previous
+  // iteration, prime the critic to scrutinize self-graded A's more harshly.
+  // Underconfidence is logged as observability but does NOT relax the bar —
+  // the critic should never be told "the worker is too humble, be lenient".
+  if (
+    context?.priorPredictionError &&
+    context.priorPredictionError.direction === 'overconfident'
+  ) {
+    const { selfGrade, deterministicGrade, magnitude } = context.priorPredictionError;
+    sections.push(
+      `[CALIBRATION WARNING]\nOn the previous iteration, the worker self-graded ${selfGrade} but the deterministic evaluator awarded ${deterministicGrade} (${magnitude} overconfidence). Treat the worker's current self-assessment as suspect: require concrete evidence (passing oracles, satisfied acceptance criteria) before accepting any self-claim of Grade A.`,
+    );
   }
 
   const mutationSummary = proposal.mutations.map((m) => `--- ${m.file} ---\n${m.content}`).join('\n\n');

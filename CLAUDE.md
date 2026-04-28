@@ -18,7 +18,7 @@ Code capability is Vinyan's first and most critical capability — not because V
 | A2 | First-Class Uncertainty | "I don't know" is a valid protocol state (`type: 'unknown'`), not an error. |
 | A3 | Deterministic Governance | Orchestrator routing/verification/commit = rule-based, no LLM in governance path. |
 | A4 | Content-Addressed Truth | Facts bound to SHA-256 file hash → auto-invalidate on change. |
-| A5 | Tiered Trust | Deterministic > heuristic > probabilistic evidence. |
+| A5 | Tiered Trust | Deterministic > heuristic > probabilistic evidence; confidence traces record oracle independence assumptions. |
 | A6 | Zero-Trust Execution | Workers propose; Orchestrator disposes. Zero execution privileges for workers. |
 | A7 | Prediction Error as Learning | Improvement = delta(predicted, actual), not just success/failure. |
 
@@ -29,7 +29,7 @@ Three additional invariants are under evaluation as official axioms. They are do
 | # | Proposed Axiom | Principle | Status |
 |---|----------------|-----------|--------|
 | A8 | Traceable Accountability | Every governance/action/verdict must be replayable from evidence, provenance link, actor identity, policy version, and timestamp. Decision-level provenance, not just file-level hashes. | Proposed — persistence MVP + routed/short-circuit trace coverage landed; remaining coverage gaps pending |
-| A9 | Resilient Degradation | Component failure must degrade capability, not corrupt state or cascade. Fallback, circuit breaker, retry, and SLO behavior are governance contracts, not ad-hoc per-call defenses. | Proposed — runtime degradation event contract + metrics MVP landed; fail-closed policy enforcement pending |
+| A9 | Resilient Degradation | Component failure must degrade capability, not corrupt state or cascade. Fallback, circuit breaker, retry, and SLO behavior are governance contracts, not ad-hoc per-call defenses. | Proposed — runtime degradation event contract + metrics MVP + trace-store/provenance fail-closed enforcement + tool/drafting failure coverage landed; broader enforcement coverage pending |
 | A10 | Goal-and-Time Grounding | Every execution phase must remain bound to root intent and evidence freshness. Stale or goal-drifted state downgrades confidence or triggers re-grounding/clarification. | Proposed — phase-boundary grounding audit + trace persistence MVP + initial clarification/confidence enforcement hooks landed; broader re-grounding policy coverage pending |
 
 Adversarial robustness remains a **corollary** of A6 + A8 + A9, not a separate axiom.

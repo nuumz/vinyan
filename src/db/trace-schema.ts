@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   governance_actor        TEXT,
   decision_timestamp      INTEGER,
   evidence_observed_at    INTEGER,
-  goal_grounding          TEXT
+  goal_grounding          TEXT,
+  oracle_independence     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);

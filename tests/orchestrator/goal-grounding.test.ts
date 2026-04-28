@@ -3,6 +3,7 @@ import type { Fact } from '../../src/core/types.ts';
 import {
   applyGoalGroundingConfidenceDowngrade,
   buildGoalGroundingClarificationQuestions,
+  buildGoalGroundingProvenance,
   evaluateGoalGrounding,
   GOAL_GROUNDING_POLICY_VERSION,
   shouldRunGoalGrounding,
@@ -79,6 +80,27 @@ describe('goal grounding', () => {
     expect(shouldRunGoalGrounding({ input: shortTask, routing: lowRiskRouting, startedAt: Date.now() })).toBe(false);
     expect(shouldRunGoalGrounding({ input: shortTask, routing: highRiskRouting, startedAt: Date.now() })).toBe(true);
     expect(shouldRunGoalGrounding({ input: longTask, routing: lowRiskRouting, startedAt: Date.now() })).toBe(true);
+    expect(shouldRunGoalGrounding({ input: shortTask, routing: lowRiskRouting, startedAt: 1_000, now: 31_001 })).toBe(
+      true,
+    );
+  });
+
+  test('uses supplied clock when evaluating elapsed-time grounding policy', () => {
+    const check = evaluateGoalGrounding({
+      input: makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 30_000, maxRetries: 1 } }),
+      understanding: makeUnderstanding(),
+      routing: makeRouting({ level: 1, riskScore: 0.2 }),
+      phase: 'generate',
+      startedAt: 1_000,
+      now: 31_001,
+    });
+
+    expect(check).toMatchObject({
+      action: 'continue',
+      phase: 'generate',
+      goalDrift: false,
+      freshnessDowngraded: false,
+    });
   });
 
   test('detects root-goal drift without rewriting the current goal', () => {
@@ -99,6 +121,52 @@ describe('goal grounding', () => {
     });
     expect(check?.rootGoalHash).not.toBe(check?.currentGoalHash);
     expect(buildGoalGroundingClarificationQuestions(check!)[0]).toContain('re-ground to the original intent');
+  });
+
+  test('rootGoal override preserves the current execution goal for drift detection', () => {
+    const check = evaluateGoalGrounding({
+      input: makeInput({ goal: 'Run the rewritten agentic workflow prompt' }),
+      understanding: makeUnderstanding({ rawGoal: 'Run the rewritten agentic workflow prompt' }),
+      routing: makeRouting(),
+      phase: 'plan',
+      startedAt: Date.now(),
+      rootGoal: 'Fix auth token refresh',
+      now: 500,
+    });
+
+    expect(check).toMatchObject({
+      action: 'request-clarification',
+      goalDrift: true,
+      freshnessDowngraded: false,
+    });
+    expect(check?.rootGoalHash).not.toBe(check?.currentGoalHash);
+  });
+
+  test('builds A10-specific governance provenance for clarification traces', () => {
+    const input = makeInput();
+    const check = evaluateGoalGrounding({
+      input: makeInput({ goal: 'Refactor billing report renderer' }),
+      understanding: makeUnderstanding({ rawGoal: 'Fix auth token refresh' }),
+      routing: makeRouting(),
+      phase: 'plan',
+      startedAt: Date.now(),
+      now: 500,
+    });
+
+    const provenance = buildGoalGroundingProvenance(input, check!);
+
+    expect(provenance).toMatchObject({
+      attributedTo: 'goalGroundingPolicy',
+      wasGeneratedBy: 'evaluateGoalGrounding',
+      reason: 'Current execution goal diverged from the root intent',
+    });
+    expect(provenance.decisionId).toContain('goal-grounding-request-clarification');
+    expect(provenance.wasDerivedFrom).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: input.id, kind: 'task-input' }),
+        expect.objectContaining({ source: 'goal-grounding-check', kind: 'other' }),
+      ]),
+    );
   });
 
   test('downgrades confidence when temporal facts are stale or low confidence', () => {
@@ -186,5 +254,87 @@ describe('goal grounding', () => {
     expect(trace.confidenceDecision?.reason).toContain('A10 grounding downgrade');
     expect(trace.pipelineConfidence?.composite).toBe(0.2);
     expect(trace.pipelineConfidence?.formula).toContain('A10=min');
+  });
+
+  // A10 broader grounding (2026-04-28): token-Jaccard drift detection
+  // replaces the earlier substring-only check. These tests pin behavior
+  // for cases the substring-only check was too coarse to handle.
+  describe('token-Jaccard drift detection', () => {
+    test('does NOT flag drift when goals share most content tokens (rephrasing)', () => {
+      // "fix login auth bug" vs "fix login auth issue" — 3/4 token overlap.
+      // Old substring-only check: would flag drift (neither contains the other).
+      // New Jaccard check: 0.6 overlap > 0.3 threshold → no drift.
+      const check = evaluateGoalGrounding({
+        input: makeInput({ goal: 'Fix login auth bug' }),
+        understanding: makeUnderstanding({ rawGoal: 'Fix login auth issue' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+      });
+
+      expect(check?.goalDrift).toBe(false);
+      expect(check?.action).not.toBe('request-clarification');
+    });
+
+    test('flags drift when content vocabulary diverges below threshold', () => {
+      // "refactor billing renderer module" vs "implement payment gateway integration"
+      // — 0/6 content-token overlap. Both Jaccard and substring agree → drift.
+      const check = evaluateGoalGrounding({
+        input: makeInput({ goal: 'Refactor billing renderer module' }),
+        understanding: makeUnderstanding({ rawGoal: 'Implement payment gateway integration' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+      });
+
+      expect(check?.goalDrift).toBe(true);
+      expect(check?.action).toBe('request-clarification');
+    });
+
+    test('substring containment still wins (current is a refinement of root)', () => {
+      // "implement user login" ⊂ "implement user login flow with redirect"
+      // → containment fast-path applies, no drift.
+      const check = evaluateGoalGrounding({
+        input: makeInput({ goal: 'implement user login flow with redirect' }),
+        understanding: makeUnderstanding({ rawGoal: 'implement user login' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+      });
+
+      expect(check?.goalDrift).toBe(false);
+    });
+
+    test('stopwords are not counted in token overlap', () => {
+      // "the auth bug" vs "an auth issue" — content tokens ["auth","bug"] vs
+      // ["auth","issue"] → 1/3 = 0.33 overlap > 0.3 threshold → no drift.
+      // Without stopword filtering, "the/a/an" would noisily inflate overlap.
+      const check = evaluateGoalGrounding({
+        input: makeInput({ goal: 'the auth bug' }),
+        understanding: makeUnderstanding({ rawGoal: 'an auth issue' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+      });
+
+      expect(check?.goalDrift).toBe(false);
+    });
+
+    test('empty / whitespace-only goal does not crash and does not flag drift', () => {
+      const check = evaluateGoalGrounding({
+        input: makeInput({ goal: '   ' }),
+        understanding: makeUnderstanding({ rawGoal: 'fix auth' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+      });
+
+      expect(check?.goalDrift).toBe(false);
+    });
   });
 });

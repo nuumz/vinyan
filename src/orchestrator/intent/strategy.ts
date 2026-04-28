@@ -173,6 +173,43 @@ function matchesCreativeDeliverable(text: string): boolean {
 }
 
 /**
+ * Multi-agent delegation patterns. Mirrors the creative-deliverable rule:
+ * a structural signal (plural/numbered "agents" + delegation/competition verb)
+ * forces `agentic-workflow` so the coordinator persona has access to the
+ * `delegate_task` tool (which requires routingLevel ≥ 2).
+ *
+ * Without this rule, "แบ่ง Agent 3ตัว แข่งกันถามตอบ" classified as
+ * `general-reasoning + inquire` cascades to `conversational` strategy at
+ * routing level 0/1, where coordinator has NO delegation capability and
+ * hallucinates "ส่งโจทย์ไปยัง Developer และ Mentor แล้ว" without any
+ * sub-task being created. The 2026-04-28 incident on session 44c83a53
+ * showed the model literally admitting "ผมอยู่ในโหมดสนทนาสั้น...หากต้องการ
+ * ให้ผมจำลองคำตอบของทั้งคู่ขึ้นมาเลย โปรดแจ้งได้".
+ *
+ * Anchor: number-or-multiplicity-quantifier + "agent(s)" within close
+ * proximity, OR "agent(s)" + competition/delegation verb. Bare "agent"
+ * (singular, no quantifier, no verb) is intentionally NOT matched — that is
+ * legitimate conversational mention.
+ */
+const MULTI_AGENT_THAI =
+  /(?:แบ่ง|หลาย|ใช้|มี|spawn)[^.!?]{0,20}(?:\d+\s*)?agents?(?:[^.!?]{0,20}(?:แข่ง|ประชัน|ทำงาน|ดีเบต|ตอบกัน|ถามตอบ|ตอบ|ถาม|ร่วม|coordinate|debate|battle|compete))?/i;
+
+const MULTI_AGENT_ENGLISH =
+  /\b(?:multiple|several|two|three|four|five|many|\d+)\s+agents?\b|\bsplit\s+(?:into|among|across)\s+(?:\d+\s+)?agents?\b|\bagents?\s+(?:compete|debate|battle|cooperate|coordinate|race|debate)\b|\b(?:have|let|spawn)\s+(?:\d+\s+)?agents?\s+(?:compete|debate|work|answer|race)\b/i;
+
+function matchesMultiAgentDelegation(text: string): boolean {
+  // Thai pattern requires the multiplicity prefix AND "agent" — the prefix
+  // alone is too noisy. The English pattern is more selective by structure.
+  // Both fire only when there is a clear plural-agent or delegation signal.
+  if (MULTI_AGENT_ENGLISH.test(text)) return true;
+  // Thai pattern: require at least one number token nearby OR a multi-agent
+  // prefix tied directly to "agent". The regex already encodes proximity;
+  // add a sanity cross-check that "agent" actually appears.
+  if (/agents?/i.test(text) && MULTI_AGENT_THAI.test(text)) return true;
+  return false;
+}
+
+/**
  * Compose a deterministic candidate from STU + rule-based tool classifier.
  * Returns an `IntentResolution` skeleton with `reasoningSource='deterministic'`.
  *
@@ -184,6 +221,30 @@ export function composeDeterministicCandidate(
   input: TaskInput,
   understanding: SemanticTaskUnderstanding,
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
+  // Highest-priority pre-rule: multi-agent delegation pattern overrides STU
+  // classification entirely. See MULTI_AGENT_THAI/MULTI_AGENT_ENGLISH doc for
+  // rationale (session 44c83a53 incident — coordinator at L0 hallucinated
+  // delegation because `delegate_task` requires L2+). Forcing
+  // `agentic-workflow` here gives coordinator the delegate_task capability so
+  // the request is fulfilled instead of mocked in prose.
+  if (matchesMultiAgentDelegation(input.goal)) {
+    return {
+      strategy: 'agentic-workflow',
+      refinedGoal: input.goal,
+      confidence: 0.9,
+      reasoning:
+        'Deterministic multi-agent delegation pattern matched (plural/numbered "agents" + delegation/competition verb) — agentic-workflow forced so coordinator has delegate_task access.',
+      reasoningSource: 'deterministic',
+      type: 'known',
+      deterministicCandidate: {
+        strategy: 'agentic-workflow',
+        confidence: 0.9,
+        source: 'multi-agent-delegation-pattern',
+        ambiguous: false,
+      },
+    };
+  }
+
   // Highest-priority pre-rule: explicit creative-deliverable pattern
   // overrides STU classification entirely. See CREATIVE_DELIVERABLE_PATTERN
   // doc for the rationale (bedtime-story comprehender mis-classification).

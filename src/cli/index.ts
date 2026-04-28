@@ -70,6 +70,7 @@ Commands:
   skills import <id> Import a SKILL.md from an external registry (github:… / agentskills:…)
   skills bind <persona> <skill> [--pin <ver>]   Bind a skill to a persona (workspace-scoped)
   skills unbind <persona> <skill>               Remove a persona-scoped skill binding
+  skills promote [--apply]                      Propose acquired→bound promotions from outcome history
 
   gate               Run oracle gate (JSON on stdin)
   analyze [dir]      Analyze session logs
@@ -253,6 +254,14 @@ if (import.meta.main) {
         try {
           const { runSkillUnbindCommand } = await import('./skill-bind.ts');
           await runSkillUnbindCommand(args.slice(2), workspacePath);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exit(2);
+        }
+      } else if (args[1] === 'promote') {
+        try {
+          const { runSkillPromoteCommand } = await import('./skill-promote.ts');
+          await runSkillPromoteCommand(args.slice(2), workspacePath);
         } catch (err) {
           console.error((err as Error).message);
           process.exit(2);

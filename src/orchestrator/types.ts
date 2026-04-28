@@ -161,7 +161,12 @@ export interface IntentDeterministicCandidate {
   strategy: ExecutionStrategy;
   confidence: number;
   /** Which rule produced the candidate (observability). */
-  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed' | 'creative-deliverable-pattern';
+  source:
+    | 'classifyDirectTool'
+    | 'mapUnderstandingToStrategy'
+    | 'composed'
+    | 'creative-deliverable-pattern'
+    | 'multi-agent-delegation-pattern';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }
@@ -676,6 +681,14 @@ export interface TaskResult {
   clarificationNeeded?: string[];
   /** Wave B: plan used for this task — surfaced so outer-loop can pass to replan engine + decomposition learner. */
   plan?: TaskDAG;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `done`/`uncertain` turn. Read by the deterministic GoalEvaluator to
+   * compute prediction-error vs the orchestrator's own grade (A7 — Prediction
+   * Error as Learning). The orchestrator never trusts this for the verdict;
+   * it is data, not authority.
+   */
+  workerSelfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,11 +1151,38 @@ export interface GoalGroundingCheck {
   evidence: GovernanceEvidenceReference[];
 }
 
+export type OracleIndependenceAssumption = 'independent' | 'shared-evidence' | 'single-oracle';
+export type OracleConfidenceCompositionMethod =
+  | 'oracle-gate-aggregate-confidence'
+  | 'default-pass-fallback'
+  | 'default-fail-fallback';
+
+export interface OracleIndependenceAudit {
+  policyVersion: string;
+  compositionMethod: OracleConfidenceCompositionMethod;
+  assumption: OracleIndependenceAssumption;
+  oracleCount: number;
+  deterministicOracleCount: number;
+  heuristicOracleCount: number;
+  primaryOracles: string[];
+  corroboratingOracles: string[];
+  sharedEvidenceWarnings: string[];
+}
+
 /** Recorded after each task for Self-Model calibration and Evolution Engine */
 export interface ExecutionTrace {
   id: string;
   taskId: string;
   sessionId?: string; // Session grouping for multi-step tasks
+  /**
+   * Parent task id when this trace belongs to a delegated child. Set from
+   * `TaskInput.parentTaskId` (which `buildSubTaskInput` populates from the
+   * parent task at delegation time). Without it, downstream consumers
+   * (Evolution Engine, observability dashboards, the chat UI's delegation
+   * tree) cannot reconstruct parent → child chains from trace storage —
+   * they'd see each child as an unrelated top-level trace.
+   */
+  parentTaskId?: string;
   workerId?: string; // Which worker (oracle/engine) executed this step
   /** Multi-agent: specialist id (e.g., 'developer') — distinct from workerId (oracle). */
   agentId?: string;
@@ -1260,6 +1300,8 @@ export interface ExecutionTrace {
   governanceProvenance?: GovernanceProvenance;
   /** A10 RFC: phase-boundary root-goal and temporal freshness grounding checks. */
   goalGrounding?: GoalGroundingCheck[];
+  /** A5 refinement: audit metadata for oracle independence assumptions during confidence composition. */
+  oracleIndependence?: OracleIndependenceAudit;
 }
 
 // ---------------------------------------------------------------------------

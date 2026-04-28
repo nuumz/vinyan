@@ -33,6 +33,124 @@ const CONTEXT_COMPRESSION_CONTINUATION_PROMPT = [
   'If the remaining work is large, break it into smaller pieces.',
 ].join('\n');
 
+// ── Accountability helpers ─────────────────────────────────────────
+
+/**
+ * Result of interpreting an attempt_completion call against the
+ * [ACCOUNTABILITY CONTRACT]. The caller wraps this in token/cache fields.
+ *
+ * Self-grade enforcement: if the agent claims status='done' but its own
+ * selfAssessment.grade is 'C', we convert to an uncertain turn so the
+ * orchestrator does NOT treat the work as complete. Generator (LLM) and
+ * verifier (orchestrator) remain different components (A1) — we are not
+ * grading the agent here, only refusing to forward a self-declared C as
+ * complete.
+ */
+export interface CompletionTurnDecision {
+  type: 'done' | 'uncertain';
+  proposedContent?: string;
+  reason?: string;
+  uncertainties?: string[];
+  needsUserInput?: boolean;
+  /** True when status='done' was downgraded because selfAssessment.grade='C'. */
+  downgradedFromGradeC: boolean;
+  /** True when status='done' had no selfAssessment at all. */
+  missingSelfAssessment: boolean;
+  /** Self-grade reported by the agent (if any). */
+  selfGrade?: 'A' | 'B' | 'C';
+  /**
+   * Slice 4 Gap B: gaps the agent admits in its self-assessment. Forwarded
+   * unchanged on `done`/`uncertain` turns so the orchestrator's GoalEvaluator
+   * can compare the predicted (self) vs measured (deterministic) grade for
+   * A7 prediction-error tracking. Empty when no gaps were declared.
+   */
+  selfGaps: string[];
+}
+
+interface AttemptCompletionParams {
+  status?: unknown;
+  summary?: unknown;
+  uncertainties?: unknown;
+  needsUserInput?: unknown;
+  proposedContent?: unknown;
+  selfAssessment?: unknown;
+}
+
+/**
+ * Pure helper — decides whether attempt_completion(...) becomes a `done`
+ * or `uncertain` worker turn, applying the Grade-C accountability rule.
+ *
+ * Exported for direct unit testing without spinning up the full agent loop.
+ */
+export function decideCompletionTurn(params: AttemptCompletionParams): CompletionTurnDecision {
+  const status = typeof params.status === 'string' ? params.status : 'done';
+  const proposedContent =
+    typeof params.proposedContent === 'string'
+      ? params.proposedContent
+      : typeof params.summary === 'string'
+        ? params.summary
+        : undefined;
+  const summary = typeof params.summary === 'string' ? params.summary : undefined;
+  const uncertainties = Array.isArray(params.uncertainties)
+    ? params.uncertainties.filter((u): u is string => typeof u === 'string')
+    : [];
+  const needsUserInput = params.needsUserInput === true;
+
+  const selfAssessment =
+    params.selfAssessment && typeof params.selfAssessment === 'object'
+      ? (params.selfAssessment as { grade?: unknown; gaps?: unknown })
+      : undefined;
+  const rawGrade = selfAssessment?.grade;
+  const selfGrade: 'A' | 'B' | 'C' | undefined =
+    rawGrade === 'A' || rawGrade === 'B' || rawGrade === 'C' ? rawGrade : undefined;
+  const gaps = Array.isArray(selfAssessment?.gaps)
+    ? (selfAssessment.gaps as unknown[]).filter((g): g is string => typeof g === 'string')
+    : [];
+
+  if (status === 'uncertain') {
+    return {
+      type: 'uncertain',
+      reason: summary ?? 'Worker reported uncertainty',
+      uncertainties,
+      needsUserInput,
+      downgradedFromGradeC: false,
+      missingSelfAssessment: false,
+      selfGrade,
+      selfGaps: gaps,
+    };
+  }
+
+  // status === 'done'
+  if (selfGrade === 'C') {
+    // Refuse to forward a self-declared Grade C as complete.
+    const downgraded: string[] = [
+      ...(gaps.length > 0 ? gaps : ['Self-graded C against accountability contract']),
+      ...uncertainties,
+    ];
+    return {
+      type: 'uncertain',
+      reason:
+        summary ??
+        'Self-assessment graded C — accountability contract requires status=uncertain for grade C',
+      uncertainties: downgraded,
+      needsUserInput: false,
+      downgradedFromGradeC: true,
+      missingSelfAssessment: false,
+      selfGrade,
+      selfGaps: gaps,
+    };
+  }
+
+  return {
+    type: 'done',
+    proposedContent,
+    downgradedFromGradeC: false,
+    missingSelfAssessment: selfGrade === undefined,
+    selfGrade,
+    selfGaps: gaps,
+  };
+}
+
 // ── Public types ───────────────────────────────────────────────────
 
 export interface WorkerIO {
@@ -310,31 +428,46 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
 
         // Handle attempt_completion (processed AFTER regular tools)
         if (completionCall) {
-          const params = completionCall.parameters;
-          const status = (params.status as string) ?? 'done';
-          if (status === 'uncertain') {
+          const decision = decideCompletionTurn(completionCall.parameters as AttemptCompletionParams);
+          if (decision.downgradedFromGradeC) {
+            logError(
+              `attempt_completion downgraded from done to uncertain: agent self-graded ${decision.selfGrade} against accountability contract`,
+            );
+          }
+          if (decision.type === 'uncertain') {
             // Agent Conversation: needsUserInput disambiguates
             //   * false/absent → code-fact uncertainty (orchestrator may retry/escalate)
             //   * true         → user-intent uncertainty (orchestrator asks the user)
-            const needsUserInput = params.needsUserInput === true;
+            const needsUserInput = decision.needsUserInput === true;
+            // Slice 4 Gap B: forward selfAssessment intact so the orchestrator's
+            // GoalEvaluator can compute prediction-error against the deterministic
+            // grade. Only attached when the agent actually self-graded.
+            const selfAssessment = decision.selfGrade
+              ? { grade: decision.selfGrade, gaps: decision.selfGaps }
+              : undefined;
             writeTurn(io, {
               type: 'uncertain',
               turnId: `t${turnCount}`,
-              reason: (params.summary as string) ?? 'Worker reported uncertainty',
-              uncertainties: (params.uncertainties as string[]) ?? [],
+              reason: decision.reason ?? 'Worker reported uncertainty',
+              uncertainties: decision.uncertainties ?? [],
               tokensConsumed: totalTokensConsumed,
               ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
               ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
               ...(needsUserInput ? { needsUserInput: true } : {}),
+              ...(selfAssessment ? { selfAssessment } : {}),
             });
           } else {
+            const selfAssessment = decision.selfGrade
+              ? { grade: decision.selfGrade, gaps: decision.selfGaps }
+              : undefined;
             writeTurn(io, {
               type: 'done',
               turnId: `t${turnCount}`,
-              proposedContent: (params.proposedContent as string) ?? (params.summary as string),
+              proposedContent: decision.proposedContent,
               tokensConsumed: totalTokensConsumed,
               ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
               ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+              ...(selfAssessment ? { selfAssessment } : {}),
             });
           }
           return;
@@ -728,6 +861,15 @@ ${taskTypeBlock}
 - If a file's content is unknown, say so — do NOT fabricate imports, paths, or APIs.
 - Never claim "all tests pass" or "everything works" without evidence from the tool output.
 - Match the conventions of the surrounding code (indentation, naming, patterns).
+
+## Accountability Protocol
+You are a senior engineer who takes professional responsibility for every result. Half-done, plausibly-correct, or "good enough" is not acceptable here; honesty about uncertainty is.
+Definition of Done = the Goal + User Constraints + Acceptance Criteria + Success Criteria + verification evidence.
+Rubric:
+- A: all criteria addressed, scoped change, evidence from files/tools/tests, no critical uncertainty.
+- B: core goal achieved with minor disclosed caveats that do not violate constraints.
+- C: missing criterion, failed/absent verification, scope drift, hidden uncertainty, or unsafe side effect.
+When you call attempt_completion with status='done' you MUST include selfAssessment.grade ('A' or 'B') and an honest gaps list. Calling status='done' with grade='C' is a contract violation and the orchestrator will reject it. For grade C, keep working, call status='uncertain', or ask the user a concrete question with options.
 
 ## Reasoning Framework
 For every turn, mentally cycle through:

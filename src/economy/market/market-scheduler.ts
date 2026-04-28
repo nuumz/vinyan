@@ -13,6 +13,7 @@ import type { MarketConfig } from '../economy-config.ts';
 import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
 import { BidAccuracyTracker } from './bid-accuracy-tracker.ts';
+import { FamilyStatsTracker } from './family-stats-tracker.ts';
 import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } from './market-phase.ts';
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
@@ -37,6 +38,12 @@ export class MarketScheduler {
   private bus: VinyanBus | undefined;
   private auctionHistory: Array<{ bidSpread: number; distinctPersonaCount?: number }> = [];
   /**
+   * Phase-8: per-task-family auction stats. Records every winning bid with its
+   * task-type-family so `evaluateMarketPhase` can apply the H6 stratified
+   * regression rule with real data instead of hardcoded zeros.
+   */
+  private familyStats: import('./family-stats-tracker.ts').FamilyStatsTracker;
+  /**
    * Tick hooks registered via {@link registerTickHook}. Invoked on every
    * {@link tick} call after the scheduler's own work completes. See
    * `docs/spec/w1-contracts.md` §9.A3.
@@ -48,6 +55,7 @@ export class MarketScheduler {
     this.accuracyTracker = new BidAccuracyTracker();
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
+    this.familyStats = new FamilyStatsTracker();
   }
 
   /**
@@ -122,6 +130,13 @@ export class MarketScheduler {
     contexts: Map<string, BidderContext>,
     taskBudgetTokens: number,
     requiredCapabilities?: ReadonlyArray<{ id: string; weight: number }>,
+    /**
+     * Phase-8: task-type-family for per-family auction stats (H6
+     * stratified regression). Optional — callers without taskType info
+     * use the default `UNKNOWN_FAMILY` bucket so global dominance still
+     * tracks correctly.
+     */
+    taskTypeFamily?: string,
   ): AuctionResult | null {
     if (!this.isActive()) return null;
     if (bids.length < this.config.min_bidders) {
@@ -152,6 +167,11 @@ export class MarketScheduler {
       requiredCapabilities,
     );
     if (!result) return null;
+
+    // Phase-8: record the winner in the family-stats window so subsequent
+    // `evaluatePhase` calls can apply the H6 stratified regression rule
+    // with real data. Family defaults to UNKNOWN_FAMILY when caller omits it.
+    this.familyStats.addAuction(result.winnerId, taskTypeFamily);
 
     // Track bid spread for collusion detection. Phase-3: also count distinct
     // personas so the detector can skip auctions where all bidders are running
@@ -238,6 +258,15 @@ export class MarketScheduler {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Phase-8: snapshot the per-task-family auction stats so callers (sleep
+   * cycle) can compose a real `MarketPhaseStats` instead of passing
+   * hardcoded zeros for `dominantWinRate` / `auctionsByFamily`.
+   */
+  getFamilyStats(): import('./family-stats-tracker.ts').FamilyStats {
+    return this.familyStats.getStats();
   }
 
   /**

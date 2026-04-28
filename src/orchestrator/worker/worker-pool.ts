@@ -362,6 +362,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  private skillAcquirer?: import('../agents/skill-acquirer.ts').SkillAcquirer;
   private streamingEnabled: boolean;
   private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
   /** W3 P3: opt-in backend-abstraction delegation (MVP: L0 only). */
@@ -447,6 +448,54 @@ export class WorkerPoolImpl implements WorkerPool {
     this.agentRegistry = registry;
   }
 
+  /**
+   * Phase-6: set the skill acquirer used to fill capability gaps before
+   * dispatch. When set together with `agentRegistry`, a task whose persona
+   * is missing required capabilities will trigger a search of the local
+   * artifact store for matching skills and load them as acquired-scope refs
+   * for this task only. Without this setter, gaps stay gaps (legacy).
+   */
+  setSkillAcquirer(acquirer: import('../agents/skill-acquirer.ts').SkillAcquirer): void {
+    this.skillAcquirer = acquirer;
+  }
+
+  /**
+   * Phase-6 helper: identify required-capability ids the persona doesn't
+   * already cover, then call the acquirer for each. Returns the union of
+   * acquired refs (deduped by id). Best-effort — acquirer failures degrade
+   * to an empty array so a flaky local cache never blocks dispatch.
+   */
+  private async acquireForGapsIfApplicable(
+    agentProfile: import('../types.ts').AgentSpec,
+    requirements: import('../types.ts').CapabilityRequirement[] | undefined,
+    taskId: string,
+    routingLevel: number,
+  ): Promise<import('../types.ts').SkillRef[]> {
+    if (!this.skillAcquirer || !this.agentRegistry || !requirements || requirements.length === 0) {
+      return [];
+    }
+    // Compute the set of capability ids the persona already advertises
+    // (base + bound). Anything in `requirements` not covered is a gap.
+    const baselineDerived = this.agentRegistry.getDerivedCapabilities(agentProfile.id);
+    const covered = new Set<string>((baselineDerived?.capabilities ?? []).map((c) => c.id));
+    const gaps = requirements.filter((r) => !covered.has(r.id));
+    if (gaps.length === 0) return [];
+
+    const acquired = new Map<string, import('../types.ts').SkillRef>();
+    for (const gap of gaps) {
+      try {
+        const refs = await this.skillAcquirer.acquireForGap(agentProfile, gap, { taskId, routingLevel });
+        for (const ref of refs) {
+          // Dedupe by id — same skill may fill multiple gaps; load once.
+          if (!acquired.has(ref.id)) acquired.set(ref.id, ref);
+        }
+      } catch {
+        /* A9: acquirer failures degrade to no fill, never block dispatch */
+      }
+    }
+    return [...acquired.values()];
+  }
+
   /** Lazily create warm pool on first subprocess dispatch (L2+). */
   private ensureWarmPool(): WarmWorkerPool | null {
     if (this.warmPool) return this.warmPool;
@@ -508,7 +557,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const releaseRuntime = this.acquireRuntimeSlot(runtimeSlotId ?? undefined, input.id);
 
     try {
-      const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
+      const workerInput = await this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
 
       // L2/L3: container dispatch when isolation level = 2
       // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -629,7 +678,7 @@ export class WorkerPoolImpl implements WorkerPool {
     }
   }
 
-  private buildWorkerInput(
+  private async buildWorkerInput(
     input: TaskInput,
     perception: PerceptualHierarchy,
     memory: WorkingMemoryState,
@@ -637,7 +686,7 @@ export class WorkerPoolImpl implements WorkerPool {
     routing: RoutingDecision,
     understanding?: import('../types.ts').TaskUnderstanding,
     turns?: import('../types.ts').Turn[],
-  ): WorkerInput {
+  ): Promise<WorkerInput> {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
       perception,
@@ -676,13 +725,25 @@ export class WorkerPoolImpl implements WorkerPool {
     const agentContext =
       input.agentId && this.agentContextBuilder ? this.agentContextBuilder.buildContext(input.agentId) : undefined;
 
-    // Phase-5B: also resolve persona's loaded skill cards so the subprocess
+    // Phase-5B + 7: also resolve persona's loaded skill cards so the subprocess
     // worker renders the same `agent-skill-cards` section as the in-process
     // path. The worker has no registry access, so cards are pre-computed
     // here and shipped through the IPC payload as `loadedSkillCards`.
+    //
+    // Phase-7: the acquirer also runs on this path so subprocess L2/L3 tasks
+    // get acquired-scope skills. Without this, in-process L0/L1 tasks would
+    // see acquired skills but isolated subprocess workers would not.
     let loadedSkillCards: SkillCardView[] | undefined;
-    if (input.agentId && this.agentRegistry) {
-      const derived = this.agentRegistry.getDerivedCapabilities(input.agentId);
+    if (input.agentId && agentProfile && this.agentRegistry) {
+      const acquiredRefs = await this.acquireForGapsIfApplicable(
+        agentProfile,
+        resolvedUnderstanding.capabilityRequirements as import('../types.ts').CapabilityRequirement[] | undefined,
+        input.id,
+        routing.level,
+      );
+      const derived = this.agentRegistry.getDerivedCapabilities(input.agentId, {
+        extraRefs: acquiredRefs.length > 0 ? acquiredRefs : undefined,
+      });
       if (derived && derived.loadedSkills.length > 0) {
         loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
       }
@@ -768,9 +829,23 @@ export class WorkerPoolImpl implements WorkerPool {
     //
     // Phase-5B: subprocess dispatch ships these via WorkerInput.loadedSkillCards
     // (see buildWorkerInput) so worker-entry.ts renders the same section.
+    //
+    // Phase-6: BEFORE deriving skills, ask the acquirer to fill any open
+    // capability gap from the local artifact store. Acquired refs are passed
+    // via `extraRefs` so they appear in `derived.loadedSkills` alongside
+    // base + bound. Outcome attribution + ACL composition all flow through
+    // the same path.
     let loadedSkillCards: SkillCardView[] | undefined = workerInput.loadedSkillCards;
     if (!loadedSkillCards && agentProfile && this.agentRegistry) {
-      const derived = this.agentRegistry.getDerivedCapabilities(agentProfile.id);
+      const acquiredRefs = await this.acquireForGapsIfApplicable(
+        agentProfile,
+        workerInput.understanding?.capabilityRequirements as import('../types.ts').CapabilityRequirement[] | undefined,
+        workerInput.taskId,
+        routing.level,
+      );
+      const derived = this.agentRegistry.getDerivedCapabilities(agentProfile.id, {
+        extraRefs: acquiredRefs.length > 0 ? acquiredRefs : undefined,
+      });
       if (derived && derived.loadedSkills.length > 0) {
         loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
       }

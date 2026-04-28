@@ -30,6 +30,7 @@ import { migration018 } from './018_retire_legacy_builtins.ts';
 import { migration019 } from './019_skill_outcomes.ts';
 import { migration020 } from './020_a8_governance_provenance.ts';
 import { migration021 } from './021_a10_goal_grounding.ts';
+import { migration022 } from './022_a5_oracle_independence.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -54,4 +55,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration019,
   migration020,
   migration021,
+  migration022,
 ];

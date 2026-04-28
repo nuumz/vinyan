@@ -43,7 +43,7 @@ export interface AgentRouter {
    *
    * `routingLevel` is an optional hint. When provided, agents whose
    * `routingHints.minLevel` exceeds the task's routing level are excluded
-   * from the rule-match candidate set — e.g., `system-designer` (minLevel:1)
+   * from the rule-match candidate set — e.g., `architect` (minLevel:1)
    * is not considered for reflex-tier L0 tasks. When the hint is absent the
    * router keeps pre-multi-agent behaviour (minLevel ignored) so callers
    * that don't know the routing level yet still get a deterministic choice.

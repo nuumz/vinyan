@@ -866,18 +866,52 @@ export class VinyanAPIServer {
   // ── Task Handlers ───────────────────────────────────────
 
   // G4: Track tasks in sessions
+  /**
+   * Resolve which session the task should attach to.
+   *  - Client passed `body.sessionId` AND it exists + isn't trashed →
+   *    use it. Surfaces in chat history; recordAssistantTurn fires.
+   *  - Client passed but invalid → 404.
+   *  - Client omitted → fall back to the default api session (current
+   *    fire-and-forget behaviour, no chat history). Returns a marker
+   *    `recordChat: false` so the caller knows not to write turns.
+   */
+  private resolveTaskSession(
+    requestedSessionId: string | undefined,
+  ): { error: Response } | { session: Session; recordChat: boolean } {
+    if (!requestedSessionId) {
+      return { session: this.getOrCreateDefaultSession(), recordChat: false };
+    }
+    const session = this.deps.sessionManager.get(requestedSessionId);
+    if (!session) {
+      return { error: jsonResponse({ error: `Session '${requestedSessionId}' not found` }, 404) };
+    }
+    if (session.lifecycleState === 'trashed') {
+      return { error: jsonResponse({ error: 'Cannot attach a task to a trashed session' }, 409) };
+    }
+    return { session, recordChat: true };
+  }
+
   private async handleSyncTask(req: Request): Promise<Response> {
     const body = (await req.json()) as Partial<TaskInput>;
     const resolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
     if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
     const input = buildTaskInput(body, resolved.profile);
 
-    const session = this.getOrCreateDefaultSession();
+    const sessionResolution = this.resolveTaskSession(input.sessionId);
+    if ('error' in sessionResolution) return sessionResolution.error;
+    const { session, recordChat } = sessionResolution;
     this.deps.sessionManager.addTask(session.id, input);
 
     const result = await this.deps.executeTask(input);
 
     this.deps.sessionManager.completeTask(session.id, input.id, result);
+    // Programmatic API tasks bound to a real chat session record an
+    // assistant turn so the conversation history reflects the work.
+    // Default-api-session tasks skip this — recording would clutter the
+    // hidden api-source session that nobody opens.
+    if (recordChat) {
+      this.deps.sessionManager.recordAssistantTurn(session.id, input.id, result);
+    }
     return jsonResponse({ result });
   }
 
@@ -887,7 +921,9 @@ export class VinyanAPIServer {
     if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
     const input = buildTaskInput(body, resolved.profile);
 
-    const session = this.getOrCreateDefaultSession();
+    const sessionResolution = this.resolveTaskSession(input.sessionId);
+    if ('error' in sessionResolution) return sessionResolution.error;
+    const { session, recordChat } = sessionResolution;
     this.deps.sessionManager.addTask(session.id, input);
 
     const controller = new AbortController();
@@ -903,6 +939,9 @@ export class VinyanAPIServer {
     promise
       .then((result) => {
         this.deps.sessionManager.completeTask(session.id, input.id, result);
+        if (recordChat) {
+          this.deps.sessionManager.recordAssistantTurn(session.id, input.id, result);
+        }
         this.asyncResults.set(input.id, result);
         this.scheduleAsyncResultEviction(input.id);
         this.inFlightTasks.delete(input.id);
@@ -2248,6 +2287,23 @@ export class VinyanAPIServer {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session) return jsonResponse({ error: 'Session not found' }, 404);
 
+    // Reject compaction of trivial sessions. Compacting a 0/1/2-task
+    // session writes a near-empty `compaction_json` row, flips the
+    // session into the `compacted` lifecycle state (which the chat UI
+    // surfaces as a distinct badge), and removes the session from the
+    // operator's active list — for no observable benefit. The chat UI's
+    // compact button still appears; this is the backend safety net for
+    // direct API calls and accidental clicks.
+    const MIN_TASKS_FOR_COMPACTION = 3;
+    if (session.taskCount < MIN_TASKS_FOR_COMPACTION) {
+      return jsonResponse(
+        {
+          error: `Session has only ${session.taskCount} task${session.taskCount === 1 ? '' : 's'}; compaction requires at least ${MIN_TASKS_FOR_COMPACTION}.`,
+        },
+        400,
+      );
+    }
+
     const result = this.deps.sessionManager.compact(sessionId);
     // G2: Emit session compacted bus event
     this.deps.bus.emit('session:compacted', { sessionId, taskCount: result.statistics.totalTasks });
@@ -2808,6 +2864,14 @@ function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInpu
     taskType: partial.taskType ?? (partial.targetFiles?.length ? 'code' : 'reasoning'),
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
+    // Preserve client-supplied sessionId so the task attaches to the
+    // requested chat session instead of the default api session. Without
+    // this every /tasks call landed in the same hidden api-source
+    // session — programmatic submission could not contribute to a chat
+    // conversation. The `handleSync/AsyncTask` path validates the
+    // session before dispatch and falls back to the default api session
+    // when omitted.
+    ...(partial.sessionId ? { sessionId: partial.sessionId } : {}),
     ...(profile !== undefined ? { profile } : partial.profile !== undefined ? { profile: partial.profile } : {}),
     budget: partial.budget ?? DEFAULT_TASK_BUDGET,
     acceptanceCriteria: partial.acceptanceCriteria,

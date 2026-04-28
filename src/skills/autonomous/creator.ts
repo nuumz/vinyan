@@ -25,7 +25,14 @@ import { computeContentHash } from '../skill-md/hash.ts';
 import type { SkillMdRecord } from '../skill-md/schema.ts';
 import { buildWindowState, DEFAULT_WINDOW_POLICY } from './prediction-window.ts';
 import type { CachedSkillLike, PredictionLedgerLike, SkillStoreLike } from './store-adapters.ts';
-import type { DraftDecision, DraftGenerator, PredictionErrorSample, WindowPolicy, WindowState } from './types.ts';
+import {
+  composeWindowKey,
+  type DraftDecision,
+  type DraftGenerator,
+  type PredictionErrorSample,
+  type WindowPolicy,
+  type WindowState,
+} from './types.ts';
 
 export interface AutonomousSkillCreatorDeps {
   /** Read-only access to the prediction ledger for signature-scoped history. */
@@ -96,28 +103,39 @@ export class AutonomousSkillCreator {
   }
 
   /**
-   * Record a sample into the rolling window for `sample.taskSignature`.
-   * Samples are retained up to `2 * windowSize` so the split-half test can
-   * always evaluate even as new evidence arrives.
+   * Record a sample into the rolling window for the (persona × taskSignature)
+   * composite key. Samples are retained up to `2 * windowSize` so the
+   * split-half test can always evaluate even as new evidence arrives.
+   *
+   * Phase-8: when `sample.personaId` is set, separate windows accumulate per
+   * persona so a Developer's `code::refactor` history doesn't pollute an
+   * Author's `code::refactor` window. Legacy samples without `personaId`
+   * share a persona-agnostic window — backward compatible.
    */
   observe(sample: PredictionErrorSample): void {
-    const entry = this.windows.get(sample.taskSignature) ?? { samples: [] };
+    const key = composeWindowKey(sample.taskSignature, sample.personaId);
+    const entry = this.windows.get(key) ?? { samples: [] };
     entry.samples.push(sample);
     // Trim to a bounded history; the window policy only inspects the tail.
     const maxKeep = Math.max(this.policy.windowSize * 2, this.policy.splitHalf * 2);
     if (entry.samples.length > maxKeep) {
       entry.samples = entry.samples.slice(-maxKeep);
     }
-    this.windows.set(sample.taskSignature, entry);
+    this.windows.set(key, entry);
   }
 
   /**
    * State machine. Evaluates the window for `taskSignature`; on qualify drafts,
    * scans, dry-runs the gate, consults the critic, then invokes the promotion
    * rule. Every arm records its own DraftDecision; no recursion, no retries.
+   *
+   * Phase-8: optional `personaId` selects the persona-keyed window. Without
+   * it, the legacy persona-agnostic window is queried — backward compatible
+   * for callers that pre-date the redesign.
    */
-  async tryDraftFor(taskSignature: string): Promise<DraftDecision> {
-    const state = this.windows.get(taskSignature);
+  async tryDraftFor(taskSignature: string, personaId?: string): Promise<DraftDecision> {
+    const key = composeWindowKey(taskSignature, personaId);
+    const state = this.windows.get(key);
     const samples = state?.samples ?? [];
     const windowState = buildWindowState(taskSignature, samples, this.policy);
 
@@ -150,9 +168,11 @@ export class AutonomousSkillCreator {
     const drafted = enforceCreationInvariants(draftedRaw, windowState);
 
     // Record cooldown start — we entered the verification pipeline.
-    const stateAfter = this.windows.get(taskSignature) ?? { samples: [] };
+    // Phase-8: cooldown keyed on the same composite (persona × signature)
+    // so a Developer's draft attempt doesn't unblock an Author's cooldown.
+    const stateAfter = this.windows.get(key) ?? { samples: [] };
     stateAfter.lastDraftAt = now;
-    this.windows.set(taskSignature, stateAfter);
+    this.windows.set(key, stateAfter);
 
     // 5. Guardrail static-scan. Any injection/bypass → reject (A6).
     const scanText = buildScanText(drafted);

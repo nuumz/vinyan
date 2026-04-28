@@ -171,6 +171,86 @@ describe('API Server', () => {
     expect(task.result.trace.outcome).toBe('timeout');
   });
 
+  // ── /tasks accepts body.sessionId (round 6 fix) ───────────
+  test('POST /tasks with body.sessionId attaches task to that session and records assistant turn', async () => {
+    // Create a real chat session.
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'ui' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+
+    // Submit via /tasks with sessionId — should land in that session.
+    const taskRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'attach to chat', sessionId: session.id }),
+      }),
+    );
+    expect(taskRes.status).toBe(200);
+    const { result } = (await taskRes.json()) as any;
+    expect(result.status).toBe('completed');
+
+    // Conversation history should now include an assistant turn for
+    // this task — the bridge that lets API-submitted work show up in
+    // the chat history. Without the recordChat=true branch this turn
+    // never appears.
+    const histRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/messages`, { headers: authHeaders }),
+    );
+    const { messages } = (await histRes.json()) as any;
+    const assistantTurn = messages.find((m: any) => m.role === 'assistant' && m.taskId === result.id);
+    expect(assistantTurn).toBeTruthy();
+  });
+
+  test('POST /tasks with non-existent sessionId returns 404', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'orphan', sessionId: 'no-such-session' }),
+      }),
+    );
+    expect(res.status).toBe(404);
+    const data = (await res.json()) as any;
+    expect(data.error).toContain('not found');
+  });
+
+  test('POST /tasks/async with body.sessionId attaches to that session', async () => {
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'ui' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+
+    const submit = await server.handleRequest(
+      req('/api/v1/tasks/async', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'async-attach', sessionId: session.id }),
+      }),
+    );
+    expect(submit.status).toBe(202);
+    const { taskId } = (await submit.json()) as any;
+
+    // Wait for the .then handler to record the assistant turn.
+    await new Promise((r) => setTimeout(r, 100));
+
+    const histRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/messages`, { headers: authHeaders }),
+    );
+    const { messages } = (await histRes.json()) as any;
+    const assistantTurn = messages.find((m: any) => m.role === 'assistant' && m.taskId === taskId);
+    expect(assistantTurn).toBeTruthy();
+  });
+
   // ── Criterion 4: Session management ─────────────────────
   test('session create + get', async () => {
     const createRes = await server.handleRequest(
@@ -188,6 +268,27 @@ describe('API Server', () => {
 
     const getRes = await server.handleRequest(req(`/api/v1/sessions/${session.id}`, { headers: authHeaders }));
     expect(getRes.status).toBe(200);
+  });
+
+  test('POST /sessions/:id/compact rejects sessions with fewer than 3 tasks (400)', async () => {
+    // Tiny sessions don't benefit from compaction — the result is a
+    // near-empty summary plus a permanent lifecycle flip to 'compacted'
+    // that hides the session from the active list. Backend guard
+    // protects against direct API calls + accidental clicks.
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'test' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+    const compactRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/compact`, { method: 'POST', headers: authHeaders }),
+    );
+    expect(compactRes.status).toBe(400);
+    const data = (await compactRes.json()) as any;
+    expect(data.error).toContain('compaction requires');
   });
 
   // ── Criterion 7: Auth enforcement (I15) ─────────────────

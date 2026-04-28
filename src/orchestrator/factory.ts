@@ -61,6 +61,7 @@ import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-ali
 import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
+import { SkillArtifactStore } from '../skills/artifact-store.ts';
 import {
   type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
@@ -79,8 +80,11 @@ import { SoulReflector } from './agent-context/soul-reflector.ts';
 import { SoulStore } from './agent-context/soul-store.ts';
 import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
+import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
+import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
+import { evaluateOverclaim, SkillUsageTracker } from './agents/skill-usage-tracker.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
 import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
@@ -454,6 +458,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
   let skillOutcomeStore: SkillOutcomeStore | undefined;
+  // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
+  // path so deps consumers can call `.acquireForGap` unconditionally.
+  let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
   let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
@@ -469,6 +476,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
     skillOutcomeStore = new SkillOutcomeStore(db.getDb());
+
+    // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
+    // a runtime gap. Local-only — Phase 7 will layer hub-fetch on top.
+    skillAcquirer = new LocalHubAcquirer({
+      artifactStore: new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') }),
+    });
     comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
@@ -1471,11 +1484,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
   if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
+  // Phase-6: hand the worker pool the runtime skill acquirer so it can fill
+  // persona capability gaps from the local artifact store before dispatch.
+  workerPool.setSkillAcquirer(skillAcquirer);
 
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
   const agentRouter = agentRegistry ? createAgentRouter({ registry: agentRegistry }) : undefined;
   if (agentRegistry && sleepCycleRunner) sleepCycleRunner.setAgentRegistry(agentRegistry);
+  // Phase-7: hook the skill promoter into the sleep cycle so acquired→bound
+  // promotion runs on the same schedule as agent evolution. Requires
+  // agentRegistry + skillOutcomeStore — both come from the DB-backed path.
+  if (sleepCycleRunner && agentRegistry && skillOutcomeStore) {
+    sleepCycleRunner.setSkillPromoter({
+      skillOutcomeStore,
+      workspace,
+      registry: agentRegistry,
+    });
+  }
 
   // User-interest miner — live aggregation from traces + session messages.
   // Noop when traceStore is missing; session-message keywords require SessionManager.
@@ -1558,6 +1584,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     providerTrustStore,
     // Phase-3: per-(persona, skill, taskSig) outcome attribution
     skillOutcomeStore,
+    // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
+    skillAcquirer,
     // Economy Operating System
     costLedger,
     budgetEnforcer,
@@ -2095,6 +2123,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     scheduleShadowPoll(SHADOW_POLL_ACTIVE_INTERVAL_MS);
   }
 
+  // Phase-11: SkillUsageTracker — accumulates `skill:viewed` signals per
+  // taskId so the executeTask wrapper can compare loaded vs viewed skill
+  // sets and emit `bid:overclaim_detected` when the persona used too few
+  // of the skills it declared. Pure in-memory; cleared per-task after
+  // evaluation. A9-compliant: subscription/handler are best-effort.
+  const skillUsageTracker = new SkillUsageTracker();
+  trackBusListener(
+    bus.on('skill:viewed', ({ taskId, skillId }: { taskId: string; skillId: string }) => {
+      try {
+        skillUsageTracker.recordView(taskId, skillId);
+      } catch {
+        /* tracker is observational; never propagate */
+      }
+    }),
+  );
+
   const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
@@ -2112,6 +2156,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           recordTaskOutcomeForPersona(input, result, deps.agentRegistry, deps.skillOutcomeStore);
         } catch {
           /* outcome recording is observational; never fail the task on it */
+        }
+      }
+
+      // Phase-11: overclaim comparator (M1). Compares the persona's
+      // declared loadout (from agentRegistry) against the skills the LLM
+      // actually viewed during execution (from skillUsageTracker). When
+      // ratio < threshold and ≥2 skills were declared, emit
+      // `bid:overclaim_detected`. Always clears the per-task tracker
+      // entry to keep memory bounded across long-running orchestrators.
+      if (deps.agentRegistry && input.agentId) {
+        try {
+          const derived = deps.agentRegistry.getDerivedCapabilities(input.agentId);
+          if (derived) {
+            const loadedSkillIds = derived.loadedSkills.map((s) => s.frontmatter.id);
+            const viewed = skillUsageTracker.getViewed(input.id);
+            const evaluation = evaluateOverclaim(loadedSkillIds, viewed);
+            if (evaluation.flagged) {
+              bus.emit('bid:overclaim_detected', {
+                taskId: input.id,
+                agentId: input.agentId,
+                declaredCount: evaluation.declaredCount,
+                viewedCount: evaluation.viewedCount,
+                viewedRatio: evaluation.viewedRatio,
+              });
+            }
+          }
+        } catch {
+          /* overclaim evaluation is observational; never fail the task on it */
+        } finally {
+          skillUsageTracker.clearTask(input.id);
         }
       }
 

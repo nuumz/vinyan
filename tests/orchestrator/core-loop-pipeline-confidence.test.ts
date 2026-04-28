@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import type { Fact, OracleVerdict } from '../../src/core/types.ts';
 import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
+import { TracePersistenceError } from '../../src/orchestrator/trace-collector.ts';
 import type { ExecutionTrace, PerceptualHierarchy, RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -219,6 +220,26 @@ describe('Pipeline Confidence — L1+ Computation', () => {
       confidence: 0.2,
     });
     expect(result.trace.pipelineConfidence?.composite).toBe(0.2);
+  });
+
+  test('A9 trace persistence failure fails closed at task boundary', async () => {
+    const bus = createBus();
+    const completed: string[] = [];
+    bus.on('task:complete', ({ result }) => completed.push(result.status));
+    const deps = makeDeps({ routingLevel: 1, verificationPassed: true, bus });
+    deps.traceCollector = {
+      record: async (trace) => {
+        throw new TracePersistenceError(trace, new Error('disk full'));
+      },
+    };
+
+    const result = await executeTask(makeInput(), deps);
+
+    expect(result.status).toBe('failed');
+    expect(result.mutations).toEqual([]);
+    expect(result.trace.outcome).toBe('failure');
+    expect(result.trace.failureReason).toContain('A9 fail-closed');
+    expect(completed).toEqual(['failed']);
   });
 
   test('L1 task with high verification confidence gets allow decision', async () => {
@@ -454,6 +475,11 @@ describe('Pipeline Confidence — ExecutionTrace Fields', () => {
     expect(trace.confidenceDecision).toBeDefined();
     expect(typeof trace.confidenceDecision!.action).toBe('string');
     expect(typeof trace.confidenceDecision!.confidence).toBe('number');
+    expect(trace.oracleIndependence).toMatchObject({
+      compositionMethod: 'oracle-gate-aggregate-confidence',
+      assumption: 'single-oracle',
+      primaryOracles: ['test:src/foo.ts'],
+    });
   });
 
   test('L2 trace includes prediction confidence in pipeline', async () => {

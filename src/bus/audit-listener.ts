@@ -18,6 +18,7 @@ const ALL_EVENTS: BusEventName[] = [
   'worker:error',
   'oracle:verdict',
   'trace:record',
+  'trace:write_failed',
   'selfmodel:predict',
   // Forward Predictor (A7)
   'prediction:generated',
@@ -60,6 +61,7 @@ const ALL_EVENTS: BusEventName[] = [
   'agent:tool_denied',
   // Decomposer
   'decomposer:fallback',
+  'degradation:triggered',
   // Phase 4 — Fleet Governance
   'worker:selected',
   'worker:exploration',

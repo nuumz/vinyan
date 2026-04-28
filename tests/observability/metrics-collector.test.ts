@@ -56,6 +56,30 @@ describe('MetricsCollector', () => {
     expect(counters['decomposer.fallback']).toBe(1);
   });
 
+  test('degradation events increment total, failure, and action counters', () => {
+    const bus = createBus();
+    const collector = new MetricsCollector();
+    collector.attach(bus);
+
+    bus.emit('degradation:triggered', {
+      taskId: 't1',
+      failureType: 'oracle-unavailable',
+      component: 'oracle:ast',
+      action: 'fallback',
+      capabilityImpact: 'reduced',
+      retryable: true,
+      severity: 'warning',
+      policyVersion: 'degradation-strategy:v1',
+      reason: 'Circuit breaker opened after 3 failures',
+      sourceEvent: 'circuit:open',
+      occurredAt: 123,
+    });
+
+    expect(collector.get('degradation.triggered')).toBe(1);
+    expect(collector.get('degradation.failure.oracle-unavailable')).toBe(1);
+    expect(collector.get('degradation.action.fallback')).toBe(1);
+  });
+
   test('detach stops counting', () => {
     const bus = createBus();
     const collector = new MetricsCollector();

@@ -7,6 +7,7 @@
 
 import { applyPredictionEscalation } from '../../gate/risk-router.ts';
 import { buildPersonaBidContext } from '../agents/persona-context-builder.ts';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
 import type {
   EngineSelectionResult,
   PerceptualHierarchy,
@@ -162,7 +163,7 @@ export async function executePredictPhase(
         }
       }
 
-      const uncertainTrace: import('../types.ts').ExecutionTrace = {
+      const uncertainTrace: import('../types.ts').ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-uncertain`,
         taskId: input.id,
         workerId: 'none',
@@ -177,7 +178,7 @@ export async function executePredictPhase(
         failureReason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
         affectedFiles: input.targetFiles ?? [],
         workerSelectionAudit: selection,
-      };
+      }, routing);
       await deps.traceCollector.record(uncertainTrace);
       deps.bus?.emit('trace:record', { trace: uncertainTrace });
       const uncertainResult: TaskResult = {

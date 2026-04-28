@@ -15,6 +15,10 @@ import type {
   SelfModelPrediction,
   SemanticTaskUnderstanding,
 } from '../types.ts';
+
+export { deriveGovernanceTraceAudit } from '../governance-provenance.ts';
+
+import { deriveGovernanceTraceAudit } from '../governance-provenance.ts';
 import { mapTraceToFPOutcome } from './generate-helpers.ts';
 import type { LearnResult, PhaseContext, VerificationResult } from './types.ts';
 
@@ -38,12 +42,6 @@ type CapabilityTraceAudit = Pick<
   | 'capabilityFitScore'
   | 'unmetCapabilityIds'
 >;
-
-type GovernanceTraceAudit = Pick<ExecutionTrace, 'governanceProvenance'>;
-
-export function deriveGovernanceTraceAudit(routing: RoutingDecision): GovernanceTraceAudit {
-  return routing.governanceProvenance ? { governanceProvenance: routing.governanceProvenance } : {};
-}
 
 export function deriveCapabilityTraceAudit(intentResolution?: IntentResolution): CapabilityTraceAudit {
   if (!intentResolution) return {};

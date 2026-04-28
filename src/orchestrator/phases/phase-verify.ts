@@ -7,26 +7,39 @@
  */
 
 import { buildComplexityContext, computeQualityScore } from '../../gate/quality-score.ts';
-import { computePipelineConfidence, deriveConfidenceDecision, type ConfidenceDecision } from '../pipeline-confidence.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
+import type { DAGExecutionResult } from '../dag-executor.ts';
 import { classifyAllFailures } from '../failure-classifier.ts';
+import type { OutcomePrediction } from '../forward-predictor-types.ts';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
+import {
+  type ConfidenceDecision,
+  computePipelineConfidence,
+  deriveConfidenceDecision,
+} from '../pipeline-confidence.ts';
 import type {
+  EngineSelectionResult,
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
   RoutingLevel,
-  SemanticTaskUnderstanding,
   SelfModelPrediction,
+  SemanticTaskUnderstanding,
   TaskDAG,
-  VerificationHint,
-  EngineSelectionResult,
   TaskResult,
+  VerificationHint,
 } from '../types.ts';
-import type { DAGExecutionResult } from '../dag-executor.ts';
-import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import type { WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { PhaseContext, VerifyResult, WorkerResult, VerificationResult, PhaseContinue, PhaseReturn, PhaseEscalate } from './types.ts';
-import { Phase } from './types.ts';
 import { buildAgentSessionSummary, mergeForwardAndSelfModel } from './generate-helpers.ts';
+import type {
+  PhaseContext,
+  PhaseContinue,
+  PhaseEscalate,
+  PhaseReturn,
+  VerificationResult,
+  VerifyResult,
+  WorkerResult,
+} from './types.ts';
+import { Phase } from './types.ts';
 
 interface VerifyInput {
   routing: RoutingDecision;
@@ -60,7 +73,7 @@ export async function executeVerifyPhase(
     prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction,
     workerSelection, lastWorkerSelection, retry, roomId,
   } = vi;
-  let { matchedSkill } = vi;
+  const { matchedSkill } = vi;
 
   // ── Step 5: VERIFY (oracle gate) ─────────────────────────────
   // Build verification hint — per-node merge for DAG, single-node for direct
@@ -147,7 +160,7 @@ export async function executeVerifyPhase(
     for (const [name, v] of Object.entries(verification.verdicts)) {
       verdictBooleans[name] = v.verified;
     }
-    const contradictionTrace: ExecutionTrace = {
+    const contradictionTrace: ExecutionTrace = applyRoutingGovernance({
       id: `trace-${input.id}-contradiction`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -162,7 +175,7 @@ export async function executeVerifyPhase(
       outcome: 'failure',
       failureReason: `Unresolved oracle contradiction at L${routing.level}: passed=[${passedOracles}] failed=[${failedOracles}]`,
       affectedFiles: input.targetFiles ?? [],
-    };
+    }, routing);
     await deps.traceCollector.record(contradictionTrace);
     return Phase.return({
       id: input.id,
@@ -294,7 +307,7 @@ export async function executeVerifyPhase(
       toLevel: (routing.level + 1) as RoutingLevel,
       reason: verification.reason ?? 'Oracle rejection at L0',
     });
-    const escalatedTrace: ExecutionTrace = {
+    const escalatedTrace: ExecutionTrace = applyRoutingGovernance({
       id: `trace-${input.id}-${routing.level}-escalated`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -309,7 +322,7 @@ export async function executeVerifyPhase(
       outcome: 'escalated',
       failureReason: verification.reason ?? 'Oracle rejection at L0',
       affectedFiles: [],
-    };
+    }, routing);
     return Phase.return({
       id: input.id,
       status: 'escalated',

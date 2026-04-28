@@ -10,9 +10,9 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import { computeCost } from '../economy/cost-computer.ts';
 import type { CostLedger } from '../economy/cost-ledger.ts';
 import type { RateCardEntry } from '../economy/economy-config.ts';
-import { computeCost } from '../economy/cost-computer.ts';
 import { resolveRateCard } from '../economy/rate-card.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { TraceCollector } from './core-loop.ts';
@@ -53,6 +53,11 @@ export class TraceCollectorImpl implements TraceCollector {
       try {
         this.traceStore.insert(trace);
       } catch (err) {
+        this.bus?.emit('trace:write_failed', {
+          taskId: trace.taskId,
+          traceId: trace.id,
+          error: String(err),
+        });
         console.warn('[vinyan] Trace INSERT failed:', err);
       }
     }

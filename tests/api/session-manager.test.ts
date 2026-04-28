@@ -264,4 +264,225 @@ describe('Session Recovery', () => {
 
     expect(sessionStore.getSession(s.id)!.updated_at).toBe(originalUpdatedAt);
   });
+
+  test('recoverOrphanedTasks marks pending/running tasks failed and records assistant turn', () => {
+    const s = manager.create('ui');
+    // Two orphans simulate what the server leaves behind on restart: a row
+    // already in 'pending' (never picked up) and one that was 'running'
+    // (mid-execution when the process died).
+    const inputPending: TaskInput = {
+      id: 'orphan-pending',
+      source: 'api',
+      goal: 'Pending orphan',
+      taskType: 'reasoning',
+      sessionId: s.id,
+      budget: { maxTokens: 1000, maxDurationMs: 30_000, maxRetries: 1 },
+    };
+    const inputRunning: TaskInput = {
+      id: 'orphan-running',
+      source: 'api',
+      goal: 'Running orphan',
+      taskType: 'reasoning',
+      sessionId: s.id,
+      budget: { maxTokens: 1000, maxDurationMs: 30_000, maxRetries: 1 },
+    };
+    manager.addTask(s.id, inputPending);
+    manager.addTask(s.id, inputRunning);
+    sessionStore.updateTaskStatus(s.id, 'orphan-running', 'running');
+    expect(sessionStore.countRunningTasks(s.id)).toBe(2);
+
+    const result = manager.recoverOrphanedTasks();
+
+    expect(result.recovered).toBe(2);
+    expect(result.sessions).toEqual([s.id]);
+    expect(sessionStore.countRunningTasks(s.id)).toBe(0);
+
+    // Each orphan should have an assistant turn explaining the interruption
+    // so the chat history is no longer a user-message-only ghost.
+    const turns = sessionStore.getTurns(s.id);
+    const assistantTurns = turns.filter((t) => t.role === 'assistant');
+    expect(assistantTurns.length).toBe(2);
+    for (const turn of assistantTurns) {
+      const textBlock = turn.blocks.find((b): b is { type: 'text'; text: string } => b.type === 'text');
+      expect(textBlock?.text).toContain('Task interrupted by server restart');
+    }
+  });
+
+  test('recoverOrphanedTasks is idempotent — second call is a no-op', () => {
+    const s = manager.create('ui');
+    const input: TaskInput = {
+      id: 'orphan-once',
+      source: 'api',
+      goal: 'Will be recovered',
+      taskType: 'reasoning',
+      sessionId: s.id,
+      budget: { maxTokens: 1000, maxDurationMs: 30_000, maxRetries: 1 },
+    };
+    manager.addTask(s.id, input);
+
+    const first = manager.recoverOrphanedTasks();
+    expect(first.recovered).toBe(1);
+
+    // Second call sees no pending/running rows — nothing to recover, no
+    // duplicate assistant turn. Without the query-driven idempotency this
+    // would re-record an "interrupted" turn on every server start.
+    const second = manager.recoverOrphanedTasks();
+    expect(second.recovered).toBe(0);
+    const assistantTurns = sessionStore.getTurns(s.id).filter((t) => t.role === 'assistant');
+    expect(assistantTurns.length).toBe(1);
+  });
+});
+
+describe('Derived state — lifecycleState + activityState', () => {
+  test('fresh session is active + empty', () => {
+    const s = manager.create('api');
+    expect(s.lifecycleState).toBe('active');
+    expect(s.activityState).toBe('empty');
+    expect(s.runningTaskCount).toBe(0);
+    expect(s.taskCount).toBe(0);
+  });
+
+  test('session with pending task is in-progress', () => {
+    const s = manager.create('api');
+    manager.addTask(s.id, makeTaskInput('t-1'));
+    const reread = manager.get(s.id)!;
+    expect(reread.activityState).toBe('in-progress');
+    expect(reread.runningTaskCount).toBe(1);
+    expect(reread.taskCount).toBe(1);
+  });
+
+  test('session is idle once all tasks have completed', () => {
+    const s = manager.create('api');
+    manager.addTask(s.id, makeTaskInput('t-1'));
+    manager.completeTask(s.id, 't-1', makeTaskResult('t-1', 'completed'));
+    const reread = manager.get(s.id)!;
+    expect(reread.activityState).toBe('idle');
+    expect(reread.runningTaskCount).toBe(0);
+    expect(reread.taskCount).toBe(1);
+  });
+
+  test('archive promotes lifecycleState to "archived" regardless of underlying status', () => {
+    const s = manager.create('api');
+    manager.addTask(s.id, makeTaskInput('t-1'));
+    manager.archive(s.id);
+    const reread = manager.get(s.id)!;
+    expect(reread.lifecycleState).toBe('archived');
+    // Archive does not affect activityState — pending task is still pending.
+    expect(reread.activityState).toBe('in-progress');
+  });
+
+  test('soft-delete promotes lifecycleState to "trashed" (dominates archived)', () => {
+    const s = manager.create('api');
+    manager.archive(s.id);
+    manager.softDelete(s.id);
+    const reread = manager.get(s.id)!;
+    expect(reread.lifecycleState).toBe('trashed');
+  });
+
+  test('listSessions surfaces runningTaskCount inline', () => {
+    const s1 = manager.create('api');
+    const s2 = manager.create('api');
+    manager.addTask(s1.id, makeTaskInput('t-1'));
+    manager.addTask(s1.id, makeTaskInput('t-2'));
+    manager.completeTask(s1.id, 't-1', makeTaskResult('t-1', 'completed'));
+    manager.addTask(s2.id, makeTaskInput('t-3'));
+    manager.completeTask(s2.id, 't-3', makeTaskResult('t-3', 'completed'));
+
+    const sessions = manager.listSessions({ state: 'active' });
+    const got1 = sessions.find((s) => s.id === s1.id)!;
+    const got2 = sessions.find((s) => s.id === s2.id)!;
+    expect(got1.runningTaskCount).toBe(1);
+    expect(got1.activityState).toBe('in-progress');
+    expect(got2.runningTaskCount).toBe(0);
+    expect(got2.activityState).toBe('idle');
+  });
+});
+
+describe('Lifecycle envelopes — applied flag + reason codes', () => {
+  test('archive returns applied=true on first call and invalid_state on second', () => {
+    const s = manager.create('api');
+    const first = manager.archive(s.id);
+    expect(first.applied).toBe(true);
+    expect(first.reason).toBeUndefined();
+
+    const second = manager.archive(s.id);
+    expect(second.applied).toBe(false);
+    expect(second.reason).toBe('invalid_state');
+    expect(second.session?.id).toBe(s.id);
+  });
+
+  test('archive returns not_found for missing session', () => {
+    const result = manager.archive('00000000-0000-0000-0000-000000000000');
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('not_found');
+    expect(result.session).toBeNull();
+  });
+
+  test('unarchive rejects an active (non-archived) session with invalid_state', () => {
+    const s = manager.create('api');
+    const result = manager.unarchive(s.id);
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('invalid_state');
+  });
+
+  test('restore rejects an active (non-trashed) session', () => {
+    const s = manager.create('api');
+    const result = manager.restore(s.id);
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('invalid_state');
+  });
+
+  test('softDelete on already-trashed session reports invalid_state', () => {
+    const s = manager.create('api');
+    expect(manager.softDelete(s.id).applied).toBe(true);
+    const second = manager.softDelete(s.id);
+    expect(second.applied).toBe(false);
+    expect(second.reason).toBe('invalid_state');
+  });
+});
+
+describe('Hard delete', () => {
+  test('hardDelete refuses a session that is not in trash', () => {
+    const s = manager.create('api');
+    const result = manager.hardDelete(s.id);
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('invalid_state');
+    expect(manager.get(s.id)).toBeTruthy(); // still there
+  });
+
+  test('hardDelete returns not_found for missing session', () => {
+    const result = manager.hardDelete('00000000-0000-0000-0000-000000000000');
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('not_found');
+  });
+
+  test('hardDelete after softDelete removes session + tasks + turns', () => {
+    const s = manager.create('api');
+    manager.addTask(s.id, makeTaskInput('t-1'));
+    manager.recordUserTurn(s.id, 'hello');
+    expect(sessionStore.countSessionTasks(s.id)).toBe(1);
+    expect(sessionStore.countTurns(s.id)).toBe(1);
+
+    manager.softDelete(s.id);
+    const result = manager.hardDelete(s.id);
+
+    expect(result.applied).toBe(true);
+    expect(result.session).toBeNull();
+    expect(manager.get(s.id)).toBeUndefined();
+    expect(sessionStore.countSessionTasks(s.id)).toBe(0);
+    expect(sessionStore.countTurns(s.id)).toBe(0);
+  });
+
+  test('hardDelete leaves sibling sessions untouched', () => {
+    const keep = manager.create('api');
+    const drop = manager.create('api');
+    manager.addTask(keep.id, makeTaskInput('keep-1'));
+    manager.addTask(drop.id, makeTaskInput('drop-1'));
+    manager.softDelete(drop.id);
+
+    expect(manager.hardDelete(drop.id).applied).toBe(true);
+
+    expect(manager.get(keep.id)).toBeTruthy();
+    expect(sessionStore.countSessionTasks(keep.id)).toBe(1);
+  });
 });

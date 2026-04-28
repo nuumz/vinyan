@@ -23,6 +23,32 @@ import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
 // dropped here. The classifier itself remains available for future
 // summary-ladder upgrades.
 
+/**
+ * Lifecycle state — the visibility/storage stage of the session.
+ * Priority (highest first): trashed > archived > compacted > suspended > active.
+ *
+ * The raw `status` column carries only the lifecycle bookkeeping enum
+ * (`active|suspended|compacted|closed`) and the `archived_at`/`deleted_at`
+ * timestamps live in separate columns. Consumers (UI, CLI) want a single
+ * dominant label per session, so we derive it once at the boundary instead
+ * of asking every renderer to combine three fields.
+ */
+export type SessionLifecycleState =
+  | 'active'
+  | 'suspended'
+  | 'compacted'
+  | 'closed'
+  | 'archived'
+  | 'trashed';
+
+/**
+ * Activity state — what the session is "doing" right now.
+ *  - 'in-progress' : at least one task is pending or running
+ *  - 'idle'        : has finished tasks but nothing in flight
+ *  - 'empty'       : no tasks recorded yet
+ */
+export type SessionActivityState = 'in-progress' | 'idle' | 'empty';
+
 export interface Session {
   id: string;
   source: string;
@@ -30,10 +56,29 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   taskCount: number;
+  /** Subset of taskCount — tasks in 'pending' or 'running' state. */
+  runningTaskCount: number;
   title: string | null;
   description: string | null;
   archivedAt: number | null;
   deletedAt: number | null;
+  /** Derived single-label lifecycle state (see SessionLifecycleState doc). */
+  lifecycleState: SessionLifecycleState;
+  /** Derived activity state (see SessionActivityState doc). */
+  activityState: SessionActivityState;
+}
+
+/**
+ * Result envelope for lifecycle transitions. `applied=true` means the row
+ * actually changed; `applied=false` means the action was rejected — `reason`
+ * distinguishes a missing session from a state-conflict (e.g. trashing an
+ * already-trashed session). HTTP handlers map `not_found` → 404 and
+ * `invalid_state` → 409, and bus events fire only on real transitions.
+ */
+export interface LifecycleResult {
+  applied: boolean;
+  session: Session | null;
+  reason?: 'not_found' | 'invalid_state';
 }
 
 export interface CreateSessionOptions {
@@ -83,6 +128,17 @@ export class SessionManager {
     return this.sessionStore;
   }
 
+  /**
+   * Late-bind the TraceStore. The factory wires it AFTER SessionManager is
+   * constructed (the order is `sessionStore → sessionManager → orchestrator
+   * → traceStore`). Without this, `getConversationHistoryDetailed` silently
+   * skips the `traceSummary` block and the chat UI loses model / agent /
+   * routing-level chips on every historical message.
+   */
+  attachTraceStore(traceStore: TraceStore): void {
+    this.traceStore = traceStore;
+  }
+
   /** Plan commit E4: accessor so core-loop can pull the retriever without re-plumbing. */
   getContextRetriever(): ContextRetriever | undefined {
     return this.retriever;
@@ -117,18 +173,23 @@ export class SessionManager {
       deleted_at: null,
     });
 
-    return {
-      id,
-      source,
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-      taskCount: 0,
-      title,
-      description,
-      archivedAt: null,
-      deletedAt: null,
-    };
+    return rowToSession(
+      {
+        id,
+        source,
+        created_at: now,
+        status: 'active',
+        working_memory_json: null,
+        compaction_json: null,
+        updated_at: now,
+        title,
+        description,
+        archived_at: null,
+        deleted_at: null,
+      },
+      0,
+      0,
+    );
   }
 
   listSessions(options: ListSessionsOptions = {}): Session[] {
@@ -145,7 +206,11 @@ export class SessionManager {
   get(sessionId: string): Session | undefined {
     const row = this.sessionStore.getSession(sessionId);
     if (!row) return undefined;
-    return rowToSession(row, this.sessionStore.countSessionTasks(sessionId));
+    return rowToSession(
+      row,
+      this.sessionStore.countSessionTasks(sessionId),
+      this.sessionStore.countRunningTasks(sessionId),
+    );
   }
 
   /**
@@ -163,35 +228,74 @@ export class SessionManager {
     return this.get(sessionId);
   }
 
-  archive(sessionId: string): Session | undefined {
-    if (!this.sessionStore.archiveSession(sessionId)) {
-      // Either missing or already archived/deleted — surface the current row
-      // for callers that want to render the latest state.
-      return this.get(sessionId);
+  /**
+   * Archive flow: only valid from "active" (no archived_at, no deleted_at).
+   * The `applied` flag distinguishes "actually moved to archive" from "no-op
+   * because already archived/trashed" so HTTP can return the right status
+   * code and the bus only emits on real transitions.
+   */
+  archive(sessionId: string): LifecycleResult {
+    const before = this.sessionStore.getSession(sessionId);
+    if (!before) return { applied: false, session: null, reason: 'not_found' };
+    if (before.archived_at !== null || before.deleted_at !== null) {
+      return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
-    return this.get(sessionId);
+    const ok = this.sessionStore.archiveSession(sessionId);
+    return { applied: ok, session: this.get(sessionId)! };
   }
 
-  unarchive(sessionId: string): Session | undefined {
-    if (!this.sessionStore.unarchiveSession(sessionId)) {
-      return this.get(sessionId);
+  /** Unarchive: valid only from "archived" (archived_at set, not trashed). */
+  unarchive(sessionId: string): LifecycleResult {
+    const before = this.sessionStore.getSession(sessionId);
+    if (!before) return { applied: false, session: null, reason: 'not_found' };
+    if (before.archived_at === null || before.deleted_at !== null) {
+      return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
-    return this.get(sessionId);
+    const ok = this.sessionStore.unarchiveSession(sessionId);
+    return { applied: ok, session: this.get(sessionId)! };
   }
 
-  /** Soft-delete — audit trail (turns/tasks/traces) is preserved. */
-  softDelete(sessionId: string): Session | undefined {
-    if (!this.sessionStore.softDeleteSession(sessionId)) {
-      return this.get(sessionId);
+  /** Soft-delete — audit trail (turns/tasks/traces) is preserved (I16). */
+  softDelete(sessionId: string): LifecycleResult {
+    const before = this.sessionStore.getSession(sessionId);
+    if (!before) return { applied: false, session: null, reason: 'not_found' };
+    if (before.deleted_at !== null) {
+      return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
-    return this.get(sessionId);
+    const ok = this.sessionStore.softDeleteSession(sessionId);
+    return { applied: ok, session: this.get(sessionId)! };
   }
 
-  restore(sessionId: string): Session | undefined {
-    if (!this.sessionStore.restoreSession(sessionId)) {
-      return this.get(sessionId);
+  /** Restore from Trash: valid only when the row is currently trashed. */
+  restore(sessionId: string): LifecycleResult {
+    const before = this.sessionStore.getSession(sessionId);
+    if (!before) return { applied: false, session: null, reason: 'not_found' };
+    if (before.deleted_at === null) {
+      return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
-    return this.get(sessionId);
+    const ok = this.sessionStore.restoreSession(sessionId);
+    return { applied: ok, session: this.get(sessionId)! };
+  }
+
+  /**
+   * Permanent removal — rejects unless the session is already trashed
+   * (`deletedAt` is set). Two-step flow (soft → hard) is intentional: the
+   * UI's "Trash" tab is the recoverable holding area; "permanently delete"
+   * lives there as a separate action to prevent one-click data loss.
+   *
+   * Returns `applied=true` when the row is gone. `session` is null on
+   * success (nothing left to surface). I16 audit trail caveat: traces and
+   * turn embeddings tied to this session also disappear — this is the
+   * point of hard delete; if you need durability use archive instead.
+   */
+  hardDelete(sessionId: string): LifecycleResult {
+    const before = this.sessionStore.getSession(sessionId);
+    if (!before) return { applied: false, session: null, reason: 'not_found' };
+    if (before.deleted_at === null) {
+      return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
+    }
+    const ok = this.sessionStore.hardDeleteSession(sessionId);
+    return { applied: ok, session: null };
   }
 
   addTask(sessionId: string, taskInput: TaskInput): void {
@@ -356,8 +460,99 @@ export class SessionManager {
       this.sessionStore.updateSessionStatus(row.id, 'active');
     }
     return suspended.map((row) =>
-      rowToSession({ ...row, status: 'active' }, this.sessionStore.countSessionTasks(row.id)),
+      rowToSession(
+        { ...row, status: 'active' },
+        this.sessionStore.countSessionTasks(row.id),
+        this.sessionStore.countRunningTasks(row.id),
+      ),
     );
+  }
+
+  /**
+   * Sweep tasks that were in `pending` / `running` when the server last
+   * exited. Each in-memory `inFlightTasks` Map is reset on restart, but the
+   * `session_tasks` row stays at its last persisted status — so without
+   * this sweep, the row is effectively orphaned: the chat shows the user
+   * message with no agent reply, the Sessions list reports a phantom
+   * `runningTaskCount`, and `countRunningTasks` keeps counting the dead row
+   * forever.
+   *
+   * For each orphan we synthesize a `failed` TaskResult, transition the
+   * row via `completeTask`, AND record an assistant turn explaining the
+   * interruption so the chat history is coherent. The sweep is idempotent
+   * by query: `listPendingTasks()` only returns rows in pending/running
+   * state, so a recovered orphan (now `failed`) won't be picked up again.
+   *
+   * MUST run during cli/serve.ts startup — after the orchestrator has
+   * initialised the DB but BEFORE the API listener accepts traffic, so
+   * incoming clients never see the half-state.
+   */
+  recoverOrphanedTasks(): { recovered: number; sessions: string[] } {
+    const orphaned = this.sessionStore.listPendingTasks();
+    if (orphaned.length === 0) return { recovered: 0, sessions: [] };
+
+    const touchedSessions = new Set<string>();
+    let recovered = 0;
+    for (const row of orphaned) {
+      try {
+        const taskInput = JSON.parse(row.task_input_json) as TaskInput;
+        const interruptionReason =
+          'Task interrupted by server restart — no completion event was recorded.';
+        const syntheticResult: TaskResult = {
+          id: row.task_id,
+          status: 'failed',
+          mutations: [],
+          trace: {
+            id: `trace-${row.task_id}-orphan-recovery`,
+            taskId: row.task_id,
+            sessionId: row.session_id,
+            workerId: 'recovery',
+            timestamp: Date.now(),
+            routingLevel: 0,
+            approach: 'orphan-recovery',
+            oracleVerdicts: {},
+            modelUsed: 'none',
+            tokensConsumed: 0,
+            durationMs: Math.max(0, Date.now() - row.created_at),
+            outcome: 'failure',
+            failureReason: interruptionReason,
+            affectedFiles: taskInput.targetFiles ?? [],
+          },
+          escalationReason: interruptionReason,
+          answer: interruptionReason,
+        };
+        this.completeTask(row.session_id, row.task_id, syntheticResult);
+        this.recordAssistantTurn(row.session_id, row.task_id, syntheticResult);
+        // Overwrite any partial pre-restart trace so the chat's agent chip
+        // reads `recovery` instead of whichever phase was mid-flight when
+        // the process died (e.g. `comprehension-phase`). Without this, the
+        // user sees "agent: comprehension-phase" labelling a "Task
+        // interrupted by server restart" message — incoherent. Best-effort.
+        if (this.traceStore) {
+          try {
+            this.traceStore.insert(syntheticResult.trace);
+          } catch (err) {
+            console.warn(
+              `[vinyan] recoverOrphanedTasks: traceStore.insert failed for ${row.task_id}: ${String(err)}`,
+            );
+          }
+        }
+        touchedSessions.add(row.session_id);
+        recovered += 1;
+      } catch (err) {
+        // Don't let one corrupt row block the whole sweep — at minimum
+        // mark it failed so listPendingTasks won't keep returning it.
+        console.warn(
+          `[vinyan] recoverOrphanedTasks: failed to recover ${row.task_id}: ${String(err)}`,
+        );
+        try {
+          this.sessionStore.updateTaskStatus(row.session_id, row.task_id, 'failed');
+        } catch {
+          /* swallow secondary failure */
+        }
+      }
+    }
+    return { recovered, sessions: [...touchedSessions] };
   }
 
   /**
@@ -669,6 +864,13 @@ export class SessionManager {
       approach?: string;
       oracleVerdictCount: number;
       affectedFiles: string[];
+      /**
+       * Worker / agent that ran this turn (e.g. `'developer'`, `'assistant'`,
+       * `'workflow-executor'`). Lets the chat UI show "Answered by: <agent>"
+       * on each historical message — without it, the user has to open Trace
+       * to find out which specialist responded.
+       */
+      workerId?: string;
     };
   }> {
     const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
@@ -734,6 +936,7 @@ function toTraceSummary(trace: import('../orchestrator/types.ts').ExecutionTrace
   approach?: string;
   oracleVerdictCount: number;
   affectedFiles: string[];
+  workerId?: string;
 } {
   return {
     routingLevel: trace.routingLevel,
@@ -744,6 +947,7 @@ function toTraceSummary(trace: import('../orchestrator/types.ts').ExecutionTrace
     approach: trace.approach,
     oracleVerdictCount: Array.isArray(trace.oracleVerdicts) ? trace.oracleVerdicts.length : 0,
     affectedFiles: trace.affectedFiles ?? [],
+    ...(trace.workerId ? { workerId: trace.workerId } : {}),
   };
 }
 
@@ -753,7 +957,7 @@ function normalizeMetadata(value: string | null | undefined): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function rowToSession(row: SessionRow, taskCount: number): Session {
+function rowToSession(row: SessionRow, taskCount: number, runningTaskCount: number): Session {
   return {
     id: row.id,
     source: row.source,
@@ -761,15 +965,37 @@ function rowToSession(row: SessionRow, taskCount: number): Session {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     taskCount,
+    runningTaskCount,
     title: row.title,
     description: row.description,
     archivedAt: row.archived_at,
     deletedAt: row.deleted_at,
+    lifecycleState: deriveLifecycleState(row),
+    activityState: deriveActivityState(taskCount, runningTaskCount),
   };
 }
 
 function rowWithCountToSession(row: SessionRowWithCount): Session {
-  return rowToSession(row, row.task_count);
+  return rowToSession(row, row.task_count, row.running_task_count);
+}
+
+/**
+ * Lifecycle priority: deleted_at trumps archived_at trumps the lifecycle
+ * `status` column. Trashed/archived sessions can hold any value in `status`
+ * (e.g. a session can be 'compacted' AND archived) but the dominant label
+ * for the operator is "this row is in the Trash" or "this row is archived",
+ * so we surface those first.
+ */
+function deriveLifecycleState(row: SessionRow): SessionLifecycleState {
+  if (row.deleted_at !== null) return 'trashed';
+  if (row.archived_at !== null) return 'archived';
+  return row.status;
+}
+
+function deriveActivityState(taskCount: number, runningTaskCount: number): SessionActivityState {
+  if (taskCount === 0) return 'empty';
+  if (runningTaskCount > 0) return 'in-progress';
+  return 'idle';
 }
 
 /**

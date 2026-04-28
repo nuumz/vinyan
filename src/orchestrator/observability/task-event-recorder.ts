@@ -65,6 +65,13 @@ export const RECORDED_EVENTS: BusEventName[] = [
   // Task lifecycle (escalation/timeout — useful for diagnostics, terminal
   // task:complete is intentionally excluded: it carries the full TaskResult
   // which we already persist in execution_traces).
+  // `task:start` IS persisted because the historical Process card needs
+  // the routing decision (level + model + agentId) to render the same
+  // "Routed to X" / "L2 · model" chips that the live bubble shows. Without
+  // it, replay of past tasks loses provenance metadata. The reducer already
+  // upserts duplicate task:start emits (preliminary `model:'pending'` →
+  // refined full-pipeline) so persisting both is safe.
+  'task:start',
   'task:escalate',
   'task:timeout',
   'task:stage_update',

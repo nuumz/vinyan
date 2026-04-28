@@ -237,6 +237,29 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   // ── Orchestrator + server wiring ────────────────────────────────
   const orchestrator = createOrchestrator({ workspace, sessionManager, db });
 
+  // Late-bind the TraceStore so `getConversationHistoryDetailed` can build
+  // `traceSummary` (model + agent + routing-level chips) for every
+  // historical assistant message. Without this hookup the chat UI shows
+  // bare bubbles with no provenance metadata.
+  if (orchestrator.traceStore) {
+    sessionManager.attachTraceStore(orchestrator.traceStore);
+  }
+
+  // Sweep tasks left in `pending` / `running` from the previous run.
+  // The in-memory inFlightTasks Map is reset on every start, so without
+  // this sweep the row stays orphaned: chat history shows the user
+  // message with no agent reply, runningTaskCount counts a phantom row,
+  // and the user can't tell whether the task is still going or stuck.
+  // MUST run BEFORE server.start() so clients never see the half-state.
+  const orphans = sessionManager.recoverOrphanedTasks();
+  if (orphans.recovered > 0) {
+    console.log(
+      `[vinyan-api] Recovered ${orphans.recovered} orphan task${orphans.recovered === 1 ? '' : 's'} ` +
+        `across ${orphans.sessions.length} session${orphans.sessions.length === 1 ? '' : 's'} ` +
+        `(marked failed + assistant turn explaining the interruption)`,
+    );
+  }
+
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });
 

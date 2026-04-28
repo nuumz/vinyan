@@ -33,6 +33,7 @@ const SSE_EVENTS: BusEventName[] = [
   // Pipeline timing
   'phase:timing',
   'trace:record',
+  'degradation:triggered',
   // Worker / oracle
   'worker:dispatch',
   'worker:selected',
@@ -101,6 +102,7 @@ const SSE_EVENTS: BusEventName[] = [
   'session:unarchived',
   'session:deleted',
   'session:restored',
+  'session:purged',
   // Memory review outcomes (approve/reject of proposals).
   'memory:approved',
   'memory:rejected',

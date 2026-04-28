@@ -6,6 +6,7 @@
  */
 
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
 import type {
   ExecutionTrace,
   PerceptualHierarchy,
@@ -241,7 +242,7 @@ export async function executePlanPhase(
       reason: decision,
     });
     if (decision === 'rejected') {
-      const rejectedTrace: ExecutionTrace = {
+      const rejectedTrace: ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-rejected`,
         taskId: input.id,
         timestamp: Date.now(),
@@ -254,7 +255,7 @@ export async function executePlanPhase(
         outcome: 'failure',
         failureReason: 'Rejected by human approval gate',
         affectedFiles: input.targetFiles ?? [],
-      };
+      }, routing);
       return Phase.return({
         id: input.id,
         status: 'failed',

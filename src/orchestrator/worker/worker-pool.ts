@@ -89,8 +89,8 @@ export interface WorkerPoolConfig {
   /**
    * Phase 2 realtime streaming. When true, WorkerInput.stream is set for
    * subprocess dispatch, workers emit `{type:"delta",...}` lines, and
-    * worker-pool forwards them as legacy `agent:text_delta` plus rich
-    * `llm:stream_delta` content bus events.
+   * worker-pool forwards them as legacy `agent:text_delta` plus rich
+   * `llm:stream_delta` content bus events.
    * Default false — the legacy non-streaming path is the opt-out baseline.
    */
   streaming?: boolean;
@@ -426,10 +426,7 @@ export class WorkerPoolImpl implements WorkerPool {
       try {
         mgr.markTaskComplete(workerId, taskId);
       } catch (err) {
-        console.warn(
-          `[vinyan] runtime-state: markTaskComplete failed for ${workerId}:`,
-          (err as Error).message,
-        );
+        console.warn(`[vinyan] runtime-state: markTaskComplete failed for ${workerId}:`, (err as Error).message);
       }
     };
   }
@@ -540,13 +537,12 @@ export class WorkerPoolImpl implements WorkerPool {
       //   2. routing.model      — trust-weighted provider chosen by EngineSelector
       //   3. selectForRoutingLevel(routing.level) — tier default
       const selectedEngine = routing.workerId
-        ? (this.engineRegistry.selectById(routing.workerId)
-            ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
-            ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-        : (routing.model
-            ? (this.engineRegistry.selectById(routing.model)
-                ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-            : this.engineRegistry.selectForRoutingLevel(routing.level));
+        ? (this.engineRegistry.selectById(routing.workerId) ??
+          (routing.model ? this.engineRegistry.selectById(routing.model) : null) ??
+          this.engineRegistry.selectForRoutingLevel(routing.level))
+        : routing.model
+          ? (this.engineRegistry.selectById(routing.model) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+          : this.engineRegistry.selectForRoutingLevel(routing.level);
       const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
       // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
       // is only needed when the worker writes to disk. This avoids LLM proxy overhead
@@ -559,7 +555,8 @@ export class WorkerPoolImpl implements WorkerPool {
         );
       }
       // Multi-agent: resolve specialist profile + peers from registry (prompt injection)
-      const agentProfile = input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      const agentProfile =
+        input.agentId && this.agentRegistry ? (this.agentRegistry.getAgent(input.agentId) ?? undefined) : undefined;
       const peerAgents = this.agentRegistry?.listAgents();
 
       const output = useSubprocessForTask
@@ -672,13 +669,11 @@ export class WorkerPoolImpl implements WorkerPool {
     // path (worker-entry.ts) can render the same persona as the in-process
     // path. Absent registries => legacy workspace-default behaviour.
     const agentProfile =
-      input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      input.agentId && this.agentRegistry ? (this.agentRegistry.getAgent(input.agentId) ?? undefined) : undefined;
     const soulContent =
-      input.agentId && this.soulStore ? this.soulStore.loadSoulRaw(input.agentId) ?? undefined : undefined;
+      input.agentId && this.soulStore ? (this.soulStore.loadSoulRaw(input.agentId) ?? undefined) : undefined;
     const agentContext =
-      input.agentId && this.agentContextBuilder
-        ? this.agentContextBuilder.buildContext(input.agentId)
-        : undefined;
+      input.agentId && this.agentContextBuilder ? this.agentContextBuilder.buildContext(input.agentId) : undefined;
 
     return {
       taskId: input.id,
@@ -725,13 +720,12 @@ export class WorkerPoolImpl implements WorkerPool {
     //   2. routing.model      — trust-weighted provider chosen by EngineSelector
     //   3. selectForRoutingLevel(routing.level) — tier default
     const engine = routing.workerId
-      ? (this.engineRegistry.selectById(routing.workerId)
-          ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
-          ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-      : (routing.model
-          ? (this.engineRegistry.selectById(routing.model)
-              ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-          : this.engineRegistry.selectForRoutingLevel(routing.level));
+      ? (this.engineRegistry.selectById(routing.workerId) ??
+        (routing.model ? this.engineRegistry.selectById(routing.model) : null) ??
+        this.engineRegistry.selectForRoutingLevel(routing.level))
+      : routing.model
+        ? (this.engineRegistry.selectById(routing.model) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+        : this.engineRegistry.selectForRoutingLevel(routing.level);
     if (!engine) {
       return emptyOutput(workerInput.taskId);
     }
@@ -745,15 +739,24 @@ export class WorkerPoolImpl implements WorkerPool {
     // Phase 2: keyed by SPECIALIST id (ts-coder/writer/...), not engine workerId.
     // Falls back to engine id for legacy compatibility when no agent is resolved.
     const aclKey = agentProfile?.id ?? routing.workerId;
-    const agentContext = aclKey && this.agentContextBuilder
-      ? this.agentContextBuilder.buildContext(aclKey)
-      : undefined;
+    const agentContext = aclKey && this.agentContextBuilder ? this.agentContextBuilder.buildContext(aclKey) : undefined;
 
     // Living Agent Soul: load SOUL.md for deep behavioral guidance (~1000-1500 tokens).
     // Same keying as ACL — specialist id, fallback to engine id.
-    const soulContent = aclKey && this.soulStore
-      ? this.soulStore.loadSoulRaw(aclKey)
-      : undefined;
+    const soulContent = aclKey && this.soulStore ? this.soulStore.loadSoulRaw(aclKey) : undefined;
+
+    // Phase-2 + Phase-5A: surface the persona's loaded skill loadout to the
+    // prompt as integrity-stamped `<skill-card>` envelopes. Without this
+    // wiring, the `agent-skill-cards` section stays empty and skill-aware
+    // routing benefits don't show up in the prompt itself.
+    let loadedSkillCards: import('../agents/derive-persona-capabilities.ts').SkillCardView[] | undefined;
+    if (agentProfile && this.agentRegistry) {
+      const derived = this.agentRegistry.getDerivedCapabilities(agentProfile.id);
+      if (derived && derived.loadedSkills.length > 0) {
+        const { toSkillCardView } = await import('../agents/derive-persona-capabilities.ts');
+        loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
+      }
+    }
 
     const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
@@ -768,8 +771,9 @@ export class WorkerPoolImpl implements WorkerPool {
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
       agentContext, // Agent Context Layer: persistent agent identity/memory/skills
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
-      agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
+      agentProfile, // Multi-agent: specialist persona (developer, author, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
+      loadedSkillCards, // Phase-2: SKILL.md cards with hash-stamped envelope
     );
 
     const startTime = performance.now();
@@ -953,11 +957,18 @@ export class WorkerPoolImpl implements WorkerPool {
       // Streaming cold path: stdout may contain delta lines before the final
       // WorkerOutput JSON. Split on newline and pick the last JSON object that
       // matches WorkerOutputSchema; forward any `{type:"delta",...}` lines to bus.
-      const lines = result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lines = result.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       let output: WorkerOutput | null = null;
       for (const line of lines) {
         let raw: any;
-        try { raw = JSON.parse(line); } catch { continue; }
+        try {
+          raw = JSON.parse(line);
+        } catch {
+          continue;
+        }
         if (raw?.type === 'delta' && typeof raw.text === 'string') {
           this.emitTextDelta(String(raw.taskId ?? workerInput.taskId), raw.text);
           continue;

@@ -69,6 +69,7 @@ export interface VinyanBusEvents {
     dayCount: number;
   };
   'trace:record': { trace: ExecutionTrace };
+  'trace:write_failed': { taskId: string; traceId: string; error: string };
 
   // Worker lifecycle
   'worker:complete': { taskId: string; output: WorkerOutput; durationMs: number };
@@ -197,6 +198,28 @@ export interface VinyanBusEvents {
     currentStage?: { phase: string; stage: string; attempt?: number; ts: number };
   };
   'task:budget-exceeded': { taskId: string; totalTokensConsumed: number; globalCap: number };
+
+  // A9: Resilient Degradation — normalized runtime degradation contract.
+  'degradation:triggered': {
+    taskId?: string;
+    failureType:
+      | 'oracle-unavailable'
+      | 'llm-provider-failure'
+      | 'tool-timeout'
+      | 'rate-limit'
+      | 'peer-unavailable'
+      | 'trace-store-write-failure'
+      | 'budget-pressure';
+    component: string;
+    action: 'retry' | 'fallback' | 'degrade' | 'fail-closed' | 'escalate';
+    capabilityImpact: 'none' | 'reduced' | 'blocked';
+    retryable: boolean;
+    severity: 'info' | 'warning' | 'critical';
+    policyVersion: string;
+    reason: string;
+    sourceEvent: string;
+    occurredAt: number;
+  };
 
   /**
    * Manual retry request — emitted by the API server when an operator (or
@@ -449,6 +472,7 @@ export interface VinyanBusEvents {
   'session:unarchived': { sessionId: string };
   'session:deleted': { sessionId: string };
   'session:restored': { sessionId: string };
+  'session:purged': { sessionId: string };
   'memory:approved': { recordId: string; key?: string };
   'memory:rejected': { recordId: string; key?: string };
 

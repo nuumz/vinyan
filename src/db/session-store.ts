@@ -38,6 +38,8 @@ export interface ListSessionsOptions {
 
 export interface SessionRowWithCount extends SessionRow {
   task_count: number;
+  /** Tasks currently in 'pending' or 'running' state — drives the in-progress badge. */
+  running_task_count: number;
 }
 
 export interface SessionMetadataPatch {
@@ -173,15 +175,30 @@ export class SessionStore {
 
     return this.db
       .query(
-        `SELECT s.*, COALESCE(t.cnt, 0) AS task_count
+        `SELECT s.*,
+                COALESCE(t.cnt, 0) AS task_count,
+                COALESCE(t.running_cnt, 0) AS running_task_count
          FROM session_store s
          LEFT JOIN (
-           SELECT session_id, COUNT(*) AS cnt FROM session_tasks GROUP BY session_id
+           SELECT session_id,
+                  COUNT(*) AS cnt,
+                  SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS running_cnt
+           FROM session_tasks GROUP BY session_id
          ) t ON t.session_id = s.id
          ${whereClause}
          ORDER BY s.updated_at DESC, s.created_at DESC${limitClause}${offsetClause}`,
       )
       .all(...params) as SessionRowWithCount[];
+  }
+
+  /** Count tasks currently in 'pending' or 'running' state for a single session. */
+  countRunningTasks(sessionId: string): number {
+    const row = this.db
+      .query(
+        "SELECT COUNT(*) AS count FROM session_tasks WHERE session_id = ? AND status IN ('pending','running')",
+      )
+      .get(sessionId) as { count: number };
+    return row.count;
   }
 
   updateSessionMetadata(id: string, patch: SessionMetadataPatch): boolean {
@@ -240,6 +257,51 @@ export class SessionStore {
       [now, id],
     );
     return res.changes > 0;
+  }
+
+  /**
+   * Permanent removal — caller MUST verify the row is already trashed
+   * (`deleted_at IS NOT NULL`) before calling this; the DELETE itself is
+   * gated by that condition for defense-in-depth.
+   *
+   * Foreign keys (session_tasks, session_turns) on session_store are NOT
+   * declared `ON DELETE CASCADE`, so we delete child rows explicitly. The
+   * `turn_embedding_meta` table cascades from `session_turns(id)`, which
+   * picks up its rows automatically. The `turn_embeddings` virtual table
+   * (sqlite-vec) carries no FK — we best-effort delete its rows by id
+   * before dropping the turns. Wrapped in a single transaction so a
+   * failure between steps cannot leave half-deleted state.
+   */
+  hardDeleteSession(id: string): boolean {
+    const turnIds = this.db
+      .query('SELECT id FROM session_turns WHERE session_id = ?')
+      .all(id) as Array<{ id: string }>;
+
+    const tx = this.db.transaction(() => {
+      // Best-effort sqlite-vec cleanup. The virtual table only exists when
+      // the sqlite-vec extension is loaded; on machines without it the
+      // table is absent and we silently skip.
+      if (turnIds.length > 0) {
+        try {
+          const placeholders = turnIds.map(() => '?').join(',');
+          this.db.run(
+            `DELETE FROM turn_embeddings WHERE turn_id IN (${placeholders})`,
+            turnIds.map((r) => r.id),
+          );
+        } catch {
+          /* turn_embeddings virtual table not present — skip */
+        }
+      }
+      this.db.run('DELETE FROM session_turns WHERE session_id = ?', [id]);
+      this.db.run('DELETE FROM session_tasks WHERE session_id = ?', [id]);
+      const res = this.db.run(
+        'DELETE FROM session_store WHERE id = ? AND deleted_at IS NOT NULL',
+        [id],
+      );
+      return res.changes > 0;
+    });
+
+    return tx() as boolean;
   }
 
   // ── Session Tasks ───────────────────────────────────────

@@ -112,6 +112,28 @@ export function renderPrometheus(metrics: SystemMetrics, eventCounters: Record<s
     ),
   );
 
+  parts.push(
+    renderMetric(
+      'vinyan_degradations_total',
+      'Total runtime degradation events triggered by A9 policy',
+      'counter',
+      eventCounters['degradation.triggered'] ?? 0,
+    ),
+  );
+
+  parts.push(
+    renderLabeledMetric('vinyan_degradations_by_failure_total', 'Runtime degradations by failure type', 'counter', {
+      'failure_type="oracle-unavailable"': eventCounters['degradation.failure.oracle-unavailable'] ?? 0,
+      'failure_type="llm-provider-failure"': eventCounters['degradation.failure.llm-provider-failure'] ?? 0,
+      'failure_type="tool-timeout"': eventCounters['degradation.failure.tool-timeout'] ?? 0,
+      'failure_type="rate-limit"': eventCounters['degradation.failure.rate-limit'] ?? 0,
+      'failure_type="peer-unavailable"': eventCounters['degradation.failure.peer-unavailable'] ?? 0,
+      'failure_type="trace-store-write-failure"':
+        eventCounters['degradation.failure.trace-store-write-failure'] ?? 0,
+      'failure_type="budget-pressure"': eventCounters['degradation.failure.budget-pressure'] ?? 0,
+    }),
+  );
+
   // vinyan_data_gate_satisfied (gauge, labeled by gate)
   parts.push(
     renderLabeledMetric('vinyan_data_gate_satisfied', 'Whether a data gate is satisfied (0 or 1)', 'gauge', {

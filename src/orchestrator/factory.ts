@@ -32,6 +32,7 @@ import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
+import { SkillOutcomeStore } from '../db/skill-outcome-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TaskEventStore } from '../db/task-event-store.ts';
@@ -89,6 +90,7 @@ import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
+import { attachDegradationEventBridge } from './degradation-strategy.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { buildEcosystem, type EcosystemBundle } from './ecosystem/builder.ts';
 import { TaskFactsRegistry } from './ecosystem/task-facts-registry.ts';
@@ -106,10 +108,10 @@ import {
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { workerIdForEngine } from './llm/engine-worker-binding.ts';
 import { loadInstructionMemory } from './llm/instruction-loader.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
-import { workerIdForEngine } from './llm/engine-worker-binding.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
@@ -451,6 +453,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
+  let skillOutcomeStore: SkillOutcomeStore | undefined;
   let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
@@ -465,6 +468,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
+    skillOutcomeStore = new SkillOutcomeStore(db.getDb());
     comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
@@ -1552,6 +1556,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     understandingEngine,
     // K2.1: Provider trust for Wilson LB selection
     providerTrustStore,
+    // Phase-3: per-(persona, skill, taskSig) outcome attribution
+    skillOutcomeStore,
     // Economy Operating System
     costLedger,
     budgetEnforcer,
@@ -1960,6 +1966,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Wire bus listeners (read-only observers — A3 compliance)
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
+  const degradationBridgeHandle = attachDegradationEventBridge(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
   // P3.B — records adaptive-behavior comprehension events
   // (calibrated, calibration_diverged, ceiling_adjusted) + AXM#7 Brier
@@ -2093,6 +2100,21 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       const result = await executeTask(input, deps);
       sessionCount++;
 
+      // Phase-5A: record per-(persona, skill, taskSig) outcomes for the
+      // SkillOutcomeStore. Single integration point — wraps every task that
+      // flows through the orchestrator's public surface, so the recorder
+      // doesn't need to be threaded through every `task:complete` emit site
+      // in core-loop. Best-effort: failures are swallowed so a recorder bug
+      // never breaks task completion.
+      if (deps.skillOutcomeStore && deps.agentRegistry) {
+        try {
+          const { recordTaskOutcomeForPersona } = await import('./agents/task-outcome-recorder.ts');
+          recordTaskOutcomeForPersona(input, result, deps.agentRegistry, deps.skillOutcomeStore);
+        } catch {
+          /* outcome recording is observational; never fail the task on it */
+        }
+      }
+
       // Trigger sleep cycle at interval (best-effort, never blocks main flow)
       if (sleepCycleRunner && sessionCount >= sleepCycleRunner.getInterval()) {
         sleepCycleRunner.run().catch(() => {
@@ -2169,6 +2191,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (shadowTimer) clearTimeout(shadowTimer);
       detachGapH();
       detachMetrics();
+      degradationBridgeHandle.detach();
       traceListenerHandle.detach();
       comprehensionTraceHandle.detach();
       detachAudit();
@@ -2532,10 +2555,7 @@ interface WorkerRegistrationDeps {
  * the LLM-vs-non-LLM defaults so both startup batch and bus-driven post-
  * startup registration produce identical row shapes.
  */
-function buildEngineProfile(
-  engine: ReasoningEngine,
-  status: 'active' | 'probation',
-): EngineProfile {
+function buildEngineProfile(engine: ReasoningEngine, status: 'active' | 'probation'): EngineProfile {
   const isLLM = engine.engineType === 'llm';
   return {
     id: workerIdForEngine(engine.id),

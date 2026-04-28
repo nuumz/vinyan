@@ -214,6 +214,11 @@ export class MetricsCollector {
       bus.on('selfmodel:calibration_error', () => this.inc('selfmodel.calibration_error')),
       bus.on('oracle:contradiction', () => this.inc('oracle.contradiction')),
       bus.on('decomposer:fallback', () => this.inc('decomposer.fallback')),
+      bus.on('degradation:triggered', ({ failureType, action }) => {
+        this.inc('degradation.triggered');
+        this.inc(`degradation.failure.${failureType}`);
+        this.inc(`degradation.action.${action}`);
+      }),
       // Phase 5: Observability, API, and GAP-H events (G3)
       bus.on('observability:alert', () => this.inc('observability.alert')),
       bus.on('memory:eviction_warning', () => this.inc('memory.eviction')),
@@ -229,7 +234,9 @@ export class MetricsCollector {
       bus.on('understanding:claims_verified', () => this.inc('understanding.verified')),
       bus.on('understanding:calibration', () => this.inc('understanding.calibration')),
     ];
-    return () => unsubs.forEach((fn) => fn());
+    return () => {
+      for (const fn of unsubs) fn();
+    };
   }
 
   inc(key: string): void {

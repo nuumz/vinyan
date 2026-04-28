@@ -10,6 +10,7 @@ import { createContract } from '../../core/agent-contract.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { DAGExecutionResult, NodeDispatcher } from '../dag-executor.ts';
 import { executeDAG } from '../dag-executor.ts';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
 import { resolveRuntimeSkillHintConstraints } from '../skill-hints.ts';
 import type {
   EngineSelectionResult,
@@ -104,6 +105,7 @@ export async function executeGeneratePhase(
           affectedFiles: [],
           timestamp: Date.now(),
           modelUsed: 'none',
+          governanceProvenance: routing.governanceProvenance,
         },
         escalationReason: `Task rejected by approval gate: ${reason}`,
       };
@@ -319,7 +321,7 @@ export async function executeGeneratePhase(
     // ── Non-retryable error fast-exit ────────────────────────────
     if (workerResult.nonRetryableError) {
       console.error(`[vinyan] Non-retryable error — aborting: ${workerResult.nonRetryableError}`);
-      const failTrace: ExecutionTrace = {
+      const failTrace: ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-non-retryable`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -334,7 +336,7 @@ export async function executeGeneratePhase(
         outcome: 'failure',
         failureReason: workerResult.nonRetryableError,
         affectedFiles: input.targetFiles ?? [],
-      };
+      }, routing);
       await deps.traceCollector.record(failTrace);
       deps.bus?.emit('trace:record', { trace: failTrace });
       const failResult: TaskResult = {
@@ -405,7 +407,7 @@ export async function executeGeneratePhase(
     totalTokensConsumed += workerResult.tokensConsumed;
     const globalBudgetCap = input.budget.maxTokens * gi.budgetCapMultiplier;
     if (totalTokensConsumed > globalBudgetCap) {
-      const budgetTrace: ExecutionTrace = {
+      const budgetTrace: ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-budget-exceeded`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -421,7 +423,7 @@ export async function executeGeneratePhase(
         failureReason: `Global token budget exceeded: ${totalTokensConsumed} > ${globalBudgetCap}`,
         affectedFiles: input.targetFiles ?? [],
         workerSelectionAudit: workerSelection ?? lastWorkerSelection,
-      };
+      }, routing);
       await deps.traceCollector.record(budgetTrace);
       deps.bus?.emit('trace:record', { trace: budgetTrace });
       deps.bus?.emit('task:budget-exceeded', {
@@ -444,7 +446,7 @@ export async function executeGeneratePhase(
       error: String(dispatchErr),
       routing,
     });
-    const dispatchFailTrace: ExecutionTrace = {
+    const dispatchFailTrace: ExecutionTrace = applyRoutingGovernance({
       id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -461,7 +463,7 @@ export async function executeGeneratePhase(
       affectedFiles: input.targetFiles ?? [],
       workerSelectionAudit: workerSelection ?? lastWorkerSelection,
       exploration: explorationFlag || undefined,
-    };
+    }, routing);
     await deps.traceCollector.record(dispatchFailTrace);
     deps.bus?.emit('trace:record', { trace: dispatchFailTrace });
     return Phase.throw(dispatchErr);

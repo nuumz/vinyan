@@ -28,8 +28,8 @@ Three additional invariants are under evaluation as official axioms. They are do
 
 | # | Proposed Axiom | Principle | Status |
 |---|----------------|-----------|--------|
-| A8 | Traceable Accountability | Every governance/action/verdict must be replayable from evidence, provenance link, actor identity, policy version, and timestamp. Decision-level provenance, not just file-level hashes. | Proposed — persistence MVP + risk-router population landed; broader runtime coverage pending |
-| A9 | Resilient Degradation | Component failure must degrade capability, not corrupt state or cascade. Fallback, circuit breaker, retry, and SLO behavior are governance contracts, not ad-hoc per-call defenses. | Proposed — depends on existing oracle circuit breaker + bus events |
+| A8 | Traceable Accountability | Every governance/action/verdict must be replayable from evidence, provenance link, actor identity, policy version, and timestamp. Decision-level provenance, not just file-level hashes. | Proposed — persistence MVP + routed/short-circuit trace coverage landed; remaining coverage gaps pending |
+| A9 | Resilient Degradation | Component failure must degrade capability, not corrupt state or cascade. Fallback, circuit breaker, retry, and SLO behavior are governance contracts, not ad-hoc per-call defenses. | Proposed — runtime degradation event contract + metrics MVP landed; fail-closed policy enforcement pending |
 | A10 | Goal-and-Time Grounding | Every execution phase must remain bound to root intent and evidence freshness. Stale or goal-drifted state downgrades confidence or triggers re-grounding/clarification. | Proposed — depends on Goal Alignment Oracle + temporal-decay |
 
 Adversarial robustness remains a **corollary** of A6 + A8 + A9, not a separate axiom.

@@ -372,6 +372,13 @@ export class VinyanAPIServer {
 
     if (method === 'DELETE' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
       const sessionId = path.split('/').pop()!;
+      // Two-step delete: ?permanent=true hard-deletes a session that's
+      // already in Trash. Default behavior is still soft-delete (move to
+      // Trash) so existing API clients don't change semantics.
+      const url = new URL(req.url);
+      if (url.searchParams.get('permanent') === 'true') {
+        return this.handleHardDeleteSession(sessionId);
+      }
       return this.handleSoftDeleteSession(sessionId);
     }
 
@@ -2106,32 +2113,91 @@ export class VinyanAPIServer {
     return jsonResponse({ session });
   }
 
+  /**
+   * Lifecycle transitions return a `LifecycleResult { applied, session, reason }`
+   * envelope from SessionManager so we can map the three real outcomes to
+   * distinct HTTP responses:
+   *   - reason='not_found'     → 404 (no row at all)
+   *   - reason='invalid_state' → 409 (e.g. archive-an-already-archived row)
+   *   - applied=true           → 200 + bus event
+   *
+   * Without this, callers got a 200 even when nothing changed and bus
+   * subscribers fired on phantom transitions.
+   */
   private handleArchiveSession(sessionId: string): Response {
-    const session = this.deps.sessionManager.archive(sessionId);
-    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const result = this.deps.sessionManager.archive(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session cannot be archived in its current state', session: result.session },
+        409,
+      );
+    }
     this.deps.bus.emit('session:archived', { sessionId });
-    return jsonResponse({ session });
+    return jsonResponse({ session: result.session });
   }
 
   private handleUnarchiveSession(sessionId: string): Response {
-    const session = this.deps.sessionManager.unarchive(sessionId);
-    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const result = this.deps.sessionManager.unarchive(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is not archived', session: result.session },
+        409,
+      );
+    }
     this.deps.bus.emit('session:unarchived', { sessionId });
-    return jsonResponse({ session });
+    return jsonResponse({ session: result.session });
   }
 
   private handleSoftDeleteSession(sessionId: string): Response {
-    const session = this.deps.sessionManager.softDelete(sessionId);
-    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const result = this.deps.sessionManager.softDelete(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is already in trash', session: result.session },
+        409,
+      );
+    }
     this.deps.bus.emit('session:deleted', { sessionId });
-    return jsonResponse({ session });
+    return jsonResponse({ session: result.session });
   }
 
   private handleRestoreSession(sessionId: string): Response {
-    const session = this.deps.sessionManager.restore(sessionId);
-    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const result = this.deps.sessionManager.restore(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is not in trash', session: result.session },
+        409,
+      );
+    }
     this.deps.bus.emit('session:restored', { sessionId });
-    return jsonResponse({ session });
+    return jsonResponse({ session: result.session });
+  }
+
+  /**
+   * DELETE /api/v1/sessions/:id?permanent=true
+   *
+   * Hard-delete from Trash. Two-step flow (soft → hard) is intentional:
+   * a session must be trashed first; any other state returns 409 to prevent
+   * one-click data loss. On success the row plus its tasks and turns are
+   * gone forever — there is no Restore path after this point.
+   */
+  private handleHardDeleteSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.hardDelete(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        {
+          error: 'Session must be moved to trash before permanent delete',
+          session: result.session,
+        },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:purged', { sessionId });
+    return jsonResponse({ deleted: true, sessionId });
   }
 
   private handleCompactSession(sessionId: string): Response {

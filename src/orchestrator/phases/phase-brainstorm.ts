@@ -16,6 +16,15 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
+import { MAX_BRAINSTORM_DRAFTERS } from '../intent/ideation-classifier.ts';
+import {
+  type IdeationCandidate,
+  type IdeationResult,
+  IdeationResultSchema,
+  ideationToConstraint,
+} from '../intent/ideation-types.ts';
+import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
 import type {
   ExecutionTrace,
   RoutingDecision,
@@ -23,14 +32,6 @@ import type {
   TaskInput,
   TaskResult,
 } from '../types.ts';
-import { MAX_BRAINSTORM_DRAFTERS } from '../intent/ideation-classifier.ts';
-import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
-import {
-  ideationToConstraint,
-  type IdeationCandidate,
-  type IdeationResult,
-  IdeationResultSchema,
-} from '../intent/ideation-types.ts';
 import type { PhaseContext, PhaseContinue, PhaseReturn } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -272,7 +273,7 @@ function buildRejectedResult(
   routing: RoutingDecision,
   startedAt: number,
 ): TaskResult {
-  const trace: ExecutionTrace = {
+  const trace: ExecutionTrace = applyRoutingGovernance({
     id: `trace-${input.id}-brainstorm-rejected-${randomUUID().slice(0, 8)}`,
     taskId: input.id,
     sessionId: input.sessionId,
@@ -287,7 +288,7 @@ function buildRejectedResult(
     durationMs: Date.now() - startedAt,
     outcome: 'success',
     affectedFiles: [],
-  };
+  }, routing);
   return {
     id: input.id,
     status: 'input-required',

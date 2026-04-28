@@ -13,9 +13,10 @@
  * with the returned `TaskResult` (core-loop returns it; tests assert it).
  */
 
-import type { VinyanBus } from '../core/bus.ts';
 import type { SessionManager } from '../api/session-manager.ts';
+import type { VinyanBus } from '../core/bus.ts';
 import type { TraceCollector } from './core-loop.ts';
+import { applyRoutingGovernance } from './governance-provenance.ts';
 import type { ExecutionTrace, RoutingDecision, TaskInput, TaskResult } from './types.ts';
 import {
   buildClarificationSet,
@@ -59,7 +60,7 @@ export async function maybeEmitCreativeClarificationGate(
 
   const stringQuestions = structuredQuestions.map((q) => q.prompt);
 
-  const trace: ExecutionTrace = {
+  const trace: ExecutionTrace = applyRoutingGovernance({
     id: `trace-${input.id}-creative-clarify`,
     taskId: input.id,
     sessionId: input.sessionId,
@@ -74,7 +75,7 @@ export async function maybeEmitCreativeClarificationGate(
     durationMs: 0,
     outcome: 'success',
     affectedFiles: input.targetFiles ?? [],
-  };
+  }, routing);
   await deps.traceCollector.record(trace);
   deps.bus?.emit('trace:record', { trace });
   deps.bus?.emit('agent:clarification_requested', {

@@ -15,9 +15,7 @@ const OracleConfigSchema = z.object({
   command: z.string().optional(),
   timeout_ms: z.number().positive().optional(),
   /** Trust tier — determines confidence range and conflict resolution priority. */
-  tier: z
-    .enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative'])
-    .default('deterministic'),
+  tier: z.enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative']).default('deterministic'),
   /** Behavior on timeout: 'block' = fail-closed, 'warn' = skip oracle and continue. */
   timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
@@ -665,9 +663,7 @@ const GatewayConfigSchema = z
          * Gateway intents — names from Discord's docs. Defaults cover the
          * MVP message-only scope.
          */
-        intents: z
-          .array(z.string())
-          .default(['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES']),
+        intents: z.array(z.string()).default(['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES']),
         /** Optional allowlist of Discord guild IDs — empty = accept all. */
         allowedGuilds: z.array(z.string()).default([]),
       })
@@ -810,9 +806,9 @@ export const VinyanConfigSchema = z.object({
     })
     .optional(),
   /**
-   * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
-   * built-in defaults are merged by the loader. CLI `vinyan agent add`
-   * appends here and writes back to vinyan.json.
+   * Specialist persona fleet (developer, author, reviewer, etc. + custom).
+   * When omitted/empty, the built-in role-pure roster is merged by the loader.
+   * CLI `vinyan agent add` appends here and writes back to vinyan.json.
    */
   agents: z.array(AgentSpecSchema).optional(),
   /**

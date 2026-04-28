@@ -19,6 +19,7 @@ import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
+import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
 import { formatEscapeProtocolBlock, parseEscapeSentinel } from './intent/escape-sentinel.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
@@ -196,6 +197,12 @@ export interface OrchestratorDeps {
   understandingEngine?: import('./understanding/understanding-engine.ts').UnderstandingEngine;
   /** K2: Provider trust store for recording per-provider success/failure outcomes. */
   providerTrustStore?: import('../db/provider-trust-store.ts').ProviderTrustStore;
+  /**
+   * Phase-3: per-(persona, skill, taskSig) outcome store. Phase-5A wires the
+   * factory's `executeTask` wrapper to record an outcome row per loaded skill
+   * after every task. Feeds Phase-6 autonomous skill promotion via Wilson LB.
+   */
+  skillOutcomeStore?: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
   /** Economy: Cost ledger for persistent cost tracking. */
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   /** Economy: Budget enforcer for global budget cap enforcement. */
@@ -409,6 +416,18 @@ async function prepareExecution(
       outcome: 'failure',
       failureReason: inputCheck.reason,
       affectedFiles: [],
+      governanceProvenance: buildShortCircuitProvenance({
+        input,
+        decisionId: 'security-rejection',
+        attributedTo: 'kernelGuardrail',
+        wasGeneratedBy: 'validateInput',
+        reason: inputCheck.reason,
+        evidence: inputCheck.detections.map((detection) => ({
+          kind: 'policy',
+          source: 'prompt-injection-guardrail',
+          summary: detection,
+        })),
+      }),
     };
     await deps.traceCollector.record(securityTrace);
     return { id: input.id, status: 'failed', mutations: [], trace: securityTrace };
@@ -996,12 +1015,7 @@ async function prepareExecution(
         // the LLM's pick (which we treat as a candidate, not a verdict).
         const llmPickedAgentId = input.agentId;
         const stripped: TaskInput = { ...input, agentId: undefined };
-        const reroute = deps.agentRouter.route(
-          stripped,
-          undefined,
-          undefined,
-          intentResolution.capabilityRequirements,
-        );
+        const reroute = deps.agentRouter.route(stripped, undefined, undefined, intentResolution.capabilityRequirements);
         if (reroute.reason === 'rule-match' && reroute.agentId !== llmPickedAgentId) {
           input.agentId = reroute.agentId;
           intentResolution = {
@@ -1073,8 +1087,9 @@ async function prepareExecution(
           // (A1) and findings are tagged probabilistic (A5) — agents must
           // verify before acting.
           try {
-            const { acquireKnowledge, planFromGapForResearch, buildResearchContextConstraint } =
-              await import('./capabilities/knowledge-acquisition.ts');
+            const { acquireKnowledge, planFromGapForResearch, buildResearchContextConstraint } = await import(
+              './capabilities/knowledge-acquisition.ts'
+            );
             const req = planFromGapForResearch(input.id, reroute.capabilityAnalysis, {
               providers: resolveKnowledgeProviderOrder(deps),
             });
@@ -1347,21 +1362,24 @@ async function prepareExecution(
   if (deps.budgetEnforcer) {
     const budgetCheck = deps.budgetEnforcer.canProceed();
     if (!budgetCheck.allowed) {
-      const trace: ExecutionTrace = {
-        id: `trace-${input.id}-budget`,
-        taskId: input.id,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        taskTypeSignature: understanding.taskTypeSignature as string | undefined,
-        approach: 'budget-blocked',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: 0,
-        durationMs: 0,
-        outcome: 'failure',
-        failureReason: 'Global budget exceeded',
-        affectedFiles: input.targetFiles ?? [],
-      };
+      const trace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-budget`,
+          taskId: input.id,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          taskTypeSignature: understanding.taskTypeSignature as string | undefined,
+          approach: 'budget-blocked',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'failure',
+          failureReason: 'Global budget exceeded',
+          affectedFiles: input.targetFiles ?? [],
+        },
+        routing,
+      );
       await deps.traceCollector.record(trace);
       deps.bus?.emit('task:budget-exceeded', { taskId: input.id, totalTokensConsumed: 0, globalCap: 0 });
       return { id: input.id, status: 'failed', mutations: [], trace, escalationReason: 'Global budget exceeded' };
@@ -1494,6 +1512,13 @@ async function buildConversationalResult(
       outcome: 'escalated',
       failureReason: 'No LLM provider configured',
       affectedFiles: [],
+      governanceProvenance: buildShortCircuitProvenance({
+        input,
+        decisionId: 'no-provider',
+        attributedTo: 'intentResolver',
+        wasGeneratedBy: 'buildConversationalResult',
+        reason: 'No LLM provider configured for conversational response',
+      }),
     };
     await deps.traceCollector.record(trace);
     deps.bus?.emit('trace:record', { trace });
@@ -1629,6 +1654,20 @@ async function buildConversationalResult(
     durationMs: Math.max(1, Date.now() - startTime),
     outcome: 'success',
     affectedFiles: [],
+    governanceProvenance: buildShortCircuitProvenance({
+      input,
+      decisionId: 'conversational-shortcircuit',
+      attributedTo: 'intentResolver',
+      wasGeneratedBy: 'buildConversationalResult',
+      reason: intent.reasoning || 'Intent resolver selected conversational short-circuit',
+      evidence: [
+        {
+          kind: 'routing-factor',
+          source: 'intent-strategy',
+          summary: `strategy=${intent.strategy}; confidence=${intent.confidence.toFixed(3)}`,
+        },
+      ],
+    }),
   };
   await deps.traceCollector.record(trace);
   deps.bus?.emit('trace:record', { trace });
@@ -1839,6 +1878,25 @@ async function executeDirectTool(
       outcome: toolResult?.status === 'success' ? 'success' : 'failure',
       failureReason: toolResult?.error,
       affectedFiles: [],
+      governanceProvenance: buildShortCircuitProvenance({
+        input,
+        decisionId: 'direct-tool-shortcircuit',
+        attributedTo: 'intentResolver',
+        wasGeneratedBy: 'executeDirectToolCall',
+        reason: intent.reasoning || 'Intent resolver selected direct tool execution',
+        evidence: [
+          {
+            kind: 'routing-factor',
+            source: 'intent-strategy',
+            summary: `strategy=${intent.strategy}; confidence=${intent.confidence.toFixed(3)}`,
+          },
+          {
+            kind: 'tool-result',
+            source: intent.directToolCall?.tool ?? 'unknown-tool',
+            summary: `status=${toolResult?.status ?? 'missing'}`,
+          },
+        ],
+      }),
     };
     await deps.traceCollector.record(trace);
     deps.bus?.emit('trace:record', { trace });
@@ -2200,6 +2258,20 @@ async function executeTaskCore(
           outcome: 'escalated',
           failureReason: intentResolution.reasoning,
           affectedFiles: [],
+          governanceProvenance: buildShortCircuitProvenance({
+            input,
+            decisionId: `intent-${intentResolution.type}`,
+            attributedTo: 'intentResolver',
+            wasGeneratedBy: 'executeTaskCore.intentResolution',
+            reason: intentResolution.reasoning,
+            evidence: [
+              {
+                kind: 'routing-factor',
+                source: 'intent-state',
+                summary: `type=${intentResolution.type}; confidence=${intentResolution.confidence.toFixed(3)}`,
+              },
+            ],
+          }),
         };
         await deps.traceCollector.record(trace);
         deps.bus?.emit('trace:record', { trace });
@@ -2296,6 +2368,20 @@ async function executeTaskCore(
                     durationMs: 0,
                     outcome: 'success',
                     affectedFiles: [],
+                    governanceProvenance: buildShortCircuitProvenance({
+                      input,
+                      decisionId: 'preference-disambiguation',
+                      attributedTo: 'intentResolver',
+                      wasGeneratedBy: 'executeTaskCore.directToolPreference',
+                      reason: `Multiple remembered apps match category ${category}`,
+                      evidence: [
+                        {
+                          kind: 'routing-factor',
+                          source: 'app-category',
+                          summary: `category=${category}; candidateCount=${apps.length}`,
+                        },
+                      ],
+                    }),
                   };
                   await deps.traceCollector.record(trace);
                   deps.bus?.emit('trace:record', { trace });
@@ -2392,6 +2478,20 @@ async function executeTaskCore(
                   ? 'partial'
                   : 'failure',
             affectedFiles: input.targetFiles ?? [],
+            governanceProvenance: buildShortCircuitProvenance({
+              input,
+              decisionId: 'agentic-workflow-shortcircuit',
+              attributedTo: 'intentResolver',
+              wasGeneratedBy: 'executeTaskCore.workflowBranch',
+              reason: intentResolution.reasoning || 'Intent resolver selected agentic workflow',
+              evidence: [
+                {
+                  kind: 'routing-factor',
+                  source: 'intent-strategy',
+                  summary: `strategy=${intentResolution.strategy}; confidence=${intentResolution.confidence.toFixed(3)}`,
+                },
+              ],
+            }),
           };
           await deps.traceCollector.record(trace);
           const result: TaskResult = {
@@ -2665,9 +2765,7 @@ async function executeTaskCore(
     // timeouts respect the wall clock.
     const WALL_CLOCK_SAFETY_MS = 250; // refuse to start with <250ms left
     const ESCALATION_MIN_REMAINING_MS = 500; // don't escalate with <500ms left
-    const buildTimeoutResult = (
-      reason: string,
-    ): TaskResult => {
+    const buildTimeoutResult = (reason: string): TaskResult => {
       const elapsedMs = Date.now() - startTime;
       const lastPhase = activity.lastPhase;
       const lastTool = activity.lastTool;
@@ -2685,32 +2783,32 @@ async function executeTaskCore(
         const ageS = Math.max(0, Math.round((Date.now() - lastTool.ts) / 1000));
         diagnosticsParts.push(`last tool: ${lastTool.name} (${lastTool.status}, ${ageS}s ago)`);
       } else if (lastPhase) {
-        diagnosticsParts.push(
-          `last phase: ${lastPhase.phase} (${Math.round(lastPhase.durationMs / 1000)}s)`,
-        );
+        diagnosticsParts.push(`last phase: ${lastPhase.phase} (${Math.round(lastPhase.durationMs / 1000)}s)`);
       }
       if (planProgress && planProgress.total > 0) {
         diagnosticsParts.push(`plan ${planProgress.done}/${planProgress.total}`);
       }
-      const diagnosticsLine =
-        diagnosticsParts.length > 0 ? ` Last activity — ${diagnosticsParts.join('; ')}.` : '';
-      const timeoutTrace: ExecutionTrace = {
-        id: `trace-${input.id}-timeout`,
-        taskId: input.id,
-        workerId: routing.workerId ?? routing.model ?? 'unknown',
-        agentId: input.agentId,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        approach: 'wall-clock-timeout',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: 0,
-        durationMs: elapsedMs,
-        outcome: 'timeout',
-        failureReason: reason,
-        affectedFiles: input.targetFiles ?? [],
-        workerSelectionAudit: lastWorkerSelection,
-      };
+      const diagnosticsLine = diagnosticsParts.length > 0 ? ` Last activity — ${diagnosticsParts.join('; ')}.` : '';
+      const timeoutTrace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-timeout`,
+          taskId: input.id,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          agentId: input.agentId,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'wall-clock-timeout',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: elapsedMs,
+          outcome: 'timeout',
+          failureReason: reason,
+          affectedFiles: input.targetFiles ?? [],
+          workerSelectionAudit: lastWorkerSelection,
+        },
+        routing,
+      );
       void deps.traceCollector.record(timeoutTrace);
       deps.bus?.emit('trace:record', { trace: timeoutTrace });
       deps.bus?.emit('task:timeout', {
@@ -3069,9 +3167,7 @@ async function executeTaskCore(
         // before retry budget is exhausted.
         const isNoResponseFailure =
           workerResult.mutations.length === 0 &&
-          (workerResult.uncertainties ?? []).some((u) =>
-            /timeout|crash|no response received|proxy timeout/i.test(u),
-          );
+          (workerResult.uncertainties ?? []).some((u) => /timeout|crash|no response received|proxy timeout/i.test(u));
         if (isNoResponseFailure && routing.workerId) {
           deps.bus?.emit('worker:error', {
             taskId: input.id,
@@ -3561,8 +3657,7 @@ async function executeTaskCore(
 
       // ── RETRY EXHAUSTED → escalate routing level ─────────────────
       const nextLevel = (routing.level + 1) as RoutingLevel;
-      const baseMaxLevel =
-        understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+      const baseMaxLevel = understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
       // G6: when budget-pressure soft-degrade lowered the initial level,
       // escalation must respect that cap. Otherwise the first oracle failure
       // re-routes via the inherited MIN_ROUTING_LEVEL constraint and walks
@@ -3601,32 +3696,35 @@ async function executeTaskCore(
     }
 
     // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
-    const escalationTrace: ExecutionTrace = {
-      id: `trace-${input.id}-escalation`,
-      taskId: input.id,
-      workerId: routing.workerId ?? routing.model ?? 'unknown',
-      agentId: input.agentId,
-      timestamp: Date.now(),
-      // Reflect the actual last-attempted level, not the global maximum:
-      // when soft-degrade caps escalation at L2 the trace must say "L2", not
-      // "L3 attempted" (G6: known-issues #22).
-      routingLevel: routing.level,
-      approach: 'all-levels-exhausted',
-      oracleVerdicts: {},
-      modelUsed: routing.model ?? 'none',
-      tokensConsumed: 0,
-      durationMs: Date.now() - startTime,
-      outcome: 'escalated',
-      failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
-      affectedFiles: input.targetFiles ?? [],
-      workerSelectionAudit: lastWorkerSelection,
-      failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
-        approach: fa.approach,
-        oracleVerdict: fa.oracleVerdict,
-        verdictConfidence: fa.verdictConfidence,
-        failureOracle: fa.failureOracle,
-      })),
-    };
+    const escalationTrace: ExecutionTrace = applyRoutingGovernance(
+      {
+        id: `trace-${input.id}-escalation`,
+        taskId: input.id,
+        workerId: routing.workerId ?? routing.model ?? 'unknown',
+        agentId: input.agentId,
+        timestamp: Date.now(),
+        // Reflect the actual last-attempted level, not the global maximum:
+        // when soft-degrade caps escalation at L2 the trace must say "L2", not
+        // "L3 attempted" (G6: known-issues #22).
+        routingLevel: routing.level,
+        approach: 'all-levels-exhausted',
+        oracleVerdicts: {},
+        modelUsed: routing.model ?? 'none',
+        tokensConsumed: 0,
+        durationMs: Date.now() - startTime,
+        outcome: 'escalated',
+        failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
+        affectedFiles: input.targetFiles ?? [],
+        workerSelectionAudit: lastWorkerSelection,
+        failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
+          approach: fa.approach,
+          oracleVerdict: fa.oracleVerdict,
+          verdictConfidence: fa.verdictConfidence,
+          failureOracle: fa.failureOracle,
+        })),
+      },
+      routing,
+    );
 
     serializeApproachesToStore(workingMemory, input, deps);
     await deps.traceCollector.record(escalationTrace);

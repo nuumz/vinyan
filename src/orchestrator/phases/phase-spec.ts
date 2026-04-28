@@ -23,6 +23,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
 import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
 import {
   type SpecArtifact,
@@ -328,7 +329,7 @@ function buildSpecRejectedResult(
   routing: RoutingDecision,
   startedAt: number,
 ): TaskResult {
-  const trace: ExecutionTrace = {
+  const trace: ExecutionTrace = applyRoutingGovernance({
     id: `trace-${input.id}-spec-rejected-${randomUUID().slice(0, 8)}`,
     taskId: input.id,
     sessionId: input.sessionId,
@@ -343,7 +344,7 @@ function buildSpecRejectedResult(
     durationMs: Date.now() - startedAt,
     outcome: 'success',
     affectedFiles: input.targetFiles ?? [],
-  };
+  }, routing);
   return {
     id: input.id,
     status: 'input-required',

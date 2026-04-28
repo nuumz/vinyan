@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Evidence } from '../../src/core/types.ts';
@@ -220,5 +220,35 @@ describe('WorldGraph', () => {
     // fileA facts deleted (sourceFile matches), fileB facts remain
     expect(wg.queryFacts('fileA.ts')).toHaveLength(0);
     expect(wg.queryFacts('fileB.ts')).toHaveLength(1);
+  });
+
+  test('workspaceRoot canonicalizes relative facts and absolute invalidation paths', () => {
+    wg.close();
+    wg = new WorldGraph(':memory:', { workspaceRoot: tempDir });
+    mkdirSync(join(tempDir, 'src'), { recursive: true });
+    const filePath = join(tempDir, 'src', 'foo.ts');
+    writeFileSync(filePath, 'export const value = 1;');
+
+    const hash = wg.computeFileHash('src/foo.ts');
+    wg.updateFileHash(filePath, hash);
+    wg.storeFact({
+      target: 'src/foo.ts',
+      pattern: 'symbol-exists',
+      evidence: [{ file: filePath, line: 1, snippet: 'export const value = 1;' }],
+      oracleName: 'ast-oracle',
+      fileHash: hash,
+      sourceFile: 'src/foo.ts',
+      verifiedAt: Date.now(),
+      confidence: 1.0,
+    });
+
+    expect(wg.queryFacts('src/foo.ts')).toHaveLength(1);
+    expect(wg.queryFacts(filePath)).toHaveLength(1);
+
+    writeFileSync(filePath, 'export const value = 2;');
+    wg.invalidateByFile(filePath);
+
+    expect(wg.queryFacts('src/foo.ts')).toHaveLength(0);
+    expect(wg.queryFacts(filePath)).toHaveLength(0);
   });
 });

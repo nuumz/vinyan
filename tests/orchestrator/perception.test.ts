@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { PerceptionAssemblerImpl } from '../../src/orchestrator/perception.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
+import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 let tempDir: string;
 
@@ -96,5 +97,39 @@ describe('PerceptionAssemblerImpl', () => {
     const assembler = new PerceptionAssemblerImpl({ workspace: tempDir });
     const result = await assembler.assemble(makeInput({ targetFiles: ['src/foo.ts'] }), 1);
     expect(result.verifiedFacts).toEqual([]);
+  });
+
+  test('with WorldGraph → returns verified facts and persists normalized dependency edges', async () => {
+    const worldGraph = new WorldGraph(':memory:', { workspaceRoot: tempDir });
+    try {
+      const hash = worldGraph.computeFileHash('src/foo.ts');
+      worldGraph.updateFileHash('src/foo.ts', hash);
+      worldGraph.storeFact({
+        target: 'src/foo.ts',
+        pattern: 'symbol-exists',
+        evidence: [{ file: join(tempDir, 'src', 'foo.ts'), line: 1, snippet: 'export const x = 1;' }],
+        oracleName: 'ast-oracle',
+        fileHash: hash,
+        sourceFile: 'src/foo.ts',
+        verifiedAt: Date.now(),
+        confidence: 1.0,
+        tierReliability: 1.0,
+      });
+
+      const assembler = new PerceptionAssemblerImpl({ workspace: tempDir, worldGraph });
+      const result = await assembler.assemble(makeInput({ targetFiles: ['src/foo.ts'] }), 1);
+
+      expect(result.verifiedFacts).toEqual([
+        expect.objectContaining({
+          target: 'src/foo.ts',
+          pattern: 'symbol-exists',
+          oracleName: 'ast-oracle',
+          tierReliability: 1.0,
+        }),
+      ]);
+      expect(worldGraph.queryDependents('src/foo.ts')).toContain('src/bar.ts');
+    } finally {
+      worldGraph.close();
+    }
   });
 });

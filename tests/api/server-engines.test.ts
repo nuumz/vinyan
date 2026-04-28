@@ -16,6 +16,7 @@
  *     has never appeared in a trace.
  *   - Both endpoints are allowlisted (no auth required).
  */
+import { Database } from 'bun:sqlite';
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -23,19 +24,20 @@ import { join } from 'path';
 import { VinyanAPIServer } from '../../src/api/server.ts';
 import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus } from '../../src/core/bus.ts';
-import { Database } from 'bun:sqlite';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
-import { LLMReasoningEngine, ReasoningEngineRegistry } from '../../src/orchestrator/llm/llm-reasoning-engine.ts';
-import { requiresAuth } from '../../src/security/auth.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
+import { engineIdFromWorker } from '../../src/orchestrator/llm/engine-worker-binding.ts';
+import { LLMReasoningEngine, ReasoningEngineRegistry } from '../../src/orchestrator/llm/llm-reasoning-engine.ts';
 import type { EngineProfile, LLMProvider, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import { requiresAuth } from '../../src/security/auth.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-engines-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
 const TEST_TOKEN = `test-token-${'a'.repeat(52)}`;
 
 let db: Database;
+let traceSeq = 0;
 
 function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
   return Promise.resolve({
@@ -101,6 +103,41 @@ function workerForEngine(engineId: string, status: EngineProfile['status']): Eng
   };
 }
 
+function insertTrace(
+  workerId: string,
+  opts?: {
+    outcome?: 'success' | 'failure';
+    qualityComposite?: number;
+    tokensConsumed?: number;
+    durationMs?: number;
+  },
+) {
+  traceSeq += 1;
+  db.run(
+    `INSERT INTO execution_traces (
+      id, task_id, timestamp, routing_level, approach, model_used,
+      tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files,
+      worker_id, quality_composite, task_type_signature
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      `trace-engine-api-${traceSeq}`,
+      `task-engine-api-${traceSeq}`,
+      1_700_000_000_000 + traceSeq,
+      1,
+      'test approach',
+      engineIdFromWorker(workerId),
+      opts?.tokensConsumed ?? 100,
+      opts?.durationMs ?? 1000,
+      opts?.outcome ?? 'success',
+      '{}',
+      '[]',
+      workerId,
+      opts?.qualityComposite ?? 0.8,
+      'api::engine',
+    ],
+  );
+}
+
 beforeAll(() => {
   mkdirSync(TEST_DIR, { recursive: true });
   writeFileSync(TOKEN_PATH, TEST_TOKEN);
@@ -114,6 +151,8 @@ beforeEach(() => {
   // accumulate via INSERT OR IGNORE, so wipe them to keep each test
   // operating on a clean fixture.
   db.exec('DELETE FROM worker_profiles');
+  db.exec('DELETE FROM execution_traces');
+  traceSeq = 0;
 });
 
 afterAll(() => {
@@ -166,10 +205,54 @@ describe('GET /api/v1/engines — new list endpoint', () => {
     expect(requiresAuth('GET', '/api/v1/engines')).toBe(false);
     expect(requiresAuth('GET', '/api/v1/workers')).toBe(false);
   });
+
+  test('enriches engine rows with authoritative worker stats', async () => {
+    const workerStore = new WorkerStore(db);
+    const engineId = 'openrouter/balanced/anthropic/claude-sonnet-4.6';
+    const worker = workerForEngine(engineId, 'active');
+    workerStore.insert(worker);
+    insertTrace(worker.id, { outcome: 'success', qualityComposite: 0.9, tokensConsumed: 100, durationMs: 1000 });
+    insertTrace(worker.id, { outcome: 'failure', qualityComposite: 0.3, tokensConsumed: 300, durationMs: 3000 });
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/engines'));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      engines: Array<{
+        id: string;
+        stats?: { totalTasks: number; successRate: number; avgQualityScore: number; avgTokenCost: number; avgDurationMs: number };
+      }>;
+    };
+    const row = data.engines.find((e) => e.id === worker.id);
+    expect(row?.stats?.totalTasks).toBe(2);
+    expect(row?.stats?.successRate).toBe(0.5);
+    expect(row?.stats?.avgQualityScore).toBeCloseTo(0.6);
+    expect(row?.stats?.avgTokenCost).toBe(200);
+    expect(row?.stats?.avgDurationMs).toBe(2000);
+  });
+
+  test('surfaces stats for legacy traces written under the bare engine id', async () => {
+    // Traces from before the canonical `worker-${engine.id}` migration
+    // landed are stored with `worker_id = engine.id` (no prefix). The
+    // dashboard previously showed Tasks=0 for those rows even though
+    // recent tasks were visible in the drilldown.
+    const workerStore = new WorkerStore(db);
+    const engineId = 'openrouter/balanced/anthropic/claude-sonnet-4.6';
+    const worker = workerForEngine(engineId, 'probation');
+    workerStore.insert(worker);
+    // Trace recorded with the legacy worker_id alias (bare engine id).
+    insertTrace(engineId, { outcome: 'success', qualityComposite: 0.85, tokensConsumed: 200, durationMs: 2000 });
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/engines'));
+    const data = (await res.json()) as { engines: Array<{ id: string; stats?: { totalTasks: number } }> };
+    const row = data.engines.find((e) => e.id === worker.id);
+    expect(row?.stats?.totalTasks).toBe(1);
+  });
 });
 
 describe('engine list dedup — registry × workerStore', () => {
-  test('one row per engine when both registry and worker-${engine.id} exist; worker status wins', async () => {
+  test('one row per engine when both registry and worker-<engine.id> exist; worker status wins', async () => {
     // Reproduces the production screenshot anomaly: every engine appeared
     // twice (once "active" from the registry, once "probation" from the
     // worker entry created by autoRegisterWorkers). The fix is dedup via
@@ -253,6 +336,30 @@ describe('GET /api/v1/engines/:id — registry fallback', () => {
     expect(data.worker.id).toBe('worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
     expect(data.worker.config.modelId).toBe('openrouter/balanced/anthropic/claude-sonnet-4.6');
     expect(data.worker.status).toBe('active');
+  });
+
+  test('accepts a canonical worker id for a live registry-only engine', async () => {
+    const server = makeServer({ withRegistry: true });
+    const id = encodeURIComponent('worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
+    const res = await server.handleRequest(new Request(`http://localhost/api/v1/engines/${id}`));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { worker: { id: string; config: { modelId: string } } };
+    expect(data.worker.id).toBe('worker-openrouter/balanced/anthropic/claude-sonnet-4.6');
+    expect(data.worker.config.modelId).toBe('openrouter/balanced/anthropic/claude-sonnet-4.6');
+  });
+
+  test('resolves an engine id to the historical worker row before registry fallback', async () => {
+    const workerStore = new WorkerStore(db);
+    const engineId = 'openrouter/balanced/anthropic/claude-sonnet-4.6';
+    workerStore.insert(workerForEngine(engineId, 'probation'));
+
+    const server = makeServer({ withRegistry: true, workerStore });
+    const id = encodeURIComponent(engineId);
+    const res = await server.handleRequest(new Request(`http://localhost/api/v1/engines/${id}`));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { worker: { id: string; status: string } };
+    expect(data.worker.id).toBe(`worker-${engineId}`);
+    expect(data.worker.status).toBe('probation');
   });
 
   test('returns 404 for an unknown engine id', async () => {

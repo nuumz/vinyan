@@ -9,6 +9,7 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
+import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
 import {
@@ -34,6 +35,21 @@ import type {
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
 const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
+
+/**
+ * Wrap multi-line shell output in a markdown code fence so the chat UI
+ * preserves columns/whitespace. Single-line / empty outputs pass through
+ * unchanged. Outputs that already contain triple-backticks fall back to a
+ * `~~~` fence to avoid breaking the wrap. Mirrors the helper used by the
+ * direct-tool short-circuit path in `core-loop.ts` — keeping a local copy
+ * to avoid an awkward upward import. Behaviour MUST stay in sync.
+ */
+function fenceShellOutput(output: string): string {
+  if (!output) return output;
+  if (!output.includes('\n')) return output;
+  const fence = output.includes('```') ? '~~~' : '```';
+  return `${fence}\n${output.replace(/\n+$/, '')}\n${fence}`;
+}
 
 function workflowStepTimeoutMs(input: TaskInput, budgetFraction: number): number {
   const fractionalBudget = Math.floor(input.budget.maxDurationMs * Math.max(budgetFraction, 0.25));
@@ -167,7 +183,14 @@ export async function executeWorkflow(
   }
 
   const stepResults = new Map<string, WorkflowStepResult>();
-  const completed = new Set<string>();
+  // `succeeded` carries dependency-satisfaction semantics: a downstream step
+  // is only `ready` when every dep ran AND completed successfully. Failed or
+  // skipped upstream steps propagate as `skipped` to their dependents — they
+  // do NOT silently satisfy the dependency the way "any finished step"
+  // would. `finished` covers everything that has produced a result so we
+  // can detect when no further progress is possible.
+  const succeeded = new Set<string>();
+  const finished = new Set<string>();
   let totalTokens = 0;
 
   // Live status mirror used to keep `agent:plan_update` in sync with the
@@ -227,19 +250,34 @@ export async function executeWorkflow(
   const remaining = new Set(plan.steps.map((s) => s.id));
 
   while (remaining.size > 0) {
-    const ready = plan.steps.filter(
-      (s) => remaining.has(s.id) && s.dependencies.every((d) => completed.has(d)),
-    );
+    // A step is `ready` when every dep finished AND succeeded.
+    // A step is `skip-now` when at least one dep finished and failed/skipped
+    // (we can't run it, so emit a synthetic `skipped` result and propagate).
+    const ready: typeof plan.steps = [];
+    const skipNow: Array<{ step: (typeof plan.steps)[number]; failedDeps: string[] }> = [];
+    for (const step of plan.steps) {
+      if (!remaining.has(step.id)) continue;
+      const failedDeps = step.dependencies.filter(
+        (d) => finished.has(d) && !succeeded.has(d),
+      );
+      if (failedDeps.length > 0) {
+        skipNow.push({ step, failedDeps });
+        continue;
+      }
+      if (step.dependencies.every((d) => succeeded.has(d))) {
+        ready.push(step);
+      }
+    }
 
-    if (ready.length === 0 && remaining.size > 0) {
-      // Deadlock — circular dependency or missing step
+    if (ready.length === 0 && skipNow.length === 0 && remaining.size > 0) {
+      // Deadlock — circular dependency or a step depends on something not in the plan
       for (const id of remaining) stepStatuses.set(id, 'failed');
       emitPlanUpdate();
       await recordFailure('workflow-deadlock', [...remaining]);
       deps.bus?.emit('workflow:complete', {
         goal: plan.goal,
         status: 'failed',
-        stepsCompleted: completed.size,
+        stepsCompleted: succeeded.size,
         totalSteps: plan.steps.length,
       });
       return buildResult(
@@ -254,6 +292,27 @@ export async function executeWorkflow(
       );
     }
 
+    // Cascade-skip dependents of failed/skipped steps before dispatching new
+    // work. This drains skip propagation in a single pass per loop iteration
+    // so the next iteration's `ready` set sees a consistent finished state.
+    for (const { step, failedDeps } of skipNow) {
+      const skippedResult: WorkflowStepResult = {
+        stepId: step.id,
+        status: 'skipped',
+        output: `Skipped: dependency failed (${failedDeps.join(', ')})`,
+        tokensConsumed: 0,
+        durationMs: 0,
+        strategyUsed: step.strategy,
+      };
+      stepResults.set(step.id, skippedResult);
+      finished.add(step.id);
+      remaining.delete(step.id);
+      stepStatuses.set(step.id, 'skipped');
+    }
+    if (skipNow.length > 0) emitPlanUpdate();
+
+    if (ready.length === 0) continue;
+
     // Mark all ready steps as running before dispatching so the UI can show
     // multiple parallel steps as in-flight when topology allows it.
     for (const step of ready) stepStatuses.set(step.id, 'running');
@@ -266,8 +325,9 @@ export async function executeWorkflow(
 
     for (const result of results) {
       stepResults.set(result.stepId, result);
-      completed.add(result.stepId);
+      finished.add(result.stepId);
       remaining.delete(result.stepId);
+      if (result.status === 'completed') succeeded.add(result.stepId);
       totalTokens += result.tokensConsumed;
       stepStatuses.set(
         result.stepId,
@@ -298,7 +358,7 @@ export async function executeWorkflow(
   deps.bus?.emit('workflow:complete', {
     goal: plan.goal,
     status,
-    stepsCompleted: completed.size,
+    stepsCompleted: succeeded.size,
     totalSteps: plan.steps.length,
   });
 
@@ -411,15 +471,34 @@ async function dispatchStrategy(
 
       case 'direct-tool': {
         if (!deps.toolExecutor) return { ...base, status: 'failed', output: 'toolExecutor not available' };
+        // Prefer the explicit `command` field — `description` is human-readable
+        // and may be a natural-language sentence that would error as a shell
+        // command. Legacy plans without `command` fall back to `description`.
+        const command = step.command?.trim() || step.description;
         const results = await deps.toolExecutor.executeProposedTools(
-          [{ id: `wf-${step.id}`, tool: 'shell_exec', parameters: { command: step.description } }],
+          [{ id: `wf-${step.id}`, tool: 'shell_exec', parameters: { command } }],
           { workspace: deps.workspace ?? '.', allowedPaths: [], routingLevel: 2 },
         );
         const toolResult = results[0];
+        if (toolResult?.status === 'success') {
+          // Fence stdout so the chat UI (ReactMarkdown) preserves whitespace
+          // and columns. Without this, `ls -la` style multi-line output
+          // collapses into a single paragraph because CommonMark treats
+          // single newlines as soft breaks.
+          const rawStdout = toolResult.output ?? '';
+          return {
+            ...base,
+            status: 'completed',
+            output: rawStdout ? fenceShellOutput(rawStdout) : '',
+          };
+        }
+        // Failure: include the command + error so plan replay / synthesis can
+        // surface why this step failed instead of an empty red node.
+        const errMsg = toolResult?.error || toolResult?.output || 'shell command failed';
         return {
           ...base,
-          status: toolResult?.status === 'success' ? 'completed' : 'failed',
-          output: toolResult?.output ?? toolResult?.error ?? '',
+          status: 'failed',
+          output: `Command \`${command}\` failed: ${errMsg}`,
         };
       }
 
@@ -469,16 +548,21 @@ async function dispatchStrategy(
         ]
           .filter((s): s is string => s !== null)
           .join('\n\n');
+        const stepSystemPrompt =
+          'You are completing one step of a multi-step workflow toward a goal the user already approved. ' +
+          'Stay focused on this step alone — do not anticipate later steps, do not summarize prior work, ' +
+          'do not greet, do not ask clarifying questions. Match the user\'s language and tone from the goal. ' +
+          'For creative writing tasks, write in narrative voice; for analytical tasks, be precise. ' +
+          'Output the step\'s deliverable directly with no meta-framing.';
         const request = {
-          systemPrompt:
-            'You are completing one step of a multi-step workflow toward a goal the user already approved. ' +
-            'Stay focused on this step alone — do not anticipate later steps, do not summarize prior work, ' +
-            'do not greet, do not ask clarifying questions. Match the user\'s language and tone from the goal. ' +
-            'For creative writing tasks, write in narrative voice; for analytical tasks, be precise. ' +
-            'Output the step\'s deliverable directly with no meta-framing.',
+          systemPrompt: stepSystemPrompt,
           userPrompt,
           maxTokens: Math.min(4000, Math.floor(input.budget.maxTokens * step.budgetFraction)),
           timeoutMs: workflowStepTimeoutMs(input, step.budgetFraction),
+          // Frozen-tier the constant step system prompt so Anthropic caches
+          // it across the workflow's multiple llm-reasoning calls (typically
+          // 2-4 per turn). The user prompt is fully turn-volatile.
+          tiers: frozenSystemTier(stepSystemPrompt, userPrompt),
         };
         const response = provider.generateStream
           ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, input.id, text))
@@ -593,39 +677,49 @@ async function buildResult(
           return `${tag} (${r.strategyUsed}):\n${body}`;
         });
         const stepSummaries = stepSections.join('\n\n---\n\n');
+        const synthesizerSystemPrompt =
+          'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
+          'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
+          'Choose the right shape for the goal: ' +
+          'creative work → output the prose / poem / story directly without bullet-pointing it; ' +
+          'analytical work → structured answer with the key findings; ' +
+          'instructional work → clear step-by-step. ' +
+          'When the last step\'s output is already a polished deliverable matching the goal, return it as-is ' +
+          '(or with light edits) — do NOT compress it into a summary. ' +
+          'When a step output contains a fenced code block (```…``` or ~~~…~~~) — typically raw shell ' +
+          'output like `ls -la` listings — reproduce that fenced block verbatim in your answer (or quote ' +
+          'the relevant subset, still inside a fence). NEVER inline shell output as prose; the user needs ' +
+          'the column structure. ' +
+          'Never narrate the workflow itself ("step 1 found…", "in this synthesis…"). ' +
+          'Do not include meta-commentary, headers like "Final answer", or framing about prior steps.';
+        const synthesizerUserPrompt = (() => {
+          // Anchor the synthesis on prior conversation when the workflow is
+          // a follow-up turn ("write chapter 2"). Without this the
+          // synthesizer only sees the current goal + step outputs and can
+          // produce something that contradicts or restarts what the
+          // assistant already said in earlier turns.
+          const transcript = formatSessionTranscript(deps.sessionTurns);
+          const transcriptBlock = transcript
+            ? `Prior conversation (oldest → newest). The synthesised final ` +
+              `answer must be consistent with these turns and continue them ` +
+              `where the goal asks for a continuation:\n${transcript}\n\n`
+            : '';
+          return (
+            `User's goal: ${plan.goal}\n\n` +
+            transcriptBlock +
+            `Synthesis instruction (planner-suggested): ${plan.synthesisPrompt}\n\n` +
+            `Step outputs (the LAST step is usually the polished deliverable):\n\n${stepSummaries}`
+          );
+        })();
         const request = {
-          systemPrompt:
-            'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
-            'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
-            'Choose the right shape for the goal: ' +
-            'creative work → output the prose / poem / story directly without bullet-pointing it; ' +
-            'analytical work → structured answer with the key findings; ' +
-            'instructional work → clear step-by-step. ' +
-            'When the last step\'s output is already a polished deliverable matching the goal, return it as-is ' +
-            '(or with light edits) — do NOT compress it into a summary. ' +
-            'Never narrate the workflow itself ("step 1 found…", "in this synthesis…"). ' +
-            'Do not include meta-commentary, headers like "Final answer", or framing about prior steps.',
-          userPrompt: (() => {
-            // Anchor the synthesis on prior conversation when the workflow is
-            // a follow-up turn ("write chapter 2"). Without this the
-            // synthesizer only sees the current goal + step outputs and can
-            // produce something that contradicts or restarts what the
-            // assistant already said in earlier turns.
-            const transcript = formatSessionTranscript(deps.sessionTurns);
-            const transcriptBlock = transcript
-              ? `Prior conversation (oldest → newest). The synthesised final ` +
-                `answer must be consistent with these turns and continue them ` +
-                `where the goal asks for a continuation:\n${transcript}\n\n`
-              : '';
-            return (
-              `User's goal: ${plan.goal}\n\n` +
-              transcriptBlock +
-              `Synthesis instruction (planner-suggested): ${plan.synthesisPrompt}\n\n` +
-              `Step outputs (the LAST step is usually the polished deliverable):\n\n${stepSummaries}`
-            );
-          })(),
+          systemPrompt: synthesizerSystemPrompt,
+          userPrompt: synthesizerUserPrompt,
           maxTokens: 4000,
           timeoutMs: Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, Math.floor(taskTimeoutMs * 0.25)),
+          // Constant synthesizer system prompt → frozen tier so Anthropic
+          // caches it across workflows. The user prompt is fully turn-volatile
+          // (varies with goal + transcript + step outputs every call).
+          tiers: frozenSystemTier(synthesizerSystemPrompt, synthesizerUserPrompt),
         };
         const response = provider.generateStream
           ? await provider.generateStream(request, ({ text }) => emitWorkflowTextDelta(deps, taskId, text))

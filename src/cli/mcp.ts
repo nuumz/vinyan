@@ -14,7 +14,7 @@ export async function startMCPServer(workspace: string): Promise<void> {
   // Try to connect WorldGraph for fact queries
   let worldGraph: WorldGraph | undefined;
   try {
-    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
+    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'), { workspaceRoot: workspace });
   } catch {
     // WorldGraph unavailable — fact queries will return empty
   }

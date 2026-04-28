@@ -651,8 +651,12 @@ export interface TaskResult {
    *   `clarificationNeeded` carries those questions. Distinct from `uncertain`
    *   because no retry/escalation is attempted — the user must answer in the
    *   next turn. Lexically aligned with A2A `A2ATaskState` for future bridging.
+   * - `partial`: the work produced a usable answer but at least one sub-step
+   *   failed or was skipped (e.g., a multi-step workflow where one
+   *   independent branch failed). UI should treat this as success-with-warning,
+   *   not a hard failure.
    */
-  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required';
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required' | 'partial';
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -1120,7 +1124,7 @@ export interface ExecutionTrace {
   modelUsed: string; // kept for backward compat; new code should prefer engineId
   tokensConsumed: number;
   durationMs: number;
-  outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+  outcome: 'success' | 'failure' | 'timeout' | 'escalated' | 'partial';
   failureReason?: string;
   affectedFiles: string[];
   // Phase 2.2 — shadow validation (async, post-commit)

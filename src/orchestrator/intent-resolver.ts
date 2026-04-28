@@ -458,6 +458,56 @@ export async function resolveIntent(
     return result;
   }
 
+  // [A.7] Direct-tool pre-classifier — runs INDEPENDENTLY of STU so high-
+  // confidence filesystem/shell goals short-circuit even when comprehension
+  // hasn't built an understanding object. Without this, "ช่วยตรวจสอบไฟล์บน
+  // ` ~/Desktop/`" falls through to the LLM intent classifier, which often
+  // picks `full-pipeline` and dispatches a worker subprocess that hangs at
+  // 90s waiting for a tool the planner already knew was a one-shot `ls`.
+  //
+  // Triggered only when the deterministic classifier returns a pre-resolved
+  // shell_exec command at confidence ≥ 0.85 — that branch already validates
+  // the path looks real (looksLikePath) and rejects bare nouns.
+  {
+    const directClass = classifyDirectTool(input.goal);
+    if (
+      directClass &&
+      directClass.confidence >= 0.85 &&
+      directClass.type === 'shell_exec' &&
+      directClass.command
+    ) {
+      const { agentId, agentSelectionReason } = resolveSelectedAgent(
+        input,
+        deps.agents,
+        deps.defaultAgentId,
+        undefined,
+        `direct-tool pre-classifier (shell_exec, conf=${directClass.confidence})`,
+      );
+      const result: IntentResolution = {
+        strategy: 'direct-tool',
+        refinedGoal: input.goal,
+        directToolCall: { tool: 'shell_exec', parameters: { command: directClass.command } },
+        confidence: directClass.confidence,
+        reasoning: `Deterministic pre-classifier matched filesystem/shell goal → ${directClass.command}.`,
+        reasoningSource: 'deterministic',
+        type: 'known',
+        agentId,
+        agentSelectionReason,
+      };
+      intentCache.set(cacheKey, result, now);
+      intentCache.prune(now);
+      deps.bus?.emit('intent:resolved', {
+        taskId: input.id,
+        strategy: result.strategy,
+        confidence: result.confidence,
+        reasoning: result.reasoning,
+        type: 'known',
+        source: 'deterministic',
+      });
+      return result;
+    }
+  }
+
   // [B] Deterministic candidate (tier 0.8). Null when caller supplied no STU.
   const deterministic = understanding ? composeDeterministicCandidate(input, understanding) : null;
 

@@ -19,6 +19,13 @@ export type WorkflowStepStrategy =
 export interface WorkflowStep {
   id: string;
   description: string;
+  /**
+   * Concrete shell command for `direct-tool` steps. Required (planner-side)
+   * when `strategy === 'direct-tool'` so the executor never has to guess
+   * a command from a natural-language description. Falls back to
+   * `description` for backward-compatible legacy plans.
+   */
+  command?: string;
   strategy: WorkflowStepStrategy;
   dependencies: string[];
   inputs: Record<string, string>;
@@ -53,6 +60,7 @@ export interface WorkflowResult {
 export const WorkflowStepSchema = z.object({
   id: z.string(),
   description: z.string(),
+  command: z.string().optional(),
   strategy: z.enum([
     'full-pipeline',
     'direct-tool',

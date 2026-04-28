@@ -846,7 +846,7 @@ export interface VinyanBusEvents {
     thinkingMode: string | null;
     thinkingTokensUsed: number | null;
     routingLevel: number;
-    outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+    outcome: 'success' | 'failure' | 'timeout' | 'escalated' | 'partial';
     qualityComposite: number | null;
     oracleCompositeScore: number | null;
   };

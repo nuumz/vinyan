@@ -149,9 +149,9 @@ const FILE_OPEN_PATTERN = /(?:เปิด(?:ไฟล์)?|open(?:\s+file)?)\s+
  * rejecting plain nouns ("ตรวจสอบนิทาน", "list improvements").
  */
 const THAI_INSPECT_PATTERN =
-  /(?:^|\s)(?:ช่วย\s*)?(?:ตรวจสอบ|อ่าน|แสดง|ดู|ลิสต์|list)\s*(?:ไฟล์|โฟลเดอร์|directory)?\s*(?:บน|ใน)?\s*[`'"]?([\w\-./~]+)[`'"]?\s*$/i;
+  /(?:^|\s)(?:ช่วย\s*)?(?:ตรวจสอบ|อ่าน|แสดง|ดู|ลิสต์|list)\s*(?:ไฟล์|โฟลเดอร์|directory)?\s*(?:บน|ใน)?\s*[`'"]?\s*([\w\-./~]+)\s*[`'"]?\s*$/i;
 const EN_INSPECT_PATTERN =
-  /^(?:please\s+)?(?:list|ls|show|inspect|check|read|view|cat)\s+(?:the\s+)?(?:files?\s+(?:in\s+)?|contents?\s+of\s+)?[`'"]?([\w\-./~]+)[`'"]?\s*$/i;
+  /^(?:please\s+)?(?:list|ls|show|inspect|check|read|view|cat)\s+(?:the\s+)?(?:files?\s+(?:in\s+)?|contents?\s+of\s+)?[`'"]?\s*([\w\-./~]+)\s*[`'"]?\s*$/i;
 
 /** File-extension hint that the path is a single file rather than a directory. */
 const SINGLE_FILE_EXT = /\.[a-z0-9]{1,8}$/i;

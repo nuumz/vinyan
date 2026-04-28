@@ -21,7 +21,7 @@ import { getSystemMetrics } from '../observability/metrics.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
-import type { EngineProfile, ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { EngineProfile, EngineStats, ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
@@ -109,6 +109,8 @@ export interface APIServerDeps {
    */
   defaultProfile?: string;
 }
+
+type EngineListEntry = EngineProfile & { stats?: EngineStats };
 
 export class VinyanAPIServer {
   private server: BunServer | null = null;
@@ -908,7 +910,12 @@ export class VinyanAPIServer {
       if (seenIds.has(id)) continue;
       seenIds.add(id);
       const sessionTask = allSessionTasks.find((t) => t.taskId === id);
-      const status = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+      const status =
+        result.status === 'completed' ||
+        result.status === 'input-required' ||
+        result.status === 'partial'
+          ? 'completed'
+          : 'failed';
       tasks.push({
         taskId: id,
         sessionId: sessionTask?.sessionId,
@@ -1453,15 +1460,20 @@ export class VinyanAPIServer {
   }
 
   private handleGetEngine(id: string): Response {
-    const historical = this.deps.workerStore?.findById(id);
+    const workerId = workerIdForEngine(id);
+    const historical =
+      this.deps.workerStore?.findById(id) ??
+      this.deps.workerStore?.findById(workerId) ??
+      this.deps.workerStore?.findByModelId(id)[0] ??
+      null;
     // Fall back to the live registry when the engine has never run a task
     // (workerStore is populated lazily from trace records). Without this
     // fallback, every engine 404s on a fresh server before the first task.
-    const worker = historical ?? this.engineFromRegistry(id);
+    const worker = historical ?? this.engineFromRegistry(id) ?? this.engineFromRegistry(engineIdFromWorker(id));
     if (!worker) return jsonResponse({ error: `engine '${id}' not found` }, 404);
 
     const capModel = this.deps.capabilityModel;
-    const capabilities = capModel?.getWorkerCapabilities(id) ?? [];
+    const capabilities = capModel?.getWorkerCapabilities(worker.id) ?? [];
 
     const trustStore = this.deps.providerTrustStore;
     const providerTrust =
@@ -1469,7 +1481,7 @@ export class VinyanAPIServer {
         ? trustStore.getProvider(worker.config.modelId.split('/')[0] ?? worker.config.modelId)
         : null;
 
-    return jsonResponse({ worker, capabilities, providerTrust });
+    return jsonResponse({ worker: this.withEngineStats(worker), capabilities, providerTrust });
   }
 
   /**
@@ -1529,7 +1541,7 @@ export class VinyanAPIServer {
    * fresh server, with worker-derived status (correct fleet behaviour) and
    * no phantom duplicates.
    */
-  private composeEngineList(): EngineProfile[] {
+  private composeEngineList(): EngineListEntry[] {
     const historical = this.deps.workerStore?.findAll() ?? [];
     // Reverse-index by canonical engine id via the typed binding helper so
     // any future change to the prefix scheme propagates through one source
@@ -1562,7 +1574,50 @@ export class VinyanAPIServer {
     for (const w of historical) {
       if (!consumedWorkerIds.has(w.id)) merged.push(w);
     }
-    return merged;
+    return merged.map((worker) => this.withEngineStats(worker));
+  }
+
+  /**
+   * Resolve worker stats with id-alias awareness.
+   *
+   * Traces written before the canonical `worker-${engine.id}` mapping
+   * landed (or by code paths that still pass the bare engine id /
+   * model id) live under different `worker_id` keys in
+   * `execution_traces`. The dashboard previously displayed `Tasks=0`
+   * for those rows even though the drilldown's recent-tasks list — fed
+   * from the live task stream — clearly showed completed work.
+   *
+   * Lookup order (first non-empty wins; never sum aliases to avoid
+   * double counting when both legacy and canonical ids exist):
+   *   1. `worker.id` (canonical, e.g. `worker-openrouter/...`)
+   *   2. `engineIdFromWorker(worker.id)` (bare engine id without prefix)
+   *   3. `worker.config.modelId` (legacy traces keyed by model)
+   *   4. `workerIdForEngine(worker.config.modelId)` (defensive — if the
+   *      worker id was minted from a different scheme but model id
+   *      matches an engine).
+   */
+  private withEngineStats(worker: EngineProfile): EngineListEntry {
+    const store = this.deps.workerStore;
+    if (!store) return worker;
+
+    const candidates = new Set<string>();
+    candidates.add(worker.id);
+    candidates.add(engineIdFromWorker(worker.id));
+    if (worker.config.modelId) {
+      candidates.add(worker.config.modelId);
+      candidates.add(workerIdForEngine(worker.config.modelId));
+    }
+
+    let stats: EngineStats | undefined;
+    for (const id of candidates) {
+      const candidate = store.getStats(id);
+      if (candidate.totalTasks > 0) {
+        stats = candidate;
+        break;
+      }
+      if (!stats) stats = candidate; // fall back to a zero-stats payload
+    }
+    return stats ? { ...worker, stats } : worker;
   }
 
   private handleSessionClarifications(sessionId: string): Response {

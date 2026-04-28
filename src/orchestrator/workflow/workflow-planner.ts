@@ -9,6 +9,7 @@
  * A3: fallback to single-step is deterministic.
  */
 import type { VinyanBus } from '../../core/bus.ts';
+import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
@@ -48,7 +49,8 @@ Output ONLY valid JSON matching this schema:
   "steps": [
     {
       "id": "step1",
-      "description": "what this step does",
+      "description": "what this step does (human-readable)",
+      "command": "OPTIONAL — required when strategy='direct-tool'; the exact shell command to execute (e.g. 'ls -la ~/Desktop'). Omit for non-direct-tool steps.",
       "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input",
       "dependencies": ["step IDs this depends on"],
       "inputs": { "key": "$stepN.result — reference to a prior step's output" },
@@ -68,9 +70,10 @@ Strategy selection rules:
 - "human-input": when you genuinely cannot proceed without user clarification
 
 Worked examples for filesystem / shell goals:
-- Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='ls -la ~/Desktop', step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
-- Goal: "show contents of src/foo.ts" / "ดู src/foo.ts" → step1 strategy='direct-tool', description='cat src/foo.ts'.
-- Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='npm test'.
+- Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='List files in ~/Desktop', command='ls -la ~/Desktop'; step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
+- Goal: "show contents of src/foo.ts" / "ดู src/foo.ts" → step1 strategy='direct-tool', description='Show contents of src/foo.ts', command='cat src/foo.ts'.
+- Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='Run npm test', command='npm test'.
+- For \`direct-tool\` steps the \`command\` field MUST be a runnable shell command, never a natural-language sentence. \`description\` may be human-readable.
 - Never invent the contents of a file/directory in \`llm-reasoning\`; always read it first via \`direct-tool\`.
 
 Creative writing rules:
@@ -138,6 +141,12 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
         systemPrompt: SYSTEM_PROMPT,
         userPrompt,
         maxTokens: 4000,
+        // Mark the SYSTEM_PROMPT (large + constant across every workflow
+        // invocation) as the frozen tier so Anthropic-direct providers cache
+        // it for 1h. The user prompt is fully turn-volatile (goal + session
+        // transcript + knowledge context) — no cache markers there. OpenRouter
+        // and the test mocks ignore `tiers` silently, so this is safe.
+        tiers: frozenSystemTier(SYSTEM_PROMPT, userPrompt),
       });
 
       const cleaned = response.content

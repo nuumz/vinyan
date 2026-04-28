@@ -1861,10 +1861,33 @@ async function executeDirectTool(
       }
     }
 
-    const answer =
-      toolResult?.status === 'success'
-        ? normalizeDirectToolAnswer(toolResult.output)
-        : (toolResult?.error ?? 'Tool execution failed');
+    // Successful shell_exec with substantive output → run a fast-tier LLM
+    // pass over the result so the chat surfaces a summary + follow-up
+    // suggestions instead of dumping a raw `ls` paragraph the user can't
+    // act on. The raw output is preserved (code-fenced) below the analysis
+    // so power users still see exact bytes. Failed runs and short outputs
+    // skip the analysis to keep cheap commands cheap.
+    let answer: string | undefined;
+    if (toolResult?.status === 'success') {
+      const rawOutput = normalizeDirectToolAnswer(toolResult.output) ?? '';
+      const isShellExec = intent.directToolCall?.tool === 'shell_exec';
+      const command = (intent.directToolCall?.parameters?.command as string | undefined) ?? '';
+
+      if (isShellExec && rawOutput && shouldAnalyzeShellOutput(rawOutput)) {
+        const analysis = await streamShellOutputAnalysis(input, command, rawOutput, deps);
+        if (analysis) {
+          answer = `${analysis}\n\n${fenceShellOutput(rawOutput)}`;
+        } else {
+          // LLM unavailable or failed — at minimum preserve column structure
+          // so the chat UI doesn't render `ls -la` as a one-paragraph wall.
+          answer = fenceShellOutput(rawOutput);
+        }
+      } else {
+        answer = rawOutput || normalizeDirectToolAnswer(toolResult.output);
+      }
+    } else {
+      answer = toolResult?.error ?? 'Tool execution failed';
+    }
 
     const result: TaskResult = {
       id: input.id,
@@ -1888,6 +1911,96 @@ function normalizeDirectToolAnswer(output: unknown): string | undefined {
     return undefined;
   }
   return JSON.stringify(output);
+}
+
+/**
+ * Heuristic: should we run a follow-up LLM analysis on this shell output?
+ *
+ * Yes for substantial multi-line output (≥3 lines, ≥100 chars) — typical
+ * "ls -la / cat / grep / npm test" results that the user wants summarized.
+ *
+ * No for:
+ *   - Empty or single-line output ("Successfully opened Chrome", "ok").
+ *   - App-launch / open commands — caller already inferred intent ("เปิด chrome").
+ *   - Any output that looks like a JSON-encoded scalar.
+ */
+function shouldAnalyzeShellOutput(output: string): boolean {
+  if (!output || output.length < 100) return false;
+  const lineCount = output.split('\n').filter((l) => l.trim().length > 0).length;
+  return lineCount >= 3;
+}
+
+/**
+ * Wrap multi-line shell output in a markdown code fence so the chat UI
+ * preserves columns/whitespace. Single-line outputs (or empty) pass through
+ * unchanged. Code fences with embedded triple-backticks fall back to a
+ * `~~~` fence to avoid breaking the wrap.
+ */
+function fenceShellOutput(output: string): string {
+  if (!output) return output;
+  if (!output.includes('\n')) return output;
+  const fence = output.includes('```') ? '~~~' : '```';
+  return `${fence}\n${output.replace(/\n+$/, '')}\n${fence}`;
+}
+
+/**
+ * Stream a fast-tier LLM analysis of a shell command's output back to the
+ * client via `llm:stream_delta`. Returns the assembled text on success,
+ * `null` when no provider is wired or the call fails — callers should fall
+ * back to the raw (code-fenced) output.
+ *
+ * The prompt is intentionally short so the analysis lands in 2–5 s with
+ * Gemma / Haiku and doesn't crowd the user's screen with prose.
+ */
+async function streamShellOutputAnalysis(
+  input: TaskInput,
+  command: string,
+  rawOutput: string,
+  deps: OrchestratorDeps,
+): Promise<string | null> {
+  const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
+  if (!provider) return null;
+  // Cap the output we feed the model — long listings explode prompt cost
+  // and don't add signal beyond the first ~4k chars.
+  const cappedOutput =
+    rawOutput.length > 4000 ? `${rawOutput.slice(0, 4000)}\n…[truncated, ${rawOutput.length} chars total]` : rawOutput;
+  const analysisSystemPrompt =
+    'You are summarizing the output of a shell command for the user. ' +
+    "Match the user's language from the goal. Be concise (3–6 short sentences or bullets). " +
+    'Do NOT repeat the raw output verbatim — it will be shown separately in a code block. ' +
+    'Identify what the output contains (group items by type when there are many), and propose 2–3 ' +
+    'plausible follow-up actions the user might want next. Output plain markdown — no headings, no preface.';
+  const analysisUserPrompt =
+    `User's goal: ${input.goal}\n` +
+    `Command run: ${command}\n` +
+    `Output (${rawOutput.split('\n').length} lines):\n${cappedOutput}\n\n` +
+    'Write the analysis + suggestions now.';
+  // Lazy import — avoid pulling in the prompt-assembler module on the cold
+  // path of every core-loop entry; it's only needed when this analyzer fires.
+  const { frozenSystemTier } = await import('./llm/prompt-assembler.ts');
+  const request = {
+    systemPrompt: analysisSystemPrompt,
+    userPrompt: analysisUserPrompt,
+    maxTokens: 800,
+    timeoutMs: 30_000,
+    temperature: 0.3,
+    // Constant analyzer system prompt → frozen tier. Below the 1024-token
+    // Anthropic cache floor on its own, but harmless to mark and consistent
+    // with the workflow planner / synthesizer wiring.
+    tiers: frozenSystemTier(analysisSystemPrompt, analysisUserPrompt),
+  };
+  try {
+    const response = provider.generateStream
+      ? await provider.generateStream(request, ({ text }) => {
+          if (!text) return;
+          deps.bus?.emit('llm:stream_delta', { taskId: input.id, kind: 'content', text });
+        })
+      : await provider.generate(request);
+    const trimmed = response.content.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
 }
 
 function shouldFireAndForgetDirectCommand(command: string): boolean {
@@ -2252,13 +2365,27 @@ async function executeTaskCore(
             modelUsed: 'workflow-planner',
             tokensConsumed: workflowResult.totalTokensConsumed,
             durationMs: workflowResult.totalDurationMs,
-            outcome: workflowResult.status === 'completed' ? 'success' : 'failure',
+            outcome:
+              workflowResult.status === 'completed'
+                ? 'success'
+                : workflowResult.status === 'partial'
+                  ? 'partial'
+                  : 'failure',
             affectedFiles: input.targetFiles ?? [],
           };
           await deps.traceCollector.record(trace);
           const result: TaskResult = {
             id: input.id,
-            status: workflowResult.status === 'completed' ? 'completed' : 'failed',
+            // Pass workflow status through verbatim. `partial` means a usable
+            // answer was produced even though one or more sub-steps failed —
+            // the UI should render this as success-with-warning, not a hard
+            // failure. Anything else (deadlock, true failure) becomes 'failed'.
+            status:
+              workflowResult.status === 'completed'
+                ? 'completed'
+                : workflowResult.status === 'partial'
+                  ? 'partial'
+                  : 'failed',
             mutations: [],
             trace,
             answer: workflowResult.synthesizedOutput,

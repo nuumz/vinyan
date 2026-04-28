@@ -387,4 +387,178 @@ describe('executeWorkflow', () => {
     expect(entry.approach).toContain('agentic-workflow');
     expect(entry.approach).toMatch(/failed:step\d+/);
   });
+
+  test('direct-tool prefers explicit `command` over `description`', async () => {
+    // Capture the command actually dispatched to the tool executor so we can
+    // verify the executor uses `step.command` instead of the natural-language
+    // description (which would error as a shell command).
+    let capturedCommand: string | null = null as string | null;
+    const toolExecutor = {
+      executeProposedTools: async (
+        calls: Array<{ id: string; tool: string; parameters: { command: string } }>,
+      ) => {
+        capturedCommand = calls[0]!.parameters.command;
+        return [{ id: calls[0]!.id, status: 'success' as const, output: 'a.txt\nb.txt\n' }];
+      },
+    };
+    const plan = JSON.stringify({
+      goal: 'list files',
+      steps: [
+        {
+          id: 'step1',
+          description: 'List files in ~/Desktop',
+          command: 'ls -la ~/Desktop',
+          strategy: 'direct-tool',
+          budgetFraction: 1.0,
+        },
+      ],
+      synthesisPrompt: 'Return step1.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async () => ({ content: plan, tokensUsed: { input: 5, output: 5 } }),
+    };
+
+    const result = await executeWorkflow(makeInput('list files'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      toolExecutor: toolExecutor as any,
+    });
+
+    expect(capturedCommand).toBe('ls -la ~/Desktop');
+    expect(result.stepResults[0]!.status).toBe('completed');
+    // Multi-line stdout must be wrapped in a fenced code block so the chat
+    // UI preserves columns instead of collapsing newlines.
+    expect(result.stepResults[0]!.output.startsWith('```')).toBe(true);
+    expect(result.stepResults[0]!.output).toContain('a.txt');
+  });
+
+  test('direct-tool falls back to `description` when `command` is absent (legacy plans)', async () => {
+    let capturedCommand: string | null = null as string | null;
+    const toolExecutor = {
+      executeProposedTools: async (
+        calls: Array<{ id: string; tool: string; parameters: { command: string } }>,
+      ) => {
+        capturedCommand = calls[0]!.parameters.command;
+        return [{ id: calls[0]!.id, status: 'success' as const, output: 'ok' }];
+      },
+    };
+    const plan = JSON.stringify({
+      goal: 'echo',
+      steps: [{ id: 'step1', description: 'echo legacy', strategy: 'direct-tool', budgetFraction: 1.0 }],
+      synthesisPrompt: 'Return step1.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async () => ({ content: plan, tokensUsed: { input: 5, output: 5 } }),
+    };
+
+    await executeWorkflow(makeInput('echo'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      toolExecutor: toolExecutor as any,
+    });
+    expect(capturedCommand).toBe('echo legacy');
+  });
+
+  test('failed dependency cascades into a skipped dependent (does not run the dependent)', async () => {
+    // step1 = direct-tool that fails (no toolExecutor wired).
+    // step2 depends on step1 and MUST be marked `skipped`, not executed —
+    // otherwise it would silently run on missing/failed upstream data.
+    let step2Executed = false;
+    const plan = JSON.stringify({
+      goal: 'inspect and analyze',
+      steps: [
+        { id: 'step1', description: 'inspect tmp', command: 'ls -la /tmp', strategy: 'direct-tool', budgetFraction: 0.5 },
+        {
+          id: 'step2',
+          description: 'analyze',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1'],
+          inputs: { listing: '$step1.result' },
+          budgetFraction: 0.5,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        step2Executed = true;
+        return { content: 'analyzed', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+
+    const result = await executeWorkflow(makeInput('inspect and analyze'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      // Intentionally no toolExecutor → step1 fails → step2 must skip.
+    });
+
+    expect(step2Executed).toBe(false);
+    const step1 = result.stepResults.find((r) => r.stepId === 'step1')!;
+    const step2 = result.stepResults.find((r) => r.stepId === 'step2')!;
+    expect(step1.status).toBe('failed');
+    expect(step2.status).toBe('skipped');
+    expect(step2.output).toContain('step1');
+    // Workflow as a whole is partial: there is no usable final step but the
+    // contract still surfaces partial vs failed for the boundary test below.
+    expect(result.status).toBe('partial');
+  });
+
+  test('independent step still runs when a sibling fails; workflow is partial', async () => {
+    // step1 fails (no toolExecutor); step2 is independent (no deps) and
+    // succeeds. The workflow must be `partial` — NOT `failed` — because we
+    // produced a usable answer.
+    const plan = JSON.stringify({
+      goal: 'two independent things',
+      steps: [
+        { id: 'step1', description: 'shell', command: 'will-not-run', strategy: 'direct-tool', budgetFraction: 0.5 },
+        { id: 'step2', description: 'reason', strategy: 'llm-reasoning', budgetFraction: 0.5 },
+      ],
+      synthesisPrompt: 'Return whichever step completed.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final synthesis from step2', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'step2 result', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+
+    const result = await executeWorkflow(makeInput('two independent things'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+    });
+
+    expect(result.status).toBe('partial');
+    const step1 = result.stepResults.find((r) => r.stepId === 'step1')!;
+    const step2 = result.stepResults.find((r) => r.stepId === 'step2')!;
+    expect(step1.status).toBe('failed');
+    expect(step2.status).toBe('completed');
+    expect(result.synthesizedOutput).toContain('step2');
+  });
 });

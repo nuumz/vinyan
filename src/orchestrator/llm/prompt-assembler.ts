@@ -47,6 +47,43 @@ export interface PromptCacheTiers {
   user: TierOffsets;
 }
 
+/**
+ * Build `PromptCacheTiers` for the common ad-hoc shape: the entire system
+ * prompt is a constant string (frozen tier) and the user prompt is fully
+ * turn-volatile. Suitable for one-shot LLM calls outside the agent loop —
+ * workflow planner / synthesizer / per-step llm-reasoning / shell-output
+ * analysis — all of which use a hand-written constant `systemPrompt` that
+ * benefits from Anthropic's 1h cache when it crosses the 1024-token floor.
+ *
+ * IMPORTANT — what is and is NOT cached:
+ *   - Anthropic's `cache_control` caches the input KV state at the marked
+ *     boundary so subsequent calls skip re-computing the cached prefix's
+ *     attention layers. **It does NOT cache the response.** The model still
+ *     samples every output token fresh on each call (with whatever
+ *     temperature you set), so identical inputs may still produce slightly
+ *     different outputs.
+ *   - For tool-use steps (workflow `direct-tool`, the shell-exec
+ *     short-circuit in core-loop), this helper is NOT used — those paths
+ *     don't call an LLM. The actual `toolExecutor.executeProposedTools`
+ *     invocation always runs fresh; there is no result cache anywhere in
+ *     the tool path. Don't be tempted to add one without auditing every
+ *     filesystem-mutating command type.
+ *
+ * Providers that don't honour `cache_control` (OpenRouter passthrough on
+ * non-Anthropic models, the test mock) silently ignore the markers, so this
+ * is safe to attach unconditionally at call sites.
+ */
+export function frozenSystemTier(
+  systemPrompt: string,
+  userPrompt: string,
+): PromptCacheTiers {
+  const sysLen = systemPrompt.length;
+  return {
+    system: { frozenEnd: sysLen, sessionEnd: sysLen, totalEnd: sysLen },
+    user: { frozenEnd: 0, sessionEnd: 0, totalEnd: userPrompt.length },
+  };
+}
+
 export interface AssembledPrompt {
   systemPrompt: string;
   userPrompt: string;

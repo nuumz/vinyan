@@ -493,7 +493,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let worldGraph: WorldGraph | undefined;
   let fileWatcher: FileWatcher | undefined;
   try {
-    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
+    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'), { workspaceRoot: workspace });
     // A4: Watch workspace for external file changes — auto-invalidate stale facts
     if (config.watchWorkspace !== false) {
       fileWatcher = new FileWatcher(worldGraph, workspace);
@@ -1042,7 +1042,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskCheckpoint.cleanup(24 * 60 * 60 * 1000);
   }
 
-  const perception = new PerceptionAssemblerImpl({ workspace });
+  const perception = new PerceptionAssemblerImpl({ workspace, worldGraph });
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {

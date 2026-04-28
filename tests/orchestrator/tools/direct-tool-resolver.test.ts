@@ -169,6 +169,17 @@ describe('classifyDirectTool', () => {
       expect(out?.command).toMatch(/^ls -la "?~\/Desktop\/"?$/);
     });
 
+    test('backtick-padded path with internal whitespace is recognised (markdown code formatting)', () => {
+      // Real chat input observed in the wild: the user wrapped the path in
+      // markdown backticks with surrounding spaces — `` ` ~/Desktop/` ``.
+      // Without the inner `\s*` in the pattern the classifier missed this
+      // and the task fell through to full-pipeline → worker subprocess
+      // crashed at 90s.
+      const out = classifyDirectTool('ช่วยตรวจสอบไฟล์บน ` ~/Desktop/`');
+      expect(out?.type).toBe('shell_exec');
+      expect(out?.command).toMatch(/^ls -la "?~\/Desktop\/"?$/);
+    });
+
     test('resolveCommand returns the pre-resolved shell_exec command verbatim', () => {
       const cls = classifyDirectTool('list files in /tmp')!;
       expect(resolveCommand(cls, 'darwin')).toBe('ls -la /tmp');

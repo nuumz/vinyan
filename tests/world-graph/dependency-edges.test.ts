@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 describe('WorldGraph dependency edges', () => {
@@ -170,5 +173,19 @@ describe('WorldGraph dependency edges', () => {
     expect(dependents).toContain('src/c.ts');
     expect(dependents).toContain('src/a.ts');
     expect(dependents).toHaveLength(3);
+  });
+
+  test('workspaceRoot normalizes absolute dependency edges for relative queries', () => {
+    wg.close();
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-wg-edges-'));
+    try {
+      wg = new WorldGraph(':memory:', { workspaceRoot: workspace });
+      wg.storeEdge(join(workspace, 'src', 'bar.ts'), join(workspace, 'src', 'foo.ts'));
+
+      expect(wg.queryDependents('src/foo.ts')).toEqual(['src/bar.ts']);
+      expect(wg.queryDependencies('src/bar.ts')).toEqual(['src/foo.ts']);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

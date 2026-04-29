@@ -93,7 +93,7 @@ export interface LocalHubAcquirerOptions {
 export class LocalHubAcquirer implements SkillAcquirer {
   private readonly store: SkillArtifactStore;
   private readonly maxResults: number;
-  private readonly importer?: SkillImporter;
+  private importer?: SkillImporter;
   private readonly discoverCandidateIds?: RemoteCandidateDiscoveryFn;
 
   constructor(opts: LocalHubAcquirerOptions) {
@@ -101,6 +101,16 @@ export class LocalHubAcquirer implements SkillAcquirer {
     this.maxResults = opts.maxResults ?? 1;
     this.importer = opts.importer;
     this.discoverCandidateIds = opts.discoverCandidateIds;
+  }
+
+  /**
+   * Phase-15 Item 1: deferred-attach hook. The factory builds the importer
+   * after criticEngine is wired (which happens later than the acquirer's
+   * own construction). Setting it post-hoc keeps the factory wiring linear
+   * without forcing a layout refactor.
+   */
+  setImporter(importer: SkillImporter): void {
+    this.importer = importer;
   }
 
   async acquireForGap(

@@ -903,6 +903,52 @@ export const VinyanConfigSchema = z.object({
       persona_skill_composition: z.boolean().default(true),
     })
     .optional(),
+  /**
+   * Phase-15 Item 1 — runtime skill acquisition from a remote registry.
+   * The `LocalHubAcquirer` already supports a cache-miss → import → rescan
+   * flow when both an importer and a `discoverCandidateIds` hook are
+   * supplied (Phase 14 Item 1). This config wires the hook from a static
+   * candidate map plus an adapter selector. When omitted (or `adapter:
+   * 'none'`), the acquirer stays local-only — same as Phase 14 default.
+   *
+   * Adapter choice is operator-level: 'github' fetches from public GitHub
+   * repos via the existing `GitHubAdapter`; 'agentskills' fetches from
+   * agentskills.io. Both run skill content through the importer's
+   * quarantine + gate + critic + promotion pipeline before the skill ever
+   * enters `.vinyan/skills/`.
+   */
+  skills: z
+    .object({
+      discovery: z
+        .object({
+          /**
+           * Per-capability list of skill IDs to attempt fetching when the
+           * runtime gap analysis surfaces an unmet capability. Format
+           * depends on the chosen adapter — `github` expects `owner/repo`
+           * or `owner/repo#path`; `agentskills` expects the slug.
+           *
+           * Example:
+           *   { "lang.typescript": ["vinyan-skills/ts-coding"],
+           *     "code.refactor": ["vinyan-skills/refactor-extract"] }
+           */
+          candidates: z.record(z.string(), z.array(z.string())).default({}),
+          /**
+           * Which transport to use when fetching the candidates above.
+           * 'none' (default) leaves the runtime local-only — config-list
+           * is observed but never fetched. Operators must opt into a
+           * network adapter explicitly.
+           */
+          adapter: z.enum(['none', 'github', 'agentskills']).default('none'),
+          /**
+           * Optional GitHub auth token forwarded to `GitHubAdapter`.
+           * Public repos work without it; private orgs / rate-limited
+           * pulls need a PAT.
+           */
+          github_token: z.string().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

@@ -1082,6 +1082,39 @@ export interface VinyanBusEvents {
   };
 
   /**
+   * Multi-agent UI surface: a `delegate-sub-agent` step has been dispatched.
+   * Lets the chat UI show the sub-agent as "running" immediately without
+   * waiting for the child task's own `task:start` to bubble up. Carries
+   * stepId so the agent-timeline card can attach this row to the parent
+   * plan checklist by step id.
+   */
+  'workflow:delegate_dispatched': {
+    taskId: string;
+    stepId: string;
+    agentId: string | null;
+    subTaskId: string;
+    stepDescription: string;
+  };
+
+  /**
+   * Multi-agent UI surface: a `delegate-sub-agent` step has finished
+   * (success / failure). Carries the resolved agent persona + a short
+   * output preview so the timeline can show what each sub-agent actually
+   * said before the parent's synthesizer runs. Pairs with
+   * `workflow:delegate_dispatched` to bracket the agent's lifecycle on
+   * the chat surface.
+   */
+  'workflow:delegate_completed': {
+    taskId: string;
+    stepId: string;
+    subTaskId: string;
+    agentId: string | null;
+    status: 'completed' | 'failed' | 'skipped';
+    outputPreview: string;
+    tokensUsed: number;
+  };
+
+  /**
    * Phase-14 (Item 4): emitted by the agent-loop's `handleDelegation` path
    * when A1 forced the delegated sub-task to the canonical Verifier persona.
    * Mirrors `workflow:a1_verifier_routed` but for the agent-loop (LLM-driven

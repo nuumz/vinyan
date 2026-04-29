@@ -387,8 +387,13 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
             return { name, result: raceResult };
           }
 
-          // Record success/failure for circuit breaker
-          if (raceResult.errorCode) {
+          // Record success/failure for circuit breaker.
+          // Only infrastructure failures (ORACLE_CRASH, TIMEOUT) trip the breaker —
+          // legitimate detection results like TYPE_MISMATCH mean the oracle is working
+          // correctly and must NOT count as failures.
+          const isInfraFailure =
+            raceResult.errorCode === 'ORACLE_CRASH' || raceResult.errorCode === 'TIMEOUT';
+          if (isInfraFailure) {
             circuitBreaker.recordFailure(name);
           } else {
             circuitBreaker.recordSuccess(name);

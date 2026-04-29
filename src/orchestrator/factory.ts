@@ -89,6 +89,7 @@ import { SoulStore } from './agent-context/soul-store.ts';
 import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
 import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
+import { buildSkillDiscoveryWiring } from './agents/skill-discovery-wiring.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
@@ -471,6 +472,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
   // path so deps consumers can call `.acquireForGap` unconditionally.
   let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
+  // Phase-15 Item 1: deferred wiring handle for the optional hub-fetch
+  // fallback on the LocalHubAcquirer. Built alongside the acquirer when DB
+  // is available; importer is attached later (after criticEngine is wired).
+  let skillDiscoveryWiring: import('./agents/skill-discovery-wiring.ts').SkillDiscoveryWiring | undefined;
   let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
@@ -488,9 +493,26 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillOutcomeStore = new SkillOutcomeStore(db.getDb());
 
     // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
-    // a runtime gap. Local-only — Phase 7 will layer hub-fetch on top.
+    // a runtime gap. Phase-15 (Item 1) layers an optional hub-fetch path
+    // on top: when `skills.discovery` is configured with both a candidate
+    // map and a non-'none' adapter, the acquirer falls through to the
+    // SkillImporter on cache miss. Default 'none' adapter keeps every
+    // existing setup local-only with zero behavioural drift.
+    const acquirerArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+    skillDiscoveryWiring = buildSkillDiscoveryWiring({
+      vinyanConfig: loadConfig(workspace),
+      db: db.getDb(),
+      workspace,
+      profile: 'default',
+      artifactStore: acquirerArtifactStore,
+    });
     skillAcquirer = new LocalHubAcquirer({
-      artifactStore: new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') }),
+      artifactStore: acquirerArtifactStore,
+      ...(skillDiscoveryWiring.discoverCandidateIds
+        ? { discoverCandidateIds: skillDiscoveryWiring.discoverCandidateIds }
+        : {}),
+      // `importer` is set later via skillDiscoveryWiring.attachImporter(...)
+      // once `criticEngine` is constructed further down in this factory.
     });
     comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
@@ -665,7 +687,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const vinyanConfig = loadConfig(workspace);
     economyConfig = vinyanConfig.economy;
     if (economyConfig?.enabled && db) {
-      costLedger = new CostLedger(db.getDb());
+      costLedger = new CostLedger(db.getDb(), bus);
       const budgetConfig = economyConfig.budgets ?? { enforcement: 'warn' as const };
       budgetEnforcer = new BudgetEnforcer(budgetConfig, costLedger, bus);
       // Economy L2: cost prediction + dynamic budgets
@@ -1290,6 +1312,17 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         bus,
         budgetGuard,
       });
+    }
+  }
+
+  // Phase-15 Item 1: now that `criticEngine` is final, attach the
+  // SkillImporter to the LocalHubAcquirer. No-op when `skills.discovery`
+  // is unconfigured or `adapter === 'none'` — see helper for the rules.
+  if (skillDiscoveryWiring && criticEngine && skillAcquirer instanceof LocalHubAcquirer) {
+    try {
+      skillDiscoveryWiring.attachImporter(skillAcquirer, criticEngine);
+    } catch {
+      /* importer attach is best-effort — acquirer remains local-only on failure */
     }
   }
 

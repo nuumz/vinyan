@@ -17,20 +17,12 @@ import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
-import {
-  buildGoalGroundingClarificationQuestions,
-  buildGoalGroundingProvenance,
-  evaluateGoalGrounding,
-} from './goal-grounding.ts';
+import { buildConversationalResult } from './conversational-result-builder.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
-import {
-  detectHallucinatedDelegation,
-  formatEscapeProtocolBlock,
-  parseEscapeSentinel,
-} from './intent/escape-sentinel.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
+import { enforceGoalGroundingBoundary } from './orchestration-boundaries.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
@@ -44,7 +36,6 @@ import { isTracePersistenceError } from './trace-collector.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
-  GoalGroundingPhase,
   IntentResolution,
   PerceptualHierarchy,
   PredictionError,
@@ -1495,311 +1486,6 @@ function resolveKnowledgeProviderOrder(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Outcome of the conversational shortcircuit. Either a final TaskResult, or a
- * re-route signal that the persona emitted the escape sentinel and the task
- * should be re-classified into agentic-workflow. The dispatch site at the
- * end of the intent branch detects `kind: 'reroute'` and falls through to
- * the agentic-workflow handler with the updated intent + input.
- */
-type ConversationalOutcome =
-  | { kind: 'final'; result: TaskResult }
-  | { kind: 'reroute'; updatedIntent: IntentResolution; updatedInput: TaskInput };
-
-async function buildConversationalResult(
-  input: TaskInput,
-  intent: IntentResolution,
-  deps: OrchestratorDeps,
-): Promise<ConversationalOutcome> {
-  const startTime = Date.now();
-  const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
-  const providerCount = deps.llmRegistry?.listProviders().length ?? 0;
-
-  // A2: Honest "I don't know" — no provider available means no conversational answer possible.
-  // Previous behavior echoed the goal back as the answer, which was dishonest.
-  if (!provider && providerCount === 0) {
-    const trace: ExecutionTrace = {
-      id: `trace-${input.id}-no-provider`,
-      taskId: input.id,
-      workerId: 'kernel',
-      timestamp: Date.now(),
-      routingLevel: 0,
-      approach: 'no-provider-escalation',
-      oracleVerdicts: {},
-      modelUsed: 'none',
-      tokensConsumed: 0,
-      durationMs: Math.max(1, Date.now() - startTime),
-      outcome: 'escalated',
-      failureReason: 'No LLM provider configured',
-      affectedFiles: [],
-      governanceProvenance: buildShortCircuitProvenance({
-        input,
-        decisionId: 'no-provider',
-        attributedTo: 'intentResolver',
-        wasGeneratedBy: 'buildConversationalResult',
-        reason: 'No LLM provider configured for conversational response',
-      }),
-    };
-    await deps.traceCollector.record(trace);
-    deps.bus?.emit('trace:record', { trace });
-    const result: TaskResult = {
-      id: input.id,
-      status: 'escalated',
-      mutations: [],
-      trace,
-      answer: '',
-      notes: ['No LLM provider configured — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY'],
-    };
-    deps.bus?.emit('task:complete', { result });
-    return { kind: 'final', result };
-  }
-
-  // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
-  // fall back to refinedGoal — this is a degraded-but-recoverable path, not a no-provider case.
-  let answer = intent.refinedGoal;
-  // Track real token consumption so the trace recorded below carries actual
-  // values, not the hardcoded 0 that broke the dashboard's per-engine
-  // averages (every conversational task previously contributed 0 tokens
-  // and the column always showed "—").
-  let tokensConsumed = 0;
-
-  // Multi-agent: resolve the specialist persona for this turn so the
-  // short-circuit reply matches the same identity that worker-pool would
-  // inject in full-pipeline. Falls back to generic Vinyan when no registry.
-  const resolvedAgent = (() => {
-    const reg = deps.agentRegistry;
-    if (!reg) return undefined;
-    const id = intent.agentId ?? reg.defaultAgent().id;
-    return reg.getAgent(id) ?? reg.defaultAgent();
-  })();
-  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps);
-
-  if (provider) {
-    try {
-      // A7: Load Turn-model history for multi-turn conversation continuity.
-      // Flatten each Turn's text blocks into a single string for the
-      // Anthropic HistoryMessage shape (tool_use is dropped here — this is
-      // the conversational persona path, not the tool-loop path).
-      let messages: import('./types.ts').HistoryMessage[] | undefined;
-      if (input.sessionId && deps.sessionManager) {
-        try {
-          const mgr = deps.sessionManager as unknown as {
-            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
-          };
-          const turns = mgr.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 20) : [];
-          if (turns.length > 0) {
-            messages = turns.map((t) => ({
-              role: t.role,
-              content: t.blocks
-                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
-                .map((b) => b.text)
-                .join('\n'),
-            }));
-          }
-        } catch {
-          /* non-fatal */
-        }
-      }
-      const llmReq = {
-        systemPrompt: personaSystemPrompt,
-        userPrompt: input.goal,
-        maxTokens: 2000,
-        temperature: 0.3,
-        messages,
-      };
-      const response =
-        deps.streamingAssistantDelta && provider.generateStream
-          ? await provider.generateStream(llmReq, ({ text }) => {
-              if (!text) return;
-              // `llm:stream_delta` is the canonical streaming event. The legacy
-              // `agent:text_delta` mirror was removed — consumers (CLI, vinyan-ui,
-              // VS Code panel) all listen to the richer shape now.
-              deps.bus?.emit('llm:stream_delta', {
-                taskId: input.id,
-                kind: 'content',
-                text,
-              });
-            })
-          : await provider.generate(llmReq);
-      answer = response.content;
-      tokensConsumed = (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
-    } catch {
-      answer = intent.refinedGoal;
-    }
-  }
-
-  // Persona escape sentinel: the persona may have determined mid-generation
-  // that this request needs proper agentic-workflow dispatch (e.g. a multi-
-  // chapter creative deliverable that conversational cannot produce). Detect
-  // the sentinel and re-route the task. Bound at one re-route per task via
-  // `intentEscapeAttempts` — defensive belt-and-suspenders so a workflow
-  // sub-task that bounces back to conversational cannot loop forever; the
-  // second match falls through and the conversational answer is returned
-  // as-is (degraded-but-safe).
-  const escapeSignal = parseEscapeSentinel(answer);
-  if (escapeSignal.matched && (input.intentEscapeAttempts ?? 0) < 1) {
-    deps.bus?.emit('intent:escape_sentinel_fired', {
-      taskId: input.id,
-      persona: resolvedAgent?.id,
-      reason: escapeSignal.reason ?? 'unspecified',
-    });
-    const seededWorkflowPrompt = `${escapeSignal.reason ?? 'persona escaped conversational shortcircuit'}\nOriginal user request: ${input.goal}`;
-    const updatedIntent: IntentResolution = {
-      ...intent,
-      strategy: 'agentic-workflow',
-      workflowPrompt: seededWorkflowPrompt,
-      reasoningSource: 'persona-escape',
-      reasoning: `${intent.reasoning ?? ''} [persona-escape: ${escapeSignal.reason ?? 'unspecified'}]`.trim(),
-    };
-    return {
-      kind: 'reroute',
-      updatedIntent,
-      updatedInput: { ...input, intentEscapeAttempts: 1 },
-    };
-  }
-
-  // Defense-in-depth: detect hallucinated delegation in the answer text when
-  // the persona did NOT emit the escape sentinel. Smaller free-tier models
-  // sometimes ignore the "do not promise to dispatch" rule and fabricate
-  // delegation prose ("ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor"), leaving
-  // the user with a fake acknowledgment and zero sub-tasks. When detected,
-  // re-route as if the sentinel had fired so the work actually happens. Same
-  // re-route budget as the sentinel path to prevent loops.
-  if ((input.intentEscapeAttempts ?? 0) < 1) {
-    const halluc = detectHallucinatedDelegation(answer);
-    if (halluc.matched) {
-      deps.bus?.emit('intent:hallucinated_delegation_detected', {
-        taskId: input.id,
-        persona: resolvedAgent?.id,
-        snippet: halluc.snippet,
-        locale: halluc.locale,
-      });
-      const seededWorkflowPrompt =
-        `Persona claimed delegation in conversational mode without dispatch capability. Snippet: "${halluc.snippet}". ` +
-        `Original user request: ${input.goal}`;
-      const updatedIntent: IntentResolution = {
-        ...intent,
-        strategy: 'agentic-workflow',
-        workflowPrompt: seededWorkflowPrompt,
-        reasoningSource: 'persona-escape',
-        reasoning:
-          `${intent.reasoning ?? ''} [hallucinated-delegation: ${halluc.locale ?? 'unknown'}]`.trim(),
-      };
-      return {
-        kind: 'reroute',
-        updatedIntent,
-        updatedInput: { ...input, intentEscapeAttempts: 1 },
-      };
-    }
-  }
-
-  const trace: ExecutionTrace = {
-    id: `trace-${input.id}-conversational`,
-    taskId: input.id,
-    // Multi-agent: attribute the trace to the resolved persona (e.g. 'coordinator')
-    // so context-builder/agent-evolution count this episode against the right agent.
-    // Falls back to 'intent-resolver' for the legacy no-registry path.
-    workerId: resolvedAgent?.id ?? 'intent-resolver',
-    timestamp: Date.now(),
-    routingLevel: 0,
-    approach: 'conversational-shortcircuit',
-    oracleVerdicts: {},
-    modelUsed: provider?.id ?? 'none',
-    tokensConsumed,
-    durationMs: Math.max(1, Date.now() - startTime),
-    outcome: 'success',
-    affectedFiles: [],
-    governanceProvenance: buildShortCircuitProvenance({
-      input,
-      decisionId: 'conversational-shortcircuit',
-      attributedTo: 'intentResolver',
-      wasGeneratedBy: 'buildConversationalResult',
-      reason: intent.reasoning || 'Intent resolver selected conversational short-circuit',
-      evidence: [
-        {
-          kind: 'routing-factor',
-          source: 'intent-strategy',
-          summary: `strategy=${intent.strategy}; confidence=${intent.confidence.toFixed(3)}`,
-        },
-      ],
-    }),
-  };
-  await deps.traceCollector.record(trace);
-  deps.bus?.emit('trace:record', { trace });
-  const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
-  deps.bus?.emit('task:complete', { result });
-  return { kind: 'final', result };
-}
-
-/**
- * Compose the conversational short-circuit system prompt with specialist
- * persona injection. Mirrors the persona/peer sections produced by
- * `assemblePrompt()` for the full pipeline so the same identity speaks in
- * both paths. When no agent registry is wired, returns the legacy generic
- * Vinyan prompt for backward compatibility.
- *
- * Soul lookup precedence: SoulStore (evolved/reflected) → AgentSpec.soul (built-in).
- */
-function buildConversationalSystemPrompt(
-  agent: import('./types.ts').AgentSpec | undefined,
-  deps: OrchestratorDeps,
-): string {
-  const closing = `Respond naturally. Match the user's language. Maintain context across turns.
-Never reveal your underlying model name or provider — you are Vinyan.
-Do NOT use JSON or code blocks unless the user asks for code.
-Do NOT narrate your reasoning process — just respond directly to the user.`;
-
-  if (!agent) {
-    return `You are Vinyan, a friendly and capable assistant. You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
-${closing}`;
-  }
-
-  const lines: string[] = [];
-  lines.push(`You are ${agent.name} (${agent.id}), a Vinyan specialist agent.`);
-  lines.push(agent.description);
-
-  // Soul: prefer disk-backed evolved soul (SoulReflector writes here), fall back to built-in.
-  const evolvedSoul = deps.soulStore?.loadSoulRaw(agent.id) ?? null;
-  const soul = evolvedSoul ?? agent.soul ?? null;
-  if (soul) {
-    lines.push('');
-    lines.push('[AGENT SOUL]');
-    lines.push(soul.trim());
-  }
-
-  // Peer roster: list other specialists so the persona can answer "what
-  // can Vinyan do" honestly. NOTE: this conversational path has no dispatch
-  // mechanism — the persona MUST NOT promise to "forward" or "hand off" to
-  // peers from here. When a request actually needs another specialist to
-  // PRODUCE a deliverable, the persona must emit the escape sentinel
-  // documented in [ESCAPE PROTOCOL] below; the orchestrator then re-routes.
-  const peers = (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id);
-  if (peers.length > 0) {
-    lines.push('');
-    lines.push('[PEER AGENTS — DO NOT PROMISE TO DISPATCH]');
-    lines.push(
-      'Vinyan has these specialist agents. You may MENTION their existence when describing capabilities, but you have NO ability to dispatch work to them from this turn. Do NOT say "I will forward this to X" — see [ESCAPE PROTOCOL] for the correct response when a request needs a specialist.',
-    );
-    lines.push(
-      'For fiction/book/webtoon/story tasks the relevant specialists are creative; keep mentions within creative roles unless the user explicitly asks for software or system work.',
-    );
-    lines.push('Only describe listed agents as Vinyan agents; do not invent agent ids.');
-    for (const p of peers) {
-      lines.push(`  - ${p.id}: ${p.description}`);
-    }
-  }
-
-  // Escape protocol: the persona's "I cannot answer this here" state. The
-  // sentinel parser in `buildConversationalResult` detects emission and
-  // re-routes the task into agentic-workflow (bounded at one re-route per
-  // task via `TaskInput.intentEscapeAttempts`).
-  lines.push('');
-  lines.push(formatEscapeProtocolBlock());
-
-  lines.push('');
-  lines.push(closing);
-  return lines.join('\n');
-}
 
 async function executeDirectTool(
   input: TaskInput,
@@ -2544,6 +2230,22 @@ async function executeTaskCore(
             workflowConfig: deps.workflowConfig,
             sessionTurns,
           });
+          // Map workflow status → ExecutionTrace.outcome. The DB schema's
+          // CHECK constraint on outcome only permits 'success' | 'failure' |
+          // 'timeout' | 'escalated' — emitting 'partial' silently fails the
+          // INSERT OR IGNORE in trace_store and the workflow trace never
+          // persists, leaving the assistant message in chat to fall back to
+          // the early-phase comprehension trace and mislabel its chips
+          // ("Conversational" instead of "Workflow"). Treat partial as
+          // success because a usable synthesized answer was produced; the
+          // per-step failures are already exposed via stepResults +
+          // workflow:delegate_completed bus events.
+          const traceOutcome: ExecutionTrace['outcome'] =
+            workflowResult.status === 'completed'
+              ? 'success'
+              : workflowResult.status === 'partial'
+                ? 'success'
+                : 'failure';
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,
             taskId: input.id,
@@ -2555,12 +2257,7 @@ async function executeTaskCore(
             modelUsed: 'workflow-planner',
             tokensConsumed: workflowResult.totalTokensConsumed,
             durationMs: workflowResult.totalDurationMs,
-            outcome:
-              workflowResult.status === 'completed'
-                ? 'success'
-                : workflowResult.status === 'partial'
-                  ? 'partial'
-                  : 'failure',
+            outcome: traceOutcome,
             affectedFiles: input.targetFiles ?? [],
             governanceProvenance: buildShortCircuitProvenance({
               input,
@@ -3693,6 +3390,22 @@ async function executeTaskCore(
             );
             if (commitResult.rejected.length > 0) {
               deps.bus?.emit('commit:rejected', { taskId: input.id, rejected: commitResult.rejected });
+              // A9 T3.b: fail-closed mutation-apply contract. Emit one
+              // `tool:mutation_failed` per rejected artifact so the
+              // degradation bridge normalizes it to
+              // `mutation-apply-failure / fail-closed`. WorkerResult
+              // mutations carry no tool provenance today, so we attribute
+              // them to the commit boundary itself with a conservative
+              // `write` category (destructive classification is deferred
+              // until provenance lands).
+              for (const r of commitResult.rejected) {
+                deps.bus?.emit('tool:mutation_failed', {
+                  taskId: input.id,
+                  toolName: 'artifact-commit',
+                  category: 'write',
+                  reason: `${r.path}: ${r.reason}`,
+                });
+              }
             }
           }
 
@@ -3746,7 +3459,11 @@ async function executeTaskCore(
             ? new Set(commitResult.applied)
             : new Set(workerResult.mutations.map((m) => m.file));
           const appliedMutations = workerResult.mutations.filter((m) => appliedSet.has(m.file));
-          const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
+          // A9 T3.b: any rejected artifact fails the task closed (preflight
+          // already guarantees no partial filesystem writes when validation
+          // rejects). Post-preflight write errors are also fatal here so
+          // the operator sees a single fail-closed signal per task.
+          const anyRejected = (commitResult?.rejected.length ?? 0) > 0;
 
           const contradictions =
             passedOracles.length > 0 && failedOracles.length > 0
@@ -3755,7 +3472,7 @@ async function executeTaskCore(
 
           const successResult: TaskResult = {
             id: input.id,
-            status: allRejected ? 'failed' : 'completed',
+            status: anyRejected ? 'failed' : 'completed',
             mutations: appliedMutations.map((m) => ({
               file: m.file,
               diff: m.diff,
@@ -3990,128 +3707,7 @@ async function executeTaskCore(
   }
 }
 
-interface GoalGroundingBoundaryResult {
-  ctx: PhaseContext;
-  result?: TaskResult;
-}
 
-async function enforceGoalGroundingBoundary(
-  ctx: PhaseContext,
-  phase: GoalGroundingPhase,
-  routing: RoutingDecision,
-  understanding: SemanticTaskUnderstanding,
-  workerSelectionAudit?: import('./types.ts').EngineSelectionResult,
-): Promise<GoalGroundingBoundaryResult> {
-  const check = evaluateGoalGrounding({
-    input: ctx.input,
-    understanding,
-    routing,
-    phase,
-    startedAt: ctx.startTime,
-    rootGoal: ctx.intentResolution?.originalGoal,
-    worldGraph: ctx.deps.worldGraph,
-    policy: ctx.deps.goalGroundingPolicy,
-  });
-  if (!check) return { ctx };
-
-  ctx.deps.bus?.emit('grounding:checked', check);
-  const nextCtx = {
-    ...ctx,
-    goalGroundingChecks: [...(ctx.goalGroundingChecks ?? []), check],
-  };
-
-  // Continue / downgrade — let downstream phase apply confidence downgrade.
-  if (check.action === 'continue' || check.action === 'downgrade-confidence') {
-    return { ctx: nextCtx };
-  }
-
-  // Inform observers when the boundary takes an action beyond passive downgrade.
-  ctx.deps.bus?.emit('grounding:action_taken', {
-    taskId: ctx.input.id,
-    action: check.action,
-    phase: check.phase,
-    reason: check.reason,
-  });
-
-  // re-ground-context / re-verify-evidence: lightweight, do not restart the
-  // pipeline. Treated as advisory signals — the check is recorded on the
-  // trace, but execution continues so the downstream phases can re-run their
-  // sub-step (perceive refresh, fact lookup) on their next iteration. Per
-  // locked decision: "re-run lightweight context only — do not silently
-  // rewrite user intent."
-  if (check.action === 're-ground-context' || check.action === 're-verify-evidence') {
-    return { ctx: nextCtx };
-  }
-
-  // request-clarification, ask-freshness-question, abort-unsafe-drift all
-  // record a governance trace; behavior diverges in the returned TaskResult.
-  const questions =
-    check.action === 'ask-freshness-question'
-      ? [
-          `A10 grounding detected possible stale evidence during ${check.phase}: ${check.reason}. Should I refresh the evidence before continuing?`,
-        ]
-      : buildGoalGroundingClarificationQuestions(check);
-  const traceApproach =
-    check.action === 'abort-unsafe-drift' ? 'goal-grounding-abort' : 'goal-grounding-clarification';
-  const traceOutcome: ExecutionTrace['outcome'] = check.action === 'abort-unsafe-drift' ? 'failure' : 'success';
-  const trace: ExecutionTrace = {
-    id: `trace-${ctx.input.id}-${traceApproach}`,
-    taskId: ctx.input.id,
-    sessionId: ctx.input.sessionId,
-    workerId: 'orchestrator',
-    agentId: ctx.input.agentId,
-    timestamp: Date.now(),
-    routingLevel: routing.level,
-    approach: traceApproach,
-    approachDescription: check.reason,
-    oracleVerdicts: { 'goal-grounding': false },
-    modelUsed: 'orchestrator',
-    tokensConsumed: 0,
-    durationMs: Date.now() - ctx.startTime,
-    outcome: traceOutcome,
-    affectedFiles: ctx.input.targetFiles ?? [],
-    workerSelectionAudit,
-    goalGrounding: nextCtx.goalGroundingChecks,
-    governanceProvenance: buildGoalGroundingProvenance(ctx.input, check),
-  };
-  await ctx.deps.traceCollector.record(trace);
-  ctx.deps.bus?.emit('trace:record', { trace });
-
-  // abort-unsafe-drift: terminal fail-closed. Refuse to commit; no clarification.
-  if (check.action === 'abort-unsafe-drift') {
-    return {
-      ctx: nextCtx,
-      result: {
-        id: ctx.input.id,
-        status: 'failed',
-        mutations: [],
-        trace,
-        escalationReason: `goal-grounding aborted: ${check.reason}`,
-      },
-    };
-  }
-
-  const { liftStringsToStructured } = await import('../core/clarification.ts');
-  ctx.deps.bus?.emit('agent:clarification_requested', {
-    taskId: ctx.input.id,
-    sessionId: ctx.input.sessionId,
-    questions,
-    structuredQuestions: liftStringsToStructured(questions),
-    routingLevel: routing.level,
-    source: 'orchestrator',
-  });
-
-  return {
-    ctx: nextCtx,
-    result: {
-      id: ctx.input.id,
-      status: 'input-required',
-      mutations: [],
-      trace,
-      clarificationNeeded: questions,
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Helpers

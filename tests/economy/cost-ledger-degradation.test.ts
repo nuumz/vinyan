@@ -60,4 +60,26 @@ describe('CostLedger A9 fail-open contract', () => {
     const both = ledger.queryByTimeRange(entry.timestamp - 10, second.timestamp + 10);
     expect(both.map((e) => e.id).sort()).toEqual(['fail-open-1', 'fail-open-2']);
   });
+
+  test('record() fault-injection: emits economy:accounting_failed when bus is wired (A9 T3.b)', async () => {
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    const events: Array<{ taskId?: string; reason: string }> = [];
+    bus.on('economy:accounting_failed', (e) => events.push(e));
+
+    // Same fault-injection: missing table → INSERT throws.
+    const db = new Database(':memory:');
+    const ledger = new CostLedger(db, bus);
+
+    const entry = makeEntry({ id: 'fault-injection-1', taskId: 'task-fi' });
+    expect(() => ledger.record(entry)).not.toThrow();
+
+    // User-visible flow remains unblocked: cache query still works.
+    expect(ledger.queryByTask('task-fi')).toHaveLength(1);
+    // Fail-open observability: accounting failure is surfaced for the
+    // degradation bridge to normalize, but the task itself is not blocked.
+    expect(events).toHaveLength(1);
+    expect(events[0]?.taskId).toBe('task-fi');
+    expect(events[0]?.reason.length).toBeGreaterThan(0);
+  });
 });

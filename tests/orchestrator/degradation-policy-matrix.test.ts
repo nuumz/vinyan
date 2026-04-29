@@ -180,6 +180,35 @@ describe('A9 fault injection — write/destructive mutation apply failure', () =
     expect(decision.action).toBe('fail-closed');
     expect(decision.retryable).toBe(false);
   });
+
+  // T3.b: core-loop commit boundary attributes rejected artifact mutations
+  // to the synthetic `artifact-commit` tool name (since WorkerResult mutations
+  // carry no per-tool provenance). This event must still normalize to
+  // mutation-apply-failure / fail-closed.
+  test('artifact-commit boundary failure normalizes fail-closed (T3.b)', () => {
+    const bus = createBus();
+    const events: DegradationEvent[] = [];
+    const bridge = attachDegradationEventBridge(bus);
+    bus.on('degradation:triggered', (e) => events.push(e));
+
+    bus.emit('tool:mutation_failed', {
+      taskId: 'task-commit',
+      toolName: 'artifact-commit',
+      category: 'write',
+      reason: "../escape.ts: Path '../escape.ts' contains '..' traversal",
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      taskId: 'task-commit',
+      failureType: 'mutation-apply-failure',
+      component: 'tool:artifact-commit',
+      action: 'fail-closed',
+      capabilityImpact: 'blocked',
+      severity: 'critical',
+    });
+    bridge.detach();
+  });
 });
 
 describe('A9 fault injection — non-governance trace persistence (legacy fail-open)', () => {

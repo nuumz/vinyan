@@ -55,6 +55,19 @@ export interface WorkflowStepResult {
   tokensConsumed: number;
   durationMs: number;
   strategyUsed: WorkflowStepStrategy;
+  /**
+   * Resolved agent persona that ran this step (for `delegate-sub-agent`).
+   * Set by the executor after merging A1-verifier override and planner-
+   * assigned `step.agentId`. Lets the UI render "step3 was answered by
+   * `architect`" without joining to the trace store. Undefined for
+   * non-delegate steps or when the executor inherits the default agent.
+   */
+  agentId?: string;
+  /**
+   * Sub-task ID for `delegate-sub-agent` steps — `${parent.id}-delegate-${step.id}`.
+   * Enables UI drill-down: "open the child trace for this delegate".
+   */
+  subTaskId?: string;
 }
 
 export interface WorkflowResult {

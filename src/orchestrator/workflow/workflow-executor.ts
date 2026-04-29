@@ -152,6 +152,12 @@ export async function executeWorkflow(
     description: s.description,
     strategy: s.strategy,
     dependencies: [...s.dependencies],
+    // Multi-agent UI surface: tell the chat which agent persona owns each
+    // delegate-sub-agent step. Without this the plan checklist labels read
+    // generically ("Researcher provides answer") and the agent-timeline
+    // card has nothing to attach the row to. Undefined for non-delegate
+    // steps where the planner did not pin a specific persona.
+    ...(s.agentId ? { agentId: s.agentId } : {}),
   }));
   const needsApproval = deps.bus != null && requiresApproval(deps.workflowConfig, input.goal);
   if (needsApproval && deps.bus) {
@@ -226,6 +232,12 @@ export async function executeWorkflow(
         id: s.id,
         label: s.description,
         status: stepStatuses.get(s.id) ?? 'pending',
+        // Carry strategy + agentId so the agent-timeline UI card can
+        // distinguish delegate-sub-agent steps (which should render as
+        // distinct agent rows) from llm-reasoning / direct-tool / synthesis
+        // steps that share the parent persona.
+        strategy: s.strategy,
+        ...(s.agentId ? { agentId: s.agentId } : {}),
       })),
     });
   };
@@ -696,6 +708,16 @@ async function dispatchStrategy(
             subTaskTimeoutMs,
           );
         });
+        // Emit "delegate dispatched" so the UI agent-timeline card can show
+        // the sub-agent as `running` immediately, without waiting for the
+        // sub-task's own `task:start` to bubble up.
+        deps.bus?.emit('workflow:delegate_dispatched', {
+          taskId: input.id,
+          stepId: step.id,
+          agentId: resolvedAgentId ?? null,
+          subTaskId: subInput.id,
+          stepDescription: step.description,
+        });
         let taskResult: TaskResult;
         try {
           taskResult = await Promise.race([deps.executeTask(subInput), timeoutPromise]);
@@ -710,15 +732,52 @@ async function dispatchStrategy(
             ...base,
             status: 'failed',
             output: err instanceof Error ? err.message : String(err),
+            agentId: resolvedAgentId,
+            subTaskId: subInput.id,
           };
         } finally {
           if (timer) clearTimeout(timer);
         }
+        const finalStatus = taskResult.status === 'completed' ? 'completed' : 'failed';
+        const stepOutput =
+          taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
+        // Preview cap: 2000 chars is enough for the user to read the
+        // sub-agent's reasoning + answer in the chat UI's expandable plan
+        // step. Earlier 300-char cap chopped mid-word ("**Auth" instead of
+        // "**Author") which the user flagged on session 43c36d16. Truncate
+        // at the last whitespace within the window so we never break a
+        // token. Full output is still attached on the WorkflowStepResult
+        // and surfaced in the synthesized final answer above.
+        const PREVIEW_CAP = 2000;
+        const outputPreview =
+          stepOutput.length <= PREVIEW_CAP
+            ? stepOutput
+            : (() => {
+                const slice = stepOutput.slice(0, PREVIEW_CAP);
+                const lastSpace = slice.lastIndexOf(' ');
+                const lastNewline = slice.lastIndexOf('\n');
+                const cut = Math.max(lastSpace, lastNewline);
+                return cut > PREVIEW_CAP * 0.8 ? slice.slice(0, cut) + '…' : slice + '…';
+              })();
+        // Emit "delegate completed" with agent + bounded output preview so
+        // the UI plan-surface step can show what each sub-agent answered
+        // before the parent's synthesizer aggregates them.
+        deps.bus?.emit('workflow:delegate_completed', {
+          taskId: input.id,
+          stepId: step.id,
+          subTaskId: subInput.id,
+          agentId: resolvedAgentId ?? null,
+          status: finalStatus,
+          outputPreview,
+          tokensUsed: taskResult.trace?.tokensConsumed ?? 0,
+        });
         return {
           ...base,
-          status: taskResult.status === 'completed' ? 'completed' : 'failed',
-          output: taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file)),
+          status: finalStatus,
+          output: stepOutput,
           tokensConsumed: taskResult.trace?.tokensConsumed ?? 0,
+          agentId: resolvedAgentId,
+          subTaskId: subInput.id,
         };
       }
 

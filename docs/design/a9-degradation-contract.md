@@ -64,6 +64,10 @@ The degradation event layer encodes:
 
 v2 promotes the previously-deferred `mutation-apply-failure` failure type. Read-only tool failures (row #12) continue to fail open via `tool-failure / retry`. Write/destructive workspace mutations that fail after classification emit `tool:mutation_failed { category: 'write' | 'destructive' }`, which the bridge normalizes to `mutation-apply-failure / fail-closed` so a partial mutation never silently commits. Anchor location: `commitArtifacts` / workspace mutation boundary in [core-loop.ts](../../src/orchestrator/core-loop.ts).
 
+### T3.b runtime closure (2026-04-29)
+
+`commitArtifacts()` now uses a **two-pass preflight** contract: pass 1 validates every artifact path (absolute / `..` traversal / workspace containment / symlink target / parent-symlink escape); if any reject, pass 2 is skipped and no file is written. The core-loop commit boundary fails the task closed when **any** artifact is rejected (not only when the full batch is rejected) and emits one `tool:mutation_failed { toolName: 'artifact-commit', category: 'write', reason }` per rejected entry. `WorkerResult.mutations` does not yet retain per-tool provenance, so `category` is conservatively pinned to `'write'`; promoting selected commits to `'destructive'` is deferred until a worker-level provenance contract lands. End-to-end coverage: [artifact-commit.test.ts](../../tests/orchestrator/worker/artifact-commit.test.ts) (preflight any-reject) + [degradation-policy-matrix.test.ts](../../tests/orchestrator/degradation-policy-matrix.test.ts) (`artifact-commit` boundary normalizes to `mutation-apply-failure / fail-closed`).
+
 ## Fault-injection coverage
 
 T3's acceptance criterion is "fault-injection tests for one fail-open and one fail-closed subsystem beyond trace-store". This slice adds the missing fail-open coverage; the matching fail-closed coverage was added by the T1 slice.
@@ -85,8 +89,8 @@ T3's acceptance criterion is "fault-injection tests for one fail-open and one fa
 ## Follow-on backlog (out of scope here)
 
 - T4 — SLO counters, deterministic circuit cooldown, operator visibility for degraded components.
-- T3.b — `mutation-apply-failure` failure type and per-tool-category policy.
-- T3.b — Optional degradation-event emission for cost-ledger/session-chat persistence if silent fail-open is no longer enough.
+- ~~T3.b — `mutation-apply-failure` failure type and per-tool-category policy.~~ Closed 2026-04-29 (see "T3.b runtime closure" section above).
+- T3.b — Optional degradation-event emission for session/chat persistence (cost-ledger emitter landed with T3.b closure).
 - T6 — A10 policy tuning telemetry.
 - Isolated fault-injection for session/chat persistence (#14).
 

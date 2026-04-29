@@ -166,7 +166,10 @@ export function applyGoalGroundingConfidenceDowngrade<T extends ExecutionTrace>(
     };
   }
   trace.confidenceDecision = {
-    action: trace.confidenceDecision && trace.confidenceDecision.action !== 'allow' ? trace.confidenceDecision.action : 're-verify',
+    action:
+      trace.confidenceDecision && trace.confidenceDecision.action !== 'allow'
+        ? trace.confidenceDecision.action
+        : 're-verify',
     confidence: downgradedConfidence,
     reason: `A10 grounding downgrade: ${downgrade.reason}`,
   };
@@ -209,21 +212,20 @@ function formatReason(
   if (action === 'downgrade-confidence') {
     return `Temporal grounding found ${staleFactCount} stale or low-confidence fact(s)`;
   }
-  if (action === 're-ground-context') return 'Goal drift detected — re-running lightweight perceive/spec to re-ground context';
+  if (action === 're-ground-context')
+    return 'Goal drift detected — re-running lightweight perceive/spec to re-ground context';
   if (action === 're-verify-evidence') {
     return `Stale evidence detected (${staleFactCount} stale fact(s)) — re-running verification with fresh fact lookup`;
   }
-  if (action === 'ask-freshness-question') return 'Mild freshness drift — surfacing clarification to confirm evidence is still current';
-  if (action === 'abort-unsafe-drift') return 'Goal drift combined with stale evidence — refusing to commit (terminal fail-closed)';
+  if (action === 'ask-freshness-question')
+    return 'Mild freshness drift — surfacing clarification to confirm evidence is still current';
+  if (action === 'abort-unsafe-drift')
+    return 'Goal drift combined with stale evidence — refusing to commit (terminal fail-closed)';
   if (goalDrift || freshnessDowngraded) return 'Grounding check observed non-blocking drift signals';
   return 'Goal and temporal evidence remain grounded';
 }
 
-function buildEvidence(
-  input: TaskInput,
-  targets: string[],
-  staleFacts: Fact[],
-): GovernanceEvidenceReference[] {
+function buildEvidence(input: TaskInput, targets: string[], staleFacts: Fact[]): GovernanceEvidenceReference[] {
   return [
     {
       kind: 'task-input',
@@ -267,7 +269,11 @@ function isStaleForGrounding(fact: Fact, now: number, freshnessFloor: number = F
   return (fact.validUntil !== undefined && fact.validUntil <= now) || fact.confidence < freshnessFloor;
 }
 
-function hasGoalDrift(rootGoal: string, currentGoal: string, threshold: number = GOAL_DRIFT_OVERLAP_THRESHOLD): boolean {
+function hasGoalDrift(
+  rootGoal: string,
+  currentGoal: string,
+  threshold: number = GOAL_DRIFT_OVERLAP_THRESHOLD,
+): boolean {
   if (!rootGoal || !currentGoal) return false;
   if (rootGoal === currentGoal) return false;
   // Containment fast-path: a refinement (current ⊆ root or root ⊆ current) is

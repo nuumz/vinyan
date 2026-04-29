@@ -230,8 +230,15 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     }
   });
 
-  test('12. rejected mutations excluded from result (A6 path safety)', async () => {
-    // Mock provider proposes a path-traversal mutation alongside a valid one
+  test('12. path safety: traversal mutation never hits disk (A6); fail-closed contract verified at unit boundary (A9 T3.b)', async () => {
+    // Mock provider proposes a path-traversal mutation alongside a valid one.
+    // The L0 reflex path used by this fixture skips workspace commit, so this
+    // integration test asserts the path-safety floor (escape file must not
+    // exist on disk and notes must surface the rejection when reached).
+    // Fail-closed any-reject + preflight semantics are unit-tested in
+    // tests/orchestrator/worker/artifact-commit.test.ts and the runtime
+    // bus→degradation bridge mapping is covered in
+    // tests/orchestrator/degradation-policy-matrix.test.ts.
     const content = JSON.stringify({
       proposedMutations: [
         { file: 'src/foo.ts', content: 'export const x = 42;\n', explanation: 'valid' },
@@ -246,16 +253,9 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       useSubprocess: false,
     });
     const result = await orchestrator.executeTask(makeInput({ targetFiles: ['src/foo.ts'] }));
-    // Traversal file must never exist on disk regardless of status
     expect(existsSync(join(tempDir, '..', 'escape.ts'))).toBe(false);
-
-    if (result.status === 'completed' && result.mutations.length > 0) {
-      // Only valid mutations should appear
-      const files = result.mutations.map((m) => m.file);
-      expect(files).not.toContain('../escape.ts');
-      expect(files).toContain('src/foo.ts');
-      // Notes should mention rejection
-      expect(result.notes?.some((n) => n.includes('Rejected'))).toBe(true);
+    if (result.status === 'failed' && result.notes) {
+      expect(result.notes.some((n) => n.includes('Rejected'))).toBe(true);
     }
   });
 

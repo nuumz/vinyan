@@ -565,6 +565,10 @@ export class VinyanAPIServer {
       return this.handleGovernanceReplay(decisionId);
     }
 
+    if (method === 'GET' && path === '/api/v1/health/degradation') {
+      return this.handleDegradationHealth();
+    }
+
     if (method === 'GET' && path === '/api/v1/memory') {
       return this.handleListMemory();
     }

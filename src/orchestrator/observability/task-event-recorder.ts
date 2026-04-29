@@ -62,6 +62,14 @@ export const RECORDED_EVENTS: BusEventName[] = [
   'workflow:step_start',
   'workflow:step_complete',
   'workflow:step_fallback',
+  // Multi-agent UI surface — needed so AgentTimelineCard can replay
+  // per-sub-agent dispatch + completion (incl. agentId + outputPreview)
+  // when the user opens an old session. Without persistence these events
+  // are live-only and the historical card has no way to reconstruct the
+  // per-agent answers.
+  'workflow:delegate_dispatched',
+  'workflow:delegate_completed',
+  'workflow:delegate_timeout',
   // Task lifecycle (escalation/timeout — useful for diagnostics, terminal
   // task:complete is intentionally excluded: it carries the full TaskResult
   // which we already persist in execution_traces).

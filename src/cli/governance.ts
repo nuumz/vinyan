@@ -82,15 +82,8 @@ function runSearch(store: TraceStore, argv: string[]): void {
   }
 
   console.log(`\n  Governance Decisions (${result.rows.length} of ${result.total}, offset=${result.offset})\n`);
-  console.log(
-    '  ' +
-      'Decision ID'.padEnd(40) +
-      'Actor'.padEnd(28) +
-      'Policy'.padEnd(28) +
-      'Outcome'.padEnd(10) +
-      'When',
-  );
-  console.log('  ' + '─'.repeat(120));
+  console.log(`  ${'Decision ID'.padEnd(40)}${'Actor'.padEnd(28)}${'Policy'.padEnd(28)}${'Outcome'.padEnd(10)}When`);
+  console.log(`  ${'─'.repeat(120)}`);
   for (const row of result.rows) {
     const decision = (row.decisionId ?? '(legacy)').slice(0, 38).padEnd(40);
     const actor = (row.governanceActor ?? '-').slice(0, 26).padEnd(28);
@@ -110,17 +103,17 @@ function runReplay(store: TraceStore, argv: string[]): void {
     console.error('Decision id required. Usage: vinyan governance replay <decisionId>');
     process.exit(2);
   }
-  const trace = store.findTraceByDecisionId(decisionId!);
+  const trace = store.findTraceByDecisionId(decisionId);
   if (!trace) {
     console.error(`No trace found for decision: ${decisionId}`);
     process.exit(1);
   }
-  const summary = buildDecisionReplay(decisionId!, trace!);
+  const summary = buildDecisionReplay(decisionId, trace);
   if (json) {
     console.log(JSON.stringify(summary, null, 2));
     return;
   }
-  console.log('\n' + formatReplayForCLI(summary) + '\n');
+  console.log(`\n${formatReplayForCLI(summary)}\n`);
 }
 
 function parseFlag(argv: string[], flag: string): string | undefined {

@@ -298,6 +298,7 @@ export async function executeGeneratePhase(
           durationMs: lastAgentResult.durationMs,
           proposedContent: lastAgentResult.proposedContent,
           nonRetryableError: lastAgentResult.nonRetryableError,
+          isUncertain: lastAgentResult.isUncertain,
           needsUserInput: lastAgentResult.needsUserInput,
           // Slice 4 Gap B: forward the agent's self-grade (if any) so the
           // GoalEvaluator can later compare it with the deterministic grade.
@@ -358,16 +359,23 @@ export async function executeGeneratePhase(
       return Phase.retry();
     }
 
-    // Empty-output gate (all task types): when the worker reports uncertain
+    // Empty-output gate (agentic worker failure): when the worker explicitly
+    // signals it could not reach a confident terminal turn (`isUncertain`)
     // AND produced neither mutations nor content, the orchestrator must NOT
     // pass this through to verify-and-succeed — that would surface as a fake
-    // `completed` task with no output (the smoke test's "done but not works"
-    // bias). This typically fires on subprocess timeout/crash or budget
-    // exhaustion before the first turn returned.
+    // `completed` task with no output (the "done but not works" bias).
+    // Common triggers: subprocess timeout/crash before first turn, the LLM
+    // streamed zero tokens, or the agent emitted `uncertain` with empty
+    // proposedContent. Skip when the agent is intentionally pausing for user
+    // input (clarification) — that's a collaborative pause, not a failure.
+    //
+    // Gated on `isUncertain` so mock workers in tests that legitimately
+    // return empty results (without flagging failure) pass through unchanged.
     if (
       workerResult.isUncertain &&
       workerResult.mutations.length === 0 &&
-      !workerResult.proposedContent?.trim()
+      !workerResult.proposedContent?.trim() &&
+      !workerResult.needsUserInput
     ) {
       workingMemory.recordFailedApproach(
         `Empty output at L${routing.level} (uncertain, no mutations, no content)`,

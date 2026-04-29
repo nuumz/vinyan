@@ -86,11 +86,18 @@ describe('executeWorkflow', () => {
     expect(result.stepResults).toHaveLength(2);
     expect(result.stepResults[0]!.status).toBe('completed');
     expect(result.stepResults[1]!.status).toBe('completed');
-    expect(result.synthesizedOutput).toBe('Final synthesis');
+    // step2 is an llm-reasoning step that depends on step1 and is the only
+    // sink — under the new short-circuit contract its output becomes the
+    // final answer directly, no second synthesizer pass. This avoids the
+    // session a43487fd "double synthesis" failure where the parent
+    // synthesizer fabricated polished agent answers on top of an
+    // already-final aggregation step.
+    expect(result.synthesizedOutput).toContain('Result for:'); // step2's output
     expect(result.totalTokensConsumed).toBeGreaterThan(0);
     expect(plannerCalled).toBe(true);
     expect(stepLLMCalled).toBe(true);
-    expect(synthesizerCalled).toBe(true);
+    // Synthesizer LLM is NOT called — short-circuit returned step2's output.
+    expect(synthesizerCalled).toBe(false);
     expect(deltas.some((d) => d.event === 'llm:stream_delta')).toBe(true);
     expect(deltas.every((d) => (d.payload as { taskId?: string }).taskId === 'task-wf-test')).toBe(true);
     expect(streamTimeouts.length).toBeGreaterThan(0);
@@ -933,6 +940,493 @@ describe('executeWorkflow', () => {
     expect(dispatchedAgentIds).toContain('developer');
     expect(dispatchedAgentIds).toContain('architect');
     expect(dispatchedAgentIds.length).toBe(2);
+  });
+
+  test('delegate sub-task receives prior dependency output + parent goal as context', async () => {
+    // Session a43487fd regression — the delegate sub-task only saw
+    // step.description (the planner's template phrasing) and did not see:
+    //   - the original user prompt (anchor for intent)
+    //   - the prior step's output (the question step1 generated for it to
+    //     answer). As a result, delegates "proposed competition rules"
+    //     instead of answering the question. The delegate goal must include
+    //     plan.goal AND the interpolated prior output AND an explicit
+    //     instruction to deliver the answer (not narrate workflow design).
+    const capturedSubGoals: string[] = [];
+    const plan = JSON.stringify({
+      goal: 'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      steps: [
+        {
+          id: 'step1',
+          description: 'Generate a challenging question for the agents',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.2,
+        },
+        {
+          id: 'step2',
+          description: 'Researcher answers the question from step1',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          dependencies: ['step1'],
+          inputs: { question: '$step1.result' },
+          budgetFraction: 0.4,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        // step1 (llm-reasoning) — produce the Quantum/RSA question.
+        return {
+          content: 'How does Shor algorithm threaten RSA in the post-quantum era?',
+          tokensUsed: { input: 5, output: 5 },
+        };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      capturedSubGoals.push(subInput.goal);
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} answer`,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    await executeWorkflow(makeInput('แบ่ง Agent 3ตัว แข่งกันถามตอบ'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(capturedSubGoals.length).toBe(1);
+    const subGoal = capturedSubGoals[0]!;
+    // Step description (the delegate's primary task) is preserved.
+    expect(subGoal).toContain('Researcher answers the question from step1');
+    // Original user request is included as anchor.
+    expect(subGoal).toContain('แบ่ง Agent 3ตัว แข่งกันถามตอบ');
+    // Prior dependency output (step1's question) is interpolated so the
+    // delegate has the actual content to answer, not just a reference.
+    expect(subGoal).toContain('Shor');
+    // Explicit "produce your answer, do not propose rules" instruction.
+    expect(subGoal).toMatch(/produce your own answer|do NOT propose|do NOT meta-describe/i);
+  });
+
+  test('delegates without aggregator sink → deterministic concat, synthesizer NOT called', async () => {
+    // The planner sometimes produces a plan with N parallel
+    // delegate-sub-agent steps and NO final aggregator/sink llm-reasoning
+    // step. Before this fix, buildResult fell through to the synthesizer
+    // LLM which on weak free-tier models smoothed persona voices and even
+    // fabricated content. Structural fix: skip the LLM, render verbatim
+    // delegate outputs under persona headers — voice-preserving + zero
+    // fabrication surface.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'parallel agents, no aggregator',
+      steps: [
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          budgetFraction: 0.5,
+        },
+        // NO final llm-reasoning sink.
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'FABRICATED', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'noop', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      const text =
+        subInput.agentId === 'researcher'
+          ? 'Empirical analysis: the answer is X with citations.'
+          : 'Author voice: a story unfolds about Y.';
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: text,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('parallel agents, no aggregator'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(result.status).toBe('completed');
+    expect(synthesizerCalled).toBe(false);
+    expect(result.synthesizedOutput).not.toContain('FABRICATED');
+    // Persona headers present.
+    expect(result.synthesizedOutput).toContain('### researcher');
+    expect(result.synthesizedOutput).toContain('### author');
+    // Verbatim delegate outputs preserved.
+    expect(result.synthesizedOutput).toContain('Empirical analysis: the answer is X with citations.');
+    expect(result.synthesizedOutput).toContain('Author voice: a story unfolds about Y.');
+  });
+
+  test('setup llm-reasoning + delegates + no aggregator → setup as supporting note, delegates as primary', async () => {
+    // Planner produces a setup step (e.g. llm-reasoning that generates the
+    // question) followed by parallel delegate-sub-agent steps and no
+    // aggregator. The setup step's output is supporting context for the
+    // delegates — it should NOT be confused with primary content. The
+    // deterministic aggregation lists delegates first as primary content
+    // and the setup step as a transparent footnote.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'setup + parallel delegates, no aggregator',
+      steps: [
+        {
+          id: 'step1',
+          description: 'generate the debate question',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.2,
+        },
+        {
+          id: 'step2',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          dependencies: ['step1'],
+          budgetFraction: 0.4,
+        },
+        {
+          id: 'step3',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          dependencies: ['step1'],
+          budgetFraction: 0.4,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'fab', tokensUsed: { input: 5, output: 5 } };
+        }
+        // step1 generates the question.
+        return {
+          content: 'What is the meaning of consciousness?',
+          tokensUsed: { input: 5, output: 5 },
+        };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} delivers a thoughtful response.`,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('setup + parallel delegates'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(result.status).toBe('completed');
+    expect(synthesizerCalled).toBe(false);
+    // Persona headers present and primary.
+    expect(result.synthesizedOutput).toContain('### researcher');
+    expect(result.synthesizedOutput).toContain('### author');
+    // Setup step appears as supporting note, NOT as primary content.
+    expect(result.synthesizedOutput).toMatch(/Setup steps that informed the agents above/);
+    expect(result.synthesizedOutput).toContain('What is the meaning of consciousness?');
+    // Verbatim delegate outputs preserved.
+    expect(result.synthesizedOutput).toContain('researcher delivers a thoughtful response.');
+    expect(result.synthesizedOutput).toContain('author delivers a thoughtful response.');
+    // Order: delegate sections appear BEFORE the setup-steps note in the
+    // joined output (delegates are primary; setup is transparency).
+    const idxResearcher = result.synthesizedOutput.indexOf('### researcher');
+    const idxSetupNote = result.synthesizedOutput.indexOf('Setup steps that informed');
+    expect(idxResearcher).toBeGreaterThanOrEqual(0);
+    expect(idxSetupNote).toBeGreaterThan(idxResearcher);
+  });
+
+  test('partial: 1 of 3 delegates failed, no aggregator → failed slot honest, others verbatim', async () => {
+    // Mixed delegate outcomes WITHOUT an aggregator step. The successful
+    // delegates' outputs must be preserved verbatim under their headers.
+    // The failed delegate's slot must be honest about the failure — no
+    // fabricated content filling in the missing voice.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'three agents, one fails, no aggregator',
+      steps: [
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.33,
+        },
+        {
+          id: 'step2',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          budgetFraction: 0.33,
+        },
+        {
+          id: 'step3',
+          description: 'mentor answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'mentor',
+          budgetFraction: 0.34,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'fab', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'noop', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      // mentor "fails" — TaskResult.status='failed' with an error message.
+      if (subInput.agentId === 'mentor') {
+        return {
+          id: subInput.id,
+          status: 'failed',
+          mutations: [],
+          answer: 'connection error',
+          trace: { tokensConsumed: 0 },
+        } as any;
+      }
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} REAL ANSWER`,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('three agents, one fails'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(result.status).toBe('partial');
+    expect(synthesizerCalled).toBe(false);
+    // Successful delegates' outputs verbatim.
+    expect(result.synthesizedOutput).toContain('researcher REAL ANSWER');
+    expect(result.synthesizedOutput).toContain('author REAL ANSWER');
+    // Failed delegate slot: honest placeholder, no fabricated content.
+    expect(result.synthesizedOutput).toContain('### mentor');
+    expect(result.synthesizedOutput).toMatch(/\[no response — /);
+    // The mentor section MUST NOT contain a fabricated "REAL ANSWER".
+    const mentorHeaderIdx = result.synthesizedOutput.indexOf('### mentor');
+    const mentorSlice = result.synthesizedOutput.slice(mentorHeaderIdx);
+    const nextSection = mentorSlice.indexOf('\n---\n');
+    const mentorBlock = nextSection > 0 ? mentorSlice.slice(0, nextSection) : mentorSlice;
+    expect(mentorBlock).not.toContain('mentor REAL ANSWER');
+  });
+
+  test('non-delegate workflow with no sole-sink → existing synthesizer LLM still runs', async () => {
+    // Regression guard: when the plan has only llm-reasoning steps WITHOUT
+    // a single-sink synthesis step (e.g. two parallel independent reasoning
+    // steps that both terminate the DAG), the deterministic-delegate
+    // aggregation branch must NOT fire (no delegates), the
+    // already-final-step short-circuit must NOT fire (no single sink), and
+    // the fall-through synthesizer LLM SHOULD run as before. This protects
+    // existing non-delegate plans (analytical workflows, multi-pass
+    // research) from being inadvertently swept into the new branch.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'two parallel analytical steps, no sole sink, no delegates',
+      steps: [
+        {
+          id: 'step1',
+          description: 'analyze angle A',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'analyze angle B',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.5,
+        },
+        // No dependencies → both are sinks (no single-sink short-circuit).
+        // No delegates → no deterministic aggregation.
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'LLM-synthesized answer', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: `step result for ${req.systemPrompt.slice(0, 20)}`, tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const result = await executeWorkflow(makeInput('two parallel analytical steps'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+    });
+    expect(result.status).toBe('completed');
+    // The LLM synthesizer DID run for non-delegate plans.
+    expect(synthesizerCalled).toBe(true);
+    expect(result.synthesizedOutput).toBe('LLM-synthesized answer');
+  });
+
+  test('final synthesis short-circuits when the last plan step is already a synthesis sink', async () => {
+    // Session a43487fd regression — workflow had step4 = 'llm-reasoning'
+    // ("Compare the three answers...") that depended on the 3 delegates.
+    // The buildResult synthesizer ran AGAIN on top of step4's output,
+    // creating a second synthesis layer that fabricated polished agent
+    // answers (the delegates had only proposed rules, but the second
+    // synthesizer invented detailed Quantum answers from the step
+    // descriptions). When the last step is already the workflow's
+    // aggregation sink and has usable output, return it verbatim — do
+    // NOT invoke the synthesizer LLM a second time.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'two delegates + final compare',
+      steps: [
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.3,
+        },
+        {
+          id: 'step2',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          budgetFraction: 0.3,
+        },
+        {
+          id: 'step3',
+          description: 'Compare and synthesize the two answers',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1', 'step2'],
+          budgetFraction: 0.4,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'FABRICATED SECOND SYNTHESIS', tokensUsed: { input: 5, output: 5 } };
+        }
+        // step3 (llm-reasoning sink) returns the planner-asked comparison.
+        return { content: 'FINAL COMPARISON FROM STEP3', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const executeTask = async (subInput: any) => {
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} actual answer`,
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('two delegates + final compare'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(result.status).toBe('completed');
+    // Synthesizer must NOT run a second pass — step3's output is the answer.
+    expect(synthesizerCalled).toBe(false);
+    expect(result.synthesizedOutput).toBe('FINAL COMPARISON FROM STEP3');
+    expect(result.synthesizedOutput).not.toContain('FABRICATED');
   });
 
   test('honesty contract is included in the synthesizer system prompt when failures exist', async () => {

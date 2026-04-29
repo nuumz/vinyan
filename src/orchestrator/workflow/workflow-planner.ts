@@ -99,6 +99,12 @@ Multi-agent rules (when the user asks for "N agents" / "have agents debate/compe
 - If the user asks for a specific persona ("ให้ developer ตอบ", "have the architect answer"), match that persona name to the closest \`agentId\` in the roster.
 - If the user only specifies a count ("3 agents") without naming personas, pick N agents from the roster whose roles are diverse enough to make the comparison meaningful (e.g. one Generator, one Verifier, one Guide rather than three Generators).
 - A single \`llm-reasoning\` step that internally role-plays "Agent A says X, Agent B says Y" is FORBIDDEN for multi-agent goals — that produces fake diversity from one model. Use \`delegate-sub-agent\` so each persona actually runs in its own sub-task.
+- step.description for a delegate-sub-agent step MUST describe ONLY the task to perform (the question to answer / the artifact to produce). It MUST NOT prescribe HOW the agent should answer — no "focusing on X", "provide a deep/creative/structured answer", "with style Y", "from the perspective of Y emphasizing Z". The agent's own persona (its soul) already encodes how. Adding stylistic hints to the description duplicates the soul, conflicts with it, and collapses the very diversity the user asked for — different personas read the same prescriptive description and converge on a shared template.
+  - Good: "Answer the question: <question text>"
+  - Good: "Respond to step1.result"
+  - Bad:  "Provide a deep, evidence-based answer focusing on factual synthesis"
+  - Bad:  "Craft a creative narrative emphasizing storytelling and engagement"
+  - Bad:  "Provide a guided answer focusing on the 'how' and 'why'"
 - Add a final \`llm-reasoning\` synthesis step (depends on all delegate steps) that combines the distinct agent outputs into the comparison/debate the user asked for.
 
 Guidelines:

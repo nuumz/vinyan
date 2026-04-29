@@ -843,8 +843,18 @@ export const VinyanConfigSchema = z.object({
        * creative goals (length ≥ 60), false otherwise.
        */
       requireUserApproval: z.union([z.boolean(), z.literal('auto')]).default('auto'),
-      /** Auto-abort if the user does not respond within this window. */
-      approvalTimeoutMs: z.number().positive().default(600_000),
+      /**
+       * Approval window before Vinyan auto-decides via `evaluateAutoApproval`.
+       * On timeout the executor invokes the rule-based discretionary verdict
+       * (read-only plan → auto-approved; mutating / destructive plan →
+       * auto-rejected). Default 3 minutes — long enough for an attentive
+       * user to review the plan card, short enough that an absent user
+       * does not block the worker indefinitely. The verdict on timeout is
+       * surfaced via `workflow:plan_approved` / `workflow:plan_rejected`
+       * with `auto: true` so dashboards can distinguish a human approval
+       * from Vinyan's deferred judgement.
+       */
+      approvalTimeoutMs: z.number().positive().default(180_000),
     })
     .optional(),
   /**

@@ -300,4 +300,94 @@ describe('composeDeterministicCandidate — multi-agent delegation pre-rule', ()
     );
     expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
   });
+
+  it('recursion guard: does NOT re-trigger when input.parentTaskId is set', () => {
+    // Session 4e62ebe6 incident — a delegated sub-task's step description
+    // ("Generate a response from the perspective of a Researcher, focusing
+    // on agent diversity") still matched the multi-agent pattern, so the
+    // sub-task launched ITS own delegate-sub-agent workflow. Task IDs
+    // grew `…-delegate-step2-delegate-step2-delegate-step3-…` and the
+    // wall-clock budget shrank exponentially per level (budgetMs=21,
+    // reason "Wall-clock budget exhausted before next attempt could
+    // start"). Multi-agent dispatch must be a TOP-LEVEL strategy only.
+    const subTaskInput: TaskInput = {
+      id: 'parent-1-delegate-step2',
+      source: 'cli',
+      goal: 'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      taskType: 'code',
+      budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
+      parentTaskId: 'parent-1', // ← marks this as a delegated sub-task
+    };
+    const result = composeDeterministicCandidate(
+      subTaskInput,
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+    expect(result.strategy).not.toBe('agentic-workflow');
+  });
+});
+
+describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper)', () => {
+  // Reported on the Step-2-of-4 author-degeneration screenshot: the parent
+  // workflow planned `step2: author — Develop a set of practical, high-
+  // engagement coaching strategies and communication frameworks…`. The
+  // delegate sub-task's STU classified that goal as
+  // `general-reasoning + execute + none`, which the fallback strategy maps
+  // to `agentic-workflow`. The sub-task then re-planned a NEW workflow,
+  // re-injected the conversational shortcircuit's escape protocol, and the
+  // free-tier author LLM paraphrased it ("the task is too big to handle
+  // inline, use a agentic-workflow path") before degenerating into a
+  // "topic-topic-topic-…" token loop. The guard must demote agentic-workflow
+  // back to conversational so the sub-task runs as a single LLM call.
+  it('demotes agentic-workflow → conversational when parentTaskId is set', () => {
+    const subTaskInput: TaskInput = {
+      id: 'parent-1-delegate-step2',
+      source: 'cli',
+      goal: 'Develop a set of practical, high-engagement coaching strategies and communication frameworks based on the psychological principles identified.',
+      taskType: 'code',
+      budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
+      parentTaskId: 'parent-1',
+    };
+    const result = composeDeterministicCandidate(
+      subTaskInput,
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('conversational');
+    expect(result.deterministicCandidate.source).toBe('sub-task-recursion-guard');
+    expect(result.reasoning).toMatch(/recursion guard|conversational/i);
+  });
+
+  it('does NOT demote at top level (parentTaskId absent)', () => {
+    // Same STU shape, but a top-level task — the planner is the right
+    // surface for `general-reasoning + execute + none`. Demotion would
+    // regress every creative top-level task to a single-LLM-call answer.
+    const result = composeDeterministicCandidate(
+      input('Develop a coaching strategy doc'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('mapUnderstandingToStrategy');
+  });
+
+  it('skips creative-deliverable pre-rule for sub-tasks', () => {
+    // A delegated sub-task whose description happens to match the creative-
+    // deliverable verb+noun pattern (e.g. "draft chapter 2 prose") must NOT
+    // re-fire the pre-rule — the parent already classified the task as
+    // creative work. Re-firing routes the sub-task into another planner
+    // round and explodes the call graph.
+    const subTaskInput: TaskInput = {
+      id: 'parent-1-delegate-step2',
+      source: 'cli',
+      goal: 'draft chapter 2 prose continuing from chapter 1',
+      taskType: 'code',
+      budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
+      parentTaskId: 'parent-1',
+    };
+    const result = composeDeterministicCandidate(
+      subTaskInput,
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+    expect(result.strategy).not.toBe('agentic-workflow');
+  });
 });

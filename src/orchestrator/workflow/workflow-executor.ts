@@ -16,6 +16,7 @@ import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import {
   approvalTimeoutMs,
   awaitApprovalDecision,
+  evaluateAutoApproval,
   requiresApproval,
   type WorkflowConfig,
 } from './approval-gate.ts';
@@ -188,13 +189,48 @@ export async function executeWorkflow(
         totalDurationMs: performance.now() - startTime,
       };
     }
-    // `decision === 'timeout'` falls through to execution: an absent user is
-    // treated as implicit approval. Emit `workflow:plan_approved` so UIs
-    // subscribed to the gate events tear down the inline approval card and
-    // flip back to a normal running state instead of waiting for the next
-    // step event to arrive.
+    // `decision === 'timeout'`: the user did not respond within
+    // `approvalTimeoutMs` (default 3 min). Instead of falling through to
+    // blanket implicit approval, exercise Vinyan's discretion via
+    // `evaluateAutoApproval` — A3-compliant rule-based judgement over the
+    // plan that approves read-only / no-side-effect plans and rejects
+    // plans containing code mutations or destructive shell commands.
+    //
+    // On `approved`: emit `workflow:plan_approved` (with `auto: true` so
+    // dashboards can distinguish a human approval from Vinyan's deferred
+    // judgement) and continue to step dispatch.
+    // On `rejected`: emit `workflow:plan_rejected` and short-circuit with
+    // a failed `WorkflowResult` carrying the verdict's rationale, so the
+    // user sees *why* Vinyan declined to proceed when they re-open the
+    // session.
     if (decision === 'timeout') {
-      bus.emit('workflow:plan_approved', { taskId: input.id });
+      const verdict = evaluateAutoApproval(plan);
+      if (verdict.decision === 'approved') {
+        bus.emit('workflow:plan_approved', {
+          taskId: input.id,
+          auto: true,
+          rationale: verdict.rationale,
+        });
+      } else {
+        bus.emit('workflow:plan_rejected', {
+          taskId: input.id,
+          auto: true,
+          rationale: verdict.rationale,
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: 0,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [],
+          synthesizedOutput: verdict.rationale,
+          totalTokensConsumed: 0,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
     }
   } else {
     deps.bus?.emit('workflow:plan_ready', {
@@ -661,15 +697,65 @@ async function dispatchStrategy(
         // A1 separation contract is a hard invariant; planner-assigned IDs
         // are advisory.
         const resolvedAgentId = verifierAgentId ?? step.agentId ?? undefined;
+        // Build the sub-task's goal with the full context the delegate needs
+        // to produce its own answer (not a meta-description of the workflow).
+        // Without this the sub-agent only saw `step.description` — the
+        // planner's template phrasing — and lost: (a) the original user
+        // request, (b) prior step outputs (e.g. step1's generated question
+        // that this delegate is meant to answer), (c) the expectedOutput
+        // hint, (d) any explicit instruction to PRODUCE the deliverable
+        // rather than describe how it should be produced. The session
+        // a43487fd audit showed delegates "proposing competition rules"
+        // instead of answering the question step1 had generated.
+        //
+        // Structure (sections separated by blank lines so the receiving LLM
+        // can parse them as distinct context blocks):
+        //   1. The delegate task itself (step.description)
+        //   2. Original user request (plan.goal) — anchor for intent
+        //   3. Prior step output (interpolatedInputs) — usually step1's
+        //      generated question for the delegate to answer
+        //   4. Expected output shape (step.expectedOutput) — when set
+        //   5. Explicit instruction to deliver the answer, not narrate
+        const subTaskGoalParts: string[] = [step.description];
+        if (plan.goal && plan.goal !== step.description) {
+          subTaskGoalParts.push(`[Original user request: ${plan.goal}]`);
+        }
+        if (interpolatedInputs && interpolatedInputs.trim().length > 0) {
+          subTaskGoalParts.push(
+            `[Prior workflow step output you should answer / build on]:\n${interpolatedInputs}`,
+          );
+        }
+        if (step.expectedOutput && step.expectedOutput.trim().length > 0) {
+          subTaskGoalParts.push(`[Expected output: ${step.expectedOutput}]`);
+        }
+        subTaskGoalParts.push(
+          'Produce your own answer / deliverable as the assigned persona — do NOT propose how the workflow or competition should be run, do NOT ask the user to provide the topic, and do NOT meta-describe what your role would do. The orchestrator already routed you here because YOU are the agent that should answer.',
+        );
+        const subTaskGoal = subTaskGoalParts.join('\n\n');
         const subInput: TaskInput = {
           id: `${input.id}-delegate-${step.id}`,
           source: input.source,
-          goal: step.description,
+          goal: subTaskGoal,
           taskType: input.taskType,
           targetFiles: input.targetFiles,
           budget: {
-            maxTokens: Math.floor(input.budget.maxTokens * step.budgetFraction),
-            maxDurationMs: Math.floor(input.budget.maxDurationMs * step.budgetFraction),
+            // Sub-task budget floors. Without these, a delegate's
+            // budgetFraction (typically 0.2-0.4) compounds with the
+            // parent's already-fractional budget when the sub-task itself
+            // runs a workflow — session 4e62ebe6 hit `budgetMs: 21` on a
+            // recursion level with `task:timeout` reason "Wall-clock budget
+            // exhausted before next attempt could start (7ms remaining)".
+            // The 30s wall-clock floor matches the per-step timeout floor
+            // (MIN_WORKFLOW_LLM_TIMEOUT_MS / 4) — anything less and the
+            // sub-agent's first LLM call times out before it can answer.
+            maxTokens: Math.max(
+              500,
+              Math.floor(input.budget.maxTokens * step.budgetFraction),
+            ),
+            maxDurationMs: Math.max(
+              30_000,
+              Math.floor(input.budget.maxDurationMs * step.budgetFraction),
+            ),
             maxRetries: input.budget.maxRetries,
           },
           ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
@@ -925,8 +1011,67 @@ async function buildResult(
 
   // Synthesize final output
   let synthesizedOutput: string;
+
+  // Already-final-step short-circuit: when the plan ends with a single
+  // aggregation/synthesis step that depends on prior steps and produced
+  // real output, treat its output as the final answer directly. Running
+  // an additional synthesizer pass on top of an already-aggregated step
+  // is the surface where the parent layer fabricated polished agent
+  // answers in session a43487fd — the delegates returned meta-commentary,
+  // step4 (the planner-supplied "Compare the three answers" step) wasn't
+  // run because it depended on the failing delegates, and the buildResult
+  // synthesizer then improvised its own "comparison" from the step
+  // descriptions. Even when delegates DO succeed, double-synthesis
+  // produces a summary-of-summary that smooths over per-persona voice.
+  // Structural rule:
+  //   - last plan step is `llm-reasoning` (the synthesis strategy planner uses)
+  //   - has dependencies (depends on prior steps; otherwise it's a single
+  //     standalone step and the multi-step path doesn't apply)
+  //   - is the only "sink" of the DAG (no other step depends on it)
+  //   - has a successful, non-empty result
+  // When all four hold, return its output verbatim.
+  const lastPlanStep = plan.steps[plan.steps.length - 1];
+  if (lastPlanStep && allResults.length > 1) {
+    const lastResult = stepResults.get(lastPlanStep.id);
+    const isLastSink = !plan.steps.some((s) => s.dependencies.includes(lastPlanStep.id));
+    const isSynthesisStep =
+      lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
+    const hasUsableOutput =
+      !!lastResult &&
+      lastResult.status === 'completed' &&
+      lastResult.output.trim().length > 0;
+    if (isLastSink && isSynthesisStep && hasUsableOutput) {
+      return {
+        status,
+        stepResults: allResults,
+        synthesizedOutput: lastResult.output,
+        totalTokensConsumed: totalTokens,
+        totalDurationMs: Math.round(durationMs),
+      };
+    }
+  }
+
   if (allResults.length === 1) {
     synthesizedOutput = allResults[0]!.output;
+  } else if (completedDelegates.length >= 1) {
+    // Deterministic delegate aggregation — fires when the workflow had
+    // delegate-sub-agent steps that succeeded but the planner did NOT
+    // include a final aggregator/sink llm-reasoning step (the
+    // already-final-step short-circuit above handles the with-aggregator
+    // case). Without this branch, buildResult falls through to its
+    // synthesizer LLM call which on weak free-tier models smooths persona
+    // voices into a shared register, paraphrases delegate output, and can
+    // even fabricate detail to "improve" missing content. The fix is
+    // structural: skip the LLM entirely when delegates are present and a
+    // verbatim concatenation under persona headers would be honest. This
+    // preserves per-persona voice and removes the fabrication surface.
+    return {
+      status,
+      stepResults: allResults,
+      synthesizedOutput: buildDeterministicDelegateAggregation(plan, stepResults, delegateStepIds),
+      totalTokensConsumed: totalTokens,
+      totalDurationMs: Math.round(durationMs),
+    };
   } else {
     const provider = deps.llmRegistry?.selectByTier('fast');
     if (provider) {
@@ -987,7 +1132,15 @@ async function buildResult(
           'missing content to make the answer look complete. Surface failures plainly (e.g., ' +
           '"I could not run X because of an error" / "ขั้นตอน X ไม่สำเร็จ") and only deliver content ' +
           'derived from the COMPLETED steps. Fabricating to fill gaps is forbidden, even if the user ' +
-          'goal asks for a complete deliverable.';
+          'goal asks for a complete deliverable. ' +
+          'STITCHER RULE (non-negotiable): you are a STITCHER, not a re-author. When step outputs are ' +
+          'tagged with persona / agent identity (e.g. "[step3 — author] (delegate-sub-agent):"), copy ' +
+          'each persona\'s text VERBATIM under a header that names the persona. Do NOT paraphrase, ' +
+          'smooth, blend, or compress per-persona content into your own register — doing so destroys the ' +
+          'voice diversity the user asked for. Your job is limited to: a brief framing intro/outro (1-2 ' +
+          'sentences), persona headers, and the verbatim outputs in between. If the user asked for a ' +
+          'comparison, the comparison is whatever ALREADY exists in the per-persona texts plus your ' +
+          'one-paragraph synthesis at the end — never a re-write of what each persona said.';
         const synthesizerUserPrompt = (() => {
           // Anchor the synthesis on prior conversation when the workflow is
           // a follow-up turn ("write chapter 2"). Without this the
@@ -1048,4 +1201,94 @@ async function buildResult(
     totalTokensConsumed: totalTokens,
     totalDurationMs: Math.round(durationMs),
   };
+}
+
+/**
+ * Build a deterministic, voice-preserving aggregation of delegate-sub-agent
+ * outputs without invoking an LLM synthesizer. Each delegate's verbatim
+ * output appears under a `### <agentId> — <step.description>` header.
+ * Failed/skipped delegate slots are acknowledged honestly with a bracketed
+ * placeholder; their content is NOT fabricated. Non-delegate completed
+ * steps (setup llm-reasoning steps that fed context into the delegates)
+ * appear as a small trailing "Setup steps that informed the agents above"
+ * note so the user can see what the workflow gathered, not as primary
+ * content competing with the personas' voices.
+ *
+ * Iterates `plan.steps` (not stepResults Map values) to guarantee the
+ * delegates appear in plan order — important when the planner intends
+ * a specific narrative ordering between personas (e.g. researcher first
+ * to set facts, then author to humanize, then mentor to frame).
+ *
+ * Pure: no I/O, no LLM, no clock. Safe to call multiple times.
+ */
+function buildDeterministicDelegateAggregation(
+  plan: WorkflowPlan,
+  stepResults: Map<string, WorkflowStepResult>,
+  delegateStepIds: Set<string>,
+): string {
+  const sections: string[] = [];
+
+  // Delegate sections — render in plan order so the persona narrative is
+  // stable across re-runs of the same workflow.
+  for (const step of plan.steps) {
+    if (!delegateStepIds.has(step.id)) continue;
+    const result = stepResults.get(step.id);
+    const agentLabel = step.agentId ?? 'agent';
+    const headerLine = `### ${agentLabel} — ${step.description}`;
+    if (!result) {
+      sections.push(`${headerLine}\n\n[no response — step did not run]`);
+      continue;
+    }
+    if (result.status === 'completed' && result.output.trim().length > 0) {
+      sections.push(`${headerLine}\n\n${result.output.trim()}`);
+      continue;
+    }
+    // Honest acknowledgement of missing/failed delegates. Output text
+    // (e.g. "step timed out after 120s") is preserved as the reason but
+    // wrapped in brackets so it cannot be mistaken for a real answer.
+    const reason = result.output.trim() || `step ${result.status}`;
+    sections.push(`${headerLine}\n\n[no response — ${reason}]`);
+  }
+
+  // Setup-step note: any non-delegate step that completed gets shown as
+  // supporting context, not as primary content. Truncated to keep the
+  // note compact (1000 chars per setup step is plenty for a question or
+  // brief). Skip when there's nothing to show.
+  const setupCompleted = plan.steps
+    .filter((s) => !delegateStepIds.has(s.id))
+    .map((s) => ({ step: s, result: stepResults.get(s.id) }))
+    .filter(
+      (x): x is { step: WorkflowStep; result: WorkflowStepResult } =>
+        !!x.result && x.result.status === 'completed' && x.result.output.trim().length > 0,
+    );
+  if (setupCompleted.length > 0) {
+    const setupLines = setupCompleted.map(({ step, result }) => {
+      const SETUP_CAP = 1000;
+      const body = result.output.trim();
+      const snippet =
+        body.length > SETUP_CAP ? `${body.slice(0, SETUP_CAP).trim()}…` : body;
+      return `- **${step.id}** (${step.strategy}): ${snippet}`;
+    });
+    sections.push(
+      `---\n\n*Setup steps that informed the agents above (shown for transparency, not as part of the persona answers):*\n\n${setupLines.join('\n\n')}`,
+    );
+  }
+
+  // Failed/skipped non-delegate steps — honest list, no fabricated content.
+  const setupFailed = plan.steps
+    .filter((s) => !delegateStepIds.has(s.id))
+    .map((s) => ({ step: s, result: stepResults.get(s.id) }))
+    .filter(
+      (x): x is { step: WorkflowStep; result: WorkflowStepResult } =>
+        !!x.result && (x.result.status === 'failed' || x.result.status === 'skipped'),
+    );
+  if (setupFailed.length > 0) {
+    const failedLines = setupFailed.map(
+      ({ step, result }) =>
+        `- **${step.id}** [${result.status}]: ${result.output.trim().slice(0, 240) || '(no detail)'}`,
+    );
+    sections.push(`*Setup steps that did not complete:*\n\n${failedLines.join('\n')}`);
+  }
+
+  return sections.join('\n\n---\n\n');
 }

@@ -20,14 +20,22 @@
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { VinyanConfig } from '../../config/schema.ts';
+import type { WorkflowPlan } from './types.ts';
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'timeout';
 
 /** Length threshold for 'auto' mode — goals at or above this are long-form. */
 export const AUTO_APPROVAL_LENGTH_THRESHOLD = 60;
 
-/** Default timeout when the config doesn't provide one. 10 minutes. */
-export const DEFAULT_APPROVAL_TIMEOUT_MS = 600_000;
+/**
+ * Default timeout when the config doesn't provide one. 3 minutes.
+ *
+ * Lowered from 10 minutes after the user reported that the previous default
+ * left agentic-workflow turns idle for too long when the human stepped away.
+ * Pairs with `evaluateAutoApproval` so the executor exercises judgement on
+ * timeout instead of falling through to blanket implicit approval.
+ */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 180_000;
 
 export type WorkflowConfig = NonNullable<VinyanConfig['workflow']>;
 
@@ -91,4 +99,99 @@ export function awaitApprovalDecision(
       if (payload.taskId === taskId) settle('rejected');
     });
   });
+}
+
+/**
+ * Auto-approval verdict produced when the user does not respond before the
+ * approval timeout fires. Vinyan exercises rule-based judgement (A3 — no LLM
+ * in the governance path) over the plan: approve when every step is
+ * read-only / no-side-effect, reject when the plan would mutate code or run
+ * a destructive shell command without a human on the line.
+ *
+ * The verdict is paired with a `rationale` string so the `WorkflowResult`
+ * surfaced on rejection can tell the user *why* Vinyan declined to proceed.
+ */
+export interface AutoApprovalVerdict {
+  decision: 'approved' | 'rejected';
+  rationale: string;
+}
+
+/**
+ * Shell command tokens that signal an irreversible side-effect on the user's
+ * machine. Matched as whole-word tokens (not substrings) so legitimate paths
+ * like `dirname` are not flagged. Conservative on purpose — when in doubt,
+ * Vinyan rejects rather than auto-approves a risky plan with no human on the
+ * line.
+ */
+const DESTRUCTIVE_SHELL_PATTERN =
+  /\b(?:rm|rmdir|mv|dd|mkfs|shred|chmod|chown|kill|killall|sudo|shutdown|reboot|halt|truncate|tee|curl|wget)\b|>>?\s*[~/.]|2>&1\s*\|/i;
+
+/**
+ * Per-step risk classification for the auto-approval evaluator. Public so the
+ * UI / dashboards can render the same verdict per row that Vinyan used to
+ * decide.
+ */
+export interface AutoApprovalStepRisk {
+  stepId: string;
+  /**
+   * Why this step is or is not risky. Empty string when the step is safe.
+   * Filled with a short, debuggable phrase ("full-pipeline mutates code",
+   * `direct-tool runs destructive shell: rm -rf …`) when risky.
+   */
+  reason: string;
+  risky: boolean;
+}
+
+/**
+ * Decide whether Vinyan should auto-approve a plan whose human reviewer
+ * timed out. Pure: no I/O, no LLM, no module state — A3-compliant.
+ *
+ * Rules (deterministic):
+ *   1. `full-pipeline` step → risky (mutates code via the worker pipeline).
+ *   2. `direct-tool` step whose `command` matches the destructive shell
+ *      pattern → risky (rm/dd/sudo/etc.).
+ *   3. `human-input` step → approved-but-no-op: the executor will surface
+ *      the input request even on auto-approve, so a human-input step in the
+ *      plan is not a reason to reject the whole workflow.
+ *   4. Everything else (`knowledge-query`, `llm-reasoning`,
+ *      `delegate-sub-agent`, plain `direct-tool` reads) → safe.
+ *
+ * If any step is risky, the verdict is `rejected` with a rationale listing
+ * the offending steps. Otherwise `approved` with a confirmation rationale.
+ */
+export function evaluateAutoApproval(plan: WorkflowPlan): AutoApprovalVerdict {
+  const risks: AutoApprovalStepRisk[] = plan.steps.map((step) => {
+    if (step.strategy === 'full-pipeline') {
+      return {
+        stepId: step.id,
+        reason: 'full-pipeline strategy mutates code via worker pipeline',
+        risky: true,
+      };
+    }
+    if (step.strategy === 'direct-tool') {
+      const command = step.command ?? step.description ?? '';
+      if (DESTRUCTIVE_SHELL_PATTERN.test(command)) {
+        const preview = command.length > 80 ? `${command.slice(0, 77)}…` : command;
+        return {
+          stepId: step.id,
+          reason: `direct-tool runs destructive shell command: ${preview}`,
+          risky: true,
+        };
+      }
+    }
+    return { stepId: step.id, reason: '', risky: false };
+  });
+
+  const risky = risks.filter((r) => r.risky);
+  if (risky.length === 0) {
+    return {
+      decision: 'approved',
+      rationale: `Auto-approved on timeout: every step is read-only / no-side-effect (${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}, ${plan.steps.map((s) => s.strategy).join(', ')}).`,
+    };
+  }
+  const summary = risky.map((r) => `${r.stepId}: ${r.reason}`).join('; ');
+  return {
+    decision: 'rejected',
+    rationale: `Auto-approval declined on timeout — ${risky.length} risky step${risky.length === 1 ? '' : 's'} require human review: ${summary}.`,
+  };
 }

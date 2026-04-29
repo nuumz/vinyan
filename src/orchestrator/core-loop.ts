@@ -2236,15 +2236,27 @@ async function executeTaskCore(
           // INSERT OR IGNORE in trace_store and the workflow trace never
           // persists, leaving the assistant message in chat to fall back to
           // the early-phase comprehension trace and mislabel its chips
-          // ("Conversational" instead of "Workflow"). Treat partial as
-          // success because a usable synthesized answer was produced; the
-          // per-step failures are already exposed via stepResults +
-          // workflow:delegate_completed bus events.
+          // ("Conversational" instead of "Workflow"). Map partial:
+          //   - some delegates succeeded → 'success' (usable synthesis)
+          //   - ALL delegates failed → 'failure' (the user explicitly asked
+          //     for agent diversity and we got none — the deterministic
+          //     "no-fabrication" report is shown but it's not a green
+          //     outcome). Session 4e62ebe6 surfaced this: 3/3 delegates
+          //     timed out, plan was 0/4 with three red ✗, but the trace
+          //     chip read "success" because partial got remapped blindly.
+          const delegateResults = workflowResult.stepResults.filter(
+            (r) => r.strategyUsed === 'delegate-sub-agent',
+          );
+          const allDelegatesFailedAtTrace =
+            delegateResults.length > 0 &&
+            delegateResults.every((r) => r.status === 'failed' || r.status === 'skipped');
           const traceOutcome: ExecutionTrace['outcome'] =
             workflowResult.status === 'completed'
               ? 'success'
               : workflowResult.status === 'partial'
-                ? 'success'
+                ? allDelegatesFailedAtTrace
+                  ? 'failure'
+                  : 'success'
                 : 'failure';
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,

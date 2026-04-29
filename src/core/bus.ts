@@ -1298,10 +1298,34 @@ export interface VinyanBusEvents {
     /** True when the orchestrator is waiting for the user to approve before executing. */
     awaitingApproval: boolean;
   };
-  /** User (via TUI / HTTP / WS) approved a plan that was awaiting approval. */
-  'workflow:plan_approved': { taskId: string; sessionId?: string };
-  /** User rejected a plan or the approval timer expired. */
-  'workflow:plan_rejected': { taskId: string; sessionId?: string; reason?: string };
+  /**
+   * User (via TUI / HTTP / WS) approved a plan that was awaiting approval —
+   * OR Vinyan auto-approved on timeout via `evaluateAutoApproval` (rule-based
+   * discretion over the plan; A3-compliant). Dashboards distinguish the two
+   * via the optional `auto: true` flag and the verdict `rationale`.
+   */
+  'workflow:plan_approved': {
+    taskId: string;
+    sessionId?: string;
+    /** True when Vinyan auto-approved on approval-timeout. Absent / false otherwise. */
+    auto?: boolean;
+    /** Verdict rationale from `evaluateAutoApproval` when `auto === true`. */
+    rationale?: string;
+  };
+  /**
+   * User rejected a plan, OR Vinyan rule-based auto-rejected the plan on
+   * approval-timeout (the plan contained `full-pipeline` or destructive
+   * `direct-tool` steps that need a human reviewer on the line).
+   */
+  'workflow:plan_rejected': {
+    taskId: string;
+    sessionId?: string;
+    reason?: string;
+    /** True when Vinyan auto-rejected on approval-timeout. Absent / false otherwise. */
+    auto?: boolean;
+    /** Verdict rationale from `evaluateAutoApproval` when `auto === true`. */
+    rationale?: string;
+  };
   'workflow:step_start': { stepId: string; strategy: string; description: string };
   'workflow:step_complete': {
     stepId: string;

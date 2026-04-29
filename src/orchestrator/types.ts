@@ -166,7 +166,15 @@ export interface IntentDeterministicCandidate {
     | 'mapUnderstandingToStrategy'
     | 'composed'
     | 'creative-deliverable-pattern'
-    | 'multi-agent-delegation-pattern';
+    | 'multi-agent-delegation-pattern'
+    /**
+     * Sub-task recursion guard demoted `agentic-workflow` (returned by the
+     * STU mapper) back to `conversational` because the input had a
+     * `parentTaskId`. Surfaced so the agent timeline / trace dashboard can
+     * tell a deliberate recursion-safety choice apart from a fresh STU
+     * mapping decision.
+     */
+    | 'sub-task-recursion-guard';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }

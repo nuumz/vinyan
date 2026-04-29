@@ -84,14 +84,24 @@ export async function buildConversationalResult(
 
   // Multi-agent: resolve the specialist persona for this turn so the
   // short-circuit reply matches the same identity that worker-pool would
-  // inject in full-pipeline. Falls back to generic Vinyan when no registry.
+  // inject in full-pipeline. Resolution priority:
+  //   1. intent.agentId — explicit choice from the IntentResolver layer
+  //   2. input.agentId  — set by the workflow executor when dispatching a
+  //      delegate-sub-agent (e.g. resolvedAgentId='author'); without this
+  //      delegated sub-tasks that fall through to the conversational
+  //      short-circuit reverted to coordinator and lost the persona the
+  //      planner had assigned (session a43487fd: author/mentor delegates
+  //      proposed competition rules instead of answering, partly because
+  //      the conversational path was speaking with the wrong soul).
+  //   3. registry default — final fallback
+  // Falls back to generic Vinyan when no registry is wired at all.
   const resolvedAgent = (() => {
     const reg = deps.agentRegistry;
     if (!reg) return undefined;
-    const id = intent.agentId ?? reg.defaultAgent().id;
+    const id = intent.agentId ?? input.agentId ?? reg.defaultAgent().id;
     return reg.getAgent(id) ?? reg.defaultAgent();
   })();
-  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps);
+  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps, input);
 
   if (provider) {
     try {
@@ -262,6 +272,7 @@ export async function buildConversationalResult(
 function buildConversationalSystemPrompt(
   agent: import('./types.ts').AgentSpec | undefined,
   deps: OrchestratorDeps,
+  input: TaskInput,
 ): string {
   const closing = `Respond naturally. Match the user's language. Maintain context across turns.
 Never reveal your underlying model name or provider — you are Vinyan.
@@ -312,8 +323,21 @@ ${closing}`;
   // sentinel parser in `buildConversationalResult` detects emission and
   // re-routes the task into agentic-workflow (bounded at one re-route per
   // task via `TaskInput.intentEscapeAttempts`).
-  lines.push('');
-  lines.push(formatEscapeProtocolBlock());
+  //
+  // Sub-task carve-out: when this task is itself a delegate-sub-agent
+  // dispatched from a parent workflow (`parentTaskId` set), the persona is
+  // already inside the agentic-workflow path — re-routing it would create
+  // the recursion documented on `intent/strategy.ts:isSubTask`. Worse, the
+  // free-tier author/researcher LLMs paraphrase the protocol stanza ("the
+  // task is too big to handle inline, use a agentic-workflow path") and
+  // then degenerate into a token loop ("topic-topic-topic-…"), which is
+  // what we observed on the Step-2-of-4 author stream. Sub-tasks must
+  // produce the step's deliverable directly; the parent synthesis step
+  // takes care of the bigger picture.
+  if (!input.parentTaskId) {
+    lines.push('');
+    lines.push(formatEscapeProtocolBlock());
+  }
 
   lines.push('');
   lines.push(closing);

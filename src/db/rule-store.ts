@@ -103,6 +103,8 @@ export class RuleStore {
 // ── Matching logic ───────────────────────────────────────────────────────
 
 function matchesContext(rule: EvolutionaryRule, context: RuleMatchContext): boolean {
+  if (rule.action === 'promote-capability') return false;
+
   const c = rule.condition;
 
   if (c.filePattern && context.filePattern) {

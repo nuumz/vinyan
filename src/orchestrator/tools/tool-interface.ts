@@ -4,12 +4,21 @@ export type ToolCategory = 'file_read' | 'file_write' | 'search' | 'shell' | 'vc
 
 export type ToolKind = 'executable' | 'control';
 
+export interface ToolSchemaProperty {
+  type: string;
+  description: string;
+  enum?: string[];
+  items?: { type: string };
+  properties?: Record<string, ToolSchemaProperty>;
+  required?: string[];
+}
+
 export interface ToolDescriptor {
   name: string;
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, { type: string; description: string; enum?: string[]; items?: { type: string } }>;
+    properties: Record<string, ToolSchemaProperty>;
     required: string[];
   };
   category: ToolCategory;
@@ -36,6 +45,13 @@ export interface ToolContext {
   allowedPaths: string[];
   workspace: string;
   overlayDir?: string;
+  /**
+   * Phase-11: id of the surrounding TaskInput. When present, side-channel
+   * tools (e.g. `skill_view`) can attribute usage signals back to the task
+   * via the bus. Optional because not every executor has a task scope —
+   * direct CLI tool calls and tests run without one.
+   */
+  taskId?: string;
   onDelegate?: (req: {
     goal: string;
     targetFiles: string[];

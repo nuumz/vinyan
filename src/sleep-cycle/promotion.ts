@@ -241,3 +241,217 @@ function clampToPragmatic(c: number): number {
   if (c > 0.7) return 0.7;
   return c;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase D — Capability claim promotion
+//
+// Promotes empirically-supported capabilities onto stable agents. When an
+// agent consistently passes tasks of a given (taskTypeSignature, agentId)
+// group while a specific capability was required, that capability is
+// merged onto the agent's `capabilities[]` with `evidence: 'evolved'`
+// and confidence = Wilson lower bound. Pure rule-based — no LLM in the
+// promotion path (A3). Confidence is statistically grounded (A5).
+//
+// Inputs:
+//   - traces       : full ExecutionTrace history (already includes
+//                    capabilityRequirements when the capability path fired)
+//   - agentRegistry: registry exposing `mergeCapabilityClaims(agentId, claims)`
+//
+// Gates:
+//   1. Group   : (taskTypeSignature, agentId) — both required.
+//   2. Sample  : ≥ minObservations traces in the group (default 30).
+//   3. Per-cap : capability must have been required in ≥ minPerCapability
+//                traces of the group (default 5) — avoids promoting a
+//                capability seen only twice across 30 tasks.
+//   4. Wilson  : Wilson lower bound of (success_count / total) on the
+//                per-capability subset must be ≥ wilsonThreshold (default 0.6).
+//   5. Skip    : task-scoped synthetic agents are NOT eligible (their
+//                claims would be discarded at task end anyway).
+// ─────────────────────────────────────────────────────────────────────────
+
+import type { CapabilityClaim, CapabilityRequirement } from '../orchestrator/types.ts';
+import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
+import type { VinyanBus } from '../core/bus.ts';
+
+export interface CapabilityPromotionOptions {
+  agentRegistry: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
+  /** Wilson LB threshold for promotion (default 0.6 — empirical signal). */
+  wilsonThreshold?: number;
+  /** Minimum traces per (taskTypeSignature, agentId) group (default 30). */
+  minObservations?: number;
+  /** Minimum traces in which the capability appeared (default 5). */
+  minPerCapability?: number;
+  /** Z-score for Wilson CI (default 1.96 = 95%). */
+  wilsonZ?: number;
+  /** Optional bus for promotion observability. */
+  bus?: Pick<VinyanBus, 'emit'>;
+}
+
+export interface CapabilityPromotionEntry {
+  agentId: string;
+  taskTypeSignature: string;
+  capabilityId: string;
+  observationCount: number;
+  successCount: number;
+  wilsonLowerBound: number;
+  promoted: boolean;
+  reason: string;
+}
+
+export interface CapabilityPromotionResult {
+  groupsConsidered: number;
+  promotedCount: number;
+  entries: CapabilityPromotionEntry[];
+}
+
+/**
+ * Promote capability claims for stable agents based on observed success
+ * across (taskTypeSignature, agentId) groups. Idempotent — re-running with
+ * the same traces produces the same merged registry state because
+ * `mergeCapabilityClaims` replaces by claim id.
+ */
+export function promoteCapabilityClaims(
+  traces: ExecutionTrace[],
+  options: CapabilityPromotionOptions,
+): CapabilityPromotionResult {
+  const wilsonThreshold = options.wilsonThreshold ?? 0.6;
+  const minObservations = options.minObservations ?? 30;
+  const minPerCapability = options.minPerCapability ?? 5;
+  const z = options.wilsonZ ?? 1.96;
+
+  // Group by (taskTypeSignature, agentId). Skip traces missing either.
+  // Key uses U+241F (Symbol For Unit Separator) — guaranteed not to appear
+  // inside either component, so we can split unambiguously even when
+  // taskTypeSignature itself contains '::' (the project's standard signature
+  // delimiter, e.g. 'review::ts::large-blast').
+  const SEP = '\u241f';
+  const groups = new Map<string, ExecutionTrace[]>();
+  for (const t of traces) {
+    if (!t.taskTypeSignature || !t.agentId) continue;
+    // Skip task-scoped synthetic agents — claims would not survive cleanup.
+    // Heuristic: synthesizeAgent ids are prefixed `synthetic-` (see
+    // `agent-synthesis.ts`). Also skip when registry has no record.
+    if (t.agentId.startsWith('synthetic-')) continue;
+    const key = `${t.taskTypeSignature}${SEP}${t.agentId}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(t);
+    groups.set(key, arr);
+  }
+
+  const entries: CapabilityPromotionEntry[] = [];
+  let promotedCount = 0;
+
+  for (const [key, groupTraces] of groups) {
+    const sepIdx = key.indexOf(SEP);
+    const taskTypeSignature = key.slice(0, sepIdx);
+    const agentId = key.slice(sepIdx + 1);
+
+    if (groupTraces.length < minObservations) continue;
+    // Skip when registry doesn't know the agent (defensive — can't promote).
+    if (!options.agentRegistry.getAgent(agentId)) continue;
+
+    // Per-capability tally: count traces in this group that REQUIRED capId,
+    // and how many of those passed (outcome === 'success').
+    const tally = new Map<string, { total: number; success: number; sample: CapabilityRequirement }>();
+    for (const t of groupTraces) {
+      const reqs = t.capabilityRequirements;
+      if (!reqs || reqs.length === 0) continue;
+      for (const r of reqs) {
+        const slot = tally.get(r.id) ?? { total: 0, success: 0, sample: r };
+        slot.total += 1;
+        if (t.outcome === 'success') slot.success += 1;
+        tally.set(r.id, slot);
+      }
+    }
+
+    // Build claims to merge for this agent in this round.
+    const toMerge: CapabilityClaim[] = [];
+    for (const [capId, slot] of tally) {
+      if (slot.total < minPerCapability) {
+        entries.push({
+          agentId,
+          taskTypeSignature,
+          capabilityId: capId,
+          observationCount: slot.total,
+          successCount: slot.success,
+          wilsonLowerBound: 0,
+          promoted: false,
+          reason: `per-capability observations ${slot.total} < ${minPerCapability}`,
+        });
+        continue;
+      }
+      const lb = wilsonLowerBound(slot.success, slot.total, z);
+      if (lb < wilsonThreshold) {
+        entries.push({
+          agentId,
+          taskTypeSignature,
+          capabilityId: capId,
+          observationCount: slot.total,
+          successCount: slot.success,
+          wilsonLowerBound: lb,
+          promoted: false,
+          reason: `Wilson LB ${lb.toFixed(3)} < ${wilsonThreshold}`,
+        });
+        continue;
+      }
+
+      const claim: CapabilityClaim = {
+        id: capId,
+        evidence: 'evolved',
+        confidence: lb,
+      };
+      // Carry forward structured signals from the requirement so the
+      // capability router can match without re-deriving them.
+      if (slot.sample.fileExtensions && slot.sample.fileExtensions.length > 0) {
+        claim.fileExtensions = [...slot.sample.fileExtensions];
+      }
+      if (slot.sample.actionVerbs && slot.sample.actionVerbs.length > 0) {
+        claim.actionVerbs = [...slot.sample.actionVerbs];
+      }
+      if (slot.sample.domains && slot.sample.domains.length > 0) {
+        claim.domains = [...slot.sample.domains];
+      }
+      if (slot.sample.frameworkMarkers && slot.sample.frameworkMarkers.length > 0) {
+        claim.frameworkMarkers = [...slot.sample.frameworkMarkers];
+      }
+      if (slot.sample.role) {
+        claim.role = slot.sample.role;
+      }
+      toMerge.push(claim);
+
+      entries.push({
+        agentId,
+        taskTypeSignature,
+        capabilityId: capId,
+        observationCount: slot.total,
+        successCount: slot.success,
+        wilsonLowerBound: lb,
+        promoted: true,
+        reason: 'promoted',
+      });
+      promotedCount += 1;
+    }
+
+    if (toMerge.length > 0) {
+      const ok = options.agentRegistry.mergeCapabilityClaims(agentId, toMerge);
+      if (ok && options.bus) {
+        for (const claim of toMerge) {
+          const stat = tally.get(claim.id)!;
+          options.bus.emit('evolution:capabilityPromoted', {
+            agentId,
+            capabilityId: claim.id,
+            confidence: claim.confidence,
+            observationCount: stat.total,
+            taskTypeSignature,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    groupsConsidered: groups.size,
+    promotedCount,
+    entries,
+  };
+}

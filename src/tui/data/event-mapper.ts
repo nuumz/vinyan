@@ -51,6 +51,7 @@ const EVENT_MAP: Record<string, EventStyle> = {
   'evolution:rulesApplied': { domain: 'evolve', icon: '·', color: ANSI.gray, defaultVisible: false },
   'evolution:rulePromoted': { domain: 'evolve', icon: '★', color: ANSI.green, defaultVisible: true },
   'evolution:ruleRetired': { domain: 'evolve', icon: '✗', color: ANSI.yellow, defaultVisible: true },
+  'evolution:capabilityPromoted': { domain: 'evolve', icon: '★', color: ANSI.green, defaultVisible: true },
 
   // Skills
   'skill:match': { domain: 'skill', icon: '⚡', color: ANSI.green, defaultVisible: false },
@@ -208,11 +209,13 @@ export function summarizeEvent(event: string, payload: unknown): string {
     case 'worker:selected':
       return `${p.workerId} score=${fmtNum(p.score)}`;
     case 'sleep:cycleComplete':
-      return `patterns=${p.patternsFound} rules=${p.rulesGenerated} skills=${p.skillsCreated}`;
+      return `patterns=${p.patternsFound} rules=${p.rulesGenerated} skills=${p.skillsCreated} caps=${p.capabilitiesPromoted ?? 0}`;
     case 'evolution:rulePromoted':
       return `${p.ruleId}`;
     case 'evolution:ruleRetired':
       return `${p.ruleId} ${truncStr(String(p.reason ?? ''), 30)}`;
+    case 'evolution:capabilityPromoted':
+      return `${p.agentId} + ${p.capabilityId} conf=${fmtNum(p.confidence)} n=${p.observationCount ?? 0}`;
     case 'peer:connected':
       return `${p.peerId} ${p.url}`;
     case 'peer:disconnected':

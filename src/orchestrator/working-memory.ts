@@ -35,6 +35,30 @@ export class WorkingMemory {
    *  safely run on every outer-loop iteration without duplicating entries. */
   private sessionHydrated = false;
   private crossTaskLoaded = false;
+  /**
+   * Accountability slice 4: most recent deterministic accountability grade
+   * computed by GoalEvaluator at the end of the previous outer-loop
+   * iteration. Read by core-loop so the next iteration's critic sees what
+   * the orchestrator's deterministic verifier said about the last attempt.
+   *
+   * A1-safe: this is data threaded between iterations, not a verdict the
+   * critic adopts. The critic still produces its own independent review.
+   */
+  private lastAccountabilityGrade?: 'A' | 'B' | 'C';
+  private lastBlockerCategories: string[] = [];
+  /**
+   * Slice 4 follow-up: snapshot of the previous iteration's prediction
+   * error (worker self-grade vs deterministic grade). Read by core-loop
+   * to thread a calibration warning into the next critic prompt when the
+   * worker has been overconfident. Inline-typed to avoid a cycle with
+   * goal-evaluator.ts.
+   */
+  private lastPredictionError?: {
+    selfGrade: 'A' | 'B' | 'C';
+    deterministicGrade: 'A' | 'B' | 'C';
+    magnitude: 'aligned' | 'minor' | 'severe';
+    direction: 'aligned' | 'overconfident' | 'underconfident';
+  };
   private bus?: VinyanBus;
   private taskId?: string;
   private archiver?: FailedApproachArchiver;
@@ -149,6 +173,69 @@ export class WorkingMemory {
    *  WorkingMemory is created outside prepareExecution but still needs archiving. */
   attachArchiver(archiver: FailedApproachArchiver): void {
     if (!this.archiver) this.archiver = archiver;
+  }
+
+  /**
+   * Accountability slice 4: record the deterministic A/B/C grade and any
+   * blocker categories computed by GoalEvaluator after the previous
+   * iteration. Subsequent iterations' critic prompt reads these so the
+   * reviewer is anchored on what the orchestrator's verifier already said.
+   *
+   * Idempotent: each outer-loop iteration overwrites the previous record;
+   * we only carry the most recent verdict, not full history (failed
+   * approaches already capture history in prose form).
+   */
+  recordAccountabilityResult(grade: 'A' | 'B' | 'C', blockerCategories: string[]): void {
+    this.lastAccountabilityGrade = grade;
+    // Deduplicate while preserving order; cap to a small list to keep prompts terse.
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    for (const c of blockerCategories) {
+      if (typeof c !== 'string' || c.length === 0) continue;
+      if (seen.has(c)) continue;
+      seen.add(c);
+      deduped.push(c);
+      if (deduped.length >= 6) break;
+    }
+    this.lastBlockerCategories = deduped;
+  }
+
+  /** Read the previous iteration's grade (undefined on first iteration). */
+  getLastAccountabilityGrade(): 'A' | 'B' | 'C' | undefined {
+    return this.lastAccountabilityGrade;
+  }
+
+  /** Read previous iteration's blocker categories (empty on first iteration). */
+  getLastBlockerCategories(): string[] {
+    return [...this.lastBlockerCategories];
+  }
+
+  /**
+   * Slice 4 follow-up — record the prediction-error verdict from the previous
+   * outer-loop iteration. Idempotent: most-recent-wins.
+   *
+   * A1-safe: pure data threaded between iterations. The next critic still
+   * produces an independent review; this is anchoring, not adoption.
+   */
+  recordPredictionError(error: {
+    selfGrade: 'A' | 'B' | 'C';
+    deterministicGrade: 'A' | 'B' | 'C';
+    magnitude: 'aligned' | 'minor' | 'severe';
+    direction: 'aligned' | 'overconfident' | 'underconfident';
+  }): void {
+    this.lastPredictionError = { ...error };
+  }
+
+  /** Read the previous iteration's prediction error (undefined on first iteration). */
+  getLastPredictionError():
+    | {
+        selfGrade: 'A' | 'B' | 'C';
+        deterministicGrade: 'A' | 'B' | 'C';
+        magnitude: 'aligned' | 'minor' | 'severe';
+        direction: 'aligned' | 'overconfident' | 'underconfident';
+      }
+    | undefined {
+    return this.lastPredictionError ? { ...this.lastPredictionError } : undefined;
   }
 
   /** G2: Archive all remaining failed approaches to persistent storage at task end.

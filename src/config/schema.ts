@@ -15,9 +15,7 @@ const OracleConfigSchema = z.object({
   command: z.string().optional(),
   timeout_ms: z.number().positive().optional(),
   /** Trust tier — determines confidence range and conflict resolution priority. */
-  tier: z
-    .enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative'])
-    .default('deterministic'),
+  tier: z.enum(['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative']).default('deterministic'),
   /** Behavior on timeout: 'block' = fail-closed, 'warn' = skip oracle and continue. */
   timeout_behavior: z.enum(['block', 'warn']).default('block'),
 });
@@ -243,6 +241,47 @@ const WorkflowRegistryConfigSchema = z.object({
 
 export type WorkflowRegistryConfig = z.infer<typeof WorkflowRegistryConfigSchema>;
 
+// ─── A9 / T4: Degradation status tracker config ─────────────────────────
+
+const DegradationConfigSchema = z.object({
+  /** Operator visibility surface for `/api/v1/health/degradation`. Default ON (additive). */
+  enabled: z.boolean().default(true),
+  /** Auto-clear stale entries after this many milliseconds. 0 disables eviction. */
+  entry_ttl_ms: z.number().int().min(0).default(5 * 60 * 1000),
+});
+
+export type DegradationConfig = z.infer<typeof DegradationConfigSchema>;
+
+// ─── A10 / T6: Goal-and-time grounding policy ───────────────────────────
+
+const GoalGroundingConfigSchema = z.object({
+  /** Run goal grounding at all. Default ON. */
+  enabled: z.boolean().default(true),
+  /** Risk score above which grounding always runs at any routing level. */
+  high_risk_score: z.number().min(0).max(1).default(0.6),
+  /** Tasks with budget at or above this duration always run grounding. */
+  long_running_budget_ms: z.number().int().min(0).default(120_000),
+  /** Wall-clock elapsed at which grounding fires regardless of budget. */
+  elapsed_check_threshold_ms: z.number().int().min(0).default(30_000),
+  /** Confidence floor applied when stale facts force a downgrade. */
+  freshness_confidence_floor: z.number().min(0).max(1).default(0.35),
+  /**
+   * Token-Jaccard threshold below which the current goal is considered drifted
+   * from the root intent. Lower values are stricter. 0 disables drift detection.
+   */
+  drift_similarity_threshold: z.number().min(0).max(1).default(0.5),
+  /**
+   * When true (Phase 5 default), drift severity escalates beyond
+   * `request-clarification` to the new action vocabulary
+   * (`re-ground-context`, `re-verify-evidence`, `ask-freshness-question`,
+   * `abort-unsafe-drift`). When false, only the legacy three actions are
+   * emitted, preserving pre-A10/T6 behavior.
+   */
+  extended_actions_enabled: z.boolean().default(false),
+});
+
+export type GoalGroundingConfig = z.infer<typeof GoalGroundingConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -267,6 +306,10 @@ const OrchestratorConfigSchema = z.object({
   skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
   /** Wave 6: Workflow registry (metadata surface). Default ON. */
   workflowRegistry: WorkflowRegistryConfigSchema.default(() => defaults(WorkflowRegistryConfigSchema)),
+  /** A9 / T4: degradation status tracker (additive operator visibility). */
+  degradation: DegradationConfigSchema.default(() => defaults(DegradationConfigSchema)),
+  /** A10 / T6: goal-and-time grounding policy + thresholds. Extended actions opt-in. */
+  goalGrounding: GoalGroundingConfigSchema.default(() => defaults(GoalGroundingConfigSchema)),
   /**
    * W3 P3: opt-in delegation of L0 dispatch through the new WorkerBackend
    * abstraction (src/runtime). Default OFF so the 1996-test baseline is
@@ -313,7 +356,7 @@ const AgentConfigSchema = z.object({
   preferences: AgentPreferencesConfigSchema.optional(),
 });
 
-// ─── Specialist agents (fleet of roles: ts-coder, writer, etc.) ────────
+// ─── Persona agents (role-pure templates: developer, author, coordinator, etc.) ───
 
 /**
  * Routing hints for specialist agent selection.
@@ -331,12 +374,30 @@ const AgentRoutingHintsSchema = z.object({
 });
 
 /**
+ * Capability claim — what the agent advertises it can do. Drives
+ * task ⇄ agent matching by skills/roles instead of by id. Optional;
+ * agents without claims fall back to inferred capabilities from
+ * routing_hints at load time.
+ */
+const AgentCapabilitySchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9._-]*$/, 'capability id must be kebab/dot-case'),
+  label: z.string().optional(),
+  file_extensions: z.array(z.string()).optional(),
+  action_verbs: z.array(z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  framework_markers: z.array(z.string()).optional(),
+  role: z.string().optional(),
+  evidence: z.enum(['builtin', 'evolved', 'synthesized', 'inferred']).default('builtin'),
+  confidence: z.number().min(0).max(1).default(0.9),
+});
+
+/**
  * AgentSpec — specialist agent configuration. Multiple allowed per workspace.
  * Each spec has own persona (soul.md), ACL, and routing hints.
  * Distinct from the workspace singleton AgentProfile (id='local').
  */
 export const AgentSpecSchema = z.object({
-  /** Unique agent identifier (e.g., 'ts-coder', 'writer', 'ceo'). */
+  /** Unique agent identifier (e.g., 'developer', 'author', 'coordinator'). */
   id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'agent id must be kebab-case'),
   /** Human-readable name shown in CLI and prompts. */
   name: z.string(),
@@ -357,6 +418,23 @@ export const AgentSpecSchema = z.object({
     .optional(),
   /** Routing hints for the intent resolver. */
   routing_hints: AgentRoutingHintsSchema.optional(),
+  /**
+   * Capability claims — drives capability-first task ⇄ agent matching.
+   * Optional. Loader fills inferred capabilities from routing_hints when
+   * absent so existing config keeps working.
+   */
+  capabilities: z.array(AgentCapabilitySchema).optional(),
+  /** Coarse role tags (e.g. 'editor', 'researcher', 'planner'). */
+  roles: z.array(z.string()).optional(),
+  /**
+   * Phase-1 redesign: canonical persona role for the role-pure roster.
+   * Drives A1 enforcement (Generator≠Verifier) and persona class taxonomy.
+   * Distinct from the legacy `roles[]` tags. Optional for backward-compat
+   * with config that pre-dates the redesign.
+   */
+  role: z
+    .enum(['coordinator', 'developer', 'architect', 'author', 'reviewer', 'assistant', 'researcher', 'mentor', 'concierge'])
+    .optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),
 });
@@ -639,9 +717,7 @@ const GatewayConfigSchema = z
          * Gateway intents — names from Discord's docs. Defaults cover the
          * MVP message-only scope.
          */
-        intents: z
-          .array(z.string())
-          .default(['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES']),
+        intents: z.array(z.string()).default(['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES']),
         /** Optional allowlist of Discord guild IDs — empty = accept all. */
         allowedGuilds: z.array(z.string()).default([]),
       })
@@ -784,9 +860,9 @@ export const VinyanConfigSchema = z.object({
     })
     .optional(),
   /**
-   * Specialist agent fleet (ts-coder, writer, ceo, etc.). When omitted/empty,
-   * built-in defaults are merged by the loader. CLI `vinyan agent add`
-   * appends here and writes back to vinyan.json.
+   * Specialist persona fleet (developer, author, reviewer, etc. + custom).
+   * When omitted/empty, the built-in role-pure roster is merged by the loader.
+   * CLI `vinyan agent add` appends here and writes back to vinyan.json.
    */
   agents: z.array(AgentSpecSchema).optional(),
   /**
@@ -809,6 +885,70 @@ export const VinyanConfigSchema = z.object({
    * affected until the operator flips both switches.
    */
   gateway: GatewayConfigSchema.optional(),
+  /**
+   * Experimental feature flags. These guard in-flight redesigns so partial
+   * landings can ship behind a config gate without breaking default behavior.
+   * Flags may be removed at any time once the work graduates — never rely on
+   * a flag being present in long-lived config.
+   */
+  experimental: z
+    .object({
+      /**
+       * Persona+skill composition (Phase 1–4 redesign). Phase 1 lands the
+       * role-pure persona roster and `effectiveTrust` scoring with no skill
+       * consumers, so default ON has no behavior change. Later phases wire
+       * skill loading, ACL composition, auction skill awareness, and the
+       * planner-level A1 enforcement under this same flag.
+       */
+      persona_skill_composition: z.boolean().default(true),
+    })
+    .optional(),
+  /**
+   * Phase-15 Item 1 — runtime skill acquisition from a remote registry.
+   * The `LocalHubAcquirer` already supports a cache-miss → import → rescan
+   * flow when both an importer and a `discoverCandidateIds` hook are
+   * supplied (Phase 14 Item 1). This config wires the hook from a static
+   * candidate map plus an adapter selector. When omitted (or `adapter:
+   * 'none'`), the acquirer stays local-only — same as Phase 14 default.
+   *
+   * Adapter choice is operator-level: 'github' fetches from public GitHub
+   * repos via the existing `GitHubAdapter`; 'agentskills' fetches from
+   * agentskills.io. Both run skill content through the importer's
+   * quarantine + gate + critic + promotion pipeline before the skill ever
+   * enters `.vinyan/skills/`.
+   */
+  skills: z
+    .object({
+      discovery: z
+        .object({
+          /**
+           * Per-capability list of skill IDs to attempt fetching when the
+           * runtime gap analysis surfaces an unmet capability. Format
+           * depends on the chosen adapter — `github` expects `owner/repo`
+           * or `owner/repo#path`; `agentskills` expects the slug.
+           *
+           * Example:
+           *   { "lang.typescript": ["vinyan-skills/ts-coding"],
+           *     "code.refactor": ["vinyan-skills/refactor-extract"] }
+           */
+          candidates: z.record(z.string(), z.array(z.string())).default({}),
+          /**
+           * Which transport to use when fetching the candidates above.
+           * 'none' (default) leaves the runtime local-only — config-list
+           * is observed but never fetched. Operators must opt into a
+           * network adapter explicitly.
+           */
+          adapter: z.enum(['none', 'github', 'agentskills']).default('none'),
+          /**
+           * Optional GitHub auth token forwarded to `GitHubAdapter`.
+           * Public repos work without it; private orgs / rate-limited
+           * pulls need a PAT.
+           */
+          github_token: z.string().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

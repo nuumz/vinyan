@@ -29,6 +29,7 @@ const ALL_BUS_EVENT_NAMES: Array<keyof VinyanBusEvents> = [
   'evolution:rulesApplied',
   'evolution:rulePromoted',
   'evolution:ruleRetired',
+  'evolution:capabilityPromoted',
   'sleep:cycleComplete',
   'selfmodel:predict',
   // Forward Predictor (A7)

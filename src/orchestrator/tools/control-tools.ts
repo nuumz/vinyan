@@ -28,7 +28,7 @@ function makeResult(callId: string, tool: string, partial: Partial<ToolResult>):
 export const attemptCompletion: Tool = {
   name: 'attempt_completion',
   description:
-    'Signal task completion or uncertainty. Use status "done" when the task is complete, or "uncertain" when you cannot proceed. Set needsUserInput=true when the uncertainty is about what the USER wants (phrase each uncertainty as a question to the user); leave needsUserInput=false/absent when the uncertainty is about a missing code fact that a retry or higher routing level could resolve.',
+    'Signal task completion or uncertainty. Use status "done" when the task is complete, or "uncertain" when you cannot proceed. Set needsUserInput=true when the uncertainty is about what the USER wants (phrase each uncertainty as a question to the user); leave needsUserInput=false/absent when the uncertainty is about a missing code fact that a retry or higher routing level could resolve. When marking status="done" you MUST include a selfAssessment with grade A or B per the [ACCOUNTABILITY CONTRACT]; grade C work is not done and must be reported via status="uncertain".',
   minIsolationLevel: 0,
   category: 'control',
   sideEffect: false,
@@ -60,6 +60,32 @@ export const attemptCompletion: Tool = {
             type: 'string',
             description: 'Non-file output (answer, analysis, etc.).',
           },
+          selfAssessment: {
+            type: 'object',
+            description:
+              'Required for status="done": your honest grading of the result against the [ACCOUNTABILITY CONTRACT]. Grade C work MUST be reported via status="uncertain", not "done" — the orchestrator will reject a "done" with grade C.',
+            properties: {
+              grade: {
+                type: 'string',
+                enum: ['A', 'B', 'C'],
+                description:
+                  "A = all criteria addressed with verification evidence. B = core goal achieved with documented minor caveats. C = critical flaw (missing criterion, failed verification, scope drift, hidden uncertainty) — DO NOT use grade C with status='done'.",
+              },
+              acceptanceCriteriaSatisfied: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'List the acceptance criteria you believe are satisfied with one short evidence pointer each.',
+              },
+              gaps: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Honest list of remaining gaps, caveats, or unverified claims. Empty array only when truly Grade A.',
+              },
+            },
+            required: ['grade'],
+          },
         },
         required: ['status'],
       },
@@ -80,6 +106,7 @@ export const attemptCompletion: Tool = {
         // uncertainty (agent expects retry/escalate) from a user-intent
         // uncertainty (agent expects the orchestrator to ask the user).
         needsUserInput: params.needsUserInput,
+        selfAssessment: params.selfAssessment,
       }),
     });
   },

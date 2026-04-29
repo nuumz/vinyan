@@ -3,6 +3,7 @@
  * Source of truth: spec/tdd.md §17.1
  */
 import type { LLMProvider, RoutingLevel } from '../types.ts';
+import { engineIdFromWorker } from './engine-worker-binding.ts';
 
 const LEVEL_TO_TIER: Record<RoutingLevel, LLMProvider['tier'] | null> = {
   0: null, // L0: no LLM (cached/scripted)
@@ -46,7 +47,7 @@ export class LLMProviderRegistry {
     if (exact) return exact;
 
     // Strip "worker-" prefix — autoRegisterWorkers creates IDs as "worker-{provider.id}"
-    const stripped = workerId.startsWith('worker-') ? workerId.slice(7) : workerId;
+    const stripped = engineIdFromWorker(workerId);
     const byStripped = this.providers.get(stripped);
     if (byStripped) return byStripped;
 

@@ -17,7 +17,7 @@ export interface EventForwarderConfig {
   bus: VinyanBus;
   /** Local instance ID. */
   instanceId: string;
-  /** Events to forward (default: sleep:cycleComplete, evolution:rulePromoted, skill:outcome). */
+  /** Events to forward (default: sleep cycle, evolution promotions, skill outcome). */
   forwardEvents?: BusEventName[];
   /** Function to get current active peers. */
   getPeers: () => DiscoveredPeer[];
@@ -25,7 +25,12 @@ export interface EventForwarderConfig {
   forwardTimeoutMs?: number;
 }
 
-const DEFAULT_FORWARD_EVENTS: BusEventName[] = ['sleep:cycleComplete', 'evolution:rulePromoted', 'skill:outcome'];
+const DEFAULT_FORWARD_EVENTS: BusEventName[] = [
+  'sleep:cycleComplete',
+  'evolution:rulePromoted',
+  'evolution:capabilityPromoted',
+  'skill:outcome',
+];
 
 export class EventForwarder {
   private config: EventForwarderConfig;

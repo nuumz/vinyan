@@ -50,6 +50,8 @@ export interface RoutingDecision {
    * existing call sites stay bit-exact when no config is supplied.
    */
   phaseConfigs?: Partial<Record<PhaseName, PhaseLLMConfig>>;
+  /** A8 RFC: provenance for the governance decision that produced this route. */
+  governanceProvenance?: GovernanceProvenance;
 }
 
 /** Epistemic signal from SelfModel — historical oracle confidence for task type.
@@ -131,7 +133,18 @@ export type ToolRequirement = 'none' | 'tool-needed';
 export type ExecutionStrategy = 'full-pipeline' | 'direct-tool' | 'conversational' | 'agentic-workflow';
 
 /** Origin of the resolved intent — enables calibration to separate LLM vs deterministic paths. */
-export type IntentReasoningSource = 'llm' | 'fallback' | 'cache' | 'deterministic' | 'merged';
+export type IntentReasoningSource =
+  | 'llm'
+  | 'fallback'
+  | 'cache'
+  | 'deterministic'
+  | 'merged'
+  // Deterministic short-affirmative pre-classifier reconstructed intent from prior turns
+  | 'short-affirmative-continuation'
+  // Deterministic short-retry pre-classifier replayed prior request after a failed turn
+  | 'short-retry-continuation'
+  // Persona escape sentinel re-routed conversational shortcircuit to agentic-workflow
+  | 'persona-escape';
 
 /**
  * Epistemic state of an intent resolution — mirrors VerifiedClaim taxonomy.
@@ -148,7 +161,12 @@ export interface IntentDeterministicCandidate {
   strategy: ExecutionStrategy;
   confidence: number;
   /** Which rule produced the candidate (observability). */
-  source: 'classifyDirectTool' | 'mapUnderstandingToStrategy' | 'composed';
+  source:
+    | 'classifyDirectTool'
+    | 'mapUnderstandingToStrategy'
+    | 'composed'
+    | 'creative-deliverable-pattern'
+    | 'multi-agent-delegation-pattern';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }
@@ -169,13 +187,19 @@ export interface IntentResolution {
   /** Which classifier produced the decision (llm | heuristic pre-filter | regex fallback). */
   reasoningSource?: IntentReasoningSource;
   /**
-   * Multi-agent: selected specialist agent id (e.g., 'ts-coder', 'writer').
+   * Multi-agent: selected specialist agent id (e.g., 'developer', 'author').
    * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
    * Overridden by `input.agentId` (CLI --agent flag).
    */
   agentId?: string;
   /** Resolver's reasoning for agent selection (observability). */
   agentSelectionReason?: string;
+  /**
+   * Structured capability requirements the LLM extracted from the goal.
+   * Forwarded to AgentRouter.route() with source `'llm-extract'`. Allows
+   * routing of creative/research/design intents without regex on goal text.
+   */
+  capabilityRequirements?: CapabilityRequirement[];
   /**
    * Epistemic state — `known` when deterministic+LLM agree (or one is confident alone),
    * `uncertain` for low-confidence / ambiguous inputs, `contradictory` when rule and LLM
@@ -194,6 +218,16 @@ export interface IntentResolution {
   originalGoal?: string;
   /** Rule-based candidate produced before the LLM ran, for observability. */
   deterministicCandidate?: IntentDeterministicCandidate;
+  /**
+   * Capability-First (Phase D): when post-LLM re-routing performed gap
+   * analysis, the result is stashed here so downstream phases (trace
+   * recording, evolution promotion) can read it without re-running.
+   */
+  capabilityAnalysis?: CapabilityGapAnalysis;
+  /** Synthesized agent id when the synthesize branch fired, for trace + cleanup. */
+  syntheticAgentId?: string;
+  /** Local-first knowledge contexts when the research branch surfaced evidence. */
+  knowledgeUsed?: KnowledgeContext[];
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */
@@ -483,7 +517,7 @@ export interface TaskInput {
    */
   subagentType?: 'explore' | 'plan' | 'general-purpose';
   /**
-   * Specialist agent ID (e.g., 'ts-coder', 'writer'). Set by:
+   * Specialist agent ID (e.g., 'developer', 'author'). Set by:
    *   1. CLI `--agent=<id>` (user override, skips auto-classification)
    *   2. Intent resolver auto-classification (when not pre-set)
    *   3. Registry default (fallback)
@@ -495,6 +529,14 @@ export interface TaskInput {
     maxDurationMs: number; // Wall-clock timeout
     maxRetries: number; // Default: 3 per routing level
   };
+  /**
+   * Bound counter for the conversational-shortcircuit escape sentinel
+   * (`<<NEEDS_AGENTIC_WORKFLOW: ...>>`). Incremented to 1 when the persona
+   * emits the sentinel and the orchestrator re-routes to agentic-workflow.
+   * The detector ignores subsequent emissions on the same task to prevent
+   * re-entry loops — see `intent/escape-sentinel.ts`.
+   */
+  intentEscapeAttempts?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -612,8 +654,12 @@ export interface TaskResult {
    *   `clarificationNeeded` carries those questions. Distinct from `uncertain`
    *   because no retry/escalation is attempted — the user must answer in the
    *   next turn. Lexically aligned with A2A `A2ATaskState` for future bridging.
+   * - `partial`: the work produced a usable answer but at least one sub-step
+   *   failed or was skipped (e.g., a multi-step workflow where one
+   *   independent branch failed). UI should treat this as success-with-warning,
+   *   not a hard failure.
    */
-  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required';
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required' | 'partial';
   mutations: Array<{
     file: string;
     diff: string; // Unified diff
@@ -635,6 +681,14 @@ export interface TaskResult {
   clarificationNeeded?: string[];
   /** Wave B: plan used for this task — surfaced so outer-loop can pass to replan engine + decomposition learner. */
   plan?: TaskDAG;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `done`/`uncertain` turn. Read by the deterministic GoalEvaluator to
+   * compute prediction-error vs the orchestrator's own grade (A7 — Prediction
+   * Error as Learning). The orchestrator never trusts this for the verdict;
+   * it is data, not authority.
+   */
+  workerSelfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,7 +1075,7 @@ export interface CachedSkill {
   origin?: 'local' | 'a2a' | 'mcp'; // PH5: instance provenance
   composedOf?: string[]; // PH5 D2: ordered list of sub-skill task signatures
   /**
-   * Multi-agent: owning specialist agent id (e.g., 'ts-coder').
+   * Multi-agent: owning specialist agent id (e.g., 'developer').
    * NULL/undefined = legacy shared skill (readable by any agent).
    * New skills are written with the creating agent's id.
    */
@@ -1042,7 +1096,7 @@ export interface EvolutionaryRule {
     riskAbove?: number;
     modelPattern?: string;
   };
-  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker';
+  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker' | 'promote-capability';
   parameters: Record<string, unknown>;
   status: 'probation' | 'active' | 'retired';
   createdAt: number;
@@ -1056,13 +1110,97 @@ export interface EvolutionaryRule {
 // Execution traces (→ TDD §12B)
 // ---------------------------------------------------------------------------
 
+export interface GovernanceEvidenceReference {
+  kind: 'task-input' | 'file' | 'oracle-verdict' | 'routing-factor' | 'policy' | 'tool-result' | 'trace' | 'other';
+  source: string;
+  contentHash?: string;
+  observedAt?: number;
+  summary?: string;
+}
+
+export interface GovernanceProvenance {
+  decisionId: string;
+  policyVersion: string;
+  attributedTo: string;
+  wasGeneratedBy: string;
+  wasDerivedFrom: GovernanceEvidenceReference[];
+  decidedAt: number;
+  evidenceObservedAt?: number;
+  reason?: string;
+  escalationPath?: RoutingLevel[];
+}
+
+export type GoalGroundingPhase = 'perceive' | 'spec' | 'plan' | 'generate' | 'verify';
+/**
+ * A10 / T6 — extended action union. The original three actions remain the
+ * default decision surface; the four added actions are gated behind
+ * `orchestrator.goalGrounding` config and the Phase 5 action handler:
+ *   - `re-ground-context`     re-run lightweight perceive/spec refresh
+ *   - `re-verify-evidence`    re-run verification with fresh fact lookup
+ *   - `ask-freshness-question` surface clarification specifically about evidence freshness
+ *   - `abort-unsafe-drift`    refuse to commit (terminal fail-closed)
+ */
+export type GoalGroundingAction =
+  | 'continue'
+  | 'downgrade-confidence'
+  | 'request-clarification'
+  | 're-ground-context'
+  | 're-verify-evidence'
+  | 'ask-freshness-question'
+  | 'abort-unsafe-drift';
+
+export interface GoalGroundingCheck {
+  taskId: string;
+  phase: GoalGroundingPhase;
+  routingLevel: RoutingLevel;
+  policyVersion: string;
+  checkedAt: number;
+  action: GoalGroundingAction;
+  reason: string;
+  rootGoalHash: string;
+  currentGoalHash: string;
+  goalDrift: boolean;
+  freshnessDowngraded: boolean;
+  factCount: number;
+  staleFactCount: number;
+  minFactConfidence?: number;
+  evidence: GovernanceEvidenceReference[];
+}
+
+export type OracleIndependenceAssumption = 'independent' | 'shared-evidence' | 'single-oracle';
+export type OracleConfidenceCompositionMethod =
+  | 'oracle-gate-aggregate-confidence'
+  | 'default-pass-fallback'
+  | 'default-fail-fallback';
+
+export interface OracleIndependenceAudit {
+  policyVersion: string;
+  compositionMethod: OracleConfidenceCompositionMethod;
+  assumption: OracleIndependenceAssumption;
+  oracleCount: number;
+  deterministicOracleCount: number;
+  heuristicOracleCount: number;
+  primaryOracles: string[];
+  corroboratingOracles: string[];
+  sharedEvidenceWarnings: string[];
+}
+
 /** Recorded after each task for Self-Model calibration and Evolution Engine */
 export interface ExecutionTrace {
   id: string;
   taskId: string;
   sessionId?: string; // Session grouping for multi-step tasks
+  /**
+   * Parent task id when this trace belongs to a delegated child. Set from
+   * `TaskInput.parentTaskId` (which `buildSubTaskInput` populates from the
+   * parent task at delegation time). Without it, downstream consumers
+   * (Evolution Engine, observability dashboards, the chat UI's delegation
+   * tree) cannot reconstruct parent → child chains from trace storage —
+   * they'd see each child as an unrelated top-level trace.
+   */
+  parentTaskId?: string;
   workerId?: string; // Which worker (oracle/engine) executed this step
-  /** Multi-agent: specialist id (e.g., 'ts-coder') — distinct from workerId (oracle). */
+  /** Multi-agent: specialist id (e.g., 'developer') — distinct from workerId (oracle). */
   agentId?: string;
   timestamp: number;
   routingLevel: RoutingLevel;
@@ -1081,7 +1219,7 @@ export interface ExecutionTrace {
   modelUsed: string; // kept for backward compat; new code should prefer engineId
   tokensConsumed: number;
   durationMs: number;
-  outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+  outcome: 'success' | 'failure' | 'timeout' | 'escalated' | 'partial';
   failureReason?: string;
   affectedFiles: string[];
   // Phase 2.2 — shadow validation (async, post-commit)
@@ -1143,6 +1281,43 @@ export interface ExecutionTrace {
   understandingVerified?: number;
   /** STU Phase D: Denormalized primaryAction for indexed queries. */
   understandingPrimaryAction?: string;
+  /** Capability route audit: resolver/router rationale for the selected agent. */
+  agentSelectionReason?: string;
+  // ── Capability-First Orchestration (Phase D) ─────────────────────────
+  /**
+   * Structured capability requirements the resolver/router judged the task
+   * to need. Recorded so sleep-cycle can group traces by `(taskTypeSignature,
+   * agentId)` and promote claims for capabilities the agent consistently
+   * succeeds on. Optional — present only on traces that flowed through the
+   * capability-aware routing path.
+   */
+  capabilityRequirements?: CapabilityRequirement[];
+  /**
+   * Output of capability gap analysis. Includes recommended action
+   * (proceed/research/synthesize/fallback) and the fit/gap breakdown for
+   * the chosen agent. Useful for evolution + dashboard observability.
+   */
+  capabilityAnalysis?: CapabilityGapAnalysis;
+  /** Capability profile id selected by the router/analysis path. */
+  selectedCapabilityProfileId?: string;
+  /** Provenance of the selected capability profile. */
+  selectedCapabilityProfileSource?: AgentCapabilityProfileSource;
+  /** Trust tier of the selected capability profile. */
+  selectedCapabilityProfileTrustTier?: CapabilityProfileTrustTier;
+  /** Fit score of the selected capability candidate that drove routing. */
+  capabilityFitScore?: number;
+  /** Capability ids still unmet by the selected capability candidate. */
+  unmetCapabilityIds?: string[];
+  /** Synthesized agent id used for this task, if synthesis fired. */
+  syntheticAgentId?: string;
+  /** Local-first knowledge contexts surfaced for this task, when research fired. */
+  knowledgeUsed?: KnowledgeContext[];
+  /** A8 RFC: replayable governance/action/verdict provenance for this trace. */
+  governanceProvenance?: GovernanceProvenance;
+  /** A10 RFC: phase-boundary root-goal and temporal freshness grounding checks. */
+  goalGrounding?: GoalGroundingCheck[];
+  /** A5 refinement: audit metadata for oracle independence assumptions during confidence composition. */
+  oracleIndependence?: OracleIndependenceAudit;
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1423,13 @@ export interface WorkerInput {
    * prior parameters.
    */
   turns?: Turn[];
+  /**
+   * Phase-2 + 5B: persona's loaded SKILL.md cards, computed by the
+   * orchestrator (in-process) and forwarded across the subprocess boundary.
+   * The worker passes them straight into `assemblePrompt` so the
+   * `agent-skill-cards` section renders identically in both dispatch paths.
+   */
+  loadedSkillCards?: import('./agents/derive-persona-capabilities.ts').SkillCardView[];
 }
 
 /** Output from a worker process */
@@ -1318,6 +1500,12 @@ export interface LLMRequest {
   systemPrompt: string;
   userPrompt: string;
   maxTokens: number;
+  /**
+   * Provider-level timeout in ms. Non-streaming calls use it as the attempt
+   * wall-clock timeout; streaming calls use it as the idle timeout between
+   * chunks unless the provider documents a stricter policy.
+   */
+  timeoutMs?: number;
   temperature?: number;
   /**
    * G3 per-phase sampling: nucleus sampling parameter (0..1). When set,
@@ -1370,6 +1558,13 @@ export interface LLMRequest {
    *   contract to the caller.
    */
   responseFormat?: ResponseFormat;
+  /**
+   * Optional trace metadata forwarded to providers that support broadcast /
+   * trace data (currently OpenRouter — see `llm/llm-trace-context.ts`).
+   * Per-request override; missing fields inherit from the ambient context
+   * established by `runWithLLMTrace(...)`.
+   */
+  trace?: import('./llm/llm-trace-context.ts').LLMTraceMetadata;
 }
 
 /** G4 response format directive — see `LLMRequest.responseFormat`. */
@@ -1439,6 +1634,7 @@ export interface RERequest {
   systemPrompt: string;
   userPrompt: string;
   maxTokens: number;
+  timeoutMs?: number;
   temperature?: number;
   tools?: Array<{
     name: string;
@@ -1554,6 +1750,12 @@ export interface EngineConfig {
   engineType?: REEngineType;
   /** Capabilities this engine declares (for capability-first routing). */
   capabilitiesDeclared?: string[];
+  /**
+   * Dispatch tier (LLM engines only). Surfaced so the dashboard / fleet
+   * tooling can group engines by class without re-parsing the id pattern.
+   * Optional — non-LLM engines (Z3, Human-ECP) leave this undefined.
+   */
+  tier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
 }
 
 /** Engine stats — computed on-demand from traces via SQL aggregates, 60s TTL cache */
@@ -1610,7 +1812,7 @@ export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
 export interface AgentProfile {
   /**
    * Agent id. 'local' = workspace host (Phase 1 singleton, preserved for backward compat).
-   * Phase 2+ allows specialist ids ('ts-coder', 'writer', etc.) from the registry.
+   * Phase 2+ allows specialist ids ('developer', 'reviewer', etc.) from the registry.
    */
   id: string;
   /** A2A instance UUID — reused from `.vinyan/instance-id`. */
@@ -1685,25 +1887,325 @@ export interface AgentRoutingHints {
  * ACL (allowed tools + capability overrides), and routing hints.
  *
  * Fields:
- *   - id: kebab-case unique identifier (e.g., 'ts-coder', 'writer')
+ *   - id: kebab-case unique identifier (e.g., 'developer', 'reviewer')
  *   - name: human-readable display name
  *   - description: one-line role summary for intent resolver
+ *   - role: canonical PersonaRole (Phase 1 redesign) — drives planner-level A1
+ *     enforcement (Generator≠Verifier on L2/L3 code-mutation) and ACL defaults.
  *   - soul: pre-loaded soul.md content (persona + philosophy + strategies)
  *   - allowedTools: tool allowlist (intersection with routing defaults)
  *   - capabilityOverrides: capability restrictions (never widens)
  *   - routingHints: advisory hints for auto-classification
+ *   - baseSkills: skills loaded at registration (Phase 2 wires these)
+ *   - acquirableSkillTags: tag globs that bound runtime skill auto-binding
  *   - builtin: true if shipped with Vinyan
  */
 export interface AgentSpec {
   id: string;
   name: string;
   description: string;
+  /**
+   * Canonical persona role for the redesigned roster. Used by the planner to
+   * enforce A1 (Generator≠Verifier persona class on L2/L3 code-mutation) and
+   * by the capability router as a coarse pre-filter. Optional for backward
+   * compatibility with user-authored agents that pre-date the redesign.
+   */
+  role?: PersonaRole;
   soul?: string;
   soulPath?: string;
   allowedTools?: string[];
   capabilityOverrides?: AgentCapabilityOverrides;
   routingHints?: AgentRoutingHints;
+  /**
+   * Capability claims — what skills/roles/domains this agent advertises.
+   * The capability layer matches task `CapabilityRequirement` against these
+   * claims to pick a fit, instead of relying solely on `routingHints` keyword
+   * matching. Optional for backward compatibility; agents without claims
+   * fall back to inferred capabilities from `routingHints`.
+   */
+  capabilities?: CapabilityClaim[];
+  /**
+   * Coarse role tags for natural-language tasks (e.g. 'editor', 'critic',
+   * 'researcher', 'planner'). Independent from `id`. Used by the capability
+   * router when the task requests a role, so we are not coupled to specific
+   * agent ids.
+   */
+  roles?: string[];
+  /**
+   * Skills loaded at agent registration (base scope). Phase 1 leaves this
+   * empty for shipped personas — skill packs ship in Phase 2/4. The capability
+   * layer treats `baseSkills` as the skill loadout that always travels with
+   * the persona, distinct from `bound` (per-workspace persistence) and
+   * `acquired` (per-task runtime binding) scopes added in later phases.
+   */
+  baseSkills?: SkillRef[];
+  /**
+   * Tag globs that bound which skills the runtime may auto-bind to this
+   * persona via the gap → hub-import path. Example: a `developer` persona
+   * carries `['language:*', 'framework:*']` so it can acquire any language
+   * or framework skill on demand, while `reviewer` carries `['review:*']`
+   * to keep its scope narrow. Empty/unset disables auto-binding.
+   */
+  acquirableSkillTags?: string[];
   builtin?: boolean;
+}
+
+/**
+ * Canonical persona roles for the redesigned agent roster.
+ *
+ * Personas are *archetypes of cognition*, not file-extension owners. Domain
+ * specialization (TypeScript, fiction, API design) lives in skill packs, not
+ * in the persona itself. The role drives:
+ *   - planner-level A1 enforcement: Generator-class personas (`developer`,
+ *     `architect`, `author`, `researcher`) cannot self-verify on L2/L3
+ *     code-mutation tasks; a Verifier-class persona (`reviewer`) is required.
+ *   - default ACL floor (e.g. `mentor` is read-only by default, `developer`
+ *     gets code-mutation tools, `researcher` gets read+network).
+ *   - capability router pre-filter (a code task prefers `developer` over
+ *     `author` when no explicit override is given).
+ *
+ * Cognitive role coverage:
+ *   - Generate (artifact production): developer, architect, author, researcher
+ *   - Verify (artifact judgement):    reviewer
+ *   - Coordinate (route work):        coordinator
+ *   - Reflex Q&A:                     assistant
+ *   - Investigate (deep synthesis):   researcher
+ *   - Guide (dialogue/coaching):      mentor
+ *   - Personal logistics:             concierge
+ */
+export type PersonaRole =
+  | 'coordinator'
+  | 'developer'
+  | 'architect'
+  | 'author'
+  | 'reviewer'
+  | 'assistant'
+  | 'researcher'
+  | 'mentor'
+  | 'concierge';
+
+/**
+ * Reference to a runtime skill (SKILL.md artifact) loaded by an agent.
+ *
+ * `pinnedVersion` and `contentHash` are A4 (content-addressed truth) anchors:
+ * a SkillRef with both fields set freezes the agent's view of the skill so
+ * later hub upgrades don't silently change behavior. Phase 1 ships only the
+ * type — runtime resolution is Phase 2.
+ */
+export interface SkillRef {
+  /** Stable skill id, matches SkillMdFrontmatter.id. */
+  id: string;
+  /** Optional semver pin. When set, resolver refuses non-matching versions. */
+  pinnedVersion?: string;
+  /** Optional sha256 pin (A4). When set, resolver refuses non-matching hashes. */
+  contentHash?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Capability layer — task ⇄ agent matching by skills, not names
+// ---------------------------------------------------------------------------
+
+/**
+ * Source of a capability declaration. Used to weight confidence: builtin
+ * declarations are trusted as-is, evolved skills carry empirical confidence,
+ * inferred entries (from routingHints) are weakest, synthesized entries from
+ * a task-scoped agent are tentative until validated.
+ */
+export type CapabilityEvidence = 'builtin' | 'evolved' | 'synthesized' | 'inferred';
+
+/** A capability the agent claims to handle. */
+export interface CapabilityClaim {
+  /** Stable id, e.g. 'code.refactor.ts', 'writing.prose.long-form', 'design.api'. */
+  id: string;
+  /** Optional human-readable label for prompts/UI. */
+  label?: string;
+  /** File extensions this capability typically targets (lowercase, leading dot). */
+  fileExtensions?: string[];
+  /** Action verbs this capability handles (matches TaskFingerprint.actionVerb vocabulary). */
+  actionVerbs?: string[];
+  /** Coarse domains, e.g. 'code-mutation', 'creative-writing'. */
+  domains?: string[];
+  /** Framework markers this capability is tuned for. */
+  frameworkMarkers?: string[];
+  /** Coarse role tag, e.g. 'editor', 'planner'. */
+  role?: string;
+  /** Where the claim came from. Affects confidence weighting at routing time. */
+  evidence: CapabilityEvidence;
+  /** [0,1] confidence in this claim. Builtin defaults near 1; inferred ≤ 0.5. */
+  confidence: number;
+}
+
+/** A single capability the task is judged to need. */
+export interface CapabilityRequirement {
+  id: string;
+  /** [0,1] importance for the task. The router weights fit/gap by this. */
+  weight: number;
+  /** Optional structured signals so the router can match without re-parsing. */
+  fileExtensions?: string[];
+  actionVerbs?: string[];
+  domains?: string[];
+  frameworkMarkers?: string[];
+  /** Soft role hint when the task explicitly asks for one. */
+  role?: string;
+  /** How the requirement was derived. */
+  source: 'fingerprint' | 'router-hint' | 'llm-extract' | 'caller';
+}
+
+export type AgentCapabilityProfileSource = 'registry' | 'synthetic' | 'peer' | 'external';
+
+export type CapabilityProfileTrustTier = 'deterministic' | 'heuristic' | 'probabilistic';
+
+export interface AgentCapabilityProfile {
+  /** Stable profile id. For local registry agents this matches `AgentSpec.id`. */
+  id: string;
+  /** Runtime route target id. Local profiles route back to an AgentSpec id. */
+  routeTargetId: string;
+  displayName?: string;
+  source: AgentCapabilityProfileSource;
+  provenance: string;
+  trustTier: CapabilityProfileTrustTier;
+  taskScope?: { taskId: string };
+  claims: CapabilityClaim[];
+  roles: string[];
+  acl: {
+    allowedTools?: string[];
+    readAny?: boolean;
+    writeAny?: boolean;
+    network?: boolean;
+    shell?: boolean;
+  };
+  routingHints?: AgentRoutingHints;
+}
+
+/** Agent-level fit summary for one task. */
+export interface CapabilityFit {
+  agentId: string;
+  /** Capability profile scored to produce this fit. Defaults to agentId for legacy callers. */
+  profileId?: string;
+  profileSource?: AgentCapabilityProfileSource;
+  trustTier?: CapabilityProfileTrustTier;
+  /** [0,1] composite fit score across required capabilities. */
+  fitScore: number;
+  /** Capability ids the agent claims (and weight contribution). */
+  matched: Array<{ id: string; weight: number; confidence: number }>;
+  /** Capability ids the agent does NOT claim, with their weight. */
+  gap: Array<{ id: string; weight: number }>;
+}
+
+/**
+ * Output of capability analysis + matching for a task.
+ * Drives the router's recommended action (proceed / research / synthesize / fallback).
+ */
+export interface CapabilityGapAnalysis {
+  taskId: string;
+  required: CapabilityRequirement[];
+  /** Sorted by fitScore desc. First entry is the recommended agent. */
+  candidates: CapabilityFit[];
+  /** [0,1] sum of weight of UNMET requirements at the best candidate. 0 = perfect. */
+  gapNormalized: number;
+  /**
+   * Recommended action for the orchestrator. Determined by deterministic
+   * thresholds, never by LLM output. The router still emits a concrete
+   * agentId (best candidate or default) regardless.
+   */
+  recommendedAction: 'proceed' | 'research' | 'synthesize' | 'fallback';
+}
+
+/**
+ * Plan to construct a task-scoped synthetic agent when no existing agent
+ * fits well enough. The synthesis step is responsible for producing an
+ * AgentSpec whose ACL is an INTERSECTION of the routing-level defaults and
+ * any template caps — never widening privilege.
+ */
+export interface AgentSynthesisPlan {
+  taskId: string;
+  /** Suggested kebab-case id, e.g. 'task-<short>-researcher'. */
+  suggestedId: string;
+  /** Capability claims to attach to the synthesized agent. */
+  capabilities: CapabilityClaim[];
+  /** Roles to expose. */
+  roles: string[];
+  /** Soul template id to seed from, when known. */
+  soulTemplateId?: string;
+  /** Why synthesis is requested (gap summary for traces). */
+  rationale: string;
+}
+
+export type AgentProposalStatus = 'pending' | 'approved' | 'rejected' | 'retired';
+export type AgentProposalTrustTier = 'low' | 'medium' | 'high';
+
+/**
+ * Quarantined proposal for a persistent custom agent. Created offline from
+ * repeated task-scoped synthetic-agent successes; never activated directly.
+ */
+export interface AgentProposal {
+  id: string;
+  status: AgentProposalStatus;
+  suggestedAgentId: string;
+  name: string;
+  description: string;
+  taskTypeSignature: string;
+  unmetCapabilityIds: string[];
+  capabilityClaims: CapabilityClaim[];
+  roles: string[];
+  allowedTools: string[];
+  capabilityOverrides: AgentCapabilityOverrides;
+  sourceSyntheticAgentIds: string[];
+  evidenceTraceIds: string[];
+  observationCount: number;
+  successCount: number;
+  wilsonLowerBound: number;
+  trustTier: AgentProposalTrustTier;
+  provenance: string;
+  rationale: string;
+  createdAt: number;
+  updatedAt: number;
+  decidedAt?: number;
+  decisionReason?: string;
+}
+
+/**
+ * Request for external knowledge acquisition before/while the agent runs.
+ * The acquisition layer (web fetch, MCP, world-graph, docs) treats this as
+ * a search spec. Findings are attached as RESEARCH context — they NEVER
+ * rewrite the task goal or override LLM agentic output.
+ */
+export interface KnowledgeAcquisitionRequest {
+  taskId: string;
+  /** Capability ids this request is trying to fill. */
+  capabilities: string[];
+  /** Free-form queries the LLM/router formulated for retrieval providers. */
+  queries: string[];
+  /** Suggested provider order: 'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'. */
+  providers?: Array<'world-graph' | 'docs' | 'mcp' | 'web' | 'peer'>;
+}
+
+export type KnowledgeAcquisitionProviderId = NonNullable<KnowledgeAcquisitionRequest['providers']>[number];
+
+/**
+ * A single piece of evidence returned by the knowledge acquisition layer.
+ * Findings are CONTEXT, never authoritative — they reach the LLM as a
+ * `[RESEARCH CONTEXT]` block and are explicitly tagged probabilistic so
+ * the agent treats them as weak hints, not facts (A2, A5).
+ *
+ * Producers MUST set `confidence` and `source` from a closed enum so
+ * downstream rendering / promotion stays deterministic.
+ */
+export interface KnowledgeContext {
+  /** Where the evidence came from. Closed vocabulary by design. */
+  source: 'world-graph' | 'workspace-docs' | 'mcp' | 'web' | 'peer' | 'trace-cache';
+  /** Capability id this evidence is meant to fill, when known. */
+  capability?: string;
+  /** The query string that produced this hit (for trace replay). */
+  query: string;
+  /** The actual evidence text — already truncated by the producer. */
+  content: string;
+  /** Pointer back to source: file path, fact id, URL, etc. */
+  reference?: string;
+  /** [0, 1] — producer-assigned, never read from external sources. */
+  confidence: number;
+  /** Wall-clock ms epoch — bound retrievals to a time window. */
+  retrievedAt: number;
 }
 
 // ---------------------------------------------------------------------------

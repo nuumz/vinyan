@@ -1,24 +1,34 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
-import { readFileSync } from 'fs';
+import { mkdirSync, readFileSync } from 'fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'path';
 import type { Evidence, Fact } from '../core/types.ts';
 import { parseFalsifiableConditions } from '../oracle/falsifiable-parser.ts';
 import { DEFAULT_RETENTION, type RetentionConfig, runRetention } from './retention.ts';
 import { SCHEMA_SQL } from './schema.ts';
 import { computeDecayedConfidence } from './temporal-decay.ts';
 
+export interface WorldGraphOptions {
+  retention?: Partial<RetentionConfig>;
+  retentionInterval?: number;
+  /** Workspace root used to canonicalize file paths for A4 hash invalidation. */
+  workspaceRoot?: string;
+}
+
 export class WorldGraph {
   private db: Database;
   private storeCount = 0;
   private retentionInterval: number;
   private retentionConfig: RetentionConfig;
+  private workspaceRoot?: string;
 
-  constructor(
-    dbPath: string = ':memory:',
-    options?: { retention?: Partial<RetentionConfig>; retentionInterval?: number },
-  ) {
+  constructor(dbPath: string = ':memory:', options?: WorldGraphOptions) {
     this.retentionConfig = { ...DEFAULT_RETENTION, ...options?.retention };
     this.retentionInterval = options?.retentionInterval ?? 100;
+    this.workspaceRoot = options?.workspaceRoot ? resolve(options.workspaceRoot) : undefined;
+    if (dbPath !== ':memory:') {
+      mkdirSync(dirname(dbPath), { recursive: true });
+    }
     this.db = new Database(dbPath);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA foreign_keys = ON');
@@ -68,15 +78,56 @@ export class WorldGraph {
     return createHash('sha256').update(content).digest('hex');
   }
 
+  private toPortablePath(filePath: string): string {
+    return filePath.split(sep).join('/');
+  }
+
+  private normalizePath(filePath: string): string {
+    if (!this.workspaceRoot) return this.toPortablePath(filePath);
+
+    const resolved = isAbsolute(filePath) ? resolve(filePath) : resolve(this.workspaceRoot, filePath);
+    const rel = relative(this.workspaceRoot, resolved);
+    if (rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
+      return this.toPortablePath(rel);
+    }
+    return this.toPortablePath(resolved);
+  }
+
+  private rawPathAlias(filePath: string): string {
+    if (this.workspaceRoot && !isAbsolute(filePath)) {
+      return this.toPortablePath(resolve(this.workspaceRoot, filePath));
+    }
+    return this.toPortablePath(filePath);
+  }
+
+  private pathAliases(filePath: string): string[] {
+    return Array.from(new Set([this.normalizePath(filePath), this.rawPathAlias(filePath)]));
+  }
+
+  private resolveFilePath(filePath: string): string {
+    if (this.workspaceRoot && !isAbsolute(filePath)) return resolve(this.workspaceRoot, filePath);
+    return filePath;
+  }
+
+  private normalizeEvidence(evidence: Evidence[]): Evidence[] {
+    return evidence.map((e) => ({ ...e, file: this.normalizePath(e.file) }));
+  }
+
   /** Compute SHA-256 hash of a file's contents. */
   computeFileHash(filePath: string): string {
-    const content = readFileSync(filePath);
+    const content = readFileSync(this.resolveFilePath(filePath));
     return createHash('sha256').update(content).digest('hex');
   }
 
   /** Store a verified fact in the World Graph. */
   storeFact(fact: Omit<Fact, 'id'>): Fact {
-    const id = this.computeFactId(fact.target, fact.pattern, fact.evidence);
+    const storedFact = {
+      ...fact,
+      target: this.normalizePath(fact.target),
+      sourceFile: this.normalizePath(fact.sourceFile),
+      evidence: this.normalizeEvidence(fact.evidence),
+    };
+    const id = this.computeFactId(storedFact.target, storedFact.pattern, storedFact.evidence);
     this.db
       .query(`
       INSERT OR REPLACE INTO facts (id, target, pattern, evidence, oracle_name, file_hash, source_file, verified_at, session_id, confidence, valid_until, decay_model, tier_reliability)
@@ -84,22 +135,22 @@ export class WorldGraph {
     `)
       .run(
         id,
-        fact.target,
-        fact.pattern,
-        JSON.stringify(fact.evidence),
-        fact.oracleName,
-        fact.fileHash,
-        fact.sourceFile,
-        fact.verifiedAt,
-        fact.sessionId ?? null,
-        fact.confidence,
-        fact.validUntil ?? null,
-        fact.decayModel ?? 'none',
-        fact.tierReliability ?? null,
+        storedFact.target,
+        storedFact.pattern,
+        JSON.stringify(storedFact.evidence),
+        storedFact.oracleName,
+        storedFact.fileHash,
+        storedFact.sourceFile,
+        storedFact.verifiedAt,
+        storedFact.sessionId ?? null,
+        storedFact.confidence,
+        storedFact.validUntil ?? null,
+        storedFact.decayModel ?? 'none',
+        storedFact.tierReliability ?? null,
       );
 
     // Populate evidence-file junction table for cross-file cascade invalidation
-    const evidenceFiles = new Set(fact.evidence.map((e) => e.file).filter(Boolean));
+    const evidenceFiles = new Set(storedFact.evidence.map((e) => e.file).filter(Boolean));
     for (const filePath of evidenceFiles) {
       this.db.query('INSERT OR IGNORE INTO fact_evidence_files (fact_id, file_path) VALUES (?, ?)').run(id, filePath);
     }
@@ -110,7 +161,7 @@ export class WorldGraph {
       runRetention(this.db, this.retentionConfig);
     }
 
-    return { ...fact, id };
+    return { ...storedFact, id };
   }
 
   /** G5: Store a failed oracle verdict for cross-task pattern visibility.
@@ -157,14 +208,16 @@ export class WorldGraph {
     // ECP §3.6: Exclude fully expired facts (valid_until passed).
     // Exponential-decay facts are included if within validUntil — decay applied at read time.
     const now = Date.now();
+    const aliases = this.pathAliases(target);
+    const placeholders = aliases.map(() => '?').join(', ');
     const rows = this.db
       .query(`
       SELECT f.* FROM facts f
       LEFT JOIN file_hashes fh ON f.source_file = fh.path
-      WHERE f.target = ? AND (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
+      WHERE f.target IN (${placeholders}) AND (fh.current_hash IS NULL OR f.file_hash = fh.current_hash)
         AND (f.valid_until IS NULL OR f.valid_until > ? OR f.decay_model = 'step')
     `)
-      .all(target, now) as Array<Record<string, unknown>>;
+      .all(...aliases, now) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: row.id as string,
       target: row.target as string,
@@ -230,24 +283,26 @@ export class WorldGraph {
   /** Update the stored hash for a file path. Triggers cascade invalidation via SQLite trigger. */
   updateFileHash(filePath: string, hash: string): void {
     const now = Date.now();
-    const existing = this.db.query('SELECT path FROM file_hashes WHERE path = ?').get(filePath);
-    if (existing) {
-      this.db.query('UPDATE file_hashes SET current_hash = ?, updated_at = ? WHERE path = ?').run(hash, now, filePath);
-    } else {
-      this.db
-        .query('INSERT INTO file_hashes (path, current_hash, updated_at) VALUES (?, ?, ?)')
-        .run(filePath, hash, now);
+    const paths = this.pathAliases(filePath);
+    for (const path of paths) {
+      const existing = this.db.query('SELECT path FROM file_hashes WHERE path = ?').get(path);
+      if (existing) {
+        this.db.query('UPDATE file_hashes SET current_hash = ?, updated_at = ? WHERE path = ?').run(hash, now, path);
+      } else {
+        this.db.query('INSERT INTO file_hashes (path, current_hash, updated_at) VALUES (?, ?, ?)').run(path, hash, now);
+      }
     }
 
     // ECP §4.5: Invalidate facts whose falsifiable_by includes this file path
+    const placeholders = paths.map(() => '?').join(', ');
     this.db
       .query(`
       DELETE FROM facts WHERE id IN (
         SELECT fact_id FROM falsifiable_conditions
-        WHERE scope = 'file' AND target = ? AND event = 'content-change'
+        WHERE scope = 'file' AND target IN (${placeholders}) AND event = 'content-change'
       )
     `)
-      .run(filePath);
+      .run(...paths);
   }
 
   /**
@@ -258,11 +313,12 @@ export class WorldGraph {
     const parsed = parseFalsifiableConditions(conditions);
     for (const p of parsed) {
       if (!p.condition) continue;
+      const target = p.condition.scope === 'file' ? this.normalizePath(p.condition.target) : p.condition.target;
       this.db
         .query(
           'INSERT OR IGNORE INTO falsifiable_conditions (fact_id, scope, target, event, raw_condition) VALUES (?, ?, ?, ?, ?)',
         )
-        .run(factId, p.condition.scope, p.condition.target, p.condition.event, p.raw);
+        .run(factId, p.condition.scope, target, p.condition.event, p.raw);
     }
   }
 
@@ -274,7 +330,7 @@ export class WorldGraph {
 
   /** Get the current stored hash for a file. */
   getFileHash(filePath: string): string | undefined {
-    const row = this.db.query('SELECT current_hash FROM file_hashes WHERE path = ?').get(filePath) as
+    const row = this.db.query('SELECT current_hash FROM file_hashes WHERE path = ?').get(this.normalizePath(filePath)) as
       | { current_hash: string }
       | undefined;
     return row?.current_hash;
@@ -289,7 +345,7 @@ export class WorldGraph {
       INSERT OR REPLACE INTO dependency_edges (from_file, to_file, edge_type, updated_at)
       VALUES (?, ?, ?, unixepoch())
     `)
-      .run(fromFile, toFile, edgeType);
+      .run(this.normalizePath(fromFile), this.normalizePath(toFile), edgeType);
   }
 
   /** Store multiple dependency edges in a single transaction. */
@@ -301,7 +357,7 @@ export class WorldGraph {
     this.db.exec('BEGIN');
     try {
       for (const edge of edges) {
-        stmt.run(edge.from, edge.to, edge.type ?? 'imports');
+        stmt.run(this.normalizePath(edge.from), this.normalizePath(edge.to), edge.type ?? 'imports');
       }
       this.db.exec('COMMIT');
     } catch (e) {
@@ -313,7 +369,8 @@ export class WorldGraph {
   /** BFS reverse traversal: find all files that depend on the given file, bounded by maxDepth. */
   queryDependents(file: string, maxDepth = 3): string[] {
     const visited = new Set<string>();
-    let frontier = [file];
+    const root = this.normalizePath(file);
+    let frontier = [root];
 
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
@@ -322,7 +379,7 @@ export class WorldGraph {
           from_file: string;
         }>;
         for (const row of rows) {
-          if (row.from_file !== file && !visited.has(row.from_file)) {
+          if (row.from_file !== root && !visited.has(row.from_file)) {
             visited.add(row.from_file);
             nextFrontier.push(row.from_file);
           }
@@ -337,7 +394,8 @@ export class WorldGraph {
   /** BFS forward traversal: find all files that the given file depends on, bounded by maxDepth. */
   queryDependencies(file: string, maxDepth = 3): string[] {
     const visited = new Set<string>();
-    let frontier = [file];
+    const root = this.normalizePath(file);
+    let frontier = [root];
 
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
@@ -346,7 +404,7 @@ export class WorldGraph {
           to_file: string;
         }>;
         for (const row of rows) {
-          if (row.to_file !== file && !visited.has(row.to_file)) {
+          if (row.to_file !== root && !visited.has(row.to_file)) {
             visited.add(row.to_file);
             nextFrontier.push(row.to_file);
           }
@@ -360,7 +418,7 @@ export class WorldGraph {
 
   /** Remove all edges originating from the given file. */
   clearEdgesForFile(file: string): void {
-    this.db.query('DELETE FROM dependency_edges WHERE from_file = ?').run(file);
+    this.db.query('DELETE FROM dependency_edges WHERE from_file = ?').run(this.normalizePath(file));
   }
 
   // ── FP-B: Typed Causal Edge Adapters ─────────────────────────────
@@ -397,6 +455,8 @@ export class WorldGraph {
   /** Record a causal relationship: change to sourceFile broke targetFile (detected by oracle). */
   recordCausalEdge(sourceFile: string, targetFile: string, oracleName: string, confidence: number): void {
     const now = Date.now();
+    const source = this.normalizePath(sourceFile);
+    const target = this.normalizePath(targetFile);
     this.db
       .query(`
       INSERT INTO causal_edges (source_file, target_file, oracle_name, confidence, observed_at, observation_count, last_observed_at)
@@ -406,13 +466,14 @@ export class WorldGraph {
         observation_count = observation_count + 1,
         last_observed_at = ?
     `)
-      .run(sourceFile, targetFile, oracleName, confidence, now, now, confidence, now);
+      .run(source, target, oracleName, confidence, now, now, confidence, now);
   }
 
   /** BFS over causal_edges to find all transitively affected files. */
   queryCausalDependents(file: string, maxDepth = 3): string[] {
     const visited = new Set<string>();
-    let frontier = [file];
+    const root = this.normalizePath(file);
+    let frontier = [root];
 
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
@@ -421,7 +482,7 @@ export class WorldGraph {
           .query('SELECT target_file FROM causal_edges WHERE source_file = ?')
           .all(current) as Array<{ target_file: string }>;
         for (const row of rows) {
-          if (row.target_file !== file && !visited.has(row.target_file)) {
+          if (row.target_file !== root && !visited.has(row.target_file)) {
             visited.add(row.target_file);
             nextFrontier.push(row.target_file);
           }
@@ -442,9 +503,10 @@ export class WorldGraph {
     observationCount: number;
     lastObservedAt: number;
   }> {
+    const target = this.normalizePath(file);
     const rows = this.db
       .query('SELECT * FROM causal_edges WHERE source_file = ? OR target_file = ?')
-      .all(file, file) as Array<Record<string, unknown>>;
+      .all(target, target) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       sourceFile: r.source_file as string,
       targetFile: r.target_file as string,

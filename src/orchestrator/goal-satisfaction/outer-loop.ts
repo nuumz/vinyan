@@ -10,9 +10,10 @@
  */
 import type { OracleVerdict } from '../../core/types.ts';
 import type { OrchestratorDeps } from '../core-loop.ts';
+import { buildShortCircuitProvenance } from '../governance-provenance.ts';
 import type { ExecutionTrace, TaskInput, TaskResult } from '../types.ts';
 import { WorkingMemory } from '../working-memory.ts';
-import { GoalTrajectoryTracker, type GoalEvaluator, type GoalSatisfaction } from './goal-evaluator.ts';
+import { type GoalSatisfaction, GoalTrajectoryTracker } from './goal-evaluator.ts';
 
 export interface GoalLoopConfig {
   maxOuterIterations: number;
@@ -127,9 +128,53 @@ export async function executeWithGoalLoop(
       basis: satisfaction.basis,
       passedChecks: satisfaction.passedChecks,
       failedChecks: satisfaction.failedChecks,
+      accountabilityGrade: satisfaction.accountabilityGrade,
     });
 
-    if (satisfaction.score >= cfg.goalSatisfactionThreshold) {
+    // Slice 4 Gap B (A7): surface prediction error as a separate signal so
+    // dashboards and the calibration ledger can track it without coupling to
+    // the main evaluation event payload. We only emit when the agent actually
+    // self-graded (predictionError populated).
+    if (satisfaction.predictionError) {
+      deps.bus?.emit('goal-loop:prediction-error', {
+        taskId: input.id,
+        iteration,
+        selfGrade: satisfaction.predictionError.selfGrade,
+        deterministicGrade: satisfaction.predictionError.deterministicGrade,
+        magnitude: satisfaction.predictionError.magnitude,
+        direction: satisfaction.predictionError.direction,
+      });
+      // Slice 4 follow-up: persist so the next iteration's critic prompt
+      // can warn against repeating an overconfident self-assessment.
+      workingMemory.recordPredictionError(satisfaction.predictionError);
+    }
+
+    // Slice 4: persist the deterministic grade + blocker categories so the
+    // NEXT iteration's critic prompt can render a [PRIOR ITERATION RESULT]
+    // block. We only carry the most recent verdict — failed-approaches
+    // already records prose history.
+    if (satisfaction.accountabilityGrade) {
+      const categories = satisfaction.blockers.map((b) => b.category);
+      workingMemory.recordAccountabilityResult(satisfaction.accountabilityGrade, categories);
+    }
+
+    // Accountability gate: even if numeric score passes, a Grade C result has a
+    // critical flaw (unresolvable blocker / oracle contradiction / score < 0.5)
+    // and MUST NOT be reported as done. Force escalation so the replan engine
+    // (or human) can intervene.
+    const blockedByGrade =
+      satisfaction.score >= cfg.goalSatisfactionThreshold &&
+      satisfaction.accountabilityGrade === 'C';
+    if (blockedByGrade) {
+      deps.bus?.emit('goal-loop:accountability-block', {
+        taskId: input.id,
+        iteration,
+        score: satisfaction.score,
+        blockers: satisfaction.blockers,
+      });
+    }
+
+    if (!blockedByGrade && satisfaction.score >= cfg.goalSatisfactionThreshold) {
       // Wave B: record winning decomposition for future seed retrieval (A7 loop closure)
       if (deps.decompositionLearner && lastPlan && lastPlan.nodes.length > 0) {
         const taskSig = result.trace?.taskTypeSignature ?? input.id;
@@ -288,6 +333,13 @@ function buildEscalationResult(input: TaskInput, reason: string, iteration: numb
     outcome: 'escalated',
     failureReason: reason,
     affectedFiles: input.targetFiles ?? [],
+    governanceProvenance: buildShortCircuitProvenance({
+      input,
+      decisionId: 'goal-loop-escalate',
+      attributedTo: 'goalLoop',
+      wasGeneratedBy: 'executeWithGoalLoop',
+      reason,
+    }),
   };
   return {
     id: input.id,

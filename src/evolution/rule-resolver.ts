@@ -74,6 +74,8 @@ function stricterAction(rule: EvolutionaryRule): number {
       return 60;
     case 'assign-worker':
       return 50;
+    case 'promote-capability':
+      return 10;
     case 'prefer-model':
       return 40;
     default:

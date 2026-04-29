@@ -47,6 +47,40 @@ export interface PromptCacheTiers {
   user: TierOffsets;
 }
 
+/**
+ * Build `PromptCacheTiers` for the common ad-hoc shape: the entire system
+ * prompt is a constant string (frozen tier) and the user prompt is fully
+ * turn-volatile. Suitable for one-shot LLM calls outside the agent loop —
+ * workflow planner / synthesizer / per-step llm-reasoning / shell-output
+ * analysis — all of which use a hand-written constant `systemPrompt` that
+ * benefits from Anthropic's 1h cache when it crosses the 1024-token floor.
+ *
+ * IMPORTANT — what is and is NOT cached:
+ *   - Anthropic's `cache_control` caches the input KV state at the marked
+ *     boundary so subsequent calls skip re-computing the cached prefix's
+ *     attention layers. **It does NOT cache the response.** The model still
+ *     samples every output token fresh on each call (with whatever
+ *     temperature you set), so identical inputs may still produce slightly
+ *     different outputs.
+ *   - For tool-use steps (workflow `direct-tool`, the shell-exec
+ *     short-circuit in core-loop), this helper is NOT used — those paths
+ *     don't call an LLM. The actual `toolExecutor.executeProposedTools`
+ *     invocation always runs fresh; there is no result cache anywhere in
+ *     the tool path. Don't be tempted to add one without auditing every
+ *     filesystem-mutating command type.
+ *
+ * Providers that don't honour `cache_control` (OpenRouter passthrough on
+ * non-Anthropic models, the test mock) silently ignore the markers, so this
+ * is safe to attach unconditionally at call sites.
+ */
+export function frozenSystemTier(systemPrompt: string, userPrompt: string): PromptCacheTiers {
+  const sysLen = systemPrompt.length;
+  return {
+    system: { frozenEnd: sysLen, sessionEnd: sysLen, totalEnd: sysLen },
+    user: { frozenEnd: 0, sessionEnd: 0, totalEnd: userPrompt.length },
+  };
+}
+
 export interface AssembledPrompt {
   systemPrompt: string;
   userPrompt: string;
@@ -99,10 +133,18 @@ export function assemblePrompt(
   agentContext?: AgentContext,
   /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
   soulContent?: string,
-  /** Multi-agent: the specialist assigned to this task (ts-coder, writer, etc.). */
+  /** Multi-agent: the specialist assigned to this task (developer, author, etc.). */
   agentProfile?: AgentSpec,
   /** Multi-agent: consultable peer agents (for agent-peers section). */
   peerAgents?: AgentSpec[],
+  /**
+   * Phase-2 wiring activation: skill cards from the persona's `DerivedCapabilities`.
+   * When supplied, the `agent-skill-cards` prompt section renders each card
+   * inside an integrity envelope (`<skill-card hash="..." tier="...">`). Empty
+   * or undefined → section is omitted, prompt unchanged. Callers compute via
+   * `derived.loadedSkills.map(toSkillCardView)`.
+   */
+  loadedSkillCards?: import('../agents/derive-persona-capabilities.ts').SkillCardView[],
 ): AssembledPrompt {
   const ctx: SectionContext = {
     goal,
@@ -118,6 +160,7 @@ export function assemblePrompt(
     soulContent,
     agentProfile,
     peerAgents,
+    loadedSkillCards,
   };
 
   // Gap 4A: Reasoning tasks now use composable section registry

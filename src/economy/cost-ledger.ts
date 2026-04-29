@@ -10,6 +10,7 @@
  * Source of truth: Economy OS plan §E1.4
  */
 import type { Database } from 'bun:sqlite';
+import type { VinyanBus } from '../core/bus.ts';
 
 export interface CostLedgerEntry {
   id: string;
@@ -37,9 +38,11 @@ interface AggregatedCost {
 export class CostLedger {
   private db: Database;
   private cache: CostLedgerEntry[] = [];
+  private bus?: VinyanBus;
 
-  constructor(db: Database) {
+  constructor(db: Database, bus?: VinyanBus) {
     this.db = db;
+    this.bus = bus;
     this.warmCache();
   }
 
@@ -107,8 +110,15 @@ export class CostLedger {
           entry.task_type_signature,
         ],
       );
-    } catch {
-      // Memory cache is authoritative — DB write failure is non-fatal
+    } catch (err) {
+      // Memory cache is authoritative — DB write failure is non-fatal.
+      // A9: surface as `economy:accounting_failed` so the degradation
+      // bridge normalizes the failure for observability while the task
+      // continues uninterrupted (fail-open).
+      this.bus?.emit('economy:accounting_failed', {
+        taskId: entry.taskId,
+        reason: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

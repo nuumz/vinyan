@@ -19,21 +19,47 @@ export interface AntiGamingAlert {
 /** Collusion: bid spread < 5% across consecutive auctions. */
 const COLLUSION_SPREAD_THRESHOLD = 0.05;
 const COLLUSION_CONSECUTIVE_THRESHOLD = 5;
+/**
+ * Phase-3: collusion requires distinct *actors*. Auctions where every bid
+ * shares the same persona id are providers running an identical persona/skill
+ * loadout — bid spread is naturally tight, not colluding. We require at least
+ * this many distinct personas in an auction before counting it toward the
+ * collusion window (risk H7 mitigation).
+ */
+const COLLUSION_MIN_DISTINCT_PERSONAS = 2;
+
+export interface CollusionWindowEntry {
+  /** (max - min) / median of bid token estimates. */
+  bidSpread: number;
+  /**
+   * Number of distinct `personaId` values among bidders in this auction.
+   * `undefined` for legacy auctions that pre-date persona dispatch — those
+   * pass the precondition (treated as if from distinct actors).
+   */
+  distinctPersonaCount?: number;
+}
 
 /**
  * Detect collusion from auction history.
- * Collusion signature: all bids cluster within 5% spread for N consecutive auctions.
+ * Collusion signature: all bids cluster within 5% spread for N consecutive
+ * auctions, AND those auctions had at least `COLLUSION_MIN_DISTINCT_PERSONAS`
+ * distinct personas. Auctions with one persona (multiple providers running
+ * the same persona) are skipped — tight spreads there are expected.
  */
-export function detectCollusion(recentAuctions: Array<{ bidSpread: number }>): AntiGamingAlert | null {
-  if (recentAuctions.length < COLLUSION_CONSECUTIVE_THRESHOLD) return null;
+export function detectCollusion(recentAuctions: readonly CollusionWindowEntry[]): AntiGamingAlert | null {
+  // Phase-3: filter to auctions that meet the actor-distinctness precondition.
+  const eligible = recentAuctions.filter(
+    (a) => a.distinctPersonaCount === undefined || a.distinctPersonaCount >= COLLUSION_MIN_DISTINCT_PERSONAS,
+  );
+  if (eligible.length < COLLUSION_CONSECUTIVE_THRESHOLD) return null;
 
-  const recent = recentAuctions.slice(-COLLUSION_CONSECUTIVE_THRESHOLD);
+  const recent = eligible.slice(-COLLUSION_CONSECUTIVE_THRESHOLD);
   const allTight = recent.every((a) => a.bidSpread < COLLUSION_SPREAD_THRESHOLD);
 
   if (allTight) {
     return {
       type: 'collusion',
-      detail: `Bid spread < ${COLLUSION_SPREAD_THRESHOLD * 100}% for ${COLLUSION_CONSECUTIVE_THRESHOLD} consecutive auctions`,
+      detail: `Bid spread < ${COLLUSION_SPREAD_THRESHOLD * 100}% for ${COLLUSION_CONSECUTIVE_THRESHOLD} consecutive auctions across ≥${COLLUSION_MIN_DISTINCT_PERSONAS} distinct personas`,
       severity: 'penalty',
     };
   }

@@ -74,8 +74,8 @@ describe('ChatStreamRenderer', () => {
       durationMs: 12,
       isError: false,
     });
-    bus.emit('agent:text_delta', { taskId, turnId: 't1', text: 'Hello, ' });
-    bus.emit('agent:text_delta', { taskId, turnId: 't1', text: 'world!' });
+    bus.emit('llm:stream_delta', { taskId, turnId: 't1', kind: 'content', text: 'Hello, ' });
+    bus.emit('llm:stream_delta', { taskId, turnId: 't1', kind: 'content', text: 'world!' });
     bus.emit('agent:session_end', {
       taskId,
       outcome: 'completed',
@@ -137,8 +137,8 @@ describe('ChatStreamRenderer', () => {
       confidence: 0.5,
       reasoning: 'unrelated',
     });
-    bus.emit('agent:text_delta', { taskId: 'chat-t-other', text: 'should not appear' });
-    bus.emit('agent:text_delta', { taskId, text: 'only mine' });
+    bus.emit('llm:stream_delta', { taskId: 'chat-t-other', kind: 'content', text: 'should not appear' });
+    bus.emit('llm:stream_delta', { taskId, kind: 'content', text: 'only mine' });
 
     renderer.detach();
     const output = read();

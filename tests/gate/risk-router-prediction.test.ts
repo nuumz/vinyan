@@ -3,7 +3,7 @@
  * Phase C1: ForwardPredictor causal risk → routing level adjustment.
  */
 import { describe, expect, it } from 'bun:test';
-import { applyPredictionEscalation } from '@vinyan/gate/risk-router.ts';
+import { applyPredictionEscalation, LEVEL_CONFIG } from '@vinyan/gate/risk-router.ts';
 import type { OutcomePrediction, CausalRiskEntry } from '@vinyan/orchestrator/forward-predictor-types.ts';
 import type { RoutingDecision, RoutingLevel } from '@vinyan/orchestrator/types.ts';
 
@@ -122,15 +122,24 @@ describe('applyPredictionEscalation', () => {
   it('returns new object — does not mutate original', () => {
     const routing = makeRouting(0);
     const originalLevel = routing.level;
+    const originalModel = routing.model;
+    const originalBudget = routing.budgetTokens;
     const prediction = makePrediction({
       causalRiskFiles: [makeRiskEntry(0.6)],
     });
     const result = applyPredictionEscalation(routing, prediction);
     expect(result).not.toBe(routing);
-    expect(routing.level).toBe(originalLevel); // original untouched
+    // Original is untouched
+    expect(routing.level).toBe(originalLevel);
+    expect(routing.model).toBe(originalModel);
+    expect(routing.budgetTokens).toBe(originalBudget);
+    // Result has the new level AND budget/model refreshed from LEVEL_CONFIG —
+    // see `withLevel` in src/gate/risk-router.ts. Carrying over the prior
+    // level's `latencyBudgetMs`/`budgetTokens` would silently cap the
+    // escalated agent at the lower level's budget.
     expect(result.level).toBe(2);
-    // Carries over other fields
-    expect(result.model).toBe(routing.model);
-    expect(result.budgetTokens).toBe(routing.budgetTokens);
+    expect(result.model).toBe(LEVEL_CONFIG[2].model);
+    expect(result.budgetTokens).toBe(LEVEL_CONFIG[2].budgetTokens);
+    expect(result.latencyBudgetMs).toBe(LEVEL_CONFIG[2].latencyBudgetMs);
   });
 });

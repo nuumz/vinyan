@@ -8,12 +8,7 @@ import {
   formatConversationContext,
   resolveSelectedAgent,
 } from '../../../src/orchestrator/intent/formatters.ts';
-import type {
-  AgentSpec,
-  SemanticTaskUnderstanding,
-  TaskInput,
-  Turn,
-} from '../../../src/orchestrator/types.ts';
+import type { AgentSpec, SemanticTaskUnderstanding, TaskInput, Turn } from '../../../src/orchestrator/types.ts';
 
 function entry(role: 'user' | 'assistant', content: string): Turn {
   return {
@@ -72,10 +67,7 @@ describe('formatConversationContext', () => {
   });
 
   it('prefixes each line with [role]', () => {
-    const rendered = formatConversationContext([
-      entry('user', 'hi'),
-      entry('assistant', 'hello'),
-    ]);
+    const rendered = formatConversationContext([entry('user', 'hi'), entry('assistant', 'hello')]);
     expect(rendered).toContain('[user]: hi');
     expect(rendered).toContain('[assistant]: hello');
   });
@@ -100,6 +92,27 @@ describe('formatAgentCatalog', () => {
     );
     expect(rendered).toContain('ts-coder: TypeScript specialist');
     expect(rendered).toContain('writer: prose + ideation');
+    expect(rendered).toContain('Do not invent specialist agent ids');
+  });
+
+  it('emits the capability vocabulary block when agents declare capabilities', () => {
+    const withCaps: AgentSpec = {
+      id: 'creative-director',
+      name: 'creative-director',
+      description: 'leads creative work',
+      capabilities: [
+        { id: 'creative.lead', evidence: 'builtin', confidence: 0.9 },
+        { id: 'creative.strategy', evidence: 'builtin', confidence: 0.85 },
+      ],
+      roles: ['lead', 'coordinator'],
+    };
+    const rendered = formatAgentCatalog([withCaps], false);
+    expect(rendered).toContain('capabilities: creative.lead, creative.strategy');
+    expect(rendered).toContain('roles: lead, coordinator');
+    expect(rendered).toContain('Capability extraction');
+    expect(rendered).toContain('creative.lead');
+    expect(rendered).toContain('creative.strategy');
+    expect(rendered).toContain('closed vocabulary');
   });
 
   it('includes routing hints when present', () => {
@@ -178,12 +191,7 @@ describe('buildClarificationRequest', () => {
   });
 
   it('returns options when rule + LLM strategies disagree (EN)', () => {
-    const result = buildClarificationRequest(
-      input('build feature'),
-      u,
-      'full-pipeline',
-      'agentic-workflow',
-    );
+    const result = buildClarificationRequest(input('build feature'), u, 'full-pipeline', 'agentic-workflow');
     expect(result.options).toBeDefined();
     expect(result.options).toHaveLength(2);
     expect(result.options?.[0]).toContain('full-pipeline');
@@ -191,12 +199,7 @@ describe('buildClarificationRequest', () => {
   });
 
   it('returns options in Thai when goal is Thai and strategies disagree', () => {
-    const result = buildClarificationRequest(
-      input('สร้าง feature'),
-      u,
-      'full-pipeline',
-      'agentic-workflow',
-    );
+    const result = buildClarificationRequest(input('สร้าง feature'), u, 'full-pipeline', 'agentic-workflow');
     expect(result.options?.[0]).toMatch(/ดำเนินการแบบ full-pipeline/);
   });
 });

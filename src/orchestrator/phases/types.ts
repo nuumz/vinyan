@@ -5,20 +5,19 @@
  * returns a PhaseOutcome that the coordinator interprets.
  */
 
-import type { AgentContract } from '../../core/agent-contract.ts';
-import type { VinyanBus } from '../../core/bus.ts';
 import type { OracleVerdict, QualityScore } from '../../core/types.ts';
 import type { EpistemicGateDecision } from '../../gate/epistemic-decision.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { OrchestratorDeps } from '../core-loop.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import type { ConfidenceDecision } from '../pipeline-confidence.ts';
 import type {
-  CachedSkill,
+  EngineSelectionResult,
   ExecutionTrace,
+  GoalGroundingCheck,
   PerceptualHierarchy,
   RoutingDecision,
-  RoutingLevel,
   SelfModelPrediction,
   SemanticTaskUnderstanding,
   TaskDAG,
@@ -26,10 +25,7 @@ import type {
   TaskResult,
   ToolCall,
   VerificationHint,
-  EngineSelectionResult,
-  WorkingMemoryState,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { WorkingMemory } from '../working-memory.ts';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +52,15 @@ export interface PhaseContext {
    * Access the raw id via `ctx.input.agentId`.
    */
   readonly agentProfile?: import('../types.ts').AgentSpec;
+  /**
+   * Capability-First (Phase D): intent-resolver output carrying
+   * `capabilityRequirements`, `capabilityAnalysis`, `syntheticAgentId`,
+   * `knowledgeUsed`. Phase Learn copies these onto the canonical
+   * ExecutionTrace so sleep-cycle promotion can group by capabilities.
+   */
+  readonly intentResolution?: import('../types.ts').IntentResolution;
+  /** A10: phase-boundary goal/time grounding checks accumulated for trace audit. */
+  readonly goalGroundingChecks?: GoalGroundingCheck[];
 }
 
 // ---------------------------------------------------------------------------
@@ -185,11 +190,27 @@ export interface WorkerResult {
   proposedContent?: string;
   nonRetryableError?: string;
   /**
+   * Propagated from WorkerLoopResult when the agentic worker reports it
+   * could not reach a confident terminal turn (subprocess timeout/crash,
+   * uncertain turn, budget_exceeded). Consumed by the empty-output gate
+   * in `phase-generate.ts` to refuse pass-through to verify when no
+   * mutations and no content were produced. Optional; absent on legacy
+   * workers that never set the flag.
+   */
+  isUncertain?: boolean;
+  /**
    * Agent Conversation: propagated from WorkerLoopResult when the agent
    * called attempt_completion with needsUserInput=true. The core loop reads
    * this flag to short-circuit into a TaskResult with status='input-required'.
    */
   needsUserInput?: boolean;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `attempt_completion` call. Forwarded unchanged to TaskResult so the
+   * deterministic GoalEvaluator can score prediction error against its own
+   * grade (A7). Optional — not all worker types or older agents emit it.
+   */
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 export interface VerificationResult {

@@ -18,6 +18,7 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import { simpleGlobMatch } from '../core/glob.ts';
+import type { AgentProposalStore } from '../db/agent-proposal-store.ts';
 import type { ComprehensionStore } from '../db/comprehension-store.ts';
 import type { PatternStore } from '../db/pattern-store.ts';
 import type { RuleStore } from '../db/rule-store.ts';
@@ -28,7 +29,8 @@ import type { MarketScheduler } from '../economy/market/market-scheduler.ts';
 import { analyzeCounterfactuals, buildQualityLookup, summarizeByTaskType } from '../evolution/counterfactual.ts';
 import { generateRule } from '../evolution/rule-generator.ts';
 import type { CommonSenseRegistry } from '../oracle/commonsense/registry.ts';
-import { promoteAllPatterns } from './promotion.ts';
+import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
+import { minePersistentAgentProposals } from '../orchestrator/capabilities/agent-proposals.ts';
 import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
 import { mineComprehension } from '../orchestrator/comprehension/learning/miner.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../orchestrator/data-gate.ts';
@@ -43,6 +45,7 @@ import {
   getActiveDecayFunction,
   recordCycleScore,
 } from './decay-experiment.ts';
+import { promoteAllPatterns, promoteCapabilityClaims } from './promotion.ts';
 import { wilsonLowerBound } from './wilson.ts';
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
@@ -52,6 +55,9 @@ const DEFAULT_CONFIG: SleepCycleConfig = {
   patternMinConfidence: 0.6,
   decayHalfLifeSessions: 50,
 };
+
+const PROMOTE_CAPABILITY_RULE_RETIRE_REASON =
+  'I12: promote-capability rules are sleep-cycle-only; capability claims are promoted by promoteCapabilityClaims()';
 
 /**
  * Book-integration Wave 2.3: termination sentinel defaults.
@@ -83,6 +89,13 @@ export interface SleepCycleResult {
    * Always 0 when no `commonsenseRegistry` is wired.
    */
   commonsensePromoted: number;
+  /**
+   * Capability-First Phase D — number of capability claims promoted onto
+   * stable agents in this cycle. Always 0 when no `agentRegistry` is wired.
+   */
+  capabilitiesPromoted: number;
+  /** Capability-First Phase 5 — pending persistent custom agent proposals created. */
+  agentProposalsCreated: number;
   costPatternsFound: number;
   marketPhaseEvaluated: boolean;
   /** Thinking readiness verdict — reported when enough traces exist. `undefined` when gate not evaluated. */
@@ -113,6 +126,50 @@ export class SleepCycleRunner {
   private costLedger?: CostLedger;
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+  private agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
+  private agentProposalStore?: AgentProposalStore;
+  private skillPromoterDeps?: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    workspace: string;
+    registry: AgentRegistry;
+  };
+  /**
+   * Phase-15 (Item 4) — skill tier graduation hook. When set, every
+   * scheduled `run()` reads outcome rows per persona, looks up current
+   * `confidence_tier` per skill from disk, evaluates Wilson LB-based
+   * decisions via `decideTierGraduations`, and applies them. Each tier
+   * change rewrites SKILL.md (recompute contentHash) and appends a
+   * `skill_trust_ledger` row referencing both old + new hashes.
+   */
+  private skillTierPromoterDeps?: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  };
+  /** Phase-15: monotonic counter incremented every cycle that the tier
+   *  promoter runs, plus per-skill last-graduated-at run counts. Pure
+   *  in-memory; resets on restart, which gives skills a fresh grace
+   *  period — same intentional reset-on-restart pattern as `ineffectiveCycles`. */
+  private tierGraduationRunCount = 0;
+  private tierGraduationCooldown: Map<string, number> = new Map();
+  /**
+   * Phase-10: optional autonomous skill creator hook. When set, every
+   * scheduled `run()` (a) feeds the creator's persona-keyed windows from
+   * SkillOutcomeStore via `feedSkillOutcomesToCreator`, then (b) iterates
+   * unique (persona, taskSignature) pairs and invokes `creator.tryDraftFor`
+   * for each — opportunity for autonomous skill drafts when windows qualify.
+   *
+   * Phase-10 ships only the scheduling machinery; Phase-11 will wire a real
+   * `DraftGenerator` (LLM) + `critic` (different engine) so drafts actually
+   * fire and pass through the gate/critic/promotion-rule pipeline.
+   */
+  private autonomousCreatorDeps?: {
+    creator: import('../skills/autonomous/creator.ts').AutonomousSkillCreator;
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+  };
   /** Optional comprehension substrate — when both present, the cycle
    *  emits `comprehension:mining_completed` with B1–B3 insights. */
   private comprehensionStore?: ComprehensionStore;
@@ -164,6 +221,10 @@ export class SleepCycleRunner {
     marketScheduler?: MarketScheduler;
     /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
+    /** Capability-First Phase D: registry sink for statistically promoted capability claims. */
+    agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
+    /** Capability-First Phase 5: quarantined custom-agent proposal sink. */
+    agentProposalStore?: AgentProposalStore;
     /** Comprehension substrate — pass BOTH to enable mining. Optional: if
      *  either is missing the mining step silently no-ops. */
     comprehensionStore?: ComprehensionStore;
@@ -199,6 +260,8 @@ export class SleepCycleRunner {
     this.costLedger = options.costLedger;
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
+    this.agentRegistry = options.agentRegistry;
+    this.agentProposalStore = options.agentProposalStore;
     this.comprehensionStore = options.comprehensionStore;
     this.comprehensionCalibrator = options.comprehensionCalibrator;
     this.decayExperiment = createExperimentState();
@@ -219,16 +282,72 @@ export class SleepCycleRunner {
     this.agentEvolution = evolution;
   }
 
+  /** Set stable-agent registry for post-construction wiring (factory loads agents later). */
+  setAgentRegistry(registry: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>): void {
+    this.agentRegistry = registry;
+  }
+
+  /** Set custom-agent proposal store for post-construction wiring. */
+  setAgentProposalStore(store: AgentProposalStore): void {
+    this.agentProposalStore = store;
+  }
+
+  /**
+   * Phase-7: attach the skill-promoter dependencies. When set, every
+   * scheduled `run()` invokes `proposeAcquiredToBoundPromotions` and
+   * applies the proposals (acquired→bound promotion). Failures are
+   * swallowed — promotion is observational, never fails a sleep cycle.
+   */
+  setSkillPromoter(deps: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    workspace: string;
+    registry: AgentRegistry;
+  }): void {
+    this.skillPromoterDeps = deps;
+  }
+
+  /**
+   * Phase-15 (Item 4) — attach the skill tier graduation hook. Mirrors
+   * `setSkillPromoter` but operates on `confidence_tier` rather than skill
+   * scope (acquired→bound). Both hooks coexist on the cycle: scope
+   * promotion runs first, then tier graduation observes the same outcome
+   * rows from a different angle. Best-effort: failures swallowed.
+   */
+  setSkillTierPromoter(deps: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  }): void {
+    this.skillTierPromoterDeps = deps;
+  }
+
+  /**
+   * Phase-10: attach the autonomous skill creator hook. When set, every
+   * scheduled `run()` feeds creator windows from SkillOutcomeStore and
+   * iterates persona-keyed (persona, taskSignature) pairs, calling
+   * `creator.tryDraftFor()` per pair. Best-effort: any failure is swallowed.
+   *
+   * Phase-10 ships only this hook. Production wiring of a real
+   * `DraftGenerator` (LLM) lives in Phase 11; until then the factory leaves
+   * `autonomousCreatorDeps` unset and the hook is inert.
+   */
+  setAutonomousSkillCreator(deps: {
+    creator: import('../skills/autonomous/creator.ts').AutonomousSkillCreator;
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+  }): void {
+    this.autonomousCreatorDeps = deps;
+  }
+
   /**
    * Post-construction wiring for the comprehension substrate. Factory
    * creates `ComprehensionCalibrator` after `SleepCycleRunner` (GAP#1
    * ordering), so this lets us attach the substrate without
    * reorganizing the whole factory.
    */
-  setComprehensionSubstrate(
-    store: ComprehensionStore,
-    calibrator: ComprehensionCalibrator,
-  ): void {
+  setComprehensionSubstrate(store: ComprehensionStore, calibrator: ComprehensionCalibrator): void {
     this.comprehensionStore = store;
     this.comprehensionCalibrator = calibrator;
   }
@@ -263,6 +382,8 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted: 0,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'data-gate',
@@ -296,6 +417,8 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted: 0,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
         skippedBy: 'sentinel-dormant',
@@ -330,6 +453,8 @@ export class SleepCycleRunner {
         decayedPatterns: 0,
         rulesPromoted,
         commonsensePromoted: 0,
+        capabilitiesPromoted: 0,
+        agentProposalsCreated: 0,
         costPatternsFound: 0,
         marketPhaseEvaluated: false,
       };
@@ -423,6 +548,16 @@ export class SleepCycleRunner {
       const { backtestRule, backtestWorkerAssignment } = await import('../evolution/backtester.ts');
       const activeRules = this.ruleStore.findActive();
       for (const rule of activeRules) {
+        if (rule.action === 'promote-capability') {
+          this.ruleStore.retire(rule.id);
+          rulesRetired++;
+          this.bus?.emit('evolution:ruleRetired', {
+            ruleId: rule.id,
+            reason: PROMOTE_CAPABILITY_RULE_RETIRE_REASON,
+          });
+          continue;
+        }
+
         const bt = this.getTracesForBacktest(rule);
         if (bt.length < 5) continue;
         const result = rule.action === 'assign-worker' ? backtestWorkerAssignment(rule, bt) : backtestRule(rule, bt);
@@ -500,6 +635,126 @@ export class SleepCycleRunner {
       }
     }
 
+    // Phase-7: skill promoter — propose acquired→bound for any (persona, skill)
+    // pair whose Wilson LB on success rate clears the threshold. Best-effort:
+    // any failure here is swallowed so the sleep cycle keeps running.
+    if (this.skillPromoterDeps) {
+      try {
+        const { proposeAcquiredToBoundPromotions, applyPromotions } = await import(
+          '../orchestrator/agents/skill-promoter.ts'
+        );
+        const proposals = proposeAcquiredToBoundPromotions(
+          this.skillPromoterDeps.skillOutcomeStore,
+          this.skillPromoterDeps.registry,
+          this.skillPromoterDeps.workspace,
+        );
+        if (proposals.length > 0) {
+          applyPromotions(this.skillPromoterDeps.workspace, proposals);
+        }
+      } catch {
+        /* Promotion is observational — never disrupts sleep cycle */
+      }
+    }
+
+    // Phase-15 (Item 4): skill tier graduation. Reads outcome rows per
+    // persona, looks up current tier per skill from disk, decides via
+    // Wilson LB threshold, and rewrites SKILL.md + appends ledger row for
+    // each promotion/demotion/quarantine. Best-effort throughout.
+    if (this.skillTierPromoterDeps) {
+      try {
+        this.tierGraduationRunCount += 1;
+        const { decideTierGraduations } = await import('../skills/autonomous/tier-graduation.ts');
+        const { applyTierGraduations } = await import('../skills/autonomous/tier-graduation-applier.ts');
+        const { skillOutcomeStore, registry, artifactStore, ledger, profile } = this.skillTierPromoterDeps;
+
+        // Gather outcome rows across every persona.
+        const rows: import('../db/skill-outcome-store.ts').SkillOutcomeRecord[] = [];
+        for (const persona of registry.listAgents()) {
+          rows.push(...skillOutcomeStore.listForPersona(persona.id));
+        }
+
+        if (rows.length > 0) {
+          // Read current tier per distinct skillId from disk. Cache reads
+          // within the cycle so the same skill isn't re-read N times when
+          // it appears for multiple personas / task signatures.
+          const distinctSkillIds = new Set(rows.map((r) => r.skillId));
+          const currentTierBySkill = new Map<string, import('../core/confidence-tier.ts').ConfidenceTier>();
+          for (const skillId of distinctSkillIds) {
+            try {
+              const record = await artifactStore.read(skillId);
+              currentTierBySkill.set(skillId, record.frontmatter.confidence_tier);
+            } catch {
+              /* skill missing on disk — skip; decision module ignores rows without a tier */
+            }
+          }
+
+          const decisions = decideTierGraduations({
+            rows,
+            currentTierBySkill,
+            cooldownState: this.tierGraduationCooldown,
+            currentRun: this.tierGraduationRunCount,
+          });
+
+          if (decisions.length > 0) {
+            const result = await applyTierGraduations(decisions, {
+              artifactStore,
+              ledger,
+              profile,
+            });
+            // Update cooldown only for decisions that actually applied.
+            for (const d of result.applied) {
+              this.tierGraduationCooldown.set(d.skillId, this.tierGraduationRunCount);
+            }
+          }
+        }
+      } catch {
+        /* Tier graduation is observational — never disrupts sleep cycle */
+      }
+    }
+
+    // Phase-10: autonomous skill creator hook. Two-step flow per cycle:
+    //   1. Feed creator windows from SkillOutcomeStore (persona-keyed samples)
+    //   2. Iterate unique (persona, taskSig) pairs and call tryDraftFor —
+    //      the creator's own qualification gates (window qualifies, no
+    //      existing skill, cooldown elapsed) decide whether a draft fires.
+    //
+    // The feeder is idempotent on identical store state because samples
+    // carry deterministic taskIds, but the creator's `observe()` doesn't
+    // dedupe. In production this is acceptable because the cycle interval
+    // is hours-to-days and outcome growth between cycles dominates the
+    // re-feed cost. A future optimisation could track a "high water mark"
+    // ts so the feeder only emits new samples.
+    if (this.autonomousCreatorDeps) {
+      try {
+        const { feedSkillOutcomesToCreator } = await import('../orchestrator/agents/skill-outcome-feeder.ts');
+        const { creator, skillOutcomeStore, registry } = this.autonomousCreatorDeps;
+        feedSkillOutcomesToCreator(creator, skillOutcomeStore, registry);
+        // Enumerate unique (persona, taskSig) pairs and try each. Best-effort
+        // per-pair: a failing tryDraftFor for one pair must not block others.
+        const seen = new Set<string>();
+        for (const persona of registry.listAgents()) {
+          let rows: ReturnType<typeof skillOutcomeStore.listForPersona>;
+          try {
+            rows = skillOutcomeStore.listForPersona(persona.id);
+          } catch {
+            continue;
+          }
+          for (const row of rows) {
+            const key = `${row.personaId}::${row.taskSignature}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            try {
+              await creator.tryDraftFor(row.taskSignature, row.personaId);
+            } catch {
+              /* Per-pair best-effort — never disrupts other pairs */
+            }
+          }
+        }
+      } catch {
+        /* Creator hook is observational — never disrupts sleep cycle */
+      }
+    }
+
     // Economy OS: Cost pattern mining (E2.4 → Sleep Cycle integration)
     let costPatternsFound = 0;
     if (this.costLedger) {
@@ -556,16 +811,24 @@ export class SleepCycleRunner {
         perEngine.set(entry.engineId, (perEngine.get(entry.engineId) ?? 0) + 1);
       }
       const minTasksPerEngine = perEngine.size > 0 ? Math.min(...perEngine.values()) : 0;
+      // Phase-8: pull real auction stats from the scheduler's family-stats
+      // tracker instead of the pre-Phase-8 hardcoded zeros. `dominantWinRate`,
+      // `auctionsByFamily`, and `dominantWinRateByFamily` are now populated
+      // from the live tracker so `evaluateMarketPhase` can apply the H6
+      // stratified regression rule meaningfully.
+      const family = this.marketScheduler.getFamilyStats();
       this.marketScheduler.evaluatePhase({
         activeEngines: engineIds.size,
         minTasksPerEngine,
         totalTraces: entries.length,
-        auctionCount: this.marketScheduler.getPhase().auctionCount,
+        auctionCount: family.auctionCount > 0 ? family.auctionCount : this.marketScheduler.getPhase().auctionCount,
         trustedRemotePeers: 0,
         minRemotePeerTasks: 0,
         distinctEnginesWithBids: 0,
         minSettledBidsPerEngine: 0,
-        dominantWinRate: 0,
+        dominantWinRate: family.dominantWinRate,
+        dominantWinRateByFamily: family.dominantWinRateByFamily,
+        auctionsByFamily: family.auctionsByFamily,
       });
       marketPhaseEvaluated = true;
     }
@@ -587,6 +850,40 @@ export class SleepCycleRunner {
       commonsensePromoted = results.filter((r) => r.promoted).length;
     }
 
+    // Capability-First Phase D — promote statistically proven capabilities
+    // onto stable agents from persisted traces. This is intentionally in the
+    // offline sleep-cycle path, not the online core loop: promotion is a
+    // deterministic governance decision based on repeated outcomes (A3/A7).
+    let capabilitiesPromoted = 0;
+    if (this.agentRegistry) {
+      const result = promoteCapabilityClaims(traces, {
+        agentRegistry: this.agentRegistry,
+        bus: this.bus,
+      });
+      capabilitiesPromoted = result.promotedCount;
+    }
+
+    // Capability-First Phase 5 — propose persistent custom agents from
+    // repeated task-scoped synthetic successes. This writes pending records
+    // only; it never activates an agent or mutates the live registry.
+    let agentProposalsCreated = 0;
+    if (this.agentProposalStore) {
+      const result = minePersistentAgentProposals(traces);
+      for (const proposal of result.proposals) {
+        const write = this.agentProposalStore.upsertPending(proposal);
+        if (!write.created) continue;
+        agentProposalsCreated++;
+        this.bus?.emit('evolution:agentProposalCreated', {
+          proposalId: proposal.id,
+          suggestedAgentId: proposal.suggestedAgentId,
+          taskTypeSignature: proposal.taskTypeSignature,
+          unmetCapabilityIds: proposal.unmetCapabilityIds,
+          evidenceTraceIds: proposal.evidenceTraceIds,
+          wilsonLowerBound: proposal.wilsonLowerBound,
+        });
+      }
+    }
+
     this.patternStore.recordCycleComplete(cycleId, traces.length, newPatterns.length);
 
     this.bus?.emit('sleep:cycleComplete', {
@@ -595,13 +892,17 @@ export class SleepCycleRunner {
       rulesGenerated,
       skillsCreated,
       rulesPromoted,
+      capabilitiesPromoted,
+      agentProposalsCreated,
     });
 
     // Thinking readiness gate — evaluate A/B measurement readiness.
     // Pure observational gate: queries thinking-mode stats from TraceStore
     // and reports whether adaptive thinking selection should be unblocked.
     // Design: docs/design/extensible-thinking-system-design.md §9.
-    let thinkingReadinessVerdict: import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict | undefined;
+    let thinkingReadinessVerdict:
+      | import('../orchestrator/thinking/thinking-readiness-gate.ts').ThinkingReadinessVerdict
+      | undefined;
     try {
       const thinkingStats = this.traceStore.getSuccessRateByThinkingMode();
       if (thinkingStats.length > 0) {
@@ -612,7 +913,10 @@ export class SleepCycleRunner {
           status: thinkingReadinessVerdict.status,
           ...(thinkingReadinessVerdict.status === 'blocked' ? { reason: thinkingReadinessVerdict.reason } : {}),
           ...(thinkingReadinessVerdict.status === 'ready'
-            ? { bestMode: thinkingReadinessVerdict.bestMode, successRateDelta: thinkingReadinessVerdict.successRateDelta }
+            ? {
+                bestMode: thinkingReadinessVerdict.bestMode,
+                successRateDelta: thinkingReadinessVerdict.successRateDelta,
+              }
             : {}),
           totalTraces,
         });
@@ -669,7 +973,9 @@ export class SleepCycleRunner {
       rulesRetired > 0 ||
       skillsCreated > 0 ||
       costPatternsFound > 0 ||
-      commonsensePromoted > 0;
+      commonsensePromoted > 0 ||
+      capabilitiesPromoted > 0 ||
+      agentProposalsCreated > 0;
     if (productive) {
       this.consecutiveNoopCycles = 0;
     } else {
@@ -686,6 +992,8 @@ export class SleepCycleRunner {
       decayedPatterns: decayedCount,
       rulesPromoted,
       commonsensePromoted,
+      capabilitiesPromoted,
+      agentProposalsCreated,
       costPatternsFound,
       marketPhaseEvaluated,
       thinkingReadinessVerdict,
@@ -935,6 +1243,15 @@ export class SleepCycleRunner {
 
     let promoted = 0;
     for (const rule of probationRules) {
+      if (rule.action === 'promote-capability') {
+        this.ruleStore.retire(rule.id);
+        this.bus?.emit('evolution:ruleRetired', {
+          ruleId: rule.id,
+          reason: PROMOTE_CAPABILITY_RULE_RETIRE_REASON,
+        });
+        continue;
+      }
+
       const backtestTraces = this.getTracesForBacktest(rule);
       if (backtestTraces.length < 5) continue;
 

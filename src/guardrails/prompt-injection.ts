@@ -32,6 +32,14 @@ export const INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
   // Base64-encoded payload — require padding suffix (=, ==) to reduce false positives
   // on minified code, long URLs, SHA hashes, and other legitimate long alphanumeric strings
   { pattern: /[A-Za-z0-9+/]{100,}={1,2}/, label: 'base64-payload' },
+  // Whole-field base64 (no padding required when source bytes are divisible by 3).
+  // Anchored to the full field value, plus diversity guard (upper + lower + digit) so
+  // SHA hashes (single-case hex), JWT base64url (contains -/_), URLs/paths, and DB
+  // connection strings don't trigger.
+  {
+    pattern: /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)[A-Za-z0-9+/]{100,}={0,2}$/,
+    label: 'base64-payload',
+  },
 ];
 
 export interface InjectionResult {

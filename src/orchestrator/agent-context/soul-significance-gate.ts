@@ -16,7 +16,7 @@ import type { AgentContext } from './types.ts';
 
 /** Minimal trace projection for significance check. */
 export interface TraceForSignificance {
-  outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+  outcome: 'success' | 'failure' | 'timeout' | 'escalated' | 'partial';
   taskTypeSignature?: string;
   predictionError?: { error: { composite: number } };
 }

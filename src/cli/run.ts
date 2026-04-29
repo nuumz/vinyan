@@ -44,7 +44,7 @@ export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {
     console.error('       --tool      Enable tool execution (shell, file ops) for non-code tasks');
     console.error('       --dry-run   Show routing decision without executing');
     console.error('       --output    Write result JSON to file');
-    console.error('       --agent <id> Force a specific specialist agent (e.g., ts-coder, writer)');
+    console.error('       --agent <id> Force a specific specialist persona (e.g., developer, author, reviewer)');
     process.exit(2);
   }
 

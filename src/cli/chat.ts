@@ -30,7 +30,7 @@ import { attachChatStreamRenderer } from './chat-stream-renderer.ts';
 
 const DEFAULT_BUDGET = {
   maxTokens: 50_000,
-  maxDurationMs: 120_000,
+  maxDurationMs: 180_000,
   maxRetries: 3,
 };
 

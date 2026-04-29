@@ -14,21 +14,25 @@
 
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
-import { LEVEL_CONFIG } from '../gate/risk-router.ts';
+import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
+import { buildConversationalResult } from './conversational-result-builder.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
+import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
+import { runWithLLMTrace } from './llm/llm-trace-context.ts';
+import { enforceGoalGroundingBoundary } from './orchestration-boundaries.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
-import type { WorkflowRegistry } from './workflows/workflow-registry.ts';
 import { executeLearnPhase } from './phases/phase-learn.ts';
 import { executePerceivePhase } from './phases/phase-perceive.ts';
-import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executePlanPhase } from './phases/phase-plan.ts';
 import { executePredictPhase } from './phases/phase-predict.ts';
+import { executeSpecPhase } from './phases/phase-spec.ts';
 import { executeVerifyPhase } from './phases/phase-verify.ts';
 import type { PhaseContext } from './phases/types.ts';
+import { isTracePersistenceError } from './trace-collector.ts';
 import type {
   CachedSkill,
   ExecutionTrace,
@@ -48,6 +52,7 @@ import type {
 import { coerceProfile } from './types.ts';
 import { checkComprehension, isComprehensionCheckDisabled } from './understanding/comprehension-check.ts';
 import { commitArtifacts } from './worker/artifact-commit.ts';
+import type { WorkflowRegistry } from './workflow/workflow-registry.ts';
 import { WorkingMemory } from './working-memory.ts';
 
 // ---------------------------------------------------------------------------
@@ -167,6 +172,10 @@ export interface OrchestratorDeps {
   workerLifecycle?: import('./fleet/worker-lifecycle.ts').WorkerLifecycle;
   /** WorldGraph for committing verified facts (A4: content-addressed truth). */
   worldGraph?: import('../world-graph/world-graph.ts').WorldGraph;
+  /** Capability research provider adapters. External adapters normalize at the boundary. */
+  knowledgeProviders?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProvider[];
+  /** Optional deterministic provider order for capability research. */
+  knowledgeProviderOrder?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[];
   /** CriticEngine — L2+ semantic verification (§17.6). Skip gracefully if absent. */
   criticEngine?: import('./critic/critic-engine.ts').CriticEngine;
   /** TestGenerator — L2+ generative verification (§17.7). Skip gracefully if absent. */
@@ -190,6 +199,19 @@ export interface OrchestratorDeps {
   understandingEngine?: import('./understanding/understanding-engine.ts').UnderstandingEngine;
   /** K2: Provider trust store for recording per-provider success/failure outcomes. */
   providerTrustStore?: import('../db/provider-trust-store.ts').ProviderTrustStore;
+  /**
+   * Phase-3: per-(persona, skill, taskSig) outcome store. Phase-5A wires the
+   * factory's `executeTask` wrapper to record an outcome row per loaded skill
+   * after every task. Feeds Phase-6 autonomous skill promotion via Wilson LB.
+   */
+  skillOutcomeStore?: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+  /**
+   * Phase-6: runtime skill acquirer. When present, the worker pool checks
+   * task gaps before dispatch and asks the acquirer to fill them with
+   * skills already cached in `.vinyan/skills/`. Defaults to NullSkillAcquirer
+   * (no-op) when the factory has no artifact store wired.
+   */
+  skillAcquirer?: import('./agents/skill-acquirer.ts').SkillAcquirer;
   /** Economy: Cost ledger for persistent cost tracking. */
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   /** Economy: Budget enforcer for global budget cap enforcement. */
@@ -234,6 +256,10 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /** Wave 5b/Capability-First Phase 4: runtime skill hints in worker execution context. */
+  skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
+  /** A10 / T6: goal-and-time grounding policy (thresholds + extended actions). */
+  goalGroundingPolicy?: import('./goal-grounding.ts').GoalGroundingPolicy;
   /**
    * Ecosystem: dispatch-scoped task facts registry. When present,
    * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
@@ -270,7 +296,7 @@ export interface OrchestratorDeps {
   /** Store for reading/updating the singleton AgentProfile at runtime. */
   agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
   /**
-   * Multi-agent: specialist registry (ts-coder, writer, etc.).
+   * Multi-agent: specialist registry (developer, author, reviewer, etc.).
    * Built from vinyan.json `agents[]` + built-in defaults by the factory.
    * Intent resolver uses this for auto-classification; prompt assembly for persona injection.
    */
@@ -369,6 +395,13 @@ async function prepareExecution(
        * from here; they fall back to the literal goal when absent.
        */
       comprehension?: import('./comprehension/types.ts').ComprehendedTaskMessage;
+      /**
+       * G6 soft-degrade routing cap. Set when budget-pressure soft-degrade
+       * lowered the initial routing level. The routing loop must respect this
+       * as the upper bound on escalation; otherwise oracle-driven escalation
+       * walks back up to the original level via MIN_ROUTING_LEVEL constraints.
+       */
+      softDegradeCap?: RoutingLevel;
     }
   | TaskResult
 > {
@@ -394,6 +427,18 @@ async function prepareExecution(
       outcome: 'failure',
       failureReason: inputCheck.reason,
       affectedFiles: [],
+      governanceProvenance: buildShortCircuitProvenance({
+        input,
+        decisionId: 'security-rejection',
+        attributedTo: 'kernelGuardrail',
+        wasGeneratedBy: 'validateInput',
+        reason: inputCheck.reason,
+        evidence: inputCheck.detections.map((detection) => ({
+          kind: 'policy',
+          source: 'prompt-injection-guardrail',
+          summary: detection,
+        })),
+      }),
     };
     await deps.traceCollector.record(securityTrace);
     return { id: input.id, status: 'failed', mutations: [], trace: securityTrace };
@@ -640,7 +685,7 @@ async function prepareExecution(
       // from claiming deterministic/heuristic at face value.
       engineType: engine.engineType,
     });
-    let verdict = stage1Verdict;
+    const verdict = stage1Verdict;
 
     // P2.C.3 — HYBRID pipeline. Run the LLM comprehender only when:
     //   (a) stage 1 succeeded AND stage 1 explicitly flagged ambiguous referents
@@ -963,6 +1008,138 @@ async function prepareExecution(
       if (intentResolution.agentId) {
         input.agentId = intentResolution.agentId;
       }
+      // Capability-first re-route (A1+A3): when the LLM extracted structured
+      // CapabilityRequirements, give the deterministic router a second pass.
+      // - rule-match: OVERRIDE the LLM's free-form `agentId` pick.
+      // - synthesize: if no existing agent fits, build a task-scoped synthetic
+      //   agent (zero-trust ACL) and register it on the registry so worker
+      //   dispatch and prompt assembly find it. Cleanup is handled in
+      //   `executeTask`'s finally via `unregisterAgentsForTask`.
+      // Generation (LLM) and verification (rule-based router/synthesis) are
+      // separated even at the agent-selection layer.
+      if (
+        deps.agentRouter &&
+        intentResolution.capabilityRequirements &&
+        intentResolution.capabilityRequirements.length > 0
+      ) {
+        // Strip any pre-set agentId so the router doesn't short-circuit on
+        // the LLM's pick (which we treat as a candidate, not a verdict).
+        const llmPickedAgentId = input.agentId;
+        const stripped: TaskInput = { ...input, agentId: undefined };
+        const reroute = deps.agentRouter.route(stripped, undefined, undefined, intentResolution.capabilityRequirements);
+        if (reroute.reason === 'rule-match' && reroute.agentId !== llmPickedAgentId) {
+          input.agentId = reroute.agentId;
+          intentResolution = {
+            ...intentResolution,
+            agentId: reroute.agentId,
+            agentSelectionReason: `capability-router override (LLM picked '${llmPickedAgentId ?? 'none'}', score ${reroute.score.toFixed(2)})`,
+            capabilityAnalysis: reroute.capabilityAnalysis ?? intentResolution.capabilityAnalysis,
+          };
+          deps.bus?.emit('agent:routed', {
+            taskId: input.id,
+            agentId: reroute.agentId,
+            reason: 'rule-match',
+            score: reroute.score,
+          });
+        } else if (
+          deps.agentRegistry &&
+          reroute.capabilityAnalysis?.recommendedAction === 'synthesize' &&
+          reroute.score < 0.4
+        ) {
+          // Build a task-scoped synthetic agent. Pure functions; no I/O.
+          const { planFromGap, synthesizeAgent } = await import('./capabilities/agent-synthesis.ts');
+          const plan = planFromGap(input.id, reroute.capabilityAnalysis, {
+            goal: input.goal,
+          });
+          if (plan && !deps.agentRegistry.has(plan.suggestedId)) {
+            try {
+              const spec = synthesizeAgent(plan);
+              deps.agentRegistry.registerAgent(spec, { taskId: input.id });
+              input.agentId = spec.id;
+              intentResolution = {
+                ...intentResolution,
+                agentId: spec.id,
+                agentSelectionReason: `synthesized task-scoped agent (gap=${reroute.capabilityAnalysis.gapNormalized.toFixed(2)})`,
+                capabilityAnalysis: reroute.capabilityAnalysis,
+                syntheticAgentId: spec.id,
+              };
+              deps.bus?.emit('agent:synthesized', {
+                taskId: input.id,
+                agentId: spec.id,
+                rationale: plan.rationale,
+                capabilities: spec.capabilities?.map((c) => c.id) ?? [],
+              });
+              deps.bus?.emit('agent:routed', {
+                taskId: input.id,
+                agentId: spec.id,
+                reason: 'synthesized',
+                score: 1,
+              });
+            } catch (err) {
+              // Synthesis failure is non-fatal — keep LLM's pick. Note for
+              // observability so dropouts don't disappear silently.
+              const reason = err instanceof Error ? err.message : String(err);
+              deps.bus?.emit('agent:synthesis-failed', {
+                taskId: input.id,
+                suggestedId: plan.suggestedId,
+                reason,
+              });
+            }
+          }
+        } else if (
+          reroute.capabilityAnalysis?.recommendedAction === 'research' &&
+          (deps.worldGraph || deps.workspace || (deps.knowledgeProviders?.length ?? 0) > 0)
+        ) {
+          // Capability-first research (Phase C1, local-first). The router
+          // decided we have a partial fit but missing knowledge: gather
+          // local evidence (world-graph facts + workspace docs) and inject
+          // it into the worker prompt as `[RESEARCH CONTEXT]` (rendered as
+          // `## Research Context (probabilistic)`). Goal stays untouched
+          // (A1) and findings are tagged probabilistic (A5) — agents must
+          // verify before acting.
+          try {
+            const { acquireKnowledge, planFromGapForResearch, buildResearchContextConstraint } = await import(
+              './capabilities/knowledge-acquisition.ts'
+            );
+            const req = planFromGapForResearch(input.id, reroute.capabilityAnalysis, {
+              providers: resolveKnowledgeProviderOrder(deps),
+            });
+            if (req && req.queries.length > 0) {
+              const contexts = await acquireKnowledge(req, {
+                worldGraph: deps.worldGraph,
+                workspace: deps.workspace,
+                knowledgeProviders: deps.knowledgeProviders,
+              });
+              const constraintLine = buildResearchContextConstraint(contexts);
+              if (constraintLine) {
+                understanding = {
+                  ...understanding,
+                  constraints: [...(understanding.constraints ?? []), constraintLine],
+                };
+                intentResolution = {
+                  ...intentResolution,
+                  capabilityAnalysis: reroute.capabilityAnalysis,
+                  knowledgeUsed: contexts,
+                };
+                deps.bus?.emit('agent:capability-research', {
+                  taskId: input.id,
+                  capabilities: req.capabilities,
+                  contextCount: contexts.length,
+                  sources: Array.from(new Set(contexts.map((c) => c.source))),
+                });
+              }
+            }
+          } catch (err) {
+            // Acquisition failure is non-fatal — task proceeds without
+            // research context. Surface for observability only.
+            const reason = err instanceof Error ? err.message : String(err);
+            deps.bus?.emit('agent:capability-research-failed', {
+              taskId: input.id,
+              reason,
+            });
+          }
+        }
+      }
       // resolveIntent now emits 'intent:resolved' itself with richer payload
       // (type, source). Legacy emit kept for listeners that haven't migrated —
       // but only when resolver didn't already emit (cache hit path). Skipping
@@ -1091,7 +1268,7 @@ async function prepareExecution(
         if (!checkSafetyInvariants(rule).safe) continue;
         if (rule.action === 'escalate' && typeof rule.parameters.toLevel === 'number') {
           const newLevel = rule.parameters.toLevel as RoutingLevel;
-          if (newLevel > routing.level) routing = { ...routing, level: newLevel };
+          if (newLevel > routing.level) routing = withLevel(routing, newLevel);
         }
         if (rule.action === 'require-oracle' && typeof rule.parameters.oracleName === 'string') {
           routing = { ...routing, mandatoryOracles: [...(routing.mandatoryOracles ?? []), rule.parameters.oracleName] };
@@ -1188,25 +1365,32 @@ async function prepareExecution(
     }
   }
 
+  // G6: routing cap installed by soft-degrade (see below). Threaded back to
+  // executeTaskCore so the routing loop's escalation respects it.
+  let softDegradeCap: RoutingLevel | undefined;
+
   // Economy: Budget enforcement
   if (deps.budgetEnforcer) {
     const budgetCheck = deps.budgetEnforcer.canProceed();
     if (!budgetCheck.allowed) {
-      const trace: ExecutionTrace = {
-        id: `trace-${input.id}-budget`,
-        taskId: input.id,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        taskTypeSignature: understanding.taskTypeSignature as string | undefined,
-        approach: 'budget-blocked',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: 0,
-        durationMs: 0,
-        outcome: 'failure',
-        failureReason: 'Global budget exceeded',
-        affectedFiles: input.targetFiles ?? [],
-      };
+      const trace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-budget`,
+          taskId: input.id,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          taskTypeSignature: understanding.taskTypeSignature as string | undefined,
+          approach: 'budget-blocked',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'failure',
+          failureReason: 'Global budget exceeded',
+          affectedFiles: input.targetFiles ?? [],
+        },
+        routing,
+      );
       await deps.traceCollector.record(trace);
       deps.bus?.emit('task:budget-exceeded', { taskId: input.id, totalTokensConsumed: 0, globalCap: 0 });
       return { id: input.id, status: 'failed', mutations: [], trace, escalationReason: 'Global budget exceeded' };
@@ -1262,6 +1446,11 @@ async function prepareExecution(
           toLevel: degradeLevel,
           reason: 'Soft degrade — budget warning threshold reached',
         });
+        // G6 cap: budget pressure already triggered the downgrade, so the
+        // routing loop must not escalate back above this level on retry. The
+        // existing escalation path otherwise re-applies the original
+        // MIN_ROUTING_LEVEL constraint (e.g. L3) and undoes the saving.
+        softDegradeCap = degradeLevel;
       }
     }
   }
@@ -1273,200 +1462,30 @@ async function prepareExecution(
     explorationFlag,
     intentResolution,
     comprehension,
+    softDegradeCap,
   };
+}
+
+function resolveKnowledgeProviderOrder(
+  deps: Pick<OrchestratorDeps, 'worldGraph' | 'workspace' | 'knowledgeProviders' | 'knowledgeProviderOrder'>,
+): import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[] | undefined {
+  if (deps.knowledgeProviderOrder && deps.knowledgeProviderOrder.length > 0) {
+    return Array.from(new Set(deps.knowledgeProviderOrder));
+  }
+
+  const providers: import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[] = [];
+  if (deps.worldGraph) providers.push('world-graph');
+  if (deps.workspace) providers.push('docs');
+  for (const provider of deps.knowledgeProviders ?? []) {
+    providers.push(provider.id);
+  }
+  return providers.length > 0 ? Array.from(new Set(providers)) : undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
-async function buildConversationalResult(
-  input: TaskInput,
-  intent: IntentResolution,
-  deps: OrchestratorDeps,
-): Promise<TaskResult> {
-  const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
-  const providerCount = deps.llmRegistry?.listProviders().length ?? 0;
-
-  // A2: Honest "I don't know" — no provider available means no conversational answer possible.
-  // Previous behavior echoed the goal back as the answer, which was dishonest.
-  if (!provider && providerCount === 0) {
-    const trace: ExecutionTrace = {
-      id: `trace-${input.id}-no-provider`,
-      taskId: input.id,
-      workerId: 'kernel',
-      timestamp: Date.now(),
-      routingLevel: 0,
-      approach: 'no-provider-escalation',
-      oracleVerdicts: {},
-      modelUsed: 'none',
-      tokensConsumed: 0,
-      durationMs: 0,
-      outcome: 'escalated',
-      failureReason: 'No LLM provider configured',
-      affectedFiles: [],
-    };
-    await deps.traceCollector.record(trace);
-    deps.bus?.emit('trace:record', { trace });
-    const result: TaskResult = {
-      id: input.id,
-      status: 'escalated',
-      mutations: [],
-      trace,
-      answer: '',
-      notes: ['No LLM provider configured — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY'],
-    };
-    deps.bus?.emit('task:complete', { result });
-    return result;
-  }
-
-  // Provider exists: attempt conversational generation. If generate throws (transient/auth error),
-  // fall back to refinedGoal — this is a degraded-but-recoverable path, not a no-provider case.
-  let answer = intent.refinedGoal;
-
-  // Multi-agent: resolve the specialist persona for this turn so the
-  // short-circuit reply matches the same identity that worker-pool would
-  // inject in full-pipeline. Falls back to generic Vinyan when no registry.
-  const resolvedAgent = (() => {
-    const reg = deps.agentRegistry;
-    if (!reg) return undefined;
-    const id = intent.agentId ?? reg.defaultAgent().id;
-    return reg.getAgent(id) ?? reg.defaultAgent();
-  })();
-  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps);
-
-  if (provider) {
-    try {
-      // A7: Load Turn-model history for multi-turn conversation continuity.
-      // Flatten each Turn's text blocks into a single string for the
-      // Anthropic HistoryMessage shape (tool_use is dropped here — this is
-      // the conversational persona path, not the tool-loop path).
-      let messages: import('./types.ts').HistoryMessage[] | undefined;
-      if (input.sessionId && deps.sessionManager) {
-        try {
-          const mgr = deps.sessionManager as unknown as {
-            getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
-          };
-          const turns = mgr.getTurnsHistory ? mgr.getTurnsHistory(input.sessionId, 20) : [];
-          if (turns.length > 0) {
-            messages = turns.map((t) => ({
-              role: t.role,
-              content: t.blocks
-                .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
-                .map((b) => b.text)
-                .join('\n'),
-            }));
-          }
-        } catch {
-          /* non-fatal */
-        }
-      }
-      const llmReq = {
-        systemPrompt: personaSystemPrompt,
-        userPrompt: input.goal,
-        maxTokens: 2000,
-        temperature: 0.3,
-        messages,
-      };
-      const response =
-        deps.streamingAssistantDelta && provider.generateStream
-          ? await provider.generateStream(llmReq, ({ text }) => {
-              if (!text) return;
-              deps.bus?.emit('agent:text_delta', { taskId: input.id, text });
-              // Mirror to llm:stream_delta so newer UIs (ChatStreamRenderer,
-              // VS Code panel) see the superset shape too.
-              deps.bus?.emit('llm:stream_delta', {
-                taskId: input.id,
-                kind: 'content',
-                text,
-              });
-            })
-          : await provider.generate(llmReq);
-      answer = response.content;
-    } catch {
-      answer = intent.refinedGoal;
-    }
-  }
-  const trace: ExecutionTrace = {
-    id: `trace-${input.id}-conversational`,
-    taskId: input.id,
-    // Multi-agent: attribute the trace to the resolved specialist (e.g. 'secretary')
-    // so context-builder/agent-evolution count this episode against the right agent.
-    // Falls back to 'intent-resolver' for the legacy no-registry path.
-    workerId: resolvedAgent?.id ?? 'intent-resolver',
-    timestamp: Date.now(),
-    routingLevel: 0,
-    approach: 'conversational-shortcircuit',
-    oracleVerdicts: {},
-    modelUsed: provider?.id ?? 'none',
-    tokensConsumed: 0,
-    durationMs: 0,
-    outcome: 'success',
-    affectedFiles: [],
-  };
-  await deps.traceCollector.record(trace);
-  deps.bus?.emit('trace:record', { trace });
-  const result: TaskResult = { id: input.id, status: 'completed', mutations: [], trace, answer };
-  deps.bus?.emit('task:complete', { result });
-  return result;
-}
-
-/**
- * Compose the conversational short-circuit system prompt with specialist
- * persona injection. Mirrors the persona/peer sections produced by
- * `assemblePrompt()` for the full pipeline so the same identity speaks in
- * both paths. When no agent registry is wired, returns the legacy generic
- * Vinyan prompt for backward compatibility.
- *
- * Soul lookup precedence: SoulStore (evolved/reflected) → AgentSpec.soul (built-in).
- */
-function buildConversationalSystemPrompt(
-  agent: import('./types.ts').AgentSpec | undefined,
-  deps: OrchestratorDeps,
-): string {
-  const closing = `Respond naturally. Match the user's language. Maintain context across turns.
-Never reveal your underlying model name or provider — you are Vinyan.
-Do NOT use JSON or code blocks unless the user asks for code.
-Do NOT narrate your reasoning process — just respond directly to the user.`;
-
-  if (!agent) {
-    return `You are Vinyan, a friendly and capable assistant. You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
-${closing}`;
-  }
-
-  const lines: string[] = [];
-  lines.push(`You are ${agent.name} (${agent.id}), a Vinyan specialist agent.`);
-  lines.push(agent.description);
-
-  // Soul: prefer disk-backed evolved soul (SoulReflector writes here), fall back to built-in.
-  const evolvedSoul = deps.soulStore?.loadSoulRaw(agent.id) ?? null;
-  const soul = evolvedSoul ?? agent.soul ?? null;
-  if (soul) {
-    lines.push('');
-    lines.push('[AGENT SOUL]');
-    lines.push(soul.trim());
-  }
-
-  // Peer roster: list other specialists this agent can mention/recommend
-  // delegating to. Conversational path can't dispatch (no tool layer here),
-  // but knowing peers exist prevents the "I don't have specialist agents"
-  // misanswer that triggered this fix.
-  const peers = (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id);
-  if (peers.length > 0) {
-    lines.push('');
-    lines.push('[CONSULTABLE AGENTS]');
-    lines.push(
-      'Vinyan also has these specialist agents you can suggest delegating to when a request is outside your role:',
-    );
-    for (const p of peers) {
-      lines.push(`  - ${p.id}: ${p.description}`);
-    }
-  }
-
-  lines.push('');
-  lines.push(closing);
-  return lines.join('\n');
-}
 
 async function executeDirectTool(
   input: TaskInput,
@@ -1600,6 +1619,25 @@ async function executeDirectTool(
       outcome: toolResult?.status === 'success' ? 'success' : 'failure',
       failureReason: toolResult?.error,
       affectedFiles: [],
+      governanceProvenance: buildShortCircuitProvenance({
+        input,
+        decisionId: 'direct-tool-shortcircuit',
+        attributedTo: 'intentResolver',
+        wasGeneratedBy: 'executeDirectToolCall',
+        reason: intent.reasoning || 'Intent resolver selected direct tool execution',
+        evidence: [
+          {
+            kind: 'routing-factor',
+            source: 'intent-strategy',
+            summary: `strategy=${intent.strategy}; confidence=${intent.confidence.toFixed(3)}`,
+          },
+          {
+            kind: 'tool-result',
+            source: intent.directToolCall?.tool ?? 'unknown-tool',
+            summary: `status=${toolResult?.status ?? 'missing'}`,
+          },
+        ],
+      }),
     };
     await deps.traceCollector.record(trace);
     deps.bus?.emit('trace:record', { trace });
@@ -1622,10 +1660,33 @@ async function executeDirectTool(
       }
     }
 
-    const answer =
-      toolResult?.status === 'success'
-        ? normalizeDirectToolAnswer(toolResult.output)
-        : (toolResult?.error ?? 'Tool execution failed');
+    // Successful shell_exec with substantive output → run a fast-tier LLM
+    // pass over the result so the chat surfaces a summary + follow-up
+    // suggestions instead of dumping a raw `ls` paragraph the user can't
+    // act on. The raw output is preserved (code-fenced) below the analysis
+    // so power users still see exact bytes. Failed runs and short outputs
+    // skip the analysis to keep cheap commands cheap.
+    let answer: string | undefined;
+    if (toolResult?.status === 'success') {
+      const rawOutput = normalizeDirectToolAnswer(toolResult.output) ?? '';
+      const isShellExec = intent.directToolCall?.tool === 'shell_exec';
+      const command = (intent.directToolCall?.parameters?.command as string | undefined) ?? '';
+
+      if (isShellExec && rawOutput && shouldAnalyzeShellOutput(rawOutput)) {
+        const analysis = await streamShellOutputAnalysis(input, command, rawOutput, deps);
+        if (analysis) {
+          answer = `${analysis}\n\n${fenceShellOutput(rawOutput)}`;
+        } else {
+          // LLM unavailable or failed — at minimum preserve column structure
+          // so the chat UI doesn't render `ls -la` as a one-paragraph wall.
+          answer = fenceShellOutput(rawOutput);
+        }
+      } else {
+        answer = rawOutput || normalizeDirectToolAnswer(toolResult.output);
+      }
+    } else {
+      answer = toolResult?.error ?? 'Tool execution failed';
+    }
 
     const result: TaskResult = {
       id: input.id,
@@ -1649,6 +1710,96 @@ function normalizeDirectToolAnswer(output: unknown): string | undefined {
     return undefined;
   }
   return JSON.stringify(output);
+}
+
+/**
+ * Heuristic: should we run a follow-up LLM analysis on this shell output?
+ *
+ * Yes for substantial multi-line output (≥3 lines, ≥100 chars) — typical
+ * "ls -la / cat / grep / npm test" results that the user wants summarized.
+ *
+ * No for:
+ *   - Empty or single-line output ("Successfully opened Chrome", "ok").
+ *   - App-launch / open commands — caller already inferred intent ("เปิด chrome").
+ *   - Any output that looks like a JSON-encoded scalar.
+ */
+function shouldAnalyzeShellOutput(output: string): boolean {
+  if (!output || output.length < 100) return false;
+  const lineCount = output.split('\n').filter((l) => l.trim().length > 0).length;
+  return lineCount >= 3;
+}
+
+/**
+ * Wrap multi-line shell output in a markdown code fence so the chat UI
+ * preserves columns/whitespace. Single-line outputs (or empty) pass through
+ * unchanged. Code fences with embedded triple-backticks fall back to a
+ * `~~~` fence to avoid breaking the wrap.
+ */
+function fenceShellOutput(output: string): string {
+  if (!output) return output;
+  if (!output.includes('\n')) return output;
+  const fence = output.includes('```') ? '~~~' : '```';
+  return `${fence}\n${output.replace(/\n+$/, '')}\n${fence}`;
+}
+
+/**
+ * Stream a fast-tier LLM analysis of a shell command's output back to the
+ * client via `llm:stream_delta`. Returns the assembled text on success,
+ * `null` when no provider is wired or the call fails — callers should fall
+ * back to the raw (code-fenced) output.
+ *
+ * The prompt is intentionally short so the analysis lands in 2–5 s with
+ * Gemma / Haiku and doesn't crowd the user's screen with prose.
+ */
+async function streamShellOutputAnalysis(
+  input: TaskInput,
+  command: string,
+  rawOutput: string,
+  deps: OrchestratorDeps,
+): Promise<string | null> {
+  const provider = deps.llmRegistry?.selectByTier('fast') ?? deps.llmRegistry?.selectByTier('balanced');
+  if (!provider) return null;
+  // Cap the output we feed the model — long listings explode prompt cost
+  // and don't add signal beyond the first ~4k chars.
+  const cappedOutput =
+    rawOutput.length > 4000 ? `${rawOutput.slice(0, 4000)}\n…[truncated, ${rawOutput.length} chars total]` : rawOutput;
+  const analysisSystemPrompt =
+    'You are summarizing the output of a shell command for the user. ' +
+    "Match the user's language from the goal. Be concise (3–6 short sentences or bullets). " +
+    'Do NOT repeat the raw output verbatim — it will be shown separately in a code block. ' +
+    'Identify what the output contains (group items by type when there are many), and propose 2–3 ' +
+    'plausible follow-up actions the user might want next. Output plain markdown — no headings, no preface.';
+  const analysisUserPrompt =
+    `User's goal: ${input.goal}\n` +
+    `Command run: ${command}\n` +
+    `Output (${rawOutput.split('\n').length} lines):\n${cappedOutput}\n\n` +
+    'Write the analysis + suggestions now.';
+  // Lazy import — avoid pulling in the prompt-assembler module on the cold
+  // path of every core-loop entry; it's only needed when this analyzer fires.
+  const { frozenSystemTier } = await import('./llm/prompt-assembler.ts');
+  const request = {
+    systemPrompt: analysisSystemPrompt,
+    userPrompt: analysisUserPrompt,
+    maxTokens: 800,
+    timeoutMs: 30_000,
+    temperature: 0.3,
+    // Constant analyzer system prompt → frozen tier. Below the 1024-token
+    // Anthropic cache floor on its own, but harmless to mark and consistent
+    // with the workflow planner / synthesizer wiring.
+    tiers: frozenSystemTier(analysisSystemPrompt, analysisUserPrompt),
+  };
+  try {
+    const response = provider.generateStream
+      ? await provider.generateStream(request, ({ text }) => {
+          if (!text) return;
+          deps.bus?.emit('llm:stream_delta', { taskId: input.id, kind: 'content', text });
+        })
+      : await provider.generate(request);
+    const trimmed = response.content.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
 }
 
 function shouldFireAndForgetDirectCommand(command: string): boolean {
@@ -1702,6 +1853,22 @@ function quoteArgForDiscovery(s: string): string {
  *   - Default: delegate to executeTaskCore for byte-identical legacy behavior
  */
 export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
+  // Establish ambient LLM trace context so providers that support broadcast
+  // metadata (currently OpenRouter — `llm/llm-trace-context.ts`) can group
+  // every LLM call inside this task under a stable session_id and trace_id
+  // without threading the values through every layer.
+  return runWithLLMTrace(
+    {
+      sessionId: input.sessionId,
+      traceId: input.id,
+      traceName: input.goal?.slice(0, 64),
+      environment: process.env.VINYAN_ENV ?? process.env.NODE_ENV ?? undefined,
+    },
+    () => executeTaskWithTrace(input, deps),
+  );
+}
+
+async function executeTaskWithTrace(input: TaskInput, deps: OrchestratorDeps): Promise<TaskResult> {
   // Profile coercion (W1 PR #1 consumer wiring).
   //
   // Every task enters the governance pipeline through this function, so
@@ -1743,9 +1910,30 @@ export async function executeTask(input: TaskInput, deps: OrchestratorDeps): Pro
       });
     }
     return await executeTaskCore(input, deps);
+  } catch (err) {
+    if (!isTracePersistenceError(err)) throw err;
+
+    const failureTrace: ExecutionTrace = {
+      ...err.trace,
+      outcome: 'failure',
+      failureReason: `A9 fail-closed: ${err.message}`,
+    };
+    const result: TaskResult = {
+      id: input.id,
+      status: 'failed',
+      mutations: [],
+      trace: failureTrace,
+      escalationReason: failureTrace.failureReason,
+    };
+    deps.bus?.emit('task:complete', { result });
+    return result;
   } finally {
     deps.agentMemory?.endTask(input.id);
     deps.taskFactsRegistry?.unregister(input.id);
+    // Sweep any task-scoped synthetic agents registered during this task
+    // (Phase B: capability-first synthesis). Idempotent — no-op when the
+    // task did not synthesize anything.
+    deps.agentRegistry?.unregisterAgentsForTask?.(input.id);
   }
 }
 
@@ -1772,12 +1960,50 @@ async function executeTaskCore(
   // call `criticEngine.clearTask(taskId)` so DebateRouterCritic
   // releases its per-task budget counter when the task exits.
   const finalizedTaskId = input.id;
+  // Declared outside the try so the finally block can release subscriptions
+  // even on throw paths. Assigned inside the try once the bus reference is
+  // confirmed.
+  let detachActivity: (() => void) | undefined;
+  // Delegation observability: register parent linkage with the trace
+  // collector at task entry so EVERY trace recorded by this task (and any
+  // sub-phases) inherits parentTaskId without each construction site
+  // having to remember. Cleared in finally — the collector's map would
+  // grow unbounded otherwise.
+  if (input.parentTaskId) {
+    (deps.traceCollector as { registerParent?: (id: string, p: string) => void })?.registerParent?.(
+      input.id,
+      input.parentTaskId,
+    );
+  }
   try {
+    // ── Preliminary task:start (all strategies) ───────────────────
+    // The full-pipeline branch emits its OWN `task:start` later (line ~2526)
+    // with the resolved routing decision. But conversational, direct-tool,
+    // and agentic-workflow short-circuit BEFORE that point, so without this
+    // preliminary emit the UI never sees `task:start` for those strategies
+    // — meaning routingLevel/engineId stay blank, the global SSE consumer
+    // never invalidates the session-messages query, and cross-tab chat
+    // refreshes lag until the next polling cycle.
+    //
+    // The full-pipeline emit later refines this with the real routing data
+    // (the reducer treats `task:start` as upsert — see `task:start` case
+    // in vinyan-ui/src/hooks/use-streaming-turn.ts).
+    const preliminaryRouting: RoutingDecision = {
+      level: 0,
+      model: 'pending',
+      budgetTokens: input.budget.maxTokens,
+      latencyBudgetMs: input.budget.maxDurationMs,
+    };
+    deps.bus?.emit('task:start', { input, routing: preliminaryRouting });
+
     const prep = await prepareExecution(input, deps, presetWorkingMemory);
     if ('status' in prep) return prep; // Early return (security rejection or budget block)
 
     // ── Strategy routing — short-circuit non-pipeline strategies ──
-    const intentResolution = prep.intentResolution;
+    // `let` (not `const`) because the conversational shortcircuit may emit
+    // the persona escape sentinel and re-route to agentic-workflow with an
+    // updated IntentResolution — see the `kind: 'reroute'` branch below.
+    let intentResolution = prep.intentResolution;
     if (intentResolution) {
       // ── Uncertain / contradictory intent → ask the user instead of guessing ──
       // A3 safety: when the resolver flagged epistemic failure, we refuse to
@@ -1801,6 +2027,20 @@ async function executeTaskCore(
           outcome: 'escalated',
           failureReason: intentResolution.reasoning,
           affectedFiles: [],
+          governanceProvenance: buildShortCircuitProvenance({
+            input,
+            decisionId: `intent-${intentResolution.type}`,
+            attributedTo: 'intentResolver',
+            wasGeneratedBy: 'executeTaskCore.intentResolution',
+            reason: intentResolution.reasoning,
+            evidence: [
+              {
+                kind: 'routing-factor',
+                source: 'intent-state',
+                summary: `type=${intentResolution.type}; confidence=${intentResolution.confidence.toFixed(3)}`,
+              },
+            ],
+          }),
         };
         await deps.traceCollector.record(trace);
         deps.bus?.emit('trace:record', { trace });
@@ -1836,7 +2076,16 @@ async function executeTaskCore(
         intentResolution.strategy = fallback as typeof intentResolution.strategy;
       }
       if (intentResolution.strategy === 'conversational') {
-        return buildConversationalResult(input, intentResolution, deps);
+        const conversationalOutcome = await buildConversationalResult(input, intentResolution, deps);
+        if (conversationalOutcome.kind === 'final') {
+          return conversationalOutcome.result;
+        }
+        // Persona escape sentinel fired: re-classify into agentic-workflow
+        // and fall through. `intentEscapeAttempts` is now 1 — the conversational
+        // path will not re-route a second time even if the workflow planner
+        // delegates back here.
+        intentResolution = conversationalOutcome.updatedIntent;
+        input = conversationalOutcome.updatedInput;
       }
       // Direct-tool: preserve the LLM-produced tool call when present.
       // Deterministic resolution is fallback-only when classification exists but
@@ -1888,6 +2137,20 @@ async function executeTaskCore(
                     durationMs: 0,
                     outcome: 'success',
                     affectedFiles: [],
+                    governanceProvenance: buildShortCircuitProvenance({
+                      input,
+                      decisionId: 'preference-disambiguation',
+                      attributedTo: 'intentResolver',
+                      wasGeneratedBy: 'executeTaskCore.directToolPreference',
+                      reason: `Multiple remembered apps match category ${category}`,
+                      evidence: [
+                        {
+                          kind: 'routing-factor',
+                          source: 'app-category',
+                          summary: `category=${category}; candidateCount=${apps.length}`,
+                        },
+                      ],
+                    }),
                   };
                   await deps.traceCollector.record(trace);
                   deps.bus?.emit('trace:record', { trace });
@@ -1934,6 +2197,25 @@ async function executeTaskCore(
         // to legacy goal-rewrite when planner unavailable or on any error.
         try {
           const { executeWorkflow } = await import('./workflow/workflow-executor.ts');
+          // Plumb the session turn history into the workflow path so the
+          // planner and synthesizer see prior assistant output for follow-up
+          // turns ("เขียนต่อบทที่ 2"). For first-turn or non-conversational
+          // dispatches the array is empty and the workflow behaves as before.
+          // Best-effort: a missing or unwired session manager simply omits
+          // the history block; the workflow still runs.
+          let sessionTurns: import('./types.ts').Turn[] | undefined;
+          if (input.sessionId && deps.sessionManager) {
+            try {
+              const mgr = deps.sessionManager as unknown as {
+                getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
+              };
+              if (typeof mgr.getTurnsHistory === 'function') {
+                sessionTurns = mgr.getTurnsHistory(input.sessionId, 12);
+              }
+            } catch {
+              /* best-effort — multi-turn coherence is a nice-to-have, not a hard dep */
+            }
+          }
           const workflowResult = await executeWorkflow(input, {
             llmRegistry: deps.llmRegistry,
             worldGraph: deps.worldGraph,
@@ -1943,9 +2225,27 @@ async function executeTaskCore(
             bus: deps.bus,
             workspace: deps.workspace,
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
+            agentRegistry: deps.agentRegistry,
             intentWorkflowPrompt: intentResolution.workflowPrompt,
             workflowConfig: deps.workflowConfig,
+            sessionTurns,
           });
+          // Map workflow status → ExecutionTrace.outcome. The DB schema's
+          // CHECK constraint on outcome only permits 'success' | 'failure' |
+          // 'timeout' | 'escalated' — emitting 'partial' silently fails the
+          // INSERT OR IGNORE in trace_store and the workflow trace never
+          // persists, leaving the assistant message in chat to fall back to
+          // the early-phase comprehension trace and mislabel its chips
+          // ("Conversational" instead of "Workflow"). Treat partial as
+          // success because a usable synthesized answer was produced; the
+          // per-step failures are already exposed via stepResults +
+          // workflow:delegate_completed bus events.
+          const traceOutcome: ExecutionTrace['outcome'] =
+            workflowResult.status === 'completed'
+              ? 'success'
+              : workflowResult.status === 'partial'
+                ? 'success'
+                : 'failure';
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,
             taskId: input.id,
@@ -1957,13 +2257,36 @@ async function executeTaskCore(
             modelUsed: 'workflow-planner',
             tokensConsumed: workflowResult.totalTokensConsumed,
             durationMs: workflowResult.totalDurationMs,
-            outcome: workflowResult.status === 'completed' ? 'success' : 'failure',
+            outcome: traceOutcome,
             affectedFiles: input.targetFiles ?? [],
+            governanceProvenance: buildShortCircuitProvenance({
+              input,
+              decisionId: 'agentic-workflow-shortcircuit',
+              attributedTo: 'intentResolver',
+              wasGeneratedBy: 'executeTaskCore.workflowBranch',
+              reason: intentResolution.reasoning || 'Intent resolver selected agentic workflow',
+              evidence: [
+                {
+                  kind: 'routing-factor',
+                  source: 'intent-strategy',
+                  summary: `strategy=${intentResolution.strategy}; confidence=${intentResolution.confidence.toFixed(3)}`,
+                },
+              ],
+            }),
           };
           await deps.traceCollector.record(trace);
           const result: TaskResult = {
             id: input.id,
-            status: workflowResult.status === 'completed' ? 'completed' : 'failed',
+            // Pass workflow status through verbatim. `partial` means a usable
+            // answer was produced even though one or more sub-steps failed —
+            // the UI should render this as success-with-warning, not a hard
+            // failure. Anything else (deadlock, true failure) becomes 'failed'.
+            status:
+              workflowResult.status === 'completed'
+                ? 'completed'
+                : workflowResult.status === 'partial'
+                  ? 'partial'
+                  : 'failed',
             mutations: [],
             trace,
             answer: workflowResult.synthesizedOutput,
@@ -2007,11 +2330,19 @@ async function executeTaskCore(
           latencyBudgetMs: Math.max(routing.latencyBudgetMs, AGENTIC_LATENCY_FLOOR),
         };
       }
-      // Ensure wall-clock timeout fits at least one full agentic attempt
-      if (input.budget.maxDurationMs < routing.latencyBudgetMs * 1.5) {
+      // Ensure wall-clock timeout fits multi-step agentic execution. A single
+      // agent-loop attempt is bounded by `latencyBudgetMs`; multi-step tool
+      // runs (read + analyze + write + verify) need ~2.5× headroom so one
+      // slow tool call doesn't burn the whole budget. Bound by the existing
+      // BUDGET_CAP_MULTIPLIER downstream.
+      const AGENTIC_BUDGET_MULTIPLIER = 2.5;
+      if (input.budget.maxDurationMs < routing.latencyBudgetMs * AGENTIC_BUDGET_MULTIPLIER) {
         input = {
           ...input,
-          budget: { ...input.budget, maxDurationMs: Math.ceil(routing.latencyBudgetMs * 1.5) },
+          budget: {
+            ...input.budget,
+            maxDurationMs: Math.ceil(routing.latencyBudgetMs * AGENTIC_BUDGET_MULTIPLIER),
+          },
         };
       }
     }
@@ -2095,6 +2426,85 @@ async function executeTaskCore(
 
     deps.bus?.emit('task:start', { input, routing });
 
+    // ── Last-activity tracker ─────────────────────────────────────
+    // Captures the most recent phase / tool / plan-progress event for
+    // the current task so the wall-clock timeout branch can surface a
+    // diagnostic line ("last activity: read_directory 8s ago, plan 1/2")
+    // instead of an opaque "Task timed out" message. Bus-driven, no DB
+    // read on the hot path. Subscriptions are filtered by taskId and
+    // detached at every return path below alongside `detachCheckpoint`.
+    const activity: {
+      lastPhase: { phase: string; durationMs: number; ts: number } | null;
+      lastTool: { name: string; ts: number; status: 'started' | 'executed'; isError?: boolean } | null;
+      planProgress: { done: number; total: number } | null;
+      currentStage: { phase: string; stage: string; attempt?: number; ts: number } | null;
+    } = { lastPhase: null, lastTool: null, planProgress: null, currentStage: null };
+
+    const detachActivityLocal = deps.bus
+      ? (() => {
+          const offs: Array<() => void> = [];
+          offs.push(
+            deps.bus!.on('phase:timing', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastPhase = { phase: p.phase, durationMs: p.durationMs, ts: Date.now() };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:tool_started', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastTool = { name: p.toolName, ts: Date.now(), status: 'started' };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:tool_executed', (p) => {
+              if (p.taskId !== input.id) return;
+              activity.lastTool = { name: p.toolName, ts: Date.now(), status: 'executed', isError: p.isError };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('agent:plan_update', (p) => {
+              if (p.taskId !== input.id) return;
+              const total = p.steps.length;
+              const done = p.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length;
+              activity.planProgress = { done, total };
+            }),
+          );
+          offs.push(
+            deps.bus!.on('task:stage_update', (p) => {
+              if (p.taskId !== input.id) return;
+              if (p.status === 'exited') {
+                // Keep the snapshot: an `exited` event is still a valid "latest
+                // known stage" for diagnostics. Update progress when supplied.
+                activity.currentStage = {
+                  phase: p.phase,
+                  stage: p.stage,
+                  attempt: p.attempt,
+                  ts: Date.now(),
+                };
+              } else {
+                activity.currentStage = {
+                  phase: p.phase,
+                  stage: p.stage,
+                  attempt: p.attempt,
+                  ts: Date.now(),
+                };
+              }
+              if (p.progress) activity.planProgress = p.progress;
+            }),
+          );
+          return () => {
+            for (const off of offs) {
+              try {
+                off();
+              } catch {
+                /* non-fatal */
+              }
+            }
+          };
+        })()
+      : undefined;
+    detachActivity = detachActivityLocal;
+
     // Crash Recovery: mark checkpoint complete/failed on task completion.
     // Agent Conversation: input-required is treated as completed from the
     // checkpoint's perspective — this turn's work is done; the agent just
@@ -2120,6 +2530,94 @@ async function executeTaskCore(
     let totalTokensConsumed = 0;
     const MAX_CONVERSATIONAL_LEVEL = 1 as RoutingLevel;
 
+    // ── Wall-clock safety margin & helpers ────────────────────────────
+    // The orchestrator must refuse to start a new attempt that cannot
+    // plausibly finish before the wall-clock budget runs out, otherwise
+    // the L(n) attempt overruns and the timeout error is misleadingly
+    // attributed to whichever level was active when the wall clock fired
+    // (often L3 after late escalation). See audit.jsonl trace for task
+    // ccf700c2 (180s budget → 65s+90s+90s L2 retries → late L2→L3
+    // escalation → "L3 timeout after 266s" misdiagnosis).
+    //
+    // Margins are kept small so existing tests with tight budgets
+    // (5s/10s) still execute their first attempt. The primary defense
+    // is the per-attempt cap that flows remaining budget into
+    // routing.latencyBudgetMs so worker subprocess + LLM proxy
+    // timeouts respect the wall clock.
+    const WALL_CLOCK_SAFETY_MS = 250; // refuse to start with <250ms left
+    const ESCALATION_MIN_REMAINING_MS = 500; // don't escalate with <500ms left
+    const buildTimeoutResult = (reason: string): TaskResult => {
+      const elapsedMs = Date.now() - startTime;
+      const lastPhase = activity.lastPhase;
+      const lastTool = activity.lastTool;
+      const planProgress = activity.planProgress;
+      const currentStage = activity.currentStage;
+      const diagnosticsParts: string[] = [];
+      if (currentStage) {
+        const stageLabel =
+          currentStage.attempt && currentStage.attempt > 1
+            ? `${currentStage.phase}:${currentStage.stage} (attempt ${currentStage.attempt})`
+            : `${currentStage.phase}:${currentStage.stage}`;
+        diagnosticsParts.push(`stage: ${stageLabel}`);
+      }
+      if (lastTool) {
+        const ageS = Math.max(0, Math.round((Date.now() - lastTool.ts) / 1000));
+        diagnosticsParts.push(`last tool: ${lastTool.name} (${lastTool.status}, ${ageS}s ago)`);
+      } else if (lastPhase) {
+        diagnosticsParts.push(`last phase: ${lastPhase.phase} (${Math.round(lastPhase.durationMs / 1000)}s)`);
+      }
+      if (planProgress && planProgress.total > 0) {
+        diagnosticsParts.push(`plan ${planProgress.done}/${planProgress.total}`);
+      }
+      const diagnosticsLine = diagnosticsParts.length > 0 ? ` Last activity — ${diagnosticsParts.join('; ')}.` : '';
+      const timeoutTrace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-timeout`,
+          taskId: input.id,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          agentId: input.agentId,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'wall-clock-timeout',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: elapsedMs,
+          outcome: 'timeout',
+          failureReason: reason,
+          affectedFiles: input.targetFiles ?? [],
+          workerSelectionAudit: lastWorkerSelection,
+        },
+        routing,
+      );
+      void deps.traceCollector.record(timeoutTrace);
+      deps.bus?.emit('trace:record', { trace: timeoutTrace });
+      deps.bus?.emit('task:timeout', {
+        taskId: input.id,
+        elapsedMs,
+        budgetMs: input.budget.maxDurationMs,
+        routingLevel: routing.level,
+        reason,
+        lastPhase: lastPhase ?? undefined,
+        lastTool: lastTool ?? undefined,
+        planProgress: planProgress ?? undefined,
+        currentStage: currentStage ?? undefined,
+      });
+      const timeoutResult: TaskResult = {
+        id: input.id,
+        status: 'failed',
+        mutations: [],
+        trace: timeoutTrace,
+        answer:
+          `Task timed out after ${Math.round(elapsedMs / 1000)}s ` +
+          `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}.` +
+          diagnosticsLine +
+          ' Try narrowing the request, or raise --max-duration if the task legitimately needs more time.',
+      };
+      deps.bus?.emit('task:complete', { result: timeoutResult });
+      return timeoutResult;
+    };
+
     // Wave 5.2: `ctx` is declared with `let` so the plan phase can hand
     // back an `enhancedInput` (with the DAG's preamble merged into
     // `constraints`) and the core-loop swaps `ctx.input` for subsequent
@@ -2137,6 +2635,7 @@ async function executeTaskCore(
       // from the ContextRetriever (E5) with recency/turn-store fallback.
       turns: sessionTurns,
       agentProfile,
+      intentResolution: prep.intentResolution,
     };
 
     // Outer loop: routing level escalation
@@ -2147,51 +2646,39 @@ async function executeTaskCore(
       // Inner loop: retry within current routing level
       for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
         // ── Wall-clock timeout check ──────────────────────────────────
-        if (Date.now() - startTime > input.budget.maxDurationMs) {
-          const timeoutTrace: ExecutionTrace = {
-            id: `trace-${input.id}-timeout`,
-            taskId: input.id,
-            workerId: routing.workerId ?? routing.model ?? 'unknown',
-            agentId: input.agentId,
-            timestamp: Date.now(),
-            routingLevel: routing.level,
-            approach: 'wall-clock-timeout',
-            oracleVerdicts: {},
-            modelUsed: routing.model ?? 'none',
-            tokensConsumed: 0,
-            durationMs: Date.now() - startTime,
-            outcome: 'timeout',
-            failureReason: `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`,
-            affectedFiles: input.targetFiles ?? [],
-            workerSelectionAudit: lastWorkerSelection,
-          };
-          await deps.traceCollector.record(timeoutTrace);
-          deps.bus?.emit('trace:record', { trace: timeoutTrace });
-          deps.bus?.emit('task:timeout', {
-            taskId: input.id,
-            elapsedMs: Date.now() - startTime,
-            budgetMs: input.budget.maxDurationMs,
-          });
-          const timeoutResult: TaskResult = {
-            id: input.id,
-            status: 'failed',
-            mutations: [],
-            trace: timeoutTrace,
-            // Surface a user-facing explanation so chat UIs don't render an
-            // empty "(no response)" bubble. The trace carries the full detail;
-            // this field is the TL;DR for clients that don't inspect traces.
-            answer:
-              `Task timed out after ${Math.round((Date.now() - startTime) / 1000)}s ` +
-              `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}. ` +
-              `Try narrowing the request, or raise --max-duration if the task legitimately needs more time.`,
-          };
-          deps.bus?.emit('task:complete', { result: timeoutResult });
-          return timeoutResult;
+        // Two-tier check:
+        //  (a) Budget already exhausted → emit timeout immediately.
+        //  (b) Less than WALL_CLOCK_SAFETY_MS remaining → refuse to
+        //      start a new attempt; the attempt cannot finish in time
+        //      and would just produce a worker timeout that gets
+        //      mis-attributed to a later level after escalation.
+        const elapsedMs = Date.now() - startTime;
+        const remainingMs = input.budget.maxDurationMs - elapsedMs;
+        if (remainingMs <= WALL_CLOCK_SAFETY_MS) {
+          return buildTimeoutResult(
+            remainingMs <= 0
+              ? `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`
+              : `Wall-clock budget exhausted before next attempt could start (${Math.max(0, remainingMs)}ms remaining)`,
+          );
+        }
+
+        // ── Per-attempt budget cap ────────────────────────────────────
+        // Cap routing.latencyBudgetMs to remaining wall-clock budget
+        // (minus safety margin) so the worker subprocess, agent contract,
+        // and LLM proxy timeouts all respect the user's budget. Without
+        // this, an L2 attempt with latencyBudgetMs=90s started 100s into
+        // a 180s budget would run for the full 90s, overshoot the 180s
+        // total, and the timeout would be reported at whatever level the
+        // escalation block jumped to next. See audit trace ccf700c2.
+        const usableMs = remainingMs - WALL_CLOCK_SAFETY_MS;
+        if (routing.latencyBudgetMs > usableMs) {
+          routing = { ...routing, latencyBudgetMs: Math.max(1_000, usableMs) };
         }
 
         // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────
-        // Phase 3: skill lookup is scoped by specialist agent. A ts-coder task
-        // sees ts-coder's skills (+ legacy shared), never writer's private skills.
+        // Phase 3: skill lookup is scoped by persona. A `developer` task sees
+        // developer-owned skills (+ legacy shared), never another persona's
+        // private skills.
         if (deps.skillManager && routing.level <= 1) {
           const fp = (input.targetFiles ?? []).sort().join(',') || '*';
           const taskSig = `${input.goal.slice(0, 50)}::${fp}`;
@@ -2255,6 +2742,18 @@ async function executeTaskCore(
         });
         const { perception } = perceiveResult.value;
         understanding = perceiveResult.value.understanding;
+        const perceiveGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'perceive',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
+        ctx = perceiveGrounding.ctx;
+        if (perceiveGrounding.result) {
+          deps.bus?.emit('task:complete', { result: perceiveGrounding.result });
+          return perceiveGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Agent Conversation: Comprehension Gate (orchestrator-driven)
@@ -2312,6 +2811,22 @@ async function executeTaskCore(
               outcome: 'success',
               affectedFiles: input.targetFiles ?? [],
               workerSelectionAudit: lastWorkerSelection,
+              governanceProvenance: buildShortCircuitProvenance({
+                input,
+                decisionId: 'comprehension-pause',
+                attributedTo: 'orchestrator',
+                wasGeneratedBy: 'executeTaskCore.comprehensionCheck',
+                reason: `comprehension check requested clarification: ${verdict.failedChecks
+                  .map((c) => c.check)
+                  .join(', ')}`,
+                evidence: [
+                  {
+                    kind: 'other',
+                    source: 'checkComprehension',
+                    summary: `confident=${verdict.confident}; questions=${verdict.questions.length}`,
+                  },
+                ],
+              }),
             };
             await deps.traceCollector.record(comprehensionTrace);
             deps.bus?.emit('trace:record', { trace: comprehensionTrace });
@@ -2371,6 +2886,18 @@ async function executeTaskCore(
             input = specOutcome.value.enhancedInput;
           }
         }
+        const specGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'spec',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
+        ctx = specGrounding.ctx;
+        if (specGrounding.result) {
+          deps.bus?.emit('task:complete', { result: specGrounding.result });
+          return specGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 2: PREDICT + SELECT WORKER
@@ -2422,6 +2949,18 @@ async function executeTaskCore(
           ctx = { ...ctx, input: enhancedInput };
           input = enhancedInput;
         }
+        const planGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'plan',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
+        ctx = planGrounding.ctx;
+        if (planGrounding.result) {
+          deps.bus?.emit('task:complete', { result: planGrounding.result });
+          return planGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 4: GENERATE
@@ -2436,6 +2975,7 @@ async function executeTaskCore(
           budgetCapMultiplier: BUDGET_CAP_MULTIPLIER,
           workerSelection,
           lastWorkerSelection,
+          matchedSkill,
           retry,
         });
         if (generateOutcome.action === 'return') return generateOutcome.result;
@@ -2450,6 +2990,38 @@ async function executeTaskCore(
         const { workerResult, isAgenticResult, lastAgentResult, dagResult, mutatingToolCalls, roomId } =
           generateOutcome.value;
         totalTokensConsumed = generateOutcome.value.totalTokensConsumed;
+        const generateGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'generate',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
+        ctx = generateGrounding.ctx;
+        if (generateGrounding.result) {
+          deps.bus?.emit('task:complete', { result: generateGrounding.result });
+          return generateGrounding.result;
+        }
+
+        // ── No-response worker rotation ──────────────────────────────
+        // When a worker produced no mutations and surfaced a timeout /
+        // crash uncertainty, the same workerId will keep timing out on
+        // subsequent retries (audit trace ccf700c2: 3× consecutive
+        // ~65–90s timeouts on the same OpenRouter free-tier worker).
+        // Clear `routing.workerId` so the next retry's worker selector
+        // can pick a different worker (or fall back to `routing.model`)
+        // before retry budget is exhausted.
+        const isNoResponseFailure =
+          workerResult.mutations.length === 0 &&
+          (workerResult.uncertainties ?? []).some((u) => /timeout|crash|no response received|proxy timeout/i.test(u));
+        if (isNoResponseFailure && routing.workerId) {
+          deps.bus?.emit('worker:error', {
+            taskId: input.id,
+            error: `No-response failure: ${(workerResult.uncertainties ?? []).slice(0, 2).join('; ')}`,
+            routing,
+          });
+          routing = { ...routing, workerId: undefined };
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Agent Conversation: input-required short-circuit
@@ -2491,6 +3063,20 @@ async function executeTaskCore(
             outcome: 'success',
             affectedFiles: input.targetFiles ?? [],
             workerSelectionAudit: lastWorkerSelection,
+            governanceProvenance: buildShortCircuitProvenance({
+              input,
+              decisionId: 'input-required-pause',
+              attributedTo: 'agenticWorker',
+              wasGeneratedBy: 'executeTaskCore.agentClarificationPause',
+              reason: 'agent requested user clarification before committing mutations',
+              evidence: [
+                {
+                  kind: 'other',
+                  source: 'attempt_completion.needsUserInput',
+                  summary: `questions=${lastAgentResult.uncertainties.length}`,
+                },
+              ],
+            }),
           };
           await deps.traceCollector.record(inputRequiredTrace);
           deps.bus?.emit('trace:record', { trace: inputRequiredTrace });
@@ -2568,6 +3154,18 @@ async function executeTaskCore(
           shouldCommit,
           trace,
         } = verifyOutcome.value;
+        const verifyGrounding = await enforceGoalGroundingBoundary(
+          ctx,
+          'verify',
+          routing,
+          understanding,
+          lastWorkerSelection,
+        );
+        ctx = verifyGrounding.ctx;
+        if (verifyGrounding.result) {
+          deps.bus?.emit('task:complete', { result: verifyGrounding.result });
+          return verifyGrounding.result;
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // Step 6: LEARN
@@ -2600,9 +3198,23 @@ async function executeTaskCore(
               // earlier `(task as unknown as { riskScore? }).riskScore` cast.
               // DebateRouterCritic reads `context.riskScore` directly; the
               // baseline critic and the 3-seat debate both accept-and-ignore.
+              //
+              // Accountability slice 4: also surface the previous outer-loop
+              // iteration's deterministic accountability grade + blocker
+              // categories so the critic anchors on what was already wrong.
+              // Empty/undefined on iteration 1.
+              const priorGrade = workingMemory.getLastAccountabilityGrade();
+              const priorBlockers = workingMemory.getLastBlockerCategories();
+              // Slice 4 follow-up: also thread the previous iteration's
+              // worker self-grade vs deterministic verdict so the critic
+              // gets a calibration warning when the worker was overconfident.
+              const priorPredictionError = workingMemory.getLastPredictionError();
               const criticContext = {
                 riskScore: routing.riskScore,
                 routingLevel: routing.level,
+                ...(priorGrade ? { priorAccountabilityGrade: priorGrade } : {}),
+                ...(priorBlockers.length > 0 ? { priorBlockerCategories: priorBlockers } : {}),
+                ...(priorPredictionError ? { priorPredictionError } : {}),
               };
               const criticResult = await deps.criticEngine.review(
                 proposal,
@@ -2697,6 +3309,7 @@ async function executeTaskCore(
               workspace: deps.workspace ?? process.cwd(),
               allowedPaths: input.targetFiles ?? [],
               routingLevel: routing.level,
+              taskId: input.id,
             } as import('./tools/tool-interface.ts').ToolContext;
             const mutatingResults = await deps.toolExecutor.executeProposedTools(mutatingToolCalls, toolContext);
             deps.bus?.emit('tools:executed', { taskId: input.id, results: mutatingResults });
@@ -2758,6 +3371,9 @@ async function executeTaskCore(
                 status: 'completed',
                 mutations: [],
                 trace: { ...finalTrace, outcome: 'success' as const },
+                answer:
+                  workerResult.proposedContent ??
+                  `The selected worker is in probation, so ${workerResult.mutations.length} candidate change(s) were queued for shadow validation and not committed.`,
                 notes: ['probation-shadow-only: I10 — probation worker result not committed'],
               };
               deps.bus?.emit('task:complete', { result: probationResult });
@@ -2774,6 +3390,22 @@ async function executeTaskCore(
             );
             if (commitResult.rejected.length > 0) {
               deps.bus?.emit('commit:rejected', { taskId: input.id, rejected: commitResult.rejected });
+              // A9 T3.b: fail-closed mutation-apply contract. Emit one
+              // `tool:mutation_failed` per rejected artifact so the
+              // degradation bridge normalizes it to
+              // `mutation-apply-failure / fail-closed`. WorkerResult
+              // mutations carry no tool provenance today, so we attribute
+              // them to the commit boundary itself with a conservative
+              // `write` category (destructive classification is deferred
+              // until provenance lands).
+              for (const r of commitResult.rejected) {
+                deps.bus?.emit('tool:mutation_failed', {
+                  taskId: input.id,
+                  toolName: 'artifact-commit',
+                  category: 'write',
+                  reason: `${r.path}: ${r.reason}`,
+                });
+              }
             }
           }
 
@@ -2827,7 +3459,11 @@ async function executeTaskCore(
             ? new Set(commitResult.applied)
             : new Set(workerResult.mutations.map((m) => m.file));
           const appliedMutations = workerResult.mutations.filter((m) => appliedSet.has(m.file));
-          const allRejected = commitResult && commitResult.applied.length === 0 && commitResult.rejected.length > 0;
+          // A9 T3.b: any rejected artifact fails the task closed (preflight
+          // already guarantees no partial filesystem writes when validation
+          // rejects). Post-preflight write errors are also fatal here so
+          // the operator sees a single fail-closed signal per task.
+          const anyRejected = (commitResult?.rejected.length ?? 0) > 0;
 
           const contradictions =
             passedOracles.length > 0 && failedOracles.length > 0
@@ -2836,7 +3472,7 @@ async function executeTaskCore(
 
           const successResult: TaskResult = {
             id: input.id,
-            status: allRejected ? 'failed' : 'completed',
+            status: anyRejected ? 'failed' : 'completed',
             mutations: appliedMutations.map((m) => ({
               file: m.file,
               diff: m.diff,
@@ -2851,6 +3487,10 @@ async function executeTaskCore(
               : undefined,
             contradictions,
             plan,
+            // Slice 4 Gap B: forward worker self-assessment so the
+            // GoalEvaluator can score prediction error against its own
+            // deterministic accountability grade.
+            ...(workerResult.selfAssessment ? { workerSelfAssessment: workerResult.selfAssessment } : {}),
           };
 
           // ── Shadow Enqueue (Phase 2.2) ──
@@ -2928,9 +3568,30 @@ async function executeTaskCore(
 
       // ── RETRY EXHAUSTED → escalate routing level ─────────────────
       const nextLevel = (routing.level + 1) as RoutingLevel;
+      const baseMaxLevel = understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+      // G6: when budget-pressure soft-degrade lowered the initial level,
+      // escalation must respect that cap. Otherwise the first oracle failure
+      // re-routes via the inherited MIN_ROUTING_LEVEL constraint and walks
+      // back up to the original level, defeating the budget saving.
       const effectiveMaxLevel =
-        understanding.taskDomain === 'conversational' ? MAX_CONVERSATIONAL_LEVEL : MAX_ROUTING_LEVEL;
+        prep.softDegradeCap !== undefined ? Math.min(baseMaxLevel, prep.softDegradeCap) : baseMaxLevel;
       if (nextLevel > effectiveMaxLevel) break;
+
+      // ── Pre-escalation budget guard ────────────────────────────────
+      // Don't escalate to a higher routing level if the wall-clock
+      // budget cannot support a meaningful attempt at the next level.
+      // Without this, the loop emits `task:escalate` L2→L3 just to have
+      // the next iteration's wall-clock check fire immediately and
+      // attribute the timeout to L3 — even though L3 never actually
+      // executed any work. Returning a timeout here keeps the failure
+      // attributed to the level that actually consumed the budget.
+      const remainingForEscalation = input.budget.maxDurationMs - (Date.now() - startTime);
+      if (remainingForEscalation < ESCALATION_MIN_REMAINING_MS) {
+        return buildTimeoutResult(
+          `Wall-clock budget exhausted at L${routing.level}; refusing to escalate to L${nextLevel} ` +
+            `with only ${Math.max(0, remainingForEscalation)}ms remaining (need ≥${ESCALATION_MIN_REMAINING_MS}ms)`,
+        );
+      }
 
       deps.bus?.emit('task:escalate', {
         taskId: input.id,
@@ -2938,37 +3599,67 @@ async function executeTaskCore(
         toLevel: nextLevel,
         reason: `Exhausted ${input.budget.maxRetries} retries at L${routing.level}`,
       });
+      // A8 broader provenance (2026-04-28): preserve the cumulative
+      // escalationPath across re-routes. The new RoutingDecision's provenance
+      // is built by RiskRouterImpl with `escalationPath:[newLevel]` only when
+      // isEscalated=true, but that's set AFTER assessInitialLevel returns —
+      // so the provenance is always missing the chain. We patch it here so
+      // every escalation transition is queryable from the routing's
+      // governance envelope.
+      const priorEscalationPath = routing.governanceProvenance?.escalationPath ?? [routing.level];
+      const priorRoutingLevel = routing.level;
       routing = await deps.riskRouter.assessInitialLevel({
         ...input,
         constraints: [...(input.constraints ?? []), `MIN_ROUTING_LEVEL:${nextLevel}`],
       });
-      routing = { ...routing, isEscalated: true };
+      const cumulativeEscalationPath: RoutingLevel[] = priorEscalationPath.includes(routing.level)
+        ? [...priorEscalationPath]
+        : [...priorEscalationPath, routing.level];
+      routing = {
+        ...routing,
+        isEscalated: true,
+        ...(routing.governanceProvenance
+          ? {
+              governanceProvenance: {
+                ...routing.governanceProvenance,
+                escalationPath: cumulativeEscalationPath,
+                reason: `${routing.governanceProvenance.reason ?? 'risk-router decision'}; escalated from L${priorRoutingLevel}`,
+              },
+            }
+          : {}),
+      };
     }
 
     // ── ALL LEVELS EXHAUSTED → escalate to human ───────────────────
-    const escalationTrace: ExecutionTrace = {
-      id: `trace-${input.id}-escalation`,
-      taskId: input.id,
-      workerId: routing.workerId ?? routing.model ?? 'unknown',
-      agentId: input.agentId,
-      timestamp: Date.now(),
-      routingLevel: MAX_ROUTING_LEVEL,
-      approach: 'all-levels-exhausted',
-      oracleVerdicts: {},
-      modelUsed: routing.model ?? 'none',
-      tokensConsumed: 0,
-      durationMs: Date.now() - startTime,
-      outcome: 'escalated',
-      failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
-      affectedFiles: input.targetFiles ?? [],
-      workerSelectionAudit: lastWorkerSelection,
-      failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
-        approach: fa.approach,
-        oracleVerdict: fa.oracleVerdict,
-        verdictConfidence: fa.verdictConfidence,
-        failureOracle: fa.failureOracle,
-      })),
-    };
+    const escalationTrace: ExecutionTrace = applyRoutingGovernance(
+      {
+        id: `trace-${input.id}-escalation`,
+        taskId: input.id,
+        workerId: routing.workerId ?? routing.model ?? 'unknown',
+        agentId: input.agentId,
+        timestamp: Date.now(),
+        // Reflect the actual last-attempted level, not the global maximum:
+        // when soft-degrade caps escalation at L2 the trace must say "L2", not
+        // "L3 attempted" (G6: known-issues #22).
+        routingLevel: routing.level,
+        approach: 'all-levels-exhausted',
+        oracleVerdicts: {},
+        modelUsed: routing.model ?? 'none',
+        tokensConsumed: 0,
+        durationMs: Date.now() - startTime,
+        outcome: 'escalated',
+        failureReason: `Failed after ${workingMemory.getSnapshot().failedApproaches.length} attempts across all routing levels`,
+        affectedFiles: input.targetFiles ?? [],
+        workerSelectionAudit: lastWorkerSelection,
+        failedApproaches: workingMemory.getSnapshot().failedApproaches.map((fa) => ({
+          approach: fa.approach,
+          oracleVerdict: fa.oracleVerdict,
+          verdictConfidence: fa.verdictConfidence,
+          failureOracle: fa.failureOracle,
+        })),
+      },
+      routing,
+    );
 
     serializeApproachesToStore(workingMemory, input, deps);
     await deps.traceCollector.record(escalationTrace);
@@ -2997,8 +3688,26 @@ async function executeTaskCore(
     } catch {
       /* hook errors are swallowed — cleanup must not fail the task */
     }
+    // Release the trace collector's delegation registry slot. Idempotent
+    // (no-op if no parent was registered). Without this the map grows
+    // unbounded over time as tasks come and go.
+    try {
+      (deps.traceCollector as { clearParent?: (id: string) => void })?.clearParent?.(finalizedTaskId);
+    } catch {
+      /* hook errors are swallowed — cleanup must not fail the task */
+    }
+    // Always release activity-tracker bus subscriptions on the way out
+    // (success, failure, escalation, throw). Mirrors detachCheckpoint
+    // but covers paths that don't reach the explicit detach call.
+    try {
+      detachActivity?.();
+    } catch {
+      /* non-fatal */
+    }
   }
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Helpers

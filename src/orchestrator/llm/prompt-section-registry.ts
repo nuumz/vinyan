@@ -9,6 +9,7 @@
  */
 
 import { sanitizeForPromptPassthrough } from '../../guardrails/index.ts';
+import { renderSkillCard } from '../agents/derive-persona-capabilities.ts';
 import { BUILT_IN_TOOLS } from '../tools/built-in-tools.ts';
 import type {
   CacheControl,
@@ -17,8 +18,8 @@ import type {
   SemanticTaskUnderstanding,
   TaskDAG,
   TaskDomain,
-  Turn,
   TaskUnderstanding,
+  Turn,
   WorkingMemoryState,
 } from '../types.ts';
 import { READONLY_TOOLS } from '../types.ts';
@@ -97,10 +98,18 @@ export interface SectionContext {
   agentContext?: import('../agent-context/types.ts').AgentContext;
   /** Living Agent Soul: pre-rendered SOUL.md content for deep prompt injection. */
   soulContent?: string;
-  /** Multi-agent: the specialist agent assigned to this task (ts-coder, writer, etc.). */
+  /** Multi-agent: the specialist agent assigned to this task (developer, author, etc.). */
   agentProfile?: import('../types.ts').AgentSpec;
   /** Multi-agent: peer agents available for consultation via delegation. */
   peerAgents?: import('../types.ts').AgentSpec[];
+  /**
+   * Phase 2 — Loaded SKILL.md cards for the dispatched persona. Each card is
+   * the L0 catalog view wrapped in an integrity envelope (`<skill-card hash="..."
+   * tier="..." source="...">`). The renderer for `agent-skill-cards` enforces
+   * a per-card char cap with whole-block-or-skip semantics. Empty/undefined →
+   * section renders nothing. Wired by core-loop / agent dispatch path.
+   */
+  loadedSkillCards?: import('../agents/derive-persona-capabilities.ts').SkillCardView[];
 }
 
 export interface PromptSection {
@@ -173,9 +182,7 @@ export class PromptSectionRegistry {
    */
   validateVolatilityOrdering(): void {
     for (const target of ['system', 'user'] as const) {
-      const sorted = this.sections
-        .filter((s) => s.target === target)
-        .sort((a, b) => a.priority - b.priority);
+      const sorted = this.sections.filter((s) => s.target === target).sort((a, b) => a.priority - b.priority);
       for (let i = 1; i < sorted.length; i++) {
         const prev = sorted[i - 1]!;
         const curr = sorted[i]!;
@@ -204,9 +211,7 @@ export class PromptSectionRegistry {
    * cached while only the turn-volatile suffix is re-processed each request.
    */
   renderTargetByTier(target: 'system' | 'user', ctx: SectionContext): RenderedTiers {
-    const sorted = this.sections
-      .filter((s) => s.target === target)
-      .sort((a, b) => a.priority - b.priority);
+    const sorted = this.sections.filter((s) => s.target === target).sort((a, b) => a.priority - b.priority);
 
     const byTier: Record<'frozen' | 'session' | 'turn', string[]> = {
       frozen: [],
@@ -232,15 +237,10 @@ export class PromptSectionRegistry {
 
     // Compute offsets. `frozenEnd` includes the separator that follows the
     // frozen tier (so cache marker can be placed cleanly at that offset).
-    const frozenEnd =
-      frozen.length === 0
-        ? 0
-        : frozen.length + (pieces.length > 1 ? TIER_SEPARATOR.length : 0);
+    const frozenEnd = frozen.length === 0 ? 0 : frozen.length + (pieces.length > 1 ? TIER_SEPARATOR.length : 0);
     const sessionLen = session.length;
     const sessionEnd =
-      sessionLen === 0
-        ? frozenEnd
-        : frozenEnd + sessionLen + (turn.length > 0 ? TIER_SEPARATOR.length : 0);
+      sessionLen === 0 ? frozenEnd : frozenEnd + sessionLen + (turn.length > 0 ? TIER_SEPARATOR.length : 0);
     const totalEnd = joined.length;
 
     return { frozen, session, turn, joined, offsets: { frozenEnd, sessionEnd, totalEnd } };
@@ -293,8 +293,30 @@ export function createDefaultRegistry(): PromptSectionRegistry {
       `[ROLE]
 You are a coding worker in Vinyan, an autonomous orchestrator powered by Epistemic Orchestration.
 You generate code proposals that will be verified by external oracles.
+You are accountable for satisfying the task's Definition of Done: goal, constraints, acceptance criteria, success criteria, and oracle evidence.
 Do NOT self-evaluate your output — external verification determines correctness.
 Do NOT apologize or narrate your process. Produce the code change directly.`,
+  });
+
+  registry.register({
+    id: 'accountability-contract',
+    target: 'system',
+    cache: 'static',
+    volatility: 'frozen',
+    priority: 35,
+    render: () =>
+      `[ACCOUNTABILITY CONTRACT]
+You are a senior engineer who takes professional responsibility for every result you ship. Half-done, plausibly-correct, or "good enough" is not acceptable; honesty about uncertainty is.
+Definition of Done = the task goal + user constraints + acceptance criteria + success criteria + oracle verification.
+Rubric:
+  A: all criteria addressed, minimal scoped change, verification evidence available, no critical uncertainty.
+  B: core goal achieved with minor disclosed caveats that do not violate constraints.
+  C: missing criterion, failed/absent verification, scope drift, hidden uncertainty, or unsafe side effect.
+Rules:
+- Propose completion only for A or B. For C, continue working, report uncertainty, or request clarification with concrete options.
+- When you call attempt_completion with status="done", you MUST include selfAssessment.grade (A or B) and an honest list of remaining gaps (use status="uncertain" instead if grade would be C).
+- If verification or tests fail, the next proposal must respond to that failure evidence; do not repeat the failed approach.
+- Your confidence is not proof. Evidence from files, tools, tests, and oracles is proof.`,
   });
 
   // Phase 7a: [ENVIRONMENT] — cwd / OS / date / git branch for code tasks.
@@ -348,6 +370,8 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
         '- If the task is ambiguous, propose the safest interpretation (smallest scope, fewest side effects) and flag alternatives.',
         // Verification
         '- Report outcomes faithfully. Never claim success without evidence from oracle verification.',
+        '- Treat acceptance criteria and success criteria as the Definition of Done, not optional guidance.',
+        '- Before proposing completion, check your result against the A/B/C accountability rubric.',
       ];
       // HMS: when prior hallucinations detected, add pointed guidance
       const hasHallucinationFailures = ctx.memory.failedApproaches.some((fa) =>
@@ -1181,9 +1205,7 @@ function renderTurnBlocks(blocks: readonly ContentBlock[]): string {
         break;
       }
       case 'tool_result':
-        parts.push(
-          `[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`,
-        );
+        parts.push(`[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`);
         break;
     }
   }
@@ -1194,8 +1216,7 @@ function renderTurnBlocks(blocks: readonly ContentBlock[]): string {
 function renderTurnsSection(turns: readonly Turn[]): string | null {
   if (!turns.length) return null;
 
-  const entries =
-    turns.length > CONVERSATION_MAX_TURNS ? turns.slice(-CONVERSATION_MAX_TURNS) : turns;
+  const entries = turns.length > CONVERSATION_MAX_TURNS ? turns.slice(-CONVERSATION_MAX_TURNS) : turns;
   const skippedCount = turns.length - entries.length;
 
   const lines: string[] = [];
@@ -1275,6 +1296,45 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
       }
       if (ac.identity.approachStyle) {
         lines.push(`Your tendency: ${ac.identity.approachStyle}.`);
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Agent Skill Cards — Phase 2: SKILL.md L0 cards with integrity envelope
+  // (hash + tier + source) wrapped around authored body. Sits in the system
+  // prompt right after agent-soul so the persona's skill loadout is part of
+  // its frozen identity for the session.
+  //
+  // The renderer enforces a per-card MAX_SKILL_CARD_CHARS budget with
+  // whole-block-or-skip semantics — never truncate mid-skill (would corrupt
+  // the A4 hash binding and expose a prompt-injection surface, risk H5/C5).
+  // Skills are rendered in the order supplied by `derivePersonaCapabilities`
+  // (tier desc, id asc) so prompt content is reproducible.
+  registry.register({
+    id: 'agent-skill-cards',
+    target: 'system',
+    cache: 'session',
+    volatility: 'session',
+    priority: 130,
+    render: (ctx) => {
+      const cards = ctx.loadedSkillCards;
+      if (!cards || cards.length === 0) return null;
+      const rendered: string[] = [];
+      let skipped = 0;
+      for (const card of cards) {
+        const block = renderSkillCard(card);
+        if (block) {
+          rendered.push(block);
+        } else {
+          skipped++;
+        }
+      }
+      if (rendered.length === 0) return null;
+      const lines = ['[LOADED SKILLS]'];
+      lines.push(...rendered);
+      if (skipped > 0) {
+        lines.push(`(${skipped} skill card${skipped === 1 ? '' : 's'} omitted: card too large)`);
       }
       return lines.join('\n');
     },

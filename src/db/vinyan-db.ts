@@ -20,6 +20,11 @@ export class VinyanDB {
     this.db = new Database(dbPath);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA foreign_keys = ON');
+    // SQLITE_BUSY → wait up to 5s for the lock to free instead of erroring out
+    // immediately. Without this, concurrent async writes (e.g. shadow:complete
+    // handlers firing while the main path is mid-INSERT) escalate to
+    // SQLITE_IOERR_VNODE on macOS WAL.
+    this.db.exec('PRAGMA busy_timeout = 5000');
 
     // Apply versioned migrations (TDD §20)
     const runner = new MigrationRunner();

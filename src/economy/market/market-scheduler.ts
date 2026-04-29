@@ -12,7 +12,12 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { MarketConfig } from '../economy-config.ts';
 import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
-import { BidAccuracyTracker } from './bid-accuracy-tracker.ts';
+import { type BidAccuracyPersistence, BidAccuracyTracker } from './bid-accuracy-tracker.ts';
+import { FamilyStatsTracker } from './family-stats-tracker.ts';
+import {
+  type PersonaOverclaimPersistence,
+  PersonaOverclaimTracker,
+} from './persona-overclaim-tracker.ts';
 import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } from './market-phase.ts';
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
@@ -35,7 +40,22 @@ export class MarketScheduler {
   private accuracyTracker: BidAccuracyTracker;
   private phaseState: MarketPhaseState;
   private bus: VinyanBus | undefined;
-  private auctionHistory: Array<{ bidSpread: number }> = [];
+  private auctionHistory: Array<{ bidSpread: number; distinctPersonaCount?: number }> = [];
+  /**
+   * Phase-8: per-task-family auction stats. Records every winning bid with its
+   * task-type-family so `evaluateMarketPhase` can apply the H6 stratified
+   * regression rule with real data instead of hardcoded zeros.
+   */
+  private familyStats: import('./family-stats-tracker.ts').FamilyStatsTracker;
+  /**
+   * Phase-12: persona-keyed overclaim ledger. Increments on every
+   * `bid:overclaim_detected` event the factory routes here, and increments
+   * `observations` on every executeTask completion where the persona had
+   * ≥2 declared skills (the threshold that makes overclaim meaningful).
+   * `allocate()` injects the resulting penalty multiplier into each bid's
+   * `BidderContext` so `scoreBid` attenuates habitually-overclaiming personas.
+   */
+  private personaOverclaimTracker: PersonaOverclaimTracker;
   /**
    * Tick hooks registered via {@link registerTickHook}. Invoked on every
    * {@link tick} call after the scheduler's own work completes. See
@@ -43,11 +63,31 @@ export class MarketScheduler {
    */
   private tickHooks: Array<() => void | Promise<void>> = [];
 
-  constructor(config: MarketConfig, bus?: VinyanBus) {
+  constructor(
+    config: MarketConfig,
+    bus?: VinyanBus,
+    /**
+     * Phase-14 (Item 3) — optional persistence backing for the persona
+     * overclaim ledger. When supplied, the tracker rehydrates from disk on
+     * construction and writes through every record so penalty math survives
+     * orchestrator restarts. Omitted in-memory fallback keeps tests / minimal
+     * setups working unchanged.
+     */
+    personaOverclaimPersistence?: PersonaOverclaimPersistence,
+    /**
+     * Phase-15 (Item 2) — sibling persistence for the bid-accuracy ledger.
+     * Same shape as the persona overclaim slot above; aggregate EMA and
+     * violation counters survive a restart. The `recentSettlements` window
+     * stays in-memory and warms up over the first 10 settlements.
+     */
+    bidAccuracyPersistence?: BidAccuracyPersistence,
+  ) {
     this.config = config;
-    this.accuracyTracker = new BidAccuracyTracker();
+    this.accuracyTracker = new BidAccuracyTracker(bidAccuracyPersistence);
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
+    this.familyStats = new FamilyStatsTracker();
+    this.personaOverclaimTracker = new PersonaOverclaimTracker(personaOverclaimPersistence);
   }
 
   /**
@@ -110,14 +150,35 @@ export class MarketScheduler {
   }
 
   /**
+   * Phase-12: get the persona-keyed overclaim tracker. The factory subscribes
+   * to `bid:overclaim_detected` and `recordObservation`s every executeTask
+   * completion with ≥2 declared skills via this surface; tests inspect the
+   * record state through it as well.
+   */
+  getPersonaOverclaimTracker(): PersonaOverclaimTracker {
+    return this.personaOverclaimTracker;
+  }
+
+  /**
    * Run an auction for a task. Returns null if auction not applicable
    * (falls back to direct selection).
+   *
+   * Phase-3: optional `requiredCapabilities` is forwarded to `runAuction` so
+   * the scorer's `skillMatch` factor attenuates bids by capability coverage.
    */
   allocate(
     taskId: string,
     bids: EngineBid[],
     contexts: Map<string, BidderContext>,
     taskBudgetTokens: number,
+    requiredCapabilities?: ReadonlyArray<{ id: string; weight: number }>,
+    /**
+     * Phase-8: task-type-family for per-family auction stats (H6
+     * stratified regression). Optional — callers without taskType info
+     * use the default `UNKNOWN_FAMILY` bucket so global dominance still
+     * tracks correctly.
+     */
+    taskTypeFamily?: string,
   ): AuctionResult | null {
     if (!this.isActive()) return null;
     if (bids.length < this.config.min_bidders) {
@@ -138,14 +199,46 @@ export class MarketScheduler {
       ctx.bidAccuracy = this.accuracyTracker.getAccuracy(bidderId);
     }
 
-    const result = runAuction(auctionId, taskId, validBids, contexts, taskBudgetTokens, this.phaseState.currentPhase);
+    // Phase-12: inject per-bid persona overclaim penalty. Looked up by the
+    // bid's `personaId` (NOT bidderId — overclaim is a persona-level signal,
+    // not a provider-level one). Defaults to 1.0 when the bid carries no
+    // persona attribution or the persona is in cold-start.
+    for (const bid of validBids) {
+      const ctx = contexts.get(bid.bidderId);
+      if (!ctx) continue;
+      ctx.personaOverclaimPenalty = bid.personaId
+        ? this.personaOverclaimTracker.getPenaltyMultiplier(bid.personaId)
+        : 1.0;
+    }
+
+    const result = runAuction(
+      auctionId,
+      taskId,
+      validBids,
+      contexts,
+      taskBudgetTokens,
+      this.phaseState.currentPhase,
+      requiredCapabilities,
+    );
     if (!result) return null;
 
-    // Track bid spread for collusion detection
+    // Phase-8: record the winner in the family-stats window so subsequent
+    // `evaluatePhase` calls can apply the H6 stratified regression rule
+    // with real data. Family defaults to UNKNOWN_FAMILY when caller omits it.
+    this.familyStats.addAuction(result.winnerId, taskTypeFamily);
+
+    // Track bid spread for collusion detection. Phase-3: also count distinct
+    // personas so the detector can skip auctions where all bidders are running
+    // the same persona/skill loadout (tight spread is expected, not collusion
+    // — risk H7).
     const spread = computeBidSpread(
       validBids.map((b) => ({ estimatedTokens: b.estimatedTokensInput + b.estimatedTokensOutput })),
     );
-    this.auctionHistory.push({ bidSpread: spread });
+    const personaIds = validBids
+      .map((b) => b.personaId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const distinctPersonaCount = personaIds.length > 0 ? new Set(personaIds).size : undefined;
+    this.auctionHistory.push({ bidSpread: spread, distinctPersonaCount });
     if (this.auctionHistory.length > 100) this.auctionHistory.shift();
 
     // Check for collusion
@@ -219,6 +312,15 @@ export class MarketScheduler {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Phase-8: snapshot the per-task-family auction stats so callers (sleep
+   * cycle) can compose a real `MarketPhaseStats` instead of passing
+   * hardcoded zeros for `dominantWinRate` / `auctionsByFamily`.
+   */
+  getFamilyStats(): import('./family-stats-tracker.ts').FamilyStats {
+    return this.familyStats.getStats();
   }
 
   /**

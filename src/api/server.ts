@@ -9,22 +9,25 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;
 
+import { z } from 'zod/v4';
 import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import { buildDecisionReplay } from '../db/governance-query.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
+import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
-import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+import type { RunOracleOptions } from '../oracle/runner.ts';
+import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
+import type { EngineProfile, EngineStats, ExecutionTrace, TaskInput, TaskResult } from '../orchestrator/types.ts';
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
-import type { RunOracleOptions } from '../oracle/runner.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
-import { z } from 'zod/v4';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
 
@@ -41,10 +44,21 @@ export interface APIServerDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   sessionManager: SessionManager;
   traceStore?: TraceStore;
+  /** Per-task durable event log for historical UI process replay (`/tasks/:id/events`). */
+  taskEventStore?: import('../db/task-event-store.ts').TaskEventStore;
   ruleStore?: RuleStore;
   workerStore?: WorkerStore;
+  /**
+   * Live Reasoning Engine registry — source of truth for "engines available
+   * right now". `/api/v1/workers` and `/api/v1/engines` merge this with
+   * `workerStore` (historical) so the dashboard never shows an empty list
+   * just because no task has run yet. Wired in `cli/serve.ts`.
+   */
+  engineRegistry?: import('../orchestrator/llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  /** A9 / T4 — operator visibility surface for `/api/v1/health/degradation`. */
+  degradationStatus?: DegradationStatusTracker;
   a2aManager?: A2AManagerImpl;
   /** Oracle runner for WebSocket ECP endpoint (PH5.18). */
   runOracle?: (oracleName: string, hypothesis: unknown, options?: RunOracleOptions) => Promise<unknown>;
@@ -100,6 +114,8 @@ export interface APIServerDeps {
   defaultProfile?: string;
 }
 
+type EngineListEntry = EngineProfile & { stats?: EngineStats };
+
 export class VinyanAPIServer {
   private server: BunServer | null = null;
   private auth: ReturnType<typeof createAuthMiddleware>;
@@ -124,6 +140,26 @@ export class VinyanAPIServer {
   private wsClients = new Set<{ ws: unknown; authenticated: boolean }>();
   /** Dedup map: key = "sessionId:content" → timestamp of last submission. */
   private recentMessageDedup = new Map<string, number>();
+  /**
+   * Per-session promise chain — serializes message handling within one
+   * session so a 2nd send can't race the 1st. Without this, two POSTs
+   * arriving 100ms apart both:
+   *   (a) record their user turn (DB),
+   *   (b) load the conversation history INCLUDING each other's user
+   *       message (because record happened first),
+   *   (c) dispatch executeTask in parallel with overlapping context,
+   *   (d) the LLM answers BOTH questions in BOTH responses — duplicate
+   *       assistant turns, identical content, polluted plan/tool state.
+   *
+   * Live-confirmed by sending "11+11?" then "22+22?" 100ms apart in the
+   * same chat — got two assistant turns each containing both answers.
+   *
+   * The chain key is sessionId; the value is the tail-Promise. Each new
+   * send awaits the previous tail before kicking off, preserving the
+   * user's typing order. Inter-session concurrency is unaffected (different
+   * sessions still run in parallel up to the global taskQueue cap).
+   */
+  private sessionTaskChain = new Map<string, Promise<unknown>>();
   /** Async result retention before eviction. Long enough for clients to poll, bounded for memory. */
   private static readonly ASYNC_RESULT_TTL_MS = 3_600_000; // 1 hour
   /** Rate-limit bucket idle window — buckets idle longer than this are evicted. */
@@ -310,6 +346,12 @@ export class VinyanAPIServer {
       return this.handleCancelTask(taskId);
     }
 
+    // ── Manual Retry (Round 5: stage-aware retry / timeout recovery) ──
+    if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/retry$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleRetryTask(taskId, req);
+    }
+
     // ── Task Approval (A6) ──────────────────────────────────
     if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/approval$/)) {
       const taskId = path.split('/')[4]!;
@@ -325,18 +367,66 @@ export class VinyanAPIServer {
       return this.handleSSE(taskId);
     }
 
+    // Persisted bus event log for a task — JSON replay used by the chat UI
+    // to reconstruct historical process timelines after page reload. Distinct
+    // from `/events` (above) which is the live SSE stream.
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/event-history$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleTaskEventHistory(taskId, req);
+    }
+
     // ── Sessions ──────────────────────────────────────────
     if (method === 'GET' && path === '/api/v1/sessions') {
-      return this.handleListSessions();
+      return this.handleListSessions(req);
     }
 
     if (method === 'POST' && path === '/api/v1/sessions') {
       return this.handleCreateSession(req);
     }
 
+    // Bulk "Empty Trash" — must come BEFORE the generic /sessions/:id
+    // pattern below, otherwise `_trash` would be parsed as a session id.
+    // The underscore prefix keeps this off the UUID-shape /:id space and
+    // signals at the URL level that this is a collection-level action.
+    if (method === 'POST' && path === '/api/v1/sessions/_trash/empty') {
+      return this.handleEmptyTrash();
+    }
+
     if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
       const sessionId = path.split('/').pop()!;
       return this.handleGetSession(sessionId);
+    }
+
+    if (method === 'PATCH' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
+      const sessionId = path.split('/').pop()!;
+      return this.handleUpdateSession(sessionId, req);
+    }
+
+    if (method === 'DELETE' && path.match(/^\/api\/v1\/sessions\/[^/]+$/)) {
+      const sessionId = path.split('/').pop()!;
+      // Two-step delete: ?permanent=true hard-deletes a session that's
+      // already in Trash. Default behavior is still soft-delete (move to
+      // Trash) so existing API clients don't change semantics.
+      const url = new URL(req.url);
+      if (url.searchParams.get('permanent') === 'true') {
+        return this.handleHardDeleteSession(sessionId);
+      }
+      return this.handleSoftDeleteSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/archive$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleArchiveSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/unarchive$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleUnarchiveSession(sessionId);
+    }
+
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/restore$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleRestoreSession(sessionId);
     }
 
     if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/compact$/)) {
@@ -399,8 +489,14 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path === '/api/v1/workers') {
-      const workers = this.deps.workerStore?.findAll() ?? [];
-      return jsonResponse({ workers });
+      return jsonResponse({ workers: this.composeEngineList() });
+    }
+
+    if (method === 'GET' && path === '/api/v1/engines') {
+      // Same payload shape as /api/v1/workers (the dashboard's "Engines" page
+      // expects `Worker[]`). Distinct route surface for future migration to a
+      // strictly-live engine view.
+      return jsonResponse({ engines: this.composeEngineList() });
     }
 
     if (method === 'GET' && path === '/api/v1/rules') {
@@ -460,6 +556,19 @@ export class VinyanAPIServer {
       return this.handleListTraces(req);
     }
 
+    if (method === 'GET' && path === '/api/v1/governance/search') {
+      return this.handleGovernanceSearch(req);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/governance\/decisions\/[^/]+\/replay$/)) {
+      const decisionId = decodeURIComponent(path.split('/')[5]!);
+      return this.handleGovernanceReplay(decisionId);
+    }
+
+    if (method === 'GET' && path === '/api/v1/health/degradation') {
+      return this.handleDegradationHealth();
+    }
+
     if (method === 'GET' && path === '/api/v1/memory') {
       return this.handleListMemory();
     }
@@ -501,7 +610,16 @@ export class VinyanAPIServer {
     }
 
     if (method === 'GET' && path.match(/^\/api\/v1\/engines\/[^/]+$/)) {
-      const id = path.split('/').pop()!;
+      // Engine ids carry slashes ("openrouter/balanced/anthropic/<model>"),
+      // so the UI URL-encodes the id segment. Decode here so the registry
+      // and workerStore lookups receive the canonical form.
+      const encoded = path.split('/').pop()!;
+      let id: string;
+      try {
+        id = decodeURIComponent(encoded);
+      } catch {
+        id = encoded;
+      }
       return this.handleGetEngine(id);
     }
 
@@ -588,9 +706,29 @@ export class VinyanAPIServer {
     }
 
     // Default: Prometheus text exposition format
-    return new Response(renderPrometheus(metrics, counters), {
+    const statusSnapshot = this.deps.degradationStatus?.snapshot();
+    return new Response(renderPrometheus(metrics, counters, statusSnapshot), {
       headers: { 'Content-Type': 'text/plain; version=0.0.4' },
     });
+  }
+
+  // ── A9 / T4: Degradation health surface ──────────────────
+
+  /**
+   * Returns the live operator view of degraded components. Status:
+   *   - `healthy`         when no entries are tracked
+   *   - `degraded`        when any fail-open entries are tracked
+   *   - `partial-outage`  when a fail-closed entry is tracked
+   */
+  private handleDegradationHealth(): Response {
+    if (!this.deps.degradationStatus) {
+      return jsonResponse({ status: 'unavailable', reason: 'degradation tracker not wired' }, 503);
+    }
+    const snapshot = this.deps.degradationStatus.snapshot();
+    let status: 'healthy' | 'degraded' | 'partial-outage' = 'healthy';
+    if (snapshot.failClosedCount > 0) status = 'partial-outage';
+    else if (snapshot.total > 0) status = 'degraded';
+    return jsonResponse({ status, snapshot });
   }
 
   // ── A2A Handler ──────────────────────────────────────────
@@ -765,18 +903,52 @@ export class VinyanAPIServer {
   // ── Task Handlers ───────────────────────────────────────
 
   // G4: Track tasks in sessions
+  /**
+   * Resolve which session the task should attach to.
+   *  - Client passed `body.sessionId` AND it exists + isn't trashed →
+   *    use it. Surfaces in chat history; recordAssistantTurn fires.
+   *  - Client passed but invalid → 404.
+   *  - Client omitted → fall back to the default api session (current
+   *    fire-and-forget behaviour, no chat history). Returns a marker
+   *    `recordChat: false` so the caller knows not to write turns.
+   */
+  private resolveTaskSession(
+    requestedSessionId: string | undefined,
+  ): { error: Response } | { session: Session; recordChat: boolean } {
+    if (!requestedSessionId) {
+      return { session: this.getOrCreateDefaultSession(), recordChat: false };
+    }
+    const session = this.deps.sessionManager.get(requestedSessionId);
+    if (!session) {
+      return { error: jsonResponse({ error: `Session '${requestedSessionId}' not found` }, 404) };
+    }
+    if (session.lifecycleState === 'trashed') {
+      return { error: jsonResponse({ error: 'Cannot attach a task to a trashed session' }, 409) };
+    }
+    return { session, recordChat: true };
+  }
+
   private async handleSyncTask(req: Request): Promise<Response> {
     const body = (await req.json()) as Partial<TaskInput>;
     const resolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
     if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
     const input = buildTaskInput(body, resolved.profile);
 
-    const session = this.getOrCreateDefaultSession();
+    const sessionResolution = this.resolveTaskSession(input.sessionId);
+    if ('error' in sessionResolution) return sessionResolution.error;
+    const { session, recordChat } = sessionResolution;
     this.deps.sessionManager.addTask(session.id, input);
 
     const result = await this.deps.executeTask(input);
 
     this.deps.sessionManager.completeTask(session.id, input.id, result);
+    // Programmatic API tasks bound to a real chat session record an
+    // assistant turn so the conversation history reflects the work.
+    // Default-api-session tasks skip this — recording would clutter the
+    // hidden api-source session that nobody opens.
+    if (recordChat) {
+      this.deps.sessionManager.recordAssistantTurn(session.id, input.id, result);
+    }
     return jsonResponse({ result });
   }
 
@@ -786,7 +958,9 @@ export class VinyanAPIServer {
     if ('error' in resolved) return jsonResponse({ error: resolved.error }, 400);
     const input = buildTaskInput(body, resolved.profile);
 
-    const session = this.getOrCreateDefaultSession();
+    const sessionResolution = this.resolveTaskSession(input.sessionId);
+    if ('error' in sessionResolution) return sessionResolution.error;
+    const { session, recordChat } = sessionResolution;
     this.deps.sessionManager.addTask(session.id, input);
 
     const controller = new AbortController();
@@ -802,6 +976,9 @@ export class VinyanAPIServer {
     promise
       .then((result) => {
         this.deps.sessionManager.completeTask(session.id, input.id, result);
+        if (recordChat) {
+          this.deps.sessionManager.recordAssistantTurn(session.id, input.id, result);
+        }
         this.asyncResults.set(input.id, result);
         this.scheduleAsyncResultEviction(input.id);
         this.inFlightTasks.delete(input.id);
@@ -839,11 +1016,21 @@ export class VinyanAPIServer {
       });
     }
 
-    // Async API results (not from session)
+    // Async API results (not from session). Pass through the orchestrator's
+    // TaskResult.status verbatim so the UI can distinguish escalated /
+    // uncertain / partial from completed and failed (the StatusBadge has
+    // dedicated tones for each — collapsing them here loses observability).
     for (const [id, result] of this.asyncResults) {
       if (seenIds.has(id)) continue;
       seenIds.add(id);
-      tasks.push({ taskId: id, status: 'completed', result });
+      const sessionTask = allSessionTasks.find((t) => t.taskId === id);
+      tasks.push({
+        taskId: id,
+        sessionId: sessionTask?.sessionId,
+        status: result.status,
+        goal: sessionTask?.goal,
+        result,
+      });
     }
 
     // Session-persisted tasks (from Chat)
@@ -862,8 +1049,30 @@ export class VinyanAPIServer {
     return jsonResponse({ tasks });
   }
 
-  private handleListSessions(): Response {
-    const sessions = this.deps.sessionManager?.listSessions() ?? [];
+  private handleListSessions(req: Request): Response {
+    const url = new URL(req.url);
+    const stateParam = url.searchParams.get('state') ?? 'active';
+    const allowedStates = new Set(['active', 'archived', 'deleted', 'all']);
+    const state = (allowedStates.has(stateParam) ? stateParam : 'active') as 'active' | 'archived' | 'deleted' | 'all';
+    const search = url.searchParams.get('search') ?? undefined;
+    const limitRaw = url.searchParams.get('limit');
+    const offsetRaw = url.searchParams.get('offset');
+    const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined;
+    const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : undefined;
+    // `?source=ui|api|all` — by default the chat Sessions page hides
+    // sessions auto-created by the async-task API (`source='api'`). Those
+    // sessions are task containers only — they never receive
+    // recordAssistantTurn, so opening them shows an empty chat which
+    // confuses users. Observability tools that want EVERY session can
+    // pass `?source=all`. `?source=api` returns api-only.
+    const sourceParam = url.searchParams.get('source') ?? 'ui';
+    const allowedSources = new Set(['ui', 'api', 'all']);
+    const sourceFilter = allowedSources.has(sourceParam) ? sourceParam : 'ui';
+    const allSessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
+    const sessions =
+      sourceFilter === 'all'
+        ? allSessions
+        : allSessions.filter((s) => s.source === sourceFilter);
     return jsonResponse({ sessions });
   }
 
@@ -930,6 +1139,102 @@ export class VinyanAPIServer {
       return jsonResponse({ taskId, status: 'cancelled' });
     }
     return jsonResponse({ error: 'Task not found or already completed' }, 404);
+  }
+
+  /**
+   * Manual retry — POST /api/v1/tasks/:id/retry
+   *
+   * Spawns a sibling task that preserves the original goal, sessionId,
+   * targetFiles, and constraints. Defaults to a generous 240s budget for
+   * timeout-recovery flows; callers may override via `body.budget` or
+   * `body.maxDurationMs`. Emits `task:retry_requested` for observability
+   * (UI can flip to "Retrying…" immediately) and dispatches via the
+   * standard async path so SSE consumers see normal `task:start`.
+   */
+  private async handleRetryTask(parentTaskId: string, req: Request): Promise<Response> {
+    if (this.inFlightTasks.has(parentTaskId)) {
+      return jsonResponse({ error: 'Task is still running' }, 409);
+    }
+
+    const parent = this.deps.sessionManager.getTaskById(parentTaskId);
+    if (!parent) {
+      return jsonResponse({ error: 'Parent task not found' }, 404);
+    }
+
+    let body: {
+      budget?: TaskInput['budget'];
+      maxDurationMs?: number;
+      reason?: string;
+      goal?: string;
+      constraints?: string[];
+    } = {};
+    try {
+      const text = await req.text();
+      if (text.length > 0) body = JSON.parse(text);
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+
+    // Default 240s for timeout-recovery; honour explicit overrides first.
+    const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
+    const budget: TaskInput['budget'] =
+      body.budget ??
+      (body.maxDurationMs
+        ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs }
+        : TIMEOUT_RETRY_BUDGET);
+
+    const newId = crypto.randomUUID();
+    const goal = body.goal ?? parent.input.goal;
+    const constraints = body.constraints ?? parent.input.constraints;
+
+    const input: TaskInput = {
+      ...parent.input,
+      id: newId,
+      goal,
+      ...(constraints && constraints.length > 0 ? { constraints } : {}),
+      budget,
+    };
+
+    // Track parent linkage on the bus so observability surfaces the chain.
+    // Observational only (A1, A3) — never used to alter routing.
+    this.deps.bus?.emit('task:retry_requested', {
+      taskId: newId,
+      parentTaskId,
+      reason: body.reason ?? 'manual-retry',
+      sessionId: parent.sessionId,
+    });
+
+    this.deps.sessionManager.addTask(parent.sessionId, input);
+
+    const promise = this.deps.executeTask(input);
+    this.inFlightTasks.set(input.id, {
+      promise,
+      cancel: () => {
+        this.deps.bus?.emit('task:timeout', { taskId: input.id, elapsedMs: 0, budgetMs: 0 });
+      },
+    });
+
+    promise
+      .then((result) => {
+        this.deps.sessionManager.completeTask(parent.sessionId, input.id, result);
+        this.asyncResults.set(input.id, result);
+        this.scheduleAsyncResultEviction(input.id);
+        this.inFlightTasks.delete(input.id);
+      })
+      .catch(() => {
+        this.inFlightTasks.delete(input.id);
+      });
+
+    return jsonResponse(
+      {
+        taskId: newId,
+        parentTaskId,
+        sessionId: parent.sessionId,
+        status: 'accepted',
+        budget,
+      },
+      202,
+    );
   }
 
   private async handleApproval(taskId: string, req: Request): Promise<Response> {
@@ -1276,11 +1581,20 @@ export class VinyanAPIServer {
   }
 
   private handleGetEngine(id: string): Response {
-    const worker = this.deps.workerStore?.findById(id);
+    const workerId = workerIdForEngine(id);
+    const historical =
+      this.deps.workerStore?.findById(id) ??
+      this.deps.workerStore?.findById(workerId) ??
+      this.deps.workerStore?.findByModelId(id)[0] ??
+      null;
+    // Fall back to the live registry when the engine has never run a task
+    // (workerStore is populated lazily from trace records). Without this
+    // fallback, every engine 404s on a fresh server before the first task.
+    const worker = historical ?? this.engineFromRegistry(id) ?? this.engineFromRegistry(engineIdFromWorker(id));
     if (!worker) return jsonResponse({ error: `engine '${id}' not found` }, 404);
 
     const capModel = this.deps.capabilityModel;
-    const capabilities = capModel?.getWorkerCapabilities(id) ?? [];
+    const capabilities = capModel?.getWorkerCapabilities(worker.id) ?? [];
 
     const trustStore = this.deps.providerTrustStore;
     const providerTrust =
@@ -1288,7 +1602,143 @@ export class VinyanAPIServer {
         ? trustStore.getProvider(worker.config.modelId.split('/')[0] ?? worker.config.modelId)
         : null;
 
-    return jsonResponse({ worker, capabilities, providerTrust });
+    return jsonResponse({ worker: this.withEngineStats(worker), capabilities, providerTrust });
+  }
+
+  /**
+   * Map a live ReasoningEngine into the EngineProfile shape the dashboard
+   * expects. Returns `null` when the registry has no engine with that id.
+   *
+   * Used only as a fallback for engines registered AFTER the lifecycle
+   * listener attached (rare — the listener auto-creates worker rows for
+   * normal registrations). The id mirrors the worker convention so
+   * `engineRegistry.selectById` can resolve either form.
+   */
+  private engineFromRegistry(id: string): EngineProfile | null {
+    const engine = this.deps.engineRegistry?.get(id);
+    if (!engine) return null;
+    return {
+      // Match the worker-id convention so the dashboard renders a stable
+      // identifier across registry-only and worker-backed entries.
+      id: workerIdForEngine(engine.id),
+      config: {
+        modelId: engine.id,
+        temperature: 0,
+        engineType: engine.engineType,
+        capabilitiesDeclared: engine.capabilities,
+        maxContextTokens: engine.maxContextTokens,
+        tier: engine.tier,
+      },
+      status: 'active',
+      // Real timestamp — UI's `timeAgo(createdAt)` would otherwise render
+      // "55 years ago" for the epoch placeholder used previously.
+      createdAt: Date.now(),
+      demotionCount: 0,
+    };
+  }
+
+  /**
+   * Build the unified engine list surfaced via /api/v1/workers and
+   * /api/v1/engines. Composition rules:
+   *   1. For every live engine in the registry, find its corresponding
+   *      worker profile in `workerStore`. The id mapping is
+   *      `worker.id === "worker-" + engine.id` — see `autoRegisterWorkers`
+   *      in factory.ts. We also fall back to matching by
+   *      `worker.config.modelId === engine.id` so future id-scheme drift
+   *      doesn't silently re-introduce duplicates.
+   *   2. When a match is found, the worker entry wins — it carries the
+   *      authoritative lifecycle status (probation/active/demoted),
+   *      demotionCount, and createdAt. The registry contributes nothing
+   *      not already on the worker.
+   *   3. When no match exists (rare — engine registered AFTER
+   *      autoRegisterWorkers ran, or registry-only engines like ephemeral
+   *      test fixtures), synthesise a row from the registry with status
+   *      'active'.
+   *   4. Append historical worker rows whose engine is no longer in the
+   *      live registry — useful for retrospective inspection of retired
+   *      engines.
+   *
+   * Net effect: ONE row per engine. Dashboard shows the live roster on a
+   * fresh server, with worker-derived status (correct fleet behaviour) and
+   * no phantom duplicates.
+   */
+  private composeEngineList(): EngineListEntry[] {
+    const historical = this.deps.workerStore?.findAll() ?? [];
+    // Reverse-index by canonical engine id via the typed binding helper so
+    // any future change to the prefix scheme propagates through one source
+    // of truth (`engine-worker-binding.ts`) rather than ad-hoc string ops.
+    const historicalByEngineId = new Map<string, EngineProfile>();
+    for (const w of historical) {
+      historicalByEngineId.set(engineIdFromWorker(w.id), w);
+      // Belt-and-suspenders: also key by config.modelId so engines whose
+      // worker id was minted under a different scheme still match.
+      if (w.config.modelId && !historicalByEngineId.has(w.config.modelId)) {
+        historicalByEngineId.set(w.config.modelId, w);
+      }
+    }
+
+    const liveEngines = this.deps.engineRegistry?.listEngines() ?? [];
+    const consumedWorkerIds = new Set<string>();
+    const merged: EngineProfile[] = [];
+
+    for (const engine of liveEngines) {
+      const histEntry = historicalByEngineId.get(engine.id);
+      if (histEntry) {
+        merged.push(histEntry);
+        consumedWorkerIds.add(histEntry.id);
+      } else {
+        const fromReg = this.engineFromRegistry(engine.id);
+        if (fromReg) merged.push(fromReg);
+      }
+    }
+    // Append retired/historical-only worker entries (no matching live engine).
+    for (const w of historical) {
+      if (!consumedWorkerIds.has(w.id)) merged.push(w);
+    }
+    return merged.map((worker) => this.withEngineStats(worker));
+  }
+
+  /**
+   * Resolve worker stats with id-alias awareness.
+   *
+   * Traces written before the canonical `worker-${engine.id}` mapping
+   * landed (or by code paths that still pass the bare engine id /
+   * model id) live under different `worker_id` keys in
+   * `execution_traces`. The dashboard previously displayed `Tasks=0`
+   * for those rows even though the drilldown's recent-tasks list — fed
+   * from the live task stream — clearly showed completed work.
+   *
+   * Lookup order (first non-empty wins; never sum aliases to avoid
+   * double counting when both legacy and canonical ids exist):
+   *   1. `worker.id` (canonical, e.g. `worker-openrouter/...`)
+   *   2. `engineIdFromWorker(worker.id)` (bare engine id without prefix)
+   *   3. `worker.config.modelId` (legacy traces keyed by model)
+   *   4. `workerIdForEngine(worker.config.modelId)` (defensive — if the
+   *      worker id was minted from a different scheme but model id
+   *      matches an engine).
+   */
+  private withEngineStats(worker: EngineProfile): EngineListEntry {
+    const store = this.deps.workerStore;
+    if (!store) return worker;
+
+    const candidates = new Set<string>();
+    candidates.add(worker.id);
+    candidates.add(engineIdFromWorker(worker.id));
+    if (worker.config.modelId) {
+      candidates.add(worker.config.modelId);
+      candidates.add(workerIdForEngine(worker.config.modelId));
+    }
+
+    let stats: EngineStats | undefined;
+    for (const id of candidates) {
+      const candidate = store.getStats(id);
+      if (candidate.totalTasks > 0) {
+        stats = candidate;
+        break;
+      }
+      if (!stats) stats = candidate; // fall back to a zero-stats payload
+    }
+    return stats ? { ...worker, stats } : worker;
   }
 
   private handleSessionClarifications(sessionId: string): Response {
@@ -1349,7 +1799,7 @@ export class VinyanAPIServer {
     const outcome = url.searchParams.get('outcome');
     const taskType = url.searchParams.get('taskType');
 
-    let traces;
+    let traces: ExecutionTrace[];
     if (taskType) {
       traces = store.findByTaskType(taskType, limit);
     } else if (outcome) {
@@ -1364,6 +1814,49 @@ export class VinyanAPIServer {
       total: store.count(),
     });
   }
+
+  /**
+   * A8 / T2 — search persisted governance decisions by facet.
+   * Query params: decisionId, policyVersion, actor, from, to, limit, offset.
+   * Legacy traces with no provenance are surfaced as `availability:'unavailable'`.
+   */
+  private handleGovernanceSearch(req: Request): Response {
+    const store = this.deps.traceStore;
+    if (!store) {
+      return jsonResponse({ rows: [], total: 0, limit: 0, offset: 0 });
+    }
+    const url = new URL(req.url);
+    const num = (key: string): number | undefined => {
+      const raw = url.searchParams.get(key);
+      if (raw == null || raw === '') return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const result = store.queryGovernance({
+      decisionId: url.searchParams.get('decisionId') ?? undefined,
+      policyVersion: url.searchParams.get('policyVersion') ?? undefined,
+      governanceActor: url.searchParams.get('actor') ?? undefined,
+      decisionFrom: num('from'),
+      decisionTo: num('to'),
+      limit: num('limit'),
+      offset: num('offset'),
+    });
+    return jsonResponse(result);
+  }
+
+  /**
+   * A8 / T2 — replay a single governance decision id, returning the persisted
+   * provenance envelope plus persisted confidence (never recomputed).
+   */
+  private handleGovernanceReplay(decisionId: string): Response {
+    const store = this.deps.traceStore;
+    if (!store) return jsonResponse({ error: 'trace store unavailable' }, 503);
+    if (!decisionId) return jsonResponse({ error: 'decisionId is required' }, 400);
+    const trace = store.findTraceByDecisionId(decisionId);
+    if (!trace) return jsonResponse({ error: 'decision not found', decisionId }, 404);
+    return jsonResponse(buildDecisionReplay(decisionId, trace));
+  }
+
 
   private async handleListMemory(): Promise<Response> {
     const workspace = this.deps.workspace;
@@ -1416,6 +1909,7 @@ export class VinyanAPIServer {
     try {
       const { approveProposal } = await import('../orchestrator/memory/memory-proposals.ts');
       const result = approveProposal(workspace, body.handle, body.reviewer);
+      this.deps.bus.emit('memory:approved', { recordId: body.handle });
       return jsonResponse({ approved: result.consumedPending, learnedPath: result.learnedPath });
     } catch (err) {
       return jsonResponse(
@@ -1450,6 +1944,7 @@ export class VinyanAPIServer {
     try {
       const { rejectProposal } = await import('../orchestrator/memory/memory-proposals.ts');
       const result = rejectProposal(workspace, body.handle, body.reviewer, body.reason);
+      this.deps.bus.emit('memory:rejected', { recordId: body.handle });
       return jsonResponse({ rejected: result.consumedPending, rejectedPath: result.rejectedPath });
     } catch (err) {
       return jsonResponse(
@@ -1671,11 +2166,51 @@ export class VinyanAPIServer {
     });
   }
 
+  /**
+   * GET /api/v1/tasks/:id/event-history
+   *
+   * Returns the persisted bus event log for a task in chronological order.
+   * Powers the chat UI's "Process" card on past assistant messages — same
+   * event shape that was streamed live via `/events` SSE, just replayed from
+   * `task_events` storage. Supports `?since=<seq>` for incremental fetch.
+   *
+   * Returns 404 when no recorder is wired (no DB) — clients fall back to
+   * showing only the trace summary in that case.
+   */
+  private handleTaskEventHistory(taskId: string, req: Request): Response {
+    const store = this.deps.taskEventStore;
+    if (!store) {
+      return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
+    }
+    const url = new URL(req.url);
+    const sinceParam = url.searchParams.get('since');
+    const limitParam = url.searchParams.get('limit');
+    const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
+    const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
+    const events = store.listForTask(taskId, { since, limit });
+    const last = events.length > 0 ? events[events.length - 1] : undefined;
+    return jsonResponse({
+      taskId,
+      events,
+      // Convenience cursor for incremental polling.
+      lastSeq: last ? last.seq : (since ?? 0),
+    });
+  }
+
   // ── Session Handlers ────────────────────────────────────
 
   private async handleCreateSession(req: Request): Promise<Response> {
-    const body = (await req.json()) as { source?: string };
-    const session = this.deps.sessionManager.create(body.source ?? 'api');
+    let body: { source?: string; title?: string | null; description?: string | null } = {};
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      // Empty / non-JSON body — keep defaults (matches the prior behavior
+      // where create() ran with `body.source ?? 'api'` even on a missing body).
+    }
+    const session = this.deps.sessionManager.create(body.source ?? 'api', {
+      title: body.title ?? null,
+      description: body.description ?? null,
+    });
     // G2: Emit session bus event
     this.deps.bus.emit('session:created', { sessionId: session.id, source: body.source ?? 'api' });
     return jsonResponse({ session }, 201);
@@ -1687,9 +2222,167 @@ export class VinyanAPIServer {
     return jsonResponse({ session });
   }
 
+  private async handleUpdateSession(sessionId: string, req: Request): Promise<Response> {
+    let body: { title?: string | null; description?: string | null } = {};
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    }
+    const patch: { title?: string | null; description?: string | null } = {};
+    if (body.title !== undefined) {
+      if (body.title !== null && typeof body.title !== 'string') {
+        return jsonResponse({ error: 'title must be string or null' }, 400);
+      }
+      if (typeof body.title === 'string' && body.title.length > 200) {
+        return jsonResponse({ error: 'title must be 200 characters or fewer' }, 400);
+      }
+      patch.title = body.title;
+    }
+    if (body.description !== undefined) {
+      if (body.description !== null && typeof body.description !== 'string') {
+        return jsonResponse({ error: 'description must be string or null' }, 400);
+      }
+      if (typeof body.description === 'string' && body.description.length > 4000) {
+        return jsonResponse({ error: 'description must be 4000 characters or fewer' }, 400);
+      }
+      patch.description = body.description;
+    }
+    if (patch.title === undefined && patch.description === undefined) {
+      return jsonResponse({ error: 'At least one of title or description is required' }, 400);
+    }
+    const session = this.deps.sessionManager.updateMetadata(sessionId, patch);
+    if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+    const fields: Array<'title' | 'description'> = [];
+    if (patch.title !== undefined) fields.push('title');
+    if (patch.description !== undefined) fields.push('description');
+    this.deps.bus.emit('session:updated', { sessionId, fields });
+    return jsonResponse({ session });
+  }
+
+  /**
+   * Lifecycle transitions return a `LifecycleResult { applied, session, reason }`
+   * envelope from SessionManager so we can map the three real outcomes to
+   * distinct HTTP responses:
+   *   - reason='not_found'     → 404 (no row at all)
+   *   - reason='invalid_state' → 409 (e.g. archive-an-already-archived row)
+   *   - applied=true           → 200 + bus event
+   *
+   * Without this, callers got a 200 even when nothing changed and bus
+   * subscribers fired on phantom transitions.
+   */
+  private handleArchiveSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.archive(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session cannot be archived in its current state', session: result.session },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:archived', { sessionId });
+    return jsonResponse({ session: result.session });
+  }
+
+  private handleUnarchiveSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.unarchive(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is not archived', session: result.session },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:unarchived', { sessionId });
+    return jsonResponse({ session: result.session });
+  }
+
+  private handleSoftDeleteSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.softDelete(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is already in trash', session: result.session },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:deleted', { sessionId });
+    return jsonResponse({ session: result.session });
+  }
+
+  private handleRestoreSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.restore(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        { error: 'Session is not in trash', session: result.session },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:restored', { sessionId });
+    return jsonResponse({ session: result.session });
+  }
+
+  /**
+   * DELETE /api/v1/sessions/:id?permanent=true
+   *
+   * Hard-delete from Trash. Two-step flow (soft → hard) is intentional:
+   * a session must be trashed first; any other state returns 409 to prevent
+   * one-click data loss. On success the row plus its tasks and turns are
+   * gone forever — there is no Restore path after this point.
+   */
+  private handleHardDeleteSession(sessionId: string): Response {
+    const result = this.deps.sessionManager.hardDelete(sessionId);
+    if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
+    if (result.reason === 'invalid_state') {
+      return jsonResponse(
+        {
+          error: 'Session must be moved to trash before permanent delete',
+          session: result.session,
+        },
+        409,
+      );
+    }
+    this.deps.bus.emit('session:purged', { sessionId });
+    return jsonResponse({ deleted: true, sessionId });
+  }
+
+  /**
+   * POST /api/v1/sessions/_trash/empty
+   *
+   * Bulk hard-delete every currently-trashed session. Returns the count
+   * and the list of removed ids; emits one `session:purged` per session
+   * so SSE subscribers (Sessions list, Trash badge) can update precisely
+   * instead of polling. An empty trash returns 200 with `deleted: 0`.
+   */
+  private handleEmptyTrash(): Response {
+    const result = this.deps.sessionManager.emptyTrash();
+    for (const sessionId of result.sessionIds) {
+      this.deps.bus.emit('session:purged', { sessionId });
+    }
+    return jsonResponse(result);
+  }
+
   private handleCompactSession(sessionId: string): Response {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session) return jsonResponse({ error: 'Session not found' }, 404);
+
+    // Reject compaction of trivial sessions. Compacting a 0/1/2-task
+    // session writes a near-empty `compaction_json` row, flips the
+    // session into the `compacted` lifecycle state (which the chat UI
+    // surfaces as a distinct badge), and removes the session from the
+    // operator's active list — for no observable benefit. The chat UI's
+    // compact button still appears; this is the backend safety net for
+    // direct API calls and accidental clicks.
+    const MIN_TASKS_FOR_COMPACTION = 3;
+    if (session.taskCount < MIN_TASKS_FOR_COMPACTION) {
+      return jsonResponse(
+        {
+          error: `Session has only ${session.taskCount} task${session.taskCount === 1 ? '' : 's'}; compaction requires at least ${MIN_TASKS_FOR_COMPACTION}.`,
+        },
+        400,
+      );
+    }
 
     const result = this.deps.sessionManager.compact(sessionId);
     // G2: Emit session compacted bus event
@@ -1798,13 +2491,66 @@ export class VinyanAPIServer {
     // Record the user turn BEFORE dispatching the task so the
     // conversation history (loaded by core-loop.ts via sessionManager)
     // includes it.
-    this.deps.sessionManager.recordUserTurn(sessionId, content);
+    //
+    // Per-session chain consideration: in the streaming branch below
+    // recordUserTurn is REPLAYED inside the chain so the prior task's
+    // assistant turn is already recorded when this task reads history.
+    // Doing it twice would duplicate the user turn — so for the
+    // streaming path we skip the eager record and let the chain own it.
+    if (stream !== true) {
+      this.deps.sessionManager.recordUserTurn(sessionId, content);
+    }
+
+    // Auto-name session from the first user message if no title was set.
+    // We use task count rather than turn count because a clarification
+    // round counts as a turn but not a task — re-naming on a follow-up
+    // would feel surprising. The truncated single-line title is a cheap
+    // deterministic placeholder; the user can edit it inline at any time
+    // from the chat header. Failures here are non-fatal: titling is a
+    // convenience, not a correctness path.
+    let effectiveSessionTitle = session.title;
+    if (!effectiveSessionTitle && session.taskCount === 0) {
+      const derived = deriveSessionTitle(content);
+      if (derived) {
+        try {
+          const updated = this.deps.sessionManager.updateMetadata(sessionId, { title: derived });
+          if (updated) {
+            effectiveSessionTitle = updated.title;
+            this.deps.bus.emit('session:updated', {
+              sessionId,
+              fields: ['title'],
+            });
+          }
+        } catch (err) {
+          // Swallow — auto-naming must never block message handling.
+          console.warn('[server] auto-name session failed', err);
+        }
+      }
+    }
 
     // Infer taskType when the client didn't specify: code if targetFiles
     // present, otherwise reasoning (matching chat.ts).
     const inferredType: 'code' | 'reasoning' = taskType ?? (targetFiles?.length ? 'code' : 'reasoning');
 
-    const constraints: string[] = [...(showThinking ? ['THINKING:enabled'] : []), ...clarificationConstraints];
+    // Operator-supplied session metadata reaches the agent as a strictly
+    // auxiliary SESSION_CONTEXT pipeline constraint. The agent worker
+    // renders it as a `## Session Context` XML block (see
+    // src/orchestrator/agent/agent-worker-entry.ts). We do NOT mutate
+    // input.goal and do not feed this into routing/governance \u2014 it is
+    // grounding only (A1, A3).
+    const sessionContextConstraints: string[] = [];
+    if (effectiveSessionTitle || session.description) {
+      const payload: { title?: string; description?: string } = {};
+      if (effectiveSessionTitle) payload.title = effectiveSessionTitle;
+      if (session.description) payload.description = session.description;
+      sessionContextConstraints.push(`SESSION_CONTEXT:${JSON.stringify(payload)}`);
+    }
+
+    const constraints: string[] = [
+      ...(showThinking ? ['THINKING:enabled'] : []),
+      ...sessionContextConstraints,
+      ...clarificationConstraints,
+    ];
 
     const input: TaskInput = {
       id: crypto.randomUUID(),
@@ -1815,11 +2561,7 @@ export class VinyanAPIServer {
       profile: resolvedProfile.profile,
       ...(targetFiles?.length ? { targetFiles } : {}),
       ...(constraints.length > 0 ? { constraints } : {}),
-      budget: budget ?? {
-        maxTokens: 50_000,
-        maxDurationMs: 120_000,
-        maxRetries: 3,
-      },
+      budget: budget ?? DEFAULT_TASK_BUDGET,
     };
 
     // Track in session_tasks for audit / observability (mirrors handleSyncTask).
@@ -1840,13 +2582,15 @@ export class VinyanAPIServer {
     // is safe — events emitted during the pipeline will be captured
     // and delivered to the client.
     if (stream === true) {
-      // Safety-net (10 min) for chat-style tasks managed inside the
-      // stream itself; the manual cleanupTimer below is for the .then/
-      // .catch fast-path so we don't wait 10 minutes when executeTask
-      // returns early.
+      // Safety-net for chat-style tasks managed inside the stream itself.
+      // Long agentic workflows can legitimately run longer than the default
+      // per-task budget because they execute multiple LLM steps; keep this
+      // comfortably above the workflow ceiling so a healthy stream does not
+      // close moments before task:complete.
+      const sseSafetyTimeoutMs = Math.max(900_000, input.budget.maxDurationMs * 6);
       let trackerSlot: (() => void) | null = null;
       const { stream: sseStream, cleanup } = createSSEStream(this.deps.bus, input.id, {
-        safetyTimeoutMs: 600_000,
+        safetyTimeoutMs: sseSafetyTimeoutMs,
         onClose: () => {
           if (trackerSlot) this.openSSECleanups.delete(trackerSlot);
         },
@@ -1861,8 +2605,25 @@ export class VinyanAPIServer {
       // manually emitting task:complete to close the stream (real
       // executeTask would normally emit this itself, but a bare throw
       // bypasses the normal emit path).
-      this.deps
-        .executeTask(input)
+      //
+      // Per-session serialization: chain this task behind any prior
+      // in-flight task in the same session so two rapid sends don't share
+      // overlapping conversation history. See `sessionTaskChain` docstring
+      // above for the failure mode this prevents.
+      //
+      // recordUserTurn lives INSIDE the chain so the prior task's
+      // assistant turn is already persisted when THIS task reads history.
+      // Otherwise both rapid POSTs record their user turns synchronously
+      // and the first task's history snapshot would still see the second
+      // user message — defeating the chain. (Eager-record was suppressed
+      // above for the streaming path so we don't double-write.)
+      const prevTail = this.sessionTaskChain.get(sessionId) ?? Promise.resolve();
+      const taskPromise = prevTail.catch(() => undefined).then(() => {
+        this.deps.sessionManager.recordUserTurn(sessionId, content);
+        return this.deps.executeTask(input);
+      });
+      this.sessionTaskChain.set(sessionId, taskPromise);
+      taskPromise
         .then((result) => {
           this.deps.sessionManager.completeTask(sessionId, input.id, result);
           this.deps.sessionManager.recordAssistantTurn(sessionId, input.id, result);
@@ -1899,6 +2660,14 @@ export class VinyanAPIServer {
           // task:complete seen for this task id, so no risk of a double
           // close if the real pipeline had already emitted one.
           this.deps.bus.emit('task:complete', { result: failedResult });
+        })
+        .finally(() => {
+          // Release the per-session chain slot ONLY if we're still the
+          // tail. A later send may have already replaced it; in that case
+          // the new tail awaits us anyway, so the chain stays correct.
+          if (this.sessionTaskChain.get(sessionId) === taskPromise) {
+            this.sessionTaskChain.delete(sessionId);
+          }
         });
 
       return new Response(sseStream, {
@@ -1955,7 +2724,13 @@ export class VinyanAPIServer {
     // Use a generous token budget so we return entries verbatim, not the
     // compacted summary. Clients that want compaction should call the
     // separate POST /api/v1/sessions/:id/compact endpoint.
-    const history = this.deps.sessionManager.getConversationHistoryText(sessionId, 1_000_000);
+    //
+    // `getConversationHistoryDetailed` is a superset of the legacy text
+    // view: every field on the old shape is preserved, with optional
+    // `thinking`, `toolsUsed`, and `traceSummary` fields added so the
+    // chat UI can render historical process cards without re-fetching the
+    // trace.
+    const history = this.deps.sessionManager.getConversationHistoryDetailed(sessionId, 1_000_000);
     const messages = limit !== undefined ? history.slice(-limit) : history;
     const pendingClarifications = this.deps.sessionManager.getPendingClarifications(sessionId);
 
@@ -2120,6 +2895,47 @@ function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string,
   });
 }
 
+/**
+ * Derive a short, single-line title from a free-form user message.
+ * Used by `handleSessionMessage` to auto-name fresh sessions on the
+ * first task. Operators can override the result via PATCH /sessions/:id.
+ *
+ * Rules:
+ *   - Collapse all whitespace (newlines, tabs) into single spaces.
+ *   - Drop common imperative prefixes ("please", "help me", etc.) for a
+ *     tighter label, but only when they appear at the start.
+ *   - Hard cap at 60 characters; cut on a word boundary if possible.
+ *   - Returns `null` for empty / whitespace-only input so the caller
+ *     can skip the update entirely.
+ */
+function deriveSessionTitle(content: string): string | null {
+  const collapsed = content.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return null;
+  let stripped = collapsed.replace(
+    /^(please|pls|kindly|could you|can you|would you|help me|i need to|i want to|let's|lets)\s+/i,
+    '',
+  );
+  if (!stripped) stripped = collapsed;
+  // Title-case the first letter for visual polish; do not touch the rest
+  // (preserves identifiers, code, etc.).
+  stripped = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+  const MAX = 60;
+  if (stripped.length <= MAX) return stripped;
+  const slice = stripped.slice(0, MAX);
+  const lastSpace = slice.lastIndexOf(' ');
+  // Cut on a word boundary when one is reasonably close to the limit;
+  // otherwise hard-cut and append an ellipsis so the truncation is
+  // visually obvious.
+  if (lastSpace > MAX * 0.6) return `${slice.slice(0, lastSpace)}…`;
+  return `${slice}…`;
+}
+
+const DEFAULT_TASK_BUDGET = {
+  maxTokens: 50_000,
+  maxDurationMs: 180_000,
+  maxRetries: 3,
+} as const;
+
 function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInput {
   return {
     id: partial.id ?? crypto.randomUUID(),
@@ -2128,12 +2944,16 @@ function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInpu
     taskType: partial.taskType ?? (partial.targetFiles?.length ? 'code' : 'reasoning'),
     targetFiles: partial.targetFiles,
     constraints: partial.constraints,
+    // Preserve client-supplied sessionId so the task attaches to the
+    // requested chat session instead of the default api session. Without
+    // this every /tasks call landed in the same hidden api-source
+    // session — programmatic submission could not contribute to a chat
+    // conversation. The `handleSync/AsyncTask` path validates the
+    // session before dispatch and falls back to the default api session
+    // when omitted.
+    ...(partial.sessionId ? { sessionId: partial.sessionId } : {}),
     ...(profile !== undefined ? { profile } : partial.profile !== undefined ? { profile: partial.profile } : {}),
-    budget: partial.budget ?? {
-      maxTokens: 50_000,
-      maxDurationMs: 60_000,
-      maxRetries: 3,
-    },
+    budget: partial.budget ?? DEFAULT_TASK_BUDGET,
     acceptanceCriteria: partial.acceptanceCriteria,
   };
 }

@@ -31,6 +31,7 @@ describe('PromptAssembler', () => {
     const { systemPrompt } = assemblePrompt('Fix bug', makePerception(), makeMemory());
     expect(systemPrompt).toContain('[ROLE]');
     expect(systemPrompt).toContain('[OUTPUT FORMAT]');
+    expect(systemPrompt).toContain('[ACCOUNTABILITY CONTRACT]');
     expect(systemPrompt).toContain('proposedMutations');
   });
 

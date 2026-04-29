@@ -49,9 +49,16 @@ describe('attachAuditListener', () => {
         },
       },
     });
+    bus.emit('evolution:capabilityPromoted', {
+      agentId: 'ts-coder',
+      capabilityId: 'code.review.ts',
+      confidence: 0.72,
+      observationCount: 30,
+      taskTypeSignature: 'review::ts',
+    });
 
     const lines = readFileSync(auditPath, 'utf-8').trim().split('\n');
-    expect(lines.length).toBe(2);
+    expect(lines.length).toBe(3);
 
     const first = JSON.parse(lines[0]!);
     expect(first.event).toBe('task:start');
@@ -60,6 +67,10 @@ describe('attachAuditListener', () => {
 
     const second = JSON.parse(lines[1]!);
     expect(second.event).toBe('task:complete');
+
+    const third = JSON.parse(lines[2]!);
+    expect(third.event).toBe('evolution:capabilityPromoted');
+    expect(third.payload.capabilityId).toBe('code.review.ts');
   });
 
   test('each line is valid JSON with ts, event, payload', () => {

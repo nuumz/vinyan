@@ -10,7 +10,14 @@ import { z } from 'zod/v4';
 
 // ── EvolutionaryRule row schema ──────────────────────────────────────────
 
-const RuleActionSchema = z.enum(['escalate', 'require-oracle', 'prefer-model', 'adjust-threshold', 'assign-worker']);
+const RuleActionSchema = z.enum([
+  'escalate',
+  'require-oracle',
+  'prefer-model',
+  'adjust-threshold',
+  'assign-worker',
+  'promote-capability',
+]);
 
 const RuleStatusSchema = z.enum(['probation', 'active', 'retired']);
 
@@ -99,13 +106,14 @@ export const AgentProfileRowSchema = z.object({
 
 // ── ExecutionTrace row schema ───────────────────────────────────────────
 
-const TraceOutcomeSchema = z.enum(['success', 'failure', 'timeout', 'escalated']);
+const TraceOutcomeSchema = z.enum(['success', 'failure', 'timeout', 'escalated', 'partial']);
 
 export const ExecutionTraceRowSchema = z.object({
   id: z.string(),
   task_id: z.string(),
   session_id: z.string().nullable().optional(),
   worker_id: z.string().nullable().optional(),
+  agent_id: z.string().nullable().optional(),
   timestamp: z.number(),
   routing_level: z.number(),
   task_type_signature: z.string().nullable().optional(),
@@ -134,4 +142,22 @@ export const ExecutionTraceRowSchema = z.object({
   confidence_decision: z.string().nullable().optional(),
   transcript_gzip: z.instanceof(Buffer).or(z.instanceof(Uint8Array)).nullable().optional(),
   transcript_turns: z.number().nullable().optional(),
+  agent_selection_reason: z.string().nullable().optional(),
+  capability_requirements: z.string().nullable().optional(),
+  capability_analysis: z.string().nullable().optional(),
+  selected_capability_profile_id: z.string().nullable().optional(),
+  selected_capability_profile_source: z.string().nullable().optional(),
+  selected_capability_profile_trust_tier: z.string().nullable().optional(),
+  capability_fit_score: z.number().nullable().optional(),
+  unmet_capability_ids: z.string().nullable().optional(),
+  synthetic_agent_id: z.string().nullable().optional(),
+  knowledge_used: z.string().nullable().optional(),
+  governance_provenance: z.string().nullable().optional(),
+  routing_decision_id: z.string().nullable().optional(),
+  policy_version: z.string().nullable().optional(),
+  governance_actor: z.string().nullable().optional(),
+  decision_timestamp: z.number().nullable().optional(),
+  evidence_observed_at: z.number().nullable().optional(),
+  goal_grounding: z.string().nullable().optional(),
+  oracle_independence: z.string().nullable().optional(),
 });

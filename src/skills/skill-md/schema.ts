@@ -13,6 +13,41 @@
 import { z } from 'zod/v4';
 import { CONFIDENCE_TIERS } from '../../core/confidence-tier.ts';
 
+/**
+ * Capability claim shape declared by a skill (Phase-2 persona/skill bridge).
+ *
+ * The `evidence` and `confidence` fields on the orchestrator-side `CapabilityClaim`
+ * are intentionally NOT settable here — they are derived from the skill's
+ * own `confidence_tier`, `origin`, and `status`. A skill author cannot
+ * unilaterally claim 'evolved' or confidence 0.99; A5 (Tiered Trust) keeps
+ * provenance under system control.
+ */
+export const SkillProvidedCapabilitySchema = z.object({
+  id: z.string().min(1),
+  label: z.string().optional(),
+  file_extensions: z.array(z.string()).optional(),
+  action_verbs: z.array(z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  framework_markers: z.array(z.string()).optional(),
+  role: z.string().optional(),
+});
+export type SkillProvidedCapability = z.infer<typeof SkillProvidedCapabilitySchema>;
+
+/**
+ * ACL declarations a skill can carry. The composition rule (Phase-2):
+ *   effective_acl = persona_acl ∩ ⋂(skill_acl)
+ * Skills can ONLY narrow, never widen. A skill that declares network=true
+ * cannot grant network access to a persona whose floor is network=false.
+ * Only `false` values are honoured during composition.
+ */
+export const SkillAclSchema = z.object({
+  read_any: z.boolean().optional(),
+  write_any: z.boolean().optional(),
+  network: z.boolean().optional(),
+  shell: z.boolean().optional(),
+});
+export type SkillAcl = z.infer<typeof SkillAclSchema>;
+
 /** Frontmatter YAML block. Ordering is agnostic here — writer canonicalizes. */
 export const SkillMdFrontmatterSchema = z
   .object({
@@ -29,7 +64,7 @@ export const SkillMdFrontmatterSchema = z
 
     // Vinyan epistemic extensions (D20)
     confidence_tier: z.enum(CONFIDENCE_TIERS),
-    origin: z.enum(['local', 'a2a', 'mcp', 'hub']).default('local'),
+    origin: z.enum(['local', 'a2a', 'mcp', 'hub', 'autonomous']).default('local'),
     declared_oracles: z.array(z.string()).default([]),
     expected_prediction_error_reduction: z
       .object({
@@ -60,6 +95,14 @@ export const SkillMdFrontmatterSchema = z
     status: z.enum(['probation', 'active', 'demoted', 'quarantined', 'retired']).default('probation'),
     promoted_at: z.number().int().optional(),
     backtest_id: z.string().optional(),
+
+    // Phase-2 persona/skill bridge — all optional, backward-compat with legacy SKILL.md.
+    /** Tags consumed by the persona's `acquirableSkillTags` glob filter (e.g. 'language:typescript', 'review:code'). */
+    tags: z.array(z.string()).optional(),
+    /** ACL contributions during composition. Skills can only narrow, never widen — A6. */
+    acl: SkillAclSchema.optional(),
+    /** Capability claims this skill backs. When present, the persona's effective claim list expands by these (with derived evidence/confidence). */
+    provides_capabilities: z.array(SkillProvidedCapabilitySchema).optional(),
   })
   .superRefine((value, ctx) => {
     // Deterministic-tier skills must be content-hash bound (A4 + A5).

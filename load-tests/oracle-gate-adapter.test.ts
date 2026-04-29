@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { OracleGateAdapter } from '../../src/orchestrator/oracle-gate-adapter.ts';
+import { OracleGateAdapter } from '../src/orchestrator/oracle-gate-adapter.ts';
 
 // Note: These tests run the real OracleGateAdapter which calls runGate().
 // Since runGate operates on file content and real oracles, we test observable behavior.

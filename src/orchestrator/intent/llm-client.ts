@@ -16,14 +16,9 @@
  */
 
 import type { z } from 'zod';
-import type { LLMProvider } from '../types.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
-import {
-  IntentResponseSchema,
-  normalizeDirectToolCall,
-  parseIntentResponse,
-  withTimeout,
-} from './parser.ts';
+import type { LLMProvider } from '../types.ts';
+import { type IntentResponseSchema, normalizeDirectToolCall, parseIntentResponse, withTimeout } from './parser.ts';
 
 /**
  * Canonical intent-classifier system prompt. Contains:
@@ -55,17 +50,22 @@ Strategy definitions:
 
 CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
-1. CONVERSATIONAL test — Is this a SHORT, simple exchange?
-   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
-   - Simple factual questions answerable in 1-3 sentences ("what is X", "how does Y work", "นิยายเว็บตูนคืออะไร") → "conversational"
-   - Meta-questions about system capabilities → "conversational"
-   - DELIVERABLE META-RULE: If the answer would be a copy/paste/publishable ARTIFACT (novel chapter, full article, script, deck, application, website, report, summary) — regardless of the verb the user chose or whether they phrased it as a question — it is ALWAYS "agentic-workflow". A 1–3 sentence answer is NOT a deliverable; anything longer likely is.
-   - Semantic test (not keyword match): ask yourself "would a complete, satisfying answer fit in one short paragraph?" If NO → "agentic-workflow".
-   - Question FORM ≠ conversational INTENT. "ช่วยทำ X ได้ไหม", "can you build X?" — when X is a concrete deliverable, treat as REQUEST TO DO X → "agentic-workflow".
-   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed action → "agentic-workflow" with workflowPrompt reconstructed from the recent conversation.
-   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization, NOT authoring). Read the verb + object semantically, not keywords in isolation.
+1. DELIVERABLE TEST — Apply FIRST. Overrides every other test.
+   Ask one question: "Would the user-acceptable answer be a publishable ARTIFACT — story chapter, full article, report, code module, slide deck, multi-paragraph prose ≥3 paragraphs, or anything the user would copy/paste/publish?"
+   If YES → "agentic-workflow". STOP. Do not consider conversational.
+   - Politeness words ("ช่วย", "could you", "please") DO NOT make a deliverable conversational.
+   - Question form ("can you write X?", "ช่วยเขียน X ได้ไหม") does NOT make a deliverable conversational when X is a concrete artifact.
+   - Quantity quantifiers ("สัก 2 บท", "5 chapters", "a long report") are unambiguous deliverable signals.
+   - Short affirmative follow-ups ("ทำเลย", "เอาเลย", "ok", "go", "เริ่มเลย", "จัดไป", "ลุย") that confirm a previously proposed deliverable → "agentic-workflow" with workflowPrompt reconstructed from the conversation.
+   - Watch for noun collisions: a word like "เว็บตูน" / "novel" can appear in non-writing tasks ("ทำให้เว็บตูนโหลดเร็วขึ้น" = performance optimization). The deliverable test is about what the ANSWER would look like, not what nouns appear in the goal.
 
-2. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
+2. CONVERSATIONAL test — Apply only if the deliverable test said NO.
+   - Greetings, small talk ("สวัสดี", "hello", "ขอบคุณ") → "conversational"
+   - Pure factual questions answerable in 1-3 sentences ("what is X", "นิยายเว็บตูนคืออะไร") → "conversational"
+   - Meta-questions about system capabilities → "conversational"
+   - If you cannot fit a complete, satisfying answer in one short paragraph, this is NOT conversational — go back to rule 1.
+
+3. DIRECT-TOOL test — Is the action itself the ENTIRE goal?
    - "direct-tool" is ONLY correct when the user needs NO textual response. The side-effect IS the result.
    - If the user wants an ANSWER, SUMMARY, LIST, or REPORT → NEVER "direct-tool"
    - Words like "summarize", "list", "find all", "analyze", "report", "สรุป", "หา", "ค้นหา", "รวบรวม", "วิเคราะห์" → NEVER "direct-tool"
@@ -78,19 +78,19 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
    - Example: "open Gmail" → shell_exec with a browser/open command for Gmail's web URL, NOT "open -a gmail" and NOT cross-platform fallback chains
    - Only use a native app launch when the target is clearly a desktop app
 
-3. FULL-PIPELINE test — Is this a focused code change?
+4. FULL-PIPELINE test — Is this a focused code change?
    - Has explicit file targets AND involves code modification → "full-pipeline"
    - Bug fix, implement feature, refactor specific module → "full-pipeline"
    - If it requires multi-file coordination OR exploration first → "agentic-workflow" instead
 
-4. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
+5. AGENTIC-WORKFLOW (default for complex) — Everything else that requires action:
    - Multi-step tasks, research, analysis, synthesis
    - Creative generation: stories, essays, poems, scripts, long-form content
    - Tasks requiring exploration before action
    - Tasks spanning multiple files without clear targets
    - Any task where the output is substantial text (more than a short paragraph)
 
-5. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
+6. USER PREFERENCE OVERRIDE — When the user prompt includes "User app preferences":
    - If user asks for a CATEGORY (e.g., "แอพ mail", "email app", "browser") and a preference exists → ALWAYS use the preferred app
    - Generate the directToolCall command for the PREFERRED app, not the platform default
    - Example: if user prefers "gmail" for "mail", then "เปิดแอพ mail" → open Gmail's URL, NOT "open -a Mail"
@@ -98,9 +98,11 @@ CRITICAL discrimination rules (apply IN THIS ORDER before choosing a strategy):
 
 workflowPrompt guidelines (for "agentic-workflow" ONLY):
 - Write it as if briefing a smart colleague who just walked into the room
-- Include: what to accomplish, what approach to take, what success looks like
+- Include: what to accomplish, the goal/output, the concrete process steps, what information is missing (if any), and what success looks like
 - Be specific about outputs expected (e.g., "produce a bullet-point summary", "list all files matching X")
 - Do NOT include generic platitudes like "be careful" — give actionable steps
+- Internal role names are routing hints only. Do NOT write workflow prompts that tell the downstream agent to tell the user to contact, wait for, hand off to, or ask a named internal agent/role. The user-facing answer should explain the work and either ask necessary clarifying questions or produce the deliverable.
+- Creative writing rule: for novel/book/webtoon/story tasks, "write" means author prose, not code. The downstream workflow may use creative capabilities internally (brief/plot/structure/draft/edit/critique), but do not expose internal role names as the answer. Do NOT assign ts-coder, system-designer, test-coder, or software roles unless the user explicitly asks for software/code.
 
 Available tools (use ONLY these exact names — do NOT invent tool names):
 - shell_exec: Execute ANY shell command (open apps, run scripts, system commands). Parameters: { "command": "..." }
@@ -176,10 +178,7 @@ export function pickPrimaryProvider(registry: LLMProviderRegistry): LLMProvider 
 }
 
 /** Pick a provider other than `excludeId` for the classify-again retry. */
-export function pickAlternateProvider(
-  registry: LLMProviderRegistry,
-  excludeId: string,
-): LLMProvider | null {
+export function pickAlternateProvider(registry: LLMProviderRegistry, excludeId: string): LLMProvider | null {
   for (const tier of TIER_PREFERENCE) {
     const p = registry.selectByTier(tier);
     if (p && p.id !== excludeId) return p;

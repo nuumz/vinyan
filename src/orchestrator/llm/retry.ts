@@ -1,8 +1,22 @@
 /**
  * Shared retry logic for LLM providers.
  *
- * Exponential backoff with configurable max retries, base delay,
- * retryable status classification, and timeout handling.
+ * Two flavours:
+ *
+ *   `retryWithBackoff`        — single wall-clock timeout per attempt. Use for
+ *                               non-streaming `provider.generate()` calls where
+ *                               there is no progress signal during the request.
+ *
+ *   `retryStreamWithBackoff`  — three timeouts per attempt: connect (until first
+ *                               byte), idle (between chunks, reset by caller),
+ *                               and wall-clock (absolute safety net). Use for
+ *                               `provider.generateStream()` so a healthy stream
+ *                               that emits tokens for several minutes is not
+ *                               killed by a fixed wall-clock that only made
+ *                               sense for blocking calls.
+ *
+ * Both helpers share the same backoff, retry-after header parsing, and error
+ * classification so the call sites stay consistent.
  */
 
 export interface RetryConfig {
@@ -12,13 +26,68 @@ export interface RetryConfig {
   baseDelayMs: number;
   /** HTTP status codes that trigger a retry. */
   retryableStatuses: Set<number>;
-  /** Request timeout in ms. */
+  /** Wall-clock timeout in ms — applies to the entire attempt. */
   timeoutMs: number;
   /** Extract retry-after delay from a provider-specific error. Return ms or undefined. */
   parseRetryAfter?: (error: unknown) => number | undefined;
   /** Additional check: is this error retryable beyond status codes? */
   isRetryableError?: (error: Error) => boolean;
 }
+
+/**
+ * Three-timeout configuration for streaming LLM calls.
+ *
+ * Why three? A single wall-clock timeout cannot tell apart these failure modes:
+ *   - server is unreachable (connect)         → caller wants to fail fast
+ *   - server accepted but went silent (idle)  → caller wants to retry
+ *   - server is genuinely slow (wall-clock)   → caller wants a long ceiling
+ *
+ * Pick values per tier; sensible starting points:
+ *   - connectTimeoutMs: 30_000   (TCP/TLS + provider routing)
+ *   - idleTimeoutMs:    90_000   (between any wire activity — content or ping)
+ *   - wallClockMs:     600_000   (absolute cap for one attempt; >10 min is almost
+ *                                 always a runaway loop on the provider side)
+ */
+export interface StreamRetryConfig {
+  maxRetries: number;
+  baseDelayMs: number;
+  retryableStatuses: Set<number>;
+  /** Time from request start until `hooks.firstByte()` is called. */
+  connectTimeoutMs: number;
+  /** Time between consecutive `hooks.activity()` calls. Reset by every call. */
+  idleTimeoutMs: number;
+  /** Absolute cap on a single attempt — fires regardless of activity. */
+  wallClockMs: number;
+  parseRetryAfter?: (error: unknown) => number | undefined;
+  isRetryableError?: (error: Error) => boolean;
+  /**
+   * Caller-owned cancellation. If aborted, retries stop immediately and the
+   * abort reason propagates as the thrown error (no synthetic timeout wrap).
+   */
+  externalSignal?: AbortSignal;
+}
+
+/**
+ * Lifecycle hooks the streaming caller invokes to keep the timeout machine
+ * informed about wire activity.
+ *
+ *   `firstByte()`  — Call once when the connection is established and the
+ *                    provider has started responding (typically right after
+ *                    `fetch` resolves, or on the first stream event). Cancels
+ *                    the connect timer and starts the idle timer. Idempotent
+ *                    — subsequent calls are no-ops.
+ *   `activity()`   — Call on EVERY signal of life from the wire: text chunk,
+ *                    SSE comment / ping, tool-use delta, anything. Resets the
+ *                    idle timer. Implicitly calls `firstByte()` if not yet
+ *                    called, so callers that don't have a separate first-byte
+ *                    signal can just call `activity()` per chunk.
+ */
+export interface StreamHooks {
+  firstByte: () => void;
+  activity: () => void;
+}
+
+export type StreamRetryFn<T> = (signal: AbortSignal, hooks: StreamHooks) => Promise<T>;
 
 export const DEFAULT_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 529]);
 
@@ -30,29 +99,32 @@ const DEFAULT_IS_RETRYABLE = (error: Error): boolean => {
 /**
  * Execute an async function with exponential backoff retry.
  *
- * The function receives an AbortSignal for timeout handling.
- * The AbortController is automatically managed per attempt.
+ * The function receives an AbortSignal that fires when the wall-clock timeout
+ * elapses. The AbortController is automatically managed per attempt.
  */
-export async function retryWithBackoff<T>(
-  fn: (signal: AbortSignal) => Promise<T>,
-  config: RetryConfig,
-): Promise<T> {
+export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T>, config: RetryConfig): Promise<T> {
   const { maxRetries, baseDelayMs, timeoutMs } = config;
   const isRetryable = config.isRetryableError ?? DEFAULT_IS_RETRYABLE;
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const result = await fn(controller.signal);
       clearTimeout(timer);
       return result;
     } catch (error) {
       clearTimeout(timer);
-      controller.abort();
 
-      const isTimeout = (error as Error).name === 'AbortError' || controller.signal.aborted;
+      // `timedOut` is the only reliable discriminator: checking
+      // `controller.signal.aborted` after an unrelated error would always
+      // return true the moment we aborted defensively, so use the flag.
+      const isTimeout = timedOut;
       lastError = isTimeout
         ? new Error(`LLM API timeout after ${timeoutMs}ms`)
         : error instanceof Error
@@ -60,14 +132,12 @@ export async function retryWithBackoff<T>(
           : new Error(String(error));
 
       if (attempt < maxRetries) {
-        // Check if retryable via status code
-        const status = (error as any)?.status;
+        const status = (error as { status?: number })?.status;
         const isStatusRetryable = typeof status === 'number' && config.retryableStatuses.has(status);
 
         if (isStatusRetryable || isTimeout || isRetryable(lastError)) {
-          // Use retry-after header if available, otherwise exponential backoff
           const retryAfterMs = config.parseRetryAfter?.(error);
-          const delay = retryAfterMs ?? baseDelayMs * Math.pow(2, attempt);
+          const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
@@ -75,5 +145,184 @@ export async function retryWithBackoff<T>(
       throw lastError;
     }
   }
-  throw lastError!;
+  throw lastError ?? new Error('retryWithBackoff exhausted with no error');
+}
+
+type TimeoutMode = 'connect' | 'idle' | 'wallClock';
+
+const TIMEOUT_LABELS: Record<TimeoutMode, string> = {
+  connect: 'connect timeout',
+  idle: 'idle timeout (no activity)',
+  wallClock: 'wall-clock timeout',
+};
+
+interface TimeoutMachine {
+  signal: AbortSignal;
+  hooks: StreamHooks;
+  getMode(): TimeoutMode | null;
+  cleanup(): void;
+}
+
+/**
+ * Wires the three-timeout state machine for one stream attempt. Encapsulating
+ * this keeps `retryStreamWithBackoff` itself short — the lifetimes of timers,
+ * the firstByte/activity transitions, and the external-signal listener are all
+ * managed here.
+ */
+function createTimeoutMachine(
+  config: Pick<StreamRetryConfig, 'connectTimeoutMs' | 'idleTimeoutMs' | 'wallClockMs' | 'externalSignal'>,
+): TimeoutMachine {
+  const controller = new AbortController();
+  let mode: TimeoutMode | null = null;
+  let firstByteSeen = false;
+
+  const fire = (m: TimeoutMode) => {
+    if (mode) return;
+    mode = m;
+    controller.abort();
+  };
+
+  let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => fire('connect'), config.connectTimeoutMs);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const wallClockTimer = setTimeout(() => fire('wallClock'), config.wallClockMs);
+
+  const startIdle = () => {
+    firstByteSeen = true;
+    if (connectTimer) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    }
+    idleTimer = setTimeout(() => fire('idle'), config.idleTimeoutMs);
+  };
+
+  const onExternalAbort = () => {
+    if (!mode) controller.abort();
+  };
+  config.externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  return {
+    signal: controller.signal,
+    hooks: {
+      firstByte: () => {
+        if (firstByteSeen) return;
+        startIdle();
+      },
+      activity: () => {
+        if (!firstByteSeen) {
+          startIdle();
+          return;
+        }
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => fire('idle'), config.idleTimeoutMs);
+      },
+    },
+    getMode: () => mode,
+    cleanup: () => {
+      if (connectTimer) clearTimeout(connectTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(wallClockTimer);
+      config.externalSignal?.removeEventListener('abort', onExternalAbort);
+    },
+  };
+}
+
+function timeoutMs(mode: TimeoutMode, config: StreamRetryConfig): number {
+  if (mode === 'connect') return config.connectTimeoutMs;
+  if (mode === 'idle') return config.idleTimeoutMs;
+  return config.wallClockMs;
+}
+
+function isStreamRetryable(
+  error: unknown,
+  classified: Error,
+  isTimeoutRetryable: boolean,
+  config: StreamRetryConfig,
+  isRetryable: (e: Error) => boolean,
+): boolean {
+  if (isTimeoutRetryable) return true;
+  const status = (error as { status?: number })?.status;
+  if (typeof status === 'number' && config.retryableStatuses.has(status)) return true;
+  return isRetryable(classified);
+}
+
+interface StreamErrorClassification {
+  wrapped: Error;
+  timedOutByUs: boolean;
+}
+
+function classifyStreamError(
+  error: unknown,
+  mode: TimeoutMode | null,
+  signal: AbortSignal,
+  config: StreamRetryConfig,
+): StreamErrorClassification {
+  const aborted = (error as Error).name === 'AbortError' || signal.aborted;
+  if (aborted && mode !== null) {
+    return {
+      wrapped: new Error(`LLM API ${TIMEOUT_LABELS[mode]} after ${timeoutMs(mode, config)}ms`),
+      timedOutByUs: true,
+    };
+  }
+  return {
+    wrapped: error instanceof Error ? error : new Error(String(error)),
+    timedOutByUs: false,
+  };
+}
+
+/**
+ * Streaming variant of `retryWithBackoff`. Per attempt:
+ *
+ *   1. A connect timer fires after `connectTimeoutMs` if `hooks.firstByte()`
+ *      isn't called — typical TCP/TLS/provider-routing failure.
+ *   2. Once `firstByte()` fires, an idle timer fires after `idleTimeoutMs`
+ *      unless `hooks.activity()` is called again. Each `activity()` resets
+ *      the timer.
+ *   3. A wall-clock timer fires after `wallClockMs` regardless — safety net
+ *      against provider loops or pathological streams.
+ *
+ * On any of those firings the supplied `signal` aborts. Callers that own the
+ * underlying transport (raw fetch reader, SDK stream object) should `try/await`
+ * inside `fn`; the AbortError will surface and `retryStreamWithBackoff` will
+ * convert it to a typed timeout error and decide whether to retry.
+ *
+ * If `externalSignal` is supplied and aborts, retries stop immediately and the
+ * caller's reason propagates without being wrapped in a timeout error.
+ */
+export async function retryStreamWithBackoff<T>(fn: StreamRetryFn<T>, config: StreamRetryConfig): Promise<T> {
+  const { maxRetries, baseDelayMs, externalSignal } = config;
+  const isRetryable = config.isRetryableError ?? DEFAULT_IS_RETRYABLE;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (externalSignal?.aborted) {
+      throw externalSignal.reason instanceof Error ? externalSignal.reason : new Error('Aborted by caller');
+    }
+
+    const machine = createTimeoutMachine(config);
+
+    try {
+      const result = await fn(machine.signal, machine.hooks);
+      machine.cleanup();
+      return result;
+    } catch (error) {
+      machine.cleanup();
+
+      // External cancel takes precedence — propagate without retry.
+      if (externalSignal?.aborted) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+
+      const { wrapped, timedOutByUs } = classifyStreamError(error, machine.getMode(), machine.signal, config);
+      lastError = wrapped;
+
+      if (attempt < maxRetries && isStreamRetryable(error, wrapped, timedOutByUs, config, isRetryable)) {
+        const retryAfterMs = config.parseRetryAfter?.(error);
+        const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error('retryStreamWithBackoff exhausted with no error');
 }

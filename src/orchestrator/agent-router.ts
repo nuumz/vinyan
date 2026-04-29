@@ -17,18 +17,24 @@
  * the caller (core-loop) can orchestrate the intent resolver call that's
  * already happening.
  */
-import type { AgentSpec, PerceptualHierarchy, TaskInput } from './types.ts';
-import type { AgentRegistry } from './agents/registry.ts';
 
-export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default';
+import type { AgentRegistry } from './agents/registry.ts';
+import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
+import { analyzeProfileFit } from './capabilities/capability-router.ts';
+import { buildAgentCapabilityProfilesFromRegistry } from './capabilities/profile-adapter.ts';
+import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy, TaskInput } from './types.ts';
+
+export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
 
 export interface AgentRouteDecision {
   agentId: string;
   reason: AgentRouteReason;
-  /** Normalized [0,1] score from rule evaluation. 0 for override/default/needs-llm. */
+  /** Composite weighted fit score from capability evaluation. 0 for override/default/needs-llm. */
   score: number;
   /** Runner-up for observability (rule-match path only). */
   runnerUp?: { agentId: string; score: number };
+  /** Capability gap analysis attached when the router actually scored agents. */
+  capabilityAnalysis?: CapabilityGapAnalysis;
 }
 
 export interface AgentRouter {
@@ -37,22 +43,27 @@ export interface AgentRouter {
    *
    * `routingLevel` is an optional hint. When provided, agents whose
    * `routingHints.minLevel` exceeds the task's routing level are excluded
-   * from the rule-match candidate set — e.g., `system-designer` (minLevel:1)
+   * from the rule-match candidate set — e.g., `architect` (minLevel:1)
    * is not considered for reflex-tier L0 tasks. When the hint is absent the
    * router keeps pre-multi-agent behaviour (minLevel ignored) so callers
    * that don't know the routing level yet still get a deterministic choice.
+   *
+   * `requirements` lets the caller inject extra CapabilityRequirements
+   * (e.g. LLM-extracted via the intent resolver). They are merged with the
+   * fingerprint-derived requirements by the analyzer and contribute to the
+   * deterministic fit scoring — they do NOT bypass scoring.
    */
-  route(input: TaskInput, perception?: PerceptualHierarchy, routingLevel?: number): AgentRouteDecision;
+  route(
+    input: TaskInput,
+    perception?: PerceptualHierarchy,
+    routingLevel?: number,
+    requirements?: CapabilityRequirement[],
+  ): AgentRouteDecision;
 }
 
 /** Thresholds for rule-based selection. Tuned for 4 built-ins. */
 const RULE_MIN_SCORE = 0.4;
 const RULE_MIN_MARGIN = 0.15;
-
-/** Weights from the approved plan. */
-const WEIGHT_EXTENSIONS = 0.5;
-const WEIGHT_FRAMEWORKS = 0.3;
-const WEIGHT_DOMAINS = 0.2;
 
 export interface DefaultAgentRouterDeps {
   registry: AgentRegistry;
@@ -60,7 +71,7 @@ export interface DefaultAgentRouterDeps {
 
 export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
   return {
-    route(input, perception, routingLevel) {
+    route(input, perception, routingLevel, requirements) {
       const registry = deps.registry;
 
       // Step 1: CLI override — user selected the specialist explicitly
@@ -68,34 +79,44 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
         return { agentId: input.agentId, reason: 'override', score: 0 };
       }
 
-      // Step 2: rule-based scoring
-      const signals = extractSignals(input, perception);
-      const allAgents = registry.listAgents();
-      // Enforce minLevel hint when a routing level is available — specialists
-      // that declare `minLevel:2` (e.g., system-designer when structural
-      // reasoning is mandatory) are excluded from L0/L1 tasks. The default
-      // agent is still the last-resort fallback below, so this never leaves
-      // the router without a choice.
-      const agents =
+      // Step 2: capability-first scoring. Agents compete on declared
+      // CapabilityClaims, which the capability-analyzer matches against
+      // task requirements derived from the fingerprint and (optionally)
+      // LLM-extracted requirements forwarded by the caller.
+      //
+      // Phase-2 wiring: profiles are built via the registry helper so each
+      // agent's skill-derived claims and skill-narrowed ACL flow into the
+      // routing layer. Without a skill resolver wired, derivation returns
+      // raw spec data and behavior is unchanged.
+      const allProfiles = buildAgentCapabilityProfilesFromRegistry(registry.listAgents(), (id) =>
+        registry.getDerivedCapabilities(id),
+      );
+      const profiles =
         typeof routingLevel === 'number'
-          ? allAgents.filter((a) => {
-              const min = a.routingHints?.minLevel;
+          ? allProfiles.filter((profile) => {
+              const min = profile.routingHints?.minLevel;
               return min === undefined || routingLevel >= min;
             })
-          : allAgents;
-      const scored = agents.map((a) => ({ agent: a, score: scoreAgent(a, signals) }));
-      scored.sort((a, b) => b.score - a.score);
+          : allProfiles;
 
-      const top = scored[0];
-      const runner = scored[1];
-      if (top && top.score >= RULE_MIN_SCORE) {
-        const margin = top.score - (runner?.score ?? 0);
+      const analyzed: CapabilityRequirement[] = analyzeRequirements({
+        task: input,
+        perception,
+        requirements,
+      });
+      const analysis = analyzeProfileFit(input.id, profiles, analyzed);
+      const top = analysis.candidates[0];
+      const runner = analysis.candidates[1];
+
+      if (top && top.fitScore >= RULE_MIN_SCORE) {
+        const margin = top.fitScore - (runner?.fitScore ?? 0);
         if (margin >= RULE_MIN_MARGIN) {
           return {
-            agentId: top.agent.id,
+            agentId: top.agentId,
             reason: 'rule-match',
-            score: top.score,
-            runnerUp: runner ? { agentId: runner.agent.id, score: runner.score } : undefined,
+            score: top.fitScore,
+            runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+            capabilityAnalysis: analysis,
           };
         }
       }
@@ -107,60 +128,10 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       return {
         agentId: registry.defaultAgent().id,
         reason: 'needs-llm',
-        score: top?.score ?? 0,
-        runnerUp: runner ? { agentId: runner.agent.id, score: runner.score } : undefined,
+        score: top?.fitScore ?? 0,
+        runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+        capabilityAnalysis: analysis,
       };
     },
   };
-}
-
-// ── Signal extraction ──────────────────────────────────────────────────
-
-interface TaskSignals {
-  extensions: Set<string>;
-  frameworks: Set<string>;
-  domains: Set<string>;
-}
-
-function extractSignals(input: TaskInput, perception?: PerceptualHierarchy): TaskSignals {
-  const extensions = new Set<string>();
-  for (const file of input.targetFiles ?? []) {
-    const idx = file.lastIndexOf('.');
-    if (idx >= 0) extensions.add(file.slice(idx).toLowerCase());
-  }
-
-  const frameworks = new Set<string>();
-  if (perception?.frameworkMarkers) {
-    for (const f of perception.frameworkMarkers) frameworks.add(f.toLowerCase());
-  }
-
-  const domains = new Set<string>();
-  // Map TaskInput.taskType to a coarse domain signal.
-  if (input.taskType === 'code') {
-    domains.add(input.targetFiles?.length ? 'code-mutation' : 'code-reasoning');
-  } else {
-    domains.add('general-reasoning');
-  }
-
-  return { extensions, frameworks, domains };
-}
-
-function scoreAgent(agent: AgentSpec, signals: TaskSignals): number {
-  const hints = agent.routingHints;
-  if (!hints) return 0;
-
-  let score = 0;
-  if (hints.preferExtensions && hints.preferExtensions.length > 0) {
-    const hits = hints.preferExtensions.filter((e) => signals.extensions.has(e.toLowerCase()));
-    if (hits.length > 0) score += WEIGHT_EXTENSIONS;
-  }
-  if (hints.preferFrameworks && hints.preferFrameworks.length > 0) {
-    const hits = hints.preferFrameworks.filter((f) => signals.frameworks.has(f.toLowerCase()));
-    if (hits.length > 0) score += WEIGHT_FRAMEWORKS;
-  }
-  if (hints.preferDomains && hints.preferDomains.length > 0) {
-    const hits = hints.preferDomains.filter((d) => signals.domains.has(d));
-    if (hits.length > 0) score += WEIGHT_DOMAINS;
-  }
-  return score;
 }

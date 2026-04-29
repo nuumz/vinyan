@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createBus } from '../../../src/core/bus.ts';
 import { createMockProvider } from '../../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
 import type {
-  PerceptualHierarchy,
   PerceptionRole,
+  PerceptualHierarchy,
   RoutingDecision,
   TaskInput,
   WorkingMemoryState,
@@ -196,6 +197,43 @@ describe('WorkerPoolImpl', () => {
     const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(1));
     expect(result.mutations).toHaveLength(0);
     expect(result.tokensConsumed).toBe(150); // tokens still counted
+  });
+
+  test('subprocess streaming deltas emit legacy and rich bus events', async () => {
+    const workerEntryPath = join(tempDir, 'stream-worker.ts');
+    writeFileSync(
+      workerEntryPath,
+      `const input = JSON.parse(await Bun.stdin.text());
+console.log(JSON.stringify({ type: 'delta', taskId: input.taskId, text: 'hello' }));
+console.log(JSON.stringify({
+  taskId: input.taskId,
+  proposedMutations: [],
+  proposedToolCalls: [],
+  uncertainties: [],
+  tokensConsumed: 1,
+  durationMs: 1,
+  proposedContent: 'hello',
+}));
+`,
+    );
+    const bus = createBus();
+    const richDeltas: Array<{ taskId: string; kind: string; text?: string }> = [];
+    bus.on('llm:stream_delta', (payload) => richDeltas.push(payload));
+    const pool = new WorkerPoolImpl({
+      registry: makeRegistry(),
+      workspace: tempDir,
+      useSubprocess: true,
+      useWarmPool: false,
+      workerEntryPath,
+      bus,
+      streaming: true,
+    });
+    (pool as unknown as { dockerAvailable: boolean }).dockerAvailable = false;
+
+    const result = await pool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(2));
+
+    expect(result.tokensConsumed).toBe(1);
+    expect(richDeltas).toEqual([{ taskId: 't-1', kind: 'content', text: 'hello' }]);
   });
 
   test('no provider for routing level returns empty result', async () => {

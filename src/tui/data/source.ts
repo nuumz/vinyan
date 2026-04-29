@@ -34,6 +34,7 @@ const LOG_ONLY_EVENTS: BusEventName[] = [
   'evolution:rulesApplied',
   'evolution:rulePromoted',
   'evolution:ruleRetired',
+  'evolution:capabilityPromoted',
   'skill:match',
   'skill:miss',
   'skill:outcome',

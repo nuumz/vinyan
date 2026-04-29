@@ -10,9 +10,9 @@
 import type { PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type {
   CachedSkill,
-  EngineProfile,
   EvolutionaryRule,
   ExecutionTrace,
+  GoalGroundingCheck,
   RoutingDecision,
   SelfModelPrediction,
   ShadowJob,
@@ -70,6 +70,19 @@ export interface VinyanBusEvents {
     dayCount: number;
   };
   'trace:record': { trace: ExecutionTrace };
+  'trace:write_failed': { taskId: string; traceId: string; error: string };
+  'grounding:checked': GoalGroundingCheck;
+  /**
+   * A10 / T6 \u2014 emitted when the goal-grounding boundary takes a runtime
+   * action beyond plain confidence downgrade. Carries the action label and
+   * the underlying check for observability.
+   */
+  'grounding:action_taken': {
+    taskId: string;
+    action: GoalGroundingCheck['action'];
+    phase: GoalGroundingCheck['phase'];
+    reason: string;
+  };
 
   // Worker lifecycle
   'worker:complete': { taskId: string; output: WorkerOutput; durationMs: number };
@@ -89,6 +102,23 @@ export interface VinyanBusEvents {
   'evolution:rulesApplied': { taskId: string; rules: EvolutionaryRule[] };
   'evolution:rulePromoted': { ruleId: string; taskSig: string };
   'evolution:ruleRetired': { ruleId: string; reason: string };
+  /** Phase D: capability claim promoted onto a stable agent. */
+  'evolution:capabilityPromoted': {
+    agentId: string;
+    capabilityId: string;
+    confidence: number;
+    observationCount: number;
+    taskTypeSignature: string;
+  };
+  /** Phase 5: quarantined persistent custom-agent proposal created. */
+  'evolution:agentProposalCreated': {
+    proposalId: string;
+    suggestedAgentId: string;
+    taskTypeSignature: string;
+    unmetCapabilityIds: string[];
+    evidenceTraceIds: string[];
+    wilsonLowerBound: number;
+  };
 
   // Sleep Cycle (Phase 2.4)
   'sleep:cycleComplete': {
@@ -97,6 +127,8 @@ export interface VinyanBusEvents {
     rulesGenerated: number;
     skillsCreated: number;
     rulesPromoted: number;
+    capabilitiesPromoted?: number;
+    agentProposalsCreated?: number;
   };
 
   // Self-Model (Phase 1C.1)
@@ -133,8 +165,117 @@ export interface VinyanBusEvents {
 
   // Task lifecycle extensions
   'task:escalate': { taskId: string; fromLevel: number; toLevel: number; reason: string };
-  'task:timeout': { taskId: string; elapsedMs: number; budgetMs: number };
+  /**
+   * Stage-level progress snapshot — finer than `phase:timing`, complements it.
+   *
+   * `phase:timing` fires AFTER a phase completes (perceive/plan/generate/...).
+   * `task:stage_update` fires DURING a phase to surface what the orchestrator
+   * is doing right now (e.g. `planning:decomposing`, `planning:scoring`,
+   * `generation:agent-loop`, `verification:running-oracles`). UIs can render
+   * "Planning · Decomposing · retry 1/2" without having to diff bus traffic.
+   *
+   * Observational only (A1, A3): never used for routing decisions. Producers
+   * are free to emit no `task:stage_update` at all — consumers MUST treat
+   * absence as "phase-level granularity is enough".
+   */
+  'task:stage_update': {
+    taskId: string;
+    /** High-level phase this stage belongs to (perceive | spec | plan | generate | verify | learn). */
+    phase: string;
+    /** Free-form sub-stage label, e.g. `decomposing`, `scoring`, `approval-gate`, `ready`, `fallback`. */
+    stage: string;
+    /** Status of the stage transition. `entered` = just started; `progress` = mid-stage update; `exited` = stage finished. */
+    status: 'entered' | 'progress' | 'exited';
+    /** Attempt number for retryable stages (1-based). Optional — omit when not retrying. */
+    attempt?: number;
+    /** Optional human-readable reason — e.g. why a stage repeated, why a fallback fired. */
+    reason?: string;
+    /** Optional progress counts (e.g. plan steps done/total). */
+    progress?: { done: number; total: number };
+  };
+  'task:timeout': {
+    taskId: string;
+    elapsedMs: number;
+    budgetMs: number;
+    /** Routing level the timeout was attributed to (the level that actually consumed budget, not a post-escalation re-label). */
+    routingLevel?: number;
+    /** Optional human-readable explanation — e.g. "wall-clock budget exhausted before next attempt could start". */
+    reason?: string;
+    /** Last `phase:timing` event observed for this task before the timeout. */
+    lastPhase?: { phase: string; durationMs: number; ts: number };
+    /** Last `agent:tool_started` / `agent:tool_executed` event observed before the timeout. */
+    lastTool?: { name: string; ts: number; status: 'started' | 'executed'; isError?: boolean };
+    /** Most recent `agent:plan_update` snapshot — number of done/skipped over total steps. */
+    planProgress?: { done: number; total: number };
+    /** Latest `task:stage_update` snapshot — what sub-stage was running when the wall clock fired. */
+    currentStage?: { phase: string; stage: string; attempt?: number; ts: number };
+  };
   'task:budget-exceeded': { taskId: string; totalTokensConsumed: number; globalCap: number };
+
+  // A9: Resilient Degradation — normalized runtime degradation contract.
+  'degradation:triggered': {
+    taskId?: string;
+    failureType:
+      | 'oracle-unavailable'
+      | 'llm-provider-failure'
+      | 'tool-timeout'
+      | 'tool-failure'
+      | 'rate-limit'
+      | 'peer-unavailable'
+      | 'trace-store-write-failure'
+      | 'budget-pressure'
+      | 'economy-accounting-failure'
+      | 'session-persistence-failure'
+      | 'mutation-apply-failure';
+    component: string;
+    action: 'retry' | 'fallback' | 'degrade' | 'fail-closed' | 'escalate';
+    capabilityImpact: 'none' | 'reduced' | 'blocked';
+    retryable: boolean;
+    severity: 'info' | 'warning' | 'critical';
+    policyVersion: string;
+    reason: string;
+    sourceEvent: string;
+    occurredAt: number;
+  };
+
+  /**
+   * A9 — economy accounting failure (cost write / ledger update fails).
+   * Emitted when cost recording cannot be persisted; degrades open by default
+   * because billing-side observability is best-effort, but feeds the
+   * degradation tracker so operators can see correlated outages.
+   */
+  'economy:accounting_failed': { taskId?: string; reason: string };
+
+  /**
+   * A9 — session/chat persistence failure (session row insert/update fails).
+   * Degrades open: chat UX should not crash on transient write errors.
+   */
+  'session:persistence_failed': { sessionId?: string; reason: string };
+
+  /**
+   * A9 — mutation-apply failure (write/destructive workspace tool failed
+   * after classification). Distinct from `tool:failure_classified` because
+   * fail-closed semantics anchor here per the A9 policy matrix.
+   */
+  'tool:mutation_failed': {
+    taskId?: string;
+    toolName: string;
+    category: 'write' | 'destructive';
+    reason: string;
+  };
+
+  /**
+   * Manual retry request — emitted by the API server when an operator (or
+   * the chat UI) hits POST /api/v1/tasks/:id/retry. Observational only
+   * (A1, A3): governance never reads this; it exists so dashboards / SSE
+   * consumers can surface the parent → child chain.
+   */
+  'task:retry_requested': {
+    taskId: string;
+    parentTaskId: string;
+    reason: string;
+    sessionId?: string;
+  };
 
   // TestGenerator observability
   'testgen:error': { taskId: string; error: string };
@@ -369,6 +510,14 @@ export interface VinyanBusEvents {
   'api:response': { method: string; path: string; status: number; durationMs: number };
   'session:created': { sessionId: string; source: string };
   'session:compacted': { sessionId: string; taskCount: number };
+  'session:updated': { sessionId: string; fields: Array<'title' | 'description'> };
+  'session:archived': { sessionId: string };
+  'session:unarchived': { sessionId: string };
+  'session:deleted': { sessionId: string };
+  'session:restored': { sessionId: string };
+  'session:purged': { sessionId: string };
+  'memory:approved': { recordId: string; key?: string };
+  'memory:rejected': { recordId: string; key?: string };
 
   // Phase E: File invalidation relay
   'file:hashChanged': { filePath: string; newHash: string; previousHash?: string };
@@ -567,6 +716,49 @@ export interface VinyanBusEvents {
   };
   /** Cache hit — re-used a prior resolution without re-classifying. */
   'intent:cache_hit': { taskId: string; cacheKey: string };
+  /**
+   * Persona inside the conversational shortcircuit emitted the escape
+   * sentinel; the orchestrator re-routed the task to agentic-workflow.
+   * Bound at one re-route per task via `TaskInput.intentEscapeAttempts`.
+   */
+  'intent:escape_sentinel_fired': {
+    taskId: string;
+    persona?: string;
+    reason: string;
+  };
+  /**
+   * Persona's conversational answer claimed delegation in plain prose
+   * ("I forwarded this to X agent") without emitting the escape sentinel.
+   * Defense-in-depth detector — same re-route consequence as the sentinel.
+   * Bound at one re-route per task via `TaskInput.intentEscapeAttempts`.
+   */
+  'intent:hallucinated_delegation_detected': {
+    taskId: string;
+    persona?: string;
+    snippet?: string;
+    locale?: 'thai' | 'english';
+  };
+  /**
+   * Deterministic short-affirmative pre-classifier reconstructed intent from
+   * the immediately prior unfulfilled deliverable proposal. Avoids one LLM
+   * call and prevents the "ack-without-action" failure mode.
+   */
+  'intent:short_affirmative_matched': {
+    taskId: string;
+    reconstructedFromTurnSeq: number;
+    reason: string;
+  };
+  /**
+   * Deterministic short-retry pre-classifier reconstructed intent from the
+   * immediately prior failed/refused assistant turn. Avoids re-routing a
+   * bare "retry" to conversational shortcircuit (which would lose the
+   * original goal entirely).
+   */
+  'intent:short_retry_matched': {
+    taskId: string;
+    reconstructedFromTurnSeq: number;
+    reason: string;
+  };
 
   // STU: Semantic Task Understanding events
   'understanding:layer0_complete': { taskId: string; durationMs: number; verb: string; category: string };
@@ -733,7 +925,7 @@ export interface VinyanBusEvents {
     thinkingMode: string | null;
     thinkingTokensUsed: number | null;
     routingLevel: number;
-    outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+    outcome: 'success' | 'failure' | 'timeout' | 'escalated' | 'partial';
     qualityComposite: number | null;
     oracleCompositeScore: number | null;
   };
@@ -839,6 +1031,102 @@ export interface VinyanBusEvents {
   // K2.2: Engine selection events
   'engine:selected': { taskId: string; provider: string; trustScore: number; reason: string };
 
+  // Phase-11: skill usage instrumentation. `skill:viewed` is emitted by
+  // ToolExecutor when the LLM invokes the `skill_view` tool with a skill id.
+  // SkillUsageTracker subscribes and aggregates per-task viewed sets so the
+  // overclaim comparator can flag bids that loaded more skills than they used.
+  'skill:viewed': { taskId: string; skillId: string };
+  /**
+   * Phase-11: emitted at task completion when a bid's loaded-skill loadout
+   * exceeded what the LLM actually viewed during execution. Producer:
+   * factory's executeTask wrapper after recordTaskOutcomeForPersona. M1
+   * mitigation — fills the long-reserved `overclaim_violations` counter
+   * surface with real data.
+   */
+  'bid:overclaim_detected': {
+    taskId: string;
+    agentId: string;
+    declaredCount: number;
+    viewedCount: number;
+    viewedRatio: number;
+  };
+
+  /**
+   * Phase-13: emitted by the workflow-executor's `delegate-sub-agent` path
+   * when A1 Epistemic Separation forced the sub-task onto the canonical
+   * Verifier persona instead of inheriting the parent's agentId. Producer:
+   * `selectVerifierForDelegation` returning a non-null id. Useful for
+   * observability — confirms the A1 guard fired without inspecting the
+   * sub-task's resulting trace.
+   */
+  'workflow:a1_verifier_routed': {
+    taskId: string;
+    stepId: string;
+    generatorAgentId: string | null;
+    verifierAgentId: string;
+  };
+
+  /**
+   * Wall-clock cap fired on a `delegate-sub-agent` step. Without this guard
+   * a free-tier 429 retry loop inside the sub-agent could hang the entire
+   * workflow indefinitely — incident: session ede9e9e1 sat for 40 min after
+   * 3 delegates stalled with no honest failure. Step is then marked failed
+   * and the executor proceeds (skipping dependents, surfacing partial
+   * results via the honesty fast-path).
+   */
+  'workflow:delegate_timeout': {
+    taskId: string;
+    stepId: string;
+    agentId: string | null;
+    timeoutMs: number;
+  };
+
+  /**
+   * Multi-agent UI surface: a `delegate-sub-agent` step has been dispatched.
+   * Lets the chat UI show the sub-agent as "running" immediately without
+   * waiting for the child task's own `task:start` to bubble up. Carries
+   * stepId so the agent-timeline card can attach this row to the parent
+   * plan checklist by step id.
+   */
+  'workflow:delegate_dispatched': {
+    taskId: string;
+    stepId: string;
+    agentId: string | null;
+    subTaskId: string;
+    stepDescription: string;
+  };
+
+  /**
+   * Multi-agent UI surface: a `delegate-sub-agent` step has finished
+   * (success / failure). Carries the resolved agent persona + a short
+   * output preview so the timeline can show what each sub-agent actually
+   * said before the parent's synthesizer runs. Pairs with
+   * `workflow:delegate_dispatched` to bracket the agent's lifecycle on
+   * the chat surface.
+   */
+  'workflow:delegate_completed': {
+    taskId: string;
+    stepId: string;
+    subTaskId: string;
+    agentId: string | null;
+    status: 'completed' | 'failed' | 'skipped';
+    outputPreview: string;
+    tokensUsed: number;
+  };
+
+  /**
+   * Phase-14 (Item 4): emitted by the agent-loop's `handleDelegation` path
+   * when A1 forced the delegated sub-task to the canonical Verifier persona.
+   * Mirrors `workflow:a1_verifier_routed` but for the agent-loop (LLM-driven
+   * delegate tool) dispatch surface — closes the parallel-dispatch A1 hole.
+   */
+  'delegation:a1_verifier_routed': {
+    taskId: string;
+    parentAgentId: string | null;
+    verifierAgentId: string;
+    requestedTargetAgentId: string | null;
+  };
+
   // Crash Recovery: task checkpoint events
   'task:recovered': { taskId: string; input: TaskInput; abandoned: boolean };
 
@@ -866,6 +1154,27 @@ export interface VinyanBusEvents {
     basis: string;
     passedChecks: string[];
     failedChecks: string[];
+    accountabilityGrade?: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+  };
+  'goal-loop:accountability-block': {
+    taskId: string;
+    iteration: number;
+    score: number;
+    blockers: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').GoalBlocker[];
+  };
+  /**
+   * Slice 4 Gap B (A7): emitted when the worker self-graded and the
+   * deterministic evaluator computed its own grade. Pure observation —
+   * the orchestrator does not act on this directly; it is consumed by
+   * dashboards and the calibration ledger to track over/underconfidence.
+   */
+  'goal-loop:prediction-error': {
+    taskId: string;
+    iteration: number;
+    selfGrade: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+    deterministicGrade: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').AccountabilityGrade;
+    magnitude: import('../orchestrator/goal-satisfaction/goal-evaluator.ts').PredictionErrorMagnitude;
+    direction: 'aligned' | 'overconfident' | 'underconfident';
   };
   'goal-loop:exhausted': { taskId: string; iteration: number };
   'goal-loop:no-replan': { taskId: string; iteration: number };
@@ -1024,8 +1333,43 @@ export interface VinyanBusEvents {
   'agent:routed': {
     taskId: string;
     agentId: string;
-    reason: 'override' | 'rule-match' | 'needs-llm' | 'default';
+    reason: 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
     score: number;
+  };
+  /**
+   * Phase B (capability-first): a task-scoped synthetic agent was built
+   * because no existing specialist's CapabilityClaims covered the task's
+   * required capabilities. The agent is registered for the lifetime of
+   * the task and unregistered in `executeTask`'s finally.
+   */
+  'agent:synthesized': {
+    taskId: string;
+    agentId: string;
+    rationale: string;
+    capabilities: string[];
+  };
+  /** Synthesis attempted but failed (registration collision, etc.). Non-fatal. */
+  'agent:synthesis-failed': {
+    taskId: string;
+    suggestedId: string;
+    reason: string;
+  };
+  /**
+   * Phase C1 (capability-first research): the orchestrator gathered local
+   * knowledge (world-graph facts + workspace docs) for an unmet capability
+   * and injected it into the worker prompt as `[RESEARCH CONTEXT]`. The
+   * task goal is NEVER rewritten (A1); findings are evidence, not verdict.
+   */
+  'agent:capability-research': {
+    taskId: string;
+    capabilities: string[];
+    contextCount: number;
+    sources: string[];
+  };
+  /** Acquisition attempted but failed. Non-fatal — task proceeds without context. */
+  'agent:capability-research-failed': {
+    taskId: string;
+    reason: string;
   };
   /**
    * Gateway inbound (W2 H1). A messaging adapter received a message

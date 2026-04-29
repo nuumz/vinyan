@@ -38,6 +38,10 @@ import {
   mergeDeterministicAndLLM,
 } from './intent/merge.ts';
 import {
+  detectRetryContinuation,
+  detectShortAffirmativeContinuation,
+} from './intent/short-affirmative.ts';
+import {
   buildClassifierUserPrompt,
   buildComprehensionBlock,
 } from './intent/prompt.ts';
@@ -60,6 +64,7 @@ import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
+  CapabilityRequirement,
   ExecutionStrategy,
   IntentDeterministicCandidate,
   IntentResolution,
@@ -225,6 +230,38 @@ const DETERMINISTIC_SKIP_THRESHOLD = 0.85;
 // imported at the top. The finalize* helpers stay here — they mutate the
 // module-level intentCache and emit orchestrator-scoped bus events.
 
+/**
+ * Map LLM-extracted capability requirements (from IntentResponseSchema) into
+ * the internal `CapabilityRequirement` shape with `source: 'llm-extract'`.
+ * Returns undefined when the LLM emitted nothing — keeps the field optional
+ * so deterministic / no-LLM paths stay byte-identical.
+ */
+function mapLLMCapabilityRequirements(
+  raw:
+    | Array<{
+        id: string;
+        weight: number;
+        fileExtensions?: string[];
+        actionVerbs?: string[];
+        domains?: string[];
+        frameworkMarkers?: string[];
+        role?: string;
+      }>
+    | undefined,
+): CapabilityRequirement[] | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  return raw.map((r) => ({
+    id: r.id,
+    weight: r.weight,
+    fileExtensions: r.fileExtensions,
+    actionVerbs: r.actionVerbs,
+    domains: r.domains,
+    frameworkMarkers: r.frameworkMarkers,
+    role: r.role,
+    source: 'llm-extract' as const,
+  }));
+}
+
 /** [B.skip] Finalize + emit a pure-deterministic resolution (no LLM consulted). */
 function finalizeDeterministicSkip(
   input: TaskInput,
@@ -331,6 +368,146 @@ export async function resolveIntent(
     return { ...cached, reasoningSource: 'cache' };
   }
 
+  // [A.5] Short-affirmative pre-classifier. Deterministic; runs before any LLM
+  // call so a "จัดการให้เลย" / "go" / "do it" continuation does NOT get
+  // re-classified as conversational and emit another empty acknowledgment.
+  // Conservative match: requires both a tight affirmative regex AND a recent
+  // assistant turn that promised a deliverable without producing it.
+  const affirmative = detectShortAffirmativeContinuation({ goal: input.goal, turns: deps.turns });
+  if (affirmative.matched && affirmative.reconstructedWorkflowPrompt) {
+    const { agentId, agentSelectionReason } = resolveSelectedAgent(
+      input,
+      deps.agents,
+      deps.defaultAgentId,
+      undefined,
+      `short-affirmative continuation (${affirmative.reason ?? 'matched'})`,
+    );
+    const result: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: input.goal,
+      workflowPrompt: affirmative.reconstructedWorkflowPrompt,
+      confidence: 0.85,
+      reasoning: `Short-affirmative continuation: ${affirmative.reason ?? 'matched prior unfulfilled deliverable proposal'}.`,
+      reasoningSource: 'short-affirmative-continuation',
+      type: 'known',
+      agentId,
+      agentSelectionReason,
+    };
+    intentCache.set(cacheKey, result, now);
+    intentCache.prune(now);
+    if (typeof affirmative.reconstructedFromTurnSeq === 'number') {
+      deps.bus?.emit('intent:short_affirmative_matched', {
+        taskId: input.id,
+        reconstructedFromTurnSeq: affirmative.reconstructedFromTurnSeq,
+        reason: affirmative.reason ?? 'matched',
+      });
+    }
+    deps.bus?.emit('intent:resolved', {
+      taskId: input.id,
+      strategy: result.strategy,
+      confidence: result.confidence,
+      reasoning: result.reasoning,
+      type: 'known',
+      source: 'deterministic',
+    });
+    return result;
+  }
+
+  // [A.6] Short-retry pre-classifier. When the user types just "retry" /
+  // "ลองใหม่" right after a failed or refused assistant turn, treat it as
+  // re-issuing the prior user request — without this, the bare "retry"
+  // routes to conversational shortcircuit and the persona answers as if it
+  // were a new question, dropping the original intent entirely.
+  const retry = detectRetryContinuation({ goal: input.goal, turns: deps.turns });
+  if (retry.matched && retry.reconstructedWorkflowPrompt) {
+    const { agentId, agentSelectionReason } = resolveSelectedAgent(
+      input,
+      deps.agents,
+      deps.defaultAgentId,
+      undefined,
+      `short-retry continuation (${retry.reason ?? 'matched'})`,
+    );
+    const result: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: input.goal,
+      workflowPrompt: retry.reconstructedWorkflowPrompt,
+      confidence: 0.85,
+      reasoning: `Short-retry continuation: ${retry.reason ?? 'matched prior failed assistant turn'}.`,
+      reasoningSource: 'short-retry-continuation',
+      type: 'known',
+      agentId,
+      agentSelectionReason,
+    };
+    intentCache.set(cacheKey, result, now);
+    intentCache.prune(now);
+    if (typeof retry.reconstructedFromTurnSeq === 'number') {
+      deps.bus?.emit('intent:short_retry_matched', {
+        taskId: input.id,
+        reconstructedFromTurnSeq: retry.reconstructedFromTurnSeq,
+        reason: retry.reason ?? 'matched',
+      });
+    }
+    deps.bus?.emit('intent:resolved', {
+      taskId: input.id,
+      strategy: result.strategy,
+      confidence: result.confidence,
+      reasoning: result.reasoning,
+      type: 'known',
+      source: 'deterministic',
+    });
+    return result;
+  }
+
+  // [A.7] Direct-tool pre-classifier — runs INDEPENDENTLY of STU so high-
+  // confidence filesystem/shell goals short-circuit even when comprehension
+  // hasn't built an understanding object. Without this, "ช่วยตรวจสอบไฟล์บน
+  // ` ~/Desktop/`" falls through to the LLM intent classifier, which often
+  // picks `full-pipeline` and dispatches a worker subprocess that hangs at
+  // 90s waiting for a tool the planner already knew was a one-shot `ls`.
+  //
+  // Triggered only when the deterministic classifier returns a pre-resolved
+  // shell_exec command at confidence ≥ 0.85 — that branch already validates
+  // the path looks real (looksLikePath) and rejects bare nouns.
+  {
+    const directClass = classifyDirectTool(input.goal);
+    if (
+      directClass &&
+      directClass.confidence >= 0.85 &&
+      directClass.type === 'shell_exec' &&
+      directClass.command
+    ) {
+      const { agentId, agentSelectionReason } = resolveSelectedAgent(
+        input,
+        deps.agents,
+        deps.defaultAgentId,
+        undefined,
+        `direct-tool pre-classifier (shell_exec, conf=${directClass.confidence})`,
+      );
+      const result: IntentResolution = {
+        strategy: 'direct-tool',
+        refinedGoal: input.goal,
+        directToolCall: { tool: 'shell_exec', parameters: { command: directClass.command } },
+        confidence: directClass.confidence,
+        reasoning: `Deterministic pre-classifier matched filesystem/shell goal → ${directClass.command}.`,
+        reasoningSource: 'deterministic',
+        type: 'known',
+        agentId,
+        agentSelectionReason,
+      };
+      intentCache.set(cacheKey, result, now);
+      intentCache.prune(now);
+      deps.bus?.emit('intent:resolved', {
+        taskId: input.id,
+        strategy: result.strategy,
+        confidence: result.confidence,
+        reasoning: result.reasoning,
+        type: 'known',
+        source: 'deterministic',
+      });
+      return result;
+    }
+  }
+
   // [B] Deterministic candidate (tier 0.8). Null when caller supplied no STU.
   const deterministic = understanding ? composeDeterministicCandidate(input, understanding) : null;
 
@@ -419,6 +596,7 @@ export async function resolveIntent(
     type: mergeResult.type,
     agentId,
     agentSelectionReason,
+    capabilityRequirements: mapLLMCapabilityRequirements(parsed.capabilityRequirements),
   };
 
   // [E] Cache write + bus emit.

@@ -19,6 +19,49 @@ export interface GoalBlocker {
   resolvable: boolean;
 }
 
+/**
+ * Accountability grade — deterministic A/B/C summary of whether the
+ * task result meets the Definition of Done (DoD).
+ *
+ * - **A**: All checks passed, no blockers — fully meets DoD.
+ * - **B**: Numeric score acceptable but documented gaps remain (all
+ *   blockers are resolvable / non-critical).
+ * - **C**: Critical flaw — unresolvable blocker (e.g. expected mutation
+ *   missing, oracle contradiction) or score below half. MUST NOT be
+ *   reported as `done`. Outer loop escalates regardless of score.
+ *
+ * This grade is the runtime counterpart to the [ACCOUNTABILITY CONTRACT]
+ * rubric injected into Generator + Critic prompts. Generator/Critic
+ * speak the grade in language; Goal Evaluator enforces it as data.
+ */
+export type AccountabilityGrade = 'A' | 'B' | 'C';
+
+/**
+ * Slice 4 Gap B — A7 prediction error.
+ *
+ * When the agent attaches a self-grade to its `attempt_completion` and the
+ * deterministic evaluator computes its own grade, we record the gap. This is
+ * pure observation — generation and verification remain different components
+ * (A1). Magnitude classification is rule-based (A3):
+ *
+ * - **aligned**: self === deterministic. Calibrated.
+ * - **minor**:   one step apart (A↔B or B↔C). Mild over/under-confidence.
+ * - **severe**:  two steps apart (A↔C). Worker claimed top quality on
+ *   critical-flaw work, or under-graded an A as C. Severe overconfidence
+ *   is the dangerous case — it signals the contract is being gamed.
+ *
+ * `direction` lets consumers tell which side erred without re-deriving it.
+ */
+export type PredictionErrorMagnitude = 'aligned' | 'minor' | 'severe';
+
+export interface PredictionError {
+  selfGrade: AccountabilityGrade;
+  deterministicGrade: AccountabilityGrade;
+  magnitude: PredictionErrorMagnitude;
+  /** 'overconfident' when self > deterministic, 'underconfident' when self < deterministic. */
+  direction: 'aligned' | 'overconfident' | 'underconfident';
+}
+
 export interface GoalSatisfaction {
   score: number;
   basis: 'deterministic' | 'llm' | 'llm-gated-off';
@@ -27,6 +70,13 @@ export interface GoalSatisfaction {
   failedChecks: string[];
   /** Wave B: progress trajectory point for this iteration. */
   trajectory?: TrajectoryPoint;
+  /** Deterministic A/B/C grade against the Definition of Done. */
+  accountabilityGrade?: AccountabilityGrade;
+  /**
+   * Slice 4 Gap B (A7): present only when the agent attached a self-grade.
+   * Records how far self-assessment diverged from the deterministic grade.
+   */
+  predictionError?: PredictionError;
 }
 
 // ── Wave B: Goal Progress Trajectory ──────────────────────────
@@ -158,7 +208,66 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
     // Wave 1b will wire llmChecker here — MVP leaves it as a TODO.
     const basis: GoalSatisfaction['basis'] = this.llmChecker ? 'llm' : 'deterministic';
 
-    return { score, basis, blockers, passedChecks, failedChecks };
+    const accountabilityGrade = this.computeAccountabilityGrade({
+      score,
+      blockers,
+      passedChecks,
+      failedChecks,
+    });
+
+    // Slice 4 Gap B (A7): if the agent self-graded, score the prediction error.
+    // Pure data — does NOT influence `accountabilityGrade` itself, since A1
+    // requires generation and verification to remain different components.
+    const workerSelfGrade = ctx.result.workerSelfAssessment?.grade;
+    const predictionError =
+      workerSelfGrade && accountabilityGrade
+        ? computePredictionError(workerSelfGrade, accountabilityGrade)
+        : undefined;
+
+    return {
+      score,
+      basis,
+      blockers,
+      passedChecks,
+      failedChecks,
+      accountabilityGrade,
+      ...(predictionError ? { predictionError } : {}),
+    };
+  }
+
+  /**
+   * Deterministic accountability grade.
+   *
+   * **C** — unresolvable blocker (critical flaw: agent claimed to mutate but
+   * didn't, oracle contradiction, etc.) OR score < 0.5. Even if numeric score
+   * passes the satisfaction threshold, grade C MUST NOT be reported as done.
+   *
+   * **A** — at least one positive check, zero failed checks, zero blockers.
+   *
+   * **B** — anything in between (acceptable score with documented, resolvable
+   * gaps).
+   */
+  private computeAccountabilityGrade(args: {
+    score: number;
+    blockers: GoalBlocker[];
+    passedChecks: string[];
+    failedChecks: string[];
+  }): AccountabilityGrade {
+    const { score, blockers, passedChecks, failedChecks } = args;
+
+    const hasUnresolvableBlocker = blockers.some((b) => b.resolvable === false);
+    const hasOracleContradiction = blockers.some(
+      (b) => b.category === 'oracle-contradiction',
+    );
+    if (hasUnresolvableBlocker || hasOracleContradiction || score < 0.5) {
+      return 'C';
+    }
+
+    if (passedChecks.length > 0 && failedChecks.length === 0 && blockers.length === 0) {
+      return 'A';
+    }
+
+    return 'B';
   }
 
   private runAlignmentChecks(ctx: GoalEvaluationContext): {
@@ -212,7 +321,9 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
         for (const reason of reasons) {
           const checkName = this.mapReasonToCheck(reason);
           perCheckPass[checkName] = false;
-          (perCheckReasons[checkName] ??= []).push(reason);
+          const reasonsForCheck = perCheckReasons[checkName] ?? [];
+          reasonsForCheck.push(reason);
+          perCheckReasons[checkName] = reasonsForCheck;
         }
       }
     }
@@ -337,4 +448,36 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
       .split(/[^a-z0-9_]+/)
       .filter((t) => t.length >= 3);
   }
+}
+
+// ── Slice 4 Gap B: prediction-error scoring (A7) ───────────────────
+
+const GRADE_RANK: Record<AccountabilityGrade, number> = { A: 0, B: 1, C: 2 };
+
+/**
+ * Pure A1/A3-safe comparator. Returns the prediction-error record without
+ * affecting the deterministic verdict in any way. Exported for testing.
+ *
+ * Magnitude is the absolute distance on the A→B→C ordinal scale:
+ *   - 0 → aligned
+ *   - 1 → minor (e.g. agent said A, evaluator says B)
+ *   - 2 → severe (A↔C, the dangerous overconfidence/underconfidence case)
+ *
+ * Direction is `overconfident` when the agent claimed a better grade than
+ * the evaluator awarded — that's the failure mode we most want to surface.
+ */
+export function computePredictionError(
+  selfGrade: AccountabilityGrade,
+  deterministicGrade: AccountabilityGrade,
+): PredictionError {
+  const distance = Math.abs(GRADE_RANK[selfGrade] - GRADE_RANK[deterministicGrade]);
+  const magnitude: PredictionErrorMagnitude =
+    distance === 0 ? 'aligned' : distance === 1 ? 'minor' : 'severe';
+  const direction: PredictionError['direction'] =
+    distance === 0
+      ? 'aligned'
+      : GRADE_RANK[selfGrade] < GRADE_RANK[deterministicGrade]
+        ? 'overconfident'
+        : 'underconfident';
+  return { selfGrade, deterministicGrade, magnitude, direction };
 }

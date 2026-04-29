@@ -30,7 +30,7 @@
 
 import { unlinkSync } from 'node:fs';
 import { join } from 'path';
-import { createA2AManager, type A2AManagerImpl } from '../a2a/a2a-manager.ts';
+import { type A2AManagerImpl, createA2AManager } from '../a2a/a2a-manager.ts';
 import { VinyanAPIServer } from '../api/server.ts';
 import { SessionManager } from '../api/session-manager.ts';
 import { loadConfig } from '../config/index.ts';
@@ -46,6 +46,7 @@ import {
   recoverStaleInstance,
   writePidFile,
 } from './_serve-lifecycle.ts';
+
 /** Hard wall-clock deadline for the entire shutdown sequence. */
 const SHUTDOWN_FORCE_EXIT_MS = 8_000;
 /** Per-step soft deadline — if exceeded we log which step hung, the global deadline still applies. */
@@ -56,11 +57,12 @@ const STEP_TIMEOUT_MS = {
   db_close: 1_000,
 };
 /**
- * How often the parent-death watchdog polls. Tight (1s) so an orphaned
- * child self-terminates quickly, narrowing the zombie window after a
- * supervisor SIGKILL / terminal force-close / OS crash.
+ * Parent-death watchdog starts tight so early orphaned children exit quickly,
+ * then backs off during long idle uptime to reduce always-on wakeups.
  */
-const PARENT_WATCHDOG_INTERVAL_MS = 1_000;
+const PARENT_WATCHDOG_INITIAL_INTERVAL_MS = 1_000;
+const PARENT_WATCHDOG_MAX_INTERVAL_MS = 30_000;
+const PARENT_WATCHDOG_BACKOFF_AFTER_MS = 60_000;
 
 /**
  * Error codes that must ALWAYS be fatal regardless of phase. These indicate
@@ -91,6 +93,11 @@ type Phase = 'startup' | 'steady' | 'shutting_down';
  */
 export interface ServeOptions {
   profile?: string;
+}
+
+export function nextParentWatchdogIntervalMs(currentMs: number, uptimeMs: number): number {
+  if (uptimeMs < PARENT_WATCHDOG_BACKOFF_AFTER_MS) return PARENT_WATCHDOG_INITIAL_INTERVAL_MS;
+  return Math.min(Math.max(currentMs * 2, PARENT_WATCHDOG_INITIAL_INTERVAL_MS), PARENT_WATCHDOG_MAX_INTERVAL_MS);
 }
 
 export async function serve(workspace: string, opts: ServeOptions = {}): Promise<void> {
@@ -142,7 +149,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   // hunt down a zombie — zombie-free under any circumstance.
   const pidFilePath = join(workspace, '.vinyan', 'serve.pid');
   const supervisorPidPath = join(workspace, '.vinyan', 'supervisor.pid');
-  const supervisorPid = parseInt(process.env.VINYAN_SUPERVISOR_PID ?? '0');
+  const supervisorPid = parseInt(process.env.VINYAN_SUPERVISOR_PID ?? '0', 10);
 
   if (!process.env.VINYAN_SUPERVISED) {
     const { foreignHolders } = await recoverStaleInstance({
@@ -186,17 +193,29 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   // When run as a child of supervise.ts, the supervisor exports its
   // PID via VINYAN_SUPERVISOR_PID. If the supervisor is SIGKILL'd
   // (or crashes) before it can signal us, we would otherwise orphan.
-  // Polling process.kill(pid, 0) lets us self-terminate cleanly.
+  // Polling process.kill(pid, 0) lets us self-terminate cleanly. The
+  // interval adapts after the first minute to keep long idle servers quiet.
   if (supervisorPid > 0) {
-    const watchdog = setInterval(() => {
-      try {
-        process.kill(supervisorPid, 0);
-      } catch {
-        console.error(`[vinyan] Supervisor (pid ${supervisorPid}) is gone — self-terminating`);
-        process.exit(1);
-      }
-    }, PARENT_WATCHDOG_INTERVAL_MS);
-    (watchdog as { unref?: () => void }).unref?.();
+    const startedAt = Date.now();
+    let intervalMs = PARENT_WATCHDOG_INITIAL_INTERVAL_MS;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const scheduleWatchdog = () => {
+      watchdog = setTimeout(() => {
+        try {
+          process.kill(supervisorPid, 0);
+        } catch {
+          console.error(`[vinyan] Supervisor (pid ${supervisorPid}) is gone — self-terminating`);
+          process.exit(1);
+        }
+        intervalMs = nextParentWatchdogIntervalMs(intervalMs, Date.now() - startedAt);
+        scheduleWatchdog();
+      }, intervalMs);
+      (watchdog as { unref?: () => void }).unref?.();
+    };
+    scheduleWatchdog();
+    process.once('exit', () => {
+      if (watchdog) clearTimeout(watchdog);
+    });
   }
 
   // ── Shared DB + session store wiring ────────────────────────────
@@ -217,6 +236,29 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
 
   // ── Orchestrator + server wiring ────────────────────────────────
   const orchestrator = createOrchestrator({ workspace, sessionManager, db });
+
+  // Late-bind the TraceStore so `getConversationHistoryDetailed` can build
+  // `traceSummary` (model + agent + routing-level chips) for every
+  // historical assistant message. Without this hookup the chat UI shows
+  // bare bubbles with no provenance metadata.
+  if (orchestrator.traceStore) {
+    sessionManager.attachTraceStore(orchestrator.traceStore);
+  }
+
+  // Sweep tasks left in `pending` / `running` from the previous run.
+  // The in-memory inFlightTasks Map is reset on every start, so without
+  // this sweep the row stays orphaned: chat history shows the user
+  // message with no agent reply, runningTaskCount counts a phantom row,
+  // and the user can't tell whether the task is still going or stuck.
+  // MUST run BEFORE server.start() so clients never see the half-state.
+  const orphans = sessionManager.recoverOrphanedTasks();
+  if (orphans.recovered > 0) {
+    console.log(
+      `[vinyan-api] Recovered ${orphans.recovered} orphan task${orphans.recovered === 1 ? '' : 's'} ` +
+        `across ${orphans.sessions.length} session${orphans.sessions.length === 1 ? '' : 's'} ` +
+        `(marked failed + assistant turn explaining the interruption)`,
+    );
+  }
 
   // K2.2: Bounded concurrent task dispatch (default 4 concurrent top-level tasks)
   const taskQueue = createTaskQueue({ maxConcurrent: 4 });
@@ -251,10 +293,13 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       executeTask: (input) => taskQueue.enqueue(() => orchestrator.executeTask(input)),
       sessionManager,
       traceStore: orchestrator.traceStore,
+      taskEventStore: orchestrator.taskEventStore,
       ruleStore: orchestrator.ruleStore,
       workerStore: orchestrator.workerStore,
+      engineRegistry: orchestrator.engineRegistry,
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
+      degradationStatus: orchestrator.degradationStatus,
       a2aManager,
       costLedger: orchestrator.costLedger,
       budgetEnforcer: orchestrator.budgetEnforcer,

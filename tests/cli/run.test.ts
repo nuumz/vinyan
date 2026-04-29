@@ -88,8 +88,13 @@ describe('CLI run command', () => {
       },
     );
 
-    const stdout = await new Response(proc.stdout).text();
-    await proc.exited;
+    const killTimer = setTimeout(() => proc.kill(), 10_000);
+
+    const [stdout] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    clearTimeout(killTimer);
 
     // Try to parse — if valid JSON, task was created with the file
     try {

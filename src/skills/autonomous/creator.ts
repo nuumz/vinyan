@@ -19,23 +19,19 @@
  * shared with SK4. Bare re-exports live in `./index.ts`.
  */
 import { containsBypassAttempt, detectPromptInjection } from '../../guardrails/index.ts';
+import type { SkillArtifactStore } from '../artifact-store.ts';
+import type { ImporterCriticFn, ImporterCriticVerdict, ImporterGateFn, ImporterGateVerdict } from '../hub/importer.ts';
 import { computeContentHash } from '../skill-md/hash.ts';
 import type { SkillMdRecord } from '../skill-md/schema.ts';
-import type { SkillArtifactStore } from '../artifact-store.ts';
-import type {
-  ImporterCriticFn,
-  ImporterCriticVerdict,
-  ImporterGateFn,
-  ImporterGateVerdict,
-} from '../hub/importer.ts';
 import { buildWindowState, DEFAULT_WINDOW_POLICY } from './prediction-window.ts';
-import type { CachedSkillLike, SkillStoreLike, PredictionLedgerLike } from './store-adapters.ts';
-import type {
-  DraftDecision,
-  DraftGenerator,
-  PredictionErrorSample,
-  WindowPolicy,
-  WindowState,
+import type { CachedSkillLike, PredictionLedgerLike, SkillStoreLike } from './store-adapters.ts';
+import {
+  composeWindowKey,
+  type DraftDecision,
+  type DraftGenerator,
+  type PredictionErrorSample,
+  type WindowPolicy,
+  type WindowState,
 } from './types.ts';
 
 export interface AutonomousSkillCreatorDeps {
@@ -56,6 +52,17 @@ export interface AutonomousSkillCreatorDeps {
    * the Hub importer's `HUB_IMPORT_GATE_CONFIDENCE_FLOOR`. Below this → reject.
    */
   readonly gateConfidenceFloor?: number;
+  /**
+   * Phase-4 risk-C3 enforcement: engine identity for the draft generator.
+   * When supplied alongside `criticEngineId`, the constructor refuses to
+   * wire the creator if both ids match — A1 forbids generator and critic
+   * sharing an engine. Optional for backwards compatibility; without ids,
+   * the wiring proceeds and the engine-separation invariant is the caller's
+   * responsibility.
+   */
+  readonly generatorEngineId?: string;
+  /** Phase-4 — engine identity for the critic. See `generatorEngineId`. */
+  readonly criticEngineId?: string;
 }
 
 export const AUTONOMOUS_DRAFT_RULE_ID = 'autonomous-draft-v1';
@@ -77,6 +84,18 @@ export class AutonomousSkillCreator {
   private readonly gateFloor: number;
 
   constructor(deps: AutonomousSkillCreatorDeps) {
+    // Phase-4 risk C3: A1 Epistemic Separation forbids the same engine from
+    // both drafting AND critiquing a skill. When both engine ids are
+    // supplied at wire time, refuse construction on equality. The check is
+    // opt-in (both ids must be supplied) so legacy callers without engine
+    // metadata still work, but production wiring should always declare both.
+    if (deps.generatorEngineId && deps.criticEngineId && deps.generatorEngineId === deps.criticEngineId) {
+      throw new Error(
+        `[autonomous-creator] A1 violation: generator and critic engine ids match ('${deps.generatorEngineId}'). ` +
+          'Wire different engines for the draft and critic paths — generation ≠ verification at the engine layer.',
+      );
+    }
+
     this.deps = deps;
     this.policy = { ...DEFAULT_WINDOW_POLICY, ...(deps.policy ?? {}) };
     this.clock = deps.clock ?? (() => Date.now());
@@ -84,28 +103,39 @@ export class AutonomousSkillCreator {
   }
 
   /**
-   * Record a sample into the rolling window for `sample.taskSignature`.
-   * Samples are retained up to `2 * windowSize` so the split-half test can
-   * always evaluate even as new evidence arrives.
+   * Record a sample into the rolling window for the (persona × taskSignature)
+   * composite key. Samples are retained up to `2 * windowSize` so the
+   * split-half test can always evaluate even as new evidence arrives.
+   *
+   * Phase-8: when `sample.personaId` is set, separate windows accumulate per
+   * persona so a Developer's `code::refactor` history doesn't pollute an
+   * Author's `code::refactor` window. Legacy samples without `personaId`
+   * share a persona-agnostic window — backward compatible.
    */
   observe(sample: PredictionErrorSample): void {
-    const entry = this.windows.get(sample.taskSignature) ?? { samples: [] };
+    const key = composeWindowKey(sample.taskSignature, sample.personaId);
+    const entry = this.windows.get(key) ?? { samples: [] };
     entry.samples.push(sample);
     // Trim to a bounded history; the window policy only inspects the tail.
     const maxKeep = Math.max(this.policy.windowSize * 2, this.policy.splitHalf * 2);
     if (entry.samples.length > maxKeep) {
       entry.samples = entry.samples.slice(-maxKeep);
     }
-    this.windows.set(sample.taskSignature, entry);
+    this.windows.set(key, entry);
   }
 
   /**
    * State machine. Evaluates the window for `taskSignature`; on qualify drafts,
    * scans, dry-runs the gate, consults the critic, then invokes the promotion
    * rule. Every arm records its own DraftDecision; no recursion, no retries.
+   *
+   * Phase-8: optional `personaId` selects the persona-keyed window. Without
+   * it, the legacy persona-agnostic window is queried — backward compatible
+   * for callers that pre-date the redesign.
    */
-  async tryDraftFor(taskSignature: string): Promise<DraftDecision> {
-    const state = this.windows.get(taskSignature);
+  async tryDraftFor(taskSignature: string, personaId?: string): Promise<DraftDecision> {
+    const key = composeWindowKey(taskSignature, personaId);
+    const state = this.windows.get(key);
     const samples = state?.samples ?? [];
     const windowState = buildWindowState(taskSignature, samples, this.policy);
 
@@ -138,9 +168,11 @@ export class AutonomousSkillCreator {
     const drafted = enforceCreationInvariants(draftedRaw, windowState);
 
     // Record cooldown start — we entered the verification pipeline.
-    const stateAfter = this.windows.get(taskSignature) ?? { samples: [] };
+    // Phase-8: cooldown keyed on the same composite (persona × signature)
+    // so a Developer's draft attempt doesn't unblock an Author's cooldown.
+    const stateAfter = this.windows.get(key) ?? { samples: [] };
     stateAfter.lastDraftAt = now;
-    this.windows.set(taskSignature, stateAfter);
+    this.windows.set(key, stateAfter);
 
     // 5. Guardrail static-scan. Any injection/bypass → reject (A6).
     const scanText = buildScanText(drafted);
@@ -299,7 +331,10 @@ function buildScanText(record: SkillMdRecord): string {
 
 function isGateVerified(verdict: ImporterGateVerdict, floor: number): boolean {
   if (verdict.epistemicDecision === 'block') return false;
-  if (verdict.decision === 'block' && (verdict.epistemicDecision == null || verdict.epistemicDecision !== 'allow-with-caveats')) {
+  if (
+    verdict.decision === 'block' &&
+    (verdict.epistemicDecision == null || verdict.epistemicDecision !== 'allow-with-caveats')
+  ) {
     // block without an allow-with-caveats override is a hard reject
     if (verdict.epistemicDecision !== 'allow') return false;
   }

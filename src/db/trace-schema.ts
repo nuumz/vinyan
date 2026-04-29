@@ -47,7 +47,25 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   understanding_intent   TEXT,
   resolved_entities      TEXT,
   understanding_verified INTEGER DEFAULT 0,
-  understanding_primary_action TEXT
+  understanding_primary_action TEXT,
+  agent_selection_reason TEXT,
+  capability_requirements TEXT,
+  capability_analysis     TEXT,
+  selected_capability_profile_id TEXT,
+  selected_capability_profile_source TEXT,
+  selected_capability_profile_trust_tier TEXT,
+  capability_fit_score REAL,
+  unmet_capability_ids TEXT,
+  synthetic_agent_id      TEXT,
+  knowledge_used          TEXT,
+  governance_provenance   TEXT,
+  routing_decision_id     TEXT,
+  policy_version          TEXT,
+  governance_actor        TEXT,
+  decision_timestamp      INTEGER,
+  evidence_observed_at    INTEGER,
+  goal_grounding          TEXT,
+  oracle_independence     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_et_task_type ON execution_traces(task_type_signature);
@@ -58,6 +76,10 @@ CREATE INDEX IF NOT EXISTS idx_et_approach ON execution_traces(task_type_signatu
 CREATE INDEX IF NOT EXISTS idx_et_worker_id ON execution_traces(worker_id);
 CREATE INDEX IF NOT EXISTS idx_et_agent_id ON execution_traces(agent_id);
 CREATE INDEX IF NOT EXISTS idx_primary_action ON execution_traces(understanding_primary_action);
+CREATE INDEX IF NOT EXISTS idx_et_routing_decision_id ON execution_traces(routing_decision_id);
+CREATE INDEX IF NOT EXISTS idx_et_policy_version ON execution_traces(policy_version);
+CREATE INDEX IF NOT EXISTS idx_et_governance_actor ON execution_traces(governance_actor);
+CREATE INDEX IF NOT EXISTS idx_et_decision_timestamp ON execution_traces(decision_timestamp);
 `;
 
 /**

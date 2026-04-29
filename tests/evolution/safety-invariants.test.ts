@@ -192,6 +192,17 @@ describe('checkSafetyInvariants — I9/I10/I11 Fleet Governance', () => {
     );
     expect(result.safe).toBe(true);
   });
+
+  test('I12: promote-capability is rejected in online rule execution', () => {
+    const result = checkSafetyInvariants(
+      makeRule({
+        action: 'promote-capability',
+        parameters: { capabilityId: 'code.review.ts', agentId: 'ts-coder' },
+      }),
+    );
+    expect(result.safe).toBe(false);
+    expect(result.violations.some((v) => v.includes('I12'))).toBe(true);
+  });
 });
 
 describe('checkSafetyInvariants — I6 risk threshold floor', () => {

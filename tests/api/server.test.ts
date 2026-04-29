@@ -24,6 +24,28 @@ let server: VinyanAPIServer;
 let db: Database;
 
 function mockExecuteTask(input: TaskInput): Promise<TaskResult> {
+  if (input.goal === 'async timeout fail') {
+    return Promise.resolve({
+      id: input.id,
+      status: 'failed',
+      mutations: [],
+      trace: {
+        id: `trace-${input.id}`,
+        taskId: input.id,
+        timestamp: Date.now(),
+        routingLevel: 2,
+        approach: 'wall-clock-timeout',
+        modelUsed: 'claude-sonnet',
+        tokensConsumed: 0,
+        durationMs: 151_000,
+        outcome: 'timeout',
+        oracleVerdicts: {},
+        affectedFiles: [],
+      },
+      answer: 'Task timed out after 151s (budget: 120s) at routing level L2.',
+    } as TaskResult);
+  }
+
   return Promise.resolve({
     id: input.id,
     status: 'completed',
@@ -127,6 +149,108 @@ describe('API Server', () => {
     expect(pollData.status).toBe('completed');
   });
 
+  test('GET /api/v1/tasks preserves async failed result status and goal', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks/async', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'async timeout fail' }),
+      }),
+    );
+
+    expect(res.status).toBe(202);
+    const data = (await res.json()) as any;
+
+    await new Promise((r) => setTimeout(r, 50));
+    const list = await server.handleRequest(req('/api/v1/tasks', { headers: authHeaders }));
+    const listData = (await list.json()) as any;
+    const task = listData.tasks.find((t: any) => t.taskId === data.taskId);
+
+    expect(task.status).toBe('failed');
+    expect(task.goal).toBe('async timeout fail');
+    expect(task.result.trace.outcome).toBe('timeout');
+  });
+
+  // ── /tasks accepts body.sessionId (round 6 fix) ───────────
+  test('POST /tasks with body.sessionId attaches task to that session and records assistant turn', async () => {
+    // Create a real chat session.
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'ui' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+
+    // Submit via /tasks with sessionId — should land in that session.
+    const taskRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'attach to chat', sessionId: session.id }),
+      }),
+    );
+    expect(taskRes.status).toBe(200);
+    const { result } = (await taskRes.json()) as any;
+    expect(result.status).toBe('completed');
+
+    // Conversation history should now include an assistant turn for
+    // this task — the bridge that lets API-submitted work show up in
+    // the chat history. Without the recordChat=true branch this turn
+    // never appears.
+    const histRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/messages`, { headers: authHeaders }),
+    );
+    const { messages } = (await histRes.json()) as any;
+    const assistantTurn = messages.find((m: any) => m.role === 'assistant' && m.taskId === result.id);
+    expect(assistantTurn).toBeTruthy();
+  });
+
+  test('POST /tasks with non-existent sessionId returns 404', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'orphan', sessionId: 'no-such-session' }),
+      }),
+    );
+    expect(res.status).toBe(404);
+    const data = (await res.json()) as any;
+    expect(data.error).toContain('not found');
+  });
+
+  test('POST /tasks/async with body.sessionId attaches to that session', async () => {
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'ui' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+
+    const submit = await server.handleRequest(
+      req('/api/v1/tasks/async', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'async-attach', sessionId: session.id }),
+      }),
+    );
+    expect(submit.status).toBe(202);
+    const { taskId } = (await submit.json()) as any;
+
+    // Wait for the .then handler to record the assistant turn.
+    await new Promise((r) => setTimeout(r, 100));
+
+    const histRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/messages`, { headers: authHeaders }),
+    );
+    const { messages } = (await histRes.json()) as any;
+    const assistantTurn = messages.find((m: any) => m.role === 'assistant' && m.taskId === taskId);
+    expect(assistantTurn).toBeTruthy();
+  });
+
   // ── Criterion 4: Session management ─────────────────────
   test('session create + get', async () => {
     const createRes = await server.handleRequest(
@@ -144,6 +268,27 @@ describe('API Server', () => {
 
     const getRes = await server.handleRequest(req(`/api/v1/sessions/${session.id}`, { headers: authHeaders }));
     expect(getRes.status).toBe(200);
+  });
+
+  test('POST /sessions/:id/compact rejects sessions with fewer than 3 tasks (400)', async () => {
+    // Tiny sessions don't benefit from compaction — the result is a
+    // near-empty summary plus a permanent lifecycle flip to 'compacted'
+    // that hides the session from the active list. Backend guard
+    // protects against direct API calls + accidental clicks.
+    const createRes = await server.handleRequest(
+      req('/api/v1/sessions', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ source: 'test' }),
+      }),
+    );
+    const { session } = (await createRes.json()) as any;
+    const compactRes = await server.handleRequest(
+      req(`/api/v1/sessions/${session.id}/compact`, { method: 'POST', headers: authHeaders }),
+    );
+    expect(compactRes.status).toBe(400);
+    const data = (await compactRes.json()) as any;
+    expect(data.error).toContain('compaction requires');
   });
 
   // ── Criterion 7: Auth enforcement (I15) ─────────────────
@@ -409,5 +554,100 @@ describe('API Server', () => {
   test('unknown route returns 404', async () => {
     const res = await server.handleRequest(req('/api/v1/unknown', { headers: authHeaders }));
     expect(res.status).toBe(404);
+  });
+
+  // ── Round 5: manual retry endpoint ──────────────────────
+  test('POST /api/v1/tasks/:id/retry returns 404 for unknown task', async () => {
+    const res = await server.handleRequest(
+      req('/api/v1/tasks/does-not-exist/retry', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test('POST /api/v1/tasks/:id/retry creates a parent-linked sibling task', async () => {
+    // First, submit and complete a parent task so SessionManager has it on file.
+    const parentRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'parent task to retry' }),
+      }),
+    );
+    expect(parentRes.status).toBe(200);
+    const parentData = (await parentRes.json()) as { result: { id: string } };
+    const parentId = parentData.result.id;
+
+    // Now hit the retry endpoint.
+    const retryRes = await server.handleRequest(
+      req(`/api/v1/tasks/${parentId}/retry`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ reason: 'manual-retry-test', maxDurationMs: 240_000 }),
+      }),
+    );
+    expect(retryRes.status).toBe(202);
+    const retryData = (await retryRes.json()) as {
+      taskId: string;
+      parentTaskId: string;
+      status: string;
+      budget: { maxDurationMs: number };
+    };
+    expect(retryData.taskId).toBeTruthy();
+    expect(retryData.taskId).not.toBe(parentId);
+    expect(retryData.parentTaskId).toBe(parentId);
+    expect(retryData.status).toBe('accepted');
+    expect(retryData.budget.maxDurationMs).toBe(240_000);
+
+    // The new task should land in /tasks once the mock executor resolves.
+    await new Promise((r) => setTimeout(r, 50));
+    const list = await server.handleRequest(req('/api/v1/tasks', { headers: authHeaders }));
+    const listData = (await list.json()) as { tasks: Array<{ taskId: string; goal?: string }> };
+    const child = listData.tasks.find((t) => t.taskId === retryData.taskId);
+    expect(child).toBeDefined();
+    expect(child?.goal).toBe('parent task to retry');
+  });
+
+  test('POST /api/v1/tasks/:id/retry emits task:retry_requested on the bus', async () => {
+    const parentRes = await server.handleRequest(
+      req('/api/v1/tasks', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ goal: 'parent for bus emit check' }),
+      }),
+    );
+    const parentData = (await parentRes.json()) as { result: { id: string } };
+    const parentId = parentData.result.id;
+
+    // Subscribe BEFORE the retry call so the synchronous bus emit is captured.
+    const bus = (server as unknown as { deps: { bus: import('../../src/core/bus.ts').VinyanBus } }).deps.bus;
+    const captured: Array<{ taskId: string; parentTaskId: string; reason: string }> = [];
+    const off = bus.on('task:retry_requested', (e) => {
+      captured.push({ taskId: e.taskId, parentTaskId: e.parentTaskId, reason: e.reason });
+    });
+
+    try {
+      const retryRes = await server.handleRequest(
+        req(`/api/v1/tasks/${parentId}/retry`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ reason: 'unit-test-emit' }),
+        }),
+      );
+      expect(retryRes.status).toBe(202);
+      const retryData = (await retryRes.json()) as { taskId: string };
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toEqual({
+        taskId: retryData.taskId,
+        parentTaskId: parentId,
+        reason: 'unit-test-emit',
+      });
+    } finally {
+      off();
+    }
   });
 });

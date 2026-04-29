@@ -195,3 +195,109 @@ describe('composeDeterministicCandidate', () => {
     expect(result.type).toBe('known');
   });
 });
+
+describe('composeDeterministicCandidate — creative-deliverable pre-rule', () => {
+  // The pre-rule is the bedtime-story bug fix. It runs BEFORE STU mapping
+  // and overrides the comprehender's domain classification when the goal
+  // text carries an unambiguous "verb + creative-noun" structural signal.
+  it('catches the bedtime-story prompt at high confidence regardless of STU domain', () => {
+    const result = composeDeterministicCandidate(
+      input('ช่วยเขียนนิยายก่อนนอน สำหรับกล่อมลูกนอนให้สัก2บท'),
+      // STU mis-classifies as conversational (the production failure mode).
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.type).toBe('known');
+    expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(result.deterministicCandidate.source).toBe('creative-deliverable-pattern');
+    expect(result.deterministicCandidate.ambiguous).toBe(false);
+  });
+
+  it('catches English authoring requests too', () => {
+    const result = composeDeterministicCandidate(
+      input('write me a 2-chapter bedtime story'),
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('creative-deliverable-pattern');
+  });
+
+  it('does NOT trigger on definition questions (verb absent)', () => {
+    const result = composeDeterministicCandidate(
+      input('นิยายเว็บตูนคืออะไร'),
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('conversational');
+    expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+  });
+
+  it('does NOT trigger on noun-collision performance tasks (verb is not authoring)', () => {
+    // "ทำให้เว็บตูนโหลดเร็วขึ้น" mentions "เว็บตูน" (a noun also used in
+    // creative writing) but the verb is "ทำให้...โหลดเร็วขึ้น" — performance.
+    const result = composeDeterministicCandidate(
+      input('ทำให้เว็บตูนโหลดเร็วขึ้น'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+  });
+
+  it('does NOT trigger on bare creative noun without authoring verb', () => {
+    const result = composeDeterministicCandidate(
+      input('นิยายเรื่องนี้สนุกมาก'),
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+  });
+});
+
+describe('composeDeterministicCandidate — multi-agent delegation pre-rule', () => {
+  // Pre-rule from session 44c83a53 incident — coordinator at routing level 0
+  // hallucinated delegation because `delegate_task` requires L2+. Pattern
+  // catches plural/numbered "agents" + delegation/competition verb and forces
+  // agentic-workflow.
+  it('catches "แบ่ง Agent 3ตัว แข่งกันถามตอบ" regardless of STU domain', () => {
+    const result = composeDeterministicCandidate(
+      input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.type).toBe('known');
+    expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+    expect(result.deterministicCandidate.ambiguous).toBe(false);
+  });
+
+  it('catches English "have 3 agents debate"', () => {
+    const result = composeDeterministicCandidate(
+      input('have 3 agents debate the merits of microservices'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+  });
+
+  it('catches "split into multiple agents"', () => {
+    const result = composeDeterministicCandidate(
+      input('split this into multiple agents and let them compete'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+  });
+
+  it('does NOT trigger on singular "what is an agent"', () => {
+    const result = composeDeterministicCandidate(
+      input('what is an agent in vinyan'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+  });
+
+  it('does NOT trigger on conversational mention "the agent helped me"', () => {
+    const result = composeDeterministicCandidate(
+      input('the agent helped me find the answer yesterday'),
+      stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+  });
+});

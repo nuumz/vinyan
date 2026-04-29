@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import type { TraceStore } from '../../src/db/trace-store.ts';
-import { TraceCollectorImpl } from '../../src/orchestrator/trace-collector.ts';
+import { TraceCollectorImpl, TracePersistenceError } from '../../src/orchestrator/trace-collector.ts';
 import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
@@ -57,6 +57,24 @@ describe('TraceCollectorImpl error logging (WU5)', () => {
     await expect(collector.record(makeTrace())).resolves.toBeUndefined();
   });
 
+  test('record() fails closed when governance provenance cannot be persisted', async () => {
+    const trace = makeTrace({
+      governanceProvenance: {
+        decisionId: 'risk-router:t-1:L1',
+        policyVersion: 'risk-router:v1',
+        attributedTo: 'riskRouter',
+        wasGeneratedBy: 'RiskRouterImpl.assessInitialLevel',
+        wasDerivedFrom: [],
+        decidedAt: 123,
+        reason: 'governed routing decision',
+      },
+    });
+    const collector = new TraceCollectorImpl(undefined, makeThrowingStore(new Error('disk full')));
+
+    await expect(collector.record(trace)).rejects.toBeInstanceOf(TracePersistenceError);
+    expect(collector.getLatestTrace()).toBe(trace);
+  });
+
   test('trace is still kept in memory even when SQLite insert fails', async () => {
     const collector = new TraceCollectorImpl(undefined, makeThrowingStore(new Error('write error')));
     const trace = makeTrace({ id: 'trace-999' });
@@ -71,5 +89,40 @@ describe('TraceCollectorImpl error logging (WU5)', () => {
     const collector = new TraceCollectorImpl();
     await collector.record(makeTrace());
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('TraceCollectorImpl parent linkage (delegation observability)', () => {
+  test('record() auto-fills parentTaskId from registry when builder did not set it', async () => {
+    const collector = new TraceCollectorImpl();
+    collector.registerParent('child-1', 'parent-1');
+    await collector.record(makeTrace({ id: 'trace-child-1', taskId: 'child-1' }));
+    expect(collector.getLatestTrace()?.parentTaskId).toBe('parent-1');
+  });
+
+  test('record() preserves parentTaskId when the builder set one explicitly (override wins)', async () => {
+    const collector = new TraceCollectorImpl();
+    collector.registerParent('child-2', 'wrong-parent');
+    await collector.record(makeTrace({ id: 'trace-child-2', taskId: 'child-2', parentTaskId: 'real-parent' }));
+    expect(collector.getLatestTrace()?.parentTaskId).toBe('real-parent');
+  });
+
+  test('clearParent() removes the registry entry — subsequent records do not get the linkage', async () => {
+    const collector = new TraceCollectorImpl();
+    collector.registerParent('child-3', 'parent-3');
+    collector.clearParent('child-3');
+    await collector.record(makeTrace({ id: 'trace-child-3', taskId: 'child-3' }));
+    expect(collector.getLatestTrace()?.parentTaskId).toBeUndefined();
+  });
+
+  test('top-level tasks (no parent registered) record without parentTaskId — no leakage from prior tasks', async () => {
+    const collector = new TraceCollectorImpl();
+    collector.registerParent('child-X', 'parent-X');
+    await collector.record(makeTrace({ id: 'trace-child-X', taskId: 'child-X' }));
+    collector.clearParent('child-X');
+    await collector.record(makeTrace({ id: 'trace-top', taskId: 'top-level-task' }));
+    // Last recorded trace should NOT have leaked parentTaskId from the
+    // prior child task's registration.
+    expect(collector.getLatestTrace()?.parentTaskId).toBeUndefined();
   });
 });

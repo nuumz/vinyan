@@ -36,6 +36,12 @@ import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export interface SkillToolsDeps {
   readonly artifactStore: SkillArtifactStore;
+  /**
+   * Phase-11: optional event bus. When provided, `skill_view` emits
+   * `skill:viewed` per successful invocation so SkillUsageTracker can build
+   * per-task viewed-skill sets for the overclaim comparator (M1).
+   */
+  readonly bus?: import('../../core/bus.ts').VinyanBus;
 }
 
 // ── Errors ──────────────────────────────────────────────────────────────
@@ -182,7 +188,7 @@ export function createSkillViewTool(deps: SkillToolsDeps): Tool {
         toolKind: 'executable',
       };
     },
-    async execute(params): Promise<ToolResult> {
+    async execute(params, context): Promise<ToolResult> {
       const callId = (params.callId as string) ?? '';
       const id = typeof params.id === 'string' ? params.id : '';
       if (id.length === 0) {
@@ -195,6 +201,14 @@ export function createSkillViewTool(deps: SkillToolsDeps): Tool {
           throw new SkillAccessDeniedError(id, status);
         }
         const view: SkillL1View = toL1(record);
+        // Phase-11: signal usage so SkillUsageTracker can update its per-task
+        // viewed-skill set. `taskId` rides on the ToolContext (set by the
+        // agent-loop). Emit only when both bus + taskId are present so legacy
+        // tool calls (no orchestrator bus) stay silent.
+        const taskId = context?.taskId ?? '';
+        if (deps.bus && taskId) {
+          deps.bus.emit('skill:viewed', { taskId, skillId: id });
+        }
         return makeResult(callId, 'skill_view', { output: view });
       } catch (e) {
         if (e instanceof SkillArtifactNotFoundError) {

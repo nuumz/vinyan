@@ -11,12 +11,18 @@
 // Classification types
 // ---------------------------------------------------------------------------
 
-export type DirectToolType = 'app_launch' | 'url_open' | 'file_open';
+export type DirectToolType = 'app_launch' | 'url_open' | 'file_open' | 'shell_exec';
 
 export interface DirectToolClassification {
   type: DirectToolType;
   target: string;
   confidence: number;
+  /**
+   * Pre-resolved shell command for `shell_exec` type. The classifier produces
+   * this so the orchestrator doesn't need to re-derive it from `target` —
+   * keeps the L0 path 100% deterministic (A3).
+   */
+  command?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,33 @@ const URL_PATTERN = /(?:เปิด|open|go\s+to|navigate\s+to|browse)\s+(https
 /** File open pattern. */
 const FILE_OPEN_PATTERN = /(?:เปิด(?:ไฟล์)?|open(?:\s+file)?)\s+([^\s]+\.\w{1,10})/i;
 
+/**
+ * Filesystem inspection patterns — capture a path argument so the planner /
+ * conversational shortcircuit can issue a deterministic `ls` / `cat` instead
+ * of routing to an LLM that fabricates "I cannot access your local files".
+ *
+ * The regex is permissive (captures any tail token); `looksLikePath` below
+ * decides whether the capture is actually a filesystem reference. This split
+ * keeps the regex tolerant of relative paths (`src/foo.ts`) while still
+ * rejecting plain nouns ("ตรวจสอบนิทาน", "list improvements").
+ */
+const THAI_INSPECT_PATTERN =
+  /(?:^|\s)(?:ช่วย\s*)?(?:ตรวจสอบ|อ่าน|แสดง|ดู|ลิสต์|list)\s*(?:ไฟล์|โฟลเดอร์|directory)?\s*(?:บน|ใน)?\s*[`'"]?\s*([\w\-./~]+)\s*[`'"]?\s*$/i;
+const EN_INSPECT_PATTERN =
+  /^(?:please\s+)?(?:list|ls|show|inspect|check|read|view|cat)\s+(?:the\s+)?(?:files?\s+(?:in\s+)?|contents?\s+of\s+)?[`'"]?\s*([\w\-./~]+)\s*[`'"]?\s*$/i;
+
+/** File-extension hint that the path is a single file rather than a directory. */
+const SINGLE_FILE_EXT = /\.[a-z0-9]{1,8}$/i;
+
+/**
+ * A captured tail counts as a filesystem path when it (a) starts with `/`,
+ * `~`, or `.`, OR (b) contains `/`, OR (c) ends with a file-extension
+ * marker. Plain nouns like "นิทาน" or "improvements" miss all three.
+ */
+function looksLikePath(s: string): boolean {
+  return /^[\/~.]/.test(s) || s.includes('/') || SINGLE_FILE_EXT.test(s);
+}
+
 // ---------------------------------------------------------------------------
 // Main API
 // ---------------------------------------------------------------------------
@@ -153,6 +186,23 @@ export function classifyDirectTool(goal: string): DirectToolClassification | nul
   const fileMatch = trimmed.match(FILE_OPEN_PATTERN);
   if (fileMatch?.[1]) {
     return { type: 'file_open', target: fileMatch[1], confidence: 0.9 };
+  }
+
+  // 2.5 Filesystem inspection — `ls -la <path>` for directories, `cat <path>`
+  // for single files. The captured tail must `looksLikePath` so we don't
+  // snag benign goals like "list improvements for the bedtime story".
+  const thaiInspect = THAI_INSPECT_PATTERN.exec(trimmed);
+  const enInspect = EN_INSPECT_PATTERN.exec(trimmed);
+  const inspectPath = thaiInspect?.[1] ?? enInspect?.[1];
+  if (inspectPath && looksLikePath(inspectPath)) {
+    const isFile = SINGLE_FILE_EXT.test(inspectPath);
+    const command = isFile ? `cat ${quoteArg(inspectPath)}` : `ls -la ${quoteArg(inspectPath)}`;
+    return {
+      type: 'shell_exec',
+      target: inspectPath,
+      command,
+      confidence: 0.85,
+    };
   }
 
   // 3. App launch — Thai
@@ -222,6 +272,12 @@ export function resolveCommand(
         platform,
       );
     }
+
+    case 'shell_exec':
+      // Classifier already pre-resolved the command (`ls -la <path>` / `cat <path>`);
+      // returning it here keeps a single source of truth and lets `resolveCommand`
+      // stay the canonical entry point used by core-loop.ts (line 2183).
+      return classification.command ?? null;
 
     default:
       return null;

@@ -6,8 +6,8 @@
  *   1. Subscribes to `workflow:plan_approved` / `workflow:plan_rejected`
  *   2. Emits `workflow:plan_ready` with `awaitingApproval: true`
  *   3. Awaits the decision (or timeout)
- *   4. Either continues (approved) or returns a failed WorkflowResult
- *      (rejected / timeout)
+ *   4. Continues on `approved` or `timeout` (absent user → implicit approve);
+ *      returns a failed WorkflowResult only on explicit `rejected`.
  */
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
@@ -76,15 +76,25 @@ describe('executeWorkflow — approval gate', () => {
     expect(result.stepResults).toHaveLength(0);
   });
 
-  test('returns a failed WorkflowResult when the approval timer expires', async () => {
+  test('auto-approves and emits workflow:plan_approved when the approval timer expires', async () => {
+    // Absent user is treated as implicit approval. The gate emits
+    // `workflow:plan_approved` so subscribed UIs tear down the inline
+    // approval card, then the executor continues into step execution
+    // exactly as if the user had clicked Approve.
     const bus = createBus();
+    const events: Array<{ name: string; payload: unknown }> = [];
+    bus.on('workflow:plan_approved', (p) =>
+      events.push({ name: 'plan_approved', payload: p }),
+    );
     const result = await executeWorkflow(makeInput('analyse something'), {
       bus,
       workflowConfig: { requireUserApproval: true, approvalTimeoutMs: 50 },
     });
-    expect(result.status).toBe('failed');
-    expect(result.synthesizedOutput).toContain('timed out');
-    expect(result.stepResults).toHaveLength(0);
+    const approved = events.find((e) => e.name === 'plan_approved');
+    expect(approved).toBeDefined();
+    expect((approved!.payload as { taskId: string }).taskId).toBe('task-exec-1');
+    expect(result.synthesizedOutput).not.toContain('timed out');
+    expect(result.synthesizedOutput).not.toContain('rejected');
   });
 
   test('honours auto mode — long-form goals require approval', async () => {

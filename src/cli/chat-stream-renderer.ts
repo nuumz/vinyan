@@ -263,15 +263,10 @@ export function attachChatStreamRenderer(
     write(`  ${ICONS.thinking} ${dimS(text)}`);
   });
 
-  // Text delta — inline streaming. Plain content goes into the answer block.
-  on('agent:text_delta', (p) => {
-    const { text } = p as { text: string };
-    if (!text) return;
-    writeInline('answer', text);
-  });
-
-  // Rich delta — split by kind. Content → answer block, thinking → thinking
-  // block (if enabled), tool_use_start → yellow preview line.
+  // Streaming delta — split by kind. Content → answer block (inline), thinking
+  // → thinking block (if enabled), tool_use_start → yellow preview line. The
+  // legacy `agent:text_delta` listener was removed — backend now emits content
+  // exclusively through `llm:stream_delta { kind: 'content' }`.
   on('llm:stream_delta', (p) => {
     const d = p as {
       kind: 'content' | 'thinking' | 'tool_use_start' | 'tool_use_input' | 'tool_use_end';

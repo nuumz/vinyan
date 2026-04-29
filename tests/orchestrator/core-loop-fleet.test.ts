@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
 import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
-import type { TaskInput, EngineSelectionResult } from '../../src/orchestrator/types.ts';
+import type { EngineSelectionResult, TaskInput } from '../../src/orchestrator/types.ts';
 
 const defaultInput: TaskInput = {
   id: 'task-fleet-1',
@@ -254,5 +254,70 @@ describe('Gap #2: workerSelectionAudit on all trace paths', () => {
     const escalationTrace = traces.find((t) => t.outcome === 'escalated');
     expect(escalationTrace).toBeDefined();
     expect(escalationTrace.workerSelectionAudit).toEqual(mockSelection);
+  });
+});
+
+// A8 broader provenance (2026-04-28): escalationPath must accumulate across
+// re-routes (L0 → L1 → L2 → L3), not just contain the final level. Without
+// this, the trace's governance envelope can't answer "how did we get here?".
+describe('A8 escalationPath accumulation across re-routes', () => {
+  test('all-levels-exhausted trace records cumulative escalation path', async () => {
+    const traces: any[] = [];
+    let assessCallCount = 0;
+    const deps = buildBaseDeps({
+      traceCollector: { record: async (t: any) => { traces.push(t); } },
+      // Force every iteration to fail verification → outer loop escalates each time
+      oracleGate: {
+        verify: async () => ({ passed: false, verdicts: {}, reason: 'forced-fail' }),
+      },
+      // Each call returns the level requested via MIN_ROUTING_LEVEL constraint
+      // and stamps a minimal governance envelope so core-loop has something to
+      // chain into.
+      riskRouter: {
+        assessInitialLevel: async (input: TaskInput) => {
+          assessCallCount++;
+          const minConstraint = (input.constraints ?? []).find((c) => c.startsWith('MIN_ROUTING_LEVEL:'));
+          const level = minConstraint ? Number(minConstraint.split(':')[1]) : 0;
+          return {
+            level: level as 0 | 1 | 2 | 3,
+            model: 'mock/model',
+            budgetTokens: 5000,
+            latencyBudgetMs: 10000,
+            governanceProvenance: {
+              decisionId: `risk-router:${input.id}:L${level}`,
+              policyVersion: 'risk-router:v1',
+              attributedTo: 'riskRouter',
+              wasGeneratedBy: 'mock',
+              wasDerivedFrom: [],
+              decidedAt: Date.now(),
+              reason: `routed to L${level}`,
+            },
+          };
+        },
+      },
+    });
+
+    const result = await executeTask({ ...defaultInput, id: 'task-escalation-path' }, deps);
+    expect(result.status).toBe('escalated');
+
+    // assessInitialLevel called: once initial + once per escalation step
+    expect(assessCallCount).toBeGreaterThan(1);
+
+    const escalated = traces.find((t) => t.outcome === 'escalated');
+    expect(escalated).toBeDefined();
+    expect(escalated.governanceProvenance).toBeDefined();
+    const path = escalated.governanceProvenance.escalationPath;
+    expect(path).toBeDefined();
+    expect(Array.isArray(path)).toBe(true);
+    // Must accumulate at least 2 levels (started at L0, escalated at least once
+    // before all-levels-exhausted). Strictly increasing.
+    expect(path.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < path.length; i++) {
+      expect(path[i]).toBeGreaterThan(path[i - 1]);
+    }
+    // Last element matches the final routing level.
+    expect(path[path.length - 1]).toBe(escalated.routingLevel);
+    // Reason should mention the escalation transition.
+    expect(escalated.governanceProvenance.reason).toMatch(/escalated from L\d/);
   });
 });

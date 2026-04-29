@@ -19,6 +19,7 @@ import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
+import { AgentProposalStore } from '../db/agent-proposal-store.ts';
 import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
@@ -31,8 +32,13 @@ import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
+import { BidAccuracyStore } from '../db/bid-accuracy-store.ts';
+import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
+import { SkillOutcomeStore } from '../db/skill-outcome-store.ts';
+import { SkillTrustLedgerStore } from '../db/skill-trust-ledger-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
+import { TaskEventStore } from '../db/task-event-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
 import { UserPreferenceStore } from '../db/user-preference-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
@@ -45,7 +51,7 @@ import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { setGateDeps } from '../gate/gate.ts';
+import { runGate as runOracleGate, setGateDeps } from '../gate/gate.ts';
 import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
 import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/scheduling/wiring.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
@@ -53,11 +59,17 @@ import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
+import { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
+import { SkillArtifactStore } from '../skills/artifact-store.ts';
+import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
+import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
+import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
+import { buildImporterGateFn } from '../skills/hub/gate-adapter.ts';
 import {
   type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
@@ -76,8 +88,12 @@ import { SoulReflector } from './agent-context/soul-reflector.ts';
 import { SoulStore } from './agent-context/soul-store.ts';
 import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
+import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
+import { buildSkillDiscoveryWiring } from './agents/skill-discovery-wiring.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
+import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
+import { evaluateOverclaim, SkillUsageTracker } from './agents/skill-usage-tracker.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
 import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
@@ -87,6 +103,7 @@ import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
 import type { DataGateThresholds } from './data-gate.ts';
+import { attachDegradationEventBridge } from './degradation-strategy.ts';
 import { DelegationRouter } from './delegation-router.ts';
 import { buildEcosystem, type EcosystemBundle } from './ecosystem/builder.ts';
 import { TaskFactsRegistry } from './ecosystem/task-facts-registry.ts';
@@ -104,15 +121,17 @@ import {
 import { DefaultGoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { InstanceCoordinator } from './instance-coordinator.ts';
 import { createAnthropicProvider } from './llm/anthropic-provider.ts';
+import { workerIdForEngine } from './llm/engine-worker-binding.ts';
 import { loadInstructionMemory } from './llm/instruction-loader.ts';
 import { startLLMProxy } from './llm/llm-proxy.ts';
-import { ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
+import { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
 import { RegressionMonitor } from './monitoring/regression-monitor.ts';
+import { attachTaskEventRecorder } from './observability/task-event-recorder.ts';
 import { OracleGateAdapter } from './oracle-gate-adapter.ts';
 import { PerceptionAssemblerImpl } from './perception.ts';
 import { initializePlugins, type PluginInitResult } from './plugin-init.ts';
@@ -139,12 +158,12 @@ import { DefaultThinkingPolicyCompiler } from './thinking/thinking-compiler.ts';
 import { ToolExecutor } from './tools/tool-executor.ts';
 import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
-import type { AgentPreferences, AgentProfile, EngineProfile, TaskInput, TaskResult } from './types.ts';
+import type { AgentPreferences, AgentProfile, EngineProfile, ReasoningEngine, TaskInput, TaskResult } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
 import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { setupUserMdObserver } from './user-context/wiring.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
-import { WorkflowRegistry } from './workflows/workflow-registry.ts';
+import { WorkflowRegistry } from './workflow/workflow-registry.ts';
 
 export interface OrchestratorConfig {
   workspace: string;
@@ -233,6 +252,10 @@ export interface OrchestratorConfig {
   commandApprovalGate?: import('./tools/command-approval-gate.ts').CommandApprovalGate;
   /** Enable background workspace watching for WorldGraph invalidation (default: true). */
   watchWorkspace?: boolean;
+  /** Capability research provider adapters. External adapters normalize at the boundary. */
+  knowledgeProviders?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProvider[];
+  /** Optional deterministic provider order for capability research. */
+  knowledgeProviderOrder?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[];
 }
 
 export interface Orchestrator {
@@ -260,6 +283,8 @@ export interface Orchestrator {
   fleetRegistry?: import('./profile/fleet-registry.ts').FleetRegistry;
   // Exposed stores for API server (G7)
   traceStore?: TraceStore;
+  /** Per-task durable event log for historical UI process replay. */
+  taskEventStore?: TaskEventStore;
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
   patternStore?: PatternStore;
@@ -271,6 +296,8 @@ export interface Orchestrator {
   agentProfile?: AgentProfile;
   /** AgentContextStore — per-agent episodic memory and learned skills. */
   agentContextStore?: AgentContextStore;
+  /** Pending persistent custom-agent proposals mined during sleep-cycle. */
+  agentProposalStore?: AgentProposalStore;
   /** AgentRegistry — merged built-in + config agent specs. */
   agentRegistry?: ReturnType<typeof loadAgentRegistry>;
   /** MCP client pool — exposed read-only for dashboard inspection. */
@@ -287,8 +314,18 @@ export interface Orchestrator {
   marketScheduler?: import('../economy/market/market-scheduler.ts').MarketScheduler;
   /** Capability model — per-worker capability scores, for /engines deepen. */
   capabilityModel?: import('./fleet/capability-model.ts').CapabilityModel;
+  /**
+   * Live Reasoning Engine registry. Always populated when at least one LLM
+   * provider is configured. Surfaces to the API server so the /engines
+   * dashboard can list engines that exist NOW (registration time), distinct
+   * from `workerStore` which records engines that have appeared in past
+   * traces.
+   */
+  engineRegistry?: ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  /** A9 / T4: live operator visibility surface; undefined when disabled in config. */
+  degradationStatus?: DegradationStatusTracker;
   approvalGate?: ApprovalGateImpl;
   // Economy stores (exposed for API/TUI)
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
@@ -369,6 +406,10 @@ export function cleanupStaleOverlays(workspace: string, maxAgeMs: number = 7_200
 export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const { workspace } = config;
   const bus = config.bus ?? createBus();
+  const factoryBusUnsubs: Array<() => void> = [];
+  const trackBusListener = (unsubscribe: () => void) => {
+    factoryBusUnsubs.push(unsubscribe);
+  };
 
   // Cleanup stale overlay directories from crashed sessions
   const staleCount = cleanupStaleOverlays(workspace);
@@ -407,6 +448,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // SQLite unavailable — fall back to in-memory only
   }
 
+  // Per-task bus event log for historical UI replay (process timeline,
+  // plan, tool calls, oracle verdicts after page reload). Optional — the
+  // recorder is attached only when DB is healthy.
+  let taskEventStore: TaskEventStore | undefined;
+  if (db) {
+    try {
+      taskEventStore = new TaskEventStore(db.getDb());
+    } catch {
+      // Best-effort; missing migration shouldn't break orchestrator boot.
+    }
+  }
+
   // Phase 2 stores — all use same db instance
   let patternStore: PatternStore | undefined;
   let shadowStore: ShadowStore | undefined;
@@ -415,9 +468,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let workerStore: WorkerStore | undefined;
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
+  let skillOutcomeStore: SkillOutcomeStore | undefined;
+  // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
+  // path so deps consumers can call `.acquireForGap` unconditionally.
+  let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
+  // Phase-15 Item 1: deferred wiring handle for the optional hub-fetch
+  // fallback on the LocalHubAcquirer. Built alongside the acquirer when DB
+  // is available; importer is attached later (after criticEngine is wired).
+  let skillDiscoveryWiring: import('./agents/skill-discovery-wiring.ts').SkillDiscoveryWiring | undefined;
   let comprehensionStore: ComprehensionStore | undefined;
   let userPreferenceStore: UserPreferenceStore | undefined;
   let agentContextStore: AgentContextStore | undefined;
+  let agentProposalStore: AgentProposalStore | undefined;
   let agentProfileStore: AgentProfileStore | undefined;
   let agentProfile: AgentProfile | undefined;
   if (db) {
@@ -428,9 +490,34 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerStore = new WorkerStore(db.getDb());
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
+    skillOutcomeStore = new SkillOutcomeStore(db.getDb());
+
+    // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
+    // a runtime gap. Phase-15 (Item 1) layers an optional hub-fetch path
+    // on top: when `skills.discovery` is configured with both a candidate
+    // map and a non-'none' adapter, the acquirer falls through to the
+    // SkillImporter on cache miss. Default 'none' adapter keeps every
+    // existing setup local-only with zero behavioural drift.
+    const acquirerArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+    skillDiscoveryWiring = buildSkillDiscoveryWiring({
+      vinyanConfig: loadConfig(workspace),
+      db: db.getDb(),
+      workspace,
+      profile: 'default',
+      artifactStore: acquirerArtifactStore,
+    });
+    skillAcquirer = new LocalHubAcquirer({
+      artifactStore: acquirerArtifactStore,
+      ...(skillDiscoveryWiring.discoverCandidateIds
+        ? { discoverCandidateIds: skillDiscoveryWiring.discoverCandidateIds }
+        : {}),
+      // `importer` is set later via skillDiscoveryWiring.attachImporter(...)
+      // once `criticEngine` is constructed further down in this factory.
+    });
     comprehensionStore = new ComprehensionStore(db.getDb());
     userPreferenceStore = new UserPreferenceStore(db.getDb());
     agentContextStore = new AgentContextStore(db.getDb());
+    agentProposalStore = new AgentProposalStore(db.getDb());
 
     // AgentProfile — workspace-level Vinyan Agent identity (singleton)
     agentProfileStore = new AgentProfileStore(db.getDb());
@@ -455,7 +542,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let worldGraph: WorldGraph | undefined;
   let fileWatcher: FileWatcher | undefined;
   try {
-    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'));
+    worldGraph = new WorldGraph(join(workspace, '.vinyan', 'world-graph.db'), { workspaceRoot: workspace });
     // A4: Watch workspace for external file changes — auto-invalidate stale facts
     if (config.watchWorkspace !== false) {
       fileWatcher = new FileWatcher(worldGraph, workspace);
@@ -491,6 +578,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let reactiveLearningConfig: FailureClusterConfig | undefined;
   // Wave 5b: Skill hints config (default ON when config absent).
   let skillHintsConfig: { enabled: boolean; topK: number } = { enabled: true, topK: 3 };
+  // A10 / T6: goal-and-time grounding policy (thresholds + opt-in extended actions).
+  let goalGroundingPolicy: import('./goal-grounding.ts').GoalGroundingPolicy | undefined;
   // Wave 4: Agent-loop goal-driven termination (gated OFF by default).
   let agentLoopGoalTerminationConfig:
     | {
@@ -502,6 +591,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     | undefined;
   // Phase 2: realtime streaming (token-level `agent:text_delta`). Default OFF.
   let streamingAssistantDelta = false;
+  // A9 / T4: degradation status tracker config (operator visibility surface).
+  let degradationStatusEnabled = true;
+  let degradationStatusTtlMs: number | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -557,6 +649,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           goalSatisfactionThreshold: goalLoopConfig?.goalSatisfactionThreshold ?? 0.75,
         };
       }
+      const dg = vinyanConfig.orchestrator.degradation;
+      if (dg) {
+        degradationStatusEnabled = dg.enabled !== false;
+        degradationStatusTtlMs = dg.entry_ttl_ms;
+      }
+      const gg = vinyanConfig.orchestrator.goalGrounding;
+      if (gg) {
+        goalGroundingPolicy = {
+          highRiskScore: gg.high_risk_score,
+          longRunningBudgetMs: gg.long_running_budget_ms,
+          elapsedCheckThresholdMs: gg.elapsed_check_threshold_ms,
+          freshnessConfidenceFloor: gg.freshness_confidence_floor,
+          driftSimilarityThreshold: gg.drift_similarity_threshold,
+          extendedActionsEnabled: gg.extended_actions_enabled,
+        };
+      }
     }
     if (vinyanConfig.fleet) {
       fleetConfig = vinyanConfig.fleet;
@@ -579,7 +687,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const vinyanConfig = loadConfig(workspace);
     economyConfig = vinyanConfig.economy;
     if (economyConfig?.enabled && db) {
-      costLedger = new CostLedger(db.getDb());
+      costLedger = new CostLedger(db.getDb(), bus);
       const budgetConfig = economyConfig.budgets ?? { enforcement: 'warn' as const };
       budgetEnforcer = new BudgetEnforcer(budgetConfig, costLedger, bus);
       // Economy L2: cost prediction + dynamic budgets
@@ -587,30 +695,50 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       dynamicBudgetAllocator = new DynamicBudgetAllocator(costLedger);
       // Economy L3: market scheduler — shared across engine-selector + sleep cycle
       if (economyConfig.market?.enabled) {
-        marketScheduler = new MarketScheduler(economyConfig.market, bus);
+        // Phase-14 (Item 3): when DB is wired, back the persona overclaim
+        // ledger with SQLite so penalty math survives orchestrator restarts.
+        // Without DB the tracker stays in-memory only — same as Phase 12.
+        const personaOverclaimStore = db ? new PersonaOverclaimStore(db.getDb()) : undefined;
+        // Phase-15 Item 2: BidAccuracyTracker persistence — same pattern as
+        // persona overclaim. Reuses the existing `bid_accuracy` table from
+        // migration 001; no new migration needed.
+        const bidAccuracyStore = db ? new BidAccuracyStore(db.getDb()) : undefined;
+        marketScheduler = new MarketScheduler(
+          economyConfig.market,
+          bus,
+          personaOverclaimStore,
+          bidAccuracyStore,
+        );
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
-        bus.on('market:settlement_accurate', ({ provider, capability }) => {
-          providerTrustStore!.recordOutcome(provider, true, capability ?? '*');
-        });
-        bus.on('market:settlement_inaccurate', ({ provider, capability }) => {
-          providerTrustStore!.recordOutcome(provider, false, capability ?? '*');
-        });
+        const trustStore = providerTrustStore;
+        trackBusListener(
+          bus.on('market:settlement_accurate', ({ provider, capability }) => {
+            trustStore.recordOutcome(provider, true, capability ?? '*');
+          }),
+        );
+        trackBusListener(
+          bus.on('market:settlement_inaccurate', ({ provider, capability }) => {
+            trustStore.recordOutcome(provider, false, capability ?? '*');
+          }),
+        );
       }
       // Economy L4: federation cost relay — broadcast costs to A2A peers
       if (economyConfig.federation?.cost_sharing_enabled) {
         const relay = new FederationCostRelay(bus);
-        bus.on('economy:cost_recorded', ({ taskId, computed_usd }) => {
-          relay.broadcastCost({
-            instanceId: 'local',
-            taskId,
-            computed_usd,
-            rate_card_id: 'auto',
-            cost_tier: 'billing',
-            timestamp: Date.now(),
-          });
-        });
+        trackBusListener(
+          bus.on('economy:cost_recorded', ({ taskId, computed_usd }) => {
+            relay.broadcastCost({
+              instanceId: 'local',
+              taskId,
+              computed_usd,
+              rate_card_id: 'auto',
+              cost_tier: 'billing',
+              timestamp: Date.now(),
+            });
+          }),
+        );
       }
       console.log('[vinyan] Economy OS: cost tracking + prediction enabled');
     }
@@ -642,18 +770,52 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     /* workflow config is best-effort */
   }
 
-  // Non-LLM Reasoning Engines — Z3 constraint solver, human-in-the-loop bridge
+  // Reasoning Engine registry — built unconditionally so the API/dashboard can
+  // surface "what engines are available right now" even when the operator
+  // hasn't added an `engines:` block to vinyan.json. Without this, the
+  // dashboard's Engines page stayed empty until the first task ran (and even
+  // then it only showed historical workerStore entries, not the live LLM
+  // providers). Z3 / Human-ECP registration remains conditional on config.
   let engineRegistry = config.engineRegistry;
+  if (!engineRegistry) {
+    engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
+  }
+  // Wire bus so the ecosystem coordinator (built below) AND the engine→worker
+  // lifecycle listener (next) can observe registry events.
+  engineRegistry.setBus(bus);
+
+  // Live sync: every subsequent engineRegistry.register() / .deregister() call
+  // emits on the bus, and this listener mirrors the change into workerStore.
+  // Without it, engines added after autoRegisterWorkers ran (Z3, Human-ECP,
+  // synthetic agents, etc.) would have no worker profile, and the dashboard
+  // would surface them as phantom 'active' rows with no trust lifecycle.
+  // Attach BEFORE the Z3/Human-ECP register() calls below so those flow
+  // through the same path.
+  let detachEngineLifecycle: (() => void) | undefined;
+  if (workerStore) {
+    const policy = config.workerBootstrapPolicy ?? 'earn';
+    const probationMinTasks = fleetConfig?.probation_min_tasks ?? 30;
+    const resolveBootstrapStatus = (workerId: string): 'active' | 'probation' => {
+      if (policy === 'grandfather') return 'active';
+      try {
+        const stats = workerStore.getStats(workerId);
+        return stats.totalTasks >= probationMinTasks ? 'active' : 'probation';
+      } catch {
+        return 'probation';
+      }
+    };
+    detachEngineLifecycle = attachEngineLifecycleListener(engineRegistry, {
+      workerStore,
+      bus,
+      allowlist: config.workerModelAllowlist ?? DEFAULT_WORKER_MODEL_ALLOWLIST,
+      resolveBootstrapStatus,
+    });
+  }
+
   try {
     const vinyanConfig = loadConfig(workspace);
     const enginesConfig = vinyanConfig.engines;
     if (enginesConfig) {
-      if (!engineRegistry) {
-        engineRegistry = ReasoningEngineRegistry.fromLLMRegistry(registry);
-      }
-      // Wire bus so the ecosystem coordinator (built below) can observe
-      // engine:registered / engine:deregistered without touching the hot path.
-      engineRegistry.setBus(bus);
       if (enginesConfig.z3?.enabled) {
         engineRegistry.register(new Z3ReasoningEngine({ z3Path: enginesConfig.z3.path }));
         console.log('[vinyan] Z3 Constraint Solver engine registered');
@@ -662,18 +824,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         engineRegistry.register(new HumanECPBridge({ bus, timeoutMs: enginesConfig.human.timeout_ms }));
         console.log('[vinyan] Human-in-the-Loop ECP bridge registered');
       }
-      // Register non-LLM engines as workers (autoRegisterWorkers ran earlier with config.engineRegistry)
-      if (workerStore) {
-        autoRegisterWorkers(
-          registry,
-          workerStore,
-          bus,
-          config.workerModelAllowlist,
-          engineRegistry,
-          config.workerBootstrapPolicy ?? 'earn',
-          fleetConfig?.probation_min_tasks ?? 30,
-        );
-      }
+      // Z3 / Human-ECP registrations above flowed through `engineRegistry.register`,
+      // which fires `engine:registered` → the lifecycle listener creates the
+      // worker entries automatically. No second autoRegisterWorkers call needed.
     }
   } catch {
     /* engine registration is best-effort */
@@ -939,6 +1092,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           workerLifecycle,
           localOracleProfileStore,
           localOracleLifecycle,
+          agentProposalStore,
           costLedger,
           marketScheduler,
         })
@@ -971,7 +1125,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskCheckpoint.cleanup(24 * 60 * 60 * 1000);
   }
 
-  const perception = new PerceptionAssemblerImpl({ workspace });
+  const perception = new PerceptionAssemblerImpl({ workspace, worldGraph });
   const selfModel = db
     ? new CalibratedSelfModel({ traceStore, db: db.getDb(), bus })
     : (() => {
@@ -1161,6 +1315,17 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   }
 
+  // Phase-15 Item 1: now that `criticEngine` is final, attach the
+  // SkillImporter to the LocalHubAcquirer. No-op when `skills.discovery`
+  // is unconfigured or `adapter === 'none'` — see helper for the rules.
+  if (skillDiscoveryWiring && criticEngine && skillAcquirer instanceof LocalHubAcquirer) {
+    try {
+      skillDiscoveryWiring.attachImporter(skillAcquirer, criticEngine);
+    } catch {
+      /* importer attach is best-effort — acquirer remains local-only on failure */
+    }
+  }
+
   // WP-3: TestGenerator — generative verification at L2+ (A1: separate LLM call from generator)
   const testGenProvider = registry.selectByTier('balanced') ?? registry.selectByTier('powerful');
   const testGenerator = testGenProvider ? new LLMTestGeneratorImpl(testGenProvider, workspace) : undefined;
@@ -1296,10 +1461,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (economyConfig?.federation?.cost_sharing_enabled) {
         const fraction = economyConfig.federation.shared_pool_fraction ?? 0.1;
         federationBudgetPool = new FederationBudgetPool(fraction, bus);
+        const budgetPool = federationBudgetPool;
         // Contribute to pool from local task completions
-        bus.on('economy:cost_recorded', ({ computed_usd }) => {
-          federationBudgetPool!.contribute(computed_usd);
-        });
+        trackBusListener(
+          bus.on('economy:cost_recorded', ({ computed_usd }) => {
+            budgetPool.contribute(computed_usd);
+          }),
+        );
       }
       instanceCoordinator = new InstanceCoordinator({
         peerUrls: instancesConfig.peers.map((p: { url: string }) => p.url),
@@ -1393,10 +1561,100 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
   if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
+  // Phase-6: hand the worker pool the runtime skill acquirer so it can fill
+  // persona capability gaps from the local artifact store before dispatch.
+  workerPool.setSkillAcquirer(skillAcquirer);
 
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
   const agentRouter = agentRegistry ? createAgentRouter({ registry: agentRegistry }) : undefined;
+  if (agentRegistry && sleepCycleRunner) sleepCycleRunner.setAgentRegistry(agentRegistry);
+  // Phase-7: hook the skill promoter into the sleep cycle so acquired→bound
+  // promotion runs on the same schedule as agent evolution. Requires
+  // agentRegistry + skillOutcomeStore — both come from the DB-backed path.
+  if (sleepCycleRunner && agentRegistry && skillOutcomeStore) {
+    sleepCycleRunner.setSkillPromoter({
+      skillOutcomeStore,
+      workspace,
+      registry: agentRegistry,
+    });
+  }
+
+  // Phase-15 (Item 4): hook the skill TIER graduation promoter alongside
+  // the scope promoter. Distinct concerns — scope = acquired↔bound; tier
+  // = speculative↔deterministic. Both share the same outcome store but
+  // operate on different SKILL.md fields. Requires DB for the trust
+  // ledger; safely skipped when DB or skillOutcomeStore absent.
+  if (sleepCycleRunner && agentRegistry && skillOutcomeStore && db) {
+    try {
+      const tierArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+      const ledger = new SkillTrustLedgerStore(db.getDb());
+      sleepCycleRunner.setSkillTierPromoter({
+        skillOutcomeStore,
+        registry: agentRegistry,
+        artifactStore: tierArtifactStore,
+        ledger,
+        profile: 'default',
+      });
+    } catch {
+      /* tier graduation wiring is best-effort — startup proceeds without it */
+    }
+  }
+
+  // Phase-14 (Item 2): wire the AutonomousSkillCreator into the sleep cycle.
+  // Phase 10 shipped the scheduling hook but left it inert pending an LLM-
+  // backed DraftGenerator + a critic from a different engine (A1). Both are
+  // available now: the LLM draft generator wraps the registry's `balanced`
+  // provider; the critic reuses the existing `criticEngine`.
+  //
+  // Refused at construction when only one provider is available — A1 forbids
+  // generator and critic sharing an engine, and we'd rather skip the path
+  // than violate the invariant. Skip is logged via console.warn (no bus
+  // event needed; the sleep-cycle hook stays inert as in Phase 10).
+  if (
+    sleepCycleRunner &&
+    agentRegistry &&
+    skillOutcomeStore &&
+    skillStore &&
+    predictionLedger &&
+    criticEngine &&
+    oracleGate
+  ) {
+    const generatorProvider =
+      registry.selectByTier('balanced') ?? registry.selectByTier('fast') ?? registry.selectByTier('powerful');
+    const generatorEngineId = generatorProvider?.id;
+    const criticEngineId = criticProvider?.id;
+    const distinctEngines = !!(generatorEngineId && criticEngineId && generatorEngineId !== criticEngineId);
+    if (generatorProvider && distinctEngines) {
+      try {
+        const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+        const creator = new AutonomousSkillCreator({
+          predictionLedger,
+          skillStore,
+          artifactStore: skillArtifactStore,
+          generator: buildLLMDraftGenerator({ provider: generatorProvider }),
+          gate: buildImporterGateFn({ runGate: runOracleGate, workspace }),
+          critic: buildImporterCriticFn({ critic: criticEngine }),
+          generatorEngineId,
+          criticEngineId,
+          workspace,
+          profile: 'default',
+        });
+        sleepCycleRunner.setAutonomousSkillCreator({
+          creator,
+          skillOutcomeStore,
+          registry: agentRegistry,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[autonomous-creator] wiring skipped — ${msg}`);
+      }
+    } else if (!distinctEngines) {
+      console.warn(
+        '[autonomous-creator] wiring skipped — only one LLM provider tier available; A1 requires generator and critic engines to differ.',
+      );
+    }
+  }
 
   // User-interest miner — live aggregation from traces + session messages.
   // Noop when traceStore is missing; session-message keywords require SessionManager.
@@ -1453,6 +1711,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     workerLifecycle,
     fleetRegistry,
     worldGraph,
+    knowledgeProviders: config.knowledgeProviders,
+    knowledgeProviderOrder: config.knowledgeProviderOrder,
     criticEngine,
     testGenerator,
     // Disable exploration in test mode for deterministic routing (A3)
@@ -1475,6 +1735,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     understandingEngine,
     // K2.1: Provider trust for Wilson LB selection
     providerTrustStore,
+    // Phase-3: per-(persona, skill, taskSig) outcome attribution
+    skillOutcomeStore,
+    // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
+    skillAcquirer,
     // Economy Operating System
     costLedger,
     budgetEnforcer,
@@ -1583,6 +1847,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    skillHintsConfig,
+    goalGroundingPolicy,
     // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
     // goal/targetFiles/deadlineAt synchronously when an auction completes.
     taskFactsRegistry,
@@ -1687,61 +1953,67 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // disabled, NO listeners are attached so there's zero runtime cost.
   if (reactiveLearningConfig?.enabled && ruleStore && traceStore) {
     const detector = new FailureClusterDetector(reactiveLearningConfig, bus);
+    const reactiveRuleStore = ruleStore;
+    const reactiveTraceStore = traceStore;
 
-    bus.on('task:complete', ({ result }) => {
-      // `input-required` is a pause for clarification, not a terminal failure.
-      if (result.status === 'input-required') return;
-      const sig = result.trace?.taskTypeSignature;
-      if (!sig) return;
-      detector.observe({
-        taskSignature: sig,
-        outcome: result.status === 'completed' ? 'success' : 'failure',
-        timestamp: Date.now(),
-        taskId: result.id,
-      });
-    });
+    trackBusListener(
+      bus.on('task:complete', ({ result }) => {
+        // `input-required` is a pause for clarification, not a terminal failure.
+        if (result.status === 'input-required') return;
+        const sig = result.trace?.taskTypeSignature;
+        if (!sig) return;
+        detector.observe({
+          taskSignature: sig,
+          outcome: result.status === 'completed' ? 'success' : 'failure',
+          timestamp: Date.now(),
+          taskId: result.id,
+        });
+      }),
+    );
 
-    bus.on('failure:cluster-detected', (payload) => {
-      try {
-        const traces = traceStore!.findByTaskType(payload.taskSignature, 20);
-        const summaries = traces.map(traceToReactiveSummary).filter((s): s is ReactiveTraceSummary => s !== null);
-        if (summaries.length < 2) {
+    trackBusListener(
+      bus.on('failure:cluster-detected', (payload) => {
+        try {
+          const traces = reactiveTraceStore.findByTaskType(payload.taskSignature, 20);
+          const summaries = traces.map(traceToReactiveSummary).filter((s): s is ReactiveTraceSummary => s !== null);
+          if (summaries.length < 2) {
+            bus.emit('reactive:rule-skipped', {
+              taskSignature: payload.taskSignature,
+              reason: 'insufficient-failure-summaries',
+            });
+            return;
+          }
+          const cluster: FailureCluster = {
+            taskSignature: payload.taskSignature,
+            failureCount: payload.failureCount,
+            taskIds: payload.taskIds,
+            windowStart: 0,
+            windowEnd: Date.now(),
+          };
+          const proposed = synthesizeReactiveRule(cluster, summaries);
+          if (!proposed) {
+            bus.emit('reactive:rule-skipped', {
+              taskSignature: payload.taskSignature,
+              reason: 'no-actionable-pattern',
+            });
+            return;
+          }
+          const evolutionary = reactiveRuleToEvolutionary(proposed);
+          reactiveRuleStore.insert(evolutionary);
+          bus.emit('reactive:rule-generated', {
+            ruleId: evolutionary.id,
+            taskSignature: payload.taskSignature,
+            action: evolutionary.action,
+            specificity: evolutionary.specificity,
+          });
+        } catch (err) {
           bus.emit('reactive:rule-skipped', {
             taskSignature: payload.taskSignature,
-            reason: 'insufficient-failure-summaries',
+            reason: `error:${err instanceof Error ? err.message : String(err)}`,
           });
-          return;
         }
-        const cluster: FailureCluster = {
-          taskSignature: payload.taskSignature,
-          failureCount: payload.failureCount,
-          taskIds: payload.taskIds,
-          windowStart: 0,
-          windowEnd: Date.now(),
-        };
-        const proposed = synthesizeReactiveRule(cluster, summaries);
-        if (!proposed) {
-          bus.emit('reactive:rule-skipped', {
-            taskSignature: payload.taskSignature,
-            reason: 'no-actionable-pattern',
-          });
-          return;
-        }
-        const evolutionary = reactiveRuleToEvolutionary(proposed);
-        ruleStore!.insert(evolutionary);
-        bus.emit('reactive:rule-generated', {
-          ruleId: evolutionary.id,
-          taskSignature: payload.taskSignature,
-          action: evolutionary.action,
-          specificity: evolutionary.specificity,
-        });
-      } catch (err) {
-        bus.emit('reactive:rule-skipped', {
-          taskSignature: payload.taskSignature,
-          reason: `error:${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    });
+      }),
+    );
   }
 
   // Phase 6.4: Late-bind delegation deps to worker pool
@@ -1876,6 +2148,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Wire bus listeners (read-only observers — A3 compliance)
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
+  const degradationBridgeHandle = attachDegradationEventBridge(bus);
+  const degradationStatus = degradationStatusEnabled
+    ? new DegradationStatusTracker({
+        ...(degradationStatusTtlMs !== undefined ? { entryTtlMs: degradationStatusTtlMs } : {}),
+      })
+    : undefined;
+  const detachDegradationStatus = degradationStatus?.attach(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
   // P3.B — records adaptive-behavior comprehension events
   // (calibrated, calibration_diverged, ceiling_adjusted) + AXM#7 Brier
@@ -1888,6 +2167,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   const detachAudit = attachAuditListener(bus, join(workspace, '.vinyan', 'audit.jsonl'));
   const detachAccuracy = oracleAccuracyStore ? attachOracleAccuracyListener(bus, oracleAccuracyStore) : undefined;
+  // Persist curated bus events per task for historical UI process replay.
+  const taskEventRecorderHandle = taskEventStore ? attachTaskEventRecorder(bus, taskEventStore) : undefined;
 
   // GAP-H failure mode detection (G5: was dead code, now live)
   const gapHDetector = new GapHDetector(bus);
@@ -1895,48 +2176,81 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
 
   // A7: Cache predictions for shadow feedback loop (prediction is not persisted to DB)
   const predictionCache = new Map<string, import('./types.ts').SelfModelPrediction>();
-  bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
-    predictionCache.set(prediction.taskId, prediction);
-    // Keep cache bounded
-    if (predictionCache.size > 200) {
-      const oldest = predictionCache.keys().next().value;
-      if (oldest) predictionCache.delete(oldest);
-    }
-  });
+  trackBusListener(
+    bus.on('selfmodel:predict', ({ prediction }: { prediction: import('./types.ts').SelfModelPrediction }) => {
+      predictionCache.set(prediction.taskId, prediction);
+      // Keep cache bounded
+      if (predictionCache.size > 200) {
+        const oldest = predictionCache.keys().next().value;
+        if (oldest) predictionCache.delete(oldest);
+      }
+    }),
+  );
 
   // Shadow validation listener — update trace store and feed back to Self-Model (H3 + A7)
   if (shadowRunner && traceStore) {
-    bus.on('shadow:complete', ({ result }) => {
-      traceStore.updateShadowValidation(result.taskId, result);
-      // A7: Feed shadow outcome back to Self-Model for calibration
-      const cached = predictionCache.get(result.taskId);
-      if (cached && 'calibrate' in selfModel) {
-        try {
-          const shadowTrace = {
-            taskId: result.taskId,
-            outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
-            durationMs: result.durationMs,
-            qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
-          } as import('./types.ts').ExecutionTrace;
-          selfModel.calibrate(cached, shadowTrace);
-        } catch {
-          /* best-effort calibration */
+    trackBusListener(
+      bus.on('shadow:complete', ({ result }) => {
+        traceStore.updateShadowValidation(result.taskId, result);
+        // A7: Feed shadow outcome back to Self-Model for calibration
+        const cached = predictionCache.get(result.taskId);
+        if (cached && 'calibrate' in selfModel) {
+          try {
+            const shadowTrace = {
+              taskId: result.taskId,
+              outcome: result.testsPassed ? ('success' as const) : ('failure' as const),
+              durationMs: result.durationMs,
+              qualityScore: { composite: result.testsPassed ? 0.8 : 0.3 },
+            } as import('./types.ts').ExecutionTrace;
+            selfModel.calibrate(cached, shadowTrace);
+          } catch {
+            /* best-effort calibration */
+          }
         }
-      }
-      predictionCache.delete(result.taskId);
-    });
+        predictionCache.delete(result.taskId);
+      }),
+    );
   }
 
   // Session counter — triggers sleep cycle at interval (H1)
   let sessionCount = 0;
 
   // Shadow background loop — safety net for missed fire-and-forget calls (P3.2)
-  let shadowInterval: ReturnType<typeof setInterval> | undefined;
+  const SHADOW_POLL_ACTIVE_INTERVAL_MS = 10_000;
+  const SHADOW_POLL_MAX_IDLE_INTERVAL_MS = 60_000;
+  let shadowTimer: ReturnType<typeof setTimeout> | undefined;
+  let shadowIdlePolls = 0;
+  let shadowPollRunning = false;
+  let shadowPollRequested = false;
+  let shadowPollStopped = false;
   if (shadowRunner) {
-    shadowInterval = setInterval(async () => {
+    const scheduleShadowPoll = (delayMs: number) => {
+      if (shadowPollStopped) return;
+      if (shadowTimer) clearTimeout(shadowTimer);
+      shadowTimer = setTimeout(runShadowPoll, delayMs);
+      (shadowTimer as { unref?: () => void }).unref?.();
+    };
+    const nextShadowDelay = (processedJob: boolean) => {
+      if (processedJob || shadowPollRequested) return 0;
+      return Math.min(
+        SHADOW_POLL_ACTIVE_INTERVAL_MS * 2 ** Math.max(0, shadowIdlePolls - 1),
+        SHADOW_POLL_MAX_IDLE_INTERVAL_MS,
+      );
+    };
+    const runShadowPoll = async () => {
+      if (shadowPollStopped) return;
+      if (shadowPollRunning) {
+        shadowPollRequested = true;
+        return;
+      }
+      shadowPollRunning = true;
+      shadowPollRequested = false;
+      let processedJob = false;
       try {
         const result = await shadowRunner.processNext();
         if (result) {
+          processedJob = true;
+          shadowIdlePolls = 0;
           bus.emit('shadow:complete', {
             job: {
               id: '',
@@ -1948,20 +2262,140 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             },
             result,
           });
+        } else {
+          shadowIdlePolls = Math.min(shadowIdlePolls + 1, 16);
         }
       } catch {
+        shadowIdlePolls = Math.min(shadowIdlePolls + 1, 16);
         /* best-effort background processing */
+      } finally {
+        shadowPollRunning = false;
+        scheduleShadowPoll(nextShadowDelay(processedJob));
       }
-    }, 10_000);
-    // unref() so this timer alone does not hold the process alive when
-    // the API server shuts down. close() also clears it explicitly.
-    (shadowInterval as { unref?: () => void }).unref?.();
+    };
+    trackBusListener(
+      bus.on('shadow:enqueue', () => {
+        shadowIdlePolls = 0;
+        shadowPollRequested = true;
+        scheduleShadowPoll(0);
+      }),
+    );
+    scheduleShadowPoll(SHADOW_POLL_ACTIVE_INTERVAL_MS);
+  }
+
+  // Phase-11: SkillUsageTracker — accumulates `skill:viewed` signals per
+  // taskId so the executeTask wrapper can compare loaded vs viewed skill
+  // sets and emit `bid:overclaim_detected` when the persona used too few
+  // of the skills it declared. Pure in-memory; cleared per-task after
+  // evaluation. A9-compliant: subscription/handler are best-effort.
+  const skillUsageTracker = new SkillUsageTracker();
+  trackBusListener(
+    bus.on('skill:viewed', ({ taskId, skillId }: { taskId: string; skillId: string }) => {
+      try {
+        skillUsageTracker.recordView(taskId, skillId);
+      } catch {
+        /* tracker is observational; never propagate */
+      }
+    }),
+  );
+
+  // Phase-12: route `bid:overclaim_detected` events to the persona-keyed
+  // overclaim ledger on the live MarketScheduler. The ledger surfaces a
+  // multiplicative penalty into `scoreBid` on the persona's next bid,
+  // closing the producer/consumer loop. Best-effort — never propagate.
+  if (marketScheduler) {
+    const tracker = marketScheduler.getPersonaOverclaimTracker();
+    trackBusListener(
+      bus.on('bid:overclaim_detected', ({ agentId }: { agentId: string }) => {
+        try {
+          tracker.recordOverclaim(agentId);
+        } catch {
+          /* observational */
+        }
+      }),
+    );
   }
 
   const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
       sessionCount++;
+
+      // Phase-15 (M2 closure): capture the per-task viewed-skill set once.
+      // Used by BOTH the outcome recorder (for filtered attribution — only
+      // viewed-and-loaded skills get credit) AND the overclaim comparator
+      // (Phase-11). Hoisting the read here keeps a single source of truth
+      // for the task's view signal and preserves the existing clearTask
+      // ordering (still runs in the overclaim block's finally).
+      const viewedSkillIds = skillUsageTracker.getViewed(input.id);
+
+      // Phase-5A: record per-(persona, skill, taskSig) outcomes for the
+      // SkillOutcomeStore. Single integration point — wraps every task that
+      // flows through the orchestrator's public surface, so the recorder
+      // doesn't need to be threaded through every `task:complete` emit site
+      // in core-loop. Best-effort: failures are swallowed so a recorder bug
+      // never breaks task completion.
+      //
+      // Phase-15: pass the viewed set so attribution credits only the skills
+      // the LLM actually fetched via `skill_view`. Empty set → legacy
+      // equal-credit fallback (see WHY in `recordSkillOutcomesFromBid`).
+      if (deps.skillOutcomeStore && deps.agentRegistry) {
+        try {
+          const { recordTaskOutcomeForPersona } = await import('./agents/task-outcome-recorder.ts');
+          recordTaskOutcomeForPersona(
+            input,
+            result,
+            deps.agentRegistry,
+            deps.skillOutcomeStore,
+            viewedSkillIds,
+          );
+        } catch {
+          /* outcome recording is observational; never fail the task on it */
+        }
+      }
+
+      // Phase-11: overclaim comparator (M1). Compares the persona's
+      // declared loadout (from agentRegistry) against the skills the LLM
+      // actually viewed during execution (from skillUsageTracker). When
+      // ratio < threshold and ≥2 skills were declared, emit
+      // `bid:overclaim_detected`. Always clears the per-task tracker
+      // entry to keep memory bounded across long-running orchestrators.
+      //
+      // Phase-12: when the evaluation actually ran (≥2 declared skills),
+      // also record an observation on the live MarketScheduler's persona
+      // overclaim tracker — observations are the denominator of the bid
+      // penalty so they MUST increment for every eligible task, not just
+      // flagged ones. Without this, a persona with one overclaim and one
+      // clean run would be punished as if it had 100% overclaim.
+      if (deps.agentRegistry && input.agentId) {
+        try {
+          const derived = deps.agentRegistry.getDerivedCapabilities(input.agentId);
+          if (derived) {
+            const loadedSkillIds = derived.loadedSkills.map((s) => s.frontmatter.id);
+            const evaluation = evaluateOverclaim(loadedSkillIds, viewedSkillIds);
+            if (evaluation.reason === 'evaluated' && marketScheduler) {
+              try {
+                marketScheduler.getPersonaOverclaimTracker().recordObservation(input.agentId);
+              } catch {
+                /* tracker is observational */
+              }
+            }
+            if (evaluation.flagged) {
+              bus.emit('bid:overclaim_detected', {
+                taskId: input.id,
+                agentId: input.agentId,
+                declaredCount: evaluation.declaredCount,
+                viewedCount: evaluation.viewedCount,
+                viewedRatio: evaluation.viewedRatio,
+              });
+            }
+          }
+        } catch {
+          /* overclaim evaluation is observational; never fail the task on it */
+        } finally {
+          skillUsageTracker.clearTask(input.id);
+        }
+      }
 
       // Trigger sleep cycle at interval (best-effort, never blocks main flow)
       if (sleepCycleRunner && sessionCount >= sleepCycleRunner.getInterval()) {
@@ -1990,14 +2424,17 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     fleetRegistry,
     // Exposed stores for API server wiring (G7)
     traceStore,
+    taskEventStore,
     ruleStore,
     skillStore,
     patternStore,
     shadowStore,
     workerStore,
+    engineRegistry,
     agentProfileStore,
     agentProfile,
     agentContextStore,
+    agentProposalStore,
     agentRegistry,
     mcpClientPool,
     oracleAccuracyStore,
@@ -2008,6 +2445,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     capabilityModel,
     worldGraph,
     metricsCollector,
+    degradationStatus,
     approvalGate,
     costLedger,
     budgetEnforcer,
@@ -2032,13 +2470,24 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       //      briefly outlive us.
       //   4. Close LLM proxy, world graph, DB — in increasing order
       //      of "holds file locks for long time".
-      if (shadowInterval) clearInterval(shadowInterval);
+      shadowPollStopped = true;
+      if (shadowTimer) clearTimeout(shadowTimer);
       detachGapH();
       detachMetrics();
+      degradationBridgeHandle.detach();
+      detachDegradationStatus?.();
       traceListenerHandle.detach();
       comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
+      taskEventRecorderHandle?.detach();
+      for (const unsub of factoryBusUnsubs.splice(0)) {
+        try {
+          unsub();
+        } catch {
+          /* best-effort */
+        }
+      }
       approvalGate.clear();
 
       // Kill warm worker subprocesses FIRST — without this, their stdin
@@ -2367,6 +2816,121 @@ function collectDeclaredCapabilities(deps: {
   return caps;
 }
 
+/**
+ * Outcome of attempting to register a single engine as a worker. Surfaced
+ * for tests + observability so callers can distinguish "skipped because
+ * utility tier" from "skipped because allowlist" from "actually created".
+ */
+export type WorkerRegistrationOutcome =
+  | 'created'
+  | 'already-exists'
+  | 'excluded-utility-tier'
+  | 'excluded-by-allowlist';
+
+interface WorkerRegistrationDeps {
+  workerStore: WorkerStore;
+  bus: VinyanBus;
+  allowlist: string[];
+  resolveBootstrapStatus: (workerId: string) => 'active' | 'probation';
+}
+
+/**
+ * Build the canonical EngineProfile for a Reasoning Engine. Encapsulates
+ * the LLM-vs-non-LLM defaults so both startup batch and bus-driven post-
+ * startup registration produce identical row shapes.
+ */
+function buildEngineProfile(engine: ReasoningEngine, status: 'active' | 'probation'): EngineProfile {
+  const isLLM = engine.engineType === 'llm';
+  return {
+    id: workerIdForEngine(engine.id),
+    config: {
+      modelId: engine.id,
+      temperature: isLLM ? 0.7 : 0,
+      systemPromptTemplate: isLLM ? 'default' : 'none',
+      maxContextTokens: engine.maxContextTokens,
+      engineType: engine.engineType,
+      capabilitiesDeclared: engine.capabilities,
+      // Tier is exposed on the worker config so the dashboard can group/filter
+      // engines by their dispatch class without re-deriving from the id pattern.
+      tier: engine.tier,
+    },
+    status,
+    createdAt: Date.now(),
+    demotionCount: 0,
+  };
+}
+
+/**
+ * Register one engine as a worker profile. Idempotent: returns
+ * `'already-exists'` when the profile is already present so concurrent
+ * paths (startup batch + bus listener) can both call this safely.
+ *
+ * Honours two exclusions, kept consistent across paths:
+ *   - tool-uses tier: utility provider for intent resolver / remediation,
+ *     not a general worker. Existing entries get demoted with a fixed
+ *     reason so the dashboard surfaces the exclusion.
+ *   - model allowlist: operator-controlled (empty = no filter).
+ */
+export function tryRegisterEngineAsWorker(
+  engine: ReasoningEngine,
+  deps: WorkerRegistrationDeps,
+): WorkerRegistrationOutcome {
+  const workerId = workerIdForEngine(engine.id);
+
+  if (engine.tier === 'tool-uses') {
+    const stale = deps.workerStore.findById(workerId);
+    if (stale && stale.status !== 'demoted') {
+      deps.workerStore.updateStatus(workerId, 'demoted', 'tool-uses tier excluded from worker pool');
+    }
+    return 'excluded-utility-tier';
+  }
+
+  if (deps.allowlist.length > 0 && !deps.allowlist.some((p) => engine.id.startsWith(p))) {
+    console.warn(`[vinyan] Skipping worker registration for '${engine.id}' — not in model allowlist`);
+    return 'excluded-by-allowlist';
+  }
+
+  if (deps.workerStore.findById(workerId)) return 'already-exists';
+
+  const profile = buildEngineProfile(engine, deps.resolveBootstrapStatus(workerId));
+  deps.workerStore.insert(profile);
+  deps.bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+  return 'created';
+}
+
+/**
+ * Subscribe `workerStore` to the registry bus so engines registered
+ * post-startup (synthetic agents, dynamically-wired Z3, etc.) get a worker
+ * profile without waiting for the next process restart. Returns an
+ * unsubscribe handle that the orchestrator close path detaches.
+ *
+ * Symmetric: `engine:deregistered` marks the worker `retired` so the
+ * dashboard's lifecycle view stays accurate. Already-retired and demoted
+ * workers are left untouched.
+ */
+export function attachEngineLifecycleListener(
+  engineRegistry: ReasoningEngineRegistry,
+  deps: WorkerRegistrationDeps,
+): () => void {
+  const onRegistered = (event: { engineId: string }) => {
+    const engine = engineRegistry.get(event.engineId);
+    if (engine) tryRegisterEngineAsWorker(engine, deps);
+  };
+  const onDeregistered = (event: { engineId: string }) => {
+    const workerId = workerIdForEngine(event.engineId);
+    const worker = deps.workerStore.findById(workerId);
+    if (!worker) return;
+    if (worker.status === 'retired' || worker.status === 'demoted') return;
+    deps.workerStore.updateStatus(workerId, 'retired', 'engine deregistered');
+  };
+  const offRegistered = deps.bus.on('engine:registered', onRegistered);
+  const offDeregistered = deps.bus.on('engine:deregistered', onDeregistered);
+  return () => {
+    offRegistered();
+    offDeregistered();
+  };
+}
+
 function autoRegisterWorkers(
   registry: LLMProviderRegistry,
   workerStore: WorkerStore,
@@ -2386,67 +2950,22 @@ function autoRegisterWorkers(
       return 'probation';
     }
   };
-  // Register LLM providers from the legacy registry
+  const deps: WorkerRegistrationDeps = { workerStore, bus, allowlist, resolveBootstrapStatus };
+
+  // Wrap each LLM provider in an LLMReasoningEngine adapter so the LLM and
+  // non-LLM paths share a single registration helper. Functionally identical
+  // to constructing a profile inline — the wrapper only normalises the
+  // shape so `tryRegisterEngineAsWorker` doesn't need a discriminator.
   for (const provider of registry.listProviders()) {
-    // tool-uses tier is a utility tier (intent resolver, remediation) — not a general worker
-    if (provider.tier === 'tool-uses') {
-      // Clean up any stale worker profile from prior sessions
-      const staleId = `worker-${provider.id}`;
-      const stale = workerStore.findById(staleId);
-      if (stale && stale.status !== 'demoted') {
-        workerStore.updateStatus(staleId, 'demoted', 'tool-uses tier excluded from worker pool');
-      }
-      continue;
-    }
-
-    // M12: Validate engine against allowlist before registration. Empty allowlist = no filter.
-    if (allowlist.length > 0 && !allowlist.some((p) => provider.id.startsWith(p))) {
-      console.warn(`[vinyan] Skipping worker registration for '${provider.id}' — not in model allowlist`);
-      continue;
-    }
-
-    const workerId = `worker-${provider.id}`;
-    if (workerStore.findById(workerId)) continue;
-
-    const profile: EngineProfile = {
-      id: workerId,
-      config: {
-        modelId: provider.id,
-        temperature: 0.7,
-        systemPromptTemplate: 'default',
-        maxContextTokens: provider.maxContextTokens,
-      },
-      status: resolveBootstrapStatus(workerId),
-      createdAt: Date.now(),
-      demotionCount: 0,
-    };
-    workerStore.insert(profile);
-    bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+    tryRegisterEngineAsWorker(new LLMReasoningEngine(provider), deps);
   }
 
-  // Register non-LLM engines from engineRegistry (fleet governance visibility)
+  // Non-LLM engines from the unified registry. The shared helper handles the
+  // idempotency check so engines already covered above are no-ops here.
   if (engineRegistry) {
     for (const engine of engineRegistry.listEngines()) {
-      if (engine.engineType === 'llm') continue; // already registered via LLMProviderRegistry above
-      const workerId = `worker-${engine.id}`;
-      if (workerStore.findById(workerId)) continue;
-
-      const profile: EngineProfile = {
-        id: workerId,
-        config: {
-          modelId: engine.id, // engine.id as model identifier for non-LLM REs
-          temperature: 0, // not applicable for non-LLM
-          systemPromptTemplate: 'none',
-          maxContextTokens: engine.maxContextTokens,
-          engineType: engine.engineType,
-          capabilitiesDeclared: engine.capabilities,
-        },
-        status: resolveBootstrapStatus(workerId),
-        createdAt: Date.now(),
-        demotionCount: 0,
-      };
-      workerStore.insert(profile);
-      bus.emit('profile:registered', { kind: 'worker', id: profile.id });
+      if (engine.engineType === 'llm') continue; // covered by the LLM loop above
+      tryRegisterEngineAsWorker(engine, deps);
     }
   }
 }

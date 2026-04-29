@@ -199,6 +199,69 @@ describe('AgentMemoryAPIImpl — delegation', () => {
     expect(counts.rejected).toBe(1);
     expect(rejected.length).toBeGreaterThan(0);
   });
+
+  test('recordFailedApproach delegates to RejectedApproachStore.store with mapped fields', async () => {
+    const stored: Array<Parameters<RejectedApproachStore['store']>[0]> = [];
+    const rejectedApproachStore = {
+      loadForTask: () => [],
+      store(entry: Parameters<RejectedApproachStore['store']>[0]) {
+        stored.push(entry);
+      },
+    } as unknown as RejectedApproachStore;
+    const api = new AgentMemoryAPIImpl({ rejectedApproachStore });
+    await api.recordFailedApproach!({
+      taskId: 't1',
+      taskType: 'reasoning',
+      approach: 'agentic-workflow:llm-reasoning',
+      failureOracle: 'workflow-step-failed',
+      routingLevel: 2,
+      fileTarget: 'src/foo.ts',
+      actionVerb: 'check',
+    });
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      taskId: 't1',
+      taskType: 'reasoning',
+      approach: 'agentic-workflow:llm-reasoning',
+      failureOracle: 'workflow-step-failed',
+      routingLevel: 2,
+      fileTarget: 'src/foo.ts',
+      actionVerb: 'check',
+      oracleVerdict: 'rejected',
+      verdictConfidence: 1.0,
+      source: 'task-end',
+    });
+  });
+
+  test('recordFailedApproach is a no-op when no rejectedApproachStore is wired', async () => {
+    const api = new AgentMemoryAPIImpl({});
+    // Should not throw — gracefully degrades.
+    await api.recordFailedApproach!({
+      taskId: 't1',
+      taskType: 'reasoning',
+      approach: 'x',
+      failureOracle: 'y',
+      routingLevel: 2,
+    });
+  });
+
+  test('recordFailedApproach swallows store errors (best-effort write)', async () => {
+    const rejectedApproachStore = {
+      loadForTask: () => [],
+      store() {
+        throw new Error('store boom');
+      },
+    } as unknown as RejectedApproachStore;
+    const api = new AgentMemoryAPIImpl({ rejectedApproachStore });
+    // Must not propagate — otherwise a transient db error fails the workflow.
+    await api.recordFailedApproach!({
+      taskId: 't1',
+      taskType: 'reasoning',
+      approach: 'x',
+      failureOracle: 'y',
+      routingLevel: 2,
+    });
+  });
 });
 
 describe('AgentMemoryAPIImpl — per-task LRU cache', () => {

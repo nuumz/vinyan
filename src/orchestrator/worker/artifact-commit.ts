@@ -29,19 +29,32 @@ export interface CommitResult {
 
 /**
  * Validate and apply artifact files to the workspace.
- * Returns which files were applied and which were rejected with reasons.
+ *
+ * Two-pass fail-closed contract (T3.b):
+ * 1. Preflight — validate every artifact path. If ANY path is rejected, write nothing
+ *    and return all invalid paths in `rejected` with `applied` empty.
+ * 2. Apply — only when preflight is fully clean, write all files. Per-file write errors
+ *    are still reported in `rejected`; previously-written files in the same batch
+ *    remain on disk (rollback is explicitly out of scope for the MVP).
  */
 export function commitArtifacts(workspace: string, artifacts: ArtifactFile[]): CommitResult {
-  const applied: string[] = [];
-  const rejected: CommitResult['rejected'] = [];
-
+  // Pass 1: preflight all paths before any write.
+  const preflightRejected: CommitResult['rejected'] = [];
   for (const artifact of artifacts) {
     const validation = validateArtifactPath(workspace, artifact.path);
     if (!validation.valid) {
-      rejected.push({ path: artifact.path, reason: validation.reason! });
-      continue;
+      preflightRejected.push({ path: artifact.path, reason: validation.reason! });
     }
+  }
 
+  if (preflightRejected.length > 0) {
+    return { applied: [], rejected: preflightRejected };
+  }
+
+  // Pass 2: write all artifacts now that preflight is clean.
+  const applied: string[] = [];
+  const rejected: CommitResult['rejected'] = [];
+  for (const artifact of artifacts) {
     try {
       const absPath = resolve(workspace, artifact.path);
       mkdirSync(dirname(absPath), { recursive: true });

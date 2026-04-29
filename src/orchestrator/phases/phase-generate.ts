@@ -7,9 +7,13 @@
  */
 
 import { createContract } from '../../core/agent-contract.ts';
+import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { DAGExecutionResult, NodeDispatcher } from '../dag-executor.ts';
 import { executeDAG } from '../dag-executor.ts';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
+import { resolveRuntimeSkillHintConstraints } from '../skill-hints.ts';
 import type {
+  EngineSelectionResult,
   ExecutionTrace,
   PerceptualHierarchy,
   RoutingDecision,
@@ -18,10 +22,16 @@ import type {
   TaskInput,
   TaskResult,
   ToolCall,
-  EngineSelectionResult,
 } from '../types.ts';
-import type { WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { PhaseContext, GenerateResult, WorkerResult, PhaseContinue, PhaseReturn, PhaseRetry, PhaseThrow } from './types.ts';
+import type {
+  GenerateResult,
+  PhaseContext,
+  PhaseContinue,
+  PhaseRetry,
+  PhaseReturn,
+  PhaseThrow,
+  WorkerResult,
+} from './types.ts';
 import { Phase } from './types.ts';
 
 interface GenerateInput {
@@ -33,6 +43,7 @@ interface GenerateInput {
   budgetCapMultiplier: number;
   workerSelection?: EngineSelectionResult;
   lastWorkerSelection?: EngineSelectionResult;
+  matchedSkill?: import('../types.ts').CachedSkill | null;
   retry: number;
 }
 
@@ -41,17 +52,21 @@ export async function executeGeneratePhase(
   gi: GenerateInput,
 ): Promise<PhaseContinue<GenerateResult> | PhaseReturn | PhaseRetry | PhaseThrow> {
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
-  const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry } = gi;
+  const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry, matchedSkill } = gi;
   let { totalTokensConsumed } = gi;
   const turns = ctx.turns;
 
   // ── Step 4: GENERATE (dispatch to worker) ────────────────────
-  // Phase 2: intersect agent's ACL overlay with routing-level capabilities.
-  // Never widens — `writer` denied `shell_exec` at L2, `ts-coder` still gets it.
+  // Phase-2 redesign wiring: ACL overlay comes from `getDerivedCapabilities`
+  // when the registry can compute it, so skill-narrowed ACL (persona ∩
+  // ⋂(skill ACL), A6 intersection rule) actually bites at dispatch time.
+  // Falls back to the raw `agent.capabilityOverrides` when derivation is
+  // unavailable (legacy registry, no skill resolver wired) so existing
+  // deployments are unaffected.
   const agent = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) : undefined;
-  const agentAcl = agent
-    ? { allowedTools: agent.allowedTools, capabilityOverrides: agent.capabilityOverrides }
-    : undefined;
+  const derived = input.agentId ? deps.agentRegistry?.getDerivedCapabilities(input.agentId) : undefined;
+  const effectiveOverrides = derived?.effectiveAcl ?? agent?.capabilityOverrides;
+  const agentAcl = agent ? { allowedTools: agent.allowedTools, capabilityOverrides: effectiveOverrides } : undefined;
   const contract = createContract(input, routing, agentAcl);
 
   // Crash Recovery: persist checkpoint before dispatch
@@ -90,6 +105,7 @@ export async function executeGeneratePhase(
           affectedFiles: [],
           timestamp: Date.now(),
           modelUsed: 'none',
+          governanceProvenance: routing.governanceProvenance,
         },
         escalationReason: `Task rejected by approval gate: ${reason}`,
       };
@@ -111,6 +127,13 @@ export async function executeGeneratePhase(
     if (routing.level >= 2 && !hasAgentDeps) {
       console.warn('[vinyan] L2+ task but agentLoopDeps unavailable — degraded to single-shot dispatch');
     }
+    const dispatchUnderstanding = await buildDispatchUnderstanding(
+      ctx,
+      understanding,
+      routing,
+      matchedSkill ?? null,
+      hasAgentDeps,
+    );
     if (routing.level <= 1 || !hasAgentDeps) {
       // L0-L1 or no agent deps: single-shot or DAG dispatch
       if (plan && !plan.isFallback && plan.nodes.length > 1) {
@@ -123,7 +146,16 @@ export async function executeGeneratePhase(
             targetFiles: node.targetFiles.length > 0 ? node.targetFiles : input.targetFiles,
             goal: node.description || input.goal,
           };
-          const result = await deps.workerPool.dispatch(nodeInput, perception, memSnapshot, plan, routing, understanding, contract, turns);
+          const result = await deps.workerPool.dispatch(
+            nodeInput,
+            perception,
+            memSnapshot,
+            plan,
+            routing,
+            dispatchUnderstanding,
+            contract,
+            turns,
+          );
           return {
             nodeId,
             mutations: result.mutations,
@@ -159,7 +191,7 @@ export async function executeGeneratePhase(
           workingMemory.getSnapshot(),
           plan,
           routing,
-          understanding,
+          dispatchUnderstanding,
           contract,
           turns,
         );
@@ -266,7 +298,11 @@ export async function executeGeneratePhase(
           durationMs: lastAgentResult.durationMs,
           proposedContent: lastAgentResult.proposedContent,
           nonRetryableError: lastAgentResult.nonRetryableError,
+          isUncertain: lastAgentResult.isUncertain,
           needsUserInput: lastAgentResult.needsUserInput,
+          // Slice 4 Gap B: forward the agent's self-grade (if any) so the
+          // GoalEvaluator can later compare it with the deterministic grade.
+          selfAssessment: lastAgentResult.selfAssessment,
         };
 
         // Agent Conversation: when the agent paused to ask the user, do NOT
@@ -289,11 +325,11 @@ export async function executeGeneratePhase(
     // ── Non-retryable error fast-exit ────────────────────────────
     if (workerResult.nonRetryableError) {
       console.error(`[vinyan] Non-retryable error — aborting: ${workerResult.nonRetryableError}`);
-      const failTrace: ExecutionTrace = {
+      const failTrace: ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-non-retryable`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+        agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'non-retryable-error',
@@ -304,7 +340,7 @@ export async function executeGeneratePhase(
         outcome: 'failure',
         failureReason: workerResult.nonRetryableError,
         affectedFiles: input.targetFiles ?? [],
-      };
+      }, routing);
       await deps.traceCollector.record(failTrace);
       deps.bus?.emit('trace:record', { trace: failTrace });
       const failResult: TaskResult = {
@@ -323,12 +359,37 @@ export async function executeGeneratePhase(
       return Phase.retry();
     }
 
+    // Empty-output gate (agentic worker failure): when the worker explicitly
+    // signals it could not reach a confident terminal turn (`isUncertain`)
+    // AND produced neither mutations nor content, the orchestrator must NOT
+    // pass this through to verify-and-succeed — that would surface as a fake
+    // `completed` task with no output (the "done but not works" bias).
+    // Common triggers: subprocess timeout/crash before first turn, the LLM
+    // streamed zero tokens, or the agent emitted `uncertain` with empty
+    // proposedContent. Skip when the agent is intentionally pausing for user
+    // input (clarification) — that's a collaborative pause, not a failure.
+    //
+    // Gated on `isUncertain` so mock workers in tests that legitimately
+    // return empty results (without flagging failure) pass through unchanged.
+    if (
+      workerResult.isUncertain &&
+      workerResult.mutations.length === 0 &&
+      !workerResult.proposedContent?.trim() &&
+      !workerResult.needsUserInput
+    ) {
+      workingMemory.recordFailedApproach(
+        `Empty output at L${routing.level} (uncertain, no mutations, no content)`,
+        'answer-quality-gate',
+      );
+      return Phase.retry();
+    }
+
     // A1 Reasoning quality gate: deterministic post-generation checks.
     if (input.taskType === 'reasoning' && workerResult.proposedContent) {
       // Check 1: Instruction echo detection
       const echoFragments = [
         'do not use json',
-        'match the user\'s language',
+        "match the user's language",
         'never fabricate facts',
         'answer directly and concisely',
         'code blocks for your answer',
@@ -363,12 +424,11 @@ export async function executeGeneratePhase(
 
       // Check 2: A6 defense-in-depth — strip mutating tool calls from non-mutation domains
       // Exception: tool-needed tasks explicitly require tool execution (e.g. "open Chrome", CLI commands)
-      const shouldFilterTools = understanding.taskDomain !== 'code-mutation' && understanding.toolRequirement !== 'tool-needed';
+      const shouldFilterTools =
+        understanding.taskDomain !== 'code-mutation' && understanding.toolRequirement !== 'tool-needed';
       if (shouldFilterTools && workerResult.proposedToolCalls.length > 0) {
         const { READONLY_TOOLS } = await import('../types.ts');
-        workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter(
-          (tc) => READONLY_TOOLS.has(tc.tool),
-        );
+        workerResult.proposedToolCalls = workerResult.proposedToolCalls.filter((tc) => READONLY_TOOLS.has(tc.tool));
       }
     }
 
@@ -376,11 +436,11 @@ export async function executeGeneratePhase(
     totalTokensConsumed += workerResult.tokensConsumed;
     const globalBudgetCap = input.budget.maxTokens * gi.budgetCapMultiplier;
     if (totalTokensConsumed > globalBudgetCap) {
-      const budgetTrace: ExecutionTrace = {
+      const budgetTrace: ExecutionTrace = applyRoutingGovernance({
         id: `trace-${input.id}-budget-exceeded`,
         taskId: input.id,
         workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+        agentId: input.agentId,
         timestamp: Date.now(),
         routingLevel: routing.level,
         approach: 'global-budget-exceeded',
@@ -392,7 +452,7 @@ export async function executeGeneratePhase(
         failureReason: `Global token budget exceeded: ${totalTokensConsumed} > ${globalBudgetCap}`,
         affectedFiles: input.targetFiles ?? [],
         workerSelectionAudit: workerSelection ?? lastWorkerSelection,
-      };
+      }, routing);
       await deps.traceCollector.record(budgetTrace);
       deps.bus?.emit('trace:record', { trace: budgetTrace });
       deps.bus?.emit('task:budget-exceeded', {
@@ -415,11 +475,11 @@ export async function executeGeneratePhase(
       error: String(dispatchErr),
       routing,
     });
-    const dispatchFailTrace: ExecutionTrace = {
+    const dispatchFailTrace: ExecutionTrace = applyRoutingGovernance({
       id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+      agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: routing.level,
       approach: 'dispatch-error',
@@ -432,7 +492,7 @@ export async function executeGeneratePhase(
       affectedFiles: input.targetFiles ?? [],
       workerSelectionAudit: workerSelection ?? lastWorkerSelection,
       exploration: explorationFlag || undefined,
-    };
+    }, routing);
     await deps.traceCollector.record(dispatchFailTrace);
     deps.bus?.emit('trace:record', { trace: dispatchFailTrace });
     return Phase.throw(dispatchErr);
@@ -445,6 +505,7 @@ export async function executeGeneratePhase(
       workspace: deps.workspace ?? process.cwd(),
       allowedPaths: input.targetFiles ?? [],
       routingLevel: routing.level,
+      taskId: input.id,
     } as import('../tools/tool-interface.ts').ToolContext;
 
     const { readOnly, mutating } = deps.toolExecutor.partitionBySideEffect(workerResult.proposedToolCalls);
@@ -465,4 +526,33 @@ export async function executeGeneratePhase(
     totalTokensConsumed,
     roomId,
   });
+}
+
+async function buildDispatchUnderstanding(
+  ctx: PhaseContext,
+  understanding: SemanticTaskUnderstanding,
+  routing: RoutingDecision,
+  matchedSkill: import('../types.ts').CachedSkill | null,
+  hasAgentLoopDeps: boolean,
+): Promise<SemanticTaskUnderstanding> {
+  const { input, deps } = ctx;
+
+  // Agentic-loop workers already inject skill hints in their init turn. This
+  // path covers single-shot dispatch and L2+ degraded single-shot fallback.
+  if (routing.level >= 2 && hasAgentLoopDeps) {
+    return understanding;
+  }
+
+  const resolved = await resolveRuntimeSkillHintConstraints({
+    input,
+    config: deps.skillHintsConfig,
+    agentMemory: deps.agentMemory,
+    matchedSkill,
+  });
+  if (resolved.constraints.length === 0) return understanding;
+
+  return {
+    ...understanding,
+    constraints: [...(understanding.constraints ?? []), ...resolved.constraints],
+  };
 }

@@ -109,6 +109,34 @@ describe('attachCLIProgressListener', () => {
     expect(output[0]).toContain('completed');
   });
 
+  test('capability promotion and sleep summary include capability counts', () => {
+    const bus = createBus();
+    const { output, stream } = createCapture();
+    attachCLIProgressListener(bus, { output: stream });
+
+    bus.emit('evolution:capabilityPromoted', {
+      agentId: 'ts-coder',
+      capabilityId: 'code.review.ts',
+      confidence: 0.72,
+      observationCount: 30,
+      taskTypeSignature: 'review::ts',
+    });
+    bus.emit('sleep:cycleComplete', {
+      cycleId: 'cycle-1',
+      patternsFound: 2,
+      rulesGenerated: 1,
+      skillsCreated: 0,
+      rulesPromoted: 0,
+      capabilitiesPromoted: 1,
+    });
+
+    expect(output).toHaveLength(2);
+    expect(output[0]).toContain('Capability promoted');
+    expect(output[0]).toContain('ts-coder');
+    expect(output[0]).toContain('code.review.ts');
+    expect(output[1]).toContain('1 capabilities');
+  });
+
   test('detach stops all output', () => {
     const bus = createBus();
     const { output, stream } = createCapture();

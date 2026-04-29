@@ -5,8 +5,9 @@
  * stays bounded, preserves success rate, and handles empty input.
  */
 import { describe, expect, test } from 'bun:test';
-import { formatSkillHintConstraints } from '../../../src/orchestrator/agent/agent-loop.ts';
-import type { CachedSkill } from '../../../src/orchestrator/types.ts';
+import type { AgentMemoryAPI } from '../../../src/orchestrator/agent-memory/agent-memory-api.ts';
+import { formatSkillHintConstraints, resolveRuntimeSkillHintConstraints } from '../../../src/orchestrator/skill-hints.ts';
+import type { CachedSkill, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function skill(overrides: Partial<CachedSkill> = {}): CachedSkill {
   return {
@@ -73,5 +74,81 @@ describe('formatSkillHintConstraints', () => {
     const result = formatSkillHintConstraints([skill()]);
     expect(result[0]).toContain('reference only');
     expect(result[0]).toContain('not mandates');
+  });
+});
+
+describe('resolveRuntimeSkillHintConstraints', () => {
+  function input(): TaskInput {
+    return {
+      id: 'task-1',
+      source: 'cli',
+      goal: 'fix auth bug',
+      taskType: 'code',
+      targetFiles: ['src/auth.ts'],
+      budget: { maxTokens: 10_000, maxRetries: 1, maxDurationMs: 30_000 },
+    } as TaskInput;
+  }
+
+  test('disabled config returns no constraints and does not query memory', async () => {
+    let queried = false;
+    const agentMemory = {
+      queryRelatedSkills: async () => {
+        queried = true;
+        return [skill({ approach: 'should not load' })];
+      },
+    } as unknown as AgentMemoryAPI;
+
+    const resolved = await resolveRuntimeSkillHintConstraints({
+      input: input(),
+      config: { enabled: false, topK: 3 },
+      agentMemory,
+      matchedSkill: skill({ approach: 'matched but disabled' }),
+    });
+
+    expect(resolved.constraints).toEqual([]);
+    expect(resolved.skills).toEqual([]);
+    expect(queried).toBe(false);
+  });
+
+  test('combines matched skill with related skills and dedupes by signature', async () => {
+    const matched = skill({ taskSignature: 'exact::auth.ts', approach: 'exact direct edit', successRate: 0.91 });
+    const related = skill({ taskSignature: 'similar::ts', approach: 'similar helper extraction', successRate: 0.82 });
+    const agentMemory = {
+      queryRelatedSkills: async (_taskSig: string, opts?: { k?: number }) => {
+        expect(opts?.k).toBe(2);
+        return [matched, related];
+      },
+    } as unknown as AgentMemoryAPI;
+
+    const resolved = await resolveRuntimeSkillHintConstraints({
+      input: input(),
+      config: { enabled: true, topK: 2 },
+      agentMemory,
+      matchedSkill: matched,
+    });
+
+    expect(resolved.skills.map((s) => s.taskSignature)).toEqual(['exact::auth.ts', 'similar::ts']);
+    expect(resolved.constraints[0]).toContain('2 proven');
+    expect(resolved.constraints[1]).toContain('exact direct edit');
+    expect(resolved.constraints[2]).toContain('similar helper extraction');
+  });
+
+  test('memory query failure still surfaces a verified matched skill', async () => {
+    const matched = skill({ taskSignature: 'exact::auth.ts', approach: 'verified exact skill', successRate: 0.94 });
+    const agentMemory = {
+      queryRelatedSkills: async () => {
+        throw new Error('skill store unavailable');
+      },
+    } as unknown as AgentMemoryAPI;
+
+    const resolved = await resolveRuntimeSkillHintConstraints({
+      input: input(),
+      config: { enabled: true, topK: 3 },
+      agentMemory,
+      matchedSkill: matched,
+    });
+
+    expect(resolved.skills).toEqual([matched]);
+    expect(resolved.constraints[1]).toContain('verified exact skill');
   });
 });

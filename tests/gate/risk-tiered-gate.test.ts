@@ -4,12 +4,14 @@
  *
  * TDD §8: hash-only (< 0.2), structural (0.2-0.4), full (≥ 0.4)
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import { clearGateDeps } from '../../src/gate/gate.ts';
 import { type GateRequest, runGate } from '../../src/gate/index.ts';
 import { calculateRiskScore, getIrreversibilityScore } from '../../src/gate/risk-router.ts';
+import { clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 
 let workspace: string;
 
@@ -21,6 +23,17 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(workspace, { recursive: true, force: true });
+});
+
+// Gate state is module-level (see src/gate/gate.ts). A previous test in the
+// process (e.g. anything that constructs an orchestrator via factory.ts) may
+// have left behind an OracleAccuracyStore pointing at a now-closed DB —
+// causing `RangeError: Cannot use a closed database` once runGate() reaches
+// the accuracy lookup. Mirror tests/gate/gate.test.ts's beforeEach so this
+// suite is isolated from cross-test contamination.
+beforeEach(() => {
+  clearTscCache();
+  clearGateDeps();
 });
 
 function makeRequest(overrides: Partial<GateRequest> & { params?: Partial<GateRequest['params']> } = {}): GateRequest {

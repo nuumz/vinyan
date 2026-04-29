@@ -229,6 +229,14 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
     }),
   );
 
+  detachers.push(
+    bus.on('evolution:capabilityPromoted', ({ agentId, capabilityId, confidence, observationCount }) => {
+      write(
+        `${dim('[vinyan]')} ${green('Capability promoted')}: ${agentId} + ${capabilityId} (${confidence.toFixed(2)}, n=${observationCount})`,
+      );
+    }),
+  );
+
   // Skill events
   detachers.push(
     bus.on('skill:match', ({ taskId, skill }) => {
@@ -249,9 +257,10 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
 
   // Sleep cycle
   detachers.push(
-    bus.on('sleep:cycleComplete', ({ patternsFound, rulesPromoted, skillsCreated }) => {
+    bus.on('sleep:cycleComplete', ({ patternsFound, rulesPromoted, skillsCreated, capabilitiesPromoted }) => {
+      const capabilityText = capabilitiesPromoted ? `, ${capabilitiesPromoted} capabilities` : '';
       write(
-        `${dim('[vinyan]')} Sleep cycle: ${patternsFound} patterns, ${rulesPromoted} rules promoted, ${skillsCreated} skills`,
+        `${dim('[vinyan]')} Sleep cycle: ${patternsFound} patterns, ${rulesPromoted} rules promoted, ${skillsCreated} skills${capabilityText}`,
       );
     }),
   );

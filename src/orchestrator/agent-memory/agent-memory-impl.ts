@@ -220,6 +220,42 @@ export class AgentMemoryAPIImpl implements AgentMemoryAPI {
     }
   }
 
+  async recordFailedApproach(entry: {
+    taskId: string;
+    taskType: string;
+    approach: string;
+    failureOracle: string;
+    routingLevel: number;
+    fileTarget?: string;
+    actionVerb?: string;
+  }): Promise<void> {
+    if (!this.deps.rejectedApproachStore) return;
+    try {
+      // Map our domain shape to the store's column schema. `oracleVerdict` is
+      // a constant string ('rejected') because the rejected-approach store
+      // separately tracks which verb caused the failure via `failureOracle`.
+      // Confidence 1.0 because the failure is observed, not estimated.
+      this.deps.rejectedApproachStore.store({
+        taskId: entry.taskId,
+        taskType: entry.taskType,
+        fileTarget: entry.fileTarget ?? '',
+        approach: entry.approach,
+        oracleVerdict: 'rejected',
+        verdictConfidence: 1.0,
+        failureOracle: entry.failureOracle,
+        routingLevel: entry.routingLevel,
+        source: 'task-end',
+        actionVerb: entry.actionVerb,
+      });
+      // Invalidate the prefix so a subsequent planner in the same task sees
+      // its own freshly-recorded failures (defensive — most workflows record
+      // at task end, after which the cache is dropped via endTask anyway).
+      this.invalidateCachePrefix('queryFailedApproaches');
+    } catch (err) {
+      warn('recordFailedApproach', err);
+    }
+  }
+
   private invalidateCachePrefix(prefix: string): void {
     const taskId = this.currentTaskId();
     if (!taskId) return;

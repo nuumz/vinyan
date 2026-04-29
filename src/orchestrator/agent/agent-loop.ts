@@ -12,18 +12,19 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import { type SilentAgentConfig, SilentAgentDetector } from '../../guardrails/silent-agent.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
+import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
 import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
 import type { HookConfig } from '../hooks/hook-schema.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
-import { computeTaskSignature } from '../prediction/self-model.ts';
-import type { CachedSkill } from '../types.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
 import { countPendingProposals } from '../memory/memory-proposals.ts';
 import { evaluatePermission } from '../permissions/permission-checker.ts';
 import type { PermissionConfig } from '../permissions/permission-schema.ts';
+import { computeTaskSignature } from '../prediction/self-model.ts';
 import type { DelegationRequest, OrchestratorTurn, WorkerTurn } from '../protocol.ts';
+import { formatSkillHintConstraints } from '../skill-hints.ts';
 import { scanToolResult } from '../tools/built-in-tools.ts';
 import type { Tool, ToolContext } from '../tools/tool-interface.ts';
 import { manifestFor } from '../tools/tool-manifest.ts';
@@ -72,6 +73,14 @@ export interface WorkerLoopResult {
    * status='input-required' (no retry, no escalation).
    */
   needsUserInput?: boolean;
+  /**
+   * Slice 4 Gap B: A/B/C self-assessment the agent attached to its terminal
+   * `done` or `uncertain` turn. Forwarded to the orchestrator's GoalEvaluator
+   * so it can compute prediction-error vs the deterministic grade (A7).
+   * Optional — agents that don't comply with the accountability contract
+   * simply omit this and the evaluator skips prediction-error scoring.
+   */
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
 }
 
 export interface AgentLoopDeps {
@@ -548,6 +557,7 @@ function buildUncertainResult(
   needsUserInput?: boolean,
   cacheReadTokens?: number,
   cacheCreationTokens?: number,
+  selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] },
 ): WorkerLoopResult {
   return {
     mutations,
@@ -562,6 +572,7 @@ function buildUncertainResult(
     proposedToolCalls: [],
     nonRetryableError,
     ...(needsUserInput ? { needsUserInput: true } : {}),
+    ...(selfAssessment ? { selfAssessment } : {}),
   };
 }
 
@@ -676,25 +687,7 @@ export async function runWave4GoalCheck(
   }
 }
 
-/**
- * Wave 5b: format top-k CachedSkills as a constraint block the worker
- * prompt assembler will render under "Constraints". Each entry shows the
- * proven approach + success rate. Bounded to avoid token bloat.
- */
-export function formatSkillHintConstraints(skills: CachedSkill[]): string[] {
-  if (skills.length === 0) return [];
-  const out: string[] = [
-    `[SKILL HINTS] ${skills.length} proven approach(es) for similar prior tasks (reference only, not mandates):`,
-  ];
-  for (let i = 0; i < skills.length; i++) {
-    const s = skills[i]!;
-    const pct = Math.round((s.successRate ?? 0) * 100);
-    // Bound per-hint length so a single verbose approach can't dominate the block.
-    const approach = s.approach.length > 200 ? `${s.approach.slice(0, 200)}…` : s.approach;
-    out.push(`  ${i + 1}. ${approach} (success: ${pct}%, uses: ${s.usageCount ?? 0})`);
-  }
-  return out;
-}
+export { formatSkillHintConstraints } from '../skill-hints.ts';
 
 export async function handleDelegation(
   request: DelegationRequest,
@@ -716,7 +709,40 @@ export async function handleDelegation(
 
   const reserved = decision.allocatedTokens;
   const childBudget = budget.deriveChildBudget(reserved);
-  const subInput = buildSubTaskInput(request, parent, routing, childBudget);
+
+  // Phase-14 (Item 4) — A1 Epistemic Separation. When the parent task is a
+  // code-mutation AND the delegation goal reads as verification work, force
+  // the canonical Verifier persona. Same router as workflow-executor uses,
+  // so both dispatch surfaces stay in lockstep. Resolution priority:
+  // A1 verifier override > request.targetAgentId > inheritance/default.
+  // Skip silently when registry isn't wired (legacy / minimal setups).
+  let a1VerifierAgentId: string | null = null;
+  if (deps.agentRegistry) {
+    // Phase-15 Item 3: duck-type taskDomain; falls through to undefined
+    // until TaskInput carries it. See workflow-executor for the rationale.
+    const parentTaskDomain = (parent as { taskDomain?: import('../types.ts').TaskDomain }).taskDomain;
+    a1VerifierAgentId = selectVerifierForDelegation(
+      {
+        description: request.goal,
+        parentTaskType: parent.taskType,
+        parentAgentId: parent.agentId,
+        ...(parentTaskDomain ? { parentTaskDomain } : {}),
+      },
+      deps.agentRegistry,
+    );
+  }
+  const effectiveRequest: DelegationRequest = a1VerifierAgentId
+    ? { ...request, targetAgentId: a1VerifierAgentId }
+    : request;
+  const subInput = buildSubTaskInput(effectiveRequest, parent, routing, childBudget);
+  if (a1VerifierAgentId) {
+    deps.bus?.emit('delegation:a1_verifier_routed', {
+      taskId: parent.id,
+      parentAgentId: parent.agentId ?? null,
+      verifierAgentId: a1VerifierAgentId,
+      requestedTargetAgentId: request.targetAgentId ?? null,
+    });
+  }
 
   const startTime = performance.now();
   try {
@@ -969,6 +995,7 @@ export async function runAgentLoop(
     allowedPaths: input.targetFiles ?? [],
     workspace: deps.workspace,
     overlayDir: overlay.dir,
+    taskId: input.id,
     onDelegate:
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)
@@ -984,63 +1011,101 @@ export async function runAgentLoop(
     // Phase 7c-2: bind plan_update to SessionProgress so the control tool can
     // install new plan snapshots. The callback runs synchronously and returns
     // a validation result the tool propagates back as a tool-result status.
-    onPlanUpdate: (todos) => progress.recordPlanUpdate(todos),
+    // After a successful update we also re-emit `agent:plan_update` on the
+    // bus so the chat UI's streaming-turn reducer can refresh its checklist;
+    // without this the plan_update tool succeeds silently and the user never
+    // sees stepwise progress (mirrors workflow-executor's emit pattern).
+    onPlanUpdate: (todos) => {
+      const result = progress.recordPlanUpdate(todos);
+      if (result.ok && deps.bus) {
+        deps.bus.emit('agent:plan_update', {
+          taskId: input.id,
+          steps: progress.plan.map((t) => ({
+            id: String(t.id),
+            label: t.status === 'in_progress' ? t.activeForm : t.content,
+            status:
+              t.status === 'in_progress' ? 'running' : t.status === 'completed' ? 'done' : 'pending',
+          })),
+        });
+      }
+      return result;
+    },
   };
 
   try {
+    // Bootstrap-precondition check: agent-worker-entry hard-requires
+    // VINYAN_PROXY_SOCKET (it calls back to the orchestrator's LLM via the
+    // proxy). When deps.proxySocketPath is absent the child would log
+    // "VINYAN_PROXY_SOCKET env var is required for subprocess bootstrap" and
+    // exit before reading the init turn, leaving the parent stuck waiting
+    // on an empty stdout (the smoke-test 98s timeout in known-issues #9/#10).
+    // Surface the misconfiguration synchronously instead.
+    //
+    // Test injection escape hatch: when `deps.createSession` is provided,
+    // the caller bypasses subprocess spawn entirely (e.g. MockAgentSession
+    // in tests/orchestrator/agent-loop.test.ts). The proxy-socket
+    // precondition does not apply because no real worker subprocess will
+    // run. Without this guard, every agent-loop unit test would have to
+    // pass a fake socket path purely to satisfy the precondition.
+    if (!deps.createSession && !deps.proxySocketPath) {
+      throw new Error(
+        'agent-loop: deps.proxySocketPath is required to spawn the agent worker subprocess. ' +
+          'Wire one in factory.ts (createOrchestrator) or use the in-process worker pool path for L0/L1.',
+      );
+    }
+
     // Compress perception before sending (fix #5)
     const compressedPerception = deps.compressPerception(perception, budget.toSnapshot().contextWindow);
 
-    // Spawn subprocess
-    const proc = Bun.spawn(['bun', 'run', deps.agentWorkerEntryPath], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: {
-        ...process.env,
-        VINYAN_ROUTING_LEVEL: String(routing.level),
-        VINYAN_MODEL: routing.model ?? '',
-        VINYAN_ORCHESTRATOR_PID: String(process.pid),
-        // Forward the selected worker's tier so subprocess uses the correct provider
-        VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
-        ...(deps.proxySocketPath ? { VINYAN_PROXY_SOCKET: deps.proxySocketPath } : {}),
-      },
-    }) as unknown as SubprocessHandle;
-
-    // Drain stderr in background for diagnostics — surface worker errors to orchestrator
+    // Spawn subprocess — skipped when `deps.createSession` is injected
+    // (test path uses a MockAgentSession that doesn't need a real proc).
+    let proc: SubprocessHandle | undefined;
     const stderrChunks: string[] = [];
-    const stderrDecoder = new TextDecoder();
-    const stderrReader = (proc as any).stderr?.getReader?.();
-    if (stderrReader) {
-      (async () => {
-        try {
-          while (true) {
-            const { done, value } = await stderrReader.read();
-            if (done) break;
-            const text = stderrDecoder.decode(value, { stream: true });
-            stderrChunks.push(text);
-            // Forward worker stderr to orchestrator stderr for visibility
-            process.stderr.write(`[worker:${input.id}] ${text}`);
+    if (!deps.createSession) {
+      proc = Bun.spawn(['bun', 'run', deps.agentWorkerEntryPath], {
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...process.env,
+          VINYAN_ROUTING_LEVEL: String(routing.level),
+          VINYAN_MODEL: routing.model ?? '',
+          VINYAN_ORCHESTRATOR_PID: String(process.pid),
+          // Forward the selected worker's tier so subprocess uses the correct provider
+          VINYAN_WORKER_TIER: extractTierFromWorkerId(routing.workerId) ?? '',
+          // Non-null because the precondition above guarantees it when
+          // we reach the spawn branch.
+          VINYAN_PROXY_SOCKET: deps.proxySocketPath as string,
+        },
+      }) as unknown as SubprocessHandle;
+
+      // Drain stderr in background for diagnostics — surface worker errors to orchestrator
+      const stderrDecoder = new TextDecoder();
+      const stderrReader = (proc as any).stderr?.getReader?.();
+      if (stderrReader) {
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await stderrReader.read();
+              if (done) break;
+              const text = stderrDecoder.decode(value, { stream: true });
+              stderrChunks.push(text);
+              // Forward worker stderr to orchestrator stderr for visibility
+              process.stderr.write(`[worker:${input.id}] ${text}`);
+            }
+          } catch {
+            /* reader closed */
           }
-        } catch {
-          /* reader closed */
-        }
-      })();
+        })();
+      }
     }
 
-    session = deps.createSession?.(proc) ?? new AgentSession(proc, (delta) => {
-      // Phase 2: forward LLM token deltas to bus as `agent:text_delta`.
-      // Observational only (A3) — no effect on verification/commit paths.
+    session = deps.createSession?.(proc as SubprocessHandle) ?? new AgentSession(proc as SubprocessHandle, (delta) => {
+      // Phase 2: forward LLM token deltas to bus as `llm:stream_delta`. The
+      // legacy `agent:text_delta` mirror was removed — content lives in the
+      // canonical event with `kind: 'content'`. Observational only (A3) —
+      // no effect on verification / commit paths.
       if (deps.streamingAssistantDelta) {
-        deps.bus?.emit('agent:text_delta', {
-          taskId: input.id,
-          turnId: delta.turnId,
-          text: delta.text,
-        });
-        // Mirror to the richer llm:stream_delta event so newer consumers
-        // (ChatStreamRenderer, SSE clients) get the superset shape. Content
-        // is the default kind — providers that later grow richer emissions
-        // (thinking / tool_use_*) can bypass this mirror and emit directly.
         deps.bus?.emit('llm:stream_delta', {
           taskId: input.id,
           turnId: delta.turnId,
@@ -1513,6 +1578,7 @@ export async function runAgentLoop(
           transcript,
           isUncertain: false,
           proposedToolCalls: [],
+          ...(turn.selfAssessment ? { selfAssessment: turn.selfAssessment } : {}),
         };
       } else if (turn.type === 'uncertain') {
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
@@ -1547,6 +1613,7 @@ export async function runAgentLoop(
           needsUserInput,
           cacheReadTokens > 0 ? cacheReadTokens : undefined,
           cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
+          turn.selfAssessment,
         );
       }
     }

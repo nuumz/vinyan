@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import { buildSubTaskInput, DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type { AgentBudget, DelegationRequest } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 
 function makeBudget(overrides: Partial<AgentBudget> = {}): AgentBudget {
   return {
@@ -342,5 +342,41 @@ describe('buildSubTaskInput', () => {
     const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
     expect(result.subagentType).toBe('general-purpose');
     expect(result.taskType).toBe('code');
+  });
+
+  // Parent-linkage propagation tests (round 4 fix). Without these the
+  // child loses observability + sessionId routing + explicit agent
+  // selection — silent multi-agent dispatch failures.
+  it('propagates parent.id to child.parentTaskId so trees can be reconstructed', () => {
+    const parent = makeParent({ id: 'task-parent-XYZ' });
+    const result = buildSubTaskInput(makeRequest(), parent, makeRouting(), makeBudget());
+    expect(result.parentTaskId).toBe('task-parent-XYZ');
+  });
+
+  it('inherits parent.sessionId so child events route to the same chat surface', () => {
+    const parent = makeParent({ sessionId: 'sess-abc' });
+    const result = buildSubTaskInput(makeRequest(), parent, makeRouting(), makeBudget());
+    expect(result.sessionId).toBe('sess-abc');
+  });
+
+  it('omits sessionId when parent has none (no spurious empty string)', () => {
+    const parent = makeParent({ sessionId: undefined });
+    const result = buildSubTaskInput(makeRequest(), parent, makeRouting(), makeBudget());
+    expect(result.sessionId).toBeUndefined();
+  });
+
+  it('forwards request.targetAgentId as child.agentId — the multi-agent dispatch hook', () => {
+    const request: DelegationRequest = {
+      goal: 'Architect-only task',
+      targetFiles: [],
+      targetAgentId: 'architect',
+    };
+    const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+    expect(result.agentId).toBe('architect');
+  });
+
+  it('omits agentId when no targetAgentId requested (fall through to default routing)', () => {
+    const result = buildSubTaskInput(makeRequest(), makeParent(), makeRouting(), makeBudget());
+    expect(result.agentId).toBeUndefined();
   });
 });

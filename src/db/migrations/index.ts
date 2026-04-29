@@ -20,6 +20,18 @@ import { migration008 } from './008_skill_trust_ledger.ts';
 import { migration009 } from './009_user_md_dialectic.ts';
 import { migration010 } from './010_commonsense_rules.ts';
 import { migration011 } from './011_commonsense_rule_telemetry.ts';
+import { migration012 } from './012_capability_trace_metadata.ts';
+import { migration013 } from './013_rule_promote_capability_action.ts';
+import { migration014 } from './014_session_metadata.ts';
+import { migration015 } from './015_capability_route_audit.ts';
+import { migration016 } from './016_agent_proposals.ts';
+import { migration017 } from './017_task_events.ts';
+import { migration018 } from './018_retire_legacy_builtins.ts';
+import { migration019 } from './019_skill_outcomes.ts';
+import { migration020 } from './020_a8_governance_provenance.ts';
+import { migration021 } from './021_a10_goal_grounding.ts';
+import { migration022 } from './022_a5_oracle_independence.ts';
+import { migration023 } from './023_persona_overclaim.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -34,4 +46,16 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration009,
   migration010,
   migration011,
+  migration012,
+  migration013,
+  migration014,
+  migration015,
+  migration016,
+  migration017,
+  migration018,
+  migration019,
+  migration020,
+  migration021,
+  migration022,
+  migration023,
 ];

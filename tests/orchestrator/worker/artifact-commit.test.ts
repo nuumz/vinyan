@@ -73,17 +73,33 @@ describe('commitArtifacts', () => {
     expect(readFileSync(join(tempDir, 'src/deep/nested/file.ts'), 'utf-8')).toBe('content');
   });
 
-  test('rejects unsafe paths and applies safe ones', () => {
+  test('fail-closed: any unsafe path rejects the whole batch (no writes)', () => {
     const result = commitArtifacts(tempDir, [
       { path: 'src/safe.ts', content: 'safe' },
       { path: '/etc/passwd', content: 'hacked' },
       { path: 'src/../../../escape.ts', content: 'evil' },
     ]);
 
-    expect(result.applied).toEqual(['src/safe.ts']);
+    expect(result.applied).toHaveLength(0);
     expect(result.rejected).toHaveLength(2);
     expect(result.rejected[0]!.reason).toContain('Absolute');
     expect(result.rejected[1]!.reason).toContain('..');
+    // Safe file must NOT have been written under preflight semantics.
+    expect(() => readFileSync(join(tempDir, 'src/safe.ts'), 'utf-8')).toThrow();
+  });
+
+  test('fail-closed: symlink target in batch rejects the whole batch', () => {
+    const linkPath = join(tempDir, 'src', 'link.ts');
+    symlinkSync(join(tempDir, 'src', 'existing.ts'), linkPath);
+
+    const result = commitArtifacts(tempDir, [
+      { path: 'src/safe2.ts', content: 'safe' },
+      { path: 'src/link.ts', content: 'overwrite-via-symlink' },
+    ]);
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected.some((r) => r.reason.includes('symlink'))).toBe(true);
+    expect(() => readFileSync(join(tempDir, 'src/safe2.ts'), 'utf-8')).toThrow();
   });
 
   test('overwrites existing file', () => {

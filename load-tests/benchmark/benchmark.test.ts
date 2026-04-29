@@ -14,7 +14,7 @@ import type { HypothesisTuple, OracleVerdict } from '../../src/core/types.ts';
 import { verify as verifyAst } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
 import { runOracle } from '../../src/oracle/runner.ts';
-import { verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
+import { verify as verifyType, clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 import type { MutationCase } from './mutations.ts';
 import { buildMutationCases } from './mutations.ts';
 
@@ -263,6 +263,10 @@ describe('Oracle Gate Benchmark', () => {
   afterEach(() => {
     // Ensure teardown happens even if test fails
     // (each test calls teardown explicitly, but this is safety net)
+    // Clear the tsc dedup cache so the next mutation test gets a fresh tsc run.
+    // Without this, a valid-mutation result (verified: true) can be reused for the
+    // immediately-following invalid-mutation test that runs within the 5s dedup window.
+    clearTscCache();
   });
 
   // --- Baseline: verify fixture project is clean ---
@@ -362,15 +366,22 @@ describe('Oracle Gate Benchmark', () => {
       expect(verdict.verified).toBe(false);
     });
 
-    test('type-oracle via child process: clean workspace passes', async () => {
-      const hypothesis: HypothesisTuple = {
-        target: '',
-        pattern: 'type-check',
-        workspace: workspaceDir,
-      };
-      const verdict = await runOracle('type-oracle', hypothesis);
-      expect(verdict.verified).toBe(true);
-    });
+    test(
+      'type-oracle via child process: clean workspace passes',
+      async () => {
+        const hypothesis: HypothesisTuple = {
+          target: '',
+          pattern: 'type-check',
+          workspace: workspaceDir,
+        };
+        const verdict = await runOracle('type-oracle', hypothesis);
+        expect(verdict.verified).toBe(true);
+      },
+      // Two layers of process boot (bun → oracle entry → tsc) on a workspace with no
+      // tsbuildinfo cache realistically takes ~5–10s. runOracle itself defaults to a
+      // 30s timeout; mirror that here so the test passes under bun's 5s default.
+      30_000,
+    );
 
     test('dep-oracle via child process: reports blast radius', async () => {
       const hypothesis: HypothesisTuple = {

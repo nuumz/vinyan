@@ -19,6 +19,8 @@ function resolveWorkerEntryPath(): string {
 }
 
 import type { VinyanBus } from '../../core/bus.ts';
+import type { AgentLoopDeps } from '../agent/agent-loop.ts';
+import { type SkillCardView, toSkillCardView } from '../agents/derive-persona-capabilities.ts';
 import type { WorkerPool } from '../core-loop.ts';
 import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from '../llm/llm-reasoning-engine.ts';
@@ -40,7 +42,6 @@ import {
   type WorkingMemoryState,
 } from '../types.ts';
 import { buildTaskUnderstanding } from '../understanding/task-understanding.ts';
-import type { AgentLoopDeps } from '../agent/agent-loop.ts';
 
 /** WorkerOutput extended with cache token metrics from LLM response (in-process path only). */
 type WorkerOutputWithCache = WorkerOutput & {
@@ -89,7 +90,8 @@ export interface WorkerPoolConfig {
   /**
    * Phase 2 realtime streaming. When true, WorkerInput.stream is set for
    * subprocess dispatch, workers emit `{type:"delta",...}` lines, and
-   * worker-pool forwards them as `agent:text_delta` bus events.
+   * worker-pool forwards them as legacy `agent:text_delta` plus rich
+   * `llm:stream_delta` content bus events.
    * Default false — the legacy non-streaming path is the opt-out baseline.
    */
   streaming?: boolean;
@@ -360,6 +362,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private agentContextBuilder?: import('../agent-context/context-builder.ts').AgentContextBuilder;
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  private skillAcquirer?: import('../agents/skill-acquirer.ts').SkillAcquirer;
   private streamingEnabled: boolean;
   private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
   /** W3 P3: opt-in backend-abstraction delegation (MVP: L0 only). */
@@ -398,6 +401,10 @@ export class WorkerPoolImpl implements WorkerPool {
     this.backendSelector = config.backendSelector;
   }
 
+  private emitTextDelta(taskId: string, text: string): void {
+    this.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
+  }
+
   /**
    * Transition the dispatched worker's runtime state Standby → Working (or
    * Working → Working for multi-assignment). Returns a disposer that flips it
@@ -421,10 +428,7 @@ export class WorkerPoolImpl implements WorkerPool {
       try {
         mgr.markTaskComplete(workerId, taskId);
       } catch (err) {
-        console.warn(
-          `[vinyan] runtime-state: markTaskComplete failed for ${workerId}:`,
-          (err as Error).message,
-        );
+        console.warn(`[vinyan] runtime-state: markTaskComplete failed for ${workerId}:`, (err as Error).message);
       }
     };
   }
@@ -442,6 +446,54 @@ export class WorkerPoolImpl implements WorkerPool {
   /** Set specialist agent registry after construction (multi-agent prompt injection). */
   setAgentRegistry(registry: import('../agents/registry.ts').AgentRegistry): void {
     this.agentRegistry = registry;
+  }
+
+  /**
+   * Phase-6: set the skill acquirer used to fill capability gaps before
+   * dispatch. When set together with `agentRegistry`, a task whose persona
+   * is missing required capabilities will trigger a search of the local
+   * artifact store for matching skills and load them as acquired-scope refs
+   * for this task only. Without this setter, gaps stay gaps (legacy).
+   */
+  setSkillAcquirer(acquirer: import('../agents/skill-acquirer.ts').SkillAcquirer): void {
+    this.skillAcquirer = acquirer;
+  }
+
+  /**
+   * Phase-6 helper: identify required-capability ids the persona doesn't
+   * already cover, then call the acquirer for each. Returns the union of
+   * acquired refs (deduped by id). Best-effort — acquirer failures degrade
+   * to an empty array so a flaky local cache never blocks dispatch.
+   */
+  private async acquireForGapsIfApplicable(
+    agentProfile: import('../types.ts').AgentSpec,
+    requirements: import('../types.ts').CapabilityRequirement[] | undefined,
+    taskId: string,
+    routingLevel: number,
+  ): Promise<import('../types.ts').SkillRef[]> {
+    if (!this.skillAcquirer || !this.agentRegistry || !requirements || requirements.length === 0) {
+      return [];
+    }
+    // Compute the set of capability ids the persona already advertises
+    // (base + bound). Anything in `requirements` not covered is a gap.
+    const baselineDerived = this.agentRegistry.getDerivedCapabilities(agentProfile.id);
+    const covered = new Set<string>((baselineDerived?.capabilities ?? []).map((c) => c.id));
+    const gaps = requirements.filter((r) => !covered.has(r.id));
+    if (gaps.length === 0) return [];
+
+    const acquired = new Map<string, import('../types.ts').SkillRef>();
+    for (const gap of gaps) {
+      try {
+        const refs = await this.skillAcquirer.acquireForGap(agentProfile, gap, { taskId, routingLevel });
+        for (const ref of refs) {
+          // Dedupe by id — same skill may fill multiple gaps; load once.
+          if (!acquired.has(ref.id)) acquired.set(ref.id, ref);
+        }
+      } catch {
+        /* A9: acquirer failures degrade to no fill, never block dispatch */
+      }
+    }
+    return [...acquired.values()];
   }
 
   /** Lazily create warm pool on first subprocess dispatch (L2+). */
@@ -505,7 +557,7 @@ export class WorkerPoolImpl implements WorkerPool {
     const releaseRuntime = this.acquireRuntimeSlot(runtimeSlotId ?? undefined, input.id);
 
     try {
-      const workerInput = this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
+      const workerInput = await this.buildWorkerInput(input, perception, memory, plan, routing, understanding, turns);
 
       // L2/L3: container dispatch when isolation level = 2
       // Skip container dispatch when useSubprocess=false (testing mode) — fall back to in-process
@@ -535,13 +587,12 @@ export class WorkerPoolImpl implements WorkerPool {
       //   2. routing.model      — trust-weighted provider chosen by EngineSelector
       //   3. selectForRoutingLevel(routing.level) — tier default
       const selectedEngine = routing.workerId
-        ? (this.engineRegistry.selectById(routing.workerId)
-            ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
-            ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-        : (routing.model
-            ? (this.engineRegistry.selectById(routing.model)
-                ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-            : this.engineRegistry.selectForRoutingLevel(routing.level));
+        ? (this.engineRegistry.selectById(routing.workerId) ??
+          (routing.model ? this.engineRegistry.selectById(routing.model) : null) ??
+          this.engineRegistry.selectForRoutingLevel(routing.level))
+        : routing.model
+          ? (this.engineRegistry.selectById(routing.model) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+          : this.engineRegistry.selectForRoutingLevel(routing.level);
       const isLLMEngine = !selectedEngine || selectedEngine.engineType === 'llm';
       // Non-code tasks (no file mutations) use in-process mode — A6 subprocess isolation
       // is only needed when the worker writes to disk. This avoids LLM proxy overhead
@@ -554,7 +605,8 @@ export class WorkerPoolImpl implements WorkerPool {
         );
       }
       // Multi-agent: resolve specialist profile + peers from registry (prompt injection)
-      const agentProfile = input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      const agentProfile =
+        input.agentId && this.agentRegistry ? (this.agentRegistry.getAgent(input.agentId) ?? undefined) : undefined;
       const peerAgents = this.agentRegistry?.listAgents();
 
       const output = useSubprocessForTask
@@ -626,7 +678,7 @@ export class WorkerPoolImpl implements WorkerPool {
     }
   }
 
-  private buildWorkerInput(
+  private async buildWorkerInput(
     input: TaskInput,
     perception: PerceptualHierarchy,
     memory: WorkingMemoryState,
@@ -634,7 +686,7 @@ export class WorkerPoolImpl implements WorkerPool {
     routing: RoutingDecision,
     understanding?: import('../types.ts').TaskUnderstanding,
     turns?: import('../types.ts').Turn[],
-  ): WorkerInput {
+  ): Promise<WorkerInput> {
     // EO #2: Prune context by role before building input
     const { perception: prunedPerception, memory: prunedMemory } = pruneForRole(
       perception,
@@ -667,13 +719,35 @@ export class WorkerPoolImpl implements WorkerPool {
     // path (worker-entry.ts) can render the same persona as the in-process
     // path. Absent registries => legacy workspace-default behaviour.
     const agentProfile =
-      input.agentId && this.agentRegistry ? this.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      input.agentId && this.agentRegistry ? (this.agentRegistry.getAgent(input.agentId) ?? undefined) : undefined;
     const soulContent =
-      input.agentId && this.soulStore ? this.soulStore.loadSoulRaw(input.agentId) ?? undefined : undefined;
+      input.agentId && this.soulStore ? (this.soulStore.loadSoulRaw(input.agentId) ?? undefined) : undefined;
     const agentContext =
-      input.agentId && this.agentContextBuilder
-        ? this.agentContextBuilder.buildContext(input.agentId)
-        : undefined;
+      input.agentId && this.agentContextBuilder ? this.agentContextBuilder.buildContext(input.agentId) : undefined;
+
+    // Phase-5B + 7: also resolve persona's loaded skill cards so the subprocess
+    // worker renders the same `agent-skill-cards` section as the in-process
+    // path. The worker has no registry access, so cards are pre-computed
+    // here and shipped through the IPC payload as `loadedSkillCards`.
+    //
+    // Phase-7: the acquirer also runs on this path so subprocess L2/L3 tasks
+    // get acquired-scope skills. Without this, in-process L0/L1 tasks would
+    // see acquired skills but isolated subprocess workers would not.
+    let loadedSkillCards: SkillCardView[] | undefined;
+    if (input.agentId && agentProfile && this.agentRegistry) {
+      const acquiredRefs = await this.acquireForGapsIfApplicable(
+        agentProfile,
+        resolvedUnderstanding.capabilityRequirements as import('../types.ts').CapabilityRequirement[] | undefined,
+        input.id,
+        routing.level,
+      );
+      const derived = this.agentRegistry.getDerivedCapabilities(input.agentId, {
+        extraRefs: acquiredRefs.length > 0 ? acquiredRefs : undefined,
+      });
+      if (derived && derived.loadedSkills.length > 0) {
+        loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
+      }
+    }
 
     return {
       taskId: input.id,
@@ -703,6 +777,9 @@ export class WorkerPoolImpl implements WorkerPool {
       // Plan commit A: Turn-model history. Subprocess workers prefer this over
       // any legacy conversationHistory shipped separately — blocks are verbatim.
       ...(turns && turns.length > 0 ? { turns } : {}),
+      // Phase-5B: skill cards forwarded so subprocess prompts render the
+      // `agent-skill-cards` section identically to the in-process path.
+      ...(loadedSkillCards && loadedSkillCards.length > 0 ? { loadedSkillCards } : {}),
     };
   }
 
@@ -720,13 +797,12 @@ export class WorkerPoolImpl implements WorkerPool {
     //   2. routing.model      — trust-weighted provider chosen by EngineSelector
     //   3. selectForRoutingLevel(routing.level) — tier default
     const engine = routing.workerId
-      ? (this.engineRegistry.selectById(routing.workerId)
-          ?? (routing.model ? this.engineRegistry.selectById(routing.model) : null)
-          ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-      : (routing.model
-          ? (this.engineRegistry.selectById(routing.model)
-              ?? this.engineRegistry.selectForRoutingLevel(routing.level))
-          : this.engineRegistry.selectForRoutingLevel(routing.level));
+      ? (this.engineRegistry.selectById(routing.workerId) ??
+        (routing.model ? this.engineRegistry.selectById(routing.model) : null) ??
+        this.engineRegistry.selectForRoutingLevel(routing.level))
+      : routing.model
+        ? (this.engineRegistry.selectById(routing.model) ?? this.engineRegistry.selectForRoutingLevel(routing.level))
+        : this.engineRegistry.selectForRoutingLevel(routing.level);
     if (!engine) {
       return emptyOutput(workerInput.taskId);
     }
@@ -740,15 +816,40 @@ export class WorkerPoolImpl implements WorkerPool {
     // Phase 2: keyed by SPECIALIST id (ts-coder/writer/...), not engine workerId.
     // Falls back to engine id for legacy compatibility when no agent is resolved.
     const aclKey = agentProfile?.id ?? routing.workerId;
-    const agentContext = aclKey && this.agentContextBuilder
-      ? this.agentContextBuilder.buildContext(aclKey)
-      : undefined;
+    const agentContext = aclKey && this.agentContextBuilder ? this.agentContextBuilder.buildContext(aclKey) : undefined;
 
     // Living Agent Soul: load SOUL.md for deep behavioral guidance (~1000-1500 tokens).
     // Same keying as ACL — specialist id, fallback to engine id.
-    const soulContent = aclKey && this.soulStore
-      ? this.soulStore.loadSoulRaw(aclKey)
-      : undefined;
+    const soulContent = aclKey && this.soulStore ? this.soulStore.loadSoulRaw(aclKey) : undefined;
+
+    // Phase-2 + Phase-5A: surface the persona's loaded skill loadout to the
+    // prompt as integrity-stamped `<skill-card>` envelopes. Without this
+    // wiring, the `agent-skill-cards` section stays empty and skill-aware
+    // routing benefits don't show up in the prompt itself.
+    //
+    // Phase-5B: subprocess dispatch ships these via WorkerInput.loadedSkillCards
+    // (see buildWorkerInput) so worker-entry.ts renders the same section.
+    //
+    // Phase-6: BEFORE deriving skills, ask the acquirer to fill any open
+    // capability gap from the local artifact store. Acquired refs are passed
+    // via `extraRefs` so they appear in `derived.loadedSkills` alongside
+    // base + bound. Outcome attribution + ACL composition all flow through
+    // the same path.
+    let loadedSkillCards: SkillCardView[] | undefined = workerInput.loadedSkillCards;
+    if (!loadedSkillCards && agentProfile && this.agentRegistry) {
+      const acquiredRefs = await this.acquireForGapsIfApplicable(
+        agentProfile,
+        workerInput.understanding?.capabilityRequirements as import('../types.ts').CapabilityRequirement[] | undefined,
+        workerInput.taskId,
+        routing.level,
+      );
+      const derived = this.agentRegistry.getDerivedCapabilities(agentProfile.id, {
+        extraRefs: acquiredRefs.length > 0 ? acquiredRefs : undefined,
+      });
+      if (derived && derived.loadedSkills.length > 0) {
+        loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
+      }
+    }
 
     const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
@@ -763,8 +864,9 @@ export class WorkerPoolImpl implements WorkerPool {
       environment, // Phase 7a: OS/cwd/git block rendered by shared section
       agentContext, // Agent Context Layer: persistent agent identity/memory/skills
       soulContent ?? undefined, // Living Agent Soul: deep behavioral guidance from SOUL.md
-      agentProfile, // Multi-agent: specialist persona (ts-coder, writer, ...)
+      agentProfile, // Multi-agent: specialist persona (developer, author, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
+      loadedSkillCards, // Phase-2: SKILL.md cards with hash-stamped envelope
     );
 
     const startTime = performance.now();
@@ -780,6 +882,7 @@ export class WorkerPoolImpl implements WorkerPool {
         systemPrompt,
         userPrompt,
         maxTokens: workerInput.budget.maxTokens,
+        timeoutMs: workerInput.budget.timeoutMs,
         temperature,
         providerOptions: {
           ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
@@ -872,10 +975,7 @@ export class WorkerPoolImpl implements WorkerPool {
       }
 
       if (raw?.type === 'delta' && typeof raw.text === 'string') {
-        this.bus?.emit('agent:text_delta', {
-          taskId: String(raw.taskId ?? workerInput.taskId),
-          text: raw.text,
-        });
+        this.emitTextDelta(String(raw.taskId ?? workerInput.taskId), raw.text);
         continue;
       }
 
@@ -950,16 +1050,20 @@ export class WorkerPoolImpl implements WorkerPool {
       // Streaming cold path: stdout may contain delta lines before the final
       // WorkerOutput JSON. Split on newline and pick the last JSON object that
       // matches WorkerOutputSchema; forward any `{type:"delta",...}` lines to bus.
-      const lines = result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lines = result.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       let output: WorkerOutput | null = null;
       for (const line of lines) {
         let raw: any;
-        try { raw = JSON.parse(line); } catch { continue; }
+        try {
+          raw = JSON.parse(line);
+        } catch {
+          continue;
+        }
         if (raw?.type === 'delta' && typeof raw.text === 'string') {
-          this.bus?.emit('agent:text_delta', {
-            taskId: String(raw.taskId ?? workerInput.taskId),
-            text: raw.text,
-          });
+          this.emitTextDelta(String(raw.taskId ?? workerInput.taskId), raw.text);
           continue;
         }
         const candidate = WorkerOutputSchema.safeParse(raw);

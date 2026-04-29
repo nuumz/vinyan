@@ -7,6 +7,7 @@
  * Source of truth: WP-5 Observability Extension (Phase 5.15)
  */
 import type { SystemMetrics } from './metrics.ts';
+import type { DegradationStatusSnapshot } from './degradation-status.ts';
 
 export interface PrometheusMetric {
   name: string;
@@ -32,8 +33,16 @@ function renderLabeledMetric(name: string, help: string, type: string, labels: R
 
 /**
  * Render SystemMetrics and event counters into Prometheus text exposition format.
+ *
+ * @param degradationSnapshot Optional A9/T4 live status snapshot. When supplied,
+ *   `vinyan_degradation_active` and `vinyan_degradation_active_by_severity` are
+ *   emitted as gauges so dashboards can alert on currently-degraded components.
  */
-export function renderPrometheus(metrics: SystemMetrics, eventCounters: Record<string, number>): string {
+export function renderPrometheus(
+  metrics: SystemMetrics,
+  eventCounters: Record<string, number>,
+  degradationSnapshot?: DegradationStatusSnapshot,
+): string {
   const parts: string[] = [];
 
   // vinyan_tasks_total (counter)
@@ -111,6 +120,78 @@ export function renderPrometheus(metrics: SystemMetrics, eventCounters: Record<s
       eventCounters['circuit.open'] ?? 0,
     ),
   );
+
+  parts.push(
+    renderMetric(
+      'vinyan_degradations_total',
+      'Total runtime degradation events triggered by A9 policy',
+      'counter',
+      eventCounters['degradation.triggered'] ?? 0,
+    ),
+  );
+
+  parts.push(
+    renderLabeledMetric('vinyan_degradations_by_failure_total', 'Runtime degradations by failure type', 'counter', {
+      'failure_type="oracle-unavailable"': eventCounters['degradation.failure.oracle-unavailable'] ?? 0,
+      'failure_type="llm-provider-failure"': eventCounters['degradation.failure.llm-provider-failure'] ?? 0,
+      'failure_type="tool-timeout"': eventCounters['degradation.failure.tool-timeout'] ?? 0,
+      'failure_type="tool-failure"': eventCounters['degradation.failure.tool-failure'] ?? 0,
+      'failure_type="rate-limit"': eventCounters['degradation.failure.rate-limit'] ?? 0,
+      'failure_type="peer-unavailable"': eventCounters['degradation.failure.peer-unavailable'] ?? 0,
+      'failure_type="trace-store-write-failure"':
+        eventCounters['degradation.failure.trace-store-write-failure'] ?? 0,
+      'failure_type="budget-pressure"': eventCounters['degradation.failure.budget-pressure'] ?? 0,
+      'failure_type="economy-accounting-failure"':
+        eventCounters['degradation.failure.economy-accounting-failure'] ?? 0,
+      'failure_type="session-persistence-failure"':
+        eventCounters['degradation.failure.session-persistence-failure'] ?? 0,
+      'failure_type="mutation-apply-failure"': eventCounters['degradation.failure.mutation-apply-failure'] ?? 0,
+    }),
+  );
+
+  parts.push(
+    renderLabeledMetric('vinyan_degradations_by_severity_total', 'Runtime degradations by severity', 'counter', {
+      'severity="info"': eventCounters['degradation.severity.info'] ?? 0,
+      'severity="warning"': eventCounters['degradation.severity.warning'] ?? 0,
+      'severity="critical"': eventCounters['degradation.severity.critical'] ?? 0,
+    }),
+  );
+
+  if (degradationSnapshot) {
+    parts.push(
+      renderMetric(
+        'vinyan_degradation_active',
+        'Number of components currently in degraded state (A9 status tracker)',
+        'gauge',
+        degradationSnapshot.total,
+      ),
+    );
+    parts.push(
+      renderMetric(
+        'vinyan_degradation_fail_closed_active',
+        'Number of components currently fail-closed (partial outage)',
+        'gauge',
+        degradationSnapshot.failClosedCount,
+      ),
+    );
+    const bySeverity: Record<string, number> = {
+      'severity="info"': 0,
+      'severity="warning"': 0,
+      'severity="critical"': 0,
+    };
+    for (const entry of degradationSnapshot.entries) {
+      const key = `severity="${entry.severity}"`;
+      bySeverity[key] = (bySeverity[key] ?? 0) + 1;
+    }
+    parts.push(
+      renderLabeledMetric(
+        'vinyan_degradation_active_by_severity',
+        'Active degraded components grouped by severity',
+        'gauge',
+        bySeverity,
+      ),
+    );
+  }
 
   // vinyan_data_gate_satisfied (gauge, labeled by gate)
   parts.push(

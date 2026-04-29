@@ -12,10 +12,14 @@
 export { canonicalFrontmatterForHash, computeContentHash } from './hash.ts';
 export { parseSkillMd } from './parser.ts';
 export {
+  type SkillAcl,
+  SkillAclSchema,
   type SkillMdBody,
   type SkillMdFrontmatter,
   SkillMdFrontmatterSchema,
   SkillMdParseError,
   type SkillMdRecord,
+  type SkillProvidedCapability,
+  SkillProvidedCapabilitySchema,
 } from './schema.ts';
 export { canonicalBodyMarkdown, canonicalFrontmatterYaml, writeSkillMd } from './writer.ts';

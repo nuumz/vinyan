@@ -50,6 +50,8 @@ describe('renderPrometheus', () => {
       'vinyan_workers_active',
       'vinyan_guardrail_detections_total',
       'vinyan_circuit_breaker_opens_total',
+      'vinyan_degradations_total',
+      'vinyan_degradations_by_failure_total',
       'vinyan_data_gate_satisfied',
     ];
     for (const name of requiredMetrics) {
@@ -74,12 +76,18 @@ describe('renderPrometheus', () => {
       'guardrail.injection': 3,
       'guardrail.bypass': 1,
       'circuit.open': 2,
+      'degradation.triggered': 4,
+      'degradation.failure.oracle-unavailable': 3,
+      'degradation.failure.trace-store-write-failure': 1,
     };
     const output = renderPrometheus(makeMetrics(), counters);
     expect(output).toContain('vinyan_oracle_verdicts_total 100');
     expect(output).toContain('vinyan_guardrail_detections_total{type="injection"} 3');
     expect(output).toContain('vinyan_guardrail_detections_total{type="bypass"} 1');
     expect(output).toContain('vinyan_circuit_breaker_opens_total 2');
+    expect(output).toContain('vinyan_degradations_total 4');
+    expect(output).toContain('vinyan_degradations_by_failure_total{failure_type="oracle-unavailable"} 3');
+    expect(output).toContain('vinyan_degradations_by_failure_total{failure_type="trace-store-write-failure"} 1');
   });
 
   test('defaults missing event counters to 0', () => {
@@ -87,6 +95,7 @@ describe('renderPrometheus', () => {
     expect(output).toContain('vinyan_oracle_verdicts_total 0');
     expect(output).toContain('vinyan_guardrail_detections_total{type="injection"} 0');
     expect(output).toContain('vinyan_circuit_breaker_opens_total 0');
+    expect(output).toContain('vinyan_degradations_total 0');
   });
 
   test('renders labeled data gate metrics with 0 or 1', () => {

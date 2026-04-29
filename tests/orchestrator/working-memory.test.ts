@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { WorkingMemoryState } from '../../src/orchestrator/types.ts';
 import {
   MAX_FAILED_APPROACHES,
   MAX_HYPOTHESES,
@@ -6,7 +7,6 @@ import {
   MAX_UNCERTAINTIES,
   WorkingMemory,
 } from '../../src/orchestrator/working-memory.ts';
-import type { WorkingMemoryState } from '../../src/orchestrator/types.ts';
 
 describe('WorkingMemory', () => {
   test('recordFailedApproach adds to snapshot', () => {
@@ -144,7 +144,9 @@ describe('WorkingMemory', () => {
     const names = snap.activeHypotheses.map((h) => h.hypothesis);
     expect(names).not.toContain('low-conf');
     expect(names).toContain('newer-high');
-    snap.activeHypotheses.forEach((h) => expect(h.confidence).toBeGreaterThanOrEqual(0.85));
+    for (const hypothesis of snap.activeHypotheses) {
+      expect(hypothesis.confidence).toBeGreaterThanOrEqual(0.85);
+    }
   });
 
   test('getSnapshot returns deep copy — field mutation does not affect internal state', () => {
@@ -332,5 +334,104 @@ describe('WorkingMemory', () => {
     // Should not throw — the eviction path tolerates archiver failures.
     expect(() => wm.recordFailedApproach('post', 'v', 0.4)).not.toThrow();
     expect(wm.getSnapshot().failedApproaches.length).toBe(MAX_FAILED_APPROACHES);
+  });
+
+  describe('accountability grade carry-over (slice 4)', () => {
+    test('returns undefined / [] before any record', () => {
+      const wm = new WorkingMemory();
+      expect(wm.getLastAccountabilityGrade()).toBeUndefined();
+      expect(wm.getLastBlockerCategories()).toEqual([]);
+    });
+
+    test('round-trip stores grade and blocker categories', () => {
+      const wm = new WorkingMemory();
+      wm.recordAccountabilityResult('C', ['oracle-contradiction', 'acceptance-criteria']);
+      expect(wm.getLastAccountabilityGrade()).toBe('C');
+      expect(wm.getLastBlockerCategories()).toEqual(['oracle-contradiction', 'acceptance-criteria']);
+    });
+
+    test('overwrites prior grade on each call (most-recent-wins)', () => {
+      const wm = new WorkingMemory();
+      wm.recordAccountabilityResult('C', ['x']);
+      wm.recordAccountabilityResult('B', ['y']);
+      expect(wm.getLastAccountabilityGrade()).toBe('B');
+      expect(wm.getLastBlockerCategories()).toEqual(['y']);
+    });
+
+    test('dedupes blocker categories preserving first-seen order', () => {
+      const wm = new WorkingMemory();
+      wm.recordAccountabilityResult('C', ['a', 'b', 'a', 'c', 'b']);
+      expect(wm.getLastBlockerCategories()).toEqual(['a', 'b', 'c']);
+    });
+
+    test('caps blocker categories at 6', () => {
+      const wm = new WorkingMemory();
+      wm.recordAccountabilityResult('C', ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']);
+      expect(wm.getLastBlockerCategories().length).toBe(6);
+      expect(wm.getLastBlockerCategories()).toEqual(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+    });
+
+    test('getLastBlockerCategories returns a copy (caller cannot mutate state)', () => {
+      const wm = new WorkingMemory();
+      wm.recordAccountabilityResult('B', ['a', 'b']);
+      const out = wm.getLastBlockerCategories();
+      out.push('mutated');
+      expect(wm.getLastBlockerCategories()).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('prediction error carry-over (slice 4 follow-up)', () => {
+    test('returns undefined before any record', () => {
+      const wm = new WorkingMemory();
+      expect(wm.getLastPredictionError()).toBeUndefined();
+    });
+
+    test('round-trip stores all four fields', () => {
+      const wm = new WorkingMemory();
+      wm.recordPredictionError({
+        selfGrade: 'A',
+        deterministicGrade: 'C',
+        magnitude: 'severe',
+        direction: 'overconfident',
+      });
+      expect(wm.getLastPredictionError()).toEqual({
+        selfGrade: 'A',
+        deterministicGrade: 'C',
+        magnitude: 'severe',
+        direction: 'overconfident',
+      });
+    });
+
+    test('overwrites prior error on each call (most-recent-wins)', () => {
+      const wm = new WorkingMemory();
+      wm.recordPredictionError({
+        selfGrade: 'A',
+        deterministicGrade: 'C',
+        magnitude: 'severe',
+        direction: 'overconfident',
+      });
+      wm.recordPredictionError({
+        selfGrade: 'B',
+        deterministicGrade: 'B',
+        magnitude: 'aligned',
+        direction: 'aligned',
+      });
+      expect(wm.getLastPredictionError()?.magnitude).toBe('aligned');
+    });
+
+    test('getLastPredictionError returns a copy (caller cannot mutate state)', () => {
+      const wm = new WorkingMemory();
+      wm.recordPredictionError({
+        selfGrade: 'A',
+        deterministicGrade: 'C',
+        magnitude: 'severe',
+        direction: 'overconfident',
+      });
+      const out = wm.getLastPredictionError();
+      if (out) {
+        out.magnitude = 'aligned';
+      }
+      expect(wm.getLastPredictionError()?.magnitude).toBe('severe');
+    });
   });
 });

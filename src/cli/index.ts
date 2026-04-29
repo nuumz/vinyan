@@ -57,17 +57,21 @@ Commands:
   config show|validate  View or validate configuration
   session list|delete|export  Manage conversation sessions
   logs [--limit N]   Inspect execution traces
+  governance <sub>   Inspect persisted governance decisions (search|replay)
 
   economy [sub]      Economy OS: budget, costs, market, trust
   trajectory <sub>   Export execution traces (ShareGPT or ECP-enriched)
   routing-explain <task_id>  Explain why a task was routed to Lx (observable routing)
   metrics            Print full system metrics as JSON
   rules              List evolutionary rules
-  skills             List cached skills
+  skills             List cached skills (subcommands: import, bind, unbind)
   patterns           Export/import patterns for cross-project transfer
   memory [sub]       Review agent-proposed memory
   schedule <sub>     Manage NL-cron schedules (create|list|show|delete)
   skills import <id> Import a SKILL.md from an external registry (github:… / agentskills:…)
+  skills bind <persona> <skill> [--pin <ver>]   Bind a skill to a persona (workspace-scoped)
+  skills unbind <persona> <skill>               Remove a persona-scoped skill binding
+  skills promote [--apply]                      Propose acquired→bound promotions from outcome history
 
   gate               Run oracle gate (JSON on stdin)
   analyze [dir]      Analyze session logs
@@ -231,12 +235,38 @@ if (import.meta.main) {
     }
 
     case 'skills': {
-      // Sub-subcommand dispatch: `skills import <id>` routes to the W3 SK3
-      // hub importer; everything else falls through to the legacy
-      // single-command `runSkillsCommand` (list cached skills).
+      // Sub-subcommand dispatch:
+      //   `skills import <id>`              → hub importer (W3 SK3)
+      //   `skills bind <persona> <skill>`   → persona-scoped binding (Phase 2)
+      //   `skills unbind <persona> <skill>` → remove persona-scoped binding
+      //   anything else                     → legacy `runSkillsCommand` (list)
       if (args[1] === 'import') {
         const { runSkillsImportCommand } = await import('./skills-import.ts');
         await runSkillsImportCommand(args.slice(2), { profile: resolvedProfile.name });
+      } else if (args[1] === 'bind') {
+        try {
+          const { runSkillBindCommand } = await import('./skill-bind.ts');
+          await runSkillBindCommand(args.slice(2), workspacePath);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exit(2);
+        }
+      } else if (args[1] === 'unbind') {
+        try {
+          const { runSkillUnbindCommand } = await import('./skill-bind.ts');
+          await runSkillUnbindCommand(args.slice(2), workspacePath);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exit(2);
+        }
+      } else if (args[1] === 'promote') {
+        try {
+          const { runSkillPromoteCommand } = await import('./skill-promote.ts');
+          await runSkillPromoteCommand(args.slice(2), workspacePath);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exit(2);
+        }
       } else {
         await runSkillsCommand(workspacePath);
       }
@@ -335,6 +365,12 @@ if (import.meta.main) {
     case 'logs': {
       const { runLogsCommand } = await import('./logs.ts');
       await runLogsCommand(args.slice(1));
+      break;
+    }
+
+    case 'governance': {
+      const { runGovernanceCommand } = await import('./governance.ts');
+      await runGovernanceCommand(args.slice(1));
       break;
     }
 

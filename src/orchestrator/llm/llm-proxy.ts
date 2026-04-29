@@ -129,7 +129,29 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider['tier'
     id: `proxy/${tier}`,
     tier,
     async generate(request: LLMRequest): Promise<LLMResponse> {
-      const PROXY_TIMEOUT_MS = 65_000;
+      // IPC-layer ceiling for the worker → orchestrator → provider round-trip.
+      // The provider itself honors `request.timeoutMs` for the actual HTTP call;
+      // this socket timeout is a belt-and-suspenders safety net so a wedged
+      // provider can't pin a worker forever.
+      //
+      // Why budget-aware: the prior fixed 65s was below Claude Sonnet's
+      // realistic ceiling for analytical work — observed in the wild as
+      // "LLM proxy timeout after 65000ms" on long-running workflow steps
+      // even when the provider call itself had a higher timeout. The fix
+      // is to derive the IPC timeout from the request's own budget plus
+      // headroom for socket roundtrip + server-side queuing.
+      //
+      //   - Floor (120s): minimum cushion for a realistic Sonnet call
+      //   - Headroom (+15s): added to request.timeoutMs to cover IPC overhead
+      //   - Ceiling (600s): hard upper bound to keep wedged calls bounded
+      const PROXY_HEADROOM_MS = 15_000;
+      const PROXY_TIMEOUT_FLOOR_MS = 120_000;
+      const PROXY_TIMEOUT_CEILING_MS = 600_000;
+      const requestTimeoutMs = request.timeoutMs ?? 0;
+      const PROXY_TIMEOUT_MS = Math.min(
+        PROXY_TIMEOUT_CEILING_MS,
+        Math.max(PROXY_TIMEOUT_FLOOR_MS, requestTimeoutMs + PROXY_HEADROOM_MS),
+      );
       const proxyRequest: LLMProxyRequest = { tier, llmRequest: request };
 
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;

@@ -141,6 +141,20 @@ export function buildSubTaskInput(
       maxDurationMs: childBudget.maxDurationMs,
       maxRetries: 1, // children get 1 retry
     },
+    // Parent linkage — without this, the child trace is orphaned in
+    // observability and the chat UI can't reconstruct the delegation
+    // tree (it sees the child as an unrelated top-level task).
+    parentTaskId: parent.id,
+    // Inherit the parent's session so the child's events route to the
+    // same chat surface (per-session SSE membership tracker keys off
+    // sessionId; without inheritance the child's events leak as
+    // "unknown session").
+    ...(parent.sessionId ? { sessionId: parent.sessionId } : {}),
+    // Forward the explicit target agent when the parent asked for one.
+    // `request.targetAgentId` was previously dropped on the floor — the
+    // child always ran with the default agent for its `subagentType`,
+    // so multi-agent dispatch via delegate_task was silently broken.
+    ...(request.targetAgentId ? { agentId: request.targetAgentId } : {}),
     ...(contextConstraint ? { constraints: [contextConstraint] } : {}),
   };
 }

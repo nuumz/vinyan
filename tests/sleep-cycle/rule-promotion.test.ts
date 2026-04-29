@@ -178,6 +178,34 @@ describe('Rule Promotion Pipeline (H2)', () => {
     expect(activeRules.some((r) => r.id === 'rule-unsafe')).toBe(false);
   });
 
+  test('promote-capability probation rules are retired as offline-only records', async () => {
+    const { traceStore, patternStore, ruleStore } = createAllStores();
+
+    ruleStore.insert(
+      makeProbationRule({
+        id: 'rule-cap-promote',
+        condition: { filePattern: 'auth.ts' },
+        action: 'promote-capability',
+        parameters: { agentId: 'ts-coder', capabilityId: 'code.review.ts' },
+      }),
+    );
+
+    seedTracesForBacktest(traceStore, { failures: 80, successes: 0, filePattern: 'auth.ts' });
+
+    const runner = new SleepCycleRunner({
+      traceStore,
+      patternStore,
+      ruleStore,
+      config: { minTracesForAnalysis: 50 },
+    });
+
+    await runner.run();
+
+    const retiredRules = ruleStore.findByStatus('retired');
+    expect(retiredRules.some((r) => r.id === 'rule-cap-promote')).toBe(true);
+    expect(ruleStore.findByStatus('active').some((r) => r.id === 'rule-cap-promote')).toBe(false);
+  });
+
   test('effectiveness updated regardless of pass/fail (PH3.3: retired on fail)', async () => {
     const { traceStore, patternStore, ruleStore } = createAllStores();
 

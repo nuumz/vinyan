@@ -79,6 +79,186 @@ describe('TraceStore', () => {
     expect(result.affectedFiles).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
   });
 
+  test('capability-first metadata roundtrips for sleep-cycle promotion', () => {
+    const trace = makeTrace({
+      agentId: 'ts-coder',
+      taskTypeSignature: 'review::ts',
+      capabilityRequirements: [
+        {
+          id: 'code.review.ts',
+          weight: 0.9,
+          source: 'llm-extract',
+          fileExtensions: ['.ts'],
+          actionVerbs: ['review'],
+        },
+      ],
+      capabilityAnalysis: {
+        taskId: 'task-001',
+        required: [
+          {
+            id: 'code.review.ts',
+            weight: 0.9,
+            source: 'llm-extract',
+          },
+        ],
+        candidates: [
+          {
+            agentId: 'ts-coder',
+            profileId: 'ts-coder',
+            profileSource: 'registry',
+            trustTier: 'deterministic',
+            fitScore: 0.8,
+            matched: [{ id: 'code.refactor.ts', weight: 0.4, confidence: 0.9 }],
+            gap: [{ id: 'code.review.ts', weight: 0.9 }],
+          },
+        ],
+        gapNormalized: 0.2,
+        recommendedAction: 'proceed',
+      },
+      agentSelectionReason: 'capability-router override (score 0.80)',
+      selectedCapabilityProfileId: 'ts-coder',
+      selectedCapabilityProfileSource: 'registry',
+      selectedCapabilityProfileTrustTier: 'deterministic',
+      capabilityFitScore: 0.8,
+      unmetCapabilityIds: ['code.review.ts'],
+      syntheticAgentId: 'synthetic-abc12345',
+      knowledgeUsed: [
+        {
+          source: 'workspace-docs',
+          capability: 'code.review.ts',
+          query: 'code review ts',
+          content: 'Review checklist',
+          reference: 'docs/review.md',
+          confidence: 0.4,
+          retrievedAt: 1234,
+        },
+      ],
+    });
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.capabilityRequirements).toEqual(trace.capabilityRequirements);
+    expect(result.capabilityAnalysis).toEqual(trace.capabilityAnalysis);
+    expect(result.agentSelectionReason).toBe('capability-router override (score 0.80)');
+    expect(result.selectedCapabilityProfileId).toBe('ts-coder');
+    expect(result.selectedCapabilityProfileSource).toBe('registry');
+    expect(result.selectedCapabilityProfileTrustTier).toBe('deterministic');
+    expect(result.capabilityFitScore).toBe(0.8);
+    expect(result.unmetCapabilityIds).toEqual(['code.review.ts']);
+    expect(result.syntheticAgentId).toBe('synthetic-abc12345');
+    expect(result.knowledgeUsed).toEqual(trace.knowledgeUsed);
+  });
+
+  test('A8 governance provenance roundtrips and denormalizes audit columns', () => {
+    const trace = makeTrace({
+      governanceProvenance: {
+        decisionId: 'route-task-001-L2',
+        policyVersion: 'risk-router:v1',
+        attributedTo: 'riskRouter',
+        wasGeneratedBy: 'assessInitialLevel',
+        wasDerivedFrom: [
+          {
+            kind: 'file',
+            source: 'src/auth.ts',
+            contentHash: 'sha256:abc123',
+            observedAt: 1_777_400_000_000,
+            summary: 'blastRadius=3',
+          },
+          {
+            kind: 'routing-factor',
+            source: 'risk-score',
+            summary: 'riskScore=0.72',
+          },
+        ],
+        decidedAt: 1_777_400_001_000,
+        evidenceObservedAt: 1_777_400_000_000,
+        reason: 'riskScore=0.72 -> L2',
+        escalationPath: [0, 1, 2],
+      },
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.governanceProvenance).toEqual(trace.governanceProvenance);
+
+    const row = db
+      .query(
+        'SELECT routing_decision_id, policy_version, governance_actor, decision_timestamp, evidence_observed_at FROM execution_traces WHERE id = ?',
+      )
+      .get(trace.id) as Record<string, unknown>;
+    expect(row.routing_decision_id).toBe('route-task-001-L2');
+    expect(row.policy_version).toBe('risk-router:v1');
+    expect(row.governance_actor).toBe('riskRouter');
+    expect(row.decision_timestamp).toBe(1_777_400_001_000);
+    expect(row.evidence_observed_at).toBe(1_777_400_000_000);
+  });
+
+  test('legacy traces without governance provenance remain readable', () => {
+    store.insert(makeTrace());
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.governanceProvenance).toBeUndefined();
+  });
+
+  test('A10 goal grounding checks roundtrip as trace audit metadata', () => {
+    const trace = makeTrace({
+      goalGrounding: [
+        {
+          taskId: 'task-001',
+          phase: 'verify',
+          routingLevel: 2,
+          policyVersion: 'goal-time-grounding:v1',
+          checkedAt: 1_777_400_002_000,
+          action: 'downgrade-confidence',
+          reason: 'Temporal grounding found 1 stale or low-confidence fact(s)',
+          rootGoalHash: 'sha256:root',
+          currentGoalHash: 'sha256:root',
+          goalDrift: false,
+          freshnessDowngraded: true,
+          factCount: 2,
+          staleFactCount: 1,
+          minFactConfidence: 0.2,
+          evidence: [
+            {
+              kind: 'other',
+              source: 'fact-low',
+              contentHash: 'sha256:abc',
+              observedAt: 1_777_400_000_000,
+              summary: 'fact=src/auth.ts; confidence=0.200; validUntil=1777400001000',
+            },
+          ],
+        },
+      ],
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.goalGrounding).toEqual(trace.goalGrounding);
+  });
+
+  test('A5 oracle independence audit metadata roundtrips', () => {
+    const trace = makeTrace({
+      oracleIndependence: {
+        policyVersion: 'oracle-independence:v1',
+        compositionMethod: 'oracle-gate-aggregate-confidence',
+        assumption: 'shared-evidence',
+        oracleCount: 2,
+        deterministicOracleCount: 1,
+        heuristicOracleCount: 1,
+        primaryOracles: ['ast'],
+        corroboratingOracles: ['lint'],
+        sharedEvidenceWarnings: ['shared evidence sha256:abc used by ast,lint'],
+      },
+    });
+
+    store.insert(trace);
+
+    const result = store.findRecent(1)[0]!;
+    expect(result.oracleIndependence).toEqual(trace.oracleIndependence);
+  });
+
   test('QualityScore denormalized into columns and reconstructed', () => {
     const trace = makeTrace({ qualityScore: PHASE1_QUALITY });
     store.insert(trace);

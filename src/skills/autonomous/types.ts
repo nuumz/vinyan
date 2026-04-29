@@ -34,6 +34,22 @@ export interface PredictionErrorSample {
   readonly compositeError: number;
   readonly outcome: 'success' | 'failure' | 'timeout' | 'escalated';
   readonly ts: number;
+  /**
+   * Phase-8: persona that handled this task. When present, the creator
+   * keys windows on (personaId × taskSignature) so different personas
+   * accumulate distinct draft windows for the same task family. Optional
+   * for backward compatibility — legacy samples that omit it fall into
+   * the persona-agnostic window keyed on `taskSignature` alone.
+   */
+  readonly personaId?: string;
+}
+
+/**
+ * Phase-8 helper: compose the window key from the persona+signature pair.
+ * Centralised so the creator and any future sampler agree on the convention.
+ */
+export function composeWindowKey(taskSignature: string, personaId?: string): string {
+  return personaId ? `${personaId}::${taskSignature}` : taskSignature;
 }
 
 /**

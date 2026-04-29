@@ -56,6 +56,57 @@ describe('MetricsCollector', () => {
     expect(counters['decomposer.fallback']).toBe(1);
   });
 
+  test('degradation events increment total, failure, and action counters', () => {
+    const bus = createBus();
+    const collector = new MetricsCollector();
+    collector.attach(bus);
+
+    bus.emit('degradation:triggered', {
+      taskId: 't1',
+      failureType: 'oracle-unavailable',
+      component: 'oracle:ast',
+      action: 'fallback',
+      capabilityImpact: 'reduced',
+      retryable: true,
+      severity: 'warning',
+      policyVersion: 'degradation-strategy:v1',
+      reason: 'Circuit breaker opened after 3 failures',
+      sourceEvent: 'circuit:open',
+      occurredAt: 123,
+    });
+
+    expect(collector.get('degradation.triggered')).toBe(1);
+    expect(collector.get('degradation.failure.oracle-unavailable')).toBe(1);
+    expect(collector.get('degradation.action.fallback')).toBe(1);
+  });
+
+  test('goal grounding events increment total and action counters', () => {
+    const bus = createBus();
+    const collector = new MetricsCollector();
+    collector.attach(bus);
+
+    bus.emit('grounding:checked', {
+      taskId: 't1',
+      phase: 'verify',
+      routingLevel: 2,
+      policyVersion: 'goal-time-grounding:v1',
+      checkedAt: 123,
+      action: 'downgrade-confidence',
+      reason: 'Temporal grounding found 1 stale or low-confidence fact(s)',
+      rootGoalHash: 'sha256:root',
+      currentGoalHash: 'sha256:root',
+      goalDrift: false,
+      freshnessDowngraded: true,
+      factCount: 1,
+      staleFactCount: 1,
+      minFactConfidence: 0.2,
+      evidence: [],
+    });
+
+    expect(collector.get('grounding.checked')).toBe(1);
+    expect(collector.get('grounding.action.downgrade-confidence')).toBe(1);
+  });
+
   test('detach stops counting', () => {
     const bus = createBus();
     const collector = new MetricsCollector();

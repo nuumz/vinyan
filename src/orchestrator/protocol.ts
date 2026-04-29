@@ -8,6 +8,7 @@
  */
 import { z } from 'zod/v4';
 import { EvidenceSchema } from '../oracle/protocol.ts';
+import { SkillCardViewSchema } from './agents/derive-persona-capabilities.ts';
 import type { InstructionMemory } from './llm/instruction-hierarchy.ts';
 import type { EnvironmentInfo } from './llm/shared-prompt-sections.ts';
 import type { Turn } from './types.ts';
@@ -331,12 +332,7 @@ const ContentBlockSchema = z.custom<Turn['blocks'][number]>(
   (value) => {
     if (value == null || typeof value !== 'object') return false;
     const v = value as { type?: unknown };
-    return (
-      v.type === 'text' ||
-      v.type === 'thinking' ||
-      v.type === 'tool_use' ||
-      v.type === 'tool_result'
-    );
+    return v.type === 'text' || v.type === 'thinking' || v.type === 'tool_use' || v.type === 'tool_result';
   },
   { message: 'Expected Anthropic-native ContentBlock' },
 );
@@ -403,6 +399,14 @@ export const WorkerInputSchema = z.object({
    * tool_result blocks verbatim.
    */
   turns: z.array(TurnSchema).optional(),
+  /**
+   * Phase-2 + 5B: persona's loaded SKILL.md cards, computed by the
+   * orchestrator (in-process) and forwarded across the subprocess boundary.
+   * The worker passes them straight into `assemblePrompt` so the
+   * `agent-skill-cards` section renders identically in both dispatch paths.
+   * Empty/undefined → no cards, prompt unchanged.
+   */
+  loadedSkillCards: z.array(SkillCardViewSchema).optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────
@@ -581,7 +585,7 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
      * Safe no-op when false or when the provider lacks streaming support.
      */
     stream: z.boolean().optional(),
-    /** Multi-agent: specialist id selected for this task (ts-coder, writer, ...). */
+    /** Multi-agent: specialist id selected for this task (developer, author, ...). */
     agentId: z.string().optional(),
     /** Multi-agent: specialist persona/ACL/hints shipped across the subprocess boundary. */
     agentProfile: AgentSpecSchema.optional(),
@@ -604,6 +608,15 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
 export type OrchestratorTurn = z.infer<typeof OrchestratorTurnSchema>;
 
 /** Worker → Orchestrator turns (ndjson) */
+// Slice 4 Gap B: workers reporting `done` or `uncertain` may attach a
+// self-assessment so the orchestrator's deterministic GoalEvaluator can
+// compute prediction error (A7). The orchestrator never trusts this for
+// the verdict — it is data, not authority.
+const SelfAssessmentSchema = z.object({
+  grade: z.enum(['A', 'B', 'C']),
+  gaps: z.array(z.string()).optional(),
+});
+
 export const WorkerTurnSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_calls'),
@@ -619,6 +632,7 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     tokensConsumed: z.number().optional(),
     cacheReadTokens: z.number().optional(),
     cacheCreationTokens: z.number().optional(),
+    selfAssessment: SelfAssessmentSchema.optional(),
   }),
   z.object({
     type: z.literal('uncertain'),
@@ -635,6 +649,7 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
      * clarification request instead of retrying/escalating. Default false.
      */
     needsUserInput: z.boolean().optional(),
+    selfAssessment: SelfAssessmentSchema.optional(),
   }),
 ]);
 export type WorkerTurn = z.infer<typeof WorkerTurnSchema>;
@@ -654,7 +669,7 @@ export const DelegationRequestSchema = z.object({
   subagentType: SubagentTypeSchema.optional(),
   /**
    * Multi-agent: route the delegated subtask to a specific peer agent
-   * (e.g., 'system-designer', 'writer'). The child inherits that peer's
+   * (e.g., 'architect', 'author'). The child inherits that peer's
    * persona, ACL, and skills. Governance rules (depth, budget, scope) are
    * unchanged — this only selects which specialist does the work.
    */

@@ -8,7 +8,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createOrchestrator } from '../../src/orchestrator/factory.ts';
+import { createOrchestrator as _createOrchestrator } from '../../src/orchestrator/factory.ts';
+
+// Test fixture: grandfather workers so freshly-registered mock providers
+// are not gated by the I10 probation path (which suppresses mutations from
+// untrusted workers). The factory's `workerBootstrapPolicy: 'grandfather'`
+// is documented as the test-fixture escape hatch in factory.ts.
+const createOrchestrator: typeof _createOrchestrator = (opts) =>
+  _createOrchestrator({ workerBootstrapPolicy: 'grandfather', ...opts });
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
@@ -119,9 +126,13 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     );
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
-    expect(traces[0]!.taskId).toBe('t-integration');
-    expect(traces[0]!.tokensConsumed).toBeGreaterThan(0); // LLM was called — tokens consumed
-    expect(traces[0]!.approach).toBeTruthy(); // approach text recorded from LLM response
+    // Pre-routing comprehension/understanding phases also record traces
+    // (with tokensConsumed:0). The contract asserted here is that *some*
+    // trace carries L1 LLM dispatch evidence — find it by routing level.
+    const workerTrace = traces.find((t) => t.taskId === 't-integration' && t.routingLevel >= 1);
+    expect(workerTrace).toBeDefined();
+    expect(workerTrace!.tokensConsumed).toBeGreaterThan(0); // LLM was called — tokens consumed
+    expect(workerTrace!.approach).toBeTruthy(); // approach text recorded from LLM response
   });
 
   test('5. escalation when oracle gate always rejects (A6 fail-closed)', async () => {
@@ -183,7 +194,10 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }),
     );
     const traces = orchestrator.traceCollector.getTraces();
-    const trace = traces[0]!;
+    // Find the L1+ worker trace explicitly (pre-routing comprehension traces
+    // carry routingLevel:0 + tokens:0 + modelUsed:'comprehension-engine-id').
+    const trace = traces.find((t) => t.taskId === 't-integration' && t.routingLevel >= 1)!;
+    expect(trace).toBeDefined();
     expect(trace.modelUsed).not.toBe('none'); // 'none' = L0 sentinel; a real model ID means LLM was called
     expect(trace.tokensConsumed).toBeGreaterThan(0); // mock returns 50 tokens — proves LLM dispatch occurred
     expect(trace.durationMs).toBeGreaterThanOrEqual(0);
@@ -216,8 +230,15 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     }
   });
 
-  test('12. rejected mutations excluded from result (A6 path safety)', async () => {
-    // Mock provider proposes a path-traversal mutation alongside a valid one
+  test('12. path safety: traversal mutation never hits disk (A6); fail-closed contract verified at unit boundary (A9 T3.b)', async () => {
+    // Mock provider proposes a path-traversal mutation alongside a valid one.
+    // The L0 reflex path used by this fixture skips workspace commit, so this
+    // integration test asserts the path-safety floor (escape file must not
+    // exist on disk and notes must surface the rejection when reached).
+    // Fail-closed any-reject + preflight semantics are unit-tested in
+    // tests/orchestrator/worker/artifact-commit.test.ts and the runtime
+    // bus→degradation bridge mapping is covered in
+    // tests/orchestrator/degradation-policy-matrix.test.ts.
     const content = JSON.stringify({
       proposedMutations: [
         { file: 'src/foo.ts', content: 'export const x = 42;\n', explanation: 'valid' },
@@ -232,16 +253,9 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
       useSubprocess: false,
     });
     const result = await orchestrator.executeTask(makeInput({ targetFiles: ['src/foo.ts'] }));
-    // Traversal file must never exist on disk regardless of status
     expect(existsSync(join(tempDir, '..', 'escape.ts'))).toBe(false);
-
-    if (result.status === 'completed' && result.mutations.length > 0) {
-      // Only valid mutations should appear
-      const files = result.mutations.map((m) => m.file);
-      expect(files).not.toContain('../escape.ts');
-      expect(files).toContain('src/foo.ts');
-      // Notes should mention rejection
-      expect(result.notes?.some((n) => n.includes('Rejected'))).toBe(true);
+    if (result.status === 'failed' && result.notes) {
+      expect(result.notes.some((n) => n.includes('Rejected'))).toBe(true);
     }
   });
 
@@ -469,6 +483,55 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
     const deliberationEscalations = escalations.filter((e) => e.reason === 'deliberation_request');
     if (deliberationEscalations.length > 0) {
       expect(deliberationEscalations[0]!.reason).toBe('deliberation_request');
+    }
+  });
+
+  test('24. wall-clock timeout is attributed to the level that actually ran (not post-escalation)', async () => {
+    // Regression test for misleading "L3 timeout" diagnostic.
+    //
+    // Without the per-attempt cap + pre-escalation guard, a small
+    // wall-clock budget that is consumed entirely at L1/L2 would still
+    // emit `task:escalate` after retry exhaustion, then the next
+    // iteration's wall-clock check would label the timeout with the
+    // post-escalation level (e.g. L3) — even though L3 never ran.
+    //
+    // This test sets a 200ms budget with a 500ms-latency mock provider.
+    // The first L1 attempt blows the budget; the loop must report the
+    // timeout at L1 (or the pre-escalation guard must trigger), never
+    // at a higher level that never executed.
+    const registry = new LLMProviderRegistry();
+    registry.register(createMockProvider({ id: 'mock/fast', tier: 'fast', latencyMs: 500 }));
+    registry.register(createMockProvider({ id: 'mock/balanced', tier: 'balanced', latencyMs: 500 }));
+    registry.register(createMockProvider({ id: 'mock/powerful', tier: 'powerful', latencyMs: 500 }));
+
+    const escalateEvents: Array<{ fromLevel: number; toLevel: number }> = [];
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry,
+      useSubprocess: false,
+    });
+    orchestrator.bus.on('task:escalate', (p) => {
+      escalateEvents.push({ fromLevel: p.fromLevel, toLevel: p.toLevel });
+    });
+
+    const result = await orchestrator.executeTask(
+      makeInput({
+        targetFiles: ['src/foo.ts'],
+        constraints: ['MIN_ROUTING_LEVEL:1'],
+        budget: { maxTokens: 10_000, maxDurationMs: 200, maxRetries: 2 },
+      }),
+    );
+
+    // The trace must reflect a level that actually consumed budget.
+    // Specifically: it must NOT claim L3 if L3 never escalated to.
+    const reachedLevel = Math.max(0, ...escalateEvents.map((e) => e.toLevel));
+    expect(result.trace.routingLevel).toBeLessThanOrEqual(Math.max(1, reachedLevel));
+
+    // If the result is a timeout, the answer/failureReason must explain
+    // the actual cause (wall-clock or budget exhausted), not a phantom
+    // "L3 timeout" message.
+    if (result.status === 'failed' && result.trace.outcome === 'timeout') {
+      expect(result.answer ?? '').toMatch(/timed out|budget|exhausted/i);
     }
   });
 });

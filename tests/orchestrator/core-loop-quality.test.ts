@@ -8,7 +8,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createOrchestrator } from '../../src/orchestrator/factory.ts';
+import { createOrchestrator as _createOrchestrator } from '../../src/orchestrator/factory.ts';
+
+// Test fixture: grandfather workers so freshly-registered mock providers are
+// not gated by the I10 probation path. See core-loop-integration.test.ts for
+// the same pattern.
+const createOrchestrator: typeof _createOrchestrator = (opts) =>
+  _createOrchestrator({ workerBootstrapPolicy: 'grandfather', ...opts });
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
@@ -69,7 +75,10 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
 
-    const trace = traces[0]!;
+    // qualityScore is set on the worker trace (post-verify), not on pre-routing
+    // comprehension traces — find by routingLevel + presence of qualityScore.
+    const trace = traces.find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
+    expect(trace).toBeDefined();
     expect(trace.qualityScore).toBeDefined();
     // C3 fix: composite may be NaN if no oracles ran (unverified gate) — that's correct
     const composite = trace.qualityScore!.composite;
@@ -81,7 +90,8 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces()[0]!;
+    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
+    expect(trace).toBeDefined();
     expect(trace.qualityScore).toBeDefined();
     // C3 fix: types are still 'number' even when NaN; dimensionsAvailable is 0 for zero-oracle
     expect(typeof trace.qualityScore!.architecturalCompliance).toBe('number');
@@ -94,7 +104,8 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces()[0]!;
+    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
+    expect(trace).toBeDefined();
     expect(trace.qualityScore).toBeDefined();
     // Without complexity context, should be phase0 (2 dims) or phase1 (3 dims if test oracle present)
     expect(['basic', 'extended']).toContain(trace.qualityScore!.phase);
@@ -117,8 +128,8 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces()[0]!;
-    if (trace.qualityScore) {
+    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined);
+    if (trace?.qualityScore) {
       // Zero-oracle case returns unverified:true with neutral score (no NaN propagation)
       if (trace.qualityScore.unverified) {
         expect(trace.qualityScore.architecturalCompliance).toBe(0.5);

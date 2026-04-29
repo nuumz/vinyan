@@ -8,10 +8,9 @@
  * meets A1 because spec generation and subsequent generation are different
  * agents using different prompts.
  *
- * The phase is opt-in:
- *   - Enabled when TaskInput.constraints contains `SPEC_PHASE:on`
- *     or SemanticTaskUnderstanding.taskDomain === 'code-mutation' at
- *     routing.level >= 1.
+ * The phase is enabled for code-mutation tasks at L1+:
+ *   - TaskInput.constraints contains `SPEC_PHASE:on`, or
+ *   - SemanticTaskUnderstanding.taskDomain === 'code-mutation' and routing.level >= 1.
  *   - Disabled unconditionally when constraints contains `SPEC_PHASE:off`.
  *
  * On success, it populates:
@@ -23,6 +22,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { applyRoutingGovernance } from '../governance-provenance.ts';
 import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
 import {
   type SpecArtifact,
@@ -76,24 +76,42 @@ export function isSpecPhaseForceDisabled(constraints?: readonly string[]): boole
 /**
  * Decide whether the Spec phase should run for the given input + routing.
  *
- * Rules (Phase A — regression-safe opt-in default):
+ * Rules:
  *   1. `SPEC_PHASE:off` always wins (kill switch).
- *   2. `SPEC_PHASE:on` enables the phase.
- *   3. Otherwise → disabled.
- *
- * Phase B (follow-up after smoke tests): flip the default to
- * `routing.level >= 1 AND taskDomain === 'code-mutation'`.
- * The `routing` + `understanding` parameters stay in the signature so
- * that change is a single-rule edit, not a signature break.
+ *   2. `SPEC_PHASE:on` enables the phase (variant chosen by selectSpecVariant).
+ *   3. code-mutation tasks at L1+ run the code variant by default.
+ *   4. code-reasoning / general-reasoning tasks at L2+ run the reasoning
+ *      variant by default (Gap C, 2026-04-28). L0/L1 reasoning skips the
+ *      phase to avoid the per-call latency tax — these tasks are typically
+ *      direct lookups.
+ *   5. conversational tasks never run the spec phase by default.
  */
 export function shouldRunSpecPhase(
   input: TaskInput,
-  _understanding: SemanticTaskUnderstanding,
-  _routing: RoutingDecision,
+  understanding: SemanticTaskUnderstanding,
+  routing: RoutingDecision,
 ): boolean {
   if (isSpecPhaseForceDisabled(input.constraints)) return false;
   if (isSpecPhaseForceEnabled(input.constraints)) return true;
+  if (understanding.taskDomain === 'code-mutation' && routing.level >= 1) return true;
+  if (
+    (understanding.taskDomain === 'code-reasoning' || understanding.taskDomain === 'general-reasoning') &&
+    routing.level >= 2
+  ) {
+    return true;
+  }
   return false;
+}
+
+/**
+ * Choose which spec variant to draft for a given task. Pure function so it
+ * can be unit-tested independently of the LLM drafter.
+ *
+ * - `code-mutation` → 'code' (existing apiShape / dataContracts schema).
+ * - everything else → 'reasoning' (deliverables / scope-boundaries schema).
+ */
+export function selectSpecVariant(understanding: SemanticTaskUnderstanding): 'code' | 'reasoning' {
+  return understanding.taskDomain === 'code-mutation' ? 'code' : 'reasoning';
 }
 
 /**
@@ -127,14 +145,37 @@ async function draftSpecViaLLM(
   // `orchestrator.llm.phases.spec`. Default unchanged from the previous
   // hardcoded 0.2.
   const phaseCfg = resolvePhaseConfig('spec', routing, { temperature: 0.2 });
+  const variant = selectSpecVariant(understanding);
+  const promptPair =
+    variant === 'reasoning'
+      ? {
+          system: buildSpecSystemPromptReasoning(),
+          user: buildSpecUserPromptReasoning(input, understanding),
+        }
+      : {
+          system: systemPrompt,
+          user: userPrompt,
+        };
   const response = await provider.generate({
-    systemPrompt,
-    userPrompt,
+    systemPrompt: promptPair.system,
+    userPrompt: promptPair.user,
     maxTokens: Math.min(4096, Math.floor(input.budget.maxTokens / 4)),
     ...phaseCfg.sampling,
   });
 
   const parsed = parseSpecArtifactJSON(response.content);
+  // The reasoning prompt instructs the LLM to set `variant: 'reasoning'`,
+  // but defensively normalise so a forgetful LLM still parses through the
+  // discriminated union (preprocess defaults missing variant to 'code',
+  // which would mis-route).
+  if (
+    variant === 'reasoning' &&
+    parsed &&
+    typeof parsed === 'object' &&
+    !('variant' in (parsed as Record<string, unknown>))
+  ) {
+    (parsed as Record<string, unknown>).variant = 'reasoning';
+  }
   return SpecArtifactSchema.parse(parsed);
 }
 
@@ -189,6 +230,57 @@ function buildSpecUserPrompt(input: TaskInput, understanding: SemanticTaskUnders
   }
   lines.push('');
   lines.push('Produce the SpecArtifact JSON now.');
+  return lines.join('\n');
+}
+
+// ── Reasoning-variant prompt builders (Gap C, 2026-04-28) ─────────────
+
+function buildSpecSystemPromptReasoning(): string {
+  return [
+    'You are Spec Author for a reasoning / analysis / planning task — NOT a code-mutation task.',
+    'You produce a single SpecArtifact JSON object that pins down EXACTLY what a "good answer" looks like BEFORE the answer is written.',
+    '',
+    'The artifact MUST conform to this shape:',
+    '{',
+    '  "version": "1",',
+    '  "variant": "reasoning",',
+    '  "summary": string (5-280 chars),',
+    '  "acceptanceCriteria": Array<{ id, description, testable: boolean, oracle: "goal-alignment"|"critic"|"manual" }> (1-7 items),',
+    '  "expectedDeliverables": Array<{ kind: "answer"|"plan"|"analysis"|"recommendation"|"comparison", audience: string, format: "prose"|"list"|"table"|"diagram-spec", minDepth?: "shallow"|"deep" }> (1-3 items),',
+    '  "scopeBoundaries": { "outOfScope": string[] (0-5), "assumptions": string[] (0-5) },',
+    '  "edgeCases": Array<{ id, scenario, expected, severity: "blocker"|"major"|"minor" }> (0-4),',
+    '  "openQuestions": string[]',
+    '}',
+    '',
+    'Rules:',
+    '- Output ONLY the JSON object — no prose, no markdown fences, no commentary.',
+    '- `variant` MUST be the literal string "reasoning".',
+    '- Acceptance criteria for reasoning tasks are graded by goal-alignment (semantic), critic (subjective quality), or manual (human review). Mechanical oracles (ast/type/test/lint/dep) are NOT valid here.',
+    '- Prefer 2-5 acceptance criteria; 7 is a hard ceiling — more usually means the task should be split.',
+    '- `expectedDeliverables` describes WHAT the consumer expects to read. `audience` is mandatory (e.g. "engineer", "ops on-call", "executive").',
+    '- `scopeBoundaries.outOfScope` is your topical guardrail — list things the answer MUST NOT pivot into. The downstream constraint pipeline turns these into `MUST: out-of-scope: …` rules.',
+    '- `scopeBoundaries.assumptions` lists premises the answer takes for granted; downstream becomes `ASSUME: …` constraints.',
+    '- Leave `openQuestions` populated when you lack information — do NOT invent acceptance criteria over uncertainty.',
+  ].join('\n');
+}
+
+function buildSpecUserPromptReasoning(input: TaskInput, understanding: SemanticTaskUnderstanding): string {
+  const lines: string[] = [];
+  lines.push(`Goal: ${input.goal}`);
+  if (understanding.semanticIntent?.goalSummary) {
+    lines.push(`Summary: ${understanding.semanticIntent.goalSummary}`);
+  }
+  lines.push(`Task domain: ${understanding.taskDomain}`);
+  if ((input.constraints ?? []).length > 0) {
+    lines.push('Existing constraints:');
+    for (const c of input.constraints ?? []) lines.push(`  - ${c}`);
+  }
+  if ((input.acceptanceCriteria ?? []).length > 0) {
+    lines.push('Existing acceptance criteria (refine — do not drop):');
+    for (const c of input.acceptanceCriteria ?? []) lines.push(`  - ${c}`);
+  }
+  lines.push('');
+  lines.push('Produce the reasoning-variant SpecArtifact JSON now.');
   return lines.join('\n');
 }
 
@@ -328,7 +420,7 @@ function buildSpecRejectedResult(
   routing: RoutingDecision,
   startedAt: number,
 ): TaskResult {
-  const trace: ExecutionTrace = {
+  const trace: ExecutionTrace = applyRoutingGovernance({
     id: `trace-${input.id}-spec-rejected-${randomUUID().slice(0, 8)}`,
     taskId: input.id,
     sessionId: input.sessionId,
@@ -343,7 +435,7 @@ function buildSpecRejectedResult(
     durationMs: Date.now() - startedAt,
     outcome: 'success',
     affectedFiles: input.targetFiles ?? [],
-  };
+  }, routing);
   return {
     id: input.id,
     status: 'input-required',

@@ -1,9 +1,10 @@
 /**
  * Phase-generate ACL test — verify agent ACL overlay intersects at dispatch time.
  *
- * This is an indirect test through createContract (the actual integration
- * point). The phase-generate call site passes `agentAcl` to createContract;
- * we verify the resulting contract respects the overlay.
+ * Runs across the role-pure persona roster:
+ *   - author has shell:false, network:false → denies shell_exec at L2
+ *   - developer has no ACL restrictions → keeps full code-mutation access
+ *   - assistant has writeAny:false → denies file_write
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -34,20 +35,19 @@ function makeRouting(level: 0 | 1 | 2 | 3): RoutingDecision {
 }
 
 describe('phase-generate ACL overlay (integration via createContract)', () => {
-  test("writer's capabilityOverrides.shell=false denies shell_exec at L2", () => {
+  test("author's capabilityOverrides.shell=false denies shell_exec at L2", () => {
     const ws = mkdtempSync(join(tmpdir(), 'vinyan-acl-'));
     try {
       const registry = loadAgentRegistry(ws, undefined);
-      const writer = registry.getAgent('writer');
-      expect(writer).not.toBeNull();
-      expect(writer!.capabilityOverrides?.shell).toBe(false);
+      const author = registry.getAgent('author');
+      expect(author).not.toBeNull();
+      expect(author!.capabilityOverrides?.shell).toBe(false);
 
-      // Simulate phase-generate's call
       const acl = {
-        allowedTools: writer!.allowedTools,
-        capabilityOverrides: writer!.capabilityOverrides,
+        allowedTools: author!.allowedTools,
+        capabilityOverrides: author!.capabilityOverrides,
       };
-      const contract = createContract(makeTask({ agentId: 'writer' }), makeRouting(2), acl);
+      const contract = createContract(makeTask({ agentId: 'author' }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'shell_exec')).toBe(false);
       expect(contract.capabilities.some((c) => c.type === 'shell_read')).toBe(false);
@@ -56,15 +56,17 @@ describe('phase-generate ACL overlay (integration via createContract)', () => {
     }
   });
 
-  test('ts-coder keeps full shell access at L2 (no ACL restrictions)', () => {
+  test('developer keeps full shell access at L2 (no ACL restrictions)', () => {
     const ws = mkdtempSync(join(tmpdir(), 'vinyan-acl-'));
     try {
       const registry = loadAgentRegistry(ws, undefined);
-      const tsCoder = registry.getAgent('ts-coder');
-      const acl = tsCoder?.capabilityOverrides || tsCoder?.allowedTools
-        ? { allowedTools: tsCoder.allowedTools, capabilityOverrides: tsCoder.capabilityOverrides }
-        : undefined;
-      const contract = createContract(makeTask({ agentId: 'ts-coder' }), makeRouting(2), acl);
+      const developer = registry.getAgent('developer');
+      expect(developer).not.toBeNull();
+      const acl =
+        developer?.capabilityOverrides || developer?.allowedTools
+          ? { allowedTools: developer!.allowedTools, capabilityOverrides: developer!.capabilityOverrides }
+          : undefined;
+      const contract = createContract(makeTask({ agentId: 'developer' }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'shell_exec')).toBe(true);
       expect(contract.capabilities.some((c) => c.type === 'file_write')).toBe(true);
@@ -79,16 +81,17 @@ describe('phase-generate ACL overlay (integration via createContract)', () => {
     expect(contract.capabilities.some((c) => c.type === 'file_write')).toBe(true);
   });
 
-  test('secretary denies writeAny at L2', () => {
+  test('assistant denies writeAny at L2', () => {
     const ws = mkdtempSync(join(tmpdir(), 'vinyan-acl-'));
     try {
       const registry = loadAgentRegistry(ws, undefined);
-      const secretary = registry.getAgent('secretary');
+      const assistant = registry.getAgent('assistant');
+      expect(assistant).not.toBeNull();
       const acl = {
-        allowedTools: secretary!.allowedTools,
-        capabilityOverrides: secretary!.capabilityOverrides,
+        allowedTools: assistant!.allowedTools,
+        capabilityOverrides: assistant!.capabilityOverrides,
       };
-      const contract = createContract(makeTask({ agentId: 'secretary' }), makeRouting(2), acl);
+      const contract = createContract(makeTask({ agentId: 'assistant' }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'file_write')).toBe(false);
       // Reads still allowed

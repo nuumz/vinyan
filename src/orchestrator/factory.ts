@@ -331,6 +331,13 @@ export interface Orchestrator {
    * traces.
    */
   engineRegistry?: ReasoningEngineRegistry;
+  /**
+   * Raw LLM provider registry. Always populated when at least one LLM
+   * provider is configured. Exposed so the API server can run small
+   * one-shot generations (e.g. human-input answer suggestions) without
+   * spinning up a full task.
+   */
+  llmRegistry?: LLMProviderRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   /** A9 / T4: live operator visibility surface; undefined when disabled in config. */
@@ -2579,6 +2586,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     shadowStore,
     workerStore,
     engineRegistry,
+    llmRegistry: registry,
     agentProfileStore,
     agentProfile,
     agentContextStore,

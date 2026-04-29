@@ -34,6 +34,7 @@ function mkSkill(over: Partial<SimpleSkill> & Pick<SimpleSkill, 'name' | 'descri
 function staticRegistry(skills: readonly SimpleSkill[]): SimpleSkillRegistry {
   return {
     getAll: () => skills,
+    refresh: () => undefined,
     getForAgent: (agentId) => {
       if (!agentId) return skills.filter((s) => s.scope === 'user' || s.scope === 'project');
       return skills.filter(

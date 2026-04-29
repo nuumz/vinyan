@@ -61,7 +61,7 @@ export interface RetryHeartbeatInfo {
 
 export type OnRetryHeartbeat = (info: RetryHeartbeatInfo) => void;
 
-/** Default heartbeat cadence — well below the 120s delegate idle floor. */
+/** Default heartbeat cadence — well below the 180s delegate idle floor (see workflow-executor.ts). */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
 export interface RetryConfig {

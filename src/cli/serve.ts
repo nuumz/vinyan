@@ -297,6 +297,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       ruleStore: orchestrator.ruleStore,
       workerStore: orchestrator.workerStore,
       engineRegistry: orchestrator.engineRegistry,
+      llmRegistry: orchestrator.llmRegistry,
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
       degradationStatus: orchestrator.degradationStatus,

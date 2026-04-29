@@ -28,6 +28,7 @@ import type { EngineProfile, EngineStats, ExecutionTrace, TaskInput, TaskResult 
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
+import { handleCodingCliRoute } from './coding-cli-routes.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
@@ -56,6 +57,14 @@ export interface APIServerDeps {
    * just because no task has run yet. Wired in `cli/serve.ts`.
    */
   engineRegistry?: import('../orchestrator/llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
+  /**
+   * LLM provider registry — used by ad-hoc one-shot endpoints that need a
+   * direct generation (e.g. the human-input suggestion endpoint that
+   * proposes 3 candidate answers when the user says "I can't think of
+   * anything"). NOT used for full task execution — that goes through the
+   * orchestrator via `executeTask`.
+   */
+  llmRegistry?: import('../orchestrator/llm/provider-registry.ts').LLMProviderRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   /** A9 / T4 — operator visibility surface for `/api/v1/health/degradation`. */
@@ -77,6 +86,10 @@ export interface APIServerDeps {
   };
   /** Approval gate for high-risk task approval (A6). */
   approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
+  /** External Coding CLI controller — drives Claude Code / GitHub Copilot. */
+  codingCliController?: import('../orchestrator/external-coding-cli/index.ts').ExternalCodingCliController;
+  /** Persistence for external coding CLI sessions/events/approvals/decisions. */
+  codingCliStore?: import('../db/coding-cli-store.ts').CodingCliStore;
   /** AgentProfileStore — workspace-level Vinyan Agent identity (singleton). */
   agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
   /** Skill store for agent-profile summarize(). */
@@ -319,6 +332,19 @@ export class VinyanAPIServer {
       return jsonResponse({ message: 'Dashboard moved to vinyan-ui. Run: cd vinyan-ui && bun run dev' }, 301);
     }
 
+    // ── External Coding CLI (Claude Code / GitHub Copilot) ──────────────
+    if (path.startsWith('/api/v1/coding-cli')) {
+      const controller = this.deps.codingCliController;
+      if (!controller) {
+        return jsonResponse({ error: 'coding-cli controller not configured' }, 503);
+      }
+      const handled = await handleCodingCliRoute(method, path, req, {
+        controller,
+        store: this.deps.codingCliStore,
+      });
+      if (handled) return handled;
+    }
+
     // ── Auth bootstrap (localhost only — lets the UI auto-fetch the token) ──
     if (method === 'GET' && path === '/api/v1/auth/bootstrap') {
       return jsonResponse({ token: this.auth.getToken() });
@@ -502,6 +528,16 @@ export class VinyanAPIServer {
       const sessionId = path.split('/')[4]!;
       return this.handleWorkflowHumanInput(sessionId, req);
     }
+    // Ask the LLM to propose N candidate answers for the human-input
+    // question — surfaced as chips on the inline answer card so the user
+    // doesn't have to start from scratch when they're unsure.
+    if (
+      method === 'POST' &&
+      path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input\/suggest$/)
+    ) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowHumanInputSuggest(sessionId, req);
+    }
     // User decides whether to ship a partial result (workflow paused on
     // `workflow:partial_failure_decision_needed`). Emits the matching
     // `_provided` event so the executor's awaiter can resolve.
@@ -550,6 +586,17 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/agents\/[^/]+$/)) {
       const agentId = path.split('/').pop()!;
       return this.handleGetAgent(agentId);
+    }
+
+    // Operator-facing AgentContext actions. Read-only export is safe; reset
+    // mutates learning state and is audit-logged at the handler.
+    if (method === 'GET' && path.match(/^\/api\/v1\/agents\/[^/]+\/context\/export$/)) {
+      const agentId = decodeURIComponent(path.split('/')[4]!);
+      return this.handleExportAgentContext(agentId);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/agents\/[^/]+\/proficiencies\/reset$/)) {
+      const agentId = decodeURIComponent(path.split('/')[4]!);
+      return this.handleResetProficiency(agentId, req);
     }
 
     if (method === 'GET' && path === '/api/v1/skills') {
@@ -1414,6 +1461,83 @@ export class VinyanAPIServer {
     }
   }
 
+  /**
+   * Generate `count` candidate answers for a workflow `human-input` step's
+   * question. Used by the inline answer card's "Suggest answers" button —
+   * the user requested this when they hit a question they couldn't answer
+   * off the cuff (e.g. "Ask the user for the topic the agents should
+   * compete on").
+   *
+   * Implementation:
+   *   1. select 'fast' tier provider — short structured generation, low
+   *      latency matters more than depth here
+   *   2. ask for JSON `{"suggestions": [string, …]}` with a strict count
+   *   3. salvage with a regex/line-based fallback if the model emits prose
+   *      around the JSON — never throw an opaque parse error at the user
+   *   4. cap suggestions at 4 and individual length at 240 chars
+   *
+   * NEVER falls back to a hardcoded list — if the LLM is unavailable we
+   * return 503 so the UI can keep showing the "type your own answer" path
+   * instead of presenting fake-looking placeholder options.
+   */
+  private async handleWorkflowHumanInputSuggest(
+    sessionId: string,
+    req: Request,
+  ): Promise<Response> {
+    const llm = this.deps.llmRegistry?.selectByTier('fast') ?? this.deps.llmRegistry?.selectByTier('balanced');
+    if (!llm) {
+      return jsonResponse({ error: 'No LLM provider configured for suggestions' }, 503);
+    }
+    let body: { taskId?: string; stepId?: string; question?: string; count?: number };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+    if (!body.taskId || !body.stepId || !body.question) {
+      return jsonResponse({ error: 'taskId, stepId, and question are required' }, 400);
+    }
+    const count = Math.max(2, Math.min(4, typeof body.count === 'number' ? body.count : 3));
+    const trimmedQ = body.question.trim();
+    if (trimmedQ.length === 0) {
+      return jsonResponse({ error: 'question must be non-empty' }, 400);
+    }
+
+    const systemPrompt =
+      'You are helping a user who is stuck on a question they need to answer to continue ' +
+      'a multi-agent workflow. Propose concise candidate answers they might pick. Each answer ' +
+      'must be self-contained and could be sent verbatim as their reply. Avoid meta-text ' +
+      `("you could say…") — write the answer itself. Reply ONLY with valid JSON of the shape ` +
+      `{"suggestions":["…","…"]} containing exactly ${count} items, each ≤ 240 characters.`;
+    const userPrompt = `QUESTION: ${trimmedQ}\n\nReturn ${count} candidate answers as JSON.`;
+
+    let raw: string;
+    try {
+      const resp = await llm.generate({
+        systemPrompt,
+        userPrompt,
+        maxTokens: 600,
+        temperature: 0.7,
+        timeoutMs: 15_000,
+      });
+      raw = resp.content ?? '';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'LLM generation failed';
+      return jsonResponse({ error: message }, 502);
+    }
+
+    const suggestions = parseSuggestionList(raw, count);
+    if (suggestions.length === 0) {
+      return jsonResponse({ error: 'LLM did not return usable suggestions' }, 502);
+    }
+    return jsonResponse({
+      taskId: body.taskId,
+      stepId: body.stepId,
+      sessionId,
+      suggestions,
+    });
+  }
+
   private async handleWorkflowPartialDecision(sessionId: string, req: Request): Promise<Response> {
     if (!this.deps.bus) {
       return jsonResponse({ error: 'Bus not configured' }, 501);
@@ -1511,6 +1635,80 @@ export class VinyanAPIServer {
   }
 
   /**
+   * Export the full AgentContext as JSON — backup / migrate / audit. The
+   * payload mirrors `findById()` exactly; downstream tooling treats it as
+   * the canonical operator-facing snapshot. 404 when the context store is
+   * not wired or the agent has no recorded context.
+   */
+  private handleExportAgentContext(id: string): Response {
+    const store = this.deps.agentContextStore;
+    if (!store) return jsonResponse({ error: 'agent context store not configured' }, 503);
+    const ctx = store.findById(id);
+    if (!ctx) return jsonResponse({ error: `agent '${id}' has no recorded context` }, 404);
+    return jsonResponse({ agentId: id, context: ctx, exportedAt: Date.now() });
+  }
+
+  /**
+   * Operator-driven reset of a single proficiency entry by `signature`.
+   *
+   * Conservative scope:
+   *   - Removes ONE entry from `agent_contexts.skills.proficiencies`.
+   *   - Does NOT touch episodes (immutable history), preferred approaches,
+   *     anti-patterns, or pending insights.
+   *   - The agent re-learns the proficiency on its next task with this
+   *     fingerprint — A7 prediction-error learning continues to write.
+   *
+   * Idempotent: returns `removed: false` when the signature was already
+   * absent. Audit-logged to console with timestamp + reason; future work
+   * promotes this to a bus event + manifest entry for durable audit.
+   */
+  private async handleResetProficiency(id: string, req: Request): Promise<Response> {
+    const store = this.deps.agentContextStore;
+    if (!store) return jsonResponse({ error: 'agent context store not configured' }, 503);
+
+    let body: { signature?: unknown; reason?: unknown };
+    try {
+      body = (await req.json()) as { signature?: unknown; reason?: unknown };
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body.signature !== 'string' || body.signature.trim().length === 0) {
+      return jsonResponse({ error: "body.signature must be a non-empty string" }, 400);
+    }
+    const signature = body.signature.trim();
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+    const ctx = store.findById(id);
+    if (!ctx) return jsonResponse({ error: `agent '${id}' has no recorded context` }, 404);
+
+    const existing = ctx.skills.proficiencies[signature];
+    if (!existing) {
+      // Idempotent — nothing to do, do not write.
+      return jsonResponse({ ok: true, removed: false, signature });
+    }
+
+    const newProficiencies = { ...ctx.skills.proficiencies };
+    delete newProficiencies[signature];
+    const updated = {
+      ...ctx,
+      skills: { ...ctx.skills, proficiencies: newProficiencies },
+      lastUpdated: Date.now(),
+    };
+    store.upsert(updated);
+
+    // Audit — keep it loud at the console so operators reviewing logs see it.
+    // Future: promote to bus event + manifest entry so it shows up in /events
+    // and can be replayed deterministically.
+    console.log(
+      `[operator-action] proficiency_reset agent=${id} signature='${signature}' previous=${JSON.stringify(
+        existing,
+      )} reason='${reason}'`,
+    );
+
+    return jsonResponse({ ok: true, removed: true, signature, remaining: Object.keys(newProficiencies).length });
+  }
+
+  /**
    * Unified Skill Library listing. Combines simple SKILL.md (registry),
    * heavy SKILL.md (artifact store), and cached approaches. Query params:
    *   - kind=simple|heavy|cached  filter to one bucket.
@@ -1577,6 +1775,11 @@ export class VinyanAPIServer {
         ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
         ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
       });
+      // Refresh the registry synchronously so the next GET reflects the
+      // freshly-written skill — without this the watcher's debounce window
+      // races the response and the UI can show stale data right after a
+      // create.
+      this.deps.simpleSkillRegistry?.refresh();
       const { simpleSkillCatalogId } = await import('./skill-catalog-service.ts');
       return jsonResponse(
         {
@@ -1645,6 +1848,7 @@ export class VinyanAPIServer {
         ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
         ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
       });
+      this.deps.simpleSkillRegistry?.refresh();
       return jsonResponse({ id });
     } catch (err) {
       const msg = (err as Error).message;
@@ -1678,6 +1882,7 @@ export class VinyanAPIServer {
         ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
         ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
       });
+      this.deps.simpleSkillRegistry?.refresh();
       return new Response(null, { status: 204 });
     } catch (err) {
       const msg = (err as Error).message;
@@ -2073,11 +2278,16 @@ export class VinyanAPIServer {
     const url = new URL(req.url);
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 500);
     const outcome = url.searchParams.get('outcome');
-    const taskType = url.searchParams.get('taskType');
+    // `taskSignature` is the canonical name — filters on `task_type_signature`
+    // (e.g. `review::typescript::small`). The legacy `taskType` param maps
+    // to the same column for back-compat with older clients/dashboards.
+    // Used by the agent-drawer "View all traces" deep-link from a
+    // proficiency row.
+    const taskSignature = url.searchParams.get('taskSignature') ?? url.searchParams.get('taskType');
 
     let traces: ExecutionTrace[];
-    if (taskType) {
-      traces = store.findByTaskType(taskType, limit);
+    if (taskSignature) {
+      traces = store.findByTaskType(taskSignature, limit);
     } else if (outcome) {
       traces = store.findByOutcome(outcome, limit);
     } else {
@@ -3261,6 +3471,68 @@ function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string,
       ...extraHeaders,
     },
   });
+}
+
+/**
+ * Salvage the suggestion list from a model's raw output. Tries strict JSON
+ * first, then a fenced-code-block JSON, then a line-by-line fallback that
+ * pulls bullet/numbered items. Returns at most `expected` non-empty items
+ * trimmed to 240 chars each.
+ *
+ * The salvage paths exist because some `fast`-tier providers wrap JSON in
+ * prose ("Here are 3 suggestions: { … }") even with strict-JSON system
+ * prompts. We never throw — the caller decides whether to surface 502.
+ */
+function parseSuggestionList(raw: string, expected: number): string[] {
+  const PER_ITEM_CAP = 240;
+  const cap = (s: string): string => {
+    const t = s.trim();
+    return t.length > PER_ITEM_CAP ? `${t.slice(0, PER_ITEM_CAP - 1)}…` : t;
+  };
+
+  const tryJson = (text: string): string[] | null => {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { suggestions?: unknown }).suggestions)) {
+        const arr = (parsed as { suggestions: unknown[] }).suggestions;
+        const items = arr.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map(cap);
+        return items.length > 0 ? items.slice(0, expected) : null;
+      }
+    } catch {
+      /* fallthrough */
+    }
+    return null;
+  };
+
+  const direct = tryJson(raw.trim());
+  if (direct) return direct;
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)```/i);
+  if (fenced && fenced[1]) {
+    const fromFence = tryJson(fenced[1].trim());
+    if (fromFence) return fromFence;
+  }
+
+  const braceStart = raw.indexOf('{');
+  const braceEnd = raw.lastIndexOf('}');
+  if (braceStart >= 0 && braceEnd > braceStart) {
+    const fromBraces = tryJson(raw.slice(braceStart, braceEnd + 1));
+    if (fromBraces) return fromBraces;
+  }
+
+  // Line-by-line fallback — some providers emit "1. …" / "- …" lists when
+  // the JSON instruction is ignored. Pull the leading marker off and keep
+  // the body. Strip trailing punctuation that looks like a list separator.
+  const lineItems: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/);
+    if (m && m[1]) {
+      const body = m[1].replace(/^["“'`]|["”'`]$/g, '');
+      if (body.trim().length > 0) lineItems.push(cap(body));
+      if (lineItems.length >= expected) break;
+    }
+  }
+  return lineItems;
 }
 
 /**

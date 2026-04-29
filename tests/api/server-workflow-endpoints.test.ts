@@ -20,7 +20,8 @@ import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
-import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
+import type { LLMProvider, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-api-workflow-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
@@ -30,6 +31,13 @@ let server: VinyanAPIServer;
 let db: Database;
 let testBus: VinyanBus;
 let capturedEvents: Array<{ name: string; payload: unknown }>;
+// Mutable handle so individual `human-input/suggest` tests can swap the
+// provider's `generate` behavior (success / parse-fallback / error / no
+// items) without rebuilding the whole server.
+let suggestProviderImpl: LLMProvider['generate'] = async () => ({
+  content: '',
+  tokensUsed: { input: 0, output: 0 },
+});
 
 function req(
   path: string,
@@ -57,6 +65,15 @@ beforeAll(() => {
   const sessionStore = new SessionStore(db);
   const sessionManager = new SessionManager(sessionStore);
 
+  // Stub LLM registry — exercised by the human-input/suggest endpoint.
+  // Per-test behavior swaps via `suggestProviderImpl`.
+  const llmRegistry = new LLMProviderRegistry();
+  llmRegistry.register({
+    id: 'mock-fast',
+    tier: 'fast',
+    generate: (req) => suggestProviderImpl(req),
+  });
+
   server = new VinyanAPIServer(
     {
       port: 0,
@@ -74,6 +91,7 @@ beforeAll(() => {
         trace: {} as TaskResult['trace'],
       }),
       sessionManager,
+      llmRegistry,
     },
   );
 });
@@ -157,6 +175,197 @@ describe('POST /api/v1/sessions/:id/workflow/reject', () => {
 
   test('returns 400 when taskId is missing', async () => {
     const res = await postJson('/api/v1/sessions/sess-1/workflow/reject', { reason: 'nope' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow human-input answer suggestions
+// ---------------------------------------------------------------------------
+
+describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
+  test('returns LLM-supplied suggestions parsed from strict JSON', async () => {
+    suggestProviderImpl = async () => ({
+      content: '{"suggestions":["Climate change","Universal basic income","AGI alignment"]}',
+      tokensUsed: { input: 10, output: 20 },
+    });
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'What topic should the agents debate?',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      taskId: string;
+      stepId: string;
+      sessionId: string;
+      suggestions: string[];
+    };
+    expect(body.taskId).toBe('task-hi');
+    expect(body.stepId).toBe('step1');
+    expect(body.sessionId).toBe('sess-1');
+    expect(body.suggestions).toEqual([
+      'Climate change',
+      'Universal basic income',
+      'AGI alignment',
+    ]);
+  });
+
+  test('salvages suggestions from a fenced JSON block surrounded by prose', async () => {
+    // Some `fast`-tier providers wrap structured output in markdown fences
+    // even with strict-JSON system prompts. The endpoint must not surface
+    // those as 502s as long as a usable list is recoverable.
+    suggestProviderImpl = async () => ({
+      content:
+        'Here are three ideas for you:\n```json\n{"suggestions":["Quantum computing","Neuro-symbolic AI","Open-source LLMs"]}\n```\nPick whichever resonates.',
+      tokensUsed: { input: 10, output: 30 },
+    });
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'topic?',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { suggestions: string[] };
+    expect(body.suggestions).toHaveLength(3);
+    expect(body.suggestions[0]).toBe('Quantum computing');
+  });
+
+  test('falls back to numbered/bulleted line parsing when no JSON is found', async () => {
+    suggestProviderImpl = async () => ({
+      content: '1. Climate change\n2. Universal basic income\n3. AGI alignment',
+      tokensUsed: { input: 5, output: 15 },
+    });
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'topic?',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { suggestions: string[] };
+    expect(body.suggestions).toEqual(['Climate change', 'Universal basic income', 'AGI alignment']);
+  });
+
+  test('returns 502 when the LLM returns nothing parseable', async () => {
+    suggestProviderImpl = async () => ({
+      content: 'I am not sure what to suggest.',
+      tokensUsed: { input: 5, output: 8 },
+    });
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'topic?',
+    });
+    expect(res.status).toBe(502);
+  });
+
+  test('returns 502 when the LLM call throws', async () => {
+    suggestProviderImpl = async () => {
+      throw new Error('upstream rate limit');
+    };
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'topic?',
+    });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/rate limit/);
+  });
+
+  test('returns 400 when taskId, stepId, or question is missing', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { stepId: 'step1', question: 'q' },
+      { taskId: 't', question: 'q' },
+      { taskId: 't', stepId: 'step1' },
+      { taskId: 't', stepId: 'step1', question: '   ' },
+    ];
+    for (const body of cases) {
+      const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', body);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test('clamps count to [2,4] before asking the LLM', async () => {
+    // Caller asks for 99 — endpoint must internally cap at 4 (the LLM
+    // returning more is fine; the endpoint slices the array to the
+    // capped count). Easy to verify by giving the LLM a 6-item answer
+    // and asserting only 4 come back.
+    suggestProviderImpl = async () => ({
+      content: '{"suggestions":["a","b","c","d","e","f"]}',
+      tokensUsed: { input: 5, output: 15 },
+    });
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
+      taskId: 'task-hi',
+      stepId: 'step1',
+      question: 'topic?',
+      count: 99,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { suggestions: string[] };
+    expect(body.suggestions).toEqual(['a', 'b', 'c', 'd']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow partial-failure decision
+// ---------------------------------------------------------------------------
+
+describe('POST /api/v1/sessions/:id/workflow/partial-decision', () => {
+  beforeEach(() => {
+    testBus.on('workflow:partial_failure_decision_provided', (p) =>
+      capturedEvents.push({ name: 'workflow:partial_failure_decision_provided', payload: p }),
+    );
+  });
+
+  test("emits decision_provided with decision='continue'", async () => {
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/partial-decision', {
+      taskId: 'task-pf',
+      decision: 'continue',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { decision: string; status: string };
+    expect(body.decision).toBe('continue');
+    expect(body.status).toBe('recorded');
+    const emitted = capturedEvents.find(
+      (e) => e.name === 'workflow:partial_failure_decision_provided',
+    );
+    expect(emitted).toBeDefined();
+    expect(emitted!.payload).toEqual({
+      taskId: 'task-pf',
+      sessionId: 'sess-1',
+      decision: 'continue',
+    });
+  });
+
+  test("emits decision_provided with decision='abort' + rationale", async () => {
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/partial-decision', {
+      taskId: 'task-pf-2',
+      decision: 'abort',
+      rationale: 'user wants to redo step2 first',
+    });
+    expect(res.status).toBe(200);
+    const emitted = capturedEvents
+      .filter((e) => e.name === 'workflow:partial_failure_decision_provided')
+      .pop();
+    expect(emitted).toBeDefined();
+    expect((emitted!.payload as { rationale: string }).rationale).toBe(
+      'user wants to redo step2 first',
+    );
+  });
+
+  test('returns 400 for invalid decision values', async () => {
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/partial-decision', {
+      taskId: 'task-pf',
+      decision: 'maybe',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when taskId missing', async () => {
+    const res = await postJson('/api/v1/sessions/sess-1/workflow/partial-decision', {
+      decision: 'continue',
+    });
     expect(res.status).toBe(400);
   });
 });

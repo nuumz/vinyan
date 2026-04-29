@@ -1657,6 +1657,33 @@ export interface VinyanBusEvents {
   'gateway:inbound': {
     envelope: import('../gateway/types.ts').GatewayInboundEnvelopeMinimal;
   };
+
+  // ── External Coding CLI (Claude Code, GitHub Copilot, ...) ──────────
+  // Provider-neutral events emitted by the ExternalCodingCliController.
+  // Adversarial robustness corollary of A6+A8+A9: every event carries
+  // taskId, codingCliSessionId, and providerId so replay can reconstruct
+  // process state without trusting raw CLI output.
+  'coding-cli:session_created': import('../orchestrator/external-coding-cli/types.ts').CodingCliSessionCreatedEvent;
+  'coding-cli:session_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliSessionStartedEvent;
+  'coding-cli:state_changed': import('../orchestrator/external-coding-cli/types.ts').CodingCliStateChangedEvent;
+  'coding-cli:message_sent': import('../orchestrator/external-coding-cli/types.ts').CodingCliMessageSentEvent;
+  'coding-cli:output_delta': import('../orchestrator/external-coding-cli/types.ts').CodingCliOutputDeltaEvent;
+  'coding-cli:tool_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliToolStartedEvent;
+  'coding-cli:tool_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliToolCompletedEvent;
+  'coding-cli:file_changed': import('../orchestrator/external-coding-cli/types.ts').CodingCliFileChangedEvent;
+  'coding-cli:command_requested': import('../orchestrator/external-coding-cli/types.ts').CodingCliCommandRequestedEvent;
+  'coding-cli:command_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliCommandCompletedEvent;
+  'coding-cli:approval_required': import('../orchestrator/external-coding-cli/types.ts').CodingCliApprovalRequiredEvent;
+  'coding-cli:approval_resolved': import('../orchestrator/external-coding-cli/types.ts').CodingCliApprovalResolvedEvent;
+  'coding-cli:decision_recorded': import('../orchestrator/external-coding-cli/types.ts').CodingCliDecisionRecordedEvent;
+  'coding-cli:checkpoint': import('../orchestrator/external-coding-cli/types.ts').CodingCliCheckpointEvent;
+  'coding-cli:result_reported': import('../orchestrator/external-coding-cli/types.ts').CodingCliResultReportedEvent;
+  'coding-cli:verification_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliVerificationStartedEvent;
+  'coding-cli:verification_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliVerificationCompletedEvent;
+  'coding-cli:completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliCompletedEvent;
+  'coding-cli:failed': import('../orchestrator/external-coding-cli/types.ts').CodingCliFailedEvent;
+  'coding-cli:stalled': import('../orchestrator/external-coding-cli/types.ts').CodingCliStalledEvent;
+  'coding-cli:cancelled': import('../orchestrator/external-coding-cli/types.ts').CodingCliCancelledEvent;
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

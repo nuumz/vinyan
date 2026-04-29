@@ -151,6 +151,33 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   // ── Memory review outcomes ──────────────────────────────────────────
   { event: 'memory:approved', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'memory:rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
+
+  // ── External Coding CLI (provider-neutral) ──────────────────────────
+  // Every UI-visible event the ExternalCodingCliController emits. Recorded
+  // for historical replay so a task event-history endpoint can reconstruct
+  // the entire CLI session timeline (state changes, tool/file activity,
+  // approvals, verification verdict) after page reload (A8).
+  { event: 'coding-cli:session_created', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:session_started', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:state_changed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:message_sent', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:output_delta', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:tool_started', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:tool_completed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:file_changed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:command_requested', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:command_completed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:approval_required', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:approval_resolved', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:decision_recorded', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:checkpoint', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:result_reported', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:verification_started', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:verification_completed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:completed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:failed', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:stalled', sse: true, record: true, scope: 'task' },
+  { event: 'coding-cli:cancelled', sse: true, record: true, scope: 'task' },
 ];
 
 /** Derived list: every event flagged for SSE forwarding. */

@@ -26,7 +26,21 @@ import { formatSessionTranscript } from './session-transcript.ts';
 import type { WorkflowPlan, WorkflowResult, WorkflowStep, WorkflowStepResult, WorkflowStepStrategy } from './types.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
-const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
+/**
+ * Idle floor for the delegate-sub-agent watchdog. Raised from 120s → 180s
+ * on 2026-04-30 after a second `step2 idle timeout after 121s ... agent=researcher`
+ * incident hit despite the 2026-04-29 structural fix (WATCHDOG_ACTIVITY_EVENTS
+ * + first-activity-arming + provider retry heartbeat). The structural fix
+ * remains the right design — but a research-class persona doing a single
+ * long `provider.generate()` call without a heartbeat-emitting tool span
+ * can plausibly burn 2+ minutes of model time, and the prior floor was too
+ * tight a margin around the heartbeat cadence (30s × 4 = 120s, no slack).
+ *
+ * Heartbeat in `llm/retry.ts` is 30s, so the new floor gives 6× cushion
+ * before false-positive timeouts. If THIS bumps and hits again, do NOT
+ * raise further — escalate to per-persona caps or split the step.
+ */
+const MIN_WORKFLOW_LLM_TIMEOUT_MS = 180_000;
 
 /**
  * Bus events that count as "the sub-task is making progress" for the
@@ -43,11 +57,14 @@ const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
  * Subscribing only to `llm:stream_delta` (the pre-fix design) silently
  * relied on `streaming.assistantDelta` being on, which is false by
  * default — so any sub-task that ran the non-streaming path was killed
- * at 120s without a real liveness check. `llm:retry_attempt` and
- * `llm:request_alive` cover the rest of the gap: 429 storms sleeping
+ * at the idle floor without a real liveness check. `llm:retry_attempt`
+ * and `llm:request_alive` cover the rest of the gap: 429 storms sleeping
  * in `retry.ts`, and a single long `provider.generate()` call (e.g.
  * author writing a 150s prose response) that emits no other event
  * during the wait — the latter incident hit author/step3 at 121s.
+ *
+ * Idle floor is `MIN_WORKFLOW_LLM_TIMEOUT_MS` (180s) — see that constant
+ * for the rationale on why it was raised from 120s.
  */
 const WATCHDOG_ACTIVITY_EVENTS = [
   'llm:stream_delta',
@@ -110,6 +127,14 @@ export interface WorkflowExecutorDeps {
    * when omitted, A1 enforcement is skipped (legacy / test paths).
    */
   agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  /**
+   * External Coding CLI strategy adapter. When wired, workflow steps with
+   * `strategy: 'external-coding-cli'` are dispatched here. Vinyan-side
+   * verification (A1) runs inside the strategy — a CLI's "completed" claim
+   * is never accepted without the verifier's verdict. Optional; omitted in
+   * deployments where coding-cli routing is disabled.
+   */
+  codingCliStrategy?: import('../external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
   intentWorkflowPrompt?: string;
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
@@ -680,6 +705,60 @@ async function dispatchStrategy(
         };
       }
 
+      case 'external-coding-cli': {
+        if (!deps.codingCliStrategy) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'external-coding-cli strategy not wired (missing codingCliStrategy in WorkflowExecutorDeps)',
+          };
+        }
+        const stepInput = step.inputs ?? {};
+        const subTaskId = `${input.id}-coding-cli-${step.id}`;
+        const outcome = await deps.codingCliStrategy.run({
+          taskId: subTaskId,
+          rootGoal: `${step.description}\n\nContext from prior steps:\n${interpolatedInputs}`,
+          cwd: deps.workspace ?? process.cwd(),
+          sessionId: input.sessionId,
+          providerId: stepInput.providerId === 'claude-code' || stepInput.providerId === 'github-copilot'
+            ? stepInput.providerId
+            : undefined,
+          mode: stepInput.mode === 'headless' || stepInput.mode === 'interactive'
+            ? stepInput.mode
+            : 'headless',
+          allowedScope: input.targetFiles ?? [],
+          notes: stepInput.notes,
+          correlationId: input.id,
+          model: stepInput.model,
+        });
+        const outputText = outcome.claim
+          ? [
+              `Provider: ${outcome.providerId ?? '(unknown)'}`,
+              `Status: ${outcome.status}`,
+              `Reason: ${outcome.reason}`,
+              `Summary: ${outcome.claim.summary}`,
+              outcome.claim.changedFiles.length
+                ? `Changed files:\n  - ${outcome.claim.changedFiles.join('\n  - ')}`
+                : 'No file changes claimed.',
+              outcome.verification
+                ? `Verification: passed=${outcome.verification.passed}, predictionError=${outcome.verification.predictionError}`
+                : 'Verification: skipped',
+            ].join('\n')
+          : `External CLI ${outcome.status}: ${outcome.reason}`;
+        // unsupported maps to failed at the workflow layer — the step's
+        // contract is "produce an outcome we can synthesize from", and an
+        // unsupported provider produces nothing useful. Operator should
+        // re-route via fallbackStrategy or fix provider availability.
+        const status: WorkflowStepResult['status'] =
+          outcome.status === 'completed' ? 'completed' : 'failed';
+        return {
+          ...base,
+          status,
+          output: outputText,
+          subTaskId,
+        };
+      }
+
       case 'direct-tool': {
         if (!deps.toolExecutor) return { ...base, status: 'failed', output: 'toolExecutor not available' };
         // Prefer the explicit `command` field — `description` is human-readable
@@ -919,7 +998,7 @@ async function dispatchStrategy(
           });
         }
         // Wall-clock guard on the delegate. Streaming-aware watchdog:
-        //   - `subTaskTimeoutMs` (≥ 120s) is the IDLE budget — how long
+        //   - `subTaskTimeoutMs` (≥ MIN_WORKFLOW_LLM_TIMEOUT_MS = 180s) is the IDLE budget — how long
         //     we tolerate ZERO progress activity AFTER the first sign
         //     of life before declaring the sub-task stuck. Any tracked
         //     activity event (see WATCHDOG_ACTIVITY_EVENTS) for this

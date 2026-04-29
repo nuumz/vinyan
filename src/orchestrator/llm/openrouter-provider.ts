@@ -13,7 +13,13 @@ import { PromptTooLargeError } from '../types.ts';
 import { clampOpenRouterId, getCurrentLLMTrace, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, type OnRetryAttempt, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
+import {
+  DEFAULT_RETRYABLE_STATUSES,
+  type OnRetryAttempt,
+  type OnRetryHeartbeat,
+  retryStreamWithBackoff,
+  retryWithBackoff,
+} from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -104,6 +110,23 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
       });
     };
   };
+  // In-flight heartbeat — emits `llm:request_alive` every 30s while the
+  // request is awaiting. Closes the watchdog gap for long single LLM
+  // calls (long-form author, large reasoning) that emit no other event.
+  const buildOnHeartbeat = (request: LLMRequest): OnRetryHeartbeat | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:request_alive', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        durationMs: info.durationMs,
+      });
+    };
+  };
 
   return {
     id: providerId,
@@ -112,6 +135,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
     async generate(request: LLMRequest): Promise<LLMResponse> {
       const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
       const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       const body: Record<string, unknown> = {
         model,
         max_tokens: request.maxTokens,
@@ -265,12 +289,14 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
           ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
       const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       const effectiveStreamTimeouts = request.timeoutMs
         ? {
             connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
@@ -456,6 +482,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
           ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },

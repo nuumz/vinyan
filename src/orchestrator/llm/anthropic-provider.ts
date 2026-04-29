@@ -13,7 +13,13 @@ import { PromptTooLargeError } from '../types.ts';
 import { getCurrentLLMTrace } from './llm-trace-context.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, type OnRetryAttempt, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
+import {
+  DEFAULT_RETRYABLE_STATUSES,
+  type OnRetryAttempt,
+  type OnRetryHeartbeat,
+  retryStreamWithBackoff,
+  retryWithBackoff,
+} from './retry.ts';
 
 /**
  * Wall-clock timeout for non-streaming `generate()`. Long because the caller
@@ -198,6 +204,23 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
       });
     };
   };
+  // In-flight heartbeat — emits `llm:request_alive` every 30s while the
+  // request is awaiting. Closes the watchdog gap for long single LLM
+  // calls (long-form author, large reasoning) that emit no other event.
+  const buildOnHeartbeat = (request: LLMRequest): OnRetryHeartbeat | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:request_alive', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        durationMs: info.durationMs,
+      });
+    };
+  };
 
   return {
     id: providerId,
@@ -205,6 +228,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
     async generate(request: LLMRequest): Promise<LLMResponse> {
       const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
       const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       // Build tool definitions for Anthropic format
       const tools = request.tools?.map((t) => ({
         name: t.name,
@@ -310,12 +334,14 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
           ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
       const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       const effectiveStreamTimeouts = request.timeoutMs
         ? {
             connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
@@ -428,6 +454,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
           ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },

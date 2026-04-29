@@ -292,6 +292,10 @@ export interface Orchestrator {
   taskEventStore?: TaskEventStore;
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
+  /** Hybrid skills — simple Claude-Code-compatible SKILL.md registry. */
+  simpleSkillRegistry?: SimpleSkillRegistry;
+  /** Hybrid skills — heavy epistemic SKILL.md artifact store. */
+  skillArtifactStore?: SkillArtifactStore;
   patternStore?: PatternStore;
   shadowStore?: ShadowStore;
   workerStore?: WorkerStore;
@@ -1622,6 +1626,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   }
 
+  // Heavy skill artifact store — shared by the tier/scope promoters, the
+  // autonomous skill creator, AND the API server's unified skill catalog.
+  // Hoisted to factory scope so all four consumers see the same on-disk
+  // root and the API can list/read SKILL.md without re-instantiating.
+  const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
   const agentRouter = agentRegistry ? createAgentRouter({ registry: agentRegistry }) : undefined;
@@ -1644,12 +1654,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // ledger; safely skipped when DB or skillOutcomeStore absent.
   if (sleepCycleRunner && agentRegistry && skillOutcomeStore && db) {
     try {
-      const tierArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
       const ledger = new SkillTrustLedgerStore(db.getDb());
       sleepCycleRunner.setSkillTierPromoter({
         skillOutcomeStore,
         registry: agentRegistry,
-        artifactStore: tierArtifactStore,
+        artifactStore: skillArtifactStore,
         ledger,
         profile: 'default',
       });
@@ -1670,12 +1679,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillsMode === 'both'
   ) {
     try {
-      const bridgeArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
       const bridgeLedger = new SkillTrustLedgerStore(db.getDb());
       sleepCycleRunner.setSimpleSkillPromoter({
         registry: simpleSkillRegistry,
         outcomeStore: skillOutcomeStore,
-        artifactStore: bridgeArtifactStore,
+        artifactStore: skillArtifactStore,
         ledger: bridgeLedger,
         profile: 'default',
       });
@@ -1710,7 +1718,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const distinctEngines = !!(generatorEngineId && criticEngineId && generatorEngineId !== criticEngineId);
     if (generatorProvider && distinctEngines) {
       try {
-        const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
         const creator = new AutonomousSkillCreator({
           predictionLedger,
           skillStore,
@@ -1965,6 +1972,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Phase 2: gate for token-level `agent:text_delta` emission in the
     // conversational short-circuit path of the core loop.
     streamingAssistantDelta,
+    // Hybrid skills — make the simple registry visible to the conversational
+    // short-circuit path so `/skill-name` invocations and description matches
+    // surface bodies in conversational replies + delegated sub-tasks. Worker-
+    // pool already has this via `setSimpleSkillRegistry`; this dep covers the
+    // hand-built-prompt path that doesn't go through worker-pool.
+    simpleSkillRegistry,
+    simpleSkillMatcherOpts:
+      skillsCfg?.simple?.match_threshold !== undefined || skillsCfg?.simple?.match_top_k !== undefined
+        ? {
+            ...(skillsCfg?.simple?.match_threshold !== undefined ? { threshold: skillsCfg.simple.match_threshold } : {}),
+            ...(skillsCfg?.simple?.match_top_k !== undefined ? { topK: skillsCfg.simple.match_top_k } : {}),
+          }
+        : undefined,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -2550,6 +2570,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskEventStore,
     ruleStore,
     skillStore,
+    // Hybrid skills — surface the simple registry + heavy artifact store on
+    // the factory's return so the API server can build the unified Skill
+    // Library catalog without re-instantiating either subsystem.
+    simpleSkillRegistry,
+    skillArtifactStore,
     patternStore,
     shadowStore,
     workerStore,

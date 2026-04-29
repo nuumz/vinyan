@@ -24,6 +24,11 @@ import {
   formatEscapeProtocolBlock,
   parseEscapeSentinel,
 } from './intent/escape-sentinel.ts';
+import {
+  renderSimpleSkillSections,
+  resolveSimpleSkillsForDispatch,
+} from '../skills/simple/dispatch-helper.ts';
+import type { SimpleSkill } from '../skills/simple/loader.ts';
 import type { ExecutionTrace, IntentResolution, TaskInput, TaskResult } from './types.ts';
 
 export type ConversationalOutcome =
@@ -126,11 +131,27 @@ export async function buildConversationalResult(
       /* registry without skill resolver — degrade silently */
     }
   }
+  // Hybrid simple skills — match against the goal text using the same
+  // resolver the worker-pool full-pipeline path uses, so a `/code-review`
+  // explicit invocation or a description match works identically in both
+  // paths. `skill:simple_invoked` fires here when bodies inline so factory
+  // outcome telemetry records conversational invocations too. Per-agent
+  // visibility is enforced by `getForAgent(agentId)` inside the helper.
+  const { simpleSkills, simpleSkillBodies } = resolveSimpleSkillsForDispatch({
+    registry: deps.simpleSkillRegistry,
+    goal: input.goal,
+    agentId: resolvedAgent?.id,
+    matcherOpts: deps.simpleSkillMatcherOpts,
+    bus: deps.bus,
+    taskId: input.id,
+  });
   const personaSystemPrompt = buildConversationalSystemPrompt(
     resolvedAgent,
     deps,
     input,
     loadedSkillCards,
+    simpleSkills,
+    simpleSkillBodies,
   );
 
   if (provider) {
@@ -316,15 +337,35 @@ function buildConversationalSystemPrompt(
   deps: OrchestratorDeps,
   input: TaskInput,
   loadedSkillCards: readonly SkillCardView[] | undefined,
+  simpleSkills: readonly SimpleSkill[],
+  simpleSkillBodies: readonly SimpleSkill[],
 ): string {
   const closing = `Respond naturally. Match the user's language. Maintain context across turns.
 Never reveal your underlying model name or provider — you are Vinyan.
 Do NOT use JSON or code blocks unless the user asks for code.
 Do NOT narrate your reasoning process — just respond directly to the user.`;
 
+  // Pre-render simple-skill blocks so both the no-agent and persona branches
+  // emit them. Missing-or-empty blocks return null and are skipped silently.
+  const simpleBlocks = renderSimpleSkillSections(simpleSkills, simpleSkillBodies);
+  const appendSimpleBlocks = (parts: string[]): void => {
+    if (simpleBlocks.available) {
+      parts.push('');
+      parts.push(simpleBlocks.available);
+    }
+    if (simpleBlocks.active) {
+      parts.push('');
+      parts.push(simpleBlocks.active);
+    }
+  };
+
   if (!agent) {
-    return `You are Vinyan, a friendly and capable assistant. You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.
-${closing}`;
+    const lines: string[] = [
+      `You are Vinyan, a friendly and capable assistant. You can help with creative writing, analysis, Q&A, brainstorming, and general assistance.`,
+    ];
+    appendSimpleBlocks(lines);
+    lines.push(closing);
+    return lines.join('\n');
   }
 
   const lines: string[] = [];
@@ -427,6 +468,12 @@ ${closing}`;
     lines.push('Do not ask the user for a topic if prior workflow output already contains one.');
     lines.push('Do not speak as or simulate other agents. Produce your deliverable directly.');
   }
+
+  // Hybrid simple skills — descriptions (eager) and matched bodies (lazy).
+  // Same content the prompt-section-registry renders for full-pipeline
+  // workers, so a `/code-review` explicit invocation or a description match
+  // works identically here. Empty blocks are skipped by the helper.
+  appendSimpleBlocks(lines);
 
   lines.push('');
   lines.push(closing);

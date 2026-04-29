@@ -15,6 +15,7 @@ import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import { buildDecisionReplay } from '../db/governance-query.ts';
 import type { RuleStore } from '../db/rule-store.ts';
+import { TREE_TASKID_CAP } from '../db/task-event-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
 import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
@@ -80,6 +81,21 @@ export interface APIServerDeps {
   agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
   /** Skill store for agent-profile summarize(). */
   skillStore?: import('../db/skill-store.ts').SkillStore;
+  /** Simple skill registry — Claude-Code-compatible SKILL.md catalog (read side). */
+  simpleSkillRegistry?: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+  /** Heavy artifact store — epistemic SKILL.md surface. */
+  skillArtifactStore?: import('../skills/artifact-store.ts').SkillArtifactStore;
+  /**
+   * Filesystem overrides for `POST/PUT/DELETE /api/v1/skills` writes. Mirrors
+   * `LoadSimpleSkillsOptions` so test fixtures can write to tmp dirs without
+   * spilling onto the real `~/.vinyan/`.
+   */
+  simpleSkillFsOverrides?: {
+    userSkillsDir?: string;
+    projectSkillsDir?: string;
+    userAgentsDir?: string;
+    projectAgentsDir?: string;
+  };
   /** Pattern store for agent-profile summarize(). */
   patternStore?: import('../db/pattern-store.ts').PatternStore;
   /** AgentContextStore — per-agent episodic memory for /agents/:id detail. */
@@ -486,6 +502,13 @@ export class VinyanAPIServer {
       const sessionId = path.split('/')[4]!;
       return this.handleWorkflowHumanInput(sessionId, req);
     }
+    // User decides whether to ship a partial result (workflow paused on
+    // `workflow:partial_failure_decision_needed`). Emits the matching
+    // `_provided` event so the executor's awaiter can resolve.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/partial-decision$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowPartialDecision(sessionId, req);
+    }
 
     // ── Read-only queries ─────────────────────────────────
     if (method === 'GET' && path === '/api/v1/agent-profile') {
@@ -531,6 +554,25 @@ export class VinyanAPIServer {
 
     if (method === 'GET' && path === '/api/v1/skills') {
       return this.handleListSkills(req);
+    }
+
+    // Unified Skill Library detail / CRUD. Detail by id, then create/update/
+    // delete simple skills (heavy + cached return 405). Order matters — the
+    // catch-all `:id` route must come AFTER the bare `/skills` listing above.
+    if (method === 'POST' && path === '/api/v1/skills') {
+      return this.handleCreateSkill(req);
+    }
+    if (method === 'GET' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleGetSkill(id);
+    }
+    if (method === 'PUT' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleUpdateSkill(id, req);
+    }
+    if (method === 'DELETE' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleDeleteSkill(id);
     }
 
     if (method === 'GET' && path === '/api/v1/patterns') {
@@ -1267,8 +1309,8 @@ export class VinyanAPIServer {
   }
 
   private handleListApprovals(): Response {
-    const ids = this.deps.approvalGate?.getPendingIds() ?? [];
-    return jsonResponse({ pending: ids });
+    const pending = this.deps.approvalGate?.getPending() ?? [];
+    return jsonResponse({ pending });
   }
 
   // ── Phase D: structured clarification response ────────────
@@ -1372,6 +1414,35 @@ export class VinyanAPIServer {
     }
   }
 
+  private async handleWorkflowPartialDecision(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string; decision?: string; rationale?: string };
+      if (!body.taskId) {
+        return jsonResponse({ error: 'taskId is required' }, 400);
+      }
+      if (body.decision !== 'continue' && body.decision !== 'abort') {
+        return jsonResponse({ error: "decision must be 'continue' or 'abort'" }, 400);
+      }
+      this.deps.bus.emit('workflow:partial_failure_decision_provided', {
+        taskId: body.taskId,
+        decision: body.decision,
+        sessionId,
+        ...(typeof body.rationale === 'string' ? { rationale: body.rationale } : {}),
+      });
+      return jsonResponse({
+        taskId: body.taskId,
+        sessionId,
+        decision: body.decision,
+        status: 'recorded',
+      });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
   // ── Agent / Skill / Pattern Handlers (read-only) ────────
 
   private handleListAgents(): Response {
@@ -1439,16 +1510,180 @@ export class VinyanAPIServer {
     });
   }
 
-  private handleListSkills(req: Request): Response {
-    const store = this.deps.skillStore;
-    if (!store) return jsonResponse({ skills: [] });
+  /**
+   * Unified Skill Library listing. Combines simple SKILL.md (registry),
+   * heavy SKILL.md (artifact store), and cached approaches. Query params:
+   *   - kind=simple|heavy|cached  filter to one bucket.
+   *   - agentId=<slug>            visible-to-agent filter.
+   *   - status=<...>              legacy cached_skills shape (back-compat).
+   */
+  private async handleListSkills(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const kindParam = url.searchParams.get('kind');
+    const agentIdParam = url.searchParams.get('agentId');
+    const statusParam = url.searchParams.get('status');
 
-    const statusParam = new URL(req.url).searchParams.get('status');
-    const skills = statusParam
-      ? store.findByStatus(statusParam as 'active' | 'probation' | 'demoted')
-      : [...store.findByStatus('active'), ...store.findByStatus('probation'), ...store.findByStatus('demoted')];
+    if (statusParam && this.deps.skillStore) {
+      const cached = this.deps.skillStore.findByStatus(
+        statusParam as 'active' | 'probation' | 'demoted',
+      );
+      return jsonResponse({ skills: cached });
+    }
 
-    return jsonResponse({ skills });
+    const { SkillCatalogService } = await import('./skill-catalog-service.ts');
+    const service = new SkillCatalogService({
+      simpleSkillRegistry: this.deps.simpleSkillRegistry,
+      artifactStore: this.deps.skillArtifactStore,
+      skillStore: this.deps.skillStore,
+    });
+    const filters: { kind?: 'simple' | 'heavy' | 'cached'; agentId?: string } = {};
+    if (kindParam === 'simple' || kindParam === 'heavy' || kindParam === 'cached') {
+      filters.kind = kindParam;
+    }
+    if (agentIdParam) filters.agentId = agentIdParam;
+    const items = await service.list(filters);
+    return jsonResponse({ items, skills: items });
+  }
+
+  private async handleGetSkill(id: string): Promise<Response> {
+    const { SkillCatalogService } = await import('./skill-catalog-service.ts');
+    const service = new SkillCatalogService({
+      simpleSkillRegistry: this.deps.simpleSkillRegistry,
+      artifactStore: this.deps.skillArtifactStore,
+      skillStore: this.deps.skillStore,
+    });
+    const detail = await service.get(id);
+    if (!detail) return jsonResponse({ error: `skill '${id}' not found` }, 404);
+    return jsonResponse(detail);
+  }
+
+  private async handleCreateSkill(req: Request): Promise<Response> {
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = parseSimpleSkillWriteBody(body);
+    if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+    try {
+      const { writeSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      const result = await writeSimpleSkill(parsed.value, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      const { simpleSkillCatalogId } = await import('./skill-catalog-service.ts');
+      return jsonResponse(
+        {
+          id: simpleSkillCatalogId({
+            name: parsed.value.name,
+            description: parsed.value.description,
+            body: parsed.value.body,
+            scope: parsed.value.scope,
+            ...(parsed.value.agentId ? { agentId: parsed.value.agentId } : {}),
+            path: result.path,
+          }),
+          path: result.path,
+        },
+        201,
+      );
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
+  }
+
+  private async handleUpdateSkill(id: string, req: Request): Promise<Response> {
+    const { parseCatalogId } = await import('./skill-catalog-service.ts');
+    const parsedId = parseCatalogId(id);
+    if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
+    if (parsedId.kind !== 'simple') {
+      return jsonResponse(
+        { error: `editing ${parsedId.kind} skills is not supported via this endpoint` },
+        405,
+      );
+    }
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = parseSimpleSkillWriteBody(body, true);
+    if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+
+    const existing = parseSimpleIdPayload(parsedId.payload);
+    if (!existing) return jsonResponse({ error: `invalid simple skill id '${id}'` }, 400);
+    if (parsed.value.name !== existing.name) {
+      return jsonResponse(
+        { error: 'body.name must match the URL id (rename = create + delete)' },
+        400,
+      );
+    }
+    if (parsed.value.scope !== existing.scope) {
+      return jsonResponse({ error: 'body.scope must match the URL id' }, 400);
+    }
+    if ((parsed.value.agentId ?? null) !== (existing.agentId ?? null)) {
+      return jsonResponse({ error: 'body.agentId must match the URL id' }, 400);
+    }
+
+    try {
+      const { writeSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      await writeSimpleSkill(parsed.value, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      return jsonResponse({ id });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
+  }
+
+  private async handleDeleteSkill(id: string): Promise<Response> {
+    const { parseCatalogId } = await import('./skill-catalog-service.ts');
+    const parsedId = parseCatalogId(id);
+    if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
+    if (parsedId.kind !== 'simple') {
+      return jsonResponse(
+        { error: `deleting ${parsedId.kind} skills is not supported via this endpoint` },
+        405,
+      );
+    }
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    const existing = parseSimpleIdPayload(parsedId.payload);
+    if (!existing) return jsonResponse({ error: `invalid simple skill id '${id}'` }, 400);
+
+    try {
+      const { deleteSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      await deleteSimpleSkill(existing, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      return new Response(null, { status: 204 });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
   }
 
   private handleListPatterns(req: Request): Response {
@@ -2214,6 +2449,20 @@ export class VinyanAPIServer {
    * event shape that was streamed live via `/events` SSE, just replayed from
    * `task_events` storage. Supports `?since=<seq>` for incremental fetch.
    *
+   * `?includeDescendants=true` widens the response to include events from
+   * every sub-agent dispatched by this task (and recursively up to
+   * `?maxDepth=N`, default 3, capped 1-5). Sub-agent tool calls live under
+   * the child's `taskId`, so without this flag the parent's history shows
+   * only `workflow:delegate_*` summaries — the chat UI's "Multi-agent
+   * complete" card uses the descendants path to populate per-agent
+   * expandable rows.
+   *
+   * Default response shape: `{ taskId, events, lastSeq }` (per-task seq
+   * cursor). Descendants response shape: `{ taskId, rootTaskId, taskIds,
+   * events, nextCursor, truncated }` — `(ts, id)` cursor matching the
+   * session endpoint's contract, since per-task seq is meaningless across
+   * the tree.
+   *
    * Returns 404 when no recorder is wired (no DB) — clients fall back to
    * showing only the trace summary in that case.
    */
@@ -2223,18 +2472,77 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
     }
     const url = new URL(req.url);
-    const sinceParam = url.searchParams.get('since');
+    const includeDescendants = url.searchParams.get('includeDescendants') === 'true';
     const limitParam = url.searchParams.get('limit');
-    const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
     const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
-    const events = store.listForTask(taskId, { since, limit });
-    const last = events.length > 0 ? events[events.length - 1] : undefined;
+
+    if (!includeDescendants) {
+      const sinceParam = url.searchParams.get('since');
+      const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
+      const events = store.listForTask(taskId, { since, limit });
+      const last = events.length > 0 ? events[events.length - 1] : undefined;
+      return jsonResponse({
+        taskId,
+        events,
+        // Convenience cursor for incremental polling.
+        lastSeq: last ? last.seq : (since ?? 0),
+      });
+    }
+
+    const maxDepthParam = url.searchParams.get('maxDepth');
+    const maxDepth =
+      maxDepthParam !== null ? Math.max(1, Math.min(5, parseInt(maxDepthParam, 10) || 3)) : 3;
+    const { taskIds, truncated } = this.resolveTaskTree(store, taskId, maxDepth);
+    const rootSession = store.lookupSessionId(taskId);
+    const sinceCursor = url.searchParams.get('since') ?? undefined;
+    const page = store.listForTaskTree(taskId, {
+      taskIds,
+      rootSessionId: rootSession,
+      since: sinceCursor,
+      limit,
+    });
     return jsonResponse({
       taskId,
-      events,
-      // Convenience cursor for incremental polling.
-      lastSeq: last ? last.seq : (since ?? 0),
+      rootTaskId: taskId,
+      taskIds,
+      events: page.events,
+      nextCursor: page.nextCursor,
+      truncated,
     });
+  }
+
+  /**
+   * BFS the delegation graph rooted at `rootTaskId` to depth `maxDepth`,
+   * stopping early when the discovered set hits {@link TREE_TASKID_CAP}.
+   * The visited set doubles as cycle protection — a child whose own
+   * `workflow:delegate_dispatched` payload echoes an ancestor is never
+   * re-enqueued.
+   */
+  private resolveTaskTree(
+    store: NonNullable<APIServerDeps['taskEventStore']>,
+    rootTaskId: string,
+    maxDepth: number,
+  ): { taskIds: string[]; truncated: boolean } {
+    const visited = new Set<string>([rootTaskId]);
+    let frontier: string[] = [rootTaskId];
+    let truncated = false;
+    for (let depth = 0; depth < maxDepth && frontier.length > 0 && !truncated; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const child of store.listChildTaskIds(id)) {
+          if (visited.has(child)) continue;
+          if (visited.size >= TREE_TASKID_CAP) {
+            truncated = true;
+            break;
+          }
+          visited.add(child);
+          next.push(child);
+        }
+        if (truncated) break;
+      }
+      frontier = next;
+    }
+    return { taskIds: [...visited], truncated };
   }
 
   /**
@@ -3059,4 +3367,104 @@ export function resolveRequestProfile(
 function extractTaskId(path: string): string | undefined {
   const match = path.match(/^\/api\/v1\/tasks\/([^/]+)/);
   return match?.[1];
+}
+
+// ── Simple-skill CRUD body parsing ──────────────────────────────────
+
+type SimpleSkillScope = 'user' | 'project' | 'user-agent' | 'project-agent';
+
+interface SimpleSkillWriteValue {
+  readonly name: string;
+  readonly description: string;
+  readonly body: string;
+  readonly scope: SimpleSkillScope;
+  readonly agentId?: string;
+}
+
+const SIMPLE_SKILL_SLUG = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Parse the JSON body for `POST/PUT /api/v1/skills`. Defaults `scope` to
+ * `'project'` so the simplest body (`{name,description,body}`) creates a
+ * project-scope skill. When `requireAllFields` is true (PUT path) every
+ * field must be present so partial updates don't silently lose data.
+ */
+function parseSimpleSkillWriteBody(
+  raw: unknown,
+  _requireAllFields: boolean = false,
+): { ok: true; value: SimpleSkillWriteValue } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object') {
+    return { ok: false, error: 'body must be an object' };
+  }
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== 'string' || !SIMPLE_SKILL_SLUG.test(r.name)) {
+    return { ok: false, error: 'name must match /^[a-z][a-z0-9-]*$/' };
+  }
+  if (typeof r.description !== 'string') {
+    return { ok: false, error: 'description must be a string' };
+  }
+  if (typeof r.body !== 'string') {
+    return { ok: false, error: 'body must be a string' };
+  }
+  const rawScope = (r.scope as string | undefined) ?? 'project';
+  if (
+    rawScope !== 'user' &&
+    rawScope !== 'project' &&
+    rawScope !== 'user-agent' &&
+    rawScope !== 'project-agent'
+  ) {
+    return { ok: false, error: "scope must be 'user' | 'project' | 'user-agent' | 'project-agent'" };
+  }
+  const agentId = typeof r.agentId === 'string' && r.agentId.length > 0 ? r.agentId : undefined;
+  if ((rawScope === 'user-agent' || rawScope === 'project-agent') && !agentId) {
+    return { ok: false, error: `scope '${rawScope}' requires agentId` };
+  }
+  if (agentId !== undefined && !SIMPLE_SKILL_SLUG.test(agentId)) {
+    return { ok: false, error: 'agentId must match /^[a-z][a-z0-9-]*$/' };
+  }
+  return {
+    ok: true,
+    value: {
+      name: r.name,
+      description: r.description,
+      body: r.body,
+      scope: rawScope,
+      ...(agentId ? { agentId } : {}),
+    },
+  };
+}
+
+/**
+ * Decode a simple-skill catalog id payload (the part after `simple:`).
+ *
+ * Shapes:
+ *   `<scope>:<name>`                  shared scopes (user / project)
+ *   `<scope>:<agentId>:<name>`        per-agent scopes (user-agent / project-agent)
+ *
+ * Returns null on any malformed input — callers should surface 400.
+ */
+function parseSimpleIdPayload(
+  payload: string,
+): { scope: SimpleSkillScope; name: string; agentId?: string } | null {
+  const parts = payload.split(':');
+  if (parts.length === 2) {
+    const [scope, name] = parts;
+    if ((scope === 'user' || scope === 'project') && name && SIMPLE_SKILL_SLUG.test(name)) {
+      return { scope, name };
+    }
+    return null;
+  }
+  if (parts.length === 3) {
+    const [scope, agentId, name] = parts;
+    if (
+      (scope === 'user-agent' || scope === 'project-agent') &&
+      agentId &&
+      name &&
+      SIMPLE_SKILL_SLUG.test(agentId) &&
+      SIMPLE_SKILL_SLUG.test(name)
+    ) {
+      return { scope, name, agentId };
+    }
+  }
+  return null;
 }

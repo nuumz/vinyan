@@ -43,14 +43,16 @@ const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
  * Subscribing only to `llm:stream_delta` (the pre-fix design) silently
  * relied on `streaming.assistantDelta` being on, which is false by
  * default — so any sub-task that ran the non-streaming path was killed
- * at 120s without a real liveness check. `llm:retry_attempt` covers the
- * other half of the same gap: a provider 429 storm sleeps in
- * `retry.ts:retryWithBackoff` with no other event traffic, which used
- * to look identical to a hang.
+ * at 120s without a real liveness check. `llm:retry_attempt` and
+ * `llm:request_alive` cover the rest of the gap: 429 storms sleeping
+ * in `retry.ts`, and a single long `provider.generate()` call (e.g.
+ * author writing a 150s prose response) that emits no other event
+ * during the wait — the latter incident hit author/step3 at 121s.
  */
 const WATCHDOG_ACTIVITY_EVENTS = [
   'llm:stream_delta',
   'llm:retry_attempt',
+  'llm:request_alive',
   'agent:text_delta',
   'phase:timing',
   'task:stage_update',
@@ -456,7 +458,7 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
   const allCompleted = [...stepResults.values()].every((r) => r.status === 'completed');
   const anyFailed = [...stepResults.values()].some((r) => r.status === 'failed');
-  const status = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
+  let status: WorkflowResult['status'] = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
 
   // Record approach failure when at least one step failed. `partial` covers
   // the "some succeeded, some failed" case — still useful signal for the
@@ -464,6 +466,105 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
   if (anyFailed) {
     const failedStepIds = [...stepResults.values()].filter((r) => r.status === 'failed').map((r) => r.stepId);
     await recordFailure('workflow-step-failed', failedStepIds);
+
+    // Runtime decision gate (MVP — multi-agent partial only): when at
+    // least one DELEGATE-SUB-AGENT step failed AND its cascade caused at
+    // least one dependent step to skip, the workflow can no longer
+    // deliver what the user originally asked for (e.g. the planner's
+    // Compare step depends on all delegates succeeding — one delegate
+    // timing out skips the comparison and forces the executor to ship a
+    // deterministic concat of survivors). Pause and ask the user before
+    // shipping that degraded result.
+    //
+    // Scope-limited to delegate-sub-agent failures on purpose:
+    //   - human-input failure is user-driven (they provided empty / no
+    //     answer); asking them again with a decision card is redundant
+    //   - llm-reasoning / direct-tool failures are infrastructure issues
+    //     that don't have a "ship as-is vs alternatives" semantic; keep
+    //     the existing silent-partial behavior until we have a separate
+    //     UX for those modes
+    //
+    // Also bypassed when:
+    //   - bus is not configured (CLI smoke without event bus)
+    //   - task is a delegated sub-task (`input.parentTaskId` set) — the
+    //     parent's gate covers the user's decision surface
+    //   - status would be 'completed' or no cascade-skip happened (a
+    //     leaf step failure with no dependents is honestly partial but
+    //     does not change what the user asked for)
+    const skippedDueToFailedDep = [...stepResults.values()].filter(
+      (r) => r.status === 'skipped' && r.output.startsWith('Skipped: dependency failed'),
+    );
+    const failedDelegateStep = plan.steps.find(
+      (s) => s.strategy === 'delegate-sub-agent' && stepResults.get(s.id)?.status === 'failed',
+    );
+    const shouldPauseForDecision =
+      !!deps.bus &&
+      !input.parentTaskId &&
+      status === 'partial' &&
+      !!failedDelegateStep &&
+      skippedDueToFailedDep.length > 0;
+
+    if (shouldPauseForDecision) {
+      const bus = deps.bus!;
+      const skippedStepIds = skippedDueToFailedDep.map((r) => r.stepId);
+      const completedStepIds = [...stepResults.values()].filter((r) => r.status === 'completed').map((r) => r.stepId);
+      const summary =
+        `${failedStepIds.length} of ${plan.steps.length} step` +
+        `${plan.steps.length === 1 ? '' : 's'} failed; ` +
+        `${skippedStepIds.length} dependent step${skippedStepIds.length === 1 ? '' : 's'} skipped.`;
+      const partialPreview = buildPartialPreview(plan, stepResults, 600);
+      const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+
+      // Subscribe BEFORE emitting `_needed` so a fast UI cannot race the
+      // request — same hazard as approval / human-input gates.
+      const decisionPromise = awaitPartialFailureDecision(bus, input.id, timeoutMs);
+      bus.emit('workflow:partial_failure_decision_needed', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        failedStepIds,
+        skippedStepIds,
+        completedStepIds,
+        summary,
+        partialPreview,
+        timeoutMs,
+      });
+      const decision = await decisionPromise;
+
+      if (decision === 'abort' || decision === 'timeout') {
+        const auto = decision === 'timeout';
+        const rationale = auto
+          ? `User did not respond within ${Math.round(timeoutMs / 1000)}s; aborting partial result.`
+          : 'User chose to abort after partial-failure review.';
+        bus.emit('workflow:partial_failure_decision_provided', {
+          taskId: input.id,
+          sessionId: input.sessionId,
+          decision: 'abort',
+          rationale,
+          ...(auto ? { auto: true } : {}),
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: succeeded.size,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [...stepResults.values()],
+          synthesizedOutput: rationale,
+          totalTokensConsumed: totalTokens,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
+      // decision === 'continue' — fall through to buildResult / emit
+      // workflow:complete with the original 'partial' status. Echo the
+      // user's decision on the bus for observability + UI teardown.
+      bus.emit('workflow:partial_failure_decision_provided', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        decision: 'continue',
+      });
+    }
   }
 
   deps.bus?.emit('workflow:complete', {
@@ -1552,4 +1653,64 @@ function buildDeterministicDelegateAggregation(
   }
 
   return sections.join('\n\n---\n\n');
+}
+
+/**
+ * Wait for the user's partial-failure decision. Mirrors the approval-gate
+ * pattern at `awaitApprovalDecision`: subscribe BEFORE the matching
+ * `_needed` event is emitted so a fast UI cannot race the executor and
+ * settle exactly once. The executor's own self-emitted `_provided` payload
+ * (the timeout abort path) carries `auto: true` so the listener can ignore
+ * it — without that filter the timeout settle would fire twice.
+ */
+function awaitPartialFailureDecision(
+  bus: VinyanBus,
+  taskId: string,
+  timeoutMs: number,
+): Promise<'continue' | 'abort' | 'timeout'> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (v: 'continue' | 'abort' | 'timeout') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(v);
+    };
+    const timer = setTimeout(() => settle('timeout'), timeoutMs);
+    const unsub = bus.on('workflow:partial_failure_decision_provided', (payload) => {
+      if (payload.taskId !== taskId) return;
+      if (payload.auto) return;
+      settle(payload.decision);
+    });
+  });
+}
+
+/**
+ * Brief preview of what would ship if the user picks "continue" on the
+ * partial-failure gate. A tightly-capped excerpt of the deterministic
+ * aggregation — enough for the user to judge "is this useful?" without
+ * dumping the full multi-paragraph aggregation into the decision card.
+ */
+function buildPartialPreview(
+  plan: WorkflowPlan,
+  stepResults: Map<string, WorkflowStepResult>,
+  maxChars: number,
+): string {
+  const sections: string[] = [];
+  for (const step of plan.steps) {
+    const result = stepResults.get(step.id);
+    if (!result || result.status !== 'completed') continue;
+    if (result.output.trim().length === 0) continue;
+    const persona = step.agentId ?? step.id;
+    const body = result.output.trim();
+    sections.push(`**${persona}**: ${body}`);
+    // Stop early once we've accumulated enough; truncated output gets a
+    // trailing ellipsis so the UI can show "more available" honestly.
+    const joined = sections.join('\n\n');
+    if (joined.length >= maxChars) {
+      return `${joined.slice(0, maxChars).trimEnd()}…`;
+    }
+  }
+  return sections.join('\n\n');
 }

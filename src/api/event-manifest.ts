@@ -120,6 +120,8 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'workflow:delegate_timeout', sse: true, record: true, scope: 'task' },
   { event: 'workflow:human_input_needed', sse: true, record: true, scope: 'task' },
   { event: 'workflow:human_input_provided', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:partial_failure_decision_needed', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:partial_failure_decision_provided', sse: true, record: true, scope: 'task' },
   // Synthesizer / planner observability — recorded for audit replay only.
   { event: 'workflow:synthesizer_compression_detected', sse: false, record: true, scope: 'task' },
   { event: 'workflow:planner_validation_warning', sse: false, record: false, scope: 'global' },
@@ -171,8 +173,18 @@ export const SESSION_BYPASS_EVENTS: BusEventName[] = EVENT_MANIFEST.filter(
   (e) => e.sse && e.sessionBypass === true,
 ).map((e) => e.event);
 
-/** Quick lookup. */
+/**
+ * O(1) lookup index built once at module load. Hot paths (recorder bus
+ * handler, SSE filter) hit this on every emit, so a linear scan was a
+ * latent perf cliff at large manifest size. The Map stays the truth as
+ * long as `EVENT_MANIFEST` is the only place new entries land.
+ */
+const MANIFEST_BY_EVENT: ReadonlyMap<BusEventName, EventManifestEntry> = (() => {
+  const map = new Map<BusEventName, EventManifestEntry>();
+  for (const entry of EVENT_MANIFEST) map.set(entry.event, entry);
+  return map;
+})();
+
 export function lookupManifestEntry(event: BusEventName): EventManifestEntry | undefined {
-  for (const entry of EVENT_MANIFEST) if (entry.event === event) return entry;
-  return undefined;
+  return MANIFEST_BY_EVENT.get(event);
 }

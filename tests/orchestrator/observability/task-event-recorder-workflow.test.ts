@@ -131,4 +131,21 @@ describe('TaskEventRecorder — workflow event coverage', () => {
     const replay = store.listForTask('t-4').map((e) => e.eventType);
     expect(replay).toEqual(['workflow:step_start', 'workflow:step_complete', 'workflow:step_start']);
   });
+
+  test('non-recorded events are never subscribed to (RECORDED_EVENTS allow-list)', () => {
+    // Belt-and-suspenders for the manifest contract: events flagged
+    // `record: false` (e.g. evolution:rulePromoted, scope='global') must
+    // NOT be persisted to task_events even when their payload carries
+    // a stray taskId — they aren't on the recorder's bus.on() list at
+    // all, and the recorder's manifest-scope guard would catch them if
+    // they were. This test pins the public contract.
+    bus.emit('evolution:rulePromoted', {
+      taskId: 't-scope',
+      ruleId: 'r1',
+    } as never);
+    handle.flush();
+
+    const events = store.listForTask('t-scope');
+    expect(events.length).toBe(0);
+  });
 });

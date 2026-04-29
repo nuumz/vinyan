@@ -32,6 +32,14 @@ export interface SimpleSkillRegistry {
    */
   getAll(): readonly SimpleSkill[];
   /**
+   * Synchronous re-scan. The watcher fires `refresh` on filesystem changes
+   * with a debounce window; the API server's CRUD handlers call this
+   * directly after a successful write so the catalog list reflects the
+   * change without waiting for the watcher (or even when `watch: false`).
+   * Idempotent — re-reads every scope, version counter increments.
+   */
+  refresh(): void;
+  /**
    * Per-agent snapshot. Returns shared-scope skills + the supplied agent's
    * per-agent skills. Other agents' per-agent skills are filtered OUT
    * (per-persona privacy isolation).
@@ -103,6 +111,9 @@ export function createSimpleSkillRegistry(
   return {
     getAll(): readonly SimpleSkill[] {
       return skills;
+    },
+    refresh(): void {
+      refresh();
     },
     getForAgent(agentId: string | undefined): readonly SimpleSkill[] {
       return filterSkillsForAgent(skills, agentId);

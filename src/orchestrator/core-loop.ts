@@ -351,6 +351,17 @@ export interface OrchestratorDeps {
    * behavior. Graceful degradation; never hard-fails on missing stage 2.
    */
   llmComprehensionEngine?: import('./comprehension/types.ts').ComprehensionEngine;
+  /**
+   * Hybrid skill registry — Claude-Code-style SKILL.md files loaded from
+   * the four scopes (`~/.vinyan/skills`, `<ws>/.vinyan/skills`, `<ws>/.vinyan/agents/<id>/skills`,
+   * `~/.vinyan/agents/<id>/skills`). Wired by the factory so the conversational
+   * short-circuit can resolve `/skill-name` invocations and inline matched
+   * bodies into its hand-built system prompt — matching the in-process and
+   * subprocess full-pipeline paths.
+   */
+  simpleSkillRegistry?: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+  /** Matcher tuning for the conversational path. Mirrors `WorkerPool.simpleMatcherOpts`. */
+  simpleSkillMatcherOpts?: import('../skills/simple/matcher.ts').MatchOptions;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;

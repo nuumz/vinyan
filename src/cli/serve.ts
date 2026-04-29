@@ -306,6 +306,12 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       approvalGate: orchestrator.approvalGate,
       agentProfileStore: orchestrator.agentProfileStore,
       skillStore: orchestrator.skillStore,
+      // Hybrid skills — surface the simple loader + heavy artifact store so
+      // the unified Skill Library at /api/v1/skills can list and detail
+      // simple/heavy/cached items in one place. CRUD writes go to
+      // <workspace>/.vinyan/skills (project) or ~/.vinyan/skills (user).
+      simpleSkillRegistry: orchestrator.simpleSkillRegistry,
+      skillArtifactStore: orchestrator.skillArtifactStore,
       patternStore: orchestrator.patternStore,
       agentContextStore: orchestrator.agentContextStore,
       agentRegistry: orchestrator.agentRegistry,

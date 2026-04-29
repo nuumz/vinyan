@@ -2335,6 +2335,101 @@ describe('executeWorkflow', () => {
     expect(streamObservedByExecutor).toBeGreaterThanOrEqual(2);
   });
 
+  test('Test 9c: delegate watchdog treats llm:request_alive heartbeat as live activity', async () => {
+    // Layer 3 contract: a single non-streaming LLM call (long-form
+    // author / large reasoning) emits no other event during the wait.
+    // The retry helper now fires a `llm:request_alive` heartbeat at a
+    // fixed cadence — the watchdog must treat it as activity. Pinning
+    // the wiring here. Real heartbeat emission is unit-tested in
+    // retry.test.ts; this asserts the watchdog surface listens.
+    const plan = JSON.stringify({
+      goal: 'long single LLM call without other events',
+      steps: [
+        {
+          id: 'step1',
+          description: 'Pose the question',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.2,
+        },
+        {
+          id: 'step2',
+          description: 'author writes a long response',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          dependencies: ['step1'],
+          inputs: { q: '$step1.result' },
+          budgetFraction: 0.6,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string; userPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'STEP_OUTPUT', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    let heartbeatsObserved = 0;
+    bus.on('llm:request_alive', () => {
+      heartbeatsObserved += 1;
+    });
+    const executeTask = async (subInput: any) => {
+      // Simulate a slow non-streaming LLM call. Three heartbeats fire
+      // over the wait — watchdog should reset its idle clock on each.
+      bus.emit('llm:request_alive', {
+        taskId: subInput.id,
+        providerId: 'openrouter/balanced/some-model',
+        attempt: 0,
+        durationMs: 30_000,
+      });
+      bus.emit('llm:request_alive', {
+        taskId: subInput.id,
+        providerId: 'openrouter/balanced/some-model',
+        attempt: 0,
+        durationMs: 60_000,
+      });
+      bus.emit('llm:request_alive', {
+        taskId: subInput.id,
+        providerId: 'openrouter/balanced/some-model',
+        attempt: 0,
+        durationMs: 90_000,
+      });
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: 'long prose answer',
+        trace: { tokensConsumed: 50 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('long single LLM call'), {
+      bus,
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+      workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
+    });
+    const delegateResult = result.stepResults.find((s) => s.stepId === 'step2');
+    expect(delegateResult).toBeDefined();
+    expect(delegateResult!.status).toBe('completed');
+    expect(heartbeatsObserved).toBeGreaterThanOrEqual(3);
+  });
+
   test('Test 9b: delegate watchdog treats llm:retry_attempt as live activity', async () => {
     // Layer 2 contract: provider retry-backoff sleeps (typically 429 from
     // OpenRouter free tier) emit `llm:retry_attempt` before each sleep.

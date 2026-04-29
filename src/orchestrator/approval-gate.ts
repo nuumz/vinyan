@@ -13,10 +13,14 @@ import type { VinyanBus } from '../core/bus.ts';
 
 export type ApprovalDecision = 'approved' | 'rejected';
 
-interface PendingApproval {
+export interface PendingApprovalInfo {
   taskId: string;
   riskScore: number;
   reason: string;
+  requestedAt: number;
+}
+
+interface PendingApproval extends PendingApprovalInfo {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -43,7 +47,14 @@ export class ApprovalGate {
         resolve('rejected');
       }, this.timeoutMs);
 
-      this.pending.set(taskId, { taskId, riskScore, reason, resolve, timer });
+      this.pending.set(taskId, {
+        taskId,
+        riskScore,
+        reason,
+        requestedAt: Date.now(),
+        resolve,
+        timer,
+      });
 
       // Emit event for TUI/listeners to pick up
       this.bus.emit('task:approval_required', { taskId, riskScore, reason });
@@ -69,6 +80,16 @@ export class ApprovalGate {
   /** Get all pending approval task IDs. */
   getPendingIds(): string[] {
     return [...this.pending.keys()];
+  }
+
+  /** Get all pending approvals with full context (riskScore, reason, requestedAt). */
+  getPending(): PendingApprovalInfo[] {
+    return [...this.pending.values()].map(({ taskId, riskScore, reason, requestedAt }) => ({
+      taskId,
+      riskScore,
+      reason,
+      requestedAt,
+    }));
   }
 
   /** Clear all pending approvals (auto-reject). Used during shutdown. */

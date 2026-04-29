@@ -709,6 +709,35 @@ export interface VinyanBusEvents {
     /** HTTP status code when the retry was triggered by a status response. */
     status?: number;
   };
+  /**
+   * In-flight heartbeat — emitted at a fixed cadence (default 30s) while
+   * an LLM provider call is actually awaiting the network response /
+   * stream. Closes the gap that retry-attempt + stream_delta cannot
+   * cover: a single non-streaming `provider.generate()` call that takes
+   * 90–180s (long-form author / large reasoning) emits NO other event
+   * during the wait, which used to look identical to a hang and tripped
+   * the delegate watchdog at 120s (incident: author step3 idle timeout
+   * after 121s, agent=author).
+   *
+   * `taskId` is resolved exactly like `llm:retry_attempt`. Suppressed
+   * when the trace context cannot bind a taskId — no orphan rows.
+   *
+   * Internal heartbeat: NOT in the SSE / event-manifest delivery list.
+   * UIs that need a "thinking" indicator should listen to
+   * `agent:thinking` / `llm:stream_delta` instead — this event is
+   * scoped to watchdog liveness only and would be too chatty for chat
+   * UIs that already render token streaming directly.
+   *
+   * Observational only (A3).
+   */
+  'llm:request_alive': {
+    taskId: string;
+    providerId: string;
+    /** 0-indexed attempt this heartbeat belongs to (resets per retry). */
+    attempt: number;
+    /** Total elapsed ms since the current attempt started. */
+    durationMs: number;
+  };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
@@ -1290,6 +1319,25 @@ export interface VinyanBusEvents {
   'replan:accepted': { taskId: string; iteration: number; planSignature: string };
   'replan:rejected': { taskId: string; iteration: number; reason: string };
 
+  /**
+   * ProcessStateReconciler observability — fires once per reconcile call
+   * (task or session) AFTER the durable history catches up with what
+   * SSE may have dropped. Internal only: NOT in `event-manifest.ts`,
+   * NOT forwarded over SSE, NOT persisted. Operators read it via metrics
+   * / logs / a future dashboard panel to track "how often does SSE lose
+   * events?" — that's the question the reconciler exists to answer.
+   *
+   * `truncated: true` indicates the page-cap or fetch-timeout safety net
+   * fired; the host should treat the cycle as incomplete and may retry.
+   */
+  'reconciler:replayed': {
+    scope: 'task' | 'session';
+    scopeId: string;
+    appliedCount: number;
+    durationMs: number;
+    truncated: boolean;
+  };
+
   // Wave 5: Reactive micro-learning — failure cluster signal
   'failure:cluster-detected': { taskSignature: string; failureCount: number; taskIds: string[] };
   'reactive:rule-generated': {
@@ -1495,6 +1543,50 @@ export interface VinyanBusEvents {
     stepId: string;
     value: string;
     sessionId?: string;
+  };
+  /**
+   * Runtime gate fired AFTER the execution loop completes when at least one
+   * step failed AND its cascade caused at least one dependent step to skip.
+   * Distinguishes "true partial failure" (user's plan can no longer deliver
+   * what they asked for) from "isolated leaf failure" (a side step failed,
+   * main work intact). Without this gate the executor silently shipped the
+   * partial aggregation as if everything was fine — see image-4 reproduction
+   * in docs/design/multi-agent-hardening-roadmap.md (incident 2026-04-29).
+   *
+   * Sub-tasks (`input.parentTaskId` set) bypass this gate — the parent's
+   * gate covers the user's decision surface. Matching response event is
+   * `workflow:partial_failure_decision_provided` with the same `taskId`.
+   */
+  'workflow:partial_failure_decision_needed': {
+    taskId: string;
+    sessionId?: string;
+    /** Steps the executor attempted that returned status='failed'. */
+    failedStepIds: string[];
+    /** Steps the cascade-skipped because their dep failed. */
+    skippedStepIds: string[];
+    /** Steps that completed normally — for "we have N answers" UI copy. */
+    completedStepIds: string[];
+    /** Short human-readable summary used as the card title. */
+    summary: string;
+    /** Truncated preview of the aggregation that would ship if user picks 'continue'. */
+    partialPreview?: string;
+    /** Wait window before executor auto-aborts. */
+    timeoutMs: number;
+  };
+  /**
+   * User decided whether to ship the partial result. Resolves the executor's
+   * paused gate. `auto: true` indicates the executor self-emitted on timeout
+   * (no user input arrived within `timeoutMs`); the executor's own listener
+   * ignores those self-emits to avoid re-settling its own promise.
+   */
+  'workflow:partial_failure_decision_provided': {
+    taskId: string;
+    decision: 'continue' | 'abort';
+    sessionId?: string;
+    /** Optional free-text user note. */
+    rationale?: string;
+    /** True when executor auto-aborted on timeout. */
+    auto?: boolean;
   };
   // Agent Context Layer: emitted during sleep cycle when agent identities are refined
   'agent:evolved': {

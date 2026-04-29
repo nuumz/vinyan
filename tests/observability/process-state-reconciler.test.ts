@@ -99,7 +99,7 @@ describe('ProcessStateReconciler', () => {
     expect((completion?.payload as { status: string }).status).toBe('skipped');
   });
 
-  test('a duplicate live event followed by replay does NOT apply twice', async () => {
+  test('ingestLive applies + dedupes; later replay does NOT double-apply', async () => {
     const reducer = makeReducer();
     const live = makeEvent('t', 5, 'workflow:step_complete', { stepId: 'x', status: 'completed' });
 
@@ -118,9 +118,17 @@ describe('ProcessStateReconciler', () => {
       applyEvent: reducer.apply,
     });
 
-    // Live path: caller marks it seen, then runs the reducer once.
-    reconciler.noteLiveEvent(live);
-    reducer.apply(live);
+    // Live path: ONE call dedupes + advances cursor + invokes reducer.
+    // The previous API made the host call noteLiveEvent + reducer.apply
+    // separately — that footgun is gone.
+    const first = reconciler.ingestLive(live);
+    expect(first.applied).toBe(true);
+    expect(reducer.state.events.length).toBe(1);
+
+    // A second ingestLive on the same id is suppressed.
+    const second = reconciler.ingestLive(live);
+    expect(second.applied).toBe(false);
+    expect(reducer.state.events.length).toBe(1);
 
     // Reconnect → reconcile session. The seenIds dedupe must suppress.
     const applied = await reconciler.reconcileSession('sess');
@@ -248,5 +256,127 @@ describe('ProcessStateReconciler', () => {
 
     await reconciler.reconcileSession('sess');
     expect(transitions).toEqual([true, false]);
+  });
+
+  test('runaway pagination is bounded by maxPagesPerReconcile', async () => {
+    // A misbehaving server returns a non-empty page with a fresh cursor
+    // every time. Without the page cap the reconciler would loop forever;
+    // with it, the cycle terminates and onReplayed reports `truncated`.
+    let pageNum = 0;
+    let onReplayed: { truncated: boolean; appliedCount: number } | undefined;
+    const reducer = makeReducer();
+    const reconciler = new ProcessStateReconciler(
+      {
+        fetchTaskHistory: async () => ({ events: [], lastSeq: 0 }),
+        fetchSessionHistory: async () => {
+          pageNum += 1;
+          return {
+            events: [makeEvent('t', pageNum, 'phase:timing', { p: pageNum }, 'sess', pageNum * 10)],
+            // Always advance the cursor so the loop continues.
+            nextCursor: `${pageNum * 10}:t-${pageNum}`,
+          };
+        },
+        applyEvent: reducer.apply,
+        onReplayed: (info) => {
+          onReplayed = info;
+        },
+      },
+      { maxPagesPerReconcile: 5 },
+    );
+
+    const applied = await reconciler.reconcileSession('sess');
+    // Bounded: 5 pages × 1 event = 5 applied, then we give up.
+    expect(applied).toBe(5);
+    expect(onReplayed?.truncated).toBe(true);
+    expect(onReplayed?.appliedCount).toBe(5);
+  });
+
+  test('maxCursors evicts oldest cursor entries FIFO', async () => {
+    const reducer = makeReducer();
+    const reconciler = new ProcessStateReconciler(
+      {
+        fetchTaskHistory: async () => ({ events: [], lastSeq: 0 }),
+        fetchSessionHistory: async () => ({ events: [], nextCursor: undefined }),
+        applyEvent: reducer.apply,
+      },
+      { maxCursors: 50 },
+    );
+
+    // Force-feed cursor entries via ingestLive — each event mints one.
+    for (let i = 0; i < 60; i++) {
+      reconciler.ingestLive(makeEvent(`task-${i}`, 1, 'phase:timing', {}));
+    }
+
+    expect(reconciler.cursorCount()).toBeLessThanOrEqual(50);
+    // The most recent task's cursor must still be present.
+    expect(reconciler.getCursor('task', 'task-59')).toBe(1);
+    // The oldest few must have been evicted.
+    expect(reconciler.getCursor('task', 'task-0')).toBeUndefined();
+  });
+
+  test('onReplayed fires once per cycle with appliedCount + scope', async () => {
+    const replays: Array<{ scope: string; scopeId: string; appliedCount: number; truncated: boolean }> = [];
+    const reconciler = new ProcessStateReconciler({
+      fetchTaskHistory: async () => ({ events: [], lastSeq: 0 }),
+      fetchSessionHistory: async () => ({
+        events: [makeEvent('t', 1, 'workflow:plan_ready', {}), makeEvent('t', 2, 'workflow:step_start', {})],
+        nextCursor: undefined,
+      }),
+      applyEvent: () => {},
+      onReplayed: ({ scope, scopeId, appliedCount, truncated }) => {
+        replays.push({ scope, scopeId, appliedCount, truncated });
+      },
+    });
+
+    await reconciler.reconcileSession('sess-x');
+    expect(replays.length).toBe(1);
+    expect(replays[0]).toMatchObject({
+      scope: 'session',
+      scopeId: 'sess-x',
+      appliedCount: 2,
+      truncated: false,
+    });
+  });
+
+  test('fetchTimeoutMs caps a hung fetch and marks the cycle truncated', async () => {
+    let onReplayed: { truncated: boolean; appliedCount: number } | undefined;
+    const reconciler = new ProcessStateReconciler(
+      {
+        fetchTaskHistory: async () => ({ events: [], lastSeq: 0 }),
+        fetchSessionHistory: () => new Promise(() => {}), // never resolves
+        applyEvent: () => {},
+        onReplayed: (info) => {
+          onReplayed = info;
+        },
+      },
+      { fetchTimeoutMs: 50 },
+    );
+
+    const applied = await reconciler.reconcileSession('sess-hung');
+    // No events applied because the fetch timed out before returning.
+    // The cycle terminates cleanly with truncated:true rather than
+    // hanging the host.
+    expect(applied).toBe(0);
+    expect(onReplayed?.truncated).toBe(true);
+  });
+
+  test('a rejected fetch terminates the cycle without crashing', async () => {
+    let onReplayed: { truncated: boolean } | undefined;
+    const reconciler = new ProcessStateReconciler({
+      fetchTaskHistory: async () => ({ events: [], lastSeq: 0 }),
+      fetchSessionHistory: async () => {
+        throw new Error('network down');
+      },
+      applyEvent: () => {},
+      onReplayed: (info) => {
+        onReplayed = info;
+      },
+    });
+
+    // Without the runFetch wrapper, this would reject and surface as
+    // an unhandled rejection in production. The reconciler maps it to
+    // a clean truncated:true cycle so the host can retry on next call.
+    await expect(reconciler.reconcileSession('sess-down')).resolves.toBe(0);
+    expect(onReplayed?.truncated).toBe(true);
   });
 });

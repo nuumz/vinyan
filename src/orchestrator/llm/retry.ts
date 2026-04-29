@@ -42,6 +42,28 @@ export interface RetryAttemptInfo {
 
 export type OnRetryAttempt = (info: RetryAttemptInfo) => void;
 
+/**
+ * In-flight heartbeat — fired at a fixed cadence WHILE the user-supplied
+ * `fn` is awaiting (network round-trip, SDK call, stream open). Lets
+ * callers emit liveness pings (e.g. `llm:request_alive`) so external
+ * watchdogs do not interpret a long single LLM call as a hang. Cleared
+ * automatically on attempt resolution (success OR error).
+ *
+ * Distinct from `OnRetryAttempt` (which fires once per BETWEEN-attempt
+ * backoff sleep): heartbeat fires N times DURING each attempt.
+ */
+export interface RetryHeartbeatInfo {
+  /** 0-indexed attempt currently in flight. */
+  attempt: number;
+  /** Elapsed ms since this attempt started. */
+  durationMs: number;
+}
+
+export type OnRetryHeartbeat = (info: RetryHeartbeatInfo) => void;
+
+/** Default heartbeat cadence — well below the 120s delegate idle floor. */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+
 export interface RetryConfig {
   /** Maximum retry attempts (default: 3). */
   maxRetries: number;
@@ -62,6 +84,15 @@ export interface RetryConfig {
    * the retry helper logs and continues so a buggy hook cannot break retry.
    */
   onAttempt?: OnRetryAttempt;
+  /**
+   * Called periodically (every `heartbeatIntervalMs`) while the in-flight
+   * attempt is awaiting. Use to emit liveness signals (e.g.
+   * `llm:request_alive`) so external watchdogs do not flag a long
+   * single LLM call as a hang. Must not throw — errors are swallowed.
+   */
+  onHeartbeat?: OnRetryHeartbeat;
+  /** Heartbeat cadence (ms). Defaults to 30_000. Disabled when `onHeartbeat` is omitted. */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -97,6 +128,10 @@ export interface StreamRetryConfig {
   externalSignal?: AbortSignal;
   /** See `RetryConfig.onAttempt`. */
   onAttempt?: OnRetryAttempt;
+  /** See `RetryConfig.onHeartbeat`. */
+  onHeartbeat?: OnRetryHeartbeat;
+  /** Heartbeat cadence (ms). Defaults to 30_000. Disabled when `onHeartbeat` is omitted. */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -146,12 +181,32 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
       timedOut = true;
       controller.abort();
     }, timeoutMs);
+    // In-flight heartbeat for long single LLM calls (e.g. author writing
+    // a 150s prose response). Without this, the watchdog watching the
+    // bus sees zero events between dispatch and completion and idles
+    // out at 120s. The interval is capped well below that floor so a
+    // real hang is still caught at HARD_CEILING_MS.
+    const heartbeatStart = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    if (config.onHeartbeat) {
+      const intervalMs = config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      heartbeatTimer = setInterval(() => {
+        try {
+          config.onHeartbeat?.({ attempt, durationMs: Date.now() - heartbeatStart });
+        } catch (err) {
+          console.warn('[retry] onHeartbeat threw; ignoring', err);
+        }
+      }, intervalMs);
+      (heartbeatTimer as { unref?: () => void }).unref?.();
+    }
     try {
       const result = await fn(controller.signal);
       clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       return result;
     } catch (error) {
       clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
 
       // `timedOut` is the only reliable discriminator: checking
       // `controller.signal.aborted` after an unrelated error would always
@@ -346,13 +401,35 @@ export async function retryStreamWithBackoff<T>(fn: StreamRetryFn<T>, config: St
     }
 
     const machine = createTimeoutMachine(config);
+    // In-flight heartbeat — same purpose as in `retryWithBackoff`. The
+    // streaming path already calls `hooks.activity()` per chunk, but
+    // those hooks are LOCAL to the retry timeout machine and do NOT
+    // reach the bus. The watchdog sits on the bus, so we still need
+    // an explicit emit. For pure-streaming providers chunks fire often
+    // enough that the heartbeat is redundant; for hybrid providers
+    // that hold a long pre-stream pause it is the only liveness ping.
+    const heartbeatStart = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    if (config.onHeartbeat) {
+      const intervalMs = config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      heartbeatTimer = setInterval(() => {
+        try {
+          config.onHeartbeat?.({ attempt, durationMs: Date.now() - heartbeatStart });
+        } catch (err) {
+          console.warn('[retry] onHeartbeat threw; ignoring', err);
+        }
+      }, intervalMs);
+      (heartbeatTimer as { unref?: () => void }).unref?.();
+    }
 
     try {
       const result = await fn(machine.signal, machine.hooks);
       machine.cleanup();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       return result;
     } catch (error) {
       machine.cleanup();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
 
       // External cancel takes precedence — propagate without retry.
       if (externalSignal?.aborted) {

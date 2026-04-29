@@ -119,6 +119,70 @@ describe('retryWithBackoff', () => {
     expect(events).toHaveLength(0);
   });
 
+  test('onHeartbeat fires periodically while a slow request is in flight', async () => {
+    const beats: Array<{ attempt: number; durationMs: number }> = [];
+    // Slow fn that resolves after ~250ms — at 50ms heartbeat cadence we
+    // expect 4-5 beats. Pin ≥ 3 to absorb scheduler jitter.
+    const result = await retryWithBackoff(
+      async () => {
+        await sleep(250);
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 50,
+        onHeartbeat: (info) => beats.push(info),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(beats.length).toBeGreaterThanOrEqual(3);
+    expect(beats[0]?.attempt).toBe(0);
+    expect(beats[0]?.durationMs).toBeGreaterThan(0);
+    // durationMs increases monotonically across beats.
+    for (let i = 1; i < beats.length; i++) {
+      expect(beats[i]!.durationMs).toBeGreaterThanOrEqual(beats[i - 1]!.durationMs);
+    }
+  });
+
+  test('onHeartbeat stops when the request resolves (no leaked timer)', async () => {
+    const beats: number[] = [];
+    await retryWithBackoff(
+      async () => {
+        await sleep(30);
+        return 'fast';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 10,
+        onHeartbeat: () => beats.push(Date.now()),
+      },
+    );
+    const beatsAtResolution = beats.length;
+    // Wait beyond several intervals — if the timer leaked we'd see more beats.
+    await sleep(80);
+    expect(beats.length).toBe(beatsAtResolution);
+  });
+
+  test('onHeartbeat errors are swallowed (buggy hook does not crash)', async () => {
+    const result = await retryWithBackoff(
+      async () => {
+        await sleep(40);
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 10,
+        onHeartbeat: () => {
+          throw new Error('hb broken');
+        },
+      },
+    );
+    expect(result).toBe('ok');
+  });
+
   test('onAttempt errors are swallowed (buggy hook does not break retry)', async () => {
     let attempts = 0;
     const result = await retryWithBackoff(
@@ -332,6 +396,24 @@ describe('retryStreamWithBackoff', () => {
     const gap = starts[1]! - starts[0]!;
     expect(gap).toBeGreaterThanOrEqual(40);
     expect(gap).toBeLessThan(500);
+  });
+
+  test('onHeartbeat fires periodically in stream retry too', async () => {
+    const beats: number[] = [];
+    const result = await retryStreamWithBackoff(
+      async (_signal, hooks) => {
+        hooks.firstByte();
+        await sleep(220);
+        return 'ok';
+      },
+      {
+        ...baseStreamConfig,
+        heartbeatIntervalMs: 50,
+        onHeartbeat: () => beats.push(Date.now()),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(beats.length).toBeGreaterThanOrEqual(3);
   });
 
   test('onAttempt fires for stream retry with delay + reason', async () => {

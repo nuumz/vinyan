@@ -47,7 +47,7 @@ function installFetchSpyWithThrottle(failures: number): {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
-  }) as typeof globalThis.fetch;
+  }) as unknown as typeof globalThis.fetch;
 
   return {
     callCount: () => calls,

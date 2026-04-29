@@ -23,7 +23,7 @@
  * Wired in `src/orchestrator/factory.ts` alongside `attachAuditListener`.
  * Returns a `detach()` function that flushes the buffer and unsubscribes.
  */
-import { RECORDED_EVENTS } from '../../api/event-manifest.ts';
+import { lookupManifestEntry, RECORDED_EVENTS } from '../../api/event-manifest.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { TaskEventStore } from '../../db/task-event-store.ts';
 
@@ -100,6 +100,13 @@ export function attachTaskEventRecorder(
   for (const eventName of RECORDED_EVENTS) {
     detachers.push(
       bus.on(eventName, (rawPayload: unknown) => {
+        // Defense-in-depth: the manifest contract test asserts every
+        // recordable event is task-scoped, but the test runs after the
+        // merge — short-circuit here so a buggy `record: true` on a
+        // session/global-scope entry can't silently fill the DB with
+        // rows that have no taskId to query by.
+        const manifestEntry = lookupManifestEntry(eventName);
+        if (manifestEntry && manifestEntry.scope !== 'task') return;
         const ids = extractIds(rawPayload);
         if (!ids.taskId) return; // Skip events that can't be associated with a task.
         const payload = truncatePayload(rawPayload, maxStringChars);

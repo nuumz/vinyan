@@ -64,7 +64,7 @@ export const SkillMdFrontmatterSchema = z
 
     // Vinyan epistemic extensions (D20)
     confidence_tier: z.enum(CONFIDENCE_TIERS),
-    origin: z.enum(['local', 'a2a', 'mcp', 'hub']).default('local'),
+    origin: z.enum(['local', 'a2a', 'mcp', 'hub', 'autonomous']).default('local'),
     declared_oracles: z.array(z.string()).default([]),
     expected_prediction_error_reduction: z
       .object({

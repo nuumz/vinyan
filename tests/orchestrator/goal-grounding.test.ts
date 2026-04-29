@@ -245,7 +245,8 @@ describe('goal grounding', () => {
       now: 500,
     });
 
-    applyGoalGroundingConfidenceDowngrade(trace, [check!]);
+    const input = makeInput();
+    applyGoalGroundingConfidenceDowngrade(trace, [check!], input);
 
     expect(trace.confidenceDecision).toMatchObject({
       action: 're-verify',
@@ -254,6 +255,19 @@ describe('goal grounding', () => {
     expect(trace.confidenceDecision?.reason).toContain('A10 grounding downgrade');
     expect(trace.pipelineConfidence?.composite).toBe(0.2);
     expect(trace.pipelineConfidence?.formula).toContain('A10=min');
+    expect(trace.governanceProvenance).toMatchObject({
+      attributedTo: 'goalGroundingPolicy',
+      wasGeneratedBy: 'evaluateGoalGrounding',
+      reason: 'Temporal grounding found 1 stale or low-confidence fact(s)',
+    });
+    expect(trace.governanceProvenance?.decisionId).toContain('goal-grounding-downgrade-confidence');
+    expect(trace.governanceProvenance?.wasDerivedFrom).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: input.id, kind: 'task-input' }),
+        expect.objectContaining({ source: 'goal-grounding-check', kind: 'other' }),
+        expect.objectContaining({ source: 'fact-low', kind: 'other' }),
+      ]),
+    );
   });
 
   // A10 broader grounding (2026-04-28): token-Jaccard drift detection

@@ -50,8 +50,45 @@ interface PersonaOverclaimRecord {
   overclaims: number;
 }
 
+/**
+ * Phase-14 (Item 3) — optional persistence backing for the tracker. Mirrors
+ * the methods `PersonaOverclaimStore` exposes; structural typing means the
+ * Store can be passed directly. When supplied, the tracker rehydrates from
+ * `listAll()` at construction and writes through every record call so
+ * penalty math survives orchestrator restarts.
+ */
+export interface PersonaOverclaimPersistence {
+  recordObservation(personaId: string, now?: number): void;
+  recordOverclaim(personaId: string, now?: number): void;
+  listAll(): Array<{ personaId: string; observations: number; overclaims: number }>;
+}
+
 export class PersonaOverclaimTracker {
   private readonly records = new Map<string, PersonaOverclaimRecord>();
+  private readonly persistence?: PersonaOverclaimPersistence;
+
+  /**
+   * Construct with an optional persistence handle. When supplied, every
+   * record call writes through to disk, and the tracker rehydrates from
+   * `persistence.listAll()` so prior counters survive a restart. Best-effort:
+   * persistence errors are swallowed so a misbehaving DB never blocks the
+   * auction (A9 graceful degradation — penalty math falls back to in-memory).
+   */
+  constructor(persistence?: PersonaOverclaimPersistence) {
+    this.persistence = persistence;
+    if (persistence) {
+      try {
+        for (const row of persistence.listAll()) {
+          this.records.set(row.personaId, {
+            observations: row.observations,
+            overclaims: row.overclaims,
+          });
+        }
+      } catch {
+        /* persistence read is best-effort; cold-start in memory if it fails */
+      }
+    }
+  }
 
   /**
    * Record an `bid:overclaim_detected` event for `personaId`. Idempotent only
@@ -62,6 +99,13 @@ export class PersonaOverclaimTracker {
   recordOverclaim(personaId: string): void {
     const r = this.ensure(personaId);
     r.overclaims += 1;
+    if (this.persistence) {
+      try {
+        this.persistence.recordOverclaim(personaId);
+      } catch {
+        /* persistence write is best-effort; in-memory counter still applies */
+      }
+    }
   }
 
   /**
@@ -74,6 +118,13 @@ export class PersonaOverclaimTracker {
   recordObservation(personaId: string): void {
     const r = this.ensure(personaId);
     r.observations += 1;
+    if (this.persistence) {
+      try {
+        this.persistence.recordObservation(personaId);
+      } catch {
+        /* persistence write is best-effort */
+      }
+    }
   }
 
   /** Read-only snapshot of a persona's record. Returns null when unknown. */

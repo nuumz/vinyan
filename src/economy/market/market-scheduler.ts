@@ -14,7 +14,10 @@ import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
 import { BidAccuracyTracker } from './bid-accuracy-tracker.ts';
 import { FamilyStatsTracker } from './family-stats-tracker.ts';
-import { PersonaOverclaimTracker } from './persona-overclaim-tracker.ts';
+import {
+  type PersonaOverclaimPersistence,
+  PersonaOverclaimTracker,
+} from './persona-overclaim-tracker.ts';
 import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } from './market-phase.ts';
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
@@ -60,13 +63,24 @@ export class MarketScheduler {
    */
   private tickHooks: Array<() => void | Promise<void>> = [];
 
-  constructor(config: MarketConfig, bus?: VinyanBus) {
+  constructor(
+    config: MarketConfig,
+    bus?: VinyanBus,
+    /**
+     * Phase-14 (Item 3) — optional persistence backing for the persona
+     * overclaim ledger. When supplied, the tracker rehydrates from disk on
+     * construction and writes through every record so penalty math survives
+     * orchestrator restarts. Omitted in-memory fallback keeps tests / minimal
+     * setups working unchanged.
+     */
+    personaOverclaimPersistence?: PersonaOverclaimPersistence,
+  ) {
     this.config = config;
     this.accuracyTracker = new BidAccuracyTracker();
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
     this.familyStats = new FamilyStatsTracker();
-    this.personaOverclaimTracker = new PersonaOverclaimTracker();
+    this.personaOverclaimTracker = new PersonaOverclaimTracker(personaOverclaimPersistence);
   }
 
   /**

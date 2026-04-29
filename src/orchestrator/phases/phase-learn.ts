@@ -269,10 +269,12 @@ export async function executeLearnPhase(
   // analysis + synthetic agent id + knowledge contexts on the trace so
   // sleep-cycle promotion can group/promote by (taskTypeSignature, agentId).
   // No LLM in this path — pure copy of resolver output (A3).
-  Object.assign(trace, deriveGovernanceTraceAudit(routing));
+  if (!trace.governanceProvenance) {
+    Object.assign(trace, deriveGovernanceTraceAudit(routing));
+  }
   if (ctx.goalGroundingChecks && ctx.goalGroundingChecks.length > 0) {
     trace.goalGrounding = ctx.goalGroundingChecks;
-    applyGoalGroundingConfidenceDowngrade(trace, ctx.goalGroundingChecks);
+    applyGoalGroundingConfidenceDowngrade(trace, ctx.goalGroundingChecks, input);
   }
 
   const ir = ctx.intentResolution;

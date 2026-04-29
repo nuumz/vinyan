@@ -32,6 +32,7 @@ import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
+import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { SkillOutcomeStore } from '../db/skill-outcome-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
@@ -48,7 +49,7 @@ import type { EconomyConfig } from '../economy/economy-config.ts';
 import { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
 import { FederationCostRelay } from '../economy/federation-cost-relay.ts';
 import { MarketScheduler } from '../economy/market/market-scheduler.ts';
-import { setGateDeps } from '../gate/gate.ts';
+import { runGate as runOracleGate, setGateDeps } from '../gate/gate.ts';
 import type { MessagingAdapterLifecycleManager } from '../gateway/lifecycle.ts';
 import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/scheduling/wiring.ts';
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
@@ -62,6 +63,10 @@ import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
+import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
+import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
+import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
+import { buildImporterGateFn } from '../skills/hub/gate-adapter.ts';
 import {
   type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
@@ -642,7 +647,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       dynamicBudgetAllocator = new DynamicBudgetAllocator(costLedger);
       // Economy L3: market scheduler — shared across engine-selector + sleep cycle
       if (economyConfig.market?.enabled) {
-        marketScheduler = new MarketScheduler(economyConfig.market, bus);
+        // Phase-14 (Item 3): when DB is wired, back the persona overclaim
+        // ledger with SQLite so penalty math survives orchestrator restarts.
+        // Without DB the tracker stays in-memory only — same as Phase 12.
+        const personaOverclaimStore = db ? new PersonaOverclaimStore(db.getDb()) : undefined;
+        marketScheduler = new MarketScheduler(economyConfig.market, bus, personaOverclaimStore);
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
@@ -1501,6 +1510,61 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       workspace,
       registry: agentRegistry,
     });
+  }
+
+  // Phase-14 (Item 2): wire the AutonomousSkillCreator into the sleep cycle.
+  // Phase 10 shipped the scheduling hook but left it inert pending an LLM-
+  // backed DraftGenerator + a critic from a different engine (A1). Both are
+  // available now: the LLM draft generator wraps the registry's `balanced`
+  // provider; the critic reuses the existing `criticEngine`.
+  //
+  // Refused at construction when only one provider is available — A1 forbids
+  // generator and critic sharing an engine, and we'd rather skip the path
+  // than violate the invariant. Skip is logged via console.warn (no bus
+  // event needed; the sleep-cycle hook stays inert as in Phase 10).
+  if (
+    sleepCycleRunner &&
+    agentRegistry &&
+    skillOutcomeStore &&
+    skillStore &&
+    predictionLedger &&
+    criticEngine &&
+    oracleGate
+  ) {
+    const generatorProvider =
+      registry.selectByTier('balanced') ?? registry.selectByTier('fast') ?? registry.selectByTier('powerful');
+    const generatorEngineId = generatorProvider?.id;
+    const criticEngineId = criticProvider?.id;
+    const distinctEngines = !!(generatorEngineId && criticEngineId && generatorEngineId !== criticEngineId);
+    if (generatorProvider && distinctEngines) {
+      try {
+        const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+        const creator = new AutonomousSkillCreator({
+          predictionLedger,
+          skillStore,
+          artifactStore: skillArtifactStore,
+          generator: buildLLMDraftGenerator({ provider: generatorProvider }),
+          gate: buildImporterGateFn({ runGate: runOracleGate, workspace }),
+          critic: buildImporterCriticFn({ critic: criticEngine }),
+          generatorEngineId,
+          criticEngineId,
+          workspace,
+          profile: 'default',
+        });
+        sleepCycleRunner.setAutonomousSkillCreator({
+          creator,
+          skillOutcomeStore,
+          registry: agentRegistry,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[autonomous-creator] wiring skipped — ${msg}`);
+      }
+    } else if (!distinctEngines) {
+      console.warn(
+        '[autonomous-creator] wiring skipped — only one LLM provider tier available; A1 requires generator and critic engines to differ.',
+      );
+    }
   }
 
   // User-interest miner — live aggregation from traces + session messages.

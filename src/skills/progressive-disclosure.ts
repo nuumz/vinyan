@@ -28,7 +28,7 @@ export interface SkillL0View {
   version: string;
   description: string;
   confidenceTier: ConfidenceTier;
-  origin: 'local' | 'a2a' | 'mcp' | 'hub';
+  origin: 'local' | 'a2a' | 'mcp' | 'hub' | 'autonomous';
   requiresToolsets: readonly string[];
   fallbackForToolsets: readonly string[];
   platforms?: readonly string[];

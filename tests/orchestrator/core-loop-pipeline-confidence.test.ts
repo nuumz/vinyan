@@ -407,9 +407,20 @@ describe('Pipeline Confidence — Decision Paths', () => {
     expect(['failed', 'escalated']).toContain(result.status);
     // Check that a refuse event was emitted for the L1 trace
     const l1Trace = recordedTraces.find((t) => t.confidenceDecision?.action === 'refuse');
-    if (l1Trace) {
-      expect(refuseEmitted).toBe(true);
-    }
+    expect(l1Trace).toBeDefined();
+    expect(refuseEmitted).toBe(true);
+    expect(l1Trace!.governanceProvenance).toMatchObject({
+      attributedTo: 'verificationPolicy',
+      wasGeneratedBy: 'executeVerifyPhase',
+    });
+    expect(l1Trace!.governanceProvenance?.decisionId).toContain('confidence-refused');
+    expect(l1Trace!.governanceProvenance?.reason).toContain('below refuse boundary 0.30');
+    expect(l1Trace!.governanceProvenance?.wasDerivedFrom).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'verification-confidence', summary: expect.stringContaining('verification=') }),
+        expect.objectContaining({ source: 'pipeline-confidence-thresholds', summary: 'refuse when composite < 0.30' }),
+      ]),
+    );
   });
 
   test('re-verify path re-runs verification', async () => {

@@ -185,12 +185,13 @@ describe('Tool Executor — additional', () => {
     expect(results[0]!.error).toContain('Unknown tool');
   });
 
-  test('getToolNames returns all 16 built-in tools', () => {
+  test('getToolNames returns all 19 built-in tools', () => {
     // Count bumped from 14 → 15 when `consult_peer` shipped in the
     // consult_peer PR (Agent Conversation Layer 2.5 — a lightweight
     // second-opinion primitive at L1+), then → 16 when Phase 7c-2
-    // added `plan_update` as a control tool at L1+.
-    expect(executor.getToolNames()).toHaveLength(16);
+    // added `plan_update` as a control tool at L1+. Later control and
+    // GitHub tools bring the built-in registry to 19.
+    expect(executor.getToolNames()).toHaveLength(19);
     expect(executor.getToolNames()).toContain('file_read');
     expect(executor.getToolNames()).toContain('shell_exec');
     expect(executor.getToolNames()).toContain('search_semantic');

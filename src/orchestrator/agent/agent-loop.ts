@@ -12,6 +12,7 @@ import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import { type SilentAgentConfig, SilentAgentDetector } from '../../guardrails/silent-agent.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
+import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import { buildSubTaskInput, type DelegationDecision, type DelegationRouter } from '../delegation-router.ts';
 import { dispatchPostToolUse, dispatchPreToolUse } from '../hooks/hook-dispatcher.ts';
 import type { HookConfig } from '../hooks/hook-schema.ts';
@@ -708,7 +709,36 @@ export async function handleDelegation(
 
   const reserved = decision.allocatedTokens;
   const childBudget = budget.deriveChildBudget(reserved);
-  const subInput = buildSubTaskInput(request, parent, routing, childBudget);
+
+  // Phase-14 (Item 4) — A1 Epistemic Separation. When the parent task is a
+  // code-mutation AND the delegation goal reads as verification work, force
+  // the canonical Verifier persona. Same router as workflow-executor uses,
+  // so both dispatch surfaces stay in lockstep. Resolution priority:
+  // A1 verifier override > request.targetAgentId > inheritance/default.
+  // Skip silently when registry isn't wired (legacy / minimal setups).
+  let a1VerifierAgentId: string | null = null;
+  if (deps.agentRegistry) {
+    a1VerifierAgentId = selectVerifierForDelegation(
+      {
+        description: request.goal,
+        parentTaskType: parent.taskType,
+        parentAgentId: parent.agentId,
+      },
+      deps.agentRegistry,
+    );
+  }
+  const effectiveRequest: DelegationRequest = a1VerifierAgentId
+    ? { ...request, targetAgentId: a1VerifierAgentId }
+    : request;
+  const subInput = buildSubTaskInput(effectiveRequest, parent, routing, childBudget);
+  if (a1VerifierAgentId) {
+    deps.bus?.emit('delegation:a1_verifier_routed', {
+      taskId: parent.id,
+      parentAgentId: parent.agentId ?? null,
+      verifierAgentId: a1VerifierAgentId,
+      requestedTargetAgentId: request.targetAgentId ?? null,
+    });
+  }
 
   const startTime = performance.now();
   try {

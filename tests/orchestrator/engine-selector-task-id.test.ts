@@ -63,10 +63,10 @@ describe('EngineSelector — task identity contract', () => {
     const auctions: Array<{ auctionId: string; taskId: string }> = [];
     bus.on('market:auction_started', (p) => auctions.push({ auctionId: p.auctionId, taskId: p.taskId }));
 
-    const marketConfig = MarketConfigSchema.parse({ enabled: true, min_bidders: 2, min_cost_records: 0 });
+    const marketConfig = MarketConfigSchema.parse({ enabled: true, min_bidders: 2, min_cost_records: 1 });
     const market = new MarketScheduler(marketConfig, bus);
     // Force phase A → B so isActive() is true and the selector takes the auction path.
-    market.checkAutoActivation(0, 2);
+    market.checkAutoActivation(1, 2);
     expect(market.isActive()).toBe(true);
 
     const selector = new DefaultEngineSelector({

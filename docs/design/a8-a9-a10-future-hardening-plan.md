@@ -1,7 +1,17 @@
 # A8/A9/A10 Future Hardening Task Plan
-**Status:** Future backlog · **Owner:** Vinyan Core · **Created:** 2026-04-28
+**Status:** Future backlog · **Owner:** Vinyan Core · **Created:** 2026-04-28 · **Last verified:** 2026-04-29
+
+> **Document boundary:** This document owns only the future hardening backlog for proposed A8/A9/A10 extensions. Current implementation status is summarized here only to separate shipped scope from future work; source code and focused tests remain the source of truth.
 
 This document is a backlog boundary, not a current-plan blocker. The concrete A5/A8/A9/A10 implementation slices are complete under the current scope. The tasks below describe broader hardening work that can be promoted into a new bounded implementation plan later.
+
+## Current Closure Snapshot
+
+| Scope | Recheck result |
+|---|---|
+| A5/A8/A9/A10 + Gap C current slices | Focused suite passed on 2026-04-29; no diagnostic errors found in touched docs/tests. |
+| Adjacent concurrent Phase-14 slices | Focused runtime wiring/tests passed; one remote skill import path remains hook-only unless an importer plus discovery hook is supplied. |
+| Full repository sweep | Known unrelated load/benchmark/smoke/gate failures remain outside this plan and do not change this backlog boundary. |
 
 ## Boundary
 

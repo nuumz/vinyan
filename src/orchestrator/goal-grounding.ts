@@ -107,6 +107,7 @@ export function buildGoalGroundingProvenance(input: TaskInput, check: GoalGround
 export function applyGoalGroundingConfidenceDowngrade<T extends ExecutionTrace>(
   trace: T,
   checks: readonly GoalGroundingCheck[],
+  input?: TaskInput,
 ): T {
   const downgrade = [...checks].reverse().find((check) => check.action === 'downgrade-confidence');
   if (!downgrade) return trace;
@@ -127,6 +128,13 @@ export function applyGoalGroundingConfidenceDowngrade<T extends ExecutionTrace>(
     confidence: downgradedConfidence,
     reason: `A10 grounding downgrade: ${downgrade.reason}`,
   };
+  if (input) {
+    const provenance = buildGoalGroundingProvenance(input, downgrade);
+    if (trace.governanceProvenance?.escalationPath) {
+      provenance.escalationPath = trace.governanceProvenance.escalationPath;
+    }
+    trace.governanceProvenance = provenance;
+  }
   return trace;
 }
 

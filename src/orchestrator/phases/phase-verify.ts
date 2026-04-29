@@ -11,22 +11,26 @@ import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import { classifyAllFailures } from '../failure-classifier.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
-import { applyRoutingGovernance } from '../governance-provenance.ts';
+import { buildShortCircuitProvenance } from '../governance-provenance.ts';
 import { deriveOracleIndependenceAudit } from '../oracle-independence.ts';
 import {
   type ConfidenceDecision,
   computePipelineConfidence,
   deriveConfidenceDecision,
+  PIPELINE_THRESHOLDS,
 } from '../pipeline-confidence.ts';
 import type {
   EngineSelectionResult,
   ExecutionTrace,
+  GovernanceEvidenceReference,
+  GovernanceProvenance,
   PerceptualHierarchy,
   RoutingDecision,
   RoutingLevel,
   SelfModelPrediction,
   SemanticTaskUnderstanding,
   TaskDAG,
+  TaskInput,
   TaskResult,
   VerificationHint,
 } from '../types.ts';
@@ -61,6 +65,46 @@ interface VerifyInput {
   retry: number;
   /** R2: when generate dispatched via Room, carries the roomId for trace tagging. */
   roomId?: string;
+}
+
+function buildVerificationProvenance(
+  input: TaskInput,
+  routing: RoutingDecision,
+  args: {
+    decisionId: string;
+    reason: string;
+    evidence: GovernanceEvidenceReference[];
+  },
+): GovernanceProvenance {
+  const provenance = buildShortCircuitProvenance({
+    input,
+    decisionId: args.decisionId,
+    attributedTo: 'verificationPolicy',
+    wasGeneratedBy: 'executeVerifyPhase',
+    reason: args.reason,
+    evidence: args.evidence,
+  });
+  if (routing.governanceProvenance?.escalationPath) {
+    provenance.escalationPath = routing.governanceProvenance.escalationPath;
+  }
+  return provenance;
+}
+
+function buildOraclePairEvidence(
+  passedOracles: readonly string[],
+  failedOracles: readonly string[],
+  verificationReason?: string,
+): GovernanceEvidenceReference[] {
+  return [
+    {
+      kind: 'oracle-verdict',
+      source: 'oracle-contradiction-pair',
+      summary: `passed=${passedOracles[0] ?? 'none'}; failed=${failedOracles[0] ?? 'none'}; passedCount=${passedOracles.length}; failedCount=${failedOracles.length}`,
+    },
+    ...(verificationReason
+      ? [{ kind: 'other' as const, source: 'verification-reason', summary: verificationReason }]
+      : []),
+  ];
 }
 
 export async function executeVerifyPhase(
@@ -161,11 +205,12 @@ export async function executeVerifyPhase(
     for (const [name, v] of Object.entries(verification.verdicts)) {
       verdictBooleans[name] = v.verified;
     }
-    const contradictionTrace: ExecutionTrace = applyRoutingGovernance({
+    const contradictionReason = `Unresolved oracle contradiction at L${routing.level}: passed=[${passedOracles}] failed=[${failedOracles}]`;
+    const contradictionTrace: ExecutionTrace = {
       id: `trace-${input.id}-contradiction`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
-    agentId: input.agentId,
+      agentId: input.agentId,
       timestamp: Date.now(),
       routingLevel: routing.level,
       approach: 'contradiction-unresolved',
@@ -174,9 +219,14 @@ export async function executeVerifyPhase(
       tokensConsumed: 0,
       durationMs: Date.now() - startTime,
       outcome: 'failure',
-      failureReason: `Unresolved oracle contradiction at L${routing.level}: passed=[${passedOracles}] failed=[${failedOracles}]`,
+      failureReason: contradictionReason,
       affectedFiles: input.targetFiles ?? [],
-    }, routing);
+      governanceProvenance: buildVerificationProvenance(input, routing, {
+        decisionId: 'contradiction-unresolved',
+        reason: contradictionReason,
+        evidence: buildOraclePairEvidence(passedOracles, failedOracles, verification.reason),
+      }),
+    };
     await deps.traceCollector.record(contradictionTrace);
     return Phase.return({
       id: input.id,
@@ -308,7 +358,8 @@ export async function executeVerifyPhase(
       toLevel: (routing.level + 1) as RoutingLevel,
       reason: verification.reason ?? 'Oracle rejection at L0',
     });
-    const escalatedTrace: ExecutionTrace = applyRoutingGovernance({
+    const l0Reason = verification.reason ?? 'Oracle rejection at L0';
+    const escalatedTrace: ExecutionTrace = {
       id: `trace-${input.id}-${routing.level}-escalated`,
       taskId: input.id,
       workerId: routing.workerId ?? routing.model ?? 'unknown',
@@ -321,9 +372,21 @@ export async function executeVerifyPhase(
       tokensConsumed: workerResult.tokensConsumed,
       durationMs: Date.now() - startTime,
       outcome: 'escalated',
-      failureReason: verification.reason ?? 'Oracle rejection at L0',
+      failureReason: l0Reason,
       affectedFiles: [],
-    }, routing);
+      governanceProvenance: buildVerificationProvenance(input, routing, {
+        decisionId: 'oracle-rejection-l0-pinned',
+        reason: `${l0Reason}; MIN_ROUTING_LEVEL:0 prevents automatic escalation`,
+        evidence: [
+          {
+            kind: 'policy',
+            source: 'input.constraints',
+            summary: 'MIN_ROUTING_LEVEL:0 set by caller',
+          },
+          ...buildOraclePairEvidence(passedOracles, failedOracles, verification.reason),
+        ],
+      }),
+    };
     return Phase.return({
       id: input.id,
       status: 'escalated',
@@ -403,6 +466,31 @@ export async function executeVerifyPhase(
       failureOracle: fa.failureOracle,
     })),
   };
+
+  if (confidenceDecision === 'refuse' && pipelineConf) {
+    const refuseBoundary = PIPELINE_THRESHOLDS.ESCALATE;
+    trace.governanceProvenance = buildVerificationProvenance(input, routing, {
+      decisionId: 'confidence-refused',
+      reason: `Pipeline confidence ${pipelineConf.composite.toFixed(4)} below refuse boundary ${refuseBoundary.toFixed(2)}; ${pipelineConf.formula}`,
+      evidence: [
+        {
+          kind: 'other',
+          source: 'verification-confidence',
+          summary: `verification=${verificationConfidence.toFixed(3)}`,
+        },
+        {
+          kind: 'other',
+          source: 'prediction-confidence',
+          summary: `prediction=${predictionConfidence?.toFixed(3) ?? 'default'}; meta=${metaPredictionConfidence?.toFixed(3) ?? 'default'}`,
+        },
+        {
+          kind: 'policy',
+          source: 'pipeline-confidence-thresholds',
+          summary: `refuse when composite < ${refuseBoundary.toFixed(2)}`,
+        },
+      ],
+    });
+  }
 
   // ── Confidence-driven decision routing ──────────────────────
   const shouldCommit =

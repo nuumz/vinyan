@@ -9,10 +9,10 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
+import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
-import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import {
   approvalTimeoutMs,
   awaitApprovalDecision,
@@ -21,22 +21,41 @@ import {
   type WorkflowConfig,
 } from './approval-gate.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
+import { buildResearchStep, detectResearchCues, prependResearchStep } from './research-step-builder.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
-import {
-  buildResearchStep,
-  detectResearchCues,
-  prependResearchStep,
-} from './research-step-builder.ts';
-import type {
-  WorkflowPlan,
-  WorkflowResult,
-  WorkflowStep,
-  WorkflowStepResult,
-  WorkflowStepStrategy,
-} from './types.ts';
+import type { WorkflowPlan, WorkflowResult, WorkflowStep, WorkflowStepResult, WorkflowStepStrategy } from './types.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
 const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
+
+/**
+ * Bus events that count as "the sub-task is making progress" for the
+ * delegate watchdog. Each event must carry a top-level `taskId` field
+ * so the executor can scope-filter to the dispatched sub-task. The set
+ * intentionally spans every code path a sub-task can take:
+ *
+ *   - Streaming LLM:           `llm:stream_delta`, `agent:text_delta`
+ *   - Full-pipeline phases:    `phase:timing`, `task:stage_update`
+ *   - Agent-loop (subprocess): `agent:tool_started`, `agent:tool_executed`,
+ *                              `agent:turn_complete`, `agent:thinking`,
+ *                              `agent:plan_update`
+ *
+ * Subscribing only to `llm:stream_delta` (the pre-fix design) silently
+ * relied on `streaming.assistantDelta` being on, which is false by
+ * default — so any sub-task that ran the non-streaming path was killed
+ * at 120s without a real liveness check.
+ */
+const WATCHDOG_ACTIVITY_EVENTS = [
+  'llm:stream_delta',
+  'agent:text_delta',
+  'phase:timing',
+  'task:stage_update',
+  'agent:tool_started',
+  'agent:tool_executed',
+  'agent:turn_complete',
+  'agent:thinking',
+  'agent:plan_update',
+] as const;
 
 /**
  * Wrap multi-line shell output in a markdown code fence so the chat UI
@@ -98,10 +117,7 @@ export interface WorkflowExecutorDeps {
   sessionTurns?: import('../types.ts').Turn[];
 }
 
-export async function executeWorkflow(
-  input: TaskInput,
-  deps: WorkflowExecutorDeps,
-): Promise<WorkflowResult> {
+export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDeps): Promise<WorkflowResult> {
   const startTime = performance.now();
 
   const plannerDeps: WorkflowPlannerDeps = {
@@ -130,12 +146,13 @@ export async function executeWorkflow(
   // market-oriented goals so downstream drafting has trend context to work
   // against. LLM-knowledge-only — no external web access.
   const researchCue = detectResearchCues(input.goal);
-  const plan: WorkflowPlan = researchCue.needsResearch && researchCue.brief
-    ? {
-        ...rawPlan,
-        steps: prependResearchStep(rawPlan.steps, buildResearchStep(researchCue.brief)),
-      }
-    : rawPlan;
+  const plan: WorkflowPlan =
+    researchCue.needsResearch && researchCue.brief
+      ? {
+          ...rawPlan,
+          steps: prependResearchStep(rawPlan.steps, buildResearchStep(researchCue.brief)),
+        }
+      : rawPlan;
 
   if (researchCue.needsResearch) {
     deps.bus?.emit('workflow:research_injected', {
@@ -172,9 +189,7 @@ export async function executeWorkflow(
   //     would block, multiplying the human friction by N
   // Treat sub-tasks as pre-authorized via the parent's gate.
   const approvalMode =
-    deps.bus && !input.parentTaskId
-      ? classifyApprovalRequirement(deps.workflowConfig, input.goal, plan)
-      : 'none';
+    deps.bus && !input.parentTaskId ? classifyApprovalRequirement(deps.workflowConfig, input.goal, plan) : 'none';
   if (approvalMode !== 'none' && deps.bus) {
     const bus = deps.bus;
     const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
@@ -337,9 +352,7 @@ export async function executeWorkflow(
       await deps.agentMemory.recordFailedApproach({
         taskId: input.id,
         taskType: input.taskType,
-        approach: failedSteps.length > 0
-          ? `${approach}|failed:${failedSteps.join(',')}`
-          : approach,
+        approach: failedSteps.length > 0 ? `${approach}|failed:${failedSteps.join(',')}` : approach,
         failureOracle,
         routingLevel: 2,
         fileTarget: input.targetFiles?.[0] ?? '',
@@ -361,9 +374,7 @@ export async function executeWorkflow(
     const skipNow: Array<{ step: (typeof plan.steps)[number]; failedDeps: string[] }> = [];
     for (const step of plan.steps) {
       if (!remaining.has(step.id)) continue;
-      const failedDeps = step.dependencies.filter(
-        (d) => finished.has(d) && !succeeded.has(d),
-      );
+      const failedDeps = step.dependencies.filter((d) => finished.has(d) && !succeeded.has(d));
       if (failedDeps.length > 0) {
         skipNow.push({ step, failedDeps });
         continue;
@@ -423,9 +434,7 @@ export async function executeWorkflow(
     emitPlanUpdate();
 
     // Execute ready steps in parallel
-    const results = await Promise.all(
-      ready.map((step) => executeStep(step, plan, stepResults, input, deps)),
-    );
+    const results = await Promise.all(ready.map((step) => executeStep(step, plan, stepResults, input, deps)));
 
     for (const result of results) {
       stepResults.set(result.stepId, result);
@@ -435,11 +444,7 @@ export async function executeWorkflow(
       totalTokens += result.tokensConsumed;
       stepStatuses.set(
         result.stepId,
-        result.status === 'completed'
-          ? 'done'
-          : result.status === 'skipped'
-            ? 'skipped'
-            : 'failed',
+        result.status === 'completed' ? 'done' : result.status === 'skipped' ? 'skipped' : 'failed',
       );
     }
     emitPlanUpdate();
@@ -453,9 +458,7 @@ export async function executeWorkflow(
   // the "some succeeded, some failed" case — still useful signal for the
   // planner to know this strategy mix is unreliable for this task type.
   if (anyFailed) {
-    const failedStepIds = [...stepResults.values()]
-      .filter((r) => r.status === 'failed')
-      .map((r) => r.stepId);
+    const failedStepIds = [...stepResults.values()].filter((r) => r.status === 'failed').map((r) => r.stepId);
     await recordFailure('workflow-step-failed', failedStepIds);
   }
 
@@ -488,6 +491,8 @@ async function executeStep(
   const stepStart = performance.now();
 
   deps.bus?.emit('workflow:step_start', {
+    taskId: input.id,
+    sessionId: input.sessionId,
     stepId: step.id,
     strategy: step.strategy,
     description: step.description,
@@ -501,18 +506,13 @@ async function executeStep(
   // Fallback on failure
   if (result.status === 'failed' && step.fallbackStrategy) {
     deps.bus?.emit('workflow:step_fallback', {
+      taskId: input.id,
+      sessionId: input.sessionId,
       stepId: step.id,
       primaryStrategy: step.strategy,
       fallbackStrategy: step.fallbackStrategy,
     });
-    result = await dispatchStrategy(
-      step.fallbackStrategy,
-      step,
-      plan,
-      interpolatedInputs,
-      input,
-      deps,
-    );
+    result = await dispatchStrategy(step.fallbackStrategy, step, plan, interpolatedInputs, input, deps);
     result.strategyUsed = step.fallbackStrategy;
   }
 
@@ -520,6 +520,8 @@ async function executeStep(
   result.durationMs = durationMs;
 
   deps.bus?.emit('workflow:step_complete', {
+    taskId: input.id,
+    sessionId: input.sessionId,
     stepId: step.id,
     status: result.status,
     strategy: result.strategyUsed,
@@ -674,16 +676,16 @@ async function dispatchStrategy(
           step.expectedOutput ? `Expected output: ${step.expectedOutput}` : null,
           interpolatedInputs ? `Prior workflow step output:\n${interpolatedInputs}` : null,
           '',
-          'Produce just this step\'s output. Match the user\'s language and register from the goal. Do not preface with meta-commentary about the workflow or the step number.',
+          "Produce just this step's output. Match the user's language and register from the goal. Do not preface with meta-commentary about the workflow or the step number.",
         ]
           .filter((s): s is string => s !== null)
           .join('\n\n');
         const stepSystemPrompt =
           'You are completing one step of a multi-step workflow toward a goal the user already approved. ' +
           'Stay focused on this step alone — do not anticipate later steps, do not summarize prior work, ' +
-          'do not greet, do not ask clarifying questions. Match the user\'s language and tone from the goal. ' +
+          "do not greet, do not ask clarifying questions. Match the user's language and tone from the goal. " +
           'For creative writing tasks, write in narrative voice; for analytical tasks, be precise. ' +
-          'Output the step\'s deliverable directly with no meta-framing.';
+          "Output the step's deliverable directly with no meta-framing.";
         const request = {
           systemPrompt: stepSystemPrompt,
           userPrompt,
@@ -760,9 +762,7 @@ async function dispatchStrategy(
           subTaskGoalParts.push(`[Original user request: ${plan.goal}]`);
         }
         if (interpolatedInputs && interpolatedInputs.trim().length > 0) {
-          subTaskGoalParts.push(
-            `[Prior workflow step output you should answer / build on]:\n${interpolatedInputs}`,
-          );
+          subTaskGoalParts.push(`[Prior workflow step output you should answer / build on]:\n${interpolatedInputs}`);
         }
         if (step.expectedOutput && step.expectedOutput.trim().length > 0) {
           subTaskGoalParts.push(`[Expected output: ${step.expectedOutput}]`);
@@ -795,14 +795,8 @@ async function dispatchStrategy(
             // LLM has up to 10 min of total wall, with idle bursts
             // ≥ 120s each killing it. Token floor stays at 500 (a
             // different concern from wall-clock budget).
-            maxTokens: Math.max(
-              500,
-              Math.floor(input.budget.maxTokens * step.budgetFraction),
-            ),
-            maxDurationMs: Math.max(
-              600_000,
-              workflowStepTimeoutMs(input, step.budgetFraction) * 4,
-            ),
+            maxTokens: Math.max(500, Math.floor(input.budget.maxTokens * step.budgetFraction)),
+            maxDurationMs: Math.max(600_000, workflowStepTimeoutMs(input, step.budgetFraction) * 4),
             maxRetries: input.budget.maxRetries,
           },
           ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
@@ -821,43 +815,79 @@ async function dispatchStrategy(
         }
         // Wall-clock guard on the delegate. Streaming-aware watchdog:
         //   - `subTaskTimeoutMs` (≥ 120s) is the IDLE budget — how long
-        //     we tolerate ZERO `llm:stream_delta` activity before
-        //     declaring the sub-task stuck. Each stream delta for this
-        //     sub-task's id resets the idle clock, so a steadily
-        //     streaming LLM keeps running.
+        //     we tolerate ZERO progress activity AFTER the first sign
+        //     of life before declaring the sub-task stuck. Any tracked
+        //     activity event (see WATCHDOG_ACTIVITY_EVENTS) for this
+        //     sub-task's id resets the idle clock.
         //   - `HARD_CEILING_MS` is the absolute wall — even a happily
         //     streaming LLM gets killed if total elapsed exceeds this,
         //     so a token-loop / runaway generation cannot run forever.
-        // Both are necessary. Without the watchdog, a static cap killed
-        // author at exactly 2m0s on session f4117fe3 even though it was
-        // producing a substantive Thai response steadily. Without the
-        // ceiling, a 429 retry loop inside the LLM provider would hang
-        // the entire workflow (incident: session ede9e9e1 — 3 delegates
-        // sat for 40 min until a server restart marked the task
-        // orphaned). The watchdog pairs with the length===0 honesty
-        // fast-path so the synthesizer reports "step X timed out"
-        // instead of fabricating an answer the agent never produced.
+        //
+        // Two design points worth flagging:
+        //
+        // 1. Idle clock arms on FIRST activity, not at dispatch. Pre-fix
+        //    the executor armed the idle timer immediately, so a
+        //    non-streaming LLM call (default `streaming.assistantDelta:
+        //    false` → `provider.generate()` blocking, no deltas) was
+        //    killed at 120s every time (incident: sub-task
+        //    `11557ffd-...-delegate-step2`, researcher persona, idle
+        //    timeout with NO stream activity ever). The streaming
+        //    watchdog cannot tell apart "stuck" from "non-streaming
+        //    path" using stream events alone — so we let HARD_CEILING_MS
+        //    own that case until activity proves the sub-task is alive.
+        //
+        // 2. Activity is a SET of events, not just `llm:stream_delta`.
+        //    Full-pipeline phases use `provider.generate()` and never
+        //    emit stream deltas, but they DO emit `phase:timing` per
+        //    boundary. Agent-loop emits `agent:turn_complete`,
+        //    `agent:tool_*`, etc. Subscribing to all of these gives a
+        //    true liveness signal regardless of which path the sub-task
+        //    takes. All listed events carry `taskId` — see
+        //    `src/core/bus.ts` for the matrix.
+        //
+        // Both timers are still necessary together. Without the idle
+        // watchdog, a streaming LLM that genuinely hangs (rare) would
+        // wait the full HARD_CEILING_MS. Without the ceiling, a 429
+        // retry loop inside the LLM provider could hang the entire
+        // workflow (incident: session ede9e9e1 — 3 delegates sat for
+        // 40 min until a server restart marked the task orphaned). The
+        // watchdog pairs with the length===0 honesty fast-path so the
+        // synthesizer reports "step X timed out" instead of fabricating
+        // an answer the agent never produced.
         const subTaskTimeoutMs = workflowStepTimeoutMs(input, step.budgetFraction);
         const HARD_CEILING_MS = Math.max(600_000, subTaskTimeoutMs * 4);
         let lastActivityAt = performance.now();
+        let firstActivitySeen = false;
         let idleTimer: ReturnType<typeof setTimeout> | undefined;
         let ceilingTimer: ReturnType<typeof setTimeout> | undefined;
         let timeoutKind: 'idle' | 'ceiling' | null = null;
         const timeoutPromise = new Promise<TaskResult>((_, reject) => {
           const idleCheck = () => {
+            // Defer the idle verdict until the sub-task has shown at
+            // least one activity event. This is the structural fix for
+            // non-streaming paths: with default config (streaming off)
+            // OR full-pipeline phases (always non-streaming), no
+            // activity event ever arrives, and the idle clock would
+            // false-positive at 120s. Re-arm and let HARD_CEILING_MS
+            // own the cap; if activity DOES start later, we transition
+            // into tight-idle mode automatically.
+            if (!firstActivitySeen) {
+              idleTimer = setTimeout(idleCheck, subTaskTimeoutMs);
+              return;
+            }
             const idleMs = performance.now() - lastActivityAt;
             if (idleMs >= subTaskTimeoutMs) {
               timeoutKind = 'idle';
               reject(
                 new Error(
                   `delegate-sub-agent step ${step.id} idle timeout after ${Math.round(idleMs / 1000)}s ` +
-                    `(no LLM stream activity, agent=${resolvedAgentId ?? 'default'})`,
+                    `(no progress events after first activity, agent=${resolvedAgentId ?? 'default'})`,
                 ),
               );
               return;
             }
             // Re-arm for the remaining idle budget. Min 1s avoids a
-            // busy-spin if a stream delta arrived right before the
+            // busy-spin if an activity event arrived right before the
             // timer fired and pushed `lastActivityAt` forward.
             idleTimer = setTimeout(idleCheck, Math.max(1_000, subTaskTimeoutMs - idleMs));
           };
@@ -872,26 +902,27 @@ async function dispatchStrategy(
             );
           }, HARD_CEILING_MS);
         });
-        // Reset idle clock on every stream-delta the sub-task emits.
-        // The sub-task path (conversational shortcircuit / full pipeline)
-        // emits `llm:stream_delta` with `taskId === subInput.id`, so the
-        // filter below picks up only this sub-task's activity. Other
-        // sub-tasks running in parallel do not interfere. The `typeof`
-        // guard handles narrow test mocks that supply only `bus.emit`
-        // (lots of pre-watchdog tests do this) — without it the watchdog
-        // throws on subscription. Production `VinyanBus` always has
-        // `.on`, so the guard is purely a test-ergonomics affordance.
+        // Reset idle clock on any liveness signal from this sub-task.
+        // The taskId filter scopes to `subInput.id`, so concurrent
+        // delegates do not bleed activity across each other. The
+        // `typeof` guard handles narrow test mocks that supply only
+        // `bus.emit` — without it the watchdog throws on subscription.
+        // Production `VinyanBus` always has `.on`.
         const busOn =
-          deps.bus && typeof (deps.bus as { on?: unknown }).on === 'function'
-            ? deps.bus.on.bind(deps.bus)
-            : undefined;
-        const unsubStream = busOn
-          ? busOn('llm:stream_delta', (payload) => {
-              if (payload.taskId === subInput.id) {
-                lastActivityAt = performance.now();
-              }
-            })
-          : undefined;
+          deps.bus && typeof (deps.bus as { on?: unknown }).on === 'function' ? deps.bus.on.bind(deps.bus) : undefined;
+        const markActivity = () => {
+          firstActivitySeen = true;
+          lastActivityAt = performance.now();
+        };
+        const unsubActivity: Array<() => void> = [];
+        if (busOn) {
+          for (const eventName of WATCHDOG_ACTIVITY_EVENTS) {
+            const off = busOn(eventName, (payload: { taskId?: string }) => {
+              if (payload?.taskId === subInput.id) markActivity();
+            });
+            if (off) unsubActivity.push(off);
+          }
+        }
         // Emit "delegate dispatched" so the UI agent-timeline card can show
         // the sub-agent as `running` immediately, without waiting for the
         // sub-task's own `task:start` to bubble up.
@@ -927,11 +958,10 @@ async function dispatchStrategy(
         } finally {
           if (idleTimer) clearTimeout(idleTimer);
           if (ceilingTimer) clearTimeout(ceilingTimer);
-          unsubStream?.();
+          for (const off of unsubActivity) off();
         }
         const finalStatus = taskResult.status === 'completed' ? 'completed' : 'failed';
-        const stepOutput =
-          taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
+        const stepOutput = taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
         // Preview cap: 2000 chars is enough for the user to read the
         // sub-agent's reasoning + answer in the chat UI's expandable plan
         // step. Earlier 300-char cap chopped mid-word ("**Auth" instead of
@@ -1016,6 +1046,7 @@ async function dispatchStrategy(
           });
           bus.emit('workflow:human_input_needed', {
             taskId: input.id,
+            sessionId: input.sessionId,
             stepId: step.id,
             question: step.description,
           });
@@ -1053,10 +1084,7 @@ async function dispatchStrategy(
   }
 }
 
-function interpolateInputs(
-  inputs: Record<string, string>,
-  priorResults: Map<string, WorkflowStepResult>,
-): string {
+function interpolateInputs(inputs: Record<string, string>, priorResults: Map<string, WorkflowStepResult>): string {
   const parts: string[] = [];
   for (const [key, ref] of Object.entries(inputs)) {
     const match = ref.match(/^\$(\w+)\.result$/);
@@ -1095,9 +1123,7 @@ async function buildResult(
   // answers from the step descriptions is exactly the regression we are
   // protecting against (incident: session fa12c770 — Researcher delegate
   // timed out, synthesizer still wrote "จำลองการตอบของ Agent ที่เหลือ").
-  const delegateStepIds = new Set(
-    plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').map((s) => s.id),
-  );
+  const delegateStepIds = new Set(plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').map((s) => s.id));
   const delegateResults = allResults.filter((r) => delegateStepIds.has(r.stepId));
   const completedDelegates = delegateResults.filter((r) => r.status === 'completed');
   const allDelegatesFailed = delegateResults.length > 0 && completedDelegates.length === 0;
@@ -1130,10 +1156,7 @@ async function buildResult(
               // context, then list each delegate failure honestly.
               const supportLines = allResults
                 .filter((r) => r.status === 'completed')
-                .map(
-                  (r) =>
-                    `- ${r.stepId} (${r.strategyUsed}) succeeded:\n  ${r.output.trim().slice(0, 400)}`,
-                )
+                .map((r) => `- ${r.stepId} (${r.strategyUsed}) succeeded:\n  ${r.output.trim().slice(0, 400)}`)
                 .join('\n');
               const delegateLines = delegateResults
                 .map((r) => {
@@ -1200,12 +1223,8 @@ async function buildResult(
   if (lastPlanStep && allResults.length > 1) {
     const lastResult = stepResults.get(lastPlanStep.id);
     const isLastSink = !plan.steps.some((s) => s.dependencies.includes(lastPlanStep.id));
-    const isSynthesisStep =
-      lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
-    const hasUsableOutput =
-      !!lastResult &&
-      lastResult.status === 'completed' &&
-      lastResult.output.trim().length > 0;
+    const isSynthesisStep = lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
+    const hasUsableOutput = !!lastResult && lastResult.status === 'completed' && lastResult.output.trim().length > 0;
     if (isLastSink && isSynthesisStep && hasUsableOutput) {
       return {
         status,
@@ -1256,8 +1275,7 @@ async function buildResult(
         const stepSections = allResults.map((r, idx) => {
           const isLast = idx === allResults.length - 1;
           const cap = isLast ? Math.max(PER_STEP_CAP, r.output.length) : PER_STEP_CAP;
-          const body =
-            r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
+          const body = r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
           // Status tag is load-bearing: it marks failed/skipped steps so the
           // synthesizer cannot silently treat their error text as if it were
           // a real step output. See A2 honesty contract clause in the system
@@ -1280,12 +1298,12 @@ async function buildResult(
             : '';
         const synthesizerSystemPrompt =
           'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
-          'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
+          "The user only sees your output, not the steps. Match the user's language and tone from the goal. " +
           'Choose the right shape for the goal: ' +
           'creative work → output the prose / poem / story directly without bullet-pointing it; ' +
           'analytical work → structured answer with the key findings; ' +
           'instructional work → clear step-by-step. ' +
-          'When the last step\'s output is already a polished deliverable matching the goal, return it as-is ' +
+          "When the last step's output is already a polished deliverable matching the goal, return it as-is " +
           '(or with light edits) — do NOT compress it into a summary. ' +
           'When a step output contains a fenced code block (```…``` or ~~~…~~~) — typically raw shell ' +
           'output like `ls -la` listings — reproduce that fenced block verbatim in your answer (or quote ' +
@@ -1301,7 +1319,7 @@ async function buildResult(
           'goal asks for a complete deliverable. ' +
           'STITCHER RULE (non-negotiable): you are a STITCHER, not a re-author. When step outputs are ' +
           'tagged with persona / agent identity (e.g. "[step3 — author] (delegate-sub-agent):"), copy ' +
-          'each persona\'s text VERBATIM under a header that names the persona. Do NOT paraphrase, ' +
+          "each persona's text VERBATIM under a header that names the persona. Do NOT paraphrase, " +
           'smooth, blend, or compress per-persona content into your own register — doing so destroys the ' +
           'voice diversity the user asked for. Your job is limited to: a brief framing intro/outro (1-2 ' +
           'sentences), persona headers, and the verbatim outputs in between. If the user asked for a ' +
@@ -1352,12 +1370,8 @@ async function buildResult(
         // (>1500 chars across steps) is almost always paraphrase, not
         // genuine consolidation. Below those bounds the synthesizer might
         // be legitimately compressing redundant content.
-        const totalStepOutputLen = allResults.reduce(
-          (sum, r) => sum + r.output.length,
-          0,
-        );
-        const compressionRatio =
-          synthesizedOutput.length / Math.max(1, totalStepOutputLen);
+        const totalStepOutputLen = allResults.reduce((sum, r) => sum + r.output.length, 0);
+        const compressionRatio = synthesizedOutput.length / Math.max(1, totalStepOutputLen);
         if (totalStepOutputLen > 1500 && compressionRatio < 0.25) {
           deps.bus?.emit('workflow:synthesizer_compression_detected', {
             taskId,
@@ -1372,15 +1386,9 @@ async function buildResult(
           // fast-path — honest, no fabrication, no smoothing.
           const concatSections = allResults.map((r) => {
             const step = plan.steps.find((s) => s.id === r.stepId);
-            const heading = step?.description
-              ? `## ${r.stepId}: ${step.description}`
-              : `## ${r.stepId}`;
+            const heading = step?.description ? `## ${r.stepId}: ${step.description}` : `## ${r.stepId}`;
             const statusTag =
-              r.status === 'completed'
-                ? ''
-                : r.status === 'failed'
-                  ? ' [FAILED]'
-                  : ` [${r.status.toUpperCase()}]`;
+              r.status === 'completed' ? '' : r.status === 'failed' ? ' [FAILED]' : ` [${r.status.toUpperCase()}]`;
             const body = r.output.trim() || '(no output)';
             return `${heading}${statusTag}\n\n${body}`;
           });
@@ -1392,16 +1400,12 @@ async function buildResult(
         // step together with headers — the latter looks like debug output.
         const last = allResults[allResults.length - 1];
         synthesizedOutput =
-          last?.output && last.output.trim().length > 0
-            ? last.output
-            : allResults.map((r) => r.output).join('\n\n');
+          last?.output && last.output.trim().length > 0 ? last.output : allResults.map((r) => r.output).join('\n\n');
       }
     } else {
       const last = allResults[allResults.length - 1];
       synthesizedOutput =
-        last?.output && last.output.trim().length > 0
-          ? last.output
-          : allResults.map((r) => r.output).join('\n\n');
+        last?.output && last.output.trim().length > 0 ? last.output : allResults.map((r) => r.output).join('\n\n');
     }
   }
 
@@ -1498,9 +1502,7 @@ function buildDeterministicDelegateAggregation(
     // wrapped in brackets so it cannot be mistaken for a real answer.
     const reason = result.output.trim() || `step ${result.status}`;
     sections.push(
-      isSingleDelegate
-        ? `[no response from ${agentLabel} — ${reason}]`
-        : `${headerLine}\n\n[no response — ${reason}]`,
+      isSingleDelegate ? `[no response from ${agentLabel} — ${reason}]` : `${headerLine}\n\n[no response — ${reason}]`,
     );
   }
 
@@ -1519,8 +1521,7 @@ function buildDeterministicDelegateAggregation(
     const setupLines = setupCompleted.map(({ step, result }) => {
       const SETUP_CAP = 1000;
       const body = result.output.trim();
-      const snippet =
-        body.length > SETUP_CAP ? `${body.slice(0, SETUP_CAP).trim()}…` : body;
+      const snippet = body.length > SETUP_CAP ? `${body.slice(0, SETUP_CAP).trim()}…` : body;
       return `- **${step.id}** (${step.strategy}): ${snippet}`;
     });
     // Pluralize the note when multi-delegate; singular when only 1.

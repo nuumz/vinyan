@@ -771,12 +771,23 @@ describe('executeWorkflow', () => {
     expect(result.synthesizedOutput).toMatch(/not as substitute|transparency/i);
   });
 
-  test('delegate-sub-agent enforces per-step wall-clock timeout (no 40-min hangs)', async () => {
+  test('delegate-sub-agent enforces per-step idle timeout once activity has begun (no 40-min hangs)', async () => {
     // Free-tier 429 retry loops inside sub-agents previously hung the
     // entire workflow indefinitely (session ede9e9e1 sat 40 min before
-    // a server restart marked it orphaned). The wall-clock cap forces a
-    // failed step result so the workflow continues and the honesty
-    // fast-path produces a partial-result report instead of a silent hang.
+    // a server restart marked it orphaned). The streaming-aware watchdog
+    // catches this in two stages:
+    //   - If the sub-task NEVER emits an activity event, the hard ceiling
+    //     (`HARD_CEILING_MS`, ≥ 600s) is the only cap. This avoids killing
+    //     the legitimate "non-streaming LLM call takes 150s" case at 120s
+    //     — the bug pre-fix was killing real work because the watchdog
+    //     conflated "no `llm:stream_delta`" with "stuck."
+    //   - Once the sub-task emits ANY tracked activity event (stream
+    //     delta, phase:timing, agent:turn_complete, etc.), the tight
+    //     idle window engages and a hang AFTER that point is killed at
+    //     `subTaskTimeoutMs` (≥ 120s).
+    // This test models the second case: the hanging delegate emits one
+    // activity event and then never resolves. The watchdog's idle clock
+    // arms on that first event and fires 120s later.
     const timeoutEvents: any[] = [];
     const plan = JSON.stringify({
       goal: 'two delegates, one hangs',
@@ -818,7 +829,14 @@ describe('executeWorkflow', () => {
         return r;
       },
     };
-    // First delegate completes normally; second never resolves.
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    bus.on('workflow:delegate_timeout', (payload) => {
+      timeoutEvents.push(payload);
+    });
+    // First delegate completes normally; second emits one stream-delta
+    // (arming the watchdog idle clock) and then hangs forever. The idle
+    // timer should fire at subTaskTimeoutMs (≥ 120s).
     const executeTask = async (subInput: any) => {
       if (subInput.id.endsWith('-delegate-step1')) {
         return {
@@ -829,20 +847,17 @@ describe('executeWorkflow', () => {
           trace: { tokensConsumed: 5 },
         } as any;
       }
-      // Never resolves — relies on the wall-clock timeout to cut it off.
+      // Emit one delta to engage the idle watchdog, then hang.
+      bus.emit('llm:stream_delta', {
+        taskId: subInput.id,
+        kind: 'content',
+        text: 'starting…',
+      });
       return await new Promise(() => {});
     };
-    const bus = {
-      emit: (event: string, payload: unknown) => {
-        if (event === 'workflow:delegate_timeout') timeoutEvents.push(payload);
-      },
-    };
     const result = await executeWorkflow(
-      // Tight budget so the per-step timeout floor (120s default MIN) is
-      // dwarfed by the test framework — but the executor uses
-      // workflowStepTimeoutMs which clamps to MIN_WORKFLOW_LLM_TIMEOUT_MS.
-      // We override budget to keep the test under 130s by setting a budget
-      // that still trips the floor; the floor is what we're verifying.
+      // Tight parent budget; the per-step floor (120s default MIN) wins
+      // and arms the idle clock at 120s after the sub-task's first event.
       {
         ...makeInput('two delegates, one hangs'),
         budget: { maxTokens: 1000, maxDurationMs: 1000, maxRetries: 1 },
@@ -850,7 +865,8 @@ describe('executeWorkflow', () => {
       {
         llmRegistry: { selectByTier: () => mockProvider } as any,
         executeTask,
-        bus: bus as any,
+        bus,
+        workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
       },
     );
     // step1 completed, step2 timed out → status partial

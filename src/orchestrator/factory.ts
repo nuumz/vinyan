@@ -431,8 +431,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   }
 
-  // Set up LLM provider registry
-  const registry = config.registry ?? createDefaultRegistry();
+  // Set up LLM provider registry. Pass the bus so providers can emit
+  // `llm:retry_attempt` per backoff sleep — keeps the delegate watchdog
+  // and dashboards from interpreting silent 429 retry storms as a hang.
+  const registry = config.registry ?? createDefaultRegistry(bus);
 
   // Set up persistent database. When the caller injected a handle, reuse it
   // so we don't open a second bun:sqlite connection on the same WAL file.
@@ -3091,12 +3093,12 @@ function autoRegisterWorkers(
   }
 }
 
-function createDefaultRegistry(): LLMProviderRegistry {
+function createDefaultRegistry(bus?: import('../core/bus.ts').VinyanBus): LLMProviderRegistry {
   const registry = new LLMProviderRegistry();
 
   // Try OpenRouter first (no SDK dependency, just fetch)
   try {
-    registerOpenRouterProviders(registry);
+    registerOpenRouterProviders(registry, undefined, bus ? { bus } : {});
   } catch {
     // OpenRouter not available (missing API key)
   }
@@ -3104,7 +3106,7 @@ function createDefaultRegistry(): LLMProviderRegistry {
   // Try Anthropic SDK as fallback
   if (registry.listProviders().length === 0) {
     try {
-      const provider = createAnthropicProvider();
+      const provider = createAnthropicProvider(bus ? { bus } : {});
       if (provider) registry.register(provider);
     } catch {
       // Anthropic SDK not available

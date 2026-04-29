@@ -7,11 +7,13 @@
  * Source of truth: spec/tdd.md §17.1
  */
 
+import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ThinkingConfig, ToolCall } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
+import { getCurrentLLMTrace } from './llm-trace-context.ts';
 import type { AnthropicMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
+import { DEFAULT_RETRYABLE_STATUSES, type OnRetryAttempt, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
 
 /**
  * Wall-clock timeout for non-streaming `generate()`. Long because the caller
@@ -146,6 +148,12 @@ export interface AnthropicProviderConfig {
   apiKey?: string;
   timeoutMs?: number;
   streamTimeouts?: Partial<StreamTimeouts>;
+  /**
+   * Optional bus reference. When supplied, the provider emits
+   * `llm:retry_attempt` per backoff sleep so downstream watchdogs can
+   * treat retries as live activity. Omit for tests / standalone use.
+   */
+  bus?: VinyanBus;
 }
 
 export function createAnthropicProvider(config: AnthropicProviderConfig = {}): LLMProvider | null {
@@ -168,12 +176,35 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
     ...DEFAULT_STREAM_TIMEOUTS[tier],
     ...config.streamTimeouts,
   };
+  const providerId = config.id ?? `anthropic/${model}`;
+
+  // Emit `llm:retry_attempt` per backoff sleep so the delegate watchdog
+  // and dashboards see retry behaviour as live activity. taskId is
+  // resolved via request.trace.traceId → ambient `runWithLLMTrace`. When
+  // neither is set we suppress (no orphan event).
+  const buildOnAttempt = (request: LLMRequest): OnRetryAttempt | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:retry_attempt', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        delayMs: info.delayMs,
+        reason: info.reason,
+        ...(info.status !== undefined ? { status: info.status } : {}),
+      });
+    };
+  };
 
   return {
-    id: config.id ?? `anthropic/${model}`,
+    id: providerId,
     tier: config.tier ?? 'balanced',
     async generate(request: LLMRequest): Promise<LLMResponse> {
       const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
+      const onAttempt = buildOnAttempt(request);
       // Build tool definitions for Anthropic format
       const tools = request.tools?.map((t) => ({
         name: t.name,
@@ -278,11 +309,13 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             const parsed = parseInt(retryAfter, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
         },
       );
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const onAttempt = buildOnAttempt(request);
       const effectiveStreamTimeouts = request.timeoutMs
         ? {
             connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
@@ -394,6 +427,7 @@ export function createAnthropicProvider(config: AnthropicProviderConfig = {}): L
             const parsed = parseInt(retryAfter, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
         },
       );
     },

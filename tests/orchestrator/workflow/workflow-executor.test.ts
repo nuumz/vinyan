@@ -2335,6 +2335,100 @@ describe('executeWorkflow', () => {
     expect(streamObservedByExecutor).toBeGreaterThanOrEqual(2);
   });
 
+  test('Test 9b: delegate watchdog treats llm:retry_attempt as live activity', async () => {
+    // Layer 2 contract: provider retry-backoff sleeps (typically 429 from
+    // OpenRouter free tier) emit `llm:retry_attempt` before each sleep.
+    // The watchdog must reset its idle clock on these so a delegate that
+    // burns its first 30s in retry-after backoff does not count as a
+    // 120s hang. Pinning the wiring here — the actual retry emission is
+    // unit-tested in retry.test.ts; this test asserts the watchdog
+    // surface listens.
+    const plan = JSON.stringify({
+      goal: 'delegate that retries before producing output',
+      steps: [
+        {
+          id: 'step1',
+          description: 'Pose the question',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.2,
+        },
+        {
+          id: 'step2',
+          description: 'researcher answers after 429 retry',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          dependencies: ['step1'],
+          inputs: { q: '$step1.result' },
+          budgetFraction: 0.6,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'STEP_OUTPUT', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    const { createBus } = await import('../../../src/core/bus.ts');
+    const bus = createBus();
+    let retryEventsObserved = 0;
+    bus.on('llm:retry_attempt', () => {
+      retryEventsObserved += 1;
+    });
+    // Delegate emits two retry_attempt events (simulating two 429 backoff
+    // sleeps) before completing. Watchdog should treat both as activity.
+    const executeTask = async (subInput: any) => {
+      bus.emit('llm:retry_attempt', {
+        taskId: subInput.id,
+        providerId: 'openrouter/balanced/free-model',
+        attempt: 0,
+        delayMs: 1000,
+        reason: '429 throttled',
+        status: 429,
+      });
+      bus.emit('llm:retry_attempt', {
+        taskId: subInput.id,
+        providerId: 'openrouter/balanced/free-model',
+        attempt: 1,
+        delayMs: 2000,
+        reason: '429 throttled',
+        status: 429,
+      });
+      return {
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: 'eventually answered',
+        trace: { tokensConsumed: 10 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('delegate retries before output'), {
+      bus,
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+      workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
+    });
+    const delegateResult = result.stepResults.find((s) => s.stepId === 'step2');
+    expect(delegateResult).toBeDefined();
+    expect(delegateResult!.status).toBe('completed');
+    expect(retryEventsObserved).toBeGreaterThanOrEqual(2);
+  });
+
   test('Test 7: end-to-end multi-agent debate — synthesis preserves delegate sentinels and does not fabricate', async () => {
     // Three delegates produce distinct sentinel answers. The final
     // workflow output (regardless of synthesizer / deterministic-concat

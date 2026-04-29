@@ -43,10 +43,14 @@ const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
  * Subscribing only to `llm:stream_delta` (the pre-fix design) silently
  * relied on `streaming.assistantDelta` being on, which is false by
  * default — so any sub-task that ran the non-streaming path was killed
- * at 120s without a real liveness check.
+ * at 120s without a real liveness check. `llm:retry_attempt` covers the
+ * other half of the same gap: a provider 429 storm sleeps in
+ * `retry.ts:retryWithBackoff` with no other event traffic, which used
+ * to look identical to a hang.
  */
 const WATCHDOG_ACTIVITY_EVENTS = [
   'llm:stream_delta',
+  'llm:retry_attempt',
   'agent:text_delta',
   'phase:timing',
   'task:stage_update',

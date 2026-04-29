@@ -683,6 +683,32 @@ export interface VinyanBusEvents {
     tool?: string;
     partialJson?: string;
   };
+  /**
+   * Retry-attempt heartbeat — emitted by an LLM provider before sleeping
+   * for backoff between retryable failures (429, 5xx, connect/idle/wall
+   * timeouts, transient fetch errors). Carries the upcoming `delayMs` so
+   * dashboards can render an ETA card and the delegate watchdog can treat
+   * the sleep as live activity rather than a hang.
+   *
+   * `taskId` is resolved from the request's explicit trace metadata, then
+   * the ambient `runWithLLMTrace` context, then the explicit task id the
+   * orchestrator passed in. When none of those are set the provider
+   * suppresses the emit (no orphan event with an empty correlation id).
+   *
+   * Observational only (A3): governance never branches on retry events.
+   */
+  'llm:retry_attempt': {
+    taskId: string;
+    providerId: string;
+    /** 0-indexed attempt that just failed; the upcoming sleep precedes attempt N+1. */
+    attempt: number;
+    /** Backoff delay in ms before the next attempt fires. */
+    delayMs: number;
+    /** Short label — error message, status string, or timeout kind. */
+    reason: string;
+    /** HTTP status code when the retry was triggered by a status response. */
+    status?: number;
+  };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
@@ -1416,15 +1442,36 @@ export interface VinyanBusEvents {
     /** Verdict rationale from `evaluateAutoApproval` when `auto === true`. */
     rationale?: string;
   };
-  'workflow:step_start': { stepId: string; strategy: string; description: string };
+  /**
+   * Per-step workflow progress. `taskId` (and `sessionId` when known)
+   * MUST be present so durable recording via TaskEventStore and the
+   * session-scoped SSE membership filter can attribute the event to the
+   * right turn — without it, a multi-task session sees freezes when
+   * step events drop or interleave.
+   */
+  'workflow:step_start': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    strategy: string;
+    description: string;
+  };
   'workflow:step_complete': {
+    taskId: string;
+    sessionId?: string;
     stepId: string;
     status: 'completed' | 'failed' | 'skipped';
     strategy: string;
     durationMs: number;
     tokensConsumed: number;
   };
-  'workflow:step_fallback': { stepId: string; primaryStrategy: string; fallbackStrategy: string };
+  'workflow:step_fallback': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    primaryStrategy: string;
+    fallbackStrategy: string;
+  };
   'workflow:research_injected': { goal: string; reason: string };
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
   'workflow:knowledge_query': { stepId: string; query: string };
@@ -1436,7 +1483,7 @@ export interface VinyanBusEvents {
    * event is `workflow:human_input_provided` with the same `taskId` +
    * `stepId`.
    */
-  'workflow:human_input_needed': { taskId: string; stepId: string; question: string };
+  'workflow:human_input_needed': { taskId: string; sessionId?: string; stepId: string; question: string };
   /**
    * User answered an in-plan `human-input` step. Resolves the executor's
    * paused `human-input` dispatch — `value` becomes the step's `output` and

@@ -7,12 +7,13 @@
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
 
+import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
-import { clampOpenRouterId, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
+import { clampOpenRouterId, getCurrentLLMTrace, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
+import { DEFAULT_RETRYABLE_STATUSES, type OnRetryAttempt, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -59,6 +60,13 @@ export interface OpenRouterProviderConfig {
   model?: string;
   timeoutMs?: number;
   streamTimeouts?: Partial<StreamTimeouts>;
+  /**
+   * Optional bus reference. When supplied, the provider emits
+   * `llm:retry_attempt` per backoff sleep so downstream watchdogs
+   * (delegate-sub-agent watchdog, dashboards) can treat retries as
+   * live activity rather than a hang. Omit for tests / standalone use.
+   */
+  bus?: VinyanBus;
 }
 
 export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMProvider | null {
@@ -72,13 +80,38 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
     ...DEFAULT_STREAM_TIMEOUTS[config.tier],
     ...config.streamTimeouts,
   };
+  const providerId = `openrouter/${config.tier}/${model}`;
+
+  // Build a per-call onAttempt that emits `llm:retry_attempt` with the
+  // sub-task id resolved from the request's explicit trace metadata or
+  // (failing that) the ambient `runWithLLMTrace` context. When neither
+  // is set we suppress — emitting an event with no correlation id would
+  // create orphan rows in observability stores. `bus` may be undefined
+  // (test / standalone construction); the closure short-circuits.
+  const buildOnAttempt = (request: LLMRequest): OnRetryAttempt | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:retry_attempt', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        delayMs: info.delayMs,
+        reason: info.reason,
+        ...(info.status !== undefined ? { status: info.status } : {}),
+      });
+    };
+  };
 
   return {
-    id: `openrouter/${config.tier}/${model}`,
+    id: providerId,
     tier: config.tier,
 
     async generate(request: LLMRequest): Promise<LLMResponse> {
       const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
+      const onAttempt = buildOnAttempt(request);
       const body: Record<string, unknown> = {
         model,
         max_tokens: request.maxTokens,
@@ -231,11 +264,13 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             const parsed = parseInt(header, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
         },
       );
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const onAttempt = buildOnAttempt(request);
       const effectiveStreamTimeouts = request.timeoutMs
         ? {
             connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
@@ -420,6 +455,7 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
             const parsed = parseInt(header, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
         },
       );
     },
@@ -430,10 +466,15 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
 export function registerOpenRouterProviders(
   registry: { register(provider: LLMProvider): void },
   apiKey?: string,
+  options: { bus?: VinyanBus } = {},
 ): number {
   let count = 0;
   for (const tier of ['fast', 'balanced', 'powerful', 'tool-uses'] as const) {
-    const provider = createOpenRouterProvider({ tier, apiKey });
+    const provider = createOpenRouterProvider({
+      tier,
+      apiKey,
+      ...(options.bus ? { bus: options.bus } : {}),
+    });
     if (provider) {
       registry.register(provider);
       count++;

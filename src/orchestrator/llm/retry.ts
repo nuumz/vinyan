@@ -19,6 +19,29 @@
  * classification so the call sites stay consistent.
  */
 
+/**
+ * Heartbeat emitted before each backoff sleep — lets callers surface the
+ * retry as live activity (delegate watchdog, dashboards, telemetry) rather
+ * than letting silent backoff look like a hang.
+ *
+ * Fires AFTER the failed attempt resolved and BEFORE `setTimeout(delayMs)`,
+ * so subscribers know the next attempt is scheduled and roughly when. Not
+ * called on the terminal failure (when `attempt === maxRetries` or the
+ * error is non-retryable) — that path just throws.
+ */
+export interface RetryAttemptInfo {
+  /** 0-indexed attempt that just failed; the upcoming sleep precedes attempt `attempt + 1`. */
+  attempt: number;
+  /** Backoff delay in ms before the next attempt fires. */
+  delayMs: number;
+  /** Short label — error message, status string, or timeout kind. */
+  reason: string;
+  /** HTTP status code when the retry was triggered by a status response. */
+  status?: number;
+}
+
+export type OnRetryAttempt = (info: RetryAttemptInfo) => void;
+
 export interface RetryConfig {
   /** Maximum retry attempts (default: 3). */
   maxRetries: number;
@@ -32,6 +55,13 @@ export interface RetryConfig {
   parseRetryAfter?: (error: unknown) => number | undefined;
   /** Additional check: is this error retryable beyond status codes? */
   isRetryableError?: (error: Error) => boolean;
+  /**
+   * Called immediately before the backoff sleep on each retryable failure.
+   * Use to emit liveness signals (e.g. `llm:retry_attempt`) so external
+   * watchdogs do not interpret the silent sleep as a stall. Must not throw —
+   * the retry helper logs and continues so a buggy hook cannot break retry.
+   */
+  onAttempt?: OnRetryAttempt;
 }
 
 /**
@@ -65,6 +95,8 @@ export interface StreamRetryConfig {
    * abort reason propagates as the thrown error (no synthetic timeout wrap).
    */
   externalSignal?: AbortSignal;
+  /** See `RetryConfig.onAttempt`. */
+  onAttempt?: OnRetryAttempt;
 }
 
 /**
@@ -138,6 +170,21 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
         if (isStatusRetryable || isTimeout || isRetryable(lastError)) {
           const retryAfterMs = config.parseRetryAfter?.(error);
           const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+          // Heartbeat for the upcoming sleep so external watchdogs (e.g.
+          // delegate-sub-agent watchdog) do not flag the backoff as a
+          // hang. A buggy hook must not break the retry, so we swallow.
+          if (config.onAttempt) {
+            try {
+              config.onAttempt({
+                attempt,
+                delayMs: delay,
+                reason: lastError.message,
+                ...(typeof status === 'number' ? { status } : {}),
+              });
+            } catch (hookErr) {
+              console.warn('[retry] onAttempt threw; ignoring', hookErr);
+            }
+          }
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
@@ -318,6 +365,19 @@ export async function retryStreamWithBackoff<T>(fn: StreamRetryFn<T>, config: St
       if (attempt < maxRetries && isStreamRetryable(error, wrapped, timedOutByUs, config, isRetryable)) {
         const retryAfterMs = config.parseRetryAfter?.(error);
         const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+        if (config.onAttempt) {
+          const status = (error as { status?: number })?.status;
+          try {
+            config.onAttempt({
+              attempt,
+              delayMs: delay,
+              reason: wrapped.message,
+              ...(typeof status === 'number' ? { status } : {}),
+            });
+          } catch (hookErr) {
+            console.warn('[retry] onAttempt threw; ignoring', hookErr);
+          }
+        }
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }

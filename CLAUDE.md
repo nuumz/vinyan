@@ -173,6 +173,7 @@ bun run build:worker        # Bundle worker-entry.ts
 - `docs/spec/tdd.md` — Implementation contracts, schemas, algorithms
 - `docs/architecture/vinyan-os-architecture.md` — Authoritative architecture doc (v5)
 - `docs/design/implementation-plan.md` — Phased roadmap
+- `docs/design/multi-agent-hardening-roadmap.md` — Deferred items from the multi-agent honesty contract (provider fallback, semaphore, recursion guard, threshold tuning, mid-stream cancel)
 
 ## Key Design Principles
 

@@ -18,96 +18,13 @@
  * Source of truth: spec/tdd.md §22.2 (GET /api/v1/tasks/:id/events),
  * docs/design/agent-conversation.md → "Long-lived session-scoped SSE".
  */
-import type { BusEventName, VinyanBus } from '../core/bus.ts';
+import type { VinyanBus } from '../core/bus.ts';
+import { EVENT_MANIFEST, SESSION_BYPASS_EVENTS, SSE_EVENTS } from './event-manifest.ts';
 
-/** Events to forward via SSE (non-sensitive, progress-related). */
-const SSE_EVENTS: BusEventName[] = [
-  // Task lifecycle
-  'task:start',
-  'task:complete',
-  'task:escalate',
-  'task:timeout',
-  'task:stage_update',
-  'task:approval_required',
-  'task:retry_requested',
-  // Pipeline timing
-  'phase:timing',
-  'trace:record',
-  'grounding:checked',
-  'degradation:triggered',
-  // Worker / oracle
-  'worker:dispatch',
-  'worker:selected',
-  'worker:complete',
-  'worker:error',
-  'oracle:verdict',
-  'critic:verdict',
-  'shadow:complete',
-  'skill:match',
-  'skill:miss',
-  'tools:executed',
-  // Agent Conversation: per-turn observability for web/mobile streams
-  'agent:session_start',
-  'agent:session_end',
-  'agent:turn_complete',
-  'agent:tool_started',
-  'agent:tool_executed',
-  'agent:tool_denied',
-  'agent:text_delta',
-  'agent:thinking',
-  'agent:contract_violation',
-  'agent:plan_update',
-  'llm:stream_delta',
-  'agent:clarification_requested',
-  // Capability-first observability — surfaces the orchestrator's routing,
-  // synthesis, and knowledge-acquisition decisions so the chat UI can render
-  // a chronological process timeline ("Routed to X", "Synthesized agent",
-  // "Researched capability Y"). All events are read-only forwards from the
-  // EventBus — no new reasoning happens at the SSE layer (A1, A3).
-  'agent:routed',
-  'agent:synthesized',
-  'agent:synthesis-failed',
-  'agent:capability-research',
-  'agent:capability-research-failed',
-  // Phase E: workflow plan approval gate (long-form goals pause for user OK
-  // via `workflow:plan_ready` with `awaitingApproval: true`). Without these
-  // on the wire, the chat UI can't render the inline approval prompt and the
-  // workflow executor times out after `approvalTimeoutMs` (default 600s)
-  // returning "Approval timed out after 600000ms" as the synthesized result.
-  'workflow:plan_ready',
-  'workflow:plan_approved',
-  'workflow:plan_rejected',
-  // Per-step workflow progress. Lets the chat UI mark which step is running
-  // and surface fallback transitions in real time, without having to derive
-  // the running step from `agent:plan_update` diffs alone.
-  'workflow:step_start',
-  'workflow:step_complete',
-  'workflow:step_fallback',
-  // Phase 0.5: surface guardrail signals through SSE so web/extension
-  // clients see input-injection / bypass detections in real time.
-  'guardrail:injection_detected',
-  'guardrail:bypass_detected',
-  // Knowledge surface — keep the operator console live for skills,
-  // patterns, evolutionary rules, world-graph facts, sleep cycle.
-  'skill:outcome',
-  'evolution:rulesApplied',
-  'evolution:rulePromoted',
-  'evolution:ruleRetired',
-  'sleep:cycleComplete',
-  'graph:fact',
-  // Session lifecycle (create/compact + metadata + archive/delete/restore).
-  'session:created',
-  'session:compacted',
-  'session:updated',
-  'session:archived',
-  'session:unarchived',
-  'session:deleted',
-  'session:restored',
-  'session:purged',
-  // Memory review outcomes (approve/reject of proposals).
-  'memory:approved',
-  'memory:rejected',
-];
+// `SSE_EVENTS` is generated from the single delivery manifest in
+// `event-manifest.ts`. To surface a new event to clients, add a row there
+// (the contract test enforces taskId presence for task-scoped events).
+export { SSE_EVENTS };
 
 interface SSEStreamOptions {
   /** Send heartbeat comments at this interval to keep connection alive. 0 = no heartbeat. */
@@ -380,57 +297,19 @@ export function createSessionSSEStream(
       });
       unsubscribers.push(unsubStart);
 
-      // Subscribe to all remaining session-relevant events. Each is
-      // filtered by taskId membership in the set we built from
-      // task:start above. We intentionally skip 'task:start' in this
-      // list to avoid double-emitting it.
-      const membershipFilteredEvents: BusEventName[] = [
-        'task:complete',
-        'task:escalate',
-        'task:timeout',
-        'phase:timing',
-        'trace:record',
-        'worker:dispatch',
-        'worker:complete',
-        'worker:error',
-        'oracle:verdict',
-        'critic:verdict',
-        'shadow:complete',
-        'skill:match',
-        'skill:miss',
-        'tools:executed',
-        'agent:session_start',
-        'agent:session_end',
-        'agent:turn_complete',
-        'agent:tool_started',
-        'agent:tool_executed',
-        'agent:text_delta',
-        'llm:stream_delta',
-        'agent:clarification_requested',
-        'agent:plan_update',
-        // Capability-first observability (see SSE_EVENTS comment above).
-        'agent:routed',
-        'agent:synthesized',
-        'agent:synthesis-failed',
-        'agent:capability-research',
-        'agent:capability-research-failed',
-        // Phase E: workflow approval gate — these all carry `taskId` so they
-        // pass the membership filter built from `task:start` above.
-        'workflow:plan_ready',
-        'workflow:plan_approved',
-        'workflow:plan_rejected',
-      ];
-      // Per-step workflow events do NOT carry `taskId` in their payload (only
-      // `stepId`). Forward them unconditionally for the active session — when
-      // multiple workflow tasks run concurrently in one session this is
-      // imprecise, but the chat UI is single-task-per-session in practice and
-      // dropping these would mean the plan checklist freezes mid-run.
-      const unconditionalStepEvents: BusEventName[] = [
-        'workflow:step_start',
-        'workflow:step_complete',
-        'workflow:step_fallback',
-      ];
-      for (const eventName of unconditionalStepEvents) {
+      // Lists are derived from the single delivery manifest:
+      //   - sessionBypass=true  → forward without a membership check
+      //                            (session-lifecycle, global signals).
+      //   - everything else     → membership-filter on taskId so events
+      //                            from sibling sessions stay off the wire.
+      // task:start is handled separately above (it's the membership-tracking
+      // gate — observing it is what populates `sessionTaskIds`).
+      const bypassEvents = SESSION_BYPASS_EVENTS.filter((e) => e !== 'task:start');
+      const membershipFilteredEvents = EVENT_MANIFEST.filter(
+        (e) => e.sse && e.sessionBypass !== true && e.event !== 'task:start',
+      ).map((e) => e.event);
+
+      for (const eventName of bypassEvents) {
         const unsub = bus.on(eventName, (payload: unknown) => {
           emit(eventName, payload);
         });

@@ -49,11 +49,36 @@ export interface ListOptions {
   limit?: number;
 }
 
+/**
+ * Cursor for session-scoped pagination. `seq` is per-task, so events from
+ * different tasks within one session must be ordered by `(ts, id)` instead.
+ * `id` breaks ties when multiple events share `ts` (1ms granularity).
+ *
+ * Wire format is the opaque string `<ts>:<id>` returned in `nextCursor`;
+ * clients pass it back as `since`. The store treats `since` as a strict
+ * lower bound — i.e. only events strictly newer than the cursor are
+ * returned, so polling never re-emits a row.
+ */
+export interface SessionListOptions {
+  /** Opaque cursor token returned by a previous call (`<ts>:<id>`). */
+  since?: string;
+  /** Hard cap on returned rows (default 1000, max 5000). */
+  limit?: number;
+}
+
+export interface SessionEventPage {
+  events: PersistedTaskEvent[];
+  /** Opaque cursor — pass back as `since` to fetch the next page. */
+  nextCursor?: string;
+}
+
 export class TaskEventStore {
   private db: Database;
   private insertStmt;
   private listStmt;
   private listSinceStmt;
+  private listSessionStmt;
+  private listSessionSinceStmt;
   /** Per-task monotonic seq counter, hydrated lazily from MAX(seq). */
   private seqByTask = new Map<string, number>();
 
@@ -75,6 +100,26 @@ export class TaskEventStore {
          FROM task_events
         WHERE task_id = $task_id AND seq >= $since
         ORDER BY seq ASC
+        LIMIT $limit`,
+    );
+    // Session-scoped ordering: rely on `(session_id, ts)` index +
+    // tie-break by `id` so the cursor is stable when multiple events
+    // share `ts`. `id` is `<taskId>-<seq>` so ordering by `id` lexically
+    // is monotonic-per-task; across tasks the tie-break is arbitrary but
+    // *deterministic*, which is what cursor pagination needs.
+    this.listSessionStmt = db.prepare(
+      `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+         FROM task_events
+        WHERE session_id = $session_id
+        ORDER BY ts ASC, id ASC
+        LIMIT $limit`,
+    );
+    this.listSessionSinceStmt = db.prepare(
+      `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+         FROM task_events
+        WHERE session_id = $session_id
+          AND (ts > $since_ts OR (ts = $since_ts AND id > $since_id))
+        ORDER BY ts ASC, id ASC
         LIMIT $limit`,
     );
   }
@@ -142,10 +187,58 @@ export class TaskEventStore {
     return rows.map(rowToEvent);
   }
 
+  /**
+   * Return events for a session ordered by `(ts, id)` across every task in
+   * the session. Powers `GET /api/v1/sessions/:id/event-history` — used by
+   * the client-side reconciler to recover process state after SSE drops or
+   * a reconnect, without having to know every active taskId in advance.
+   *
+   * Cursor format is opaque (`<ts>:<id>`). Clients should treat it as a
+   * pass-through token; pass back the `nextCursor` from the previous
+   * response as `since` for incremental polling.
+   */
+  listForSession(sessionId: string, opts: SessionListOptions = {}): SessionEventPage {
+    const limit = Math.max(1, Math.min(opts.limit ?? 1000, 5000));
+    let rows: TaskEventRow[];
+    if (opts.since) {
+      const parsed = parseSessionCursor(opts.since);
+      if (!parsed) {
+        // Invalid cursor — treat as "from beginning" rather than error,
+        // so a client that lost cursor state can still recover.
+        rows = this.listSessionStmt.all({ $session_id: sessionId, $limit: limit }) as TaskEventRow[];
+      } else {
+        rows = this.listSessionSinceStmt.all({
+          $session_id: sessionId,
+          $since_ts: parsed.ts,
+          $since_id: parsed.id,
+          $limit: limit,
+        }) as TaskEventRow[];
+      }
+    } else {
+      rows = this.listSessionStmt.all({ $session_id: sessionId, $limit: limit }) as TaskEventRow[];
+    }
+    const events = rows.map(rowToEvent);
+    const last = events[events.length - 1];
+    return {
+      events,
+      nextCursor: last ? `${last.ts}:${last.id}` : undefined,
+    };
+  }
+
   /** Drop in-memory seq cache entries for a task — used by tests. */
   forgetTask(taskId: string): void {
     this.seqByTask.delete(taskId);
   }
+}
+
+function parseSessionCursor(token: string): { ts: number; id: string } | undefined {
+  const idx = token.indexOf(':');
+  if (idx <= 0 || idx === token.length - 1) return undefined;
+  const tsStr = token.slice(0, idx);
+  const id = token.slice(idx + 1);
+  const ts = Number.parseInt(tsStr, 10);
+  if (!Number.isFinite(ts) || ts < 0) return undefined;
+  return { ts, id };
 }
 
 function rowToEvent(row: TaskEventRow): PersistedTaskEvent {

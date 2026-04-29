@@ -13,13 +13,13 @@ import { z } from 'zod/v4';
 import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
+import { buildDecisionReplay } from '../db/governance-query.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
-import { buildDecisionReplay } from '../db/governance-query.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
+import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
-import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
@@ -432,6 +432,16 @@ export class VinyanAPIServer {
     if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/compact$/)) {
       const sessionId = path.split('/')[4]!;
       return this.handleCompactSession(sessionId);
+    }
+
+    // Session-scoped persisted event log — used by the reconciler to
+    // recover process state across SSE drops / reconnects without needing
+    // to enumerate every active taskId. Mirrors the per-task variant
+    // (`/tasks/:id/event-history`) but orders rows by `(ts, id)` across
+    // every task that ran under the session.
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/event-history$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionEventHistory(sessionId, req);
     }
 
     // Agent Conversation: conversational message endpoints.
@@ -1076,10 +1086,7 @@ export class VinyanAPIServer {
     const allowedSources = new Set(['ui', 'api', 'all']);
     const sourceFilter = allowedSources.has(sourceParam) ? sourceParam : 'ui';
     const allSessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
-    const sessions =
-      sourceFilter === 'all'
-        ? allSessions
-        : allSessions.filter((s) => s.source === sourceFilter);
+    const sessions = sourceFilter === 'all' ? allSessions : allSessions.filter((s) => s.source === sourceFilter);
     return jsonResponse({ sessions });
   }
 
@@ -1186,9 +1193,7 @@ export class VinyanAPIServer {
     const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
     const budget: TaskInput['budget'] =
       body.budget ??
-      (body.maxDurationMs
-        ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs }
-        : TIMEOUT_RETRY_BUDGET);
+      (body.maxDurationMs ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs } : TIMEOUT_RETRY_BUDGET);
 
     const newId = crypto.randomUUID();
     const goal = body.goal ?? parent.input.goal;
@@ -1893,7 +1898,6 @@ export class VinyanAPIServer {
     return jsonResponse(buildDecisionReplay(decisionId, trace));
   }
 
-
   private async handleListMemory(): Promise<Response> {
     const workspace = this.deps.workspace;
     if (!workspace) {
@@ -2233,6 +2237,36 @@ export class VinyanAPIServer {
     });
   }
 
+  /**
+   * GET /api/v1/sessions/:sessionId/event-history?since=<cursor>&limit=<n>
+   *
+   * Replay every persisted UI-visible event for a session, ordered across
+   * tasks by `(ts, id)`. Used by the client-side reconciler when SSE
+   * reconnects, when the tab returns to the foreground, and after a
+   * critical user action (approve / reject / human-input) to make sure
+   * the UI hasn't missed a state transition.
+   *
+   * Cursor is opaque (`<ts>:<id>`); clients should treat the returned
+   * `nextCursor` as a token and not parse it. Returns 404 when no DB is
+   * configured (matches the per-task endpoint).
+   */
+  private handleSessionEventHistory(sessionId: string, req: Request): Response {
+    const store = this.deps.taskEventStore;
+    if (!store) {
+      return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
+    }
+    const url = new URL(req.url);
+    const since = url.searchParams.get('since') ?? undefined;
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
+    const page = store.listForSession(sessionId, { since: since ?? undefined, limit });
+    return jsonResponse({
+      sessionId,
+      events: page.events,
+      nextCursor: page.nextCursor,
+    });
+  }
+
   // ── Session Handlers ────────────────────────────────────
 
   private async handleCreateSession(req: Request): Promise<Response> {
@@ -2311,10 +2345,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.archive(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session cannot be archived in its current state', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session cannot be archived in its current state', session: result.session }, 409);
     }
     this.deps.bus.emit('session:archived', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2324,10 +2355,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.unarchive(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is not archived', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is not archived', session: result.session }, 409);
     }
     this.deps.bus.emit('session:unarchived', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2337,10 +2365,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.softDelete(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is already in trash', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is already in trash', session: result.session }, 409);
     }
     this.deps.bus.emit('session:deleted', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2350,10 +2375,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.restore(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is not in trash', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is not in trash', session: result.session }, 409);
     }
     this.deps.bus.emit('session:restored', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2654,10 +2676,12 @@ export class VinyanAPIServer {
       // user message — defeating the chain. (Eager-record was suppressed
       // above for the streaming path so we don't double-write.)
       const prevTail = this.sessionTaskChain.get(sessionId) ?? Promise.resolve();
-      const taskPromise = prevTail.catch(() => undefined).then(() => {
-        this.deps.sessionManager.recordUserTurn(sessionId, content);
-        return this.deps.executeTask(input);
-      });
+      const taskPromise = prevTail
+        .catch(() => undefined)
+        .then(() => {
+          this.deps.sessionManager.recordUserTurn(sessionId, content);
+          return this.deps.executeTask(input);
+        });
       this.sessionTaskChain.set(sessionId, taskPromise);
       taskPromise
         .then((result) => {

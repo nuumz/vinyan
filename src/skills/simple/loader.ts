@@ -15,11 +15,17 @@
  *     1. Check null derefs and error handling
  *     2. ...
  *
- * Two scopes are supported:
- *   1. User-global  — `~/.vinyan/skills/<name>/SKILL.md`
- *   2. Project      — `<workspace>/.vinyan/skills/<name>/SKILL.md`
+ * Four scopes are supported (most-specific wins on name conflict):
  *
- * Project scope wins on name conflict (mirrors Claude Code precedence).
+ *   1. project-agent — `<workspace>/.vinyan/agents/<agent-id>/skills/<name>/SKILL.md`
+ *   2. project       — `<workspace>/.vinyan/skills/<name>/SKILL.md`
+ *   3. user-agent    — `~/.vinyan/agents/<agent-id>/skills/<name>/SKILL.md`
+ *   4. user          — `~/.vinyan/skills/<name>/SKILL.md`
+ *
+ * Per-agent scopes are isolated: a skill at `~/.vinyan/agents/developer/skills/X`
+ * is visible to the `developer` persona only — never to `reviewer` or any other
+ * persona. Loaders that don't supply an `agentId` return ONLY the shared
+ * scopes (user + project) for backward compatibility.
  *
  * Description cap: 1,536 chars (Claude Code's listing cap). Longer descriptions
  * are truncated with a warning so the operator sees the issue rather than
@@ -38,7 +44,7 @@ import { join } from 'node:path';
 
 export const DESCRIPTION_CHAR_CAP = 1536;
 
-export type SimpleSkillScope = 'user' | 'project';
+export type SimpleSkillScope = 'user' | 'project' | 'user-agent' | 'project-agent';
 
 export interface SimpleSkill {
   /** Filesystem-derived id (the `<name>` directory). Frontmatter `name` overrides if present. */
@@ -49,6 +55,12 @@ export interface SimpleSkill {
   readonly body: string;
   /** Where this skill came from. */
   readonly scope: SimpleSkillScope;
+  /**
+   * Agent id this skill is bound to. Only set when `scope === 'user-agent'`
+   * or `'project-agent'`. Shared-scope skills (user/project) leave this
+   * undefined so consumers know they're not persona-restricted.
+   */
+  readonly agentId?: string;
   /** Absolute path to the SKILL.md file. */
   readonly path: string;
 }
@@ -60,6 +72,15 @@ export interface LoadSimpleSkillsOptions {
   readonly workspace: string;
   /** Override `<workspace>/.vinyan/skills/` location (mainly for tests). */
   readonly projectSkillsDir?: string;
+  /**
+   * Override `~/.vinyan/agents/` location for per-agent user-scope skills.
+   * Mainly for tests. Per-agent skills are loaded for every agent id found
+   * under this dir at scan time; visibility filtering happens at access time
+   * via `SimpleSkillRegistry.getForAgent(agentId)`.
+   */
+  readonly userAgentsDir?: string;
+  /** Override `<workspace>/.vinyan/agents/` for project-scoped per-agent skills. */
+  readonly projectAgentsDir?: string;
 }
 
 export interface LoadSimpleSkillsResult {
@@ -69,28 +90,108 @@ export interface LoadSimpleSkillsResult {
 }
 
 /**
- * Load all simple skills from both scopes. Project wins on name conflict.
+ * Load all simple skills from every scope. Returns the FULL union without
+ * agent-visibility filtering — callers (registry / CLI) filter at access
+ * time so a single watcher can serve all agents.
+ *
+ * Same-name conflict precedence: project-agent (for the same agent id) >
+ * project-shared > user-agent (same agent id) > user-shared. Cross-agent
+ * conflicts are NOT collapsed — each agent's per-agent skill is a distinct
+ * record, separated by `agentId`.
  */
 export function loadSimpleSkills(opts: LoadSimpleSkillsOptions): LoadSimpleSkillsResult {
   const failed: string[] = [];
   const userDir = opts.userSkillsDir ?? join(homedir(), '.vinyan', 'skills');
   const projectDir = opts.projectSkillsDir ?? join(opts.workspace, '.vinyan', 'skills');
+  const userAgentsDir = opts.userAgentsDir ?? join(homedir(), '.vinyan', 'agents');
+  const projectAgentsDir = opts.projectAgentsDir ?? join(opts.workspace, '.vinyan', 'agents');
 
-  const byName = new Map<string, SimpleSkill>();
-  // Load user-global first; project entries overwrite.
+  // Shared-scope: keyed by name.
+  const sharedByName = new Map<string, SimpleSkill>();
   for (const skill of scanScope(userDir, 'user', failed)) {
-    byName.set(skill.name, skill);
+    sharedByName.set(skill.name, skill);
   }
   for (const skill of scanScope(projectDir, 'project', failed)) {
-    byName.set(skill.name, skill);
+    sharedByName.set(skill.name, skill);
   }
 
-  // Stable order: name asc.
-  const skills = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  // Per-agent scopes: keyed by `<agentId>::<name>` so different agents can
+  // own a skill of the same name without colliding.
+  const agentByKey = new Map<string, SimpleSkill>();
+  for (const skill of scanAgentRoot(userAgentsDir, 'user-agent', failed)) {
+    agentByKey.set(`${skill.agentId}::${skill.name}`, skill);
+  }
+  for (const skill of scanAgentRoot(projectAgentsDir, 'project-agent', failed)) {
+    agentByKey.set(`${skill.agentId}::${skill.name}`, skill);
+  }
+
+  const skills = [...sharedByName.values(), ...agentByKey.values()].sort((a, b) => {
+    if (a.name !== b.name) return a.name.localeCompare(b.name);
+    // Stable ordering for tests: shared first, then by scope rank, then by agent id.
+    return scopeRank(a.scope) - scopeRank(b.scope) || (a.agentId ?? '').localeCompare(b.agentId ?? '');
+  });
   return { skills, failedNames: failed };
 }
 
-function scanScope(rootDir: string, scope: SimpleSkillScope, failed: string[]): SimpleSkill[] {
+/**
+ * Precedence rank for same-name conflicts (higher wins).
+ *
+ * Design: `project-agent > project > user-agent > user`. Project-scope shared
+ * wins over a user-scope per-agent variant — operators editing the project's
+ * shared SKILL.md expect their change to take effect for everyone, including
+ * agents who happen to have a user-global per-agent variant of the same name.
+ */
+function scopeRank(scope: SimpleSkillScope): number {
+  switch (scope) {
+    case 'user':
+      return 0;
+    case 'user-agent':
+      return 1;
+    case 'project':
+      return 2;
+    case 'project-agent':
+      return 3;
+  }
+}
+
+/**
+ * Scan an "agents root" directory — `<root>/<agent-id>/skills/<name>/SKILL.md`.
+ * Each subdir under `agentsRoot` is treated as a candidate `agentId`; missing
+ * `skills/` subdirectory is silently skipped.
+ */
+function scanAgentRoot(
+  agentsRoot: string,
+  scope: 'user-agent' | 'project-agent',
+  failed: string[],
+): SimpleSkill[] {
+  if (!existsSync(agentsRoot)) return [];
+  let agentEntries: string[];
+  try {
+    agentEntries = readdirSync(agentsRoot);
+  } catch (err) {
+    console.warn(
+      `[skill:simple-loader] cannot read ${agentsRoot} (${scope}): ${(err as Error).message}`,
+    );
+    return [];
+  }
+
+  const out: SimpleSkill[] = [];
+  for (const agentId of agentEntries) {
+    const skillsDir = join(agentsRoot, agentId, 'skills');
+    if (!safeIsDir(skillsDir)) continue;
+    for (const skill of scanScope(skillsDir, scope, failed, agentId)) {
+      out.push(skill);
+    }
+  }
+  return out;
+}
+
+function scanScope(
+  rootDir: string,
+  scope: SimpleSkillScope,
+  failed: string[],
+  agentId?: string,
+): SimpleSkill[] {
   if (!existsSync(rootDir)) return [];
   let entries: string[];
   try {
@@ -104,19 +205,18 @@ function scanScope(rootDir: string, scope: SimpleSkillScope, failed: string[]): 
 
   const skills: SimpleSkill[] = [];
   for (const entry of entries) {
-    // Allow either a directory (`<name>/SKILL.md`) — Claude Code convention —
-    // or a flat file (`<name>.md`). Skip the heavy-schema layout (`local/<id>/SKILL.md`)
-    // so the simple loader doesn't double-claim epistemic-stack skills.
     const directPath = join(rootDir, entry, 'SKILL.md');
     const namespaceDir = join(rootDir, entry);
     if (!safeIsDir(namespaceDir)) continue;
 
     // Skip the "local/" namespace used by SkillArtifactStore — those are
-    // heavy-schema skills owned by the epistemic stack.
-    if (entry === 'local') continue;
+    // heavy-schema skills owned by the epistemic stack. Only skip at SHARED
+    // scopes where the artifact store coexists; at per-agent scopes the
+    // user is free to use the name.
+    if ((scope === 'user' || scope === 'project') && entry === 'local') continue;
 
     if (existsSync(directPath)) {
-      const skill = tryLoad(directPath, entry, scope, failed);
+      const skill = tryLoad(directPath, entry, scope, failed, agentId);
       if (skill) skills.push(skill);
     }
   }
@@ -128,6 +228,7 @@ function tryLoad(
   dirName: string,
   scope: SimpleSkillScope,
   failed: string[],
+  agentId?: string,
 ): SimpleSkill | null {
   let text: string;
   try {
@@ -155,8 +256,46 @@ function tryLoad(
     description,
     body: parsed.body,
     scope,
+    ...(agentId ? { agentId } : {}),
     path: filePath,
   };
+}
+
+/**
+ * Filter the FULL skill list down to those visible to a specific agent —
+ * shared-scope skills + that agent's per-agent skills. Used by the dispatch
+ * path so each persona sees only their own + global skills.
+ *
+ * Same-name precedence within the visible set:
+ *   project-agent (for THIS agent) > project (shared)
+ *     > user-agent (for THIS agent) > user (shared)
+ *
+ * Cross-agent skills (other agents' per-agent dirs) are filtered OUT.
+ */
+export function filterSkillsForAgent(
+  skills: readonly SimpleSkill[],
+  agentId: string | undefined,
+): readonly SimpleSkill[] {
+  if (!agentId) {
+    // No agent context → only shared skills are visible.
+    return skills.filter((s) => s.scope === 'user' || s.scope === 'project');
+  }
+  // Step 1: keep shared + this agent's per-agent skills only.
+  const visible = skills.filter(
+    (s) =>
+      s.scope === 'user' ||
+      s.scope === 'project' ||
+      ((s.scope === 'user-agent' || s.scope === 'project-agent') && s.agentId === agentId),
+  );
+  // Step 2: collapse same-name conflicts using precedence.
+  const byName = new Map<string, SimpleSkill>();
+  for (const skill of visible) {
+    const existing = byName.get(skill.name);
+    if (!existing || scopeRank(skill.scope) > scopeRank(existing.scope)) {
+      byName.set(skill.name, skill);
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function capDescription(raw: string, name: string): string {

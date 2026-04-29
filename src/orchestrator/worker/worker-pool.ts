@@ -504,6 +504,7 @@ export class WorkerPoolImpl implements WorkerPool {
   private resolveSimpleSkillsForTask(
     goal: string,
     taskId: string,
+    agentId: string | undefined,
     skillsFromInput?: import('../../skills/simple/loader.ts').SimpleSkill[],
     bodiesFromInput?: import('../../skills/simple/loader.ts').SimpleSkill[],
   ): {
@@ -522,7 +523,9 @@ export class WorkerPoolImpl implements WorkerPool {
       return ret;
     }
     if (!this.simpleSkillRegistry) return {};
-    const snapshot = this.simpleSkillRegistry.getAll();
+    // Per-agent visibility: each persona sees only shared skills + their own
+    // per-agent skills. Agent X's per-agent skills stay invisible to Y.
+    const snapshot = this.simpleSkillRegistry.getForAgent(agentId);
     if (snapshot.length === 0) return {};
     let matchedBodies: readonly import('../../skills/simple/loader.ts').SimpleSkill[] = [];
     try {
@@ -562,6 +565,7 @@ export class WorkerPoolImpl implements WorkerPool {
           taskId,
           skillName: skill.name,
           scope: skill.scope,
+          ...(skill.agentId ? { agentId: skill.agentId } : {}),
         });
       } catch {
         /* observational */
@@ -862,8 +866,14 @@ export class WorkerPoolImpl implements WorkerPool {
     // Hybrid skill redesign — resolve simple skills + matched bodies once
     // here so the subprocess worker doesn't need its own registry. We emit
     // invocations from this path so the dispatcher's bus subscriber records
-    // outcomes against the matched names regardless of dispatch mode.
-    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(input.goal, input.id);
+    // outcomes against the matched names regardless of dispatch mode. The
+    // agentId argument enforces per-persona visibility — agent X never sees
+    // agent Y's per-agent skills.
+    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(
+      input.goal,
+      input.id,
+      input.agentId,
+    );
 
     return {
       taskId: input.id,
@@ -977,9 +987,11 @@ export class WorkerPoolImpl implements WorkerPool {
     // Hybrid skill redesign — resolve simple-layer skills + matched bodies
     // for this task. Subprocess path passes them through `workerInput`; the
     // in-process path may have a fresh registry snapshot to use directly.
+    // Per-agent visibility honoured via the agentId arg.
     const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(
       workerInput.goal,
       workerInput.taskId,
+      workerInput.agentId,
       workerInput.simpleSkills,
       workerInput.simpleSkillBodies,
     );

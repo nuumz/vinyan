@@ -17,7 +17,7 @@
  *   - Tests can inject a static registry without spinning up a real filesystem
  *     watcher (the prompt-section tests in Phase 3 will use this).
  */
-import { loadSimpleSkills, type LoadSimpleSkillsOptions, type SimpleSkill } from './loader.ts';
+import { filterSkillsForAgent, loadSimpleSkills, type LoadSimpleSkillsOptions, type SimpleSkill } from './loader.ts';
 import {
   startSimpleSkillWatcher,
   type SimpleSkillWatcher,
@@ -25,9 +25,24 @@ import {
 } from './watcher.ts';
 
 export interface SimpleSkillRegistry {
-  /** Snapshot of currently loaded skills, sorted by name. */
+  /**
+   * Full snapshot — every loaded skill across all 4 scopes (shared + every
+   * agent's per-agent dirs). Use `getForAgent` for the dispatch-time view
+   * filtered to a specific persona.
+   */
   getAll(): readonly SimpleSkill[];
-  /** Look up a skill by name. */
+  /**
+   * Per-agent snapshot. Returns shared-scope skills + the supplied agent's
+   * per-agent skills. Other agents' per-agent skills are filtered OUT
+   * (per-persona privacy isolation).
+   *
+   * Pass `undefined` to get only the shared scopes (no agent context).
+   */
+  getForAgent(agentId: string | undefined): readonly SimpleSkill[];
+  /**
+   * Look up a skill by name in the FULL snapshot (no agent filtering). Mainly
+   * for CLI tooling — use `getForAgent` then `find` for dispatch-time lookups.
+   */
   getByName(name: string): SimpleSkill | null;
   /**
    * Monotonic counter — increments on every refresh. Consumers cache against
@@ -56,7 +71,18 @@ export function createSimpleSkillRegistry(
     const result = loadSimpleSkills(opts);
     skills = result.skills;
     byName.clear();
-    for (const skill of skills) byName.set(skill.name, skill);
+    // Prefer shared-scope first so CLI's `getByName('code-review')` returns
+    // the user/project version rather than picking a per-agent variant by
+    // accident. Per-agent variants of the same name are still reachable via
+    // `getForAgent(agentId)` then by-name search, or via the FULL snapshot.
+    for (const skill of skills) {
+      if (skill.scope === 'user' || skill.scope === 'project') {
+        byName.set(skill.name, skill);
+      }
+    }
+    for (const skill of skills) {
+      if (!byName.has(skill.name)) byName.set(skill.name, skill);
+    }
     version += 1;
   };
 
@@ -78,7 +104,14 @@ export function createSimpleSkillRegistry(
     getAll(): readonly SimpleSkill[] {
       return skills;
     },
+    getForAgent(agentId: string | undefined): readonly SimpleSkill[] {
+      return filterSkillsForAgent(skills, agentId);
+    },
     getByName(name: string): SimpleSkill | null {
+      // First match in the FULL snapshot. With per-agent skills, multiple
+      // entries may share a name (one per agent + shared); the first match
+      // by stable order is good enough for CLI tooling. The dispatch path
+      // uses `getForAgent` instead.
       return byName.get(name) ?? null;
     },
     getVersion(): number {

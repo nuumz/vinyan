@@ -469,6 +469,13 @@ export class VinyanAPIServer {
       const sessionId = path.split('/')[4]!;
       return this.handleWorkflowReject(sessionId, req);
     }
+    // User answers an in-plan `human-input` step (workflow paused on
+    // `workflow:human_input_needed`). Resolves the executor's wait by
+    // emitting `workflow:human_input_provided` with the user's value.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowHumanInput(sessionId, req);
+    }
 
     // ── Read-only queries ─────────────────────────────────
     if (method === 'GET' && path === '/api/v1/agent-profile') {
@@ -1326,6 +1333,35 @@ export class VinyanAPIServer {
         reason: typeof body.reason === 'string' ? body.reason : undefined,
       });
       return jsonResponse({ taskId: body.taskId, sessionId, status: 'rejected' });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  private async handleWorkflowHumanInput(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string; stepId?: string; value?: string };
+      if (!body.taskId || !body.stepId) {
+        return jsonResponse({ error: 'taskId and stepId are required' }, 400);
+      }
+      if (typeof body.value !== 'string') {
+        return jsonResponse({ error: 'value (string) is required' }, 400);
+      }
+      this.deps.bus.emit('workflow:human_input_provided', {
+        taskId: body.taskId,
+        stepId: body.stepId,
+        value: body.value,
+        sessionId,
+      });
+      return jsonResponse({
+        taskId: body.taskId,
+        stepId: body.stepId,
+        sessionId,
+        status: 'recorded',
+      });
     } catch {
       return jsonResponse({ error: 'Invalid request body' }, 400);
     }

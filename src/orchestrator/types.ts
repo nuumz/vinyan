@@ -1439,6 +1439,12 @@ export interface WorkerInput {
    */
   loadedSkillCards?: import('./agents/derive-persona-capabilities.ts').SkillCardView[];
   /**
+   * Specialist agent dispatched for this task. Threaded across IPC so the
+   * subprocess can apply per-agent skill visibility (per-agent simple skills
+   * are filtered by this id) and any other persona-keyed wiring.
+   */
+  agentId?: string;
+  /**
    * Hybrid skill redesign — Claude-Code-style simple skills available to
    * this task. The orchestrator's `SimpleSkillRegistry` resolves the
    * snapshot at dispatch time; descriptions render in the system prompt at

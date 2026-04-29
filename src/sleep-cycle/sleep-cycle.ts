@@ -769,6 +769,8 @@ export class SleepCycleRunner {
             cycleId,
             promoted: result.promoted.map((p) => ({
               name: p.skillName,
+              heavySkillId: p.heavySkillId,
+              agentId: p.agentId,
               trials: p.trials,
               successRate: p.successRate,
             })),

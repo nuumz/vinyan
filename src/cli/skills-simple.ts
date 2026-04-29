@@ -60,16 +60,26 @@ export async function runSkillsSimpleCommand(args: readonly string[], opts: Comm
 function runNew(args: readonly string[], opts: CommandOptions): void {
   const { positional, flags } = parseArgs(args);
   const name = positional[0];
-  if (!name) throw new Error('Usage: vinyan skills new <name> [--scope=user|project] [--description="..."]');
+  if (!name) {
+    throw new Error(
+      'Usage: vinyan skills new <name> [--scope=user|project] [--agent=<id>] [--description="..."]',
+    );
+  }
   validateName(name);
 
-  const scope = parseScope(flags.scope ?? 'project');
+  // Default scope changes based on --agent: per-agent skills land in user
+  // scope by default (most useful — bind the persona machine-wide). Shared
+  // skills default to project scope (existing behaviour).
+  const agentId = flags.agent;
+  if (agentId) validateAgentId(agentId);
+  const defaultScope: Scope = agentId ? 'user' : 'project';
+  const scope = parseScope(flags.scope ?? defaultScope);
   const description = flags.description ?? '';
-  const skillDir = join(scopeDir(scope, opts.workspace), name);
+  const skillDir = join(resolveSkillDir(scope, opts.workspace, agentId), name);
 
   if (existsSync(join(skillDir, 'SKILL.md'))) {
     throw new Error(
-      `Skill '${name}' already exists at ${join(skillDir, 'SKILL.md')}. Edit it with 'vinyan skills edit ${name}'.`,
+      `Skill '${name}' already exists at ${join(skillDir, 'SKILL.md')}. Edit it with 'vinyan skills edit ${name}${agentId ? ` --agent=${agentId}` : ''}'.`,
     );
   }
 
@@ -94,7 +104,8 @@ description: ${description || `(write a 1-line description — when should this 
 `;
   const skillMdPath = join(skillDir, 'SKILL.md');
   writeFileSync(skillMdPath, template, 'utf-8');
-  console.log(`Created ${skillMdPath} (scope: ${scope})`);
+  const scopeLabel = agentId ? `${scope}-agent (${agentId})` : scope;
+  console.log(`Created ${skillMdPath} (scope: ${scopeLabel})`);
 
   if (!flags['no-edit']) {
     openEditor(skillMdPath);
@@ -106,24 +117,56 @@ description: ${description || `(write a 1-line description — when should this 
 function runList(args: readonly string[], opts: CommandOptions): void {
   const { flags } = parseArgs(args);
   const scopeFilter = flags.scope ? parseScope(flags.scope) : null;
+  const agentFilter = flags.agent;
+  if (agentFilter && agentFilter !== 'ALL') validateAgentId(agentFilter);
 
   const result = loadSimpleSkills({ workspace: opts.workspace });
-  const filtered = scopeFilter ? result.skills.filter((s) => s.scope === scopeFilter) : result.skills;
+  let filtered = result.skills;
+  if (agentFilter === 'ALL') {
+    // Pass — show every skill including all per-agent variants.
+  } else if (agentFilter) {
+    // Show shared + this agent's per-agent skills only.
+    filtered = filtered.filter(
+      (s) =>
+        s.scope === 'user' || s.scope === 'project' || s.agentId === agentFilter,
+    );
+  } else {
+    // Default: shared scopes only — backward-compat with pre-per-agent CLI.
+    filtered = filtered.filter((s) => s.scope === 'user' || s.scope === 'project');
+  }
+  if (scopeFilter) {
+    if (agentFilter && agentFilter !== 'ALL') {
+      filtered = filtered.filter((s) => {
+        if (s.scope === 'user' || s.scope === 'project') return s.scope === scopeFilter;
+        return scopeFilter === 'user' ? s.scope === 'user-agent' : s.scope === 'project-agent';
+      });
+    } else {
+      filtered = filtered.filter((s) => s.scope === scopeFilter);
+    }
+  }
 
   if (filtered.length === 0) {
     const where = scopeFilter ? `${scopeFilter}-scope` : 'either scope';
-    console.log(`No simple skills found in ${where}.`);
-    console.log(`Create one: vinyan skills new <name>${scopeFilter ? ` --scope=${scopeFilter}` : ''}`);
+    const ag = agentFilter && agentFilter !== 'ALL' ? ` for agent '${agentFilter}'` : '';
+    console.log(`No simple skills found in ${where}${ag}.`);
+    const flagHint = [scopeFilter ? ` --scope=${scopeFilter}` : '', agentFilter && agentFilter !== 'ALL' ? ` --agent=${agentFilter}` : ''].join('');
+    console.log(`Create one: vinyan skills new <name>${flagHint}`);
     return;
   }
 
   // Pretty table.
   const nameWidth = Math.max(4, ...filtered.map((s) => s.name.length));
-  const scopeWidth = 7;
-  console.log(`${'NAME'.padEnd(nameWidth)}  ${'SCOPE'.padEnd(scopeWidth)}  DESCRIPTION`);
+  const scopeWidth = Math.max(7, ...filtered.map((s) => s.scope.length));
+  const agentWidth = Math.max(5, ...filtered.map((s) => (s.agentId ?? '').length));
+  console.log(
+    `${'NAME'.padEnd(nameWidth)}  ${'SCOPE'.padEnd(scopeWidth)}  ${'AGENT'.padEnd(agentWidth)}  DESCRIPTION`,
+  );
   for (const skill of filtered) {
     const desc = truncate(skill.description, 80);
-    console.log(`${skill.name.padEnd(nameWidth)}  ${skill.scope.padEnd(scopeWidth)}  ${desc}`);
+    const agent = skill.agentId ?? '-';
+    console.log(
+      `${skill.name.padEnd(nameWidth)}  ${skill.scope.padEnd(scopeWidth)}  ${agent.padEnd(agentWidth)}  ${desc}`,
+    );
   }
   if (result.failedNames.length > 0) {
     console.warn(`\n[skill:list] ${result.failedNames.length} skill(s) failed to load: ${result.failedNames.join(', ')}`);
@@ -133,17 +176,24 @@ function runList(args: readonly string[], opts: CommandOptions): void {
 // ── `vinyan skills show <name>` ───────────────────────────────────────
 
 function runShow(args: readonly string[], opts: CommandOptions): void {
-  const { positional } = parseArgs(args);
+  const { positional, flags } = parseArgs(args);
   const name = positional[0];
-  if (!name) throw new Error('Usage: vinyan skills show <name>');
+  if (!name) throw new Error('Usage: vinyan skills show <name> [--agent=<id>]');
 
-  const skill = findByName(name, opts.workspace);
+  const findOpts: FindByNameOptions = {};
+  if (flags.agent) {
+    validateAgentId(flags.agent);
+    findOpts.agent = flags.agent;
+  }
+  const skill = findByName(name, opts.workspace, findOpts);
   if (!skill) {
-    throw new Error(`Skill '${name}' not found. Run 'vinyan skills list' to see available skills.`);
+    const where = flags.agent ? ` for agent '${flags.agent}'` : '';
+    throw new Error(`Skill '${name}'${where} not found. Run 'vinyan skills list${flags.agent ? ` --agent=${flags.agent}` : ''}' to see available skills.`);
   }
 
   console.log(`name: ${skill.name}`);
   console.log(`scope: ${skill.scope}`);
+  if (skill.agentId) console.log(`agent: ${skill.agentId}`);
   console.log(`path: ${skill.path}`);
   console.log(`description: ${skill.description}`);
   console.log('');
@@ -155,16 +205,29 @@ function runShow(args: readonly string[], opts: CommandOptions): void {
 function runSearch(args: readonly string[], opts: CommandOptions): void {
   const { positional, flags } = parseArgs(args);
   const query = positional.join(' ').trim();
-  if (!query) throw new Error('Usage: vinyan skills search <query terms>');
+  if (!query) throw new Error('Usage: vinyan skills search <query terms> [--agent=<id>] [--top-k=N]');
 
   const result = loadSimpleSkills({ workspace: opts.workspace });
-  if (result.skills.length === 0) {
+  let pool = result.skills;
+  if (flags.agent) {
+    validateAgentId(flags.agent);
+    // Mirror dispatch-time visibility: shared + this agent's per-agent skills.
+    pool = pool.filter(
+      (s) => s.scope === 'user' || s.scope === 'project' || s.agentId === flags.agent,
+    );
+  } else {
+    // Default to shared scopes only — no random per-agent variants leaking
+    // into a query that didn't ask for them.
+    pool = pool.filter((s) => s.scope === 'user' || s.scope === 'project');
+  }
+
+  if (pool.length === 0) {
     console.log('No simple skills available to search. Create one: vinyan skills new <name>');
     return;
   }
 
   const topK = flags['top-k'] ? Number.parseInt(flags['top-k'], 10) : 5;
-  const matches = matchSkillsForTask(query, result.skills, { topK });
+  const matches = matchSkillsForTask(query, pool, { topK });
   if (matches.length === 0) {
     console.log(`No skills matched '${query}' above the default threshold.`);
     return;
@@ -172,18 +235,29 @@ function runSearch(args: readonly string[], opts: CommandOptions): void {
 
   console.log(`Top ${matches.length} match(es) for: ${query}`);
   for (const m of matches) {
-    console.log(`  ${m.score.toFixed(3)}  ${m.skill.name}  (${m.skill.scope})  — ${truncate(m.skill.description, 80)}`);
+    const ag = m.skill.agentId ? `, ${m.skill.agentId}` : '';
+    console.log(
+      `  ${m.score.toFixed(3)}  ${m.skill.name}  (${m.skill.scope}${ag})  — ${truncate(m.skill.description, 80)}`,
+    );
   }
 }
 
 // ── `vinyan skills edit <name>` ───────────────────────────────────────
 
 function runEdit(args: readonly string[], opts: CommandOptions): void {
-  const { positional } = parseArgs(args);
+  const { positional, flags } = parseArgs(args);
   const name = positional[0];
-  if (!name) throw new Error('Usage: vinyan skills edit <name>');
-  const skill = findByName(name, opts.workspace);
-  if (!skill) throw new Error(`Skill '${name}' not found.`);
+  if (!name) throw new Error('Usage: vinyan skills edit <name> [--agent=<id>]');
+  const findOpts: FindByNameOptions = {};
+  if (flags.agent) {
+    validateAgentId(flags.agent);
+    findOpts.agent = flags.agent;
+  }
+  const skill = findByName(name, opts.workspace, findOpts);
+  if (!skill) {
+    const where = flags.agent ? ` for agent '${flags.agent}'` : '';
+    throw new Error(`Skill '${name}'${where} not found.`);
+  }
   openEditor(skill.path);
 }
 
@@ -192,9 +266,20 @@ function runEdit(args: readonly string[], opts: CommandOptions): void {
 function runRemove(args: readonly string[], opts: CommandOptions): void {
   const { positional, flags } = parseArgs(args);
   const name = positional[0];
-  if (!name) throw new Error('Usage: vinyan skills remove <name> [--scope=user|project] [--force]');
-  const skill = findByName(name, opts.workspace, flags.scope ? parseScope(flags.scope) : undefined);
-  if (!skill) throw new Error(`Skill '${name}' not found.`);
+  if (!name) {
+    throw new Error('Usage: vinyan skills remove <name> [--scope=user|project] [--agent=<id>] [--force]');
+  }
+  const findOpts: FindByNameOptions = {};
+  if (flags.scope) findOpts.scope = parseScope(flags.scope);
+  if (flags.agent) {
+    validateAgentId(flags.agent);
+    findOpts.agent = flags.agent;
+  }
+  const skill = findByName(name, opts.workspace, findOpts);
+  if (!skill) {
+    const where = flags.agent ? ` for agent '${flags.agent}'` : '';
+    throw new Error(`Skill '${name}'${where} not found.`);
+  }
 
   if (!flags.force) {
     console.log(`Will delete: ${skill.path}`);
@@ -297,6 +382,20 @@ function scopeDir(scope: Scope, workspace: string): string {
   return scope === 'user' ? join(homedir(), '.vinyan', 'skills') : join(workspace, '.vinyan', 'skills');
 }
 
+/**
+ * Resolve the on-disk skill directory for a (scope, agent) tuple. When
+ * `agentId` is supplied, routes to the per-agent dir
+ * (`<root>/.vinyan/agents/<agentId>/skills/`); otherwise to the shared dir.
+ */
+function resolveSkillDir(scope: Scope, workspace: string, agentId: string | undefined): string {
+  const root = scope === 'user' ? homedir() : workspace;
+  if (agentId) {
+    validateAgentId(agentId);
+    return join(root, '.vinyan', 'agents', agentId, 'skills');
+  }
+  return join(root, '.vinyan', 'skills');
+}
+
 function validateName(name: string): void {
   // 1 required leading [a-z0-9] + up to 63 more [a-z0-9_-] = 1–64 chars total
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) {
@@ -306,9 +405,50 @@ function validateName(name: string): void {
   }
 }
 
-function findByName(name: string, workspace: string, scope?: Scope): SimpleSkill | null {
+function validateAgentId(agentId: string): void {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(agentId)) {
+    throw new Error(
+      `Invalid agent id '${agentId}'. Use lowercase letters, digits, '-', '_'; start with a letter/digit; max 64 chars.`,
+    );
+  }
+}
+
+interface FindByNameOptions {
+  /** Restrict to a single shared scope. */
+  scope?: Scope;
+  /**
+   * Restrict to a specific agent's per-agent skills. Set to `'shared'` to
+   * exclude per-agent dirs entirely; default is "any scope, any agent" so
+   * `vinyan skills show <name>` can find a skill the user just created
+   * without making them remember which scope/agent it lives under.
+   */
+  agent?: string | 'shared';
+}
+
+function findByName(
+  name: string,
+  workspace: string,
+  opts: FindByNameOptions = {},
+): SimpleSkill | null {
   const result = loadSimpleSkills({ workspace });
-  const candidates = scope ? result.skills.filter((s) => s.scope === scope) : result.skills;
+  let candidates = result.skills;
+  if (opts.agent === 'shared') {
+    candidates = candidates.filter((s) => s.scope === 'user' || s.scope === 'project');
+  } else if (opts.agent) {
+    candidates = candidates.filter((s) => s.agentId === opts.agent);
+  }
+  if (opts.scope) {
+    // Scope filter applies to the SHARED scopes only; per-agent variants are
+    // matched by agent id above. Combining `--scope=user --agent=...` filters
+    // to user-agent.
+    if (opts.agent && opts.agent !== 'shared') {
+      candidates = candidates.filter((s) =>
+        opts.scope === 'user' ? s.scope === 'user-agent' : s.scope === 'project-agent',
+      );
+    } else {
+      candidates = candidates.filter((s) => s.scope === opts.scope);
+    }
+  }
   return candidates.find((s) => s.name === name) ?? null;
 }
 

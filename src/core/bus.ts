@@ -1060,7 +1060,15 @@ export interface VinyanBusEvents {
    */
   'skill:graduated_from_simple': {
     cycleId: string;
-    promoted: Array<{ name: string; trials: number; successRate: number }>;
+    promoted: Array<{
+      name: string;
+      /** Heavy artifact-store id (`<agent>/<name>` per-agent, `<name>` shared). */
+      heavySkillId: string;
+      /** Agent the simple skill was bound to, null when shared-scope. */
+      agentId: string | null;
+      trials: number;
+      successRate: number;
+    }>;
   };
 
   /**
@@ -1073,7 +1081,9 @@ export interface VinyanBusEvents {
     taskId: string;
     skillName: string;
     /** Where the skill was loaded from. */
-    scope: 'user' | 'project';
+    scope: 'user' | 'project' | 'user-agent' | 'project-agent';
+    /** Agent the skill is bound to, when scope is `*-agent`. */
+    agentId?: string;
   };
 
   /**
@@ -1418,7 +1428,27 @@ export interface VinyanBusEvents {
   'workflow:research_injected': { goal: string; reason: string };
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
   'workflow:knowledge_query': { stepId: string; query: string };
-  'workflow:human_input_needed': { stepId: string; question: string };
+  /**
+   * Workflow executor hit a `human-input` step and is paused waiting for
+   * the user's answer. Carries `taskId` so UIs can correlate the question
+   * to the live streaming turn (without it the frontend cannot tell which
+   * turn's bubble should render the input prompt). The matching response
+   * event is `workflow:human_input_provided` with the same `taskId` +
+   * `stepId`.
+   */
+  'workflow:human_input_needed': { taskId: string; stepId: string; question: string };
+  /**
+   * User answered an in-plan `human-input` step. Resolves the executor's
+   * paused `human-input` dispatch — `value` becomes the step's `output` and
+   * downstream dependents continue. Emitted by the API endpoint the chat
+   * UI's input card POSTs to.
+   */
+  'workflow:human_input_provided': {
+    taskId: string;
+    stepId: string;
+    value: string;
+    sessionId?: string;
+  };
   // Agent Context Layer: emitted during sleep cycle when agent identities are refined
   'agent:evolved': {
     cycleId: string;

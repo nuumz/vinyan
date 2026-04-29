@@ -973,11 +973,72 @@ async function dispatchStrategy(
       }
 
       case 'human-input': {
-        deps.bus?.emit('workflow:human_input_needed', {
-          stepId: step.id,
-          question: step.description,
+        // Pause the executor until the user answers. Without this wait the
+        // step would silently return `skipped`, cascading dependency failure
+        // through every downstream delegate (incident: session b749e5bd —
+        // the user pressed Approve on a 5-step plan whose step1 was
+        // "Ask the user for the topic"; steps 2-4 then all skipped with
+        // "Skipped: dependency failed (step1)" because step1 returned
+        // skipped immediately on dispatch).
+        //
+        // Without a bus we can't pause — fail honestly so the user sees
+        // why instead of skipping into an undefined cascade.
+        if (!deps.bus) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'human-input step requires a bus to await user response',
+          };
+        }
+        const bus = deps.bus;
+        // Re-use the approval window as the human-input ceiling; same
+        // intent (a finite cap so an absent user does not hang the worker
+        // forever) and the same default 3 min in DEFAULT_APPROVAL_TIMEOUT_MS.
+        const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+        const value = await new Promise<string | { timedOut: true }>((resolve) => {
+          let settled = false;
+          const settle = (v: string | { timedOut: true }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            unsub();
+            resolve(v);
+          };
+          const timer = setTimeout(() => settle({ timedOut: true }), timeoutMs);
+          // Subscribe BEFORE emitting `_needed` so a fast UI cannot race the
+          // request — POST-then-bus-emit happens through the API endpoint
+          // and we must not miss the response if it lands within the same
+          // tick.
+          const unsub = bus.on('workflow:human_input_provided', (payload) => {
+            if (payload.taskId !== input.id) return;
+            if (payload.stepId !== step.id) return;
+            settle(typeof payload.value === 'string' ? payload.value : '');
+          });
+          bus.emit('workflow:human_input_needed', {
+            taskId: input.id,
+            stepId: step.id,
+            question: step.description,
+          });
         });
-        return { ...base, status: 'skipped', output: '[Awaiting human input]' };
+        if (typeof value !== 'string') {
+          return {
+            ...base,
+            status: 'failed',
+            output:
+              `Human-input step ${step.id} timed out after ` +
+              `${Math.round(timeoutMs / 1000)}s without a user response. ` +
+              'No answer was provided so dependent steps cannot proceed.',
+          };
+        }
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'Human-input step received an empty answer; refusing to fabricate a value for downstream steps.',
+          };
+        }
+        return { ...base, status: 'completed', output: trimmed };
       }
 
       default:

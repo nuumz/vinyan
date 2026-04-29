@@ -53,6 +53,15 @@ export interface SimpleSkillPromoterDeps {
 
 export interface PromotionDecision {
   readonly skillName: string;
+  /**
+   * Agent the simple skill was bound to (per-agent scope), or null for
+   * shared-scope skills. The heavy SKILL.md is written under namespaced id
+   * `<agent>/<name>` when this is set, leaving each persona's graduated
+   * skills in their own corner of the artifact store.
+   */
+  readonly agentId: string | null;
+  /** Heavy-store skill id used for the graduated artifact. */
+  readonly heavySkillId: string;
   readonly trials: number;
   readonly successes: number;
   readonly failures: number;
@@ -67,6 +76,12 @@ export interface PromotionResult {
 /**
  * Run one promotion pass: scan every loaded simple skill, evaluate outcomes,
  * synthesize and write heavy SKILL.md for those that qualify.
+ *
+ * Per-agent simple skills are aggregated per (agentId, skillName) — each
+ * agent earns its own graduation. The heavy artifact is written under the
+ * namespaced id `<agentId>/<name>` so multiple agents can graduate a skill
+ * with the same name without collision. Shared-scope skills graduate to
+ * the flat id `<name>` and aggregate outcomes across all personas.
  */
 export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Promise<PromotionResult> {
   const now = deps.now ?? (() => Date.now());
@@ -78,28 +93,37 @@ export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Pro
   const skills = deps.registry.getAll();
 
   for (const skill of skills) {
+    const agentId = skill.agentId ?? null;
+    const heavySkillId = agentId ? `${agentId}/${skill.name}` : skill.name;
+    const reportName = agentId ? `${agentId}/${skill.name}` : skill.name;
     try {
-      const aggregate = aggregateOutcomes(skill.name, deps.outcomeStore);
+      // Per-agent skills: aggregate ONLY rows for this persona so each agent's
+      // promotion reflects evidence the agent actually accumulated. Shared
+      // skills aggregate across all personas.
+      const aggregate = agentId
+        ? aggregateOutcomesForAgent(skill.name, agentId, deps.outcomeStore)
+        : aggregateOutcomes(skill.name, deps.outcomeStore);
+
       if (aggregate.trials < minTrials) {
-        skipped.push({ skillName: skill.name, reason: `insufficient trials (${aggregate.trials} < ${minTrials})` });
+        skipped.push({ skillName: reportName, reason: `insufficient trials (${aggregate.trials} < ${minTrials})` });
         continue;
       }
       if (aggregate.successRate < minSuccessRate) {
         skipped.push({
-          skillName: skill.name,
+          skillName: reportName,
           reason: `success rate ${aggregate.successRate.toFixed(2)} < ${minSuccessRate}`,
         });
         continue;
       }
 
-      const newRecord = buildHeavyRecord(skill);
+      const newRecord = buildHeavyRecord(skill, heavySkillId);
 
       // Idempotency: if a heavy record already exists with the same content
       // hash, skip. If hashes differ (user edited the simple body since the
       // last promotion), bump patch version and re-emit.
-      const existing = await tryReadExisting(deps.artifactStore, skill.name);
+      const existing = await tryReadExisting(deps.artifactStore, heavySkillId);
       if (existing && existing.contentHash === newRecord.contentHash) {
-        skipped.push({ skillName: skill.name, reason: 'already promoted, content unchanged' });
+        skipped.push({ skillName: reportName, reason: 'already promoted, content unchanged' });
         continue;
       }
       const finalRecord = existing
@@ -112,13 +136,14 @@ export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Pro
       try {
         deps.ledger.record({
           profile: deps.profile,
-          skillId: skill.name,
+          skillId: heavySkillId,
           event: 'promoted',
           toTier: finalRecord.frontmatter.confidence_tier,
           fromStatus: existing ? 'active' : 'fetched',
           toStatus: 'active',
           evidence: {
             promotedFrom: 'simple-skill-layer',
+            ...(agentId ? { agentId } : {}),
             ...(existing ? { previousHash: existing.contentHash } : {}),
             newHash: finalRecord.contentHash,
             trials: aggregate.trials,
@@ -136,6 +161,8 @@ export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Pro
 
       promoted.push({
         skillName: skill.name,
+        agentId,
+        heavySkillId,
         trials: aggregate.trials,
         successes: aggregate.successes,
         failures: aggregate.failures,
@@ -143,7 +170,7 @@ export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Pro
       });
     } catch (err) {
       skipped.push({
-        skillName: skill.name,
+        skillName: reportName,
         reason: err instanceof Error ? err.message : String(err),
       });
     }
@@ -161,6 +188,32 @@ interface OutcomeAggregate {
 
 function aggregateOutcomes(skillName: string, store: SkillOutcomeStore): OutcomeAggregate {
   const rows = store.listForSkill(skillName);
+  let successes = 0;
+  let failures = 0;
+  for (const row of rows) {
+    successes += row.successes;
+    failures += row.failures;
+  }
+  const trials = successes + failures;
+  return {
+    trials,
+    successes,
+    failures,
+    successRate: trials > 0 ? successes / trials : 0,
+  };
+}
+
+/**
+ * Per-agent aggregate: include only rows where the persona id matches the
+ * skill's bound agent. A skill named `code-review` bound to `developer`
+ * never inherits outcomes recorded against `reviewer`.
+ */
+function aggregateOutcomesForAgent(
+  skillName: string,
+  agentId: string,
+  store: SkillOutcomeStore,
+): OutcomeAggregate {
+  const rows = store.listForSkill(skillName).filter((r) => r.personaId === agentId);
   let successes = 0;
   let failures = 0;
   for (const row of rows) {
@@ -194,10 +247,15 @@ async function tryReadExisting(
  *   - status: active (not probation — graduation IS the audit signal)
  *   - origin: local (user-authored, not autonomous-creator)
  *   - version: 0.1.0 starter
+ *
+ * `heavySkillId` is the artifact-store id (`<agent>/<name>` for per-agent or
+ * `<name>` for shared). It must match the heavy schema's id regex —
+ * `[a-z][a-z0-9-]*(\/[a-z][a-z0-9-]*)?` — which the simple-skill name
+ * validator already enforces.
  */
-function buildHeavyRecord(skill: SimpleSkill): SkillMdRecord {
+function buildHeavyRecord(skill: SimpleSkill, heavySkillId: string): SkillMdRecord {
   const frontmatter: SkillMdFrontmatter = {
-    id: skill.name,
+    id: heavySkillId,
     name: skill.name,
     version: '0.1.0',
     description: skill.description || `Promoted from simple skill '${skill.name}'`,

@@ -419,7 +419,8 @@ export const WorkerInputSchema = z.object({
         name: z.string(),
         description: z.string(),
         body: z.string(),
-        scope: z.enum(['user', 'project']),
+        scope: z.enum(['user', 'project', 'user-agent', 'project-agent']),
+        agentId: z.string().optional(),
         path: z.string(),
       }),
     )
@@ -435,7 +436,8 @@ export const WorkerInputSchema = z.object({
         name: z.string(),
         description: z.string(),
         body: z.string(),
-        scope: z.enum(['user', 'project']),
+        scope: z.enum(['user', 'project', 'user-agent', 'project-agent']),
+        agentId: z.string().optional(),
         path: z.string(),
       }),
     )

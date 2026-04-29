@@ -170,6 +170,24 @@ export class SleepCycleRunner {
     skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
     registry: AgentRegistry;
   };
+  /**
+   * Hybrid skill redesign — bridge from simple-layer skills to heavy
+   * epistemic-layer SKILL.md. When set, every scheduled `run()` invokes
+   * `runSimpleSkillPromoter` which evaluates outcome aggregates per simple
+   * skill and writes a heavy-schema SKILL.md for those that meet the
+   * promotion threshold (≥15 trials AND ≥0.8 success rate).
+   *
+   * Independent of `setSkillPromoter` (acquired→bound) and `setSkillTierPromoter`
+   * (tier graduation) — those operate on heavy-layer skills, this one
+   * promotes simple → heavy as the entry point into the audited stack.
+   */
+  private simpleSkillPromoterDeps?: {
+    registry: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+    outcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  };
   /** Optional comprehension substrate — when both present, the cycle
    *  emits `comprehension:mining_completed` with B1–B3 insights. */
   private comprehensionStore?: ComprehensionStore;
@@ -339,6 +357,21 @@ export class SleepCycleRunner {
     registry: AgentRegistry;
   }): void {
     this.autonomousCreatorDeps = deps;
+  }
+
+  /**
+   * Hybrid skill redesign — register the simple→heavy graduation bridge.
+   * Every scheduled `run()` evaluates loaded simple skills against the
+   * outcome store and promotes any that meet the threshold.
+   */
+  setSimpleSkillPromoter(deps: {
+    registry: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+    outcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  }): void {
+    this.simpleSkillPromoterDeps = deps;
   }
 
   /**
@@ -724,6 +757,28 @@ export class SleepCycleRunner {
     // is hours-to-days and outcome growth between cycles dominates the
     // re-feed cost. A future optimisation could track a "high water mark"
     // ts so the feeder only emits new samples.
+    // Hybrid skill redesign — bridge: simple-layer skill that has accumulated
+    // ≥15 trials and ≥0.8 success rate gets promoted into the heavy SKILL.md
+    // schema. One-way only; the simple file stays in place. Best-effort.
+    if (this.simpleSkillPromoterDeps) {
+      try {
+        const { runSimpleSkillPromoter } = await import('../skills/simple/promoter.ts');
+        const result = await runSimpleSkillPromoter(this.simpleSkillPromoterDeps);
+        if (result.promoted.length > 0) {
+          this.bus?.emit?.('skill:graduated_from_simple', {
+            cycleId,
+            promoted: result.promoted.map((p) => ({
+              name: p.skillName,
+              trials: p.trials,
+              successRate: p.successRate,
+            })),
+          });
+        }
+      } catch {
+        /* Simple-skill bridge is observational — never disrupts sleep cycle */
+      }
+    }
+
     if (this.autonomousCreatorDeps) {
       try {
         const { feedSkillOutcomesToCreator } = await import('../orchestrator/agents/skill-outcome-feeder.ts');

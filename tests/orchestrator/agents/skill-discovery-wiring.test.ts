@@ -61,7 +61,10 @@ function makeFixtures() {
   };
 }
 
-function makeConfig(discovery: VinyanConfig['skills'] extends infer T ? T : never): VinyanConfig {
+// Accepts a partial skills block — the tests focus on the discovery sub-tree;
+// mode + simple defaults are filled by the loader at parse time and don't
+// affect the wiring path under test here.
+function makeConfig(discovery: { discovery?: unknown } | undefined): VinyanConfig {
   return {
     version: 1,
     oracles: {},

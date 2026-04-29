@@ -1438,6 +1438,15 @@ export interface WorkerInput {
    * `agent-skill-cards` section renders identically in both dispatch paths.
    */
   loadedSkillCards?: import('./agents/derive-persona-capabilities.ts').SkillCardView[];
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple skills available to
+   * this task. The orchestrator's `SimpleSkillRegistry` resolves the
+   * snapshot at dispatch time; descriptions render in the system prompt at
+   * `simple-skill-descriptions`, bodies (subset matched to goal text) at
+   * `simple-skill-bodies`.
+   */
+  simpleSkills?: import('../skills/simple/loader.ts').SimpleSkill[];
+  simpleSkillBodies?: import('../skills/simple/loader.ts').SimpleSkill[];
 }
 
 /** Output from a worker process */

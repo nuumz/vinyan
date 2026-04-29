@@ -13,6 +13,11 @@
  * trace shape, and event order are unchanged.
  */
 import type { OrchestratorDeps } from './core-loop.ts';
+import {
+  renderSkillCard,
+  type SkillCardView,
+  toSkillCardView,
+} from './agents/derive-persona-capabilities.ts';
 import { buildShortCircuitProvenance } from './governance-provenance.ts';
 import {
   detectHallucinatedDelegation,
@@ -101,7 +106,32 @@ export async function buildConversationalResult(
     const id = intent.agentId ?? input.agentId ?? reg.defaultAgent().id;
     return reg.getAgent(id) ?? reg.defaultAgent();
   })();
-  const personaSystemPrompt = buildConversationalSystemPrompt(resolvedAgent, deps, input);
+  // Persona runtime skill cards. Mirrors the worker-pool path
+  // (`worker-pool.ts:744-750` and `worker-pool.ts:846-852`) so a delegate
+  // sub-agent answering through the conversational shortcircuit sees the same
+  // persona-bound skills its full-pipeline counterpart would. We deliberately
+  // skip `extraRefs` (the skill-acquirer is async/IO and out of scope for the
+  // synchronous conversational call). Optional-chained because narrow test
+  // mocks omit `getDerivedCapabilities`; production registries always
+  // implement it. Returns `null` when no skill resolver is wired — degrades
+  // to no [LOADED SKILLS] block, never throws.
+  let loadedSkillCards: SkillCardView[] | undefined;
+  if (resolvedAgent && deps.agentRegistry?.getDerivedCapabilities) {
+    try {
+      const derived = deps.agentRegistry.getDerivedCapabilities(resolvedAgent.id);
+      if (derived && derived.loadedSkills.length > 0) {
+        loadedSkillCards = derived.loadedSkills.map(toSkillCardView);
+      }
+    } catch {
+      /* registry without skill resolver — degrade silently */
+    }
+  }
+  const personaSystemPrompt = buildConversationalSystemPrompt(
+    resolvedAgent,
+    deps,
+    input,
+    loadedSkillCards,
+  );
 
   if (provider) {
     try {
@@ -110,7 +140,19 @@ export async function buildConversationalResult(
       // Anthropic HistoryMessage shape (tool_use is dropped here — this is
       // the conversational persona path, not the tool-loop path).
       let messages: import('./types.ts').HistoryMessage[] | undefined;
-      if (input.sessionId && deps.sessionManager) {
+      // Sub-task carve-out: when this task is a delegated sub-agent
+      // (`parentTaskId` set), do NOT load the parent session's turn history.
+      // `subInput.goal` (built by `workflow-executor.ts:719-734`) already
+      // carries everything the delegate needs — its step description, the
+      // original user request, dependency outputs, and expected output.
+      // Loading parent turns adds the parent's setup prose ("have 3 agents
+      // debate competition design"), which delegates then echo back instead
+      // of producing their own step deliverable (session a43487fd symptom).
+      // Vinyan delegate sub-tasks are single-call (the executor dispatches
+      // each via `executeTask(subInput)` once — no in-step multi-turn loop),
+      // so suppressing turn history loses no required context. If a future
+      // multi-turn-delegate feature lands, revisit this guard before flipping.
+      if (input.sessionId && deps.sessionManager && !input.parentTaskId) {
         try {
           const mgr = deps.sessionManager as unknown as {
             getTurnsHistory?: (id: string, n?: number) => import('./types.ts').Turn[];
@@ -273,6 +315,7 @@ function buildConversationalSystemPrompt(
   agent: import('./types.ts').AgentSpec | undefined,
   deps: OrchestratorDeps,
   input: TaskInput,
+  loadedSkillCards: readonly SkillCardView[] | undefined,
 ): string {
   const closing = `Respond naturally. Match the user's language. Maintain context across turns.
 Never reveal your underlying model name or provider — you are Vinyan.
@@ -297,13 +340,43 @@ ${closing}`;
     lines.push(soul.trim());
   }
 
+  // Persona runtime skill cards. Worker-pool injects these via the prompt
+  // assembler's `agent-skill-cards` section — the conversational shortcircuit
+  // assembles its prompt by hand, so we render the same cards inline.
+  // `renderSkillCard` returns null when an envelope exceeds
+  // MAX_SKILL_CARD_CHARS — we skip those (whole-block-or-skip per
+  // `derive-persona-capabilities.ts:286-294`). If every card is oversize OR
+  // the persona has no bound skills, we emit no header at all (no orphan
+  // section).
+  if (loadedSkillCards && loadedSkillCards.length > 0) {
+    const rendered = loadedSkillCards
+      .map((view) => renderSkillCard(view))
+      .filter((card): card is string => card !== null);
+    if (rendered.length > 0) {
+      lines.push('');
+      lines.push('[LOADED SKILLS]');
+      for (const card of rendered) lines.push(card);
+    }
+  }
+
   // Peer roster: list other specialists so the persona can answer "what
   // can Vinyan do" honestly. NOTE: this conversational path has no dispatch
   // mechanism — the persona MUST NOT promise to "forward" or "hand off" to
   // peers from here. When a request actually needs another specialist to
   // PRODUCE a deliverable, the persona must emit the escape sentinel
   // documented in [ESCAPE PROTOCOL] below; the orchestrator then re-routes.
-  const peers = (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id);
+  //
+  // Sub-task carve-out: when this task is a delegated sub-agent
+  // (`parentTaskId` set), the persona is already inside the agentic-workflow
+  // path AND has no dispatch capability — listing peers is dead context that
+  // also invites the LLM to talk *about* the other agents instead of
+  // producing its own step (session a43487fd: delegates described
+  // "competition setup" instead of answering the assigned step). Mirrors the
+  // escape-protocol sub-task carve-out further down — same predicate,
+  // same reasoning.
+  const peers = !input.parentTaskId
+    ? (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id)
+    : [];
   if (peers.length > 0) {
     lines.push('');
     lines.push('[PEER AGENTS — DO NOT PROMISE TO DISPATCH]');
@@ -337,6 +410,22 @@ ${closing}`;
   if (!input.parentTaskId) {
     lines.push('');
     lines.push(formatEscapeProtocolBlock());
+  }
+
+  // Sub-task contract — counterpart to the escape-protocol carve-out above.
+  // Delegate sub-agents need an explicit reminder that they are answering
+  // ONE workflow step, not designing the workflow or simulating peers. The
+  // generic `closing` block (no JSON, no narrating reasoning) does not cover
+  // these workflow-specific failure modes. The wording is deliberately
+  // verbatim from the user spec — these are the exact failure modes seen
+  // in session a43487fd (delegates echoing setup prose, asking the user
+  // for a topic that prior step already produced, simulating other agents).
+  if (input.parentTaskId) {
+    lines.push('');
+    lines.push('[SUB-TASK CONTRACT]');
+    lines.push('Answer ONLY this assigned workflow step. Do not design the workflow.');
+    lines.push('Do not ask the user for a topic if prior workflow output already contains one.');
+    lines.push('Do not speak as or simulate other agents. Produce your deliverable directly.');
   }
 
   lines.push('');

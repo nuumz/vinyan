@@ -1052,6 +1052,31 @@ export interface VinyanBusEvents {
   };
 
   /**
+   * Hybrid skill redesign — emitted when a Claude-Code-style simple skill
+   * accumulates enough outcome evidence to graduate into the heavy
+   * SKILL.md schema. Producer: `runSimpleSkillPromoter` invoked from the
+   * sleep cycle. Listeners can show "skill X is now in the audited stack"
+   * notifications.
+   */
+  'skill:graduated_from_simple': {
+    cycleId: string;
+    promoted: Array<{ name: string; trials: number; successRate: number }>;
+  };
+
+  /**
+   * Hybrid skill redesign — emitted by the worker-pool every time a simple
+   * skill body is inlined into a task's prompt. Factory subscribes to track
+   * per-task invocation sets so simple-skill outcomes can be recorded at
+   * task completion (separate from heavy-stack `skill:viewed`).
+   */
+  'skill:simple_invoked': {
+    taskId: string;
+    skillName: string;
+    /** Where the skill was loaded from. */
+    scope: 'user' | 'project';
+  };
+
+  /**
    * Phase-13: emitted by the workflow-executor's `delegate-sub-agent` path
    * when A1 Epistemic Separation forced the sub-task onto the canonical
    * Verifier persona instead of inheriting the parent's agentId. Producer:
@@ -1112,6 +1137,37 @@ export interface VinyanBusEvents {
     status: 'completed' | 'failed' | 'skipped';
     outputPreview: string;
     tokensUsed: number;
+  };
+
+  /**
+   * Synthesizer LLM ignored the STITCHER rule and compressed/paraphrased
+   * step outputs into a tight register. Observability event for the
+   * compression safety net in `buildResult` — the executor discards the
+   * synthesizer's output and falls back to a deterministic concat to
+   * preserve voice diversity. Fired only when the workflow has
+   * substantial output (>1500 bytes total) and the LLM compressed below
+   * 25%, indicating paraphrase not legitimate consolidation.
+   */
+  'workflow:synthesizer_compression_detected': {
+    taskId: string;
+    stepOutputBytes: number;
+    synthesizedBytes: number;
+    compressionRatio: number;
+  };
+
+  /**
+   * Planner-emitted plan failed validation: it referenced an agent id not
+   * in the live registry (hallucinated) OR assigned the same agentId to
+   * multiple `delegate-sub-agent` steps (duplicate, would produce false
+   * diversity). The offending `agentId` was dropped from each step before
+   * dispatch; the affected delegates run with default routing and their
+   * UI rows render with `agent?` instead of misattributing to a persona
+   * that didn't actually answer.
+   */
+  'workflow:planner_validation_warning': {
+    goal: string;
+    hallucinatedAgentIds: Array<{ stepId: string; agentId: string }>;
+    duplicateAgentIds: Array<{ stepId: string; agentId: string }>;
   };
 
   /**
@@ -1288,8 +1344,17 @@ export interface VinyanBusEvents {
   /**
    * Phase E: fires once per task after the plan has been finalized (research
    * injection applied) and BEFORE any step executes. UIs use this to render a
-   * human-readable TODO checklist and — when `workflow.requireUserApproval`
-   * is on — display an approval prompt.
+   * human-readable TODO checklist and — when `awaitingApproval=true` —
+   * display an approval prompt whose copy and timeout behaviour depend on
+   * `approvalMode`:
+   *   - 'agent-discretion': review window; on timeout Vinyan auto-decides
+   *     via `evaluateAutoApproval` (read-only → approve; mutating → reject).
+   *     `autoDecisionAllowed` is true, `timeoutMs` is the review window.
+   *   - 'human-required':   only a human may decide. Timeout MUST NOT
+   *     auto-approve. `autoDecisionAllowed` is false; UI must not show
+   *     auto-approval copy.
+   * Older listeners that ignore the new fields keep working — the legacy
+   * `awaitingApproval` boolean is preserved.
    */
   'workflow:plan_ready': {
     taskId: string;
@@ -1297,6 +1362,21 @@ export interface VinyanBusEvents {
     steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
     /** True when the orchestrator is waiting for the user to approve before executing. */
     awaitingApproval: boolean;
+    /**
+     * Approval mode for this plan. Optional for back-compat; treat absence
+     * as 'agent-discretion' when `awaitingApproval=true`.
+     */
+    approvalMode?: 'agent-discretion' | 'human-required';
+    /**
+     * Approval window the backend will honor before timing out the gate.
+     * UI uses this for the countdown bar — do not hardcode a default.
+     */
+    timeoutMs?: number;
+    /**
+     * Whether Vinyan may auto-decide on timeout. False for 'human-required'.
+     * UI gates auto-approval copy on this flag.
+     */
+    autoDecisionAllowed?: boolean;
   };
   /**
    * User (via TUI / HTTP / WS) approved a plan that was awaiting approval —

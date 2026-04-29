@@ -9,6 +9,8 @@
  * A3: fallback to single-step is deterministic.
  */
 import type { VinyanBus } from '../../core/bus.ts';
+// (used by sanitizeDelegateAgentIds / formatAgentRoster — keep import even
+// if the only consumer above is implicit)
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
@@ -191,7 +193,18 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '');
       const parsed = JSON.parse(cleaned);
-      const plan = WorkflowPlanSchema.parse(parsed);
+      const rawPlan = WorkflowPlanSchema.parse(parsed);
+      // Sanitize delegate agentIds: drop hallucinated ids (not in registry)
+      // and de-duplicate within the same plan. Both failure modes silently
+      // collapse persona diversity — a hallucinated id falls back to the
+      // default coordinator soul (sub-agent answers in coordinator voice
+      // instead of the requested specialist), and a duplicated id runs the
+      // same persona twice in parallel (the user gets two near-identical
+      // answers presented as if they were distinct voices). Sanitization
+      // strips the offending agentId so the executor uses default routing
+      // — the planner's intent to delegate is preserved, but the delegate
+      // is honestly anonymous rather than misattributed.
+      const plan = sanitizeDelegateAgentIds(rawPlan, deps.agentRegistry, deps.bus);
 
       deps.bus?.emit('workflow:plan_created', {
         goal: opts.goal,
@@ -206,6 +219,86 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
   }
 
   return fallbackPlan(opts.goal);
+}
+
+/**
+ * Validate and clean up `step.agentId` on `delegate-sub-agent` steps.
+ *
+ * Two failure modes the LLM planner produces in practice:
+ *
+ * 1. **Hallucinated id** — planner writes an `agentId` that doesn't exist
+ *    in the registry (e.g. `'developer-agent'` when only `'developer'` is
+ *    registered, or invents `'philosopher'` for a persona we don't have).
+ *    Without sanitization, the executor's `verifierAgentId ?? step.agentId`
+ *    chain still tries the bad id and falls through to the default
+ *    coordinator — but the delegate's output is then attributed to the
+ *    PLANNER'S intended persona, not the actual coordinator who ran it.
+ *    Silent persona misattribution.
+ *
+ * 2. **Duplicate id within the same plan** — planner assigns the same
+ *    persona to multiple `delegate-sub-agent` steps (e.g. two steps with
+ *    `agentId='researcher'`). The two parallel sub-tasks run the same
+ *    persona with the same step description, producing near-identical
+ *    answers presented in the UI as if they were distinct voices.
+ *    Fake diversity.
+ *
+ * Sanitization drops the offending agentId rather than dropping the whole
+ * step — the executor will fall back to default routing, and the
+ * UI/trace shows the delegate as `agent?` (the AgentTimelineCard's
+ * fallback label) rather than misattributing the answer.
+ *
+ * Pure: no I/O. Emits a single observability event when corrections are
+ * applied so production can detect when planner output deviates.
+ */
+function sanitizeDelegateAgentIds(
+  plan: WorkflowPlan,
+  registry: AgentRegistry | undefined,
+  bus?: VinyanBus,
+): WorkflowPlan {
+  // Build the registry id set once. When no registry is wired, we cannot
+  // verify ids — pass through (legacy / minimal test setups).
+  const knownIds = new Set<string>();
+  if (registry) {
+    try {
+      for (const a of registry.listAgents()) knownIds.add(a.id);
+    } catch {
+      return plan;
+    }
+  }
+
+  const seenAgentIds = new Set<string>();
+  const droppedHallucinated: Array<{ stepId: string; agentId: string }> = [];
+  const droppedDuplicate: Array<{ stepId: string; agentId: string }> = [];
+
+  const steps = plan.steps.map((s) => {
+    if (s.strategy !== 'delegate-sub-agent' || !s.agentId) return s;
+    const id = s.agentId;
+    // Hallucinated: not in registry. Skip when registry was unavailable
+    // (knownIds is empty AND registry was undefined).
+    if (registry && !knownIds.has(id)) {
+      droppedHallucinated.push({ stepId: s.id, agentId: id });
+      const { agentId: _drop, ...rest } = s;
+      return rest;
+    }
+    // Duplicate within plan.
+    if (seenAgentIds.has(id)) {
+      droppedDuplicate.push({ stepId: s.id, agentId: id });
+      const { agentId: _drop, ...rest } = s;
+      return rest;
+    }
+    seenAgentIds.add(id);
+    return s;
+  });
+
+  if (droppedHallucinated.length > 0 || droppedDuplicate.length > 0) {
+    bus?.emit('workflow:planner_validation_warning', {
+      goal: plan.goal,
+      hallucinatedAgentIds: droppedHallucinated,
+      duplicateAgentIds: droppedDuplicate,
+    });
+  }
+
+  return { ...plan, steps };
 }
 
 /**

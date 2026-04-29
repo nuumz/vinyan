@@ -71,12 +71,15 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 26 sections', () => {
+  it('registers 28 sections', () => {
     // Phase-2 redesign added `agent-skill-cards` (system, priority 130) so
     // SKILL.md cards can be injected with an integrity envelope right after
     // `agent-soul`. Bumped from 24.
+    // Hybrid skill redesign added `simple-skill-descriptions` (system, 131)
+    // and `simple-skill-bodies` (system, 232) — Claude-Code-style layer.
+    // Bumped from 26 → 28.
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(26);
+    expect(registry.getSectionIds()).toHaveLength(28);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {

@@ -16,8 +16,8 @@ import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import {
   approvalTimeoutMs,
   awaitApprovalDecision,
+  classifyApprovalRequirement,
   evaluateAutoApproval,
-  requiresApproval,
   type WorkflowConfig,
 } from './approval-gate.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
@@ -160,10 +160,25 @@ export async function executeWorkflow(
     // steps where the planner did not pin a specific persona.
     ...(s.agentId ? { agentId: s.agentId } : {}),
   }));
-  const needsApproval = deps.bus != null && requiresApproval(deps.workflowConfig, input.goal);
-  if (needsApproval && deps.bus) {
+  // Approval gate is a USER-facing checkpoint — only fires for top-level
+  // tasks. Sub-tasks (`input.parentTaskId` set) inherit the parent's
+  // approval and must NOT trigger their own approval prompts. Without
+  // this bypass:
+  //   - a delegate-sub-agent whose synthesized plan would normally trigger
+  //     approval would pause waiting for a user decision
+  //   - the user only sees the parent task in the UI; they have no
+  //     surface to approve a sub-task → workflow stuck forever
+  //   - if config has `requireUserApproval='always'`, EVERY delegate
+  //     would block, multiplying the human friction by N
+  // Treat sub-tasks as pre-authorized via the parent's gate.
+  const approvalMode =
+    deps.bus && !input.parentTaskId
+      ? classifyApprovalRequirement(deps.workflowConfig, input.goal, plan)
+      : 'none';
+  if (approvalMode !== 'none' && deps.bus) {
     const bus = deps.bus;
     const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+    const autoDecisionAllowed = approvalMode === 'agent-discretion';
     // Subscribe BEFORE emitting plan_ready so we never miss an approval event
     // that races the emit (HTTP client may POST approve very quickly).
     const decisionPromise = awaitApprovalDecision(bus, input.id, timeoutMs);
@@ -172,6 +187,9 @@ export async function executeWorkflow(
       goal: plan.goal,
       steps: stepsForEvent,
       awaitingApproval: true,
+      approvalMode,
+      timeoutMs,
+      autoDecisionAllowed,
     });
     const decision = await decisionPromise;
     if (decision === 'rejected') {
@@ -189,21 +207,42 @@ export async function executeWorkflow(
         totalDurationMs: performance.now() - startTime,
       };
     }
-    // `decision === 'timeout'`: the user did not respond within
-    // `approvalTimeoutMs` (default 3 min). Instead of falling through to
-    // blanket implicit approval, exercise Vinyan's discretion via
-    // `evaluateAutoApproval` — A3-compliant rule-based judgement over the
-    // plan that approves read-only / no-side-effect plans and rejects
-    // plans containing code mutations or destructive shell commands.
-    //
-    // On `approved`: emit `workflow:plan_approved` (with `auto: true` so
-    // dashboards can distinguish a human approval from Vinyan's deferred
-    // judgement) and continue to step dispatch.
-    // On `rejected`: emit `workflow:plan_rejected` and short-circuit with
-    // a failed `WorkflowResult` carrying the verdict's rationale, so the
-    // user sees *why* Vinyan declined to proceed when they re-open the
-    // session.
     if (decision === 'timeout') {
+      // Mode-aware timeout handling. `human-required` plans MUST NOT
+      // auto-approve — the plan contains a step that genuinely needs a
+      // human's judgement (clarify, choose, decide, …). The runtime
+      // contract requires a finite WorkflowResult, so on timeout we
+      // surface an honest "human decision required" failure instead of
+      // letting the worker hang or silently approving.
+      if (approvalMode === 'human-required') {
+        const rationale =
+          'Human decision required; Vinyan cannot auto-approve this plan. ' +
+          'The plan asks the user to choose / confirm / clarify before it ' +
+          'can continue, and no decision arrived within the review window.';
+        bus.emit('workflow:plan_rejected', {
+          taskId: input.id,
+          auto: true,
+          rationale,
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: 0,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [],
+          synthesizedOutput: rationale,
+          totalTokensConsumed: 0,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
+      // `agent-discretion` — exercise Vinyan's deferred judgement via
+      // `evaluateAutoApproval` (A3-compliant rule-based verdict over the
+      // plan). Read-only / no-side-effect plans get auto-approved and
+      // continue to step dispatch; plans containing code mutations or
+      // destructive shell commands are auto-rejected with a rationale.
       const verdict = evaluateAutoApproval(plan);
       if (verdict.decision === 'approved') {
         bus.emit('workflow:plan_approved', {
@@ -739,22 +778,30 @@ async function dispatchStrategy(
           taskType: input.taskType,
           targetFiles: input.targetFiles,
           budget: {
-            // Sub-task budget floors. Without these, a delegate's
-            // budgetFraction (typically 0.2-0.4) compounds with the
-            // parent's already-fractional budget when the sub-task itself
-            // runs a workflow — session 4e62ebe6 hit `budgetMs: 21` on a
-            // recursion level with `task:timeout` reason "Wall-clock budget
-            // exhausted before next attempt could start (7ms remaining)".
-            // The 30s wall-clock floor matches the per-step timeout floor
-            // (MIN_WORKFLOW_LLM_TIMEOUT_MS / 4) — anything less and the
-            // sub-agent's first LLM call times out before it can answer.
+            // Sub-task wall-clock budget. Set to the OUTER hard ceiling
+            // (`HARD_CEILING_MS` below) — NOT the idle/soft limit. The
+            // outer Promise.race uses a streaming-aware watchdog: the
+            // LLM gets `subTaskTimeoutMs` of idle budget that is RESET
+            // by every `llm:stream_delta` for the sub-task, plus an
+            // absolute ceiling. The sub-task's own self-timer in
+            // `core-loop.ts:2624` only sees this number and is unaware
+            // of streaming activity, so we MUST give it the full
+            // ceiling — otherwise it self-kills mid-stream and the
+            // watchdog never gets a chance to extend on activity.
+            // Session f4117fe3 symptom: author streaming a substantive
+            // Thai response was killed at exactly 2m0s = the static
+            // 120s wall, even though tokens were arriving steadily —
+            // both clocks now key off `HARD_CEILING_MS` so a streaming
+            // LLM has up to 10 min of total wall, with idle bursts
+            // ≥ 120s each killing it. Token floor stays at 500 (a
+            // different concern from wall-clock budget).
             maxTokens: Math.max(
               500,
               Math.floor(input.budget.maxTokens * step.budgetFraction),
             ),
             maxDurationMs: Math.max(
-              30_000,
-              Math.floor(input.budget.maxDurationMs * step.budgetFraction),
+              600_000,
+              workflowStepTimeoutMs(input, step.budgetFraction) * 4,
             ),
             maxRetries: input.budget.maxRetries,
           },
@@ -772,28 +819,79 @@ async function dispatchStrategy(
             verifierAgentId,
           });
         }
-        // Wall-clock cap on the delegate. Without this a free-tier 429
-        // retry loop inside the sub-agent's LLM provider hangs the entire
-        // workflow indefinitely (incident: session ede9e9e1 — 3 delegates
-        // sat for 40 min until a server restart marked the task orphaned;
-        // step1 had completed in 6.5s but steps 2-4 produced no observable
-        // progress and no honest failure either). The cap pairs with the
-        // length===0 honesty fast-path so the synthesizer reports "step X
-        // timed out" instead of fabricating an answer the agent never
-        // produced.
+        // Wall-clock guard on the delegate. Streaming-aware watchdog:
+        //   - `subTaskTimeoutMs` (≥ 120s) is the IDLE budget — how long
+        //     we tolerate ZERO `llm:stream_delta` activity before
+        //     declaring the sub-task stuck. Each stream delta for this
+        //     sub-task's id resets the idle clock, so a steadily
+        //     streaming LLM keeps running.
+        //   - `HARD_CEILING_MS` is the absolute wall — even a happily
+        //     streaming LLM gets killed if total elapsed exceeds this,
+        //     so a token-loop / runaway generation cannot run forever.
+        // Both are necessary. Without the watchdog, a static cap killed
+        // author at exactly 2m0s on session f4117fe3 even though it was
+        // producing a substantive Thai response steadily. Without the
+        // ceiling, a 429 retry loop inside the LLM provider would hang
+        // the entire workflow (incident: session ede9e9e1 — 3 delegates
+        // sat for 40 min until a server restart marked the task
+        // orphaned). The watchdog pairs with the length===0 honesty
+        // fast-path so the synthesizer reports "step X timed out"
+        // instead of fabricating an answer the agent never produced.
         const subTaskTimeoutMs = workflowStepTimeoutMs(input, step.budgetFraction);
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        const HARD_CEILING_MS = Math.max(600_000, subTaskTimeoutMs * 4);
+        let lastActivityAt = performance.now();
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        let ceilingTimer: ReturnType<typeof setTimeout> | undefined;
+        let timeoutKind: 'idle' | 'ceiling' | null = null;
         const timeoutPromise = new Promise<TaskResult>((_, reject) => {
-          timer = setTimeout(
-            () =>
+          const idleCheck = () => {
+            const idleMs = performance.now() - lastActivityAt;
+            if (idleMs >= subTaskTimeoutMs) {
+              timeoutKind = 'idle';
               reject(
                 new Error(
-                  `delegate-sub-agent step ${step.id} timed out after ${Math.round(subTaskTimeoutMs / 1000)}s (agent=${resolvedAgentId ?? 'default'})`,
+                  `delegate-sub-agent step ${step.id} idle timeout after ${Math.round(idleMs / 1000)}s ` +
+                    `(no LLM stream activity, agent=${resolvedAgentId ?? 'default'})`,
                 ),
+              );
+              return;
+            }
+            // Re-arm for the remaining idle budget. Min 1s avoids a
+            // busy-spin if a stream delta arrived right before the
+            // timer fired and pushed `lastActivityAt` forward.
+            idleTimer = setTimeout(idleCheck, Math.max(1_000, subTaskTimeoutMs - idleMs));
+          };
+          idleTimer = setTimeout(idleCheck, subTaskTimeoutMs);
+          ceilingTimer = setTimeout(() => {
+            timeoutKind = 'ceiling';
+            reject(
+              new Error(
+                `delegate-sub-agent step ${step.id} wall-clock timeout (absolute ceiling) ` +
+                  `after ${Math.round(HARD_CEILING_MS / 1000)}s (agent=${resolvedAgentId ?? 'default'})`,
               ),
-            subTaskTimeoutMs,
-          );
+            );
+          }, HARD_CEILING_MS);
         });
+        // Reset idle clock on every stream-delta the sub-task emits.
+        // The sub-task path (conversational shortcircuit / full pipeline)
+        // emits `llm:stream_delta` with `taskId === subInput.id`, so the
+        // filter below picks up only this sub-task's activity. Other
+        // sub-tasks running in parallel do not interfere. The `typeof`
+        // guard handles narrow test mocks that supply only `bus.emit`
+        // (lots of pre-watchdog tests do this) — without it the watchdog
+        // throws on subscription. Production `VinyanBus` always has
+        // `.on`, so the guard is purely a test-ergonomics affordance.
+        const busOn =
+          deps.bus && typeof (deps.bus as { on?: unknown }).on === 'function'
+            ? deps.bus.on.bind(deps.bus)
+            : undefined;
+        const unsubStream = busOn
+          ? busOn('llm:stream_delta', (payload) => {
+              if (payload.taskId === subInput.id) {
+                lastActivityAt = performance.now();
+              }
+            })
+          : undefined;
         // Emit "delegate dispatched" so the UI agent-timeline card can show
         // the sub-agent as `running` immediately, without waiting for the
         // sub-task's own `task:start` to bubble up.
@@ -808,11 +906,16 @@ async function dispatchStrategy(
         try {
           taskResult = await Promise.race([deps.executeTask(subInput), timeoutPromise]);
         } catch (err) {
+          // Surface the watchdog verdict so dashboards / replays can tell
+          // an idle/stuck timeout (LLM produced no tokens for ≥120s) apart
+          // from a hard-ceiling kill (LLM streamed but ran past 10 min).
+          // `timeoutMs` carries whichever budget actually fired so
+          // operators see the matching number on the trace card.
           deps.bus?.emit('workflow:delegate_timeout', {
             taskId: input.id,
             stepId: step.id,
             agentId: resolvedAgentId ?? null,
-            timeoutMs: subTaskTimeoutMs,
+            timeoutMs: timeoutKind === 'ceiling' ? HARD_CEILING_MS : subTaskTimeoutMs,
           });
           return {
             ...base,
@@ -822,7 +925,9 @@ async function dispatchStrategy(
             subTaskId: subInput.id,
           };
         } finally {
-          if (timer) clearTimeout(timer);
+          if (idleTimer) clearTimeout(idleTimer);
+          if (ceilingTimer) clearTimeout(ceilingTimer);
+          unsubStream?.();
         }
         const finalStatus = taskResult.status === 'completed' ? 'completed' : 'failed';
         const stepOutput =
@@ -1175,6 +1280,51 @@ async function buildResult(
           : await provider.generate(request);
         synthesizedOutput = response.content;
         totalTokens += (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
+        // Compression safety net: when the LLM synthesizer ignores the
+        // STITCHER rule (weak free-tier models do this — they paraphrase /
+        // summarize per-step content into a tight register, destroying any
+        // voice diversity that was present), the synthesized output is
+        // dramatically shorter than the sum of step outputs. Detect this
+        // and fall back to a deterministic concat with step headers.
+        // Threshold rationale: aggressive compression (<25% of total
+        // step output length) on a workflow with substantial outputs
+        // (>1500 chars across steps) is almost always paraphrase, not
+        // genuine consolidation. Below those bounds the synthesizer might
+        // be legitimately compressing redundant content.
+        const totalStepOutputLen = allResults.reduce(
+          (sum, r) => sum + r.output.length,
+          0,
+        );
+        const compressionRatio =
+          synthesizedOutput.length / Math.max(1, totalStepOutputLen);
+        if (totalStepOutputLen > 1500 && compressionRatio < 0.25) {
+          deps.bus?.emit('workflow:synthesizer_compression_detected', {
+            taskId,
+            stepOutputBytes: totalStepOutputLen,
+            synthesizedBytes: synthesizedOutput.length,
+            compressionRatio,
+          });
+          // Replace with a deterministic concat that preserves every step's
+          // verbatim content under a `## Step N: <description>` header. The
+          // user keeps voice + detail; the LLM's compressed prose is
+          // discarded. This is the same shape as the all-delegate-failed
+          // fast-path — honest, no fabrication, no smoothing.
+          const concatSections = allResults.map((r) => {
+            const step = plan.steps.find((s) => s.id === r.stepId);
+            const heading = step?.description
+              ? `## ${r.stepId}: ${step.description}`
+              : `## ${r.stepId}`;
+            const statusTag =
+              r.status === 'completed'
+                ? ''
+                : r.status === 'failed'
+                  ? ' [FAILED]'
+                  : ` [${r.status.toUpperCase()}]`;
+            const body = r.output.trim() || '(no output)';
+            return `${heading}${statusTag}\n\n${body}`;
+          });
+          synthesizedOutput = concatSections.join('\n\n---\n\n');
+        }
       } catch {
         // Fallback when the synthesizer LLM call fails: prefer the last step's
         // raw output (usually the polished deliverable) over stitching every
@@ -1228,26 +1378,69 @@ function buildDeterministicDelegateAggregation(
 ): string {
   const sections: string[] = [];
 
+  // Single-delegate visual cleanup: when only ONE delegate ran, the
+  // `### <agentId> — <description>` header looks orphaned in the chat
+  // surface (the UI plan checklist already shows the persona chip on
+  // that step, so repeating it as a markdown h3 is redundant + visually
+  // "heading-y" without a sibling section to compare against). Render
+  // the verbatim output without the header in that case. Multi-delegate
+  // plans keep the headers because the user IS comparing voices.
+  const isSingleDelegate = delegateStepIds.size === 1;
+
+  // Per-delegate cap. With N delegates each producing ~10k chars, the
+  // deterministic concat balloons to 30k+ chars — the chat UI struggles
+  // (browser layout jank, message bubble wrapping issues) and any
+  // downstream consumer that re-feeds this output to an LLM blows the
+  // input budget. 8000 chars per delegate is generous enough for a
+  // multi-paragraph essay-style answer while keeping total output under
+  // ~32k for typical 3-agent plans. Truncated outputs are tagged so the
+  // user knows content was cut, not silently dropped.
+  const PER_DELEGATE_CAP = 8000;
+  const truncate = (text: string): string => {
+    if (text.length <= PER_DELEGATE_CAP) return text;
+    return `${text.slice(0, PER_DELEGATE_CAP).trim()}\n\n*[…truncated, full output ${text.length} chars]*`;
+  };
+
   // Delegate sections — render in plan order so the persona narrative is
   // stable across re-runs of the same workflow.
   for (const step of plan.steps) {
     if (!delegateStepIds.has(step.id)) continue;
     const result = stepResults.get(step.id);
     const agentLabel = step.agentId ?? 'agent';
-    const headerLine = `### ${agentLabel} — ${step.description}`;
+    const headerLine = isSingleDelegate ? '' : `### ${agentLabel} — ${step.description}`;
+    const headerPrefix = isSingleDelegate ? '' : `${headerLine}\n\n`;
     if (!result) {
-      sections.push(`${headerLine}\n\n[no response — step did not run]`);
+      sections.push(
+        isSingleDelegate
+          ? `[no response from ${agentLabel} — step did not run]`
+          : `${headerLine}\n\n[no response — step did not run]`,
+      );
       continue;
     }
     if (result.status === 'completed' && result.output.trim().length > 0) {
-      sections.push(`${headerLine}\n\n${result.output.trim()}`);
+      sections.push(`${headerPrefix}${truncate(result.output.trim())}`);
+      continue;
+    }
+    // Empty-output edge case: status is 'completed' but the agent
+    // produced only whitespace. Treat this honestly as "no response"
+    // rather than rendering an empty section under the persona header.
+    if (result.status === 'completed') {
+      sections.push(
+        isSingleDelegate
+          ? `[no response from ${agentLabel} — empty output]`
+          : `${headerLine}\n\n[no response — empty output]`,
+      );
       continue;
     }
     // Honest acknowledgement of missing/failed delegates. Output text
     // (e.g. "step timed out after 120s") is preserved as the reason but
     // wrapped in brackets so it cannot be mistaken for a real answer.
     const reason = result.output.trim() || `step ${result.status}`;
-    sections.push(`${headerLine}\n\n[no response — ${reason}]`);
+    sections.push(
+      isSingleDelegate
+        ? `[no response from ${agentLabel} — ${reason}]`
+        : `${headerLine}\n\n[no response — ${reason}]`,
+    );
   }
 
   // Setup-step note: any non-delegate step that completed gets shown as
@@ -1269,8 +1462,10 @@ function buildDeterministicDelegateAggregation(
         body.length > SETUP_CAP ? `${body.slice(0, SETUP_CAP).trim()}…` : body;
       return `- **${step.id}** (${step.strategy}): ${snippet}`;
     });
+    // Pluralize the note when multi-delegate; singular when only 1.
+    const aboveLabel = isSingleDelegate ? 'response above' : 'agents above';
     sections.push(
-      `---\n\n*Setup steps that informed the agents above (shown for transparency, not as part of the persona answers):*\n\n${setupLines.join('\n\n')}`,
+      `---\n\n*Setup steps that informed the ${aboveLabel} (shown for transparency, not as part of the persona answers):*\n\n${setupLines.join('\n\n')}`,
     );
   }
 

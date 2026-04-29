@@ -1,28 +1,51 @@
 /**
- * Approval Gate — pauses workflow execution until the user approves the plan.
+ * Approval Gate — pauses workflow execution until the user (or, for
+ * `agent-discretion` mode, Vinyan's deferred rule-based judgement) decides.
  *
  * Wiring (see workflow-executor.ts):
  *   1. Executor builds the plan (planner + research injection).
- *   2. Executor calls `requiresApproval(config, goal)` to decide whether to
- *      pause. When `false`, dispatch continues immediately.
- *   3. When `true`, executor subscribes via `awaitApprovalDecision` FIRST
- *      (to avoid a race) and then emits `workflow:plan_ready` with
- *      `awaitingApproval: true`.
+ *   2. Executor calls `classifyApprovalRequirement(config, goal, plan)` to
+ *      pick a `WorkflowApprovalMode`:
+ *        - 'none'             → dispatch immediately.
+ *        - 'agent-discretion' → wait, on timeout call `evaluateAutoApproval`.
+ *        - 'human-required'   → wait, on timeout fail with "human decision
+ *                                required" — NEVER auto-approve.
+ *   3. For both blocking modes, executor subscribes via
+ *      `awaitApprovalDecision` FIRST (to avoid a race) and then emits
+ *      `workflow:plan_ready` with `awaitingApproval: true` and the resolved
+ *      `approvalMode` + `timeoutMs` so the UI renders correct copy.
  *   4. TUI / HTTP / WS surfaces the plan. The user types approve/reject (or
  *      the timeout expires).
  *   5. Approval client emits `workflow:plan_approved` or
- *      `workflow:plan_rejected`. The executor wakes, steps run (approved) or
- *      returns a failed `WorkflowResult` (rejected / timeout).
+ *      `workflow:plan_rejected`. The executor wakes; steps run (approved) or
+ *      a failed `WorkflowResult` is returned (rejected / human-required
+ *      timeout / agent-discretion auto-reject).
  *
  * A3 note: the gate itself is rule-based (no LLM). Decision events are
- * strictly authored by the user; timeouts are deterministic.
+ * authored by the user (or by `evaluateAutoApproval` in
+ * `agent-discretion` mode only); timeouts are deterministic.
  */
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { VinyanConfig } from '../../config/schema.ts';
-import type { WorkflowPlan } from './types.ts';
+import type { WorkflowPlan, WorkflowStep } from './types.ts';
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'timeout';
+
+/**
+ * Approval mode for a workflow plan. Decided by `classifyApprovalRequirement`
+ * over the resolved plan + config + goal — deterministic, A3-compliant.
+ *
+ *   - `none`             → skip the gate, dispatch immediately.
+ *   - `agent-discretion` → wait for human approve/reject; on timeout
+ *     `evaluateAutoApproval` decides (read-only → approve; mutating →
+ *     reject).
+ *   - `human-required`   → ONLY a human may approve/reject. Timeout MUST NOT
+ *     auto-approve. The executor surfaces an honest "human decision required"
+ *     failure if the timer fires (the runtime must produce a finite
+ *     WorkflowResult per the task lifecycle contract).
+ */
+export type WorkflowApprovalMode = 'none' | 'agent-discretion' | 'human-required';
 
 /** Length threshold for 'auto' mode — goals at or above this are long-form. */
 export const AUTO_APPROVAL_LENGTH_THRESHOLD = 60;
@@ -30,14 +53,106 @@ export const AUTO_APPROVAL_LENGTH_THRESHOLD = 60;
 /**
  * Default timeout when the config doesn't provide one. 3 minutes.
  *
+ * Applies to `agent-discretion` review windows. `human-required` mode does
+ * NOT auto-decide on timeout — the executor uses the same window to bound
+ * task lifetime but surfaces a "human decision required" failure rather
+ * than calling `evaluateAutoApproval`.
+ *
  * Lowered from 10 minutes after the user reported that the previous default
  * left agentic-workflow turns idle for too long when the human stepped away.
- * Pairs with `evaluateAutoApproval` so the executor exercises judgement on
- * timeout instead of falling through to blanket implicit approval.
  */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 180_000;
 
 export type WorkflowConfig = NonNullable<VinyanConfig['workflow']>;
+
+/**
+ * Tokens that signal a step needs an actual human decision, not just a
+ * "review the plan" sanity check. Matched as whole-word against
+ * `description` + `expectedOutput`. Bilingual EN/TH because Vinyan ships
+ * with Thai-first chat UX and the planner emits Thai descriptions when the
+ * goal is Thai.
+ *
+ * Conservative on purpose: false-positives here downgrade
+ * `agent-discretion` to `human-required` (waits for the human) — the worst
+ * case is a slightly slower workflow, never a destructive action without
+ * review.
+ */
+// Individual decision keywords — add new terms here; the regex is built from this list.
+// Matched as whole-word (\b) against step description + expectedOutput.
+const HUMAN_ONLY_KEYWORDS_EN: string[] = [
+  // Simple action verbs
+  'confirm', 'choose', 'select', 'clarify', 'decide', 'approve', 'reject',
+  // Compound phrases
+  'pick(?:\\s+one)?',
+  'which\\s+(?:option|one)',
+  'cannot\\s+decide',
+  'cannot\\s+proceed',
+  // Deference phrases
+  'need(?:s)?\\s+(?:user|human)\\s+(?:input|decision|confirmation|approval)',
+];
+const HUMAN_ONLY_MARKERS_EN = new RegExp(`\\b(?:${HUMAN_ONLY_KEYWORDS_EN.join('|')})\\b`, 'i');
+
+// Thai phrases written verbatim — no word-boundary regex semantics in Thai.
+const HUMAN_ONLY_MARKERS_TH = [
+  'ตรงกับที่อยากได้ไหม',   // "Does this match what you wanted?"
+  'ตรงกับที่ต้องการไหม',   // "Does this match what you need?"
+  'ให้เลือก',              // "Please choose / select"
+  'ต้องการแบบไหน',         // "Which style/type do you want?"
+  'ผิดตรงไหน',             // "What part is wrong?"
+  'ตัดสินใจ',              // "Decide / make a decision"
+  'ยืนยัน',               // "Confirm"
+  'อนุมัติ',              // "Approve"
+  'ขอความเห็น',            // "Request / seeking opinion"
+  'ต้องการให้ผู้ใช้',      // "Needs the user to..."
+];
+
+function looksLikeHumanDecisionStep(step: WorkflowStep): boolean {
+  if (step.strategy === 'human-input') return true;
+  const haystack = `${step.description ?? ''}\n${step.expectedOutput ?? ''}`;
+  if (!haystack.trim()) return false;
+  if (HUMAN_ONLY_MARKERS_EN.test(haystack)) return true;
+  for (const phrase of HUMAN_ONLY_MARKERS_TH) {
+    if (haystack.includes(phrase)) return true;
+  }
+  return false;
+}
+
+/**
+ * Classify the approval requirement for a workflow plan. Pure: no I/O, no
+ * LLM. Run after the planner builds the plan and the executor resolves any
+ * research-step injection — input is the final plan that will dispatch.
+ *
+ * Rules (deterministic, A3 — no LLM in governance path):
+ *   1. `requireUserApproval === false`               → 'none'.
+ *   2. Plan contains a `human-input` step OR any step description /
+ *      expectedOutput hits a human-only marker (en/th choose/confirm/
+ *      decide …)                                      → 'human-required'.
+ *   3. `requireUserApproval === true`                 → 'agent-discretion'.
+ *   4. `requireUserApproval === 'auto'` (default):
+ *        - long-form goal (≥ AUTO_APPROVAL_LENGTH_THRESHOLD)
+ *                                                     → 'agent-discretion'
+ *        - short, clear goal                           → 'none'.
+ *
+ * Note: `requiresApproval` is preserved as a thin wrapper for callers that
+ * only need a boolean (legacy tests, dashboards). Workflow-executor uses
+ * this richer classifier.
+ */
+export function classifyApprovalRequirement(
+  config: WorkflowConfig | undefined,
+  goal: string,
+  plan: WorkflowPlan,
+): WorkflowApprovalMode {
+  const setting = config?.requireUserApproval ?? 'auto';
+  const hasHumanOnlyStep = plan.steps.some(looksLikeHumanDecisionStep);
+
+  if (setting === false) return 'none';
+  if (hasHumanOnlyStep) return 'human-required';
+  if (setting === true) return 'agent-discretion';
+  // 'auto' — short goals skip; long-form goals get a review window.
+  return goal.trim().length >= AUTO_APPROVAL_LENGTH_THRESHOLD
+    ? 'agent-discretion'
+    : 'none';
+}
 
 /**
  * Decide whether the workflow requires user approval before execution.
@@ -68,8 +183,11 @@ export function approvalTimeoutMs(config: WorkflowConfig | undefined): number {
  * Wait for the user's approval decision. Resolves with:
  *   - 'approved' when `workflow:plan_approved` arrives for this taskId
  *   - 'rejected' when `workflow:plan_rejected` arrives
- *   - 'timeout' after `timeoutMs` with no decision (treated as implicit
- *     approval by `workflow-executor` — an absent user defaults to allow)
+ *   - 'timeout' after `timeoutMs` with no decision. Interpretation is the
+ *     caller's contract: in `agent-discretion` the executor invokes
+ *     `evaluateAutoApproval` to make a rule-based call; in `human-required`
+ *     the executor surfaces an honest "human decision required" failure
+ *     (NEVER auto-approves).
  *
  * Subscription happens inline so callers MUST call this BEFORE emitting
  * `workflow:plan_ready` to avoid missing an approval event that races the

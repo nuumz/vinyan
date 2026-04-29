@@ -236,14 +236,27 @@ if (import.meta.main) {
 
     case 'skills': {
       // Sub-subcommand dispatch:
-      //   `skills import <id>`              → hub importer (W3 SK3)
-      //   `skills bind <persona> <skill>`   → persona-scoped binding (Phase 2)
-      //   `skills unbind <persona> <skill>` → remove persona-scoped binding
-      //   anything else                     → legacy `runSkillsCommand` (list)
-      if (args[1] === 'import') {
+      //   Hybrid simple-layer (Claude-Code-style) — schema-free:
+      //     `skills new <name>`                → scaffold SKILL.md
+      //     `skills list [--scope=...]`        → table of available skills
+      //     `skills show <name>`               → render full SKILL.md
+      //     `skills search <query>`            → matcher-ranked top hits
+      //     `skills edit <name>`               → open SKILL.md in $EDITOR
+      //     `skills remove <name> [--force]`   → delete skill dir
+      //     `skills mode [simple|epistemic|both]` → flip vinyan.json:skills.mode
+      //
+      //   Heavy / epistemic-layer (kept for power users) :
+      //     `skills import <id>`               → hub importer (W3 SK3)
+      //     `skills bind <persona> <skill>`    → persona-scoped binding (Phase 2)
+      //     `skills unbind <persona> <skill>`  → remove persona-scoped binding
+      //     `skills promote ...`               → tier graduation (sleep cycle)
+      //     anything else                      → legacy `runSkillsCommand` (list)
+      const sub = args[1];
+      const SIMPLE_SUBS = new Set(['new', 'list', 'show', 'search', 'edit', 'remove', 'rm', 'delete', 'mode']);
+      if (sub === 'import') {
         const { runSkillsImportCommand } = await import('./skills-import.ts');
         await runSkillsImportCommand(args.slice(2), { profile: resolvedProfile.name });
-      } else if (args[1] === 'bind') {
+      } else if (sub === 'bind') {
         try {
           const { runSkillBindCommand } = await import('./skill-bind.ts');
           await runSkillBindCommand(args.slice(2), workspacePath);
@@ -251,7 +264,7 @@ if (import.meta.main) {
           console.error((err as Error).message);
           process.exit(2);
         }
-      } else if (args[1] === 'unbind') {
+      } else if (sub === 'unbind') {
         try {
           const { runSkillUnbindCommand } = await import('./skill-bind.ts');
           await runSkillUnbindCommand(args.slice(2), workspacePath);
@@ -259,10 +272,18 @@ if (import.meta.main) {
           console.error((err as Error).message);
           process.exit(2);
         }
-      } else if (args[1] === 'promote') {
+      } else if (sub === 'promote') {
         try {
           const { runSkillPromoteCommand } = await import('./skill-promote.ts');
           await runSkillPromoteCommand(args.slice(2), workspacePath);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exit(2);
+        }
+      } else if (sub && SIMPLE_SUBS.has(sub)) {
+        try {
+          const { runSkillsSimpleCommand } = await import('./skills-simple.ts');
+          await runSkillsSimpleCommand(args.slice(1), { workspace: workspacePath });
         } catch (err) {
           console.error((err as Error).message);
           process.exit(2);

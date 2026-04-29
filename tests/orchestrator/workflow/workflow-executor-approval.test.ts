@@ -1,13 +1,18 @@
 /**
- * Tests for the approval-gate behaviour in workflow-executor (Phase E).
+ * Tests for the approval-gate behaviour in workflow-executor.
  *
- * The executor calls `requiresApproval(config, goal)`; when it returns true,
- * the executor:
- *   1. Subscribes to `workflow:plan_approved` / `workflow:plan_rejected`
- *   2. Emits `workflow:plan_ready` with `awaitingApproval: true`
- *   3. Awaits the decision (or timeout)
- *   4. Continues on `approved` or `timeout` (absent user → implicit approve);
- *      returns a failed WorkflowResult only on explicit `rejected`.
+ * The executor calls `classifyApprovalRequirement(config, goal, plan)` to
+ * pick a `WorkflowApprovalMode`:
+ *   - 'none'             → dispatch immediately.
+ *   - 'agent-discretion' → emit plan_ready, await decision, on timeout call
+ *                          `evaluateAutoApproval` (read-only → approve;
+ *                          mutating → reject) with `auto: true`.
+ *   - 'human-required'   → emit plan_ready, await decision, on timeout
+ *                          surface "human decision required" failure with
+ *                          `auto: true` BUT NEVER call evaluateAutoApproval.
+ *
+ * `workflow:plan_ready` carries `approvalMode`, `timeoutMs`,
+ * `autoDecisionAllowed` so the UI can render mode-specific copy.
  */
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
@@ -187,5 +192,114 @@ describe('executeWorkflow — approval gate', () => {
     });
     const planReady = events.find((e) => e.name === 'plan_ready');
     expect((planReady!.payload as { awaitingApproval: boolean }).awaitingApproval).toBe(false);
+  });
+
+  test('plan_ready carries approvalMode + timeoutMs + autoDecisionAllowed for agent-discretion', async () => {
+    const bus = createBus();
+    const events: Array<{ name: string; payload: unknown }> = [];
+    bus.on('workflow:plan_ready', (p) => events.push({ name: 'plan_ready', payload: p }));
+    const run = executeWorkflow(makeInput('analyse something'), {
+      bus,
+      workflowConfig: { requireUserApproval: true, approvalTimeoutMs: 12_345 },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const planReady = events.find((e) => e.name === 'plan_ready');
+    const payload = planReady!.payload as {
+      awaitingApproval: boolean;
+      approvalMode?: string;
+      timeoutMs?: number;
+      autoDecisionAllowed?: boolean;
+    };
+    expect(payload.awaitingApproval).toBe(true);
+    expect(payload.approvalMode).toBe('agent-discretion');
+    expect(payload.timeoutMs).toBe(12_345);
+    expect(payload.autoDecisionAllowed).toBe(true);
+    bus.emit('workflow:plan_approved', { taskId: 'task-exec-1' });
+    await run;
+  });
+
+  test('human-required: timeout does NOT auto-approve and surfaces human-needed failure', async () => {
+    // Force the planner into a `human-input` step by mocking the LLM to
+    // return a plan that the classifier will tag as human-required.
+    const humanRequiredPlan = JSON.stringify({
+      goal: 'pick one',
+      steps: [
+        {
+          id: 'step1',
+          description: 'Please choose which option you want to proceed with',
+          strategy: 'human-input',
+          budgetFraction: 1.0,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      capabilities: { codeGeneration: true, structuredOutput: true },
+      generate: async () => ({ content: humanRequiredPlan, tokensUsed: { input: 10, output: 10 } }),
+    };
+    const bus = createBus();
+    const planReadyEvents: Array<unknown> = [];
+    const planRejectedEvents: Array<unknown> = [];
+    const planApprovedEvents: Array<unknown> = [];
+    bus.on('workflow:plan_ready', (p) => planReadyEvents.push(p));
+    bus.on('workflow:plan_rejected', (p) => planRejectedEvents.push(p));
+    bus.on('workflow:plan_approved', (p) => planApprovedEvents.push(p));
+
+    const result = await executeWorkflow(makeInput('pick one'), {
+      bus,
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      workflowConfig: { requireUserApproval: 'auto', approvalTimeoutMs: 50 },
+    });
+
+    // plan_ready must carry human-required mode + autoDecisionAllowed=false.
+    const planReady = planReadyEvents[0] as {
+      approvalMode?: string;
+      autoDecisionAllowed?: boolean;
+    };
+    expect(planReady.approvalMode).toBe('human-required');
+    expect(planReady.autoDecisionAllowed).toBe(false);
+
+    // No auto-approval allowed in human-required mode.
+    expect(planApprovedEvents).toHaveLength(0);
+    // Backend tears the gate down with plan_rejected (auto:true) so the UI
+    // can unmount the card.
+    const rejected = planRejectedEvents[0] as { auto?: boolean; rationale?: string };
+    expect(rejected.auto).toBe(true);
+    expect(rejected.rationale).toMatch(/Human decision required/);
+
+    expect(result.status).toBe('failed');
+    expect(result.synthesizedOutput).toMatch(/Human decision required/);
+    expect(result.stepResults).toHaveLength(0);
+  });
+
+  test('human-required: explicit user approval still proceeds', async () => {
+    const humanRequiredPlan = JSON.stringify({
+      goal: 'choose one',
+      steps: [
+        {
+          id: 'step1',
+          description: 'Confirm which output you want',
+          strategy: 'llm-reasoning',
+          budgetFraction: 1.0,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      capabilities: { codeGeneration: true, structuredOutput: true },
+      generate: async () => ({ content: humanRequiredPlan, tokensUsed: { input: 10, output: 10 } }),
+    };
+    const bus = createBus();
+    const run = executeWorkflow(makeInput('choose one'), {
+      bus,
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      workflowConfig: { requireUserApproval: 'auto', approvalTimeoutMs: 30_000 },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    bus.emit('workflow:plan_approved', { taskId: 'task-exec-1' });
+    const result = await run;
+    expect(result.synthesizedOutput).not.toMatch(/Human decision required/);
   });
 });

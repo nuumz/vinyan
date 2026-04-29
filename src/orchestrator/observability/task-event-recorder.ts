@@ -70,6 +70,12 @@ export const RECORDED_EVENTS: BusEventName[] = [
   'workflow:delegate_dispatched',
   'workflow:delegate_completed',
   'workflow:delegate_timeout',
+  // Synthesis safety-net observability — persisted as raw timeline annotations
+  // so operators can audit quiet failure recoveries (LLM output compressed and
+  // overridden; planner output sanitized) in the per-task history. The
+  // historical card renders them as generic annotations, not distinct UI cards.
+  'workflow:synthesizer_compression_detected',
+  'workflow:planner_validation_warning',
   // Task lifecycle (escalation/timeout — useful for diagnostics, terminal
   // task:complete is intentionally excluded: it carries the full TaskResult
   // which we already persist in execution_traces).

@@ -407,6 +407,39 @@ export const WorkerInputSchema = z.object({
    * Empty/undefined → no cards, prompt unchanged.
    */
   loadedSkillCards: z.array(SkillCardViewSchema).optional(),
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple skills available to
+   * this task. Resolved by the orchestrator's `SimpleSkillRegistry` snapshot
+   * at dispatch time. Listed in the system prompt by `simple-skill-descriptions`
+   * so the model knows what's available.
+   */
+  simpleSkills: z
+    .array(
+      z.object({
+        name: z.string(),
+        description: z.string(),
+        body: z.string(),
+        scope: z.enum(['user', 'project']),
+        path: z.string(),
+      }),
+    )
+    .optional(),
+  /**
+   * Subset of `simpleSkills` whose body should be inlined for THIS task —
+   * decided by the orchestrator's matcher against the goal text. Renders
+   * via `simple-skill-bodies` section.
+   */
+  simpleSkillBodies: z
+    .array(
+      z.object({
+        name: z.string(),
+        description: z.string(),
+        body: z.string(),
+        scope: z.enum(['user', 'project']),
+        path: z.string(),
+      }),
+    )
+    .optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────

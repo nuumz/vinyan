@@ -7,11 +7,28 @@ import {
   approvalTimeoutMs,
   AUTO_APPROVAL_LENGTH_THRESHOLD,
   awaitApprovalDecision,
+  classifyApprovalRequirement,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   evaluateAutoApproval,
   requiresApproval,
 } from '../../../src/orchestrator/workflow/approval-gate.ts';
 import type { WorkflowPlan } from '../../../src/orchestrator/workflow/types.ts';
+
+function planWith(steps: WorkflowPlan['steps']): WorkflowPlan {
+  return { goal: 'g', steps, synthesisPrompt: 's' };
+}
+function makeStep(over: Partial<WorkflowPlan['steps'][number]>): WorkflowPlan['steps'][number] {
+  return {
+    id: 's1',
+    description: '',
+    strategy: 'llm-reasoning',
+    dependencies: [],
+    inputs: {},
+    expectedOutput: '',
+    budgetFraction: 0.5,
+    ...over,
+  };
+}
 
 describe('requiresApproval', () => {
   test('returns false when config is missing (default auto) and goal is short', () => {
@@ -37,6 +54,97 @@ describe('requiresApproval', () => {
     const justBelow = 'a'.repeat(AUTO_APPROVAL_LENGTH_THRESHOLD - 1);
     expect(requiresApproval({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, justAtThreshold)).toBe(true);
     expect(requiresApproval({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, justBelow)).toBe(false);
+  });
+});
+
+describe('classifyApprovalRequirement', () => {
+  test("returns 'none' for short clear goal in auto mode", () => {
+    const plan = planWith([makeStep({ id: 's1', description: 'list files', strategy: 'direct-tool', command: 'ls' })]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, 'list', plan),
+    ).toBe('none');
+  });
+
+  test("returns 'agent-discretion' for long clear plan in auto mode", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'knowledge-query', description: 'gather context' }),
+      makeStep({ id: 's2', strategy: 'llm-reasoning', description: 'draft outline' }),
+    ]);
+    const longGoal = 'a'.repeat(AUTO_APPROVAL_LENGTH_THRESHOLD + 1);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, longGoal, plan),
+    ).toBe('agent-discretion');
+  });
+
+  test("returns 'agent-discretion' when requireUserApproval=true and no human-only steps", () => {
+    const plan = planWith([makeStep({ id: 's1', strategy: 'llm-reasoning', description: 'analyse' })]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: true, approvalTimeoutMs: 1000 }, 'hi', plan),
+    ).toBe('agent-discretion');
+  });
+
+  test("returns 'none' when requireUserApproval=false even for risky plans", () => {
+    const plan = planWith([makeStep({ id: 's1', strategy: 'full-pipeline', description: 'refactor auth' })]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: false, approvalTimeoutMs: 1000 }, 'do', plan),
+    ).toBe('none');
+  });
+
+  test("returns 'human-required' when plan contains a human-input step", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'llm-reasoning', description: 'draft' }),
+      makeStep({ id: 's2', strategy: 'human-input', description: 'awaiting' }),
+    ]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, 'go', plan),
+    ).toBe('human-required');
+  });
+
+  test("returns 'human-required' for English choose/confirm/decide descriptions", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'llm-reasoning', description: 'Please confirm which option you want to proceed with' }),
+    ]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, 'go', plan),
+    ).toBe('human-required');
+  });
+
+  test("returns 'human-required' for Thai 'ตรงกับที่อยากได้ไหม' (does this match what you wanted?) description", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'llm-reasoning', description: 'ตรงกับที่อยากได้ไหม' }),
+    ]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, 'ทำงาน', plan),
+    ).toBe('human-required');
+  });
+
+  test("returns 'human-required' for Thai 'ให้เลือก' (choose) / 'ตัดสินใจ' (decide) decision steps", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'llm-reasoning', description: 'ให้เลือกวิธีที่ต้องการ' }),
+      makeStep({ id: 's2', strategy: 'llm-reasoning', description: 'ขั้นตอนต่อไป', expectedOutput: 'ตัดสินใจ' }),
+    ]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: 'auto', approvalTimeoutMs: 1000 }, 'ทำงาน', plan),
+    ).toBe('human-required');
+  });
+
+  test("'human-required' overrides requireUserApproval=true (still wait for human, just no auto-decide)", () => {
+    const plan = planWith([
+      makeStep({ id: 's1', strategy: 'human-input', description: 'awaiting' }),
+    ]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: true, approvalTimeoutMs: 1000 }, 'go', plan),
+    ).toBe('human-required');
+  });
+
+  test("requireUserApproval=false short-circuits human-only marker (operator opted out)", () => {
+    // Defensive: if the operator has explicitly disabled the gate, we honor
+    // it. The classifier only forces human-required when SOME approval was
+    // already going to happen.
+    const plan = planWith([makeStep({ id: 's1', strategy: 'human-input', description: 'choose one' })]);
+    expect(
+      classifyApprovalRequirement({ requireUserApproval: false, approvalTimeoutMs: 1000 }, 'go', plan),
+    ).toBe('none');
   });
 });
 

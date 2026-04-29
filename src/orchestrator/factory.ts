@@ -66,6 +66,11 @@ import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
+import { buildSyncSkillResolver } from '../skills/sync-skill-resolver.ts';
+import {
+  createSimpleSkillRegistry,
+  type SimpleSkillRegistry,
+} from '../skills/simple/registry.ts';
 import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
 import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
 import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
@@ -1546,24 +1551,74 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // + Round F: `.claude/agents/<id>/AGENT.md` markdown loader for Claude Code
   // drop-in compat). vinyan.json wins on id conflict — markdown loader merges
   // first, then config agents override.
+  //
+  // Pre-resolve skills synchronously so `getDerivedCapabilities` can compose
+  // base + bound + acquired skills into the persona's effective claim list.
+  // Without this, `loadedSkills` stays empty and skill bodies never reach
+  // the LLM prompt — the smoking gun that kept the entire skill subsystem
+  // inert across Phases 1-15.5.
+  const skillResolverResult = buildSyncSkillResolver(join(workspace, '.vinyan', 'skills'));
+  if (skillResolverResult.loadedCount > 0) {
+    console.log(
+      `[vinyan] Skill resolver: ${skillResolverResult.loadedCount} skill(s) loaded from .vinyan/skills/`,
+    );
+  }
+  if (skillResolverResult.failedIds.length > 0) {
+    console.warn(
+      `[vinyan] Skill resolver: ${skillResolverResult.failedIds.length} skill(s) failed to parse: ${skillResolverResult.failedIds.join(', ')}`,
+    );
+  }
+  const registryOptions = {
+    skillResolver: skillResolverResult.resolver,
+    enableSkillComposition: true,
+  };
   let agentRegistry: ReturnType<typeof loadAgentRegistry> | undefined;
   try {
     const vinyanCfg = loadConfig(workspace);
     const mdScan = scanAgentMarkdown(workspace);
     const mergedConfigs: AgentSpecConfig[] = [...mdScan.entries.map((e) => e.config), ...(vinyanCfg.agents ?? [])];
-    agentRegistry = loadAgentRegistry(workspace, mergedConfigs, soulsByIdFrom(mdScan.entries));
+    agentRegistry = loadAgentRegistry(workspace, mergedConfigs, soulsByIdFrom(mdScan.entries), registryOptions);
     if (mdScan.entries.length > 0) {
       console.log(`[vinyan] Agent registry: ${mdScan.entries.length} agent(s) loaded from .claude/agents/`);
     }
   } catch (err) {
     console.warn('[vinyan] Agent registry load failed, using built-in defaults:', err);
-    agentRegistry = loadAgentRegistry(workspace, undefined);
+    agentRegistry = loadAgentRegistry(workspace, undefined, undefined, registryOptions);
   }
   // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
   if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
   // Phase-6: hand the worker pool the runtime skill acquirer so it can fill
   // persona capability gaps from the local artifact store before dispatch.
   workerPool.setSkillAcquirer(skillAcquirer);
+
+  // Hybrid skill redesign — Claude-Code-style simple skill layer. Default
+  // mode='simple' surfaces dropped-in `~/.vinyan/skills/<name>/SKILL.md`
+  // files immediately in the system prompt without going through the heavy
+  // ACL/tier/auction pipeline. mode='epistemic' disables this layer in favor
+  // of the historical stack; mode='both' keeps both active. The watcher
+  // self-refreshes the registry as files change.
+  const skillsCfg = (loadConfig(workspace) as { skills?: { mode?: string; simple?: { enabled?: boolean; user_dir?: string; project_dir?: string; watcher_debounce_ms?: number; match_threshold?: number; match_top_k?: number } } }).skills;
+  const skillsMode = skillsCfg?.mode ?? 'simple';
+  const simpleEnabled = skillsCfg?.simple?.enabled ?? true;
+  let simpleSkillRegistry: SimpleSkillRegistry | undefined;
+  if (simpleEnabled && (skillsMode === 'simple' || skillsMode === 'both')) {
+    simpleSkillRegistry = createSimpleSkillRegistry({
+      workspace,
+      ...(skillsCfg?.simple?.user_dir !== undefined ? { userSkillsDir: skillsCfg.simple.user_dir } : {}),
+      ...(skillsCfg?.simple?.project_dir !== undefined ? { projectSkillsDir: skillsCfg.simple.project_dir } : {}),
+      ...(skillsCfg?.simple?.watcher_debounce_ms !== undefined ? { watcherDebounceMs: skillsCfg.simple.watcher_debounce_ms } : {}),
+      watch: true,
+    });
+    const matcherOpts: { threshold?: number; topK?: number } = {};
+    if (skillsCfg?.simple?.match_threshold !== undefined) matcherOpts.threshold = skillsCfg.simple.match_threshold;
+    if (skillsCfg?.simple?.match_top_k !== undefined) matcherOpts.topK = skillsCfg.simple.match_top_k;
+    workerPool.setSimpleSkillRegistry(simpleSkillRegistry, matcherOpts);
+    if (simpleSkillRegistry.getAll().length > 0) {
+      console.log(
+        `[vinyan] Simple skills: ${simpleSkillRegistry.getAll().length} loaded (mode='${skillsMode}'). Matcher: threshold=${matcherOpts.threshold ?? 0.15} topK=${matcherOpts.topK ?? 3}.`,
+      );
+    }
+  }
 
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
@@ -1598,6 +1653,32 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       });
     } catch {
       /* tier graduation wiring is best-effort — startup proceeds without it */
+    }
+  }
+
+  // Hybrid skill redesign — wire the simple → heavy bridge when mode='both'.
+  // Both layers must be active for graduation to make sense: 'simple' alone
+  // has no heavy stack to promote into; 'epistemic' alone has no simple
+  // skills to source from. The promoter runs every sleep cycle.
+  if (
+    sleepCycleRunner &&
+    skillOutcomeStore &&
+    db &&
+    simpleSkillRegistry &&
+    skillsMode === 'both'
+  ) {
+    try {
+      const bridgeArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+      const bridgeLedger = new SkillTrustLedgerStore(db.getDb());
+      sleepCycleRunner.setSimpleSkillPromoter({
+        registry: simpleSkillRegistry,
+        outcomeStore: skillOutcomeStore,
+        artifactStore: bridgeArtifactStore,
+        ledger: bridgeLedger,
+        profile: 'default',
+      });
+    } catch {
+      /* bridge wiring is best-effort — startup proceeds without it */
     }
   }
 
@@ -2316,6 +2397,30 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     );
   }
 
+  // Hybrid skill redesign — track simple-skill invocations per task. The
+  // worker-pool emits `skill:simple_invoked` for every body inlined into a
+  // task's prompt; we accumulate names in a per-task set so the executeTask
+  // wrapper can record outcomes at task completion. Pure in-memory; cleared
+  // after the outcome record is written.
+  const simpleSkillInvocations = new Map<string, Set<string>>();
+  trackBusListener(
+    bus.on(
+      'skill:simple_invoked',
+      ({ taskId, skillName }: { taskId: string; skillName: string }) => {
+        try {
+          let set = simpleSkillInvocations.get(taskId);
+          if (!set) {
+            set = new Set<string>();
+            simpleSkillInvocations.set(taskId, set);
+          }
+          set.add(skillName);
+        } catch {
+          /* observational */
+        }
+      },
+    ),
+  );
+
   const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
@@ -2352,6 +2457,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         } catch {
           /* outcome recording is observational; never fail the task on it */
         }
+      }
+
+      // Hybrid skill redesign — record outcomes for any simple-layer skill
+      // body that was inlined for this task. Feeds `SkillOutcomeStore` so the
+      // bridge (Phase 5) can promote skills with sufficient evidence.
+      if (deps.skillOutcomeStore) {
+        const invoked = simpleSkillInvocations.get(input.id);
+        if (invoked && invoked.size > 0) {
+          try {
+            const { recordSimpleSkillOutcomes } = await import('./agents/task-outcome-recorder.ts');
+            recordSimpleSkillOutcomes(input, result, invoked, deps.skillOutcomeStore);
+          } catch {
+            /* outcome recording is observational; never fail the task on it */
+          }
+        }
+        simpleSkillInvocations.delete(input.id);
       }
 
       // Phase-11: overclaim comparator (M1). Compares the persona's

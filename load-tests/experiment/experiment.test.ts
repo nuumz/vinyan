@@ -18,6 +18,8 @@ import { cpSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { type GateRequest, runGate } from '../../src/gate/index.ts';
+import { clearGateDeps } from '../../src/gate/gate.ts';
+import { clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 import { CODING_TASKS, type CodingTask, TASK_COUNT } from './tasks.ts';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -71,6 +73,11 @@ function getExperimentConcurrency(): number {
 const EXPERIMENT_CONCURRENCY = getExperimentConcurrency();
 
 beforeAll(() => {
+  // Clear any stale gate deps that may have been injected by other test files
+  // (e.g. orchestrator factory tests that call setGateDeps with a real SQLite store).
+  // Without this, runGate() would try to use the stale oracleAccuracyStore from a
+  // now-closed database, causing a disk I/O error.
+  clearGateDeps();
   tempRoot = join(tmpdir(), `vinyan-experiment-${Date.now()}`);
   mkdirSync(tempRoot, { recursive: true });
 });
@@ -114,6 +121,12 @@ async function evaluateTask(task: CodingTask): Promise<TaskResult> {
     if (task.correctMutation.file !== task.incorrectMutation.file) {
       rmSync(incorrectPath, { force: true });
     }
+
+    // Clear the tsc dedup cache between the incorrect and correct runs.
+    // Both runs share the same workspace path, so without this the second runGate
+    // call would reuse the cached tsc result from the first run (within the 5s
+    // dedup window), causing a false positive when the correct mutation is clean.
+    clearTscCache();
 
     const correctPath = join(workspace, task.correctMutation.file);
     writeFileSync(correctPath, task.correctMutation.content);

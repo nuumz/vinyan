@@ -88,6 +88,42 @@ export interface CriticContext {
     magnitude: 'aligned' | 'minor' | 'severe';
     direction: 'aligned' | 'overconfident' | 'underconfident';
   };
+  /**
+   * C1: Historical adversary — aggregated failed approaches for the current
+   * task signature, surfaced into the critic's user prompt as `[HISTORICAL
+   * EVIDENCE]`. Populated by `buildHistoricalAdversaryContext()` in
+   * `historical-adversary.ts`. When present and non-empty, the critic is
+   * instructed to flag any proposal that repeats a listed approach.
+   *
+   * A1-safe: data threaded by the orchestrator from the read-only memory
+   * surface (`AgentMemoryAPI`); the critic still produces an independent
+   * verdict. Off-by-default — orchestrators that do not opt in see no
+   * behavior change.
+   */
+  priorFailedApproaches?: ReadonlyArray<{
+    /** Compact descriptor (e.g. "agentic-workflow:llm-reasoning,llm-reasoning"). */
+    approach: string;
+    /** Discriminator that classified the failure (e.g. "workflow-deadlock"). */
+    failureOracle: string;
+    /** Times this (approach, failureOracle) appeared in the queried window. */
+    occurrences: number;
+    /** Most recent observation timestamp — used for recency framing. */
+    lastSeenAt: number;
+  }>;
+  /**
+   * C1: aggregate outcome counts for prior traces with the same task
+   * signature. Lets the critic anchor on base-rate ("4/12 succeeded last
+   * time we tried this") rather than evaluating in isolation. Optional —
+   * falls back gracefully when traces are unavailable or the task type
+   * has no prior runs.
+   */
+  priorTraceSummary?: {
+    totalAttempts: number;
+    successCount: number;
+    failureCount: number;
+    /** Most common routing level reached across prior attempts (0..3). */
+    mostCommonEscalation?: number;
+  };
 }
 
 /** CriticEngine interface — implemented by LLMCriticImpl */

@@ -131,22 +131,21 @@ function rowToRecord(row: SkillOutcomeRow): SkillOutcomeRecord {
 }
 
 /**
- * Fan one task outcome out to every loaded skill on a persona-aware bid.
+ * Fan one task outcome out to a persona-aware bid's loaded skills.
  *
  * Phase-3 schema enables per-(persona, skill, taskSig) attribution; Phase-4
- * autonomous skill creator will read this signal to trigger drafts. The
- * helper exists at the db layer so settlement / phase-learn callers can wire
- * it without re-deriving the loadout themselves — they pass the bid (which
- * already carries `personaId` + `loadedSkillIds`), the task signature, and
- * the outcome.
+ * autonomous skill creator reads this signal to trigger drafts.
  *
- * No-op when `personaId` is absent or `loadedSkillIds` is empty. This makes
- * the helper safe to call unconditionally — legacy non-persona bids do not
- * record anything, no errors emitted.
+ * Phase-15 (M2 closure): when `viewedSkillIds` is supplied AND non-empty,
+ * credit only the intersection of loaded ∩ viewed — skills the LLM didn't
+ * touch via `skill_view` get nothing. When the viewed set is undefined or
+ * empty, fall back to legacy equal-credit fan-out across every loaded
+ * skill. The fallback matters: a skill consumed via L0 catalog never fires
+ * `skill_view`, so an empty viewed set is the "we don't have a usage signal"
+ * state, NOT "the LLM used nothing." Treating empty as zero credit would
+ * silently zero out attribution on every legacy task.
  *
- * Equal credit: every loaded skill receives the same outcome counter. A more
- * accurate per-skill attribution scheme (only credit skills whose `whenToUse`
- * fingerprint matched the task) is a Phase-4 refinement — risk M2.
+ * No-op when `personaId` is absent or `loadedSkillIds` is empty.
  */
 export interface PersonaBidLike {
   personaId?: string;
@@ -158,13 +157,18 @@ export function recordSkillOutcomesFromBid(
   bid: PersonaBidLike,
   taskSignature: string,
   outcome: SkillOutcome,
+  viewedSkillIds?: ReadonlySet<string>,
   now = Date.now(),
 ): number {
   const personaId = bid.personaId;
-  const skills = bid.loadedSkillIds ?? [];
-  if (!personaId || skills.length === 0) return 0;
-  for (const skillId of skills) {
+  const loaded = bid.loadedSkillIds ?? [];
+  if (!personaId || loaded.length === 0) return 0;
+  // Phase-15: when viewed set has entries, credit only the intersection.
+  // Empty/undefined viewed → legacy equal-credit fan-out (see WHY above).
+  const useFiltered = viewedSkillIds !== undefined && viewedSkillIds.size > 0;
+  const credited = useFiltered ? loaded.filter((id) => viewedSkillIds!.has(id)) : loaded;
+  for (const skillId of credited) {
     store.recordOutcome({ personaId, skillId, taskSignature }, outcome, now);
   }
-  return skills.length;
+  return credited.length;
 }

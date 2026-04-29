@@ -22,7 +22,7 @@ import { join } from 'path';
 import type { Fact } from '../../src/core/types.ts';
 import { verify as verifyAst } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
-import { verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
+import { clearTscCache, verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 describe('World Graph Lifecycle', () => {
@@ -369,6 +369,7 @@ export function multiply(x: number, y: number): number {
     const mathPath = join(tempDir, 'math.ts');
 
     // Step 1: type-check passes
+    clearTscCache();
     const typeV1 = await verifyType({
       target: 'math.ts',
       pattern: 'type-check',
@@ -408,6 +409,8 @@ export function multiply(x: number, y: number): number {
     expect(graph.queryFacts('math.ts')).toHaveLength(0);
 
     // Step 4: re-run type-check — should now fail (utils.ts calls add(acc, v) with 2 args)
+    // Clear tsc dedup cache so the post-mutation run isn't served from the pre-mutation result.
+    clearTscCache();
     const typeV2 = await verifyType({
       target: '',
       pattern: 'type-check',

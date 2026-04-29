@@ -362,15 +362,22 @@ describe('Oracle Gate Benchmark', () => {
       expect(verdict.verified).toBe(false);
     });
 
-    test('type-oracle via child process: clean workspace passes', async () => {
-      const hypothesis: HypothesisTuple = {
-        target: '',
-        pattern: 'type-check',
-        workspace: workspaceDir,
-      };
-      const verdict = await runOracle('type-oracle', hypothesis);
-      expect(verdict.verified).toBe(true);
-    });
+    test(
+      'type-oracle via child process: clean workspace passes',
+      async () => {
+        const hypothesis: HypothesisTuple = {
+          target: '',
+          pattern: 'type-check',
+          workspace: workspaceDir,
+        };
+        const verdict = await runOracle('type-oracle', hypothesis);
+        expect(verdict.verified).toBe(true);
+      },
+      // Two layers of process boot (bun → oracle entry → tsc) on a workspace with no
+      // tsbuildinfo cache realistically takes ~5–10s. runOracle itself defaults to a
+      // 30s timeout; mirror that here so the test passes under bun's 5s default.
+      30_000,
+    );
 
     test('dep-oracle via child process: reports blast radius', async () => {
       const hypothesis: HypothesisTuple = {

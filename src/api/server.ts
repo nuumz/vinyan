@@ -15,9 +15,11 @@ import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import type { RuleStore } from '../db/rule-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
+import { buildDecisionReplay } from '../db/governance-query.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
+import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
@@ -55,6 +57,8 @@ export interface APIServerDeps {
   engineRegistry?: import('../orchestrator/llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  /** A9 / T4 — operator visibility surface for `/api/v1/health/degradation`. */
+  degradationStatus?: DegradationStatusTracker;
   a2aManager?: A2AManagerImpl;
   /** Oracle runner for WebSocket ECP endpoint (PH5.18). */
   runOracle?: (oracleName: string, hypothesis: unknown, options?: RunOracleOptions) => Promise<unknown>;
@@ -552,6 +556,15 @@ export class VinyanAPIServer {
       return this.handleListTraces(req);
     }
 
+    if (method === 'GET' && path === '/api/v1/governance/search') {
+      return this.handleGovernanceSearch(req);
+    }
+
+    if (method === 'GET' && path.match(/^\/api\/v1\/governance\/decisions\/[^/]+\/replay$/)) {
+      const decisionId = decodeURIComponent(path.split('/')[5]!);
+      return this.handleGovernanceReplay(decisionId);
+    }
+
     if (method === 'GET' && path === '/api/v1/memory') {
       return this.handleListMemory();
     }
@@ -689,9 +702,29 @@ export class VinyanAPIServer {
     }
 
     // Default: Prometheus text exposition format
-    return new Response(renderPrometheus(metrics, counters), {
+    const statusSnapshot = this.deps.degradationStatus?.snapshot();
+    return new Response(renderPrometheus(metrics, counters, statusSnapshot), {
       headers: { 'Content-Type': 'text/plain; version=0.0.4' },
     });
+  }
+
+  // ── A9 / T4: Degradation health surface ──────────────────
+
+  /**
+   * Returns the live operator view of degraded components. Status:
+   *   - `healthy`         when no entries are tracked
+   *   - `degraded`        when any fail-open entries are tracked
+   *   - `partial-outage`  when a fail-closed entry is tracked
+   */
+  private handleDegradationHealth(): Response {
+    if (!this.deps.degradationStatus) {
+      return jsonResponse({ status: 'unavailable', reason: 'degradation tracker not wired' }, 503);
+    }
+    const snapshot = this.deps.degradationStatus.snapshot();
+    let status: 'healthy' | 'degraded' | 'partial-outage' = 'healthy';
+    if (snapshot.failClosedCount > 0) status = 'partial-outage';
+    else if (snapshot.total > 0) status = 'degraded';
+    return jsonResponse({ status, snapshot });
   }
 
   // ── A2A Handler ──────────────────────────────────────────
@@ -1777,6 +1810,49 @@ export class VinyanAPIServer {
       total: store.count(),
     });
   }
+
+  /**
+   * A8 / T2 — search persisted governance decisions by facet.
+   * Query params: decisionId, policyVersion, actor, from, to, limit, offset.
+   * Legacy traces with no provenance are surfaced as `availability:'unavailable'`.
+   */
+  private handleGovernanceSearch(req: Request): Response {
+    const store = this.deps.traceStore;
+    if (!store) {
+      return jsonResponse({ rows: [], total: 0, limit: 0, offset: 0 });
+    }
+    const url = new URL(req.url);
+    const num = (key: string): number | undefined => {
+      const raw = url.searchParams.get(key);
+      if (raw == null || raw === '') return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const result = store.queryGovernance({
+      decisionId: url.searchParams.get('decisionId') ?? undefined,
+      policyVersion: url.searchParams.get('policyVersion') ?? undefined,
+      governanceActor: url.searchParams.get('actor') ?? undefined,
+      decisionFrom: num('from'),
+      decisionTo: num('to'),
+      limit: num('limit'),
+      offset: num('offset'),
+    });
+    return jsonResponse(result);
+  }
+
+  /**
+   * A8 / T2 — replay a single governance decision id, returning the persisted
+   * provenance envelope plus persisted confidence (never recomputed).
+   */
+  private handleGovernanceReplay(decisionId: string): Response {
+    const store = this.deps.traceStore;
+    if (!store) return jsonResponse({ error: 'trace store unavailable' }, 503);
+    if (!decisionId) return jsonResponse({ error: 'decisionId is required' }, 400);
+    const trace = store.findTraceByDecisionId(decisionId);
+    if (!trace) return jsonResponse({ error: 'decision not found', decisionId }, 404);
+    return jsonResponse(buildDecisionReplay(decisionId, trace));
+  }
+
 
   private async handleListMemory(): Promise<Response> {
     const workspace = this.deps.workspace;

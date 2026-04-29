@@ -102,7 +102,7 @@ describe('Phase-5A loop-closure integration', () => {
       // Mirrors the factory's executeTask wrapper invocation.
       const input = makeInput('refactor src/foo.ts');
       const result = makeResult('completed');
-      const summary = recordTaskOutcomeForPersona(input, result, reg, store, 1000);
+      const summary = recordTaskOutcomeForPersona(input, result, reg, store, undefined, 1000);
 
       expect(summary.skillsRecorded).toBe(2);
       expect(summary.outcome).toBe('success');
@@ -135,6 +135,7 @@ describe('Phase-5A loop-closure integration', () => {
         makeResult('failed'),
         reg,
         store,
+        undefined,
         1000,
       );
       expect(summary.outcome).toBe('failure');
@@ -171,10 +172,10 @@ describe('Phase-5A loop-closure integration', () => {
     try {
       const input = makeInput('refactor src/foo.ts');
       for (let i = 0; i < 5; i++) {
-        recordTaskOutcomeForPersona(input, makeResult('completed'), reg, store, 1000 + i);
+        recordTaskOutcomeForPersona(input, makeResult('completed'), reg, store, undefined, 1000 + i);
       }
       for (let i = 0; i < 2; i++) {
-        recordTaskOutcomeForPersona(input, makeResult('failed'), reg, store, 2000 + i);
+        recordTaskOutcomeForPersona(input, makeResult('failed'), reg, store, undefined, 2000 + i);
       }
       const row = store.getOutcome({
         personaId: 'developer',

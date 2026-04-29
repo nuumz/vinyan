@@ -1,15 +1,17 @@
 # A8/A9/A10 Future Hardening Task Plan
-**Status:** Future backlog · **Owner:** Vinyan Core · **Created:** 2026-04-28 · **Last verified:** 2026-04-29
+**Status:** Mixed: T1/T3 baseline closed; T2/T4/T5/T6/T7 backlog · **Owner:** Vinyan Core · **Created:** 2026-04-28 · **Last verified:** 2026-04-29
 
 > **Document boundary:** This document owns only the future hardening backlog for proposed A8/A9/A10 extensions. Current implementation status is summarized here only to separate shipped scope from future work; source code and focused tests remain the source of truth.
 
-This document is a backlog boundary, not a current-plan blocker. The concrete A5/A8/A9/A10 implementation slices are complete under the current scope. The tasks below describe broader hardening work that can be promoted into a new bounded implementation plan later.
+This document is a backlog boundary, not a current-plan blocker. T1 and the bounded T3 baseline have been promoted, implemented, and closed. The remaining task groups below describe broader hardening work that can be promoted into new bounded implementation plans later.
 
 ## Current Closure Snapshot
 
 | Scope | Recheck result |
 |---|---|
 | A5/A8/A9/A10 + Gap C current slices | Focused suite passed on 2026-04-29; no diagnostic errors found in touched docs/tests. |
+| T1 A8 provenance coverage | Closed on 2026-04-29; see [a8-provenance-coverage-audit.md](a8-provenance-coverage-audit.md). |
+| T3 A9 fail-open/fail-closed baseline | Closed on 2026-04-29 as an observability + tests slice; see [a9-degradation-contract.md](a9-degradation-contract.md). |
 | Adjacent concurrent Phase-14 slices | Focused runtime wiring/tests passed; one remote skill import path remains hook-only unless an importer plus discovery hook is supplied. |
 | Full repository sweep | Known unrelated load/benchmark/smoke/gate failures remain outside this plan and do not change this backlog boundary. |
 
@@ -17,8 +19,8 @@ This document is a backlog boundary, not a current-plan blocker. The concrete A5
 
 | Area | Current implemented scope | Future hardening scope |
 |---|---|---|
-| A8 Traceable Accountability | Governance provenance envelope, SQLite persistence, routed/short-circuit trace coverage, A10 clarification provenance, goal-loop escalation provenance, escalationPath accumulation | Broader decision-level provenance coverage, stricter enforcement policy, query/report tooling |
-| A9 Resilient Degradation | Degradation event contract, factory bridge wiring, trace-store/provenance fail-closed behavior, tool/drafting/failure-class bridges | More explicit fail-open vs fail-closed matrix, subsystem SLOs, chaos/fault-injection coverage |
+| A8 Traceable Accountability | Governance provenance envelope, SQLite persistence, routed/short-circuit trace coverage, A10 clarification provenance, goal-loop escalation provenance, escalationPath accumulation, terminal verification provenance coverage for T1 gaps | Query/replay tooling and operator reporting |
+| A9 Resilient Degradation | Degradation event contract, factory bridge wiring, trace-store/provenance fail-closed behavior, tool/drafting/failure-class bridges, baseline fail-open/fail-closed matrix, cost-ledger fail-open fault-injection coverage | SLOs, circuit policy, broader chaos/fault-injection coverage, mutation-apply failure contract, optional degradation-event coverage for currently silent best-effort stores |
 | A10 Goal-and-Time Grounding | Phase-boundary checks, clarification pause on drift, temporal confidence downgrade, deterministic clock, root/current goal separation, token-Jaccard drift detection | Runtime re-grounding actions beyond clarify/downgrade, operator policy knobs, longitudinal drift analytics |
 
 ## Non-Goals
@@ -31,6 +33,8 @@ This document is a backlog boundary, not a current-plan blocker. The concrete A5
 ## Task Groups
 
 ### T1 — A8 provenance coverage audit and enforcement matrix
+
+**Status:** Closed. Authoritative closure doc: [a8-provenance-coverage-audit.md](a8-provenance-coverage-audit.md).
 
 **Goal:** Make every governance-relevant decision either provenance-bearing or explicitly exempt.
 
@@ -59,18 +63,32 @@ This document is a backlog boundary, not a current-plan blocker. The concrete A5
 
 ### T3 — A9 fail-open/fail-closed policy matrix
 
+**Status:** Baseline closed. Authoritative contract doc: [a9-degradation-contract.md](a9-degradation-contract.md).
+
+The implemented slice documents the current per-subsystem policy contract and adds fail-open fault-injection coverage for cost-ledger persistence. It intentionally does not change runtime behavior. Remaining T3 follow-ups are tracked as T3.b below.
+
 **Goal:** Replace implicit best-effort choices with an explicit degradation contract per subsystem.
 
 | Failure class | Initial policy candidate | Acceptance criteria |
 |---|---|---|
 | Trace persistence for governance traces | Fail closed | Already implemented; document as baseline. |
 | Trace persistence for non-governance traces | Warn/degrade open | Confirm no task success depends on durable non-governance trace writes. |
-| Cost/economy accounting | Degrade open | Failure emits degradation event and never blocks task result. |
+| Cost/economy accounting | Degrade open | Failure never blocks task result; current behavior is silent fail-open with the in-memory cache as the authoritative read path. Optional degradation-event emission is deferred. |
 | Shadow validation | Degrade open | Failure emits normalized degradation event and preserves committed result state. |
-| Tool mutation failure after verification | Usually fail closed or partial | Define per tool category; add tests for unsafe write failure. |
-| Session/chat persistence | Case-by-case | Define whether user-visible state loss blocks completion. |
+| Tool mutation failure after verification | Usually fail closed or partial | Deferred to T3.b: define per tool category; add tests for unsafe write failure. |
+| Session/chat persistence | Case-by-case | Baseline contract documented as fail-open; isolated fault-injection is deferred. |
 
-**Tests:** Add fault-injection tests for one fail-open and one fail-closed subsystem beyond trace-store.
+**Tests:** Baseline slice covers one fail-open subsystem beyond trace-store ([cost-ledger-degradation.test.ts](../../tests/economy/cost-ledger-degradation.test.ts)); fail-closed beyond trace-store is already covered by terminal verification tests from T1.
+
+### T3.b — A9 degradation contract follow-ups
+
+**Status:** Future backlog.
+
+| Item | Acceptance criteria |
+|---|---|
+| Mutation-apply failure policy | Define per-tool-category fail-open/fail-closed behavior and add an unsafe-write failure test. |
+| Silent best-effort stores | Decide whether cost-ledger and session/chat persistence should emit normalized degradation events, or remain local silent fail-open. |
+| Session/chat fault injection | Add isolated tests proving user-visible task completion is not blocked by session/chat write loss. |
 
 ### T4 — A9 SLO and circuit-breaker hardening
 
@@ -120,11 +138,11 @@ This document is a backlog boundary, not a current-plan blocker. The concrete A5
 
 ## Suggested Execution Order
 
-1. T1 A8 coverage/enforcement matrix.
-2. T3 A9 fail-open/fail-closed matrix.
+1. ✅ T1 A8 coverage/enforcement matrix.
+2. ✅ T3 A9 fail-open/fail-closed baseline.
 3. T5 A10 action expansion.
 4. T2/T4/T6 operational tooling and analytics.
-5. T7 cleanup after behavior stabilizes.
+5. T3.b/T7 cleanup and remaining hardening after behavior stabilizes.
 
 ## Promotion Criteria For Starting Implementation
 

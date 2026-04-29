@@ -202,6 +202,13 @@ export interface WorkerResult {
    * grade (A7). Optional — not all worker types or older agents emit it.
    */
   selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] };
+  /**
+   * Worker indicated it's uncertain about the outcome — fed by the
+   * empty-output gate in `phase-generate.ts` to refuse pass-through to
+   * verify when no mutations and no content were produced. Optional;
+   * absent on legacy workers that never set the flag.
+   */
+  isUncertain?: boolean;
 }
 
 export interface VerificationResult {

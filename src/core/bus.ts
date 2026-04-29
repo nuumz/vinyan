@@ -72,6 +72,17 @@ export interface VinyanBusEvents {
   'trace:record': { trace: ExecutionTrace };
   'trace:write_failed': { taskId: string; traceId: string; error: string };
   'grounding:checked': GoalGroundingCheck;
+  /**
+   * A10 / T6 \u2014 emitted when the goal-grounding boundary takes a runtime
+   * action beyond plain confidence downgrade. Carries the action label and
+   * the underlying check for observability.
+   */
+  'grounding:action_taken': {
+    taskId: string;
+    action: GoalGroundingCheck['action'];
+    phase: GoalGroundingCheck['phase'];
+    reason: string;
+  };
 
   // Worker lifecycle
   'worker:complete': { taskId: string; output: WorkerOutput; durationMs: number };
@@ -212,7 +223,10 @@ export interface VinyanBusEvents {
       | 'rate-limit'
       | 'peer-unavailable'
       | 'trace-store-write-failure'
-      | 'budget-pressure';
+      | 'budget-pressure'
+      | 'economy-accounting-failure'
+      | 'session-persistence-failure'
+      | 'mutation-apply-failure';
     component: string;
     action: 'retry' | 'fallback' | 'degrade' | 'fail-closed' | 'escalate';
     capabilityImpact: 'none' | 'reduced' | 'blocked';
@@ -222,6 +236,32 @@ export interface VinyanBusEvents {
     reason: string;
     sourceEvent: string;
     occurredAt: number;
+  };
+
+  /**
+   * A9 — economy accounting failure (cost write / ledger update fails).
+   * Emitted when cost recording cannot be persisted; degrades open by default
+   * because billing-side observability is best-effort, but feeds the
+   * degradation tracker so operators can see correlated outages.
+   */
+  'economy:accounting_failed': { taskId?: string; reason: string };
+
+  /**
+   * A9 — session/chat persistence failure (session row insert/update fails).
+   * Degrades open: chat UX should not crash on transient write errors.
+   */
+  'session:persistence_failed': { sessionId?: string; reason: string };
+
+  /**
+   * A9 — mutation-apply failure (write/destructive workspace tool failed
+   * after classification). Distinct from `tool:failure_classified` because
+   * fail-closed semantics anchor here per the A9 policy matrix.
+   */
+  'tool:mutation_failed': {
+    taskId?: string;
+    toolName: string;
+    category: 'write' | 'destructive';
+    reason: string;
   };
 
   /**
@@ -1024,6 +1064,21 @@ export interface VinyanBusEvents {
     stepId: string;
     generatorAgentId: string | null;
     verifierAgentId: string;
+  };
+
+  /**
+   * Wall-clock cap fired on a `delegate-sub-agent` step. Without this guard
+   * a free-tier 429 retry loop inside the sub-agent could hang the entire
+   * workflow indefinitely — incident: session ede9e9e1 sat for 40 min after
+   * 3 delegates stalled with no honest failure. Step is then marked failed
+   * and the executor proceeds (skipping dependents, surfacing partial
+   * results via the honesty fast-path).
+   */
+  'workflow:delegate_timeout': {
+    taskId: string;
+    stepId: string;
+    agentId: string | null;
+    timeoutMs: number;
   };
 
   /**

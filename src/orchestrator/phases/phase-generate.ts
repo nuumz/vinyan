@@ -358,6 +358,24 @@ export async function executeGeneratePhase(
       return Phase.retry();
     }
 
+    // Empty-output gate (all task types): when the worker reports uncertain
+    // AND produced neither mutations nor content, the orchestrator must NOT
+    // pass this through to verify-and-succeed — that would surface as a fake
+    // `completed` task with no output (the smoke test's "done but not works"
+    // bias). This typically fires on subprocess timeout/crash or budget
+    // exhaustion before the first turn returned.
+    if (
+      workerResult.isUncertain &&
+      workerResult.mutations.length === 0 &&
+      !workerResult.proposedContent?.trim()
+    ) {
+      workingMemory.recordFailedApproach(
+        `Empty output at L${routing.level} (uncertain, no mutations, no content)`,
+        'answer-quality-gate',
+      );
+      return Phase.retry();
+    }
+
     // A1 Reasoning quality gate: deterministic post-generation checks.
     if (input.taskType === 'reasoning' && workerResult.proposedContent) {
       // Check 1: Instruction echo detection

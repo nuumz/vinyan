@@ -1,10 +1,23 @@
 # Spec Phase for Non-Code Tasks — Design Doc
 
-**Status:** Draft (RFC) · **Owner:** Vinyan Core · **Created:** 2026-04-28
+**Status:** Implemented closure · **Owner:** Vinyan Core · **Created:** 2026-04-28 · **Closed:** 2026-04-29
 
-Closes Gap C from the Task-Accountability sweep (slice 4 follow-up). This doc
-**does not** introduce code. It exists so a reviewer can sign off on the
-contract before we touch `phase-spec.ts`.
+Closes Gap C from the Task-Accountability sweep (slice 4 follow-up).
+
+> **Document boundary:** This document owns the non-code Spec phase contract and the implementation decisions for the reasoning variant. Current runtime behavior lives in `phase-spec.ts`, `spec-artifact.ts`, and the verification phase; this doc explains the contract and records deviations from the original RFC.
+
+## 0. Implementation Closure
+
+The bounded Gap C slice is implemented and verified in the focused A5/A8/A9/A10 + Gap C suite on 2026-04-29.
+
+| Decision | Final state |
+|---|---|
+| Schema discriminator | Implemented as a `code` / `reasoning` discriminated union, with missing `variant` defaulting to `code` for backwards compatibility. |
+| Gate threshold | Implemented: non-code reasoning/planning/analysis tasks enter Spec at L2+, with explicit task constraints still able to force the phase. |
+| Variant placement | Implemented in the Spec phase and SpecArtifact parsing layer rather than a new module. |
+| Verification strategy | Implemented through spec-derived acceptance criteria/constraints plus the existing verification hint path. The Verify phase attaches `understanding` and `targetFiles`, allowing the goal-alignment verifier and critic path to evaluate reasoning outputs without introducing a new oracle family. |
+
+The original RFC text below remains as design rationale; the status above is authoritative for current scope.
 
 ---
 
@@ -144,7 +157,7 @@ does via `RE registry` capability matching).
 | 3. Add `selectSpecVariant()` + extend `shouldRunSpecPhase()` | `phase-spec.ts` | Medium — gate change |
 | 4. Add `buildSpecSystemPromptReasoning()` + drafter branch | `phase-spec.ts` | Medium — new prompt |
 | 5. Extend `specToAcceptanceCriteriaList()` to handle both variants | `spec-artifact.ts` | Low |
-| 6. phase-verify: route reasoning criteria to goal-alignment oracle | `phases/phase-verify.ts` | Medium — wiring |
+| 6. phase-verify: pass reasoning context into the existing goal-alignment / critic verification path | `phases/phase-verify.ts` | Medium — wiring |
 | 7. Tests: 6 new (3 schema, 2 gate, 1 e2e reasoning task) | `tests/orchestrator/phases/` | — |
 
 **Stop conditions** (any of):
@@ -170,14 +183,13 @@ does via `RE registry` capability matching).
 5. **OQ3.** Does `SPEC_PHASE:on` at L0 still bypass the level>=2 gate for
    reasoning? Proposal: yes — the explicit constraint always wins.
 
-## 8. Decision Required
+## 8. Implemented Decisions
 
-Before implementation we need sign-off on:
+These RFC decisions were accepted for the bounded Gap C slice:
 
-- [ ] Schema discriminator approach (vs separate types entirely).
-- [ ] Gate threshold (`level >= 2` for non-code).
-- [ ] Variant selection function placement (`phase-spec.ts` vs new module).
-- [ ] Verifier strategy (Layer 2 = goal-alignment + critic, no new oracle).
+- [x] Schema discriminator approach (vs separate types entirely).
+- [x] Gate threshold (`level >= 2` for non-code).
+- [x] Variant selection function placement in the Spec phase / SpecArtifact layer.
+- [x] Verifier strategy uses goal-alignment + critic through existing verification wiring; no new oracle family.
 
-Approval of all four → proceed to step 1 of §6. Rejection of any → revise
-this doc, do not start implementation.
+Future domain-specific deterministic oracles are intentionally outside this slice and should be documented in a separate oracle extension guide.

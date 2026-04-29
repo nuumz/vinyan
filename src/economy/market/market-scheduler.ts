@@ -12,7 +12,7 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { MarketConfig } from '../economy-config.ts';
 import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
-import { BidAccuracyTracker } from './bid-accuracy-tracker.ts';
+import { type BidAccuracyPersistence, BidAccuracyTracker } from './bid-accuracy-tracker.ts';
 import { FamilyStatsTracker } from './family-stats-tracker.ts';
 import {
   type PersonaOverclaimPersistence,
@@ -74,9 +74,16 @@ export class MarketScheduler {
      * setups working unchanged.
      */
     personaOverclaimPersistence?: PersonaOverclaimPersistence,
+    /**
+     * Phase-15 (Item 2) — sibling persistence for the bid-accuracy ledger.
+     * Same shape as the persona overclaim slot above; aggregate EMA and
+     * violation counters survive a restart. The `recentSettlements` window
+     * stays in-memory and warms up over the first 10 settlements.
+     */
+    bidAccuracyPersistence?: BidAccuracyPersistence,
   ) {
     this.config = config;
-    this.accuracyTracker = new BidAccuracyTracker();
+    this.accuracyTracker = new BidAccuracyTracker(bidAccuracyPersistence);
     this.phaseState = createInitialPhaseState();
     this.bus = bus;
     this.familyStats = new FamilyStatsTracker();

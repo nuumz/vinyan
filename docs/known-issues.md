@@ -87,6 +87,15 @@
   - Terminal escalation trace's `routingLevel` is now `routing.level` (the actual last-attempted level), not hardcoded `MAX_ROUTING_LEVEL`.
 - **Status**: ✅ Fixed. Test 22 passes, no regressions in test 21 / 23 (G6 sister tests).
 
+### 14. Real-task empty-output completion ✅
+- **Files**: `src/orchestrator/phases/phase-generate.ts`, `src/orchestrator/llm/anthropic-provider.ts`, `src/orchestrator/llm/openrouter-provider.ts`
+- **Symptom**: Real provider runs could surface as `completed` while carrying no mutations and no answer. In practice this came from worker uncertainty after a timeout/crash/budget exhaustion before first useful output.
+- **Root cause**: Tool-using LLM requests have heavier tool-schema prompts and can take longer than the old `tool-uses` connect timeout to first byte. When the worker returned `isUncertain` with no proposed content, Generate could still fall through toward verification instead of forcing another attempt/failure path.
+- **Fix**:
+  - Provider defaults now align `tool-uses` stream timeouts with the balanced/powerful tiers to avoid false-positive connect timeouts on schema-heavy calls.
+  - Generate phase now has an all-task empty-output gate: `isUncertain && mutations.length === 0 && !proposedContent` records a failed approach and retries instead of letting a fake empty completion through.
+- **Status**: ✅ Fixed in the current architecture. Real smoke tests remain provider-key-gated.
+
 ## Open / Out of scope
 
 ### Smoke: real-LLM tests (env-gated)

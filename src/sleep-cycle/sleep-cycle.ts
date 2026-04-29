@@ -134,6 +134,27 @@ export class SleepCycleRunner {
     registry: AgentRegistry;
   };
   /**
+   * Phase-15 (Item 4) — skill tier graduation hook. When set, every
+   * scheduled `run()` reads outcome rows per persona, looks up current
+   * `confidence_tier` per skill from disk, evaluates Wilson LB-based
+   * decisions via `decideTierGraduations`, and applies them. Each tier
+   * change rewrites SKILL.md (recompute contentHash) and appends a
+   * `skill_trust_ledger` row referencing both old + new hashes.
+   */
+  private skillTierPromoterDeps?: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  };
+  /** Phase-15: monotonic counter incremented every cycle that the tier
+   *  promoter runs, plus per-skill last-graduated-at run counts. Pure
+   *  in-memory; resets on restart, which gives skills a fresh grace
+   *  period — same intentional reset-on-restart pattern as `ineffectiveCycles`. */
+  private tierGraduationRunCount = 0;
+  private tierGraduationCooldown: Map<string, number> = new Map();
+  /**
    * Phase-10: optional autonomous skill creator hook. When set, every
    * scheduled `run()` (a) feeds the creator's persona-keyed windows from
    * SkillOutcomeStore via `feedSkillOutcomesToCreator`, then (b) iterates
@@ -283,6 +304,23 @@ export class SleepCycleRunner {
     registry: AgentRegistry;
   }): void {
     this.skillPromoterDeps = deps;
+  }
+
+  /**
+   * Phase-15 (Item 4) — attach the skill tier graduation hook. Mirrors
+   * `setSkillPromoter` but operates on `confidence_tier` rather than skill
+   * scope (acquired→bound). Both hooks coexist on the cycle: scope
+   * promotion runs first, then tier graduation observes the same outcome
+   * rows from a different angle. Best-effort: failures swallowed.
+   */
+  setSkillTierPromoter(deps: {
+    skillOutcomeStore: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
+    registry: AgentRegistry;
+    artifactStore: import('../skills/artifact-store.ts').SkillArtifactStore;
+    ledger: import('../db/skill-trust-ledger-store.ts').SkillTrustLedgerStore;
+    profile: string;
+  }): void {
+    this.skillTierPromoterDeps = deps;
   }
 
   /**
@@ -615,6 +653,62 @@ export class SleepCycleRunner {
         }
       } catch {
         /* Promotion is observational — never disrupts sleep cycle */
+      }
+    }
+
+    // Phase-15 (Item 4): skill tier graduation. Reads outcome rows per
+    // persona, looks up current tier per skill from disk, decides via
+    // Wilson LB threshold, and rewrites SKILL.md + appends ledger row for
+    // each promotion/demotion/quarantine. Best-effort throughout.
+    if (this.skillTierPromoterDeps) {
+      try {
+        this.tierGraduationRunCount += 1;
+        const { decideTierGraduations } = await import('../skills/autonomous/tier-graduation.ts');
+        const { applyTierGraduations } = await import('../skills/autonomous/tier-graduation-applier.ts');
+        const { skillOutcomeStore, registry, artifactStore, ledger, profile } = this.skillTierPromoterDeps;
+
+        // Gather outcome rows across every persona.
+        const rows: import('../db/skill-outcome-store.ts').SkillOutcomeRecord[] = [];
+        for (const persona of registry.listAgents()) {
+          rows.push(...skillOutcomeStore.listForPersona(persona.id));
+        }
+
+        if (rows.length > 0) {
+          // Read current tier per distinct skillId from disk. Cache reads
+          // within the cycle so the same skill isn't re-read N times when
+          // it appears for multiple personas / task signatures.
+          const distinctSkillIds = new Set(rows.map((r) => r.skillId));
+          const currentTierBySkill = new Map<string, import('../core/confidence-tier.ts').ConfidenceTier>();
+          for (const skillId of distinctSkillIds) {
+            try {
+              const record = await artifactStore.read(skillId);
+              currentTierBySkill.set(skillId, record.frontmatter.confidence_tier);
+            } catch {
+              /* skill missing on disk — skip; decision module ignores rows without a tier */
+            }
+          }
+
+          const decisions = decideTierGraduations({
+            rows,
+            currentTierBySkill,
+            cooldownState: this.tierGraduationCooldown,
+            currentRun: this.tierGraduationRunCount,
+          });
+
+          if (decisions.length > 0) {
+            const result = await applyTierGraduations(decisions, {
+              artifactStore,
+              ledger,
+              profile,
+            });
+            // Update cooldown only for decisions that actually applied.
+            for (const d of result.applied) {
+              this.tierGraduationCooldown.set(d.skillId, this.tierGraduationRunCount);
+            }
+          }
+        }
+      } catch {
+        /* Tier graduation is observational — never disrupts sleep cycle */
       }
     }
 

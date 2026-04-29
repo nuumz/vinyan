@@ -20,6 +20,42 @@ const LONG_RUNNING_BUDGET_MS = 120_000;
 const ELAPSED_CHECK_THRESHOLD_MS = 30_000;
 const FRESHNESS_CONFIDENCE_FLOOR = 0.35;
 
+/**
+ * A10 broader grounding (2026-04-28): replaces the earlier substring-only
+ * check. Threshold deliberately conservative — drift triggers a clarification
+ * pause, so over-flagging is more disruptive than missing subtle drift.
+ *
+ * Tunable via `GoalGroundingPolicy.driftSimilarityThreshold` at evaluator
+ * call sites. Token-Jaccard <= threshold => drift.
+ */
+const GOAL_DRIFT_OVERLAP_THRESHOLD = 0.3;
+
+/**
+ * A10 / T6 — evaluator policy. When omitted, defaults preserve the legacy
+ * v1 thresholds and the legacy three-action vocabulary, so existing call
+ * sites and tests stay green.
+ */
+export interface GoalGroundingPolicy {
+  highRiskScore?: number;
+  longRunningBudgetMs?: number;
+  elapsedCheckThresholdMs?: number;
+  freshnessConfidenceFloor?: number;
+  driftSimilarityThreshold?: number;
+  /** Opt in to the four extended actions (`re-ground-context`, etc.). */
+  extendedActionsEnabled?: boolean;
+}
+
+function resolvePolicy(p?: GoalGroundingPolicy): Required<GoalGroundingPolicy> {
+  return {
+    highRiskScore: p?.highRiskScore ?? HIGH_RISK_SCORE,
+    longRunningBudgetMs: p?.longRunningBudgetMs ?? LONG_RUNNING_BUDGET_MS,
+    elapsedCheckThresholdMs: p?.elapsedCheckThresholdMs ?? ELAPSED_CHECK_THRESHOLD_MS,
+    freshnessConfidenceFloor: p?.freshnessConfidenceFloor ?? FRESHNESS_CONFIDENCE_FLOOR,
+    driftSimilarityThreshold: p?.driftSimilarityThreshold ?? GOAL_DRIFT_OVERLAP_THRESHOLD,
+    extendedActionsEnabled: p?.extendedActionsEnabled ?? false,
+  };
+}
+
 interface WorldGraphReader {
   queryFacts(target: string): Fact[];
 }
@@ -33,32 +69,38 @@ interface GoalGroundingInput {
   rootGoal?: string;
   worldGraph?: WorldGraphReader;
   now?: number;
+  /** A10 / T6 — optional policy override. */
+  policy?: GoalGroundingPolicy;
 }
 
-export function shouldRunGoalGrounding(args: Pick<GoalGroundingInput, 'input' | 'routing' | 'startedAt' | 'now'>): boolean {
+export function shouldRunGoalGrounding(
+  args: Pick<GoalGroundingInput, 'input' | 'routing' | 'startedAt' | 'now' | 'policy'>,
+): boolean {
+  const policy = resolvePolicy(args.policy);
   const elapsedMs = (args.now ?? Date.now()) - args.startedAt;
   return (
     args.routing.level >= 2 ||
-    (args.routing.riskScore ?? 0) >= HIGH_RISK_SCORE ||
-    args.input.budget.maxDurationMs >= LONG_RUNNING_BUDGET_MS ||
-    elapsedMs >= ELAPSED_CHECK_THRESHOLD_MS
+    (args.routing.riskScore ?? 0) >= policy.highRiskScore ||
+    args.input.budget.maxDurationMs >= policy.longRunningBudgetMs ||
+    elapsedMs >= policy.elapsedCheckThresholdMs
   );
 }
 
 export function evaluateGoalGrounding(args: GoalGroundingInput): GoalGroundingCheck | undefined {
-  if (!shouldRunGoalGrounding(args)) return undefined;
+  const policy = resolvePolicy(args.policy);
+  if (!shouldRunGoalGrounding({ ...args, policy })) return undefined;
 
   const now = args.now ?? Date.now();
   const rootGoalSource = args.rootGoal ?? (args.understanding.rawGoal || args.input.goal);
   const rootGoal = normalizeGoal(stripReplanDirective(rootGoalSource));
   const currentGoal = normalizeGoal(stripReplanDirective(args.input.goal));
-  const goalDrift = hasGoalDrift(rootGoal, currentGoal);
+  const goalDrift = hasGoalDrift(rootGoal, currentGoal, policy.driftSimilarityThreshold);
   const targets = collectGroundingTargets(args.input, args.understanding);
   const facts = args.worldGraph ? queryFacts(args.worldGraph, targets) : [];
-  const staleFacts = facts.filter((fact) => isStaleForGrounding(fact, now));
+  const staleFacts = facts.filter((fact) => isStaleForGrounding(fact, now, policy.freshnessConfidenceFloor));
   const minFactConfidence = facts.length > 0 ? Math.min(...facts.map((fact) => fact.confidence)) : undefined;
   const freshnessDowngraded = staleFacts.length > 0;
-  const action = decideAction(goalDrift, freshnessDowngraded);
+  const action = decideAction(goalDrift, freshnessDowngraded, staleFacts.length, policy);
 
   return {
     taskId: args.input.id,
@@ -138,9 +180,22 @@ export function applyGoalGroundingConfidenceDowngrade<T extends ExecutionTrace>(
   return trace;
 }
 
-function decideAction(goalDrift: boolean, freshnessDowngraded: boolean): GoalGroundingAction {
-  if (goalDrift) return 'request-clarification';
-  if (freshnessDowngraded) return 'downgrade-confidence';
+function decideAction(
+  goalDrift: boolean,
+  freshnessDowngraded: boolean,
+  staleFactCount: number,
+  policy: Required<GoalGroundingPolicy>,
+): GoalGroundingAction {
+  if (!policy.extendedActionsEnabled) {
+    if (goalDrift) return 'request-clarification';
+    if (freshnessDowngraded) return 'downgrade-confidence';
+    return 'continue';
+  }
+  // Extended action vocabulary (A10 / T6) — severity-driven.
+  if (goalDrift && freshnessDowngraded) return 'abort-unsafe-drift';
+  if (goalDrift) return 're-ground-context';
+  if (freshnessDowngraded && staleFactCount >= 3) return 're-verify-evidence';
+  if (freshnessDowngraded) return 'ask-freshness-question';
   return 'continue';
 }
 
@@ -154,6 +209,12 @@ function formatReason(
   if (action === 'downgrade-confidence') {
     return `Temporal grounding found ${staleFactCount} stale or low-confidence fact(s)`;
   }
+  if (action === 're-ground-context') return 'Goal drift detected — re-running lightweight perceive/spec to re-ground context';
+  if (action === 're-verify-evidence') {
+    return `Stale evidence detected (${staleFactCount} stale fact(s)) — re-running verification with fresh fact lookup`;
+  }
+  if (action === 'ask-freshness-question') return 'Mild freshness drift — surfacing clarification to confirm evidence is still current';
+  if (action === 'abort-unsafe-drift') return 'Goal drift combined with stale evidence — refusing to commit (terminal fail-closed)';
   if (goalDrift || freshnessDowngraded) return 'Grounding check observed non-blocking drift signals';
   return 'Goal and temporal evidence remain grounded';
 }
@@ -202,11 +263,11 @@ function queryFacts(worldGraph: WorldGraphReader, targets: string[]): Fact[] {
   return facts;
 }
 
-function isStaleForGrounding(fact: Fact, now: number): boolean {
-  return (fact.validUntil !== undefined && fact.validUntil <= now) || fact.confidence < FRESHNESS_CONFIDENCE_FLOOR;
+function isStaleForGrounding(fact: Fact, now: number, freshnessFloor: number = FRESHNESS_CONFIDENCE_FLOOR): boolean {
+  return (fact.validUntil !== undefined && fact.validUntil <= now) || fact.confidence < freshnessFloor;
 }
 
-function hasGoalDrift(rootGoal: string, currentGoal: string): boolean {
+function hasGoalDrift(rootGoal: string, currentGoal: string, threshold: number = GOAL_DRIFT_OVERLAP_THRESHOLD): boolean {
   if (!rootGoal || !currentGoal) return false;
   if (rootGoal === currentGoal) return false;
   // Containment fast-path: a refinement (current ⊆ root or root ⊆ current) is
@@ -216,18 +277,8 @@ function hasGoalDrift(rootGoal: string, currentGoal: string): boolean {
   // vocabulary, treat as drift. Rule-based (A3 safe) — no LLM in the path.
   // Returns 1.0 when either side has no content tokens, so we never flag a
   // "drift" purely because we couldn't extract enough vocabulary.
-  return tokenJaccard(rootGoal, currentGoal) < GOAL_DRIFT_OVERLAP_THRESHOLD;
+  return tokenJaccard(rootGoal, currentGoal) < threshold;
 }
-
-/**
- * A10 broader grounding (2026-04-28): replaces the earlier substring-only
- * check. Threshold deliberately conservative — drift triggers a clarification
- * pause, so over-flagging is more disruptive than missing subtle drift.
- *
- * Tunable via const (no runtime knob yet); revisit if dashboards show
- * pause noise.
- */
-const GOAL_DRIFT_OVERLAP_THRESHOLD = 0.3;
 
 /** Common English stopwords stripped before Jaccard scoring. Kept small +
  *  literal — large stopword lists tend to drop content tokens like "user". */

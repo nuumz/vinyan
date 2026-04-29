@@ -32,8 +32,10 @@ import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
+import { BidAccuracyStore } from '../db/bid-accuracy-store.ts';
 import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { SkillOutcomeStore } from '../db/skill-outcome-store.ts';
+import { SkillTrustLedgerStore } from '../db/skill-trust-ledger-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TaskEventStore } from '../db/task-event-store.ts';
@@ -57,6 +59,7 @@ import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
+import { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { loadBundleManifests } from '../plugin/index.ts';
@@ -320,6 +323,8 @@ export interface Orchestrator {
   engineRegistry?: ReasoningEngineRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
+  /** A9 / T4: live operator visibility surface; undefined when disabled in config. */
+  degradationStatus?: DegradationStatusTracker;
   approvalGate?: ApprovalGateImpl;
   // Economy stores (exposed for API/TUI)
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
@@ -551,6 +556,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let reactiveLearningConfig: FailureClusterConfig | undefined;
   // Wave 5b: Skill hints config (default ON when config absent).
   let skillHintsConfig: { enabled: boolean; topK: number } = { enabled: true, topK: 3 };
+  // A10 / T6: goal-and-time grounding policy (thresholds + opt-in extended actions).
+  let goalGroundingPolicy: import('./goal-grounding.ts').GoalGroundingPolicy | undefined;
   // Wave 4: Agent-loop goal-driven termination (gated OFF by default).
   let agentLoopGoalTerminationConfig:
     | {
@@ -562,6 +569,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     | undefined;
   // Phase 2: realtime streaming (token-level `agent:text_delta`). Default OFF.
   let streamingAssistantDelta = false;
+  // A9 / T4: degradation status tracker config (operator visibility surface).
+  let degradationStatusEnabled = true;
+  let degradationStatusTtlMs: number | undefined;
   try {
     const vinyanConfig = loadConfig(workspace);
     if (vinyanConfig.orchestrator) {
@@ -617,6 +627,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           goalSatisfactionThreshold: goalLoopConfig?.goalSatisfactionThreshold ?? 0.75,
         };
       }
+      const dg = vinyanConfig.orchestrator.degradation;
+      if (dg) {
+        degradationStatusEnabled = dg.enabled !== false;
+        degradationStatusTtlMs = dg.entry_ttl_ms;
+      }
+      const gg = vinyanConfig.orchestrator.goalGrounding;
+      if (gg) {
+        goalGroundingPolicy = {
+          highRiskScore: gg.high_risk_score,
+          longRunningBudgetMs: gg.long_running_budget_ms,
+          elapsedCheckThresholdMs: gg.elapsed_check_threshold_ms,
+          freshnessConfidenceFloor: gg.freshness_confidence_floor,
+          driftSimilarityThreshold: gg.drift_similarity_threshold,
+          extendedActionsEnabled: gg.extended_actions_enabled,
+        };
+      }
     }
     if (vinyanConfig.fleet) {
       fleetConfig = vinyanConfig.fleet;
@@ -651,7 +677,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         // ledger with SQLite so penalty math survives orchestrator restarts.
         // Without DB the tracker stays in-memory only — same as Phase 12.
         const personaOverclaimStore = db ? new PersonaOverclaimStore(db.getDb()) : undefined;
-        marketScheduler = new MarketScheduler(economyConfig.market, bus, personaOverclaimStore);
+        // Phase-15 Item 2: BidAccuracyTracker persistence — same pattern as
+        // persona overclaim. Reuses the existing `bid_accuracy` table from
+        // migration 001; no new migration needed.
+        const bidAccuracyStore = db ? new BidAccuracyStore(db.getDb()) : undefined;
+        marketScheduler = new MarketScheduler(
+          economyConfig.market,
+          bus,
+          personaOverclaimStore,
+          bidAccuracyStore,
+        );
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
@@ -1512,6 +1547,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     });
   }
 
+  // Phase-15 (Item 4): hook the skill TIER graduation promoter alongside
+  // the scope promoter. Distinct concerns — scope = acquired↔bound; tier
+  // = speculative↔deterministic. Both share the same outcome store but
+  // operate on different SKILL.md fields. Requires DB for the trust
+  // ledger; safely skipped when DB or skillOutcomeStore absent.
+  if (sleepCycleRunner && agentRegistry && skillOutcomeStore && db) {
+    try {
+      const tierArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
+      const ledger = new SkillTrustLedgerStore(db.getDb());
+      sleepCycleRunner.setSkillTierPromoter({
+        skillOutcomeStore,
+        registry: agentRegistry,
+        artifactStore: tierArtifactStore,
+        ledger,
+        profile: 'default',
+      });
+    } catch {
+      /* tier graduation wiring is best-effort — startup proceeds without it */
+    }
+  }
+
   // Phase-14 (Item 2): wire the AutonomousSkillCreator into the sleep cycle.
   // Phase 10 shipped the scheduling hook but left it inert pending an LLM-
   // backed DraftGenerator + a critic from a different engine (A1). Both are
@@ -1759,6 +1815,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         })
       : undefined,
     skillHintsConfig,
+    goalGroundingPolicy,
     // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
     // goal/targetFiles/deadlineAt synchronously when an auction completes.
     taskFactsRegistry,
@@ -2059,6 +2116,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const metricsCollector = new MetricsCollector();
   const detachMetrics = metricsCollector.attach(bus);
   const degradationBridgeHandle = attachDegradationEventBridge(bus);
+  const degradationStatus = degradationStatusEnabled
+    ? new DegradationStatusTracker({
+        ...(degradationStatusTtlMs !== undefined ? { entryTtlMs: degradationStatusTtlMs } : {}),
+      })
+    : undefined;
+  const detachDegradationStatus = degradationStatus?.attach(bus);
   const traceListenerHandle = attachTraceListener(bus, { workerStore });
   // P3.B — records adaptive-behavior comprehension events
   // (calibrated, calibration_diverged, ceiling_adjusted) + AXM#7 Brier
@@ -2225,16 +2288,34 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       const result = await executeTask(input, deps);
       sessionCount++;
 
+      // Phase-15 (M2 closure): capture the per-task viewed-skill set once.
+      // Used by BOTH the outcome recorder (for filtered attribution — only
+      // viewed-and-loaded skills get credit) AND the overclaim comparator
+      // (Phase-11). Hoisting the read here keeps a single source of truth
+      // for the task's view signal and preserves the existing clearTask
+      // ordering (still runs in the overclaim block's finally).
+      const viewedSkillIds = skillUsageTracker.getViewed(input.id);
+
       // Phase-5A: record per-(persona, skill, taskSig) outcomes for the
       // SkillOutcomeStore. Single integration point — wraps every task that
       // flows through the orchestrator's public surface, so the recorder
       // doesn't need to be threaded through every `task:complete` emit site
       // in core-loop. Best-effort: failures are swallowed so a recorder bug
       // never breaks task completion.
+      //
+      // Phase-15: pass the viewed set so attribution credits only the skills
+      // the LLM actually fetched via `skill_view`. Empty set → legacy
+      // equal-credit fallback (see WHY in `recordSkillOutcomesFromBid`).
       if (deps.skillOutcomeStore && deps.agentRegistry) {
         try {
           const { recordTaskOutcomeForPersona } = await import('./agents/task-outcome-recorder.ts');
-          recordTaskOutcomeForPersona(input, result, deps.agentRegistry, deps.skillOutcomeStore);
+          recordTaskOutcomeForPersona(
+            input,
+            result,
+            deps.agentRegistry,
+            deps.skillOutcomeStore,
+            viewedSkillIds,
+          );
         } catch {
           /* outcome recording is observational; never fail the task on it */
         }
@@ -2258,8 +2339,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           const derived = deps.agentRegistry.getDerivedCapabilities(input.agentId);
           if (derived) {
             const loadedSkillIds = derived.loadedSkills.map((s) => s.frontmatter.id);
-            const viewed = skillUsageTracker.getViewed(input.id);
-            const evaluation = evaluateOverclaim(loadedSkillIds, viewed);
+            const evaluation = evaluateOverclaim(loadedSkillIds, viewedSkillIds);
             if (evaluation.reason === 'evaluated' && marketScheduler) {
               try {
                 marketScheduler.getPersonaOverclaimTracker().recordObservation(input.agentId);
@@ -2332,6 +2412,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     capabilityModel,
     worldGraph,
     metricsCollector,
+    degradationStatus,
     approvalGate,
     costLedger,
     budgetEnforcer,
@@ -2361,6 +2442,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       detachGapH();
       detachMetrics();
       degradationBridgeHandle.detach();
+      detachDegradationStatus?.();
       traceListenerHandle.detach();
       comprehensionTraceHandle.detach();
       detachAudit();

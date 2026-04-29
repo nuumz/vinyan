@@ -214,10 +214,13 @@ export class MetricsCollector {
       bus.on('selfmodel:calibration_error', () => this.inc('selfmodel.calibration_error')),
       bus.on('oracle:contradiction', () => this.inc('oracle.contradiction')),
       bus.on('decomposer:fallback', () => this.inc('decomposer.fallback')),
-      bus.on('degradation:triggered', ({ failureType, action }) => {
+      bus.on('degradation:triggered', ({ failureType, action, severity, component, policyVersion }) => {
         this.inc('degradation.triggered');
         this.inc(`degradation.failure.${failureType}`);
         this.inc(`degradation.action.${action}`);
+        this.inc(`degradation.severity.${severity}`);
+        this.inc(`degradation.component.${component}`);
+        this.inc(`degradation.policy.${policyVersion}`);
       }),
       bus.on('grounding:checked', ({ action }) => {
         this.inc('grounding.checked');

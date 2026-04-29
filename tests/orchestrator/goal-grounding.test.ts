@@ -351,4 +351,132 @@ describe('goal grounding', () => {
       expect(check?.goalDrift).toBe(false);
     });
   });
+
+  describe('A10/T6 extended actions (opt-in via policy.extendedActionsEnabled)', () => {
+    const driftingInput = () => makeInput({ goal: 'Refactor billing renderer module' });
+    const driftingUnderstanding = () =>
+      makeUnderstanding({
+        rawGoal: 'Implement payment gateway integration',
+        resolvedEntities: [
+          {
+            reference: 'auth module',
+            resolvedPaths: ['src/auth.ts'],
+            resolution: 'exact',
+            confidence: 0.9,
+            confidenceSource: 'evidence-derived',
+          },
+        ],
+      });
+
+    function staleFacts(n: number) {
+      return Array.from({ length: n }, (_, i) =>
+        makeFact({ id: `fact-${i}`, confidence: 0.2, validUntil: 2_000 }),
+      );
+    }
+
+    test('drift + stale facts → abort-unsafe-drift', () => {
+      const worldGraph = { queryFacts: () => staleFacts(1) };
+      const check = evaluateGoalGrounding({
+        input: driftingInput(),
+        understanding: driftingUnderstanding(),
+        routing: makeRouting(),
+        phase: 'verify',
+        startedAt: Date.now(),
+        worldGraph,
+        now: 500,
+        policy: { extendedActionsEnabled: true },
+      });
+
+      expect(check?.action).toBe('abort-unsafe-drift');
+      expect(check?.goalDrift).toBe(true);
+      expect(check?.freshnessDowngraded).toBe(true);
+    });
+
+    test('drift only → re-ground-context', () => {
+      const check = evaluateGoalGrounding({
+        input: driftingInput(),
+        understanding: makeUnderstanding({ rawGoal: 'Implement payment gateway integration' }),
+        routing: makeRouting(),
+        phase: 'plan',
+        startedAt: Date.now(),
+        now: 500,
+        policy: { extendedActionsEnabled: true },
+      });
+
+      expect(check?.action).toBe('re-ground-context');
+      expect(check?.goalDrift).toBe(true);
+    });
+
+    test('stale facts ≥3 → re-verify-evidence', () => {
+      const worldGraph = { queryFacts: () => staleFacts(3) };
+      const check = evaluateGoalGrounding({
+        input: makeInput(),
+        understanding: makeUnderstanding({
+          resolvedEntities: [
+            {
+              reference: 'auth module',
+              resolvedPaths: ['src/auth.ts'],
+              resolution: 'exact',
+              confidence: 0.9,
+              confidenceSource: 'evidence-derived',
+            },
+          ],
+        }),
+        routing: makeRouting(),
+        phase: 'verify',
+        startedAt: Date.now(),
+        worldGraph,
+        now: 500,
+        policy: { extendedActionsEnabled: true },
+      });
+
+      expect(check?.action).toBe('re-verify-evidence');
+      expect(check?.staleFactCount).toBe(3);
+    });
+
+    test('1-2 stale facts → ask-freshness-question', () => {
+      const worldGraph = { queryFacts: () => staleFacts(2) };
+      const check = evaluateGoalGrounding({
+        input: makeInput(),
+        understanding: makeUnderstanding({
+          resolvedEntities: [
+            {
+              reference: 'auth module',
+              resolvedPaths: ['src/auth.ts'],
+              resolution: 'exact',
+              confidence: 0.9,
+              confidenceSource: 'evidence-derived',
+            },
+          ],
+        }),
+        routing: makeRouting(),
+        phase: 'verify',
+        startedAt: Date.now(),
+        worldGraph,
+        now: 500,
+        policy: { extendedActionsEnabled: true },
+      });
+
+      expect(check?.action).toBe('ask-freshness-question');
+    });
+
+    test('extended disabled → falls back to legacy 3 actions (request-clarification on drift)', () => {
+      const worldGraph = { queryFacts: () => staleFacts(3) };
+      const check = evaluateGoalGrounding({
+        input: driftingInput(),
+        understanding: driftingUnderstanding(),
+        routing: makeRouting(),
+        phase: 'verify',
+        startedAt: Date.now(),
+        worldGraph,
+        now: 500,
+      });
+
+      expect(['request-clarification', 'downgrade-confidence']).toContain(check?.action ?? '');
+      expect(check?.action).not.toBe('abort-unsafe-drift');
+      expect(check?.action).not.toBe('re-ground-context');
+      expect(check?.action).not.toBe('re-verify-evidence');
+      expect(check?.action).not.toBe('ask-freshness-question');
+    });
+  });
 });

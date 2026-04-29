@@ -718,11 +718,15 @@ export async function handleDelegation(
   // Skip silently when registry isn't wired (legacy / minimal setups).
   let a1VerifierAgentId: string | null = null;
   if (deps.agentRegistry) {
+    // Phase-15 Item 3: duck-type taskDomain; falls through to undefined
+    // until TaskInput carries it. See workflow-executor for the rationale.
+    const parentTaskDomain = (parent as { taskDomain?: import('../types.ts').TaskDomain }).taskDomain;
     a1VerifierAgentId = selectVerifierForDelegation(
       {
         description: request.goal,
         parentTaskType: parent.taskType,
         parentAgentId: parent.agentId,
+        ...(parentTaskDomain ? { parentTaskDomain } : {}),
       },
       deps.agentRegistry,
     );

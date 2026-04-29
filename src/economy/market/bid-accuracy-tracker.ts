@@ -21,10 +21,47 @@ const PENALTY_DURATION = 20;
 /** Underbid threshold: actual/estimated > 1.5. */
 const UNDERBID_THRESHOLD = 3;
 
+/**
+ * Phase-15 (Item 2) — optional persistence backing for the tracker. The
+ * methods structurally match `BidAccuracyStore`, so the Store can be passed
+ * directly. When supplied, the tracker rehydrates its in-memory `records`
+ * map from `listAll()` at construction and writes through every settlement
+ * via `upsertRecord`. The `recentSettlements` window stays in-memory only —
+ * window-violation detection takes up to `VIOLATION_WINDOW` settlements
+ * after restart to fully warm up, matching the Phase-14 PersonaOverclaim
+ * trade-off (aggregate counters persist; per-event history doesn't).
+ */
+export interface BidAccuracyPersistence {
+  upsertRecord(record: BidAccuracyRecord): void;
+  listAll(): BidAccuracyRecord[];
+}
+
 export class BidAccuracyTracker {
   private records = new Map<string, BidAccuracyRecord>();
   /** Recent settlements per bidder for windowed violation detection. */
   private recentSettlements = new Map<string, Settlement[]>();
+  private readonly persistence?: BidAccuracyPersistence;
+
+  /**
+   * Construct with an optional persistence handle. When supplied, every
+   * `recordSettlement` call writes the new aggregate to disk, and the
+   * tracker rehydrates from `persistence.listAll()` so prior EMA + violation
+   * counts survive a restart. Best-effort throughout: persistence errors
+   * are swallowed so a misbehaving DB never blocks the auction (A9 graceful
+   * degradation — penalty math falls back to in-memory).
+   */
+  constructor(persistence?: BidAccuracyPersistence) {
+    this.persistence = persistence;
+    if (persistence) {
+      try {
+        for (const row of persistence.listAll()) {
+          this.records.set(row.bidderId, { ...row });
+        }
+      } catch {
+        /* persistence read is best-effort; cold-start in memory if it fails */
+      }
+    }
+  }
 
   /** Update accuracy from a settlement. */
   recordSettlement(settlement: Settlement): void {
@@ -74,6 +111,15 @@ export class BidAccuracyTracker {
     }
 
     this.records.set(bidderId, record);
+
+    // Phase-15 Item 2: write-through to persistence. A9 best-effort.
+    if (this.persistence) {
+      try {
+        this.persistence.upsertRecord(record);
+      } catch {
+        /* persistence write is best-effort; in-memory state still applies */
+      }
+    }
   }
 
   /** Get accuracy record for a bidder. */

@@ -122,4 +122,81 @@ describe('selectVerifierForDelegation', () => {
       cleanup();
     }
   });
+
+  test('Phase-15 Item 3: code-reasoning parentTaskDomain suppresses override', () => {
+    const { reg, cleanup } = makeRegistry();
+    try {
+      // verify verb + code parentTaskType would normally route to reviewer,
+      // but read-only code-reasoning produces no artifact → skip override.
+      const result = selectVerifierForDelegation(
+        {
+          description: 'review the implementation',
+          parentTaskType: 'code',
+          parentAgentId: 'developer',
+          parentTaskDomain: 'code-reasoning',
+        },
+        reg,
+      );
+      expect(result).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('Phase-15 Item 3: code-mutation parentTaskDomain keeps override firing', () => {
+    const { reg, cleanup } = makeRegistry();
+    try {
+      const result = selectVerifierForDelegation(
+        {
+          description: 'review the patch',
+          parentTaskType: 'code',
+          parentAgentId: 'developer',
+          parentTaskDomain: 'code-mutation',
+        },
+        reg,
+      );
+      expect(result).toBe('reviewer');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('Phase-15 Item 3: undefined parentTaskDomain preserves Phase-14 behaviour', () => {
+    const { reg, cleanup } = makeRegistry();
+    try {
+      const result = selectVerifierForDelegation(
+        {
+          description: 'audit',
+          parentTaskType: 'code',
+          parentAgentId: 'developer',
+          // no parentTaskDomain — falls through to Phase-14 gate.
+        },
+        reg,
+      );
+      expect(result).toBe('reviewer');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('Phase-15 Item 3: general-reasoning parentTaskDomain does not suppress (only code-reasoning does)', () => {
+    const { reg, cleanup } = makeRegistry();
+    try {
+      // Defensive: if a non-code-reasoning domain reaches the router on a
+      // code parentTaskType, the gate is permissive — only `code-reasoning`
+      // is whitelisted as the no-artifact case.
+      const result = selectVerifierForDelegation(
+        {
+          description: 'verify',
+          parentTaskType: 'code',
+          parentAgentId: 'developer',
+          parentTaskDomain: 'general-reasoning',
+        },
+        reg,
+      );
+      expect(result).toBe('reviewer');
+    } finally {
+      cleanup();
+    }
+  });
 });

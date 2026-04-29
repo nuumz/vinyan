@@ -13,6 +13,7 @@
  *
  * Pure: no IO, no LLM, no clock. A3 compliant — deterministic governance.
  */
+import type { TaskDomain } from '../types.ts';
 import type { AgentRegistry } from './registry.ts';
 
 /**
@@ -33,6 +34,16 @@ export interface A1VerifierRoutingInput {
   parentTaskType: string | undefined;
   /** Persona id of the parent task, when set. Used to skip self-routing. */
   parentAgentId: string | undefined;
+  /**
+   * Phase-15 (Item 3): finer-grained signal from `TaskUnderstanding`.
+   * `code-reasoning` (read-only "explain this function") suppresses the
+   * override even when `parentTaskType === 'code'`, because no artifact is
+   * produced — there's nothing for a Verifier to verify. Other domain
+   * values (or undefined) keep the existing `parentTaskType === 'code'`
+   * gate in force, so callers without TaskUnderstanding routing land back
+   * on Phase-14 behaviour with no regression.
+   */
+  parentTaskDomain?: TaskDomain;
 }
 
 /**
@@ -50,6 +61,9 @@ export function selectVerifierForDelegation(
   registry: AgentRegistry,
 ): string | null {
   if (routing.parentTaskType !== 'code') return null;
+  // Phase-15 Item 3: read-only code reasoning produces no artifact, so
+  // there's nothing for a Verifier to verify — skip the override.
+  if (routing.parentTaskDomain === 'code-reasoning') return null;
   if (!VERIFY_DESCRIPTION_PATTERN.test(routing.description)) return null;
   const verifier = registry.findCanonicalVerifier();
   if (!verifier) return null;

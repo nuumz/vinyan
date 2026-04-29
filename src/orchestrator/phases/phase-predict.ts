@@ -5,7 +5,7 @@
  * reasoning policy, thinking policy compilation, and worker selection.
  */
 
-import { applyPredictionEscalation } from '../../gate/risk-router.ts';
+import { applyPredictionEscalation, withLevel } from '../../gate/risk-router.ts';
 import { buildPersonaBidContext } from '../agents/persona-context-builder.ts';
 import { applyRoutingGovernance } from '../governance-provenance.ts';
 import type {
@@ -69,7 +69,7 @@ export async function executePredictPhase(
 
     // S1: Cold-start safeguard — enforce minimum routing level
     if (prediction.forceMinLevel != null && routing.level < prediction.forceMinLevel) {
-      routing = { ...routing, level: prediction.forceMinLevel as RoutingLevel };
+      routing = withLevel(routing, prediction.forceMinLevel as RoutingLevel);
     }
   }
 

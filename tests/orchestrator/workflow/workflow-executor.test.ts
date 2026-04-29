@@ -679,6 +679,185 @@ describe('executeWorkflow', () => {
     expect(result.synthesizedOutput).toMatch(/could not produce|step\(s\) failed/i);
   });
 
+  test('A2 honesty: when ALL delegate-sub-agent steps fail, synthesizer is NOT called even if setup steps succeeded', async () => {
+    // Multi-agent regression from session fa12c770 — Researcher delegate
+    // timed out, Author/Mentor delegates also failed, but a setup step
+    // ("generate question") completed in 6.5s. Synthesizer received the
+    // succeeded step1 + failed delegates and STILL fabricated Author/Mentor
+    // responses ("จำลองการตอบของ Agent ที่เหลือ"). The fast-path now
+    // also fires when all delegate-sub-agent steps failed regardless of
+    // whether setup steps succeeded — the user asked for agent answers,
+    // not for the system to fake them.
+    let synthesizerCalled = false;
+    const plan = JSON.stringify({
+      goal: 'multi-agent debate with question setup',
+      steps: [
+        {
+          id: 'step1',
+          description: 'generate the debate question',
+          strategy: 'llm-reasoning',
+          budgetFraction: 0.2,
+        },
+        {
+          id: 'step2',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          dependencies: ['step1'],
+          budgetFraction: 0.3,
+        },
+        {
+          id: 'step3',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          dependencies: ['step1'],
+          budgetFraction: 0.3,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          synthesizerCalled = true;
+          return { content: 'fabricated agent answers', tokensUsed: { input: 5, output: 5 } };
+        }
+        // step1 (llm-reasoning, "generate the debate question") succeeds.
+        return { content: 'What is the meaning of life?', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    // Both delegates fail (executeTask returns failed status).
+    const executeTask = async (subInput: any) => {
+      return {
+        id: subInput.id,
+        status: 'failed',
+        mutations: [],
+        answer: `${subInput.agentId} delegate failed`,
+        trace: { tokensConsumed: 0 },
+      } as any;
+    };
+    const result = await executeWorkflow(makeInput('multi-agent debate with question setup'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
+    expect(result.status).toBe('partial');
+    expect(synthesizerCalled).toBe(false);
+    expect(result.synthesizedOutput).not.toContain('fabricated');
+    expect(result.synthesizedOutput).toMatch(/multi-agent.*could not produce|delegated agents/i);
+    // Setup step's success IS shown for transparency (so user sees the
+    // question was generated) but is explicitly marked as supporting
+    // context, not as a substitute for the missing agent answers.
+    expect(result.synthesizedOutput).toContain('What is the meaning of life?');
+    expect(result.synthesizedOutput).toMatch(/not as substitute|transparency/i);
+  });
+
+  test('delegate-sub-agent enforces per-step wall-clock timeout (no 40-min hangs)', async () => {
+    // Free-tier 429 retry loops inside sub-agents previously hung the
+    // entire workflow indefinitely (session ede9e9e1 sat 40 min before
+    // a server restart marked it orphaned). The wall-clock cap forces a
+    // failed step result so the workflow continues and the honesty
+    // fast-path produces a partial-result report instead of a silent hang.
+    const timeoutEvents: any[] = [];
+    const plan = JSON.stringify({
+      goal: 'two delegates, one hangs',
+      steps: [
+        {
+          id: 'step1',
+          description: 'fast delegate',
+          strategy: 'delegate-sub-agent',
+          agentId: 'developer',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'hanging delegate',
+          strategy: 'delegate-sub-agent',
+          agentId: 'architect',
+          budgetFraction: 0.5,
+        },
+      ],
+      synthesisPrompt: 'Combine.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async (req: { systemPrompt: string }) => {
+        if (req.systemPrompt.includes('workflow planner')) {
+          return { content: plan, tokensUsed: { input: 5, output: 5 } };
+        }
+        if (req.systemPrompt.includes('final answer for the user')) {
+          return { content: 'final', tokensUsed: { input: 5, output: 5 } };
+        }
+        return { content: 'noop', tokensUsed: { input: 5, output: 5 } };
+      },
+      generateStream: async (
+        req: { systemPrompt: string; userPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        const r = await mockProvider.generate(req);
+        onDelta({ text: r.content });
+        return r;
+      },
+    };
+    // First delegate completes normally; second never resolves.
+    const executeTask = async (subInput: any) => {
+      if (subInput.id.endsWith('-delegate-step1')) {
+        return {
+          id: subInput.id,
+          status: 'completed',
+          mutations: [],
+          answer: 'fast result',
+          trace: { tokensConsumed: 5 },
+        } as any;
+      }
+      // Never resolves — relies on the wall-clock timeout to cut it off.
+      return await new Promise(() => {});
+    };
+    const bus = {
+      emit: (event: string, payload: unknown) => {
+        if (event === 'workflow:delegate_timeout') timeoutEvents.push(payload);
+      },
+    };
+    const result = await executeWorkflow(
+      // Tight budget so the per-step timeout floor (120s default MIN) is
+      // dwarfed by the test framework — but the executor uses
+      // workflowStepTimeoutMs which clamps to MIN_WORKFLOW_LLM_TIMEOUT_MS.
+      // We override budget to keep the test under 130s by setting a budget
+      // that still trips the floor; the floor is what we're verifying.
+      {
+        ...makeInput('two delegates, one hangs'),
+        budget: { maxTokens: 1000, maxDurationMs: 1000, maxRetries: 1 },
+      },
+      {
+        llmRegistry: { selectByTier: () => mockProvider } as any,
+        executeTask,
+        bus: bus as any,
+      },
+    );
+    // step1 completed, step2 timed out → status partial
+    expect(result.status).toBe('partial');
+    const step1 = result.stepResults.find((r) => r.stepId === 'step1');
+    const step2 = result.stepResults.find((r) => r.stepId === 'step2');
+    expect(step1?.status).toBe('completed');
+    expect(step2?.status).toBe('failed');
+    expect(step2?.output).toMatch(/timed out|timeout/i);
+    expect(timeoutEvents.length).toBe(1);
+    expect(timeoutEvents[0].stepId).toBe('step2');
+    expect(timeoutEvents[0].agentId).toBe('architect');
+  }, 200_000); // give the 120s floor room to fire
+
   test('delegate-sub-agent step.agentId is plumbed through to the sub-task', async () => {
     // Multi-agent fix: planner-assigned `agentId` MUST reach the sub-task's
     // TaskInput so each delegate runs under a distinct persona. Without

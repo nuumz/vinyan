@@ -241,6 +241,47 @@ const WorkflowRegistryConfigSchema = z.object({
 
 export type WorkflowRegistryConfig = z.infer<typeof WorkflowRegistryConfigSchema>;
 
+// ─── A9 / T4: Degradation status tracker config ─────────────────────────
+
+const DegradationConfigSchema = z.object({
+  /** Operator visibility surface for `/api/v1/health/degradation`. Default ON (additive). */
+  enabled: z.boolean().default(true),
+  /** Auto-clear stale entries after this many milliseconds. 0 disables eviction. */
+  entry_ttl_ms: z.number().int().min(0).default(5 * 60 * 1000),
+});
+
+export type DegradationConfig = z.infer<typeof DegradationConfigSchema>;
+
+// ─── A10 / T6: Goal-and-time grounding policy ───────────────────────────
+
+const GoalGroundingConfigSchema = z.object({
+  /** Run goal grounding at all. Default ON. */
+  enabled: z.boolean().default(true),
+  /** Risk score above which grounding always runs at any routing level. */
+  high_risk_score: z.number().min(0).max(1).default(0.6),
+  /** Tasks with budget at or above this duration always run grounding. */
+  long_running_budget_ms: z.number().int().min(0).default(120_000),
+  /** Wall-clock elapsed at which grounding fires regardless of budget. */
+  elapsed_check_threshold_ms: z.number().int().min(0).default(30_000),
+  /** Confidence floor applied when stale facts force a downgrade. */
+  freshness_confidence_floor: z.number().min(0).max(1).default(0.35),
+  /**
+   * Token-Jaccard threshold below which the current goal is considered drifted
+   * from the root intent. Lower values are stricter. 0 disables drift detection.
+   */
+  drift_similarity_threshold: z.number().min(0).max(1).default(0.5),
+  /**
+   * When true (Phase 5 default), drift severity escalates beyond
+   * `request-clarification` to the new action vocabulary
+   * (`re-ground-context`, `re-verify-evidence`, `ask-freshness-question`,
+   * `abort-unsafe-drift`). When false, only the legacy three actions are
+   * emitted, preserving pre-A10/T6 behavior.
+   */
+  extended_actions_enabled: z.boolean().default(false),
+});
+
+export type GoalGroundingConfig = z.infer<typeof GoalGroundingConfigSchema>;
+
 const OrchestratorConfigSchema = z.object({
   routing: RoutingConfigSchema.default(() => defaults(RoutingConfigSchema)),
   isolation: IsolationConfigSchema.default(() => defaults(IsolationConfigSchema)),
@@ -265,6 +306,10 @@ const OrchestratorConfigSchema = z.object({
   skillHints: SkillHintsConfigSchema.default(() => defaults(SkillHintsConfigSchema)),
   /** Wave 6: Workflow registry (metadata surface). Default ON. */
   workflowRegistry: WorkflowRegistryConfigSchema.default(() => defaults(WorkflowRegistryConfigSchema)),
+  /** A9 / T4: degradation status tracker (additive operator visibility). */
+  degradation: DegradationConfigSchema.default(() => defaults(DegradationConfigSchema)),
+  /** A10 / T6: goal-and-time grounding policy + thresholds. Extended actions opt-in. */
+  goalGrounding: GoalGroundingConfigSchema.default(() => defaults(GoalGroundingConfigSchema)),
   /**
    * W3 P3: opt-in delegation of L0 dispatch through the new WorkerBackend
    * abstraction (src/runtime). Default OFF so the 1996-test baseline is

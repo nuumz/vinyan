@@ -14,7 +14,7 @@
 
 import { resolve as resolvePath } from 'node:path';
 import type { VinyanBus } from '../core/bus.ts';
-import { LEVEL_CONFIG } from '../gate/risk-router.ts';
+import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
 import {
@@ -267,6 +267,8 @@ export interface OrchestratorDeps {
   agentMemory?: AgentMemoryAPI;
   /** Wave 5b/Capability-First Phase 4: runtime skill hints in worker execution context. */
   skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
+  /** A10 / T6: goal-and-time grounding policy (thresholds + extended actions). */
+  goalGroundingPolicy?: import('./goal-grounding.ts').GoalGroundingPolicy;
   /**
    * Ecosystem: dispatch-scoped task facts registry. When present,
    * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
@@ -1275,7 +1277,7 @@ async function prepareExecution(
         if (!checkSafetyInvariants(rule).safe) continue;
         if (rule.action === 'escalate' && typeof rule.parameters.toLevel === 'number') {
           const newLevel = rule.parameters.toLevel as RoutingLevel;
-          if (newLevel > routing.level) routing = { ...routing, level: newLevel };
+          if (newLevel > routing.level) routing = withLevel(routing, newLevel);
         }
         if (rule.action === 'require-oracle' && typeof rule.parameters.oracleName === 'string') {
           routing = { ...routing, mandatoryOracles: [...(routing.mandatoryOracles ?? []), rule.parameters.oracleName] };
@@ -4008,6 +4010,7 @@ async function enforceGoalGroundingBoundary(
     startedAt: ctx.startTime,
     rootGoal: ctx.intentResolution?.originalGoal,
     worldGraph: ctx.deps.worldGraph,
+    policy: ctx.deps.goalGroundingPolicy,
   });
   if (!check) return { ctx };
 
@@ -4016,24 +4019,56 @@ async function enforceGoalGroundingBoundary(
     ...ctx,
     goalGroundingChecks: [...(ctx.goalGroundingChecks ?? []), check],
   };
-  if (check.action !== 'request-clarification') return { ctx: nextCtx };
 
-  const questions = buildGoalGroundingClarificationQuestions(check);
+  // Continue / downgrade — let downstream phase apply confidence downgrade.
+  if (check.action === 'continue' || check.action === 'downgrade-confidence') {
+    return { ctx: nextCtx };
+  }
+
+  // Inform observers when the boundary takes an action beyond passive downgrade.
+  ctx.deps.bus?.emit('grounding:action_taken', {
+    taskId: ctx.input.id,
+    action: check.action,
+    phase: check.phase,
+    reason: check.reason,
+  });
+
+  // re-ground-context / re-verify-evidence: lightweight, do not restart the
+  // pipeline. Treated as advisory signals — the check is recorded on the
+  // trace, but execution continues so the downstream phases can re-run their
+  // sub-step (perceive refresh, fact lookup) on their next iteration. Per
+  // locked decision: "re-run lightweight context only — do not silently
+  // rewrite user intent."
+  if (check.action === 're-ground-context' || check.action === 're-verify-evidence') {
+    return { ctx: nextCtx };
+  }
+
+  // request-clarification, ask-freshness-question, abort-unsafe-drift all
+  // record a governance trace; behavior diverges in the returned TaskResult.
+  const questions =
+    check.action === 'ask-freshness-question'
+      ? [
+          `A10 grounding detected possible stale evidence during ${check.phase}: ${check.reason}. Should I refresh the evidence before continuing?`,
+        ]
+      : buildGoalGroundingClarificationQuestions(check);
+  const traceApproach =
+    check.action === 'abort-unsafe-drift' ? 'goal-grounding-abort' : 'goal-grounding-clarification';
+  const traceOutcome: ExecutionTrace['outcome'] = check.action === 'abort-unsafe-drift' ? 'failure' : 'success';
   const trace: ExecutionTrace = {
-    id: `trace-${ctx.input.id}-goal-grounding-clarify`,
+    id: `trace-${ctx.input.id}-${traceApproach}`,
     taskId: ctx.input.id,
     sessionId: ctx.input.sessionId,
     workerId: 'orchestrator',
     agentId: ctx.input.agentId,
     timestamp: Date.now(),
     routingLevel: routing.level,
-    approach: 'goal-grounding-clarification',
+    approach: traceApproach,
     approachDescription: check.reason,
     oracleVerdicts: { 'goal-grounding': false },
     modelUsed: 'orchestrator',
     tokensConsumed: 0,
     durationMs: Date.now() - ctx.startTime,
-    outcome: 'success',
+    outcome: traceOutcome,
     affectedFiles: ctx.input.targetFiles ?? [],
     workerSelectionAudit,
     goalGrounding: nextCtx.goalGroundingChecks,
@@ -4041,6 +4076,20 @@ async function enforceGoalGroundingBoundary(
   };
   await ctx.deps.traceCollector.record(trace);
   ctx.deps.bus?.emit('trace:record', { trace });
+
+  // abort-unsafe-drift: terminal fail-closed. Refuse to commit; no clarification.
+  if (check.action === 'abort-unsafe-drift') {
+    return {
+      ctx: nextCtx,
+      result: {
+        id: ctx.input.id,
+        status: 'failed',
+        mutations: [],
+        trace,
+        escalationReason: `goal-grounding aborted: ${check.reason}`,
+      },
+    };
+  }
 
   const { liftStringsToStructured } = await import('../core/clarification.ts');
   ctx.deps.bus?.emit('agent:clarification_requested', {

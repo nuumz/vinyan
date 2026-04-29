@@ -11,9 +11,11 @@
  * via `recordSkillOutcomesFromBid`. This unblocks Phase-5 autonomous skill
  * promotion (Wilson LB on per-(persona, skill, taskSig) outcomes).
  *
- * Equal-credit attribution: every loaded skill gets the same counter bump.
- * A more accurate scheme — credit only the skills whose `whenToUse` actually
- * matched — is a Phase-5 refinement (risk M2).
+ * Phase-15 (M2 closure): when callers pass `viewedSkillIds` (the set the
+ * `SkillUsageTracker` accumulated from `skill_view` calls during execution),
+ * only viewed-and-loaded skills are credited. Empty/undefined viewed set
+ * preserves the legacy equal-credit behaviour — see WHY in
+ * `recordSkillOutcomesFromBid`.
  */
 import type { SkillOutcome, SkillOutcomeStore } from '../../db/skill-outcome-store.ts';
 import { recordSkillOutcomesFromBid } from '../../db/skill-outcome-store.ts';
@@ -44,6 +46,7 @@ export function recordTaskOutcomeForPersona(
   result: TaskResult,
   registry: Pick<AgentRegistry, 'getDerivedCapabilities'>,
   store: SkillOutcomeStore,
+  viewedSkillIds?: ReadonlySet<string>,
   now = Date.now(),
 ): TaskOutcomeRecord {
   const taskSignature = deriveTaskSignature(input);
@@ -63,6 +66,7 @@ export function recordTaskOutcomeForPersona(
     { personaId: input.agentId, loadedSkillIds },
     taskSignature,
     outcome,
+    viewedSkillIds,
     now,
   );
   return { skillsRecorded, taskSignature, outcome };

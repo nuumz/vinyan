@@ -7,6 +7,7 @@
  */
 
 import { buildComplexityContext, computeQualityScore } from '../../gate/quality-score.ts';
+import { withLevel } from '../../gate/risk-router.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
 import type { DAGExecutionResult } from '../dag-executor.ts';
 import { classifyAllFailures } from '../failure-classifier.ts';
@@ -194,7 +195,7 @@ export async function executeVerifyPhase(
         taskId: input.id, fromLevel, toLevel,
         reason: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
       });
-      return Phase.escalate({ ...routing, level: toLevel });
+      return Phase.escalate(withLevel(routing, toLevel));
     }
 
     // L3 contradiction: nowhere to escalate — terminal failure

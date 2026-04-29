@@ -57,6 +57,7 @@ Commands:
   config show|validate  View or validate configuration
   session list|delete|export  Manage conversation sessions
   logs [--limit N]   Inspect execution traces
+  governance <sub>   Inspect persisted governance decisions (search|replay)
 
   economy [sub]      Economy OS: budget, costs, market, trust
   trajectory <sub>   Export execution traces (ShareGPT or ECP-enriched)
@@ -364,6 +365,12 @@ if (import.meta.main) {
     case 'logs': {
       const { runLogsCommand } = await import('./logs.ts');
       await runLogsCommand(args.slice(1));
+      break;
+    }
+
+    case 'governance': {
+      const { runGovernanceCommand } = await import('./governance.ts');
+      await runGovernanceCommand(args.slice(1));
       break;
     }
 

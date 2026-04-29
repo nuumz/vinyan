@@ -39,7 +39,11 @@ const DEFAULT_STREAM_TIMEOUTS: Record<LLMProvider['tier'], StreamTimeouts> = {
   fast: { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
   balanced: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
   powerful: { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
-  'tool-uses': { connectTimeoutMs: 15_000, idleTimeoutMs: 60_000, wallClockMs: 300_000 },
+  // tool-uses: aligned with balanced/powerful. Free / lightly-resourced
+  // tool-using backends routinely take 15–25s to first byte under load
+  // (system-prompt + tool-schema parsing); 15s yields false-positive
+  // connect timeouts that surface as `completed` tasks with empty output.
+  'tool-uses': { connectTimeoutMs: 30_000, idleTimeoutMs: 90_000, wallClockMs: 600_000 },
 };
 
 const DEFAULT_MODELS: Record<LLMProvider['tier'], string> = {

@@ -1,14 +1,16 @@
-# Persona/Skill Redesign — Future Backlog
+# Persona/Skill Redesign — Closure + Future Backlog
 
-**Status:** redesign FULLY CLOSED 2026-04-29 across Phases 1–14. The original Phase 1 plan and all four originally-deferred items shipped. This document captures **future enhancements** that are NOT required for the redesign to be complete but would extend its impact. Treat as backlog candidates, sized for individual scoping.
+**Status:** core redesign closed 2026-04-29 across Phases 1–15. Runtime hooks for the originally deferred items shipped, with one explicit boundary: remote skill import is hook-only until a production discovery adapter is selected and wired. This document captures the remaining backlog plus the Phase-15 closure decisions that changed the runtime skill architecture.
+
+> **Document boundary:** This document owns persona/runtime-skill redesign closure status and remaining backlog. Runtime skill artifact invariants live in [decisions.md](../architecture/decisions.md#decision-20-skillmd-as-ecp-verified-capability-package-wave-14); current TypeScript remains the source of truth for exact APIs.
 
 ## Table of contents
 
 1. [Hub discovery adapter](#1-hub-discovery-adapter-completes-phase-14-item-1) — completes Phase-14 Item 1's pluggable discovery surface
 2. [BidAccuracyTracker persistence](#2-bidaccuracytracker-persistence) — sibling to Item 3, same pattern
-3. [TaskDomain-aware A1 routing](#3-taskdomain-aware-a1-verifier-routing) — finer signal than `taskType === 'code'`
-4. [Skill graduation pipeline](#4-skill-graduation-pipeline) — auto-promote `probabilistic` → `heuristic` → `deterministic`
-5. [Per-task skill attribution](#5-per-task-skill-attribution-risk-m2) — distribute outcome credit by usage signal, not equal split
+3. [TaskDomain-aware A1 routing](#3-taskdomain-aware-a1-verifier-routing) — implemented Phase-15 precision gate
+4. [Skill graduation pipeline](#4-skill-graduation-pipeline) — implemented Phase-15 confidence-tier promoter
+5. [Per-task skill attribution](#5-per-task-skill-attribution-risk-m2) — implemented Phase-15 viewed-skill attribution
 
 ---
 
@@ -77,50 +79,47 @@ Restart-replay test: record 20 settlements at varied accuracies; drop the tracke
 
 ## 3. TaskDomain-aware A1 verifier routing
 
+**Status:** ✅ Shipped in Phase-15 Item 3.
+
 ### Why
 
 Phase-14 Item 4's `selectVerifierForDelegation()` keys on `parentTaskType === 'code'`. `TaskInput.taskType` is a coarse `'code' | 'reasoning'`. The TaskUnderstanding pipeline computes a finer `taskDomain: 'code-mutation' | 'code-reasoning' | 'general-reasoning' | 'conversational'`. The original Phase-1 plan called for A1 enforcement specifically on `code-mutation` — `code-reasoning` (e.g. "explain this function") doesn't strictly need a separate Verifier persona since no artifact is being produced.
 
-Today's gate is conservative: `'code'` covers BOTH `code-mutation` AND `code-reasoning`. So the verifier override fires for some delegations where it's overkill (e.g. "review this function's complexity" on a code-reasoning parent).
+The old gate was conservative: `'code'` covered BOTH `code-mutation` AND `code-reasoning`. That made the verifier override fire for some delegations where no artifact was produced.
 
 ### What
 
-Thread the `taskDomain` through to the A1 router.
+Implemented as the low-risk Option A:
 
-Two options:
-
-**Option A — best-effort plumbing.** Add an optional `parentTaskDomain?: TaskDomain` to `A1VerifierRoutingInput`. When present and `=== 'code-reasoning'`, skip the override. Otherwise behave identically. Callers that don't have the domain available pass it as undefined and the existing `'code'` gate stays in force.
-
-**Option B — refactor.** Compute `taskDomain` inside the router via a heuristic on the parent's goal/files. More logic, more drift risk, no immediate caller for the precision.
-
-**Recommendation:** Option A. Workflow-executor and agent-loop both have `parent: TaskInput` available; if the upstream pipeline annotates the parent with TaskUnderstanding output, the domain is reachable. Keep the refactor simple.
+- `A1VerifierRoutingInput` accepts optional `parentTaskDomain?: TaskDomain`.
+- `code-reasoning` suppresses the Verifier override because read-only explanation/review tasks produce no artifact.
+- `undefined` preserves Phase-14 behavior, so callers without a TaskUnderstanding domain still route by the old `parentTaskType === 'code'` guard.
+- `workflow-executor.ts` and `agent-loop.ts` duck-type the field from parent `TaskInput` until the input model statically carries `taskDomain`.
 
 ### Critical files
 
 - `src/orchestrator/agents/a1-verifier-router.ts:30` — add `parentTaskDomain?: TaskDomain` to `A1VerifierRoutingInput`
-- `src/orchestrator/workflow/workflow-executor.ts:629`, `src/orchestrator/agent/agent-loop.ts:721` — pass `parent.understanding?.taskDomain` (or wherever it lives) when available
+- `src/orchestrator/workflow/workflow-executor.ts`, `src/orchestrator/agent/agent-loop.ts` — duck-type optional `taskDomain` from the parent task and pass it when available
 
-### Size
+### Remaining follow-up
 
-20–30 LOC + 30 LOC tests (verify-style + code-reasoning parent → no override; verify-style + code-mutation parent → override).
-
-### Verification
-
-Existing Phase-13 + Phase-14 test cases for `parentTaskType === 'code'` still pass; new cases for `taskDomain === 'code-reasoning'` confirm skipped routing.
+When `TaskInput` grows a first-class `taskDomain`, replace the current duck-typed reads with the typed field. No routing behavior change is expected.
 
 ---
 
 ## 4. Skill graduation pipeline
 
+**Status:** ✅ Shipped in Phase-15 Item 4.
+
 ### Why
 
-`SkillMdRecord.frontmatter.confidence_tier` ladders from `speculative → probabilistic → pragmatic → heuristic → deterministic`. Autonomously-created skills land at `probabilistic` (Phase-14 Item 2). The redesign assumes future graduation paths exist but Phase 14 didn't ship any — a skill stays `probabilistic` forever even if real outcomes show sustained high Wilson LB.
+`SkillMdRecord.frontmatter.confidence_tier` ladders from `speculative → probabilistic → pragmatic → heuristic → deterministic`. Autonomously-created skills land at `probabilistic` (Phase-14 Item 2). Phase 15 adds the missing graduation path so outcome evidence can move a runtime skill up or down the tier ladder.
 
 This is the highest-leverage extension: skill graduation drives `effectiveTrust` upward via `TIER_WEIGHT`, which directly influences auction wins.
 
 ### What
 
-Add a sleep-cycle promoter that scans `SkillOutcomeStore` rows per `(persona, skill, taskSig)`:
+Implemented as a sleep-cycle promoter that scans `SkillOutcomeStore` rows per `(persona, skill, taskSig)`:
 
 ```
 For each (persona, skill, taskSig) row:
@@ -128,60 +127,54 @@ For each (persona, skill, taskSig) row:
   Wilson LB < 0.4 AND outcomes ≥ 20 → demote tier one rung down (or quarantine)
 ```
 
-Mirror existing `skill-promoter.ts` (which handles `acquired → bound` scope graduation) — same scheduling pattern, different decision rule.
+This mirrors the existing scope promoter (`acquired → bound`) but operates on `confidence_tier`. Both hooks run best-effort in the same sleep-cycle pass and share `SkillOutcomeStore` as their evidence source.
 
 ### Critical files
 
-- `src/orchestrator/agents/skill-promoter.ts` (template)
 - `src/skills/autonomous/tier-graduation.ts` (NEW) — pure decision function
-- `src/orchestrator/factory.ts:1503` — same wire-up pattern as `setSkillPromoter`
-- `src/skills/skill-md/writer.ts` — mutate frontmatter `confidence_tier` + `promoted_at` + content_hash recompute
-
-### Size
-
-200–300 LOC + 150–200 LOC tests. Largest backlog item but mostly mechanical.
+- `src/skills/autonomous/tier-graduation-applier.ts` (NEW) — artifact rewrite + trust-ledger append
+- `src/sleep-cycle/sleep-cycle.ts` — `setSkillTierPromoter()` hook and scheduled run
+- `src/orchestrator/factory.ts` — wires artifact store + trust ledger into the sleep-cycle runner
 
 ### Verification
 
-Sleep-cycle replay test: seed 30 successful outcomes for a `probabilistic` skill; run promoter; verify tier flipped to `pragmatic` AND `content_hash` recomputed AND skill_trust_ledger row appended.
+[tier-graduation.test.ts](../../tests/skills/autonomous/tier-graduation.test.ts) covers promote, demote, quarantine, cooldown, artifact rewrite, content hash change, trust-ledger evidence, missing-artifact skip, and per-decision A9 isolation.
 
 ### Risk
 
-Tier changes invalidate `content_hash` (A4) — every promotion is effectively a new skill version. The writer must recompute the hash atomically and the trust ledger must record both old and new hashes.
+Tier changes invalidate `content_hash` (A4), so every promotion/demotion is effectively a new runtime-skill version. The applier writes the new artifact first, then appends the trust-ledger row best-effort. If the ledger write fails after the artifact write, disk remains the source of truth and the next sleep cycle observes the new tier.
 
 ---
 
 ## 5. Per-task skill attribution (risk M2)
 
+**Status:** ✅ Shipped in Phase-15 Item 5.
+
 ### Why
 
-`recordSkillOutcomesFromBid` (in `skill-outcome-store.ts:156`) currently fans one task outcome out to **every** loaded skill on the bid. A persona that loaded `[ts-coding, lint-fix, refactor-extract]` and won a refactor task gets all three skills credited equally — even though `lint-fix` was probably irrelevant.
+Before Phase 15, `recordSkillOutcomesFromBid` fanned one task outcome out to every loaded skill on the bid. A persona that loaded `[ts-coding, lint-fix, refactor-extract]` and won a refactor task got all three skills credited equally, even when only one skill was actually viewed.
 
 This is documented as risk M2 in the original Phase 1 plan: equal credit dilutes the attribution signal that drives Phase-14 Item 2's autonomous creator (which keys on `(persona, skill, taskSig)` Wilson LB).
 
 ### What
 
-Extend `SkillUsageTracker` (Phase 11) to track which loaded skills the LLM actually `skill_view`ed during the task. At outcome-recording time, credit only the skills that were viewed. Skills loaded but not viewed get NO credit (instead of equal credit). This converts the attribution from `1/N per loaded skill` to `1/V per viewed skill`, where V ≤ N.
+Implemented by reusing `SkillUsageTracker` (Phase 11) as the task's usage signal. At outcome-recording time, the recorder credits only `loaded ∩ viewed` runtime skills when the viewed set is non-empty. Empty/undefined viewed sets preserve the legacy equal-credit fallback so L0 catalog-only tasks do not lose all attribution.
 
 Aligns with Phase-11's already-implemented `evaluateOverclaim` view-tracking — same data already flows into the tracker.
 
 ### Critical files
 
 - `src/db/skill-outcome-store.ts:156` — `recordSkillOutcomesFromBid` accepts a `viewedSkillIds?: ReadonlySet<string>` filter
-- `src/orchestrator/factory.ts:2156` — at the executeTask wrapper, pass `skillUsageTracker.getViewed(input.id)` into `recordTaskOutcomeForPersona`
+- `src/orchestrator/factory.ts` — captures `skillUsageTracker.getViewed(input.id)` once and passes it to both outcome attribution and overclaim evaluation
 - `src/orchestrator/agents/task-outcome-recorder.ts` — plumb the viewed set through
-
-### Size
-
-50–80 LOC core + 80–100 LOC tests (equal-credit baseline; viewed-only attribution; empty viewed set falls back to equal credit so we don't lose signals on legacy paths)
 
 ### Verification
 
-Two skills loaded; only one viewed; record outcome; assert only the viewed skill's row incremented; the unviewed skill's counter stays at 0. Baseline test (empty viewed set) confirms legacy fallback.
+[skill-outcome-store-attribution.test.ts](../../tests/db/skill-outcome-store-attribution.test.ts) covers undefined viewed fallback, empty viewed fallback, loaded/viewed intersection, viewed-but-not-loaded suppression, zero-overlap behavior, failure outcomes, and no-op legacy bids.
 
 ### Risk
 
-False negatives if the LLM uses an L0 catalog card without invoking `skill_view`. Mitigation: empty viewed set falls back to equal credit so the change is purely additive — never worse than current behaviour.
+False negatives are still possible if the LLM uses an L0 catalog card without invoking `skill_view`. The empty-viewed fallback keeps that path additive: absence of a usage signal means legacy equal credit, not zero credit.
 
 ---
 
@@ -189,11 +182,9 @@ False negatives if the LLM uses an L0 catalog card without invoking `skill_view`
 
 If picking up the backlog in a future session, the order that maximizes leverage per LOC is:
 
-1. **Item 5 (per-task attribution)** — closes the M2 risk; reuses Phase 11 view tracker; strengthens every downstream signal (auction outcomes, autonomous creator triggers, persona-skill-promoter)
-2. **Item 4 (skill graduation)** — once M2 is fixed, graduation runs on cleaner data
-3. **Item 3 (taskDomain routing)** — small, axiom-aligned, surfaces once graduated skills start producing more delegations
-4. **Item 2 (BidAccuracy persistence)** — sibling pattern; mechanical; no dependency on others
-5. **Item 1 (hub discovery adapter)** — ship config-list slice first; expand if telemetry shows real demand
+1. **Item 2 (BidAccuracy persistence)** — sibling pattern; mechanical; no dependency on others
+2. **Item 1 (hub discovery adapter)** — ship config-list slice first; expand if telemetry shows real demand
+3. **TaskInput.taskDomain typing follow-up** — only after the upstream input model owns the field directly
 
 ## Out of scope for this backlog
 
@@ -208,8 +199,11 @@ These are tracked elsewhere or by other initiatives:
 | Item | Status |
 |---|---|
 | Persona/skill redesign Phases 1–13 | ✅ Shipped (2026-04-28) |
-| Phase 14 Item 1 — LocalHubAcquirer hub fetch | ✅ Shipped (wiring) — pending discovery adapter (Item 1 above) |
+| Phase 14 Item 1 — LocalHubAcquirer remote import fallback | ✅ Hook shipped/tested — production discovery adapter pending (Item 1 above) |
 | Phase 14 Item 2 — DraftGenerator + cross-engine critic | ✅ Shipped (2026-04-29) |
 | Phase 14 Item 3 — PersonaOverclaim persistence | ✅ Shipped (2026-04-29) |
 | Phase 14 Item 4 — A1 in agent-loop | ✅ Shipped (2026-04-29) |
-| Future backlog (this doc) | 📋 Designed, ready to scope |
+| Phase 15 Item 3 — TaskDomain-aware A1 verifier routing | ✅ Shipped (2026-04-29) |
+| Phase 15 Item 4 — Skill tier graduation pipeline | ✅ Shipped (2026-04-29) |
+| Phase 15 Item 5 — Per-task viewed-skill attribution | ✅ Shipped (2026-04-29) |
+| Remaining future backlog | 📋 Hub discovery adapter, BidAccuracy persistence, typed `TaskInput.taskDomain` follow-up |

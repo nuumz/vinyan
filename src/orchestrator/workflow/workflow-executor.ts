@@ -626,12 +626,19 @@ async function dispatchStrategy(
         // inherit the parent's generator persona. Skip when the registry
         // isn't wired or no canonical verifier is registered (forgiveness
         // for legacy / minimal setups).
+        // Phase-15 Item 3: TaskInput doesn't statically carry `taskDomain`
+        // today, so duck-type the read. When the upstream pipeline later
+        // annotates input with TaskUnderstanding output, the domain becomes
+        // observable; until then this falls through to undefined and the
+        // existing parentTaskType gate stays in force (no regression).
+        const parentTaskDomain = (input as { taskDomain?: import('../types.ts').TaskDomain }).taskDomain;
         const verifierAgentId = deps.agentRegistry
           ? selectVerifierForDelegation(
               {
                 description: step.description,
                 parentTaskType: input.taskType,
                 parentAgentId: input.agentId,
+                ...(parentTaskDomain ? { parentTaskDomain } : {}),
               },
               deps.agentRegistry,
             )
@@ -667,7 +674,46 @@ async function dispatchStrategy(
             verifierAgentId,
           });
         }
-        const taskResult = await deps.executeTask(subInput);
+        // Wall-clock cap on the delegate. Without this a free-tier 429
+        // retry loop inside the sub-agent's LLM provider hangs the entire
+        // workflow indefinitely (incident: session ede9e9e1 — 3 delegates
+        // sat for 40 min until a server restart marked the task orphaned;
+        // step1 had completed in 6.5s but steps 2-4 produced no observable
+        // progress and no honest failure either). The cap pairs with the
+        // length===0 honesty fast-path so the synthesizer reports "step X
+        // timed out" instead of fabricating an answer the agent never
+        // produced.
+        const subTaskTimeoutMs = workflowStepTimeoutMs(input, step.budgetFraction);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<TaskResult>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `delegate-sub-agent step ${step.id} timed out after ${Math.round(subTaskTimeoutMs / 1000)}s (agent=${resolvedAgentId ?? 'default'})`,
+                ),
+              ),
+            subTaskTimeoutMs,
+          );
+        });
+        let taskResult: TaskResult;
+        try {
+          taskResult = await Promise.race([deps.executeTask(subInput), timeoutPromise]);
+        } catch (err) {
+          deps.bus?.emit('workflow:delegate_timeout', {
+            taskId: input.id,
+            stepId: step.id,
+            agentId: resolvedAgentId ?? null,
+            timeoutMs: subTaskTimeoutMs,
+          });
+          return {
+            ...base,
+            status: 'failed',
+            output: err instanceof Error ? err.message : String(err),
+          };
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
         return {
           ...base,
           status: taskResult.status === 'completed' ? 'completed' : 'failed',
@@ -731,6 +777,20 @@ async function buildResult(
   const skippedSteps = allResults.filter((r) => r.status === 'skipped');
   const completedSteps = allResults.filter((r) => r.status === 'completed');
 
+  // Cross-reference plan to identify which steps were delegate-sub-agent.
+  // When a multi-agent goal's delegated agents all fail, the question
+  // structure / setup steps that succeeded (e.g. "generate the quiz") are
+  // not a substitute for the missing agent answers — fabricating those
+  // answers from the step descriptions is exactly the regression we are
+  // protecting against (incident: session fa12c770 — Researcher delegate
+  // timed out, synthesizer still wrote "จำลองการตอบของ Agent ที่เหลือ").
+  const delegateStepIds = new Set(
+    plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').map((s) => s.id),
+  );
+  const delegateResults = allResults.filter((r) => delegateStepIds.has(r.stepId));
+  const completedDelegates = delegateResults.filter((r) => r.status === 'completed');
+  const allDelegatesFailed = delegateResults.length > 0 && completedDelegates.length === 0;
+
   // A2 honesty fast-path: when no step succeeded, refuse to call the
   // synthesizer LLM at all. Free-tier 429 incident on session 44c83a53
   // showed that handing failed step outputs ("429 error") to the
@@ -744,26 +804,57 @@ async function buildResult(
   // entire multi-agent comparison from the goal text alone (incident:
   // session 46e730ed — "ไม่เห็นแบ่ง Agent 3ตัว แข่งกันถามตอบเลย มันไป
   // จำลองสมมติ 3agent ใน request เดียวเฉยๆ").
-  if (allResults.length === 0 || completedSteps.length === 0) {
+  if (allResults.length === 0 || completedSteps.length === 0 || allDelegatesFailed) {
     const body =
       allResults.length === 0
         ? `The workflow produced no step results — the planner or executor exited before any step ran. ` +
           `No synthesis was attempted: there is nothing real to aggregate, and asking the LLM to ` +
           `"answer the goal anyway" would fabricate content the workflow never produced.`
-        : (() => {
-            const failureLines = allResults
-              .map((r) => {
-                const snippet = r.output.trim().slice(0, 240) || '(no output)';
-                return `- ${r.stepId} [${r.status}]: ${snippet}`;
-              })
-              .join('\n');
-            return (
-              `The workflow could not produce an answer — all ${allResults.length} step(s) ` +
-              `failed or were skipped:\n\n${failureLines}\n\n` +
-              `No synthesis was attempted: aggregating from zero successful steps would ` +
-              `risk fabricating content that was never produced.`
-            );
-          })();
+        : allDelegatesFailed
+          ? (() => {
+              // Multi-agent specific failure: any setup steps (generate the
+              // question, gather context) may have succeeded, but the
+              // delegated agent answers — the actual content the user asked
+              // for — are missing. Surface what succeeded as supporting
+              // context, then list each delegate failure honestly.
+              const supportLines = allResults
+                .filter((r) => r.status === 'completed')
+                .map(
+                  (r) =>
+                    `- ${r.stepId} (${r.strategyUsed}) succeeded:\n  ${r.output.trim().slice(0, 400)}`,
+                )
+                .join('\n');
+              const delegateLines = delegateResults
+                .map((r) => {
+                  const snippet = r.output.trim().slice(0, 240) || '(no output)';
+                  return `- ${r.stepId} [${r.status}, agent=${plan.steps.find((s) => s.id === r.stepId)?.agentId ?? 'default'}]: ${snippet}`;
+                })
+                .join('\n');
+              return (
+                `The multi-agent workflow could not produce real agent responses — ` +
+                `${delegateResults.length} of ${delegateResults.length} delegated agents ` +
+                `failed or timed out:\n\n${delegateLines}\n\n` +
+                (supportLines
+                  ? `Setup steps that DID succeed (shown for transparency, not as substitutes):\n\n${supportLines}\n\n`
+                  : '') +
+                `No synthesis was attempted: simulating the missing agent answers from the ` +
+                `step descriptions alone would fabricate the very diversity the user asked for.`
+              );
+            })()
+          : (() => {
+              const failureLines = allResults
+                .map((r) => {
+                  const snippet = r.output.trim().slice(0, 240) || '(no output)';
+                  return `- ${r.stepId} [${r.status}]: ${snippet}`;
+                })
+                .join('\n');
+              return (
+                `The workflow could not produce an answer — all ${allResults.length} step(s) ` +
+                `failed or were skipped:\n\n${failureLines}\n\n` +
+                `No synthesis was attempted: aggregating from zero successful steps would ` +
+                `risk fabricating content that was never produced.`
+              );
+            })();
     return {
       status,
       stepResults: allResults,

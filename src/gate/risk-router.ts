@@ -170,6 +170,27 @@ export const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTo
   3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
 };
 
+/**
+ * Re-target a routing decision at a different level, refreshing the budget /
+ * model fields from `LEVEL_CONFIG[targetLevel]`. Use this whenever a code
+ * path moves a routing decision to a new level — `{ ...routing, level: X }`
+ * alone keeps the previous level's `latencyBudgetMs` and `budgetTokens`,
+ * which silently caps the agent's wall-clock and token budget at the lower
+ * level's value (see L1→L2: agent inherited 15s instead of 90s, timing out
+ * before the first turn ever returned).
+ */
+export function withLevel(routing: RoutingDecision, targetLevel: RoutingLevel): RoutingDecision {
+  if (routing.level === targetLevel) return routing;
+  const cfg = LEVEL_CONFIG[targetLevel];
+  return {
+    ...routing,
+    level: targetLevel,
+    model: cfg.model,
+    budgetTokens: cfg.budgetTokens,
+    latencyBudgetMs: cfg.latencyBudgetMs,
+  };
+}
+
 // ── Prediction-based escalation ──────────────────────────────────
 
 /**
@@ -200,5 +221,5 @@ export function applyPredictionEscalation(
   }
 
   if (level === routing.level) return routing;
-  return { ...routing, level };
+  return withLevel(routing, level);
 }

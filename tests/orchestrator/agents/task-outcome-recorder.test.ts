@@ -149,6 +149,7 @@ describe('recordTaskOutcomeForPersona', () => {
         makeResult('completed'),
         reg,
         store,
+        undefined,
         1000,
       );
       expect(out.skillsRecorded).toBe(2);
@@ -173,6 +174,7 @@ describe('recordTaskOutcomeForPersona', () => {
         makeResult('failed'),
         reg,
         store,
+        undefined,
         1000,
       );
       expect(out.outcome).toBe('failure');

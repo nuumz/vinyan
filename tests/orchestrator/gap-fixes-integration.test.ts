@@ -167,6 +167,7 @@ describe('G4 — recordSkillOutcomesFromBid wires settlement → outcome store',
       { personaId: 'developer', loadedSkillIds: ['ts-coding', 'react-patterns'] },
       'refactor::ts',
       'success',
+      undefined,
       1000,
     );
     expect(recorded).toBe(2);

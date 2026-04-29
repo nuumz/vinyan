@@ -1131,7 +1131,23 @@ export interface GovernanceProvenance {
 }
 
 export type GoalGroundingPhase = 'perceive' | 'spec' | 'plan' | 'generate' | 'verify';
-export type GoalGroundingAction = 'continue' | 'downgrade-confidence' | 'request-clarification';
+/**
+ * A10 / T6 — extended action union. The original three actions remain the
+ * default decision surface; the four added actions are gated behind
+ * `orchestrator.goalGrounding` config and the Phase 5 action handler:
+ *   - `re-ground-context`     re-run lightweight perceive/spec refresh
+ *   - `re-verify-evidence`    re-run verification with fresh fact lookup
+ *   - `ask-freshness-question` surface clarification specifically about evidence freshness
+ *   - `abort-unsafe-drift`    refuse to commit (terminal fail-closed)
+ */
+export type GoalGroundingAction =
+  | 'continue'
+  | 'downgrade-confidence'
+  | 'request-clarification'
+  | 're-ground-context'
+  | 're-verify-evidence'
+  | 'ask-freshness-question'
+  | 'abort-unsafe-drift';
 
 export interface GoalGroundingCheck {
   taskId: string;

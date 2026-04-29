@@ -214,7 +214,9 @@ TDD ไม่มีแม้ schema placeholder สำหรับ `skill_templa
 
 **Why it matters for ENS:** Intelligence = compression of experience เป็น reusable abstractions ถ้ามีแค่ rules 10,000 ข้อที่ไม่ compress เป็น skills → system ไม่ scale
 
-#### Gap C: Cross-Domain Limitation Undocumented
+#### Gap C: Cross-Domain Limitation (Current Scope Closed)
+
+> **2026-04-29 update:** Closed for the current bounded scope by [spec-phase-non-code.md](../design/spec-phase-non-code.md). Non-code reasoning/planning tasks now have a reasoning SpecArtifact variant and verification path through existing goal-alignment/critic wiring. Broader domain-specific oracle families remain future work.
 
 Oracles ทั้งหมดเป็น **code-specific** (AST, tsc, test runner, lint) — สำหรับ non-code domains ไม่มี deterministic oracle → ต้องใช้ LLM-as-judge ซึ่ง **เป็นปัญหาเดียวกับที่ Vinyan วิจารณ์ framework อื่น**
 
@@ -413,7 +415,8 @@ Items เหล่านี้ต้องการ Orchestrator หรือ de
 - [ ] **ECP Richness: Deliberation + Temporal** — เพิ่ม `deliberation_request`, `temporal_context` fields ตาม concept §2.2 (→ §8.2, §12.3)
 - [ ] **Working Memory 4 Components** — activeHypotheses + unresolvedUncertainties เพิ่มจาก 2/4 เป็น 4/4 (→ §8.2, §12.4)
 - [ ] **Skill Formation Schema** — เพิ่ม `skill_templates` table + trace-to-skill extraction pipeline (→ §8.3 Gap B)
-- [ ] **Cross-Domain Oracle Extension Guide** — document pluggable Oracle interface for non-code domains (→ §8.3 Gap C)
+- [x] **Cross-Domain Spec phase contract** — reasoning/planning tasks use a non-code SpecArtifact variant and existing verifier path (→ §8.3 Gap C; see [spec-phase-non-code.md](../design/spec-phase-non-code.md))
+- [ ] **Cross-Domain Oracle Extension Guide** — document pluggable Oracle interface for domain-specific deterministic oracles beyond code/reasoning (→ §8.3 Gap C follow-up)
 - [ ] **World Graph Concurrent Write Strategy** — writer queue / WAL + single-writer enforcement (→ Finding 4.3)
 - [ ] **World Graph Capacity Model** — benchmark SQLite ที่ 10K/50K/100K facts, document limits (→ Finding 4.2)
 - [ ] **World Graph Backup + DR** — periodic backup, integrity check, RPO/RTO targets (→ Finding 3.1, 7.3)
@@ -431,11 +434,12 @@ Items เหล่านี้ต้องการ Orchestrator หรือ de
 - [x] World Graph retention policy (→ §9.2, R2) ✅ *added to TDD §5*
 - [ ] World Graph capacity model — benchmark at scale (→ Finding 4.2)
 - [ ] OpenClaw SDK interface contract (→ Risk: SDK dependency)
-- [ ] Oracle extension guide — how to add new oracle types (→ §8.3 Gap C)
+- [x] Non-code Spec phase contract — current Gap C slice (→ §8.3 Gap C; see [spec-phase-non-code.md](../design/spec-phase-non-code.md))
+- [ ] Oracle extension guide — how to add domain-specific deterministic oracle types beyond the current reasoning path (→ §8.3 Gap C follow-up)
 - [ ] Disaster recovery plan (→ Finding 7.3)
 - [ ] Mermaid sequence diagram: full gate flow
 - [ ] Skill formation schema design (→ §8.3 Gap B)
-- [ ] ENS scope declaration — "for AI Systems" vs "for Code" boundary (→ §8.3 Gap C)
+- [x] ENS scope declaration for current non-code reasoning path — covered by [spec-phase-non-code.md](../design/spec-phase-non-code.md)
 
 ---
 

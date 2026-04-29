@@ -1205,6 +1205,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 - Migration `004_skill_artifact.ts` adds `confidence_tier`, `skill_md_path`, `content_hash`, `expected_error_reduction`, `backtest_id`, `quarantined_at` to `cached_skills` (reserved in [w1-contracts §2](../spec/w1-contracts.md)).
 - `skill-registry` is a `single (active)` plugin category (w1-contracts §5). Hub becomes the active provider once ready; the built-in `CachedSkill` store remains the fallback.
 - Autonomous creation code path must read from `prediction_ledger + prediction_outcomes` — not `execution_traces` alone. Drafts carry `evidenceTier: 'probabilistic'`; post-Oracle they move to `heuristic`; post-backtest they may reach `deterministic` only if bound to a content hash.
+- Phase-15 closes the runtime-skill evidence loop: outcome attribution is filtered by `skill_view` usage when available, and the sleep-cycle tier promoter can promote/demote/quarantine runtime skills from Wilson lower-bound evidence. Tier changes rewrite SKILL.md and append trust-ledger evidence; every tier change is a new content-addressed artifact version.
 - Skills Hub becomes an epistemic, not just a security, surface. This is flagship differentiator #2.
 
 ---

@@ -2,9 +2,9 @@
 
 **Status:** Implemented closure · **Owner:** Vinyan Core · **Created:** 2026-04-29 · **Closed:** 2026-04-29
 **Source plan:** [a8-a9-a10-future-hardening-plan.md](a8-a9-a10-future-hardening-plan.md) — T1 slice
-**Scope:** Inventory + classification matrix + bounded A8 provenance closure for rows #17/#18/#20/#22. A9 T3 and A10 T5 future hardening remain out of scope.
+**Scope:** Inventory + classification matrix + bounded A8 provenance closure for rows #17/#18/#20/#22. A9 fail-open/closed policy and A10 re-grounding action expansion remain out of scope.
 
-> **Document boundary**: This document owns the A8 governance-decision inventory and the missing/partial coverage list. It does NOT own A9 fail-open/closed policy (T3) or A10 re-grounding action expansion (T5); it only flags where they connect.
+> **Document boundary**: This document owns the A8 governance-decision inventory and the missing/partial coverage list. It does NOT own A9 fail-open/closed policy (see [a9-degradation-contract.md](a9-degradation-contract.md)) or A10 re-grounding action expansion (T5); it only flags where they connect.
 
 ## Summary
 
@@ -74,7 +74,7 @@ The following `provenance-required` paths were missing or partial in the audit a
 
 ## Enforcement policy recommendation
 
-This is the input to T3 (A9 fail-open/fail-closed matrix); T1 only proposes the A8-side default.
+This is the A8-side persistence default. The A9 subsystem contract is now owned by [a9-degradation-contract.md](a9-degradation-contract.md).
 
 - **Fail closed** when a `provenance-required` trace fails to persist:
   - Security rejection (#1, #2)
@@ -89,7 +89,7 @@ This is the input to T3 (A9 fail-open/fail-closed matrix); T1 only proposes the 
   - Goal-drift downgrade / clarify (#22, #23)
 - **Degrade open** when an `optional` or `exempt-by-design` trace fails to persist (current behaviour; no change required).
 - **Default rule:** `traceCollector.requiresDurablePersistence(trace) === true` ⇒ fail closed. The audit confirms this rule covers all `provenance-required` rows once gaps #17/#18/#20/#22/#23 are populated.
-- **Connection to T3:** the per-subsystem fail-open vs fail-closed contracts in T3 should treat the rows above as the canonical "fail closed" set for trace-store writes. T3 still owns the SLO/circuit-breaker side of the contract.
+- **Connection to A9:** [a9-degradation-contract.md](a9-degradation-contract.md) treats the rows above as the canonical "fail closed" set for trace-store writes. T4 still owns the SLO/circuit-breaker side of the contract.
 - **Intermediate escalation exemption (#19/#21):** Oracle contradiction escalation below L3 and deliberation bonus retries are non-terminal re-routing hops. They are intentionally not trace-producing governance decisions; the terminal trace's `governanceProvenance.escalationPath` is the replay surface.
 
 ## Coverage already complete
@@ -105,12 +105,13 @@ This is the input to T3 (A9 fail-open/fail-closed matrix); T1 only proposes the 
 1. **T2 query ergonomics** — threshold values and oracle-pair details are currently stored in `GovernanceProvenance.reason` / `wasDerivedFrom`. T2 should decide which fields deserve denormalized query helpers.
 2. **Multi-rejection precedence** — when multiple gates would reject (security + intent contradiction), which trace's provenance is promoted to `TaskResult.trace`? Current behavior is first-wins.
 
-## Next steps (handoff to a future bounded slice)
+## Next steps (handoff to future bounded slices)
 
-This T1 closure is complete. The natural follow-on is the next task group from [a8-a9-a10-future-hardening-plan.md](a8-a9-a10-future-hardening-plan.md):
+This T1 closure is complete, and the T3 baseline is closed in [a9-degradation-contract.md](a9-degradation-contract.md). The remaining natural follow-ons from [a8-a9-a10-future-hardening-plan.md](a8-a9-a10-future-hardening-plan.md) are:
 
-1. T3 A9 fail-open/fail-closed matrix.
-2. T5 A10 action expansion.
-3. T2 A8 provenance query/replay tooling, if operational trace lookup becomes the priority.
+1. T5 A10 action expansion.
+2. T2 A8 provenance query/replay tooling, if operational trace lookup becomes the priority.
+3. T4 A9 SLO/circuit-breaker hardening.
+4. T3.b mutation-apply/session-chat follow-ups, if failure policy needs to move beyond the baseline matrix.
 
 Promotion of that slice into a current plan should follow the criteria in [a8-a9-a10-future-hardening-plan.md](a8-a9-a10-future-hardening-plan.md#promotion-criteria-for-starting-implementation).

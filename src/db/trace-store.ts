@@ -6,6 +6,13 @@
  */
 import type { Database } from 'bun:sqlite';
 import type { ExecutionTrace, ShadowValidationResult } from '../orchestrator/types.ts';
+import {
+  GOVERNANCE_QUERY_DEFAULT_LIMIT,
+  type GovernanceTraceQuery,
+  type GovernanceTraceQueryResult,
+  normalizeGovernanceQuery,
+  summarizeGovernanceTrace,
+} from './governance-query.ts';
 import { ExecutionTraceRowSchema } from './schemas.ts';
 
 export class TraceStore {
@@ -303,7 +310,86 @@ export class TraceStore {
       console.warn('[vinyan] updateShadowValidation failed (best-effort):', err);
     }
   }
+
+  /**
+   * A8 / T2 — query traces by governance facets. Uses the denormalized
+   * `routing_decision_id`, `policy_version`, `governance_actor`, and
+   * `decision_timestamp` columns for index-friendly scans.
+   *
+   * Legacy traces with NULL governance columns are excluded from facet
+   * filters but counted accurately when no filters are supplied — caller
+   * controls scope via filter presence.
+   */
+  queryGovernance(filters: GovernanceTraceQuery = {}): GovernanceTraceQueryResult {
+    const normalized = normalizeGovernanceQuery(filters);
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (normalized.decisionId) {
+      where.push('routing_decision_id = ?');
+      params.push(normalized.decisionId);
+    }
+    if (normalized.policyVersion) {
+      where.push('policy_version = ?');
+      params.push(normalized.policyVersion);
+    }
+    if (normalized.governanceActor) {
+      where.push('governance_actor = ?');
+      params.push(normalized.governanceActor);
+    }
+    if (normalized.decisionFrom != null) {
+      where.push('decision_timestamp >= ?');
+      params.push(Math.floor(normalized.decisionFrom));
+    }
+    if (normalized.decisionTo != null) {
+      where.push('decision_timestamp <= ?');
+      params.push(Math.floor(normalized.decisionTo));
+    }
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+    const totalRow = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM execution_traces ${whereSql}`)
+      .get(...params) as { cnt: number };
+
+    // Order by persisted decision_timestamp when available, else by trace
+    // timestamp, so legacy rows still sort deterministically.
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM execution_traces ${whereSql}
+         ORDER BY COALESCE(decision_timestamp, timestamp) DESC, timestamp DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...params, normalized.limit, normalized.offset);
+
+    const traces = rows.map(rowToTrace);
+    return {
+      rows: traces.map(summarizeGovernanceTrace),
+      total: totalRow.cnt,
+      limit: normalized.limit,
+      offset: normalized.offset,
+    };
+  }
+
+  /**
+   * A8 / T2 — load the full trace whose persisted governance decision id
+   * matches `decisionId`. Returns the most recent matching row when the
+   * decision id was reused (should not happen, but defensive). Returns
+   * undefined when the decision id is unknown.
+   */
+  findTraceByDecisionId(decisionId: string): ExecutionTrace | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM execution_traces WHERE routing_decision_id = ?
+         ORDER BY COALESCE(decision_timestamp, timestamp) DESC, timestamp DESC LIMIT 1`,
+      )
+      .get(decisionId);
+    return row ? rowToTrace(row) : undefined;
+  }
 }
+
+/** Re-export so callers don't have to import the helper module directly. */
+export { GOVERNANCE_QUERY_DEFAULT_LIMIT };
 
 // ── Row → ExecutionTrace deserialization ────────────────────────────────
 

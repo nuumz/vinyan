@@ -299,6 +299,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       engineRegistry: orchestrator.engineRegistry,
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
+      degradationStatus: orchestrator.degradationStatus,
       a2aManager,
       costLedger: orchestrator.costLedger,
       budgetEnforcer: orchestrator.budgetEnforcer,

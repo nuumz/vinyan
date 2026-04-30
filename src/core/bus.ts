@@ -1700,6 +1700,19 @@ export interface VinyanBusEvents {
   'workflow:todo_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowTodoUpdatedEvent;
   'workflow:subtasks_planned': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtasksPlannedEvent;
   'workflow:subtask_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtaskUpdatedEvent;
+  /**
+   * COMPETITION-mode synthesizer's structured verdict. Emitted ONLY after
+   * the synthesis output's fenced JSON block parses against
+   * {@link import('../orchestrator/workflow/stage-manifest.ts').WinnerVerdict}
+   * AND `winnerAgentId` (when non-null) is in the participating delegate
+   * set. Absence of this event ⇒ no winner declared (legacy turn,
+   * non-competition, parse failed, or hallucinated id) — UI must NEVER
+   * infer winners from agent order or speed.
+   *
+   * `winnerAgentId === null` is a deliberate "no clear winner / tie"
+   * verdict and is distinct from "event never emitted".
+   */
+  'workflow:winner_determined': import('../orchestrator/workflow/stage-manifest.ts').WorkflowWinnerDeterminedEvent;
 
   'workflow:partial_failure_decision_provided': {
     taskId: string;

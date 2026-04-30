@@ -17,6 +17,14 @@ import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
+import {
+  ClaudeCodeAdapter,
+  CodingCliConfigSchema,
+  CodingCliWorkflowStrategy,
+  ExternalCodingCliController,
+  GitHubCopilotAdapter,
+} from './external-coding-cli/index.ts';
+import { CodingCliStore } from '../db/coding-cli-store.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
 import { AgentProposalStore } from '../db/agent-proposal-store.ts';
@@ -369,6 +377,21 @@ export interface Orchestrator {
    * populated when `config.plugins.enabled` is true.
    */
   pluginsReady?: Promise<PluginInitResult>;
+  /**
+   * External Coding CLI controller — wired when at least one provider
+   * adapter detects an installed CLI binary. Exposed so the API server
+   * can mount `/api/v1/coding-cli/*` and so tests can drive the
+   * controller directly.
+   */
+  codingCliController?: import('./external-coding-cli/external-coding-cli-controller.ts').ExternalCodingCliController;
+  /**
+   * Workflow strategy wrapping the controller — same instance used by the
+   * core-loop's external-coding-cli fast-path AND by workflow plans that
+   * explicitly emit `strategy: 'external-coding-cli'`.
+   */
+  codingCliStrategy?: import('./external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
+  /** Persistence backing for coding-cli sessions (mirrors `traceStore`). */
+  codingCliStore?: import('../db/coding-cli-store.ts').CodingCliStore;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -1504,6 +1527,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Approval Gate (A6: human-in-the-loop for high-risk tasks)
   const approvalGate = new ApprovalGateImpl(bus);
 
+  // External Coding CLI (Claude Code / GitHub Copilot) — controller +
+  // workflow strategy. Always constructed so:
+  //   1. The deterministic intent classifier can route to it.
+  //   2. The API server can mount /api/v1/coding-cli/* without an extra
+  //      bootstrap dance.
+  //   3. Missing binaries surface as `unsupported-capability` honestly
+  //      (A9) rather than silently failing as shell errors.
+  // Adapter detection runs lazily on first use; constructing them here is
+  // a pure object allocation (no subprocess spawned).
+  let codingCliController: ExternalCodingCliController | undefined;
+  let codingCliStrategy: CodingCliWorkflowStrategy | undefined;
+  let codingCliStoreInstance: CodingCliStore | undefined;
+  try {
+    if (db) {
+      codingCliStoreInstance = new CodingCliStore(db.getDb());
+    }
+    const cliConfig = CodingCliConfigSchema.parse({});
+    codingCliController = new ExternalCodingCliController({
+      bus,
+      approvalGate,
+      config: cliConfig,
+      adapters: [new ClaudeCodeAdapter(), new GitHubCopilotAdapter()],
+      store: codingCliStoreInstance,
+    });
+    codingCliStrategy = new CodingCliWorkflowStrategy(codingCliController);
+  } catch {
+    /* coding-cli wiring is best-effort — leave undefined and the
+     * pre-classifier surfaces an unsupported-capability outcome */
+  }
+
   // Forward Predictor (A7: prediction error as learning signal)
   let forwardPredictor: import('./forward-predictor-types.ts').ForwardPredictor | undefined;
   let predictionLedger: PredictionLedger | undefined;
@@ -2007,6 +2060,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             ...(skillsCfg?.simple?.match_top_k !== undefined ? { topK: skillsCfg.simple.match_top_k } : {}),
           }
         : undefined,
+    // External Coding CLI strategy — wired so the deterministic intent
+    // pre-classifier can dispatch through it. When undefined (require
+    // failure / store missing), the dispatch surfaces an honest
+    // unsupported-capability outcome rather than reverting to shell_exec.
+    codingCliStrategy,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -2611,6 +2669,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalGate,
     costLedger,
     budgetEnforcer,
+    // External Coding CLI surface — exposed for the API server (mounts
+    // /api/v1/coding-cli/*) and for tests to drive directly without
+    // bouncing through the orchestrator's executeTask path.
+    codingCliController,
+    codingCliStrategy,
+    codingCliStore: codingCliStoreInstance,
     // W2: optional plugin subsystem — populated when
     // `config.plugins.enabled` is true. pluginRegistry / messagingLifecycle
     // / pluginWarnings are filled in asynchronously by the init promise,
@@ -2651,6 +2715,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         }
       }
       approvalGate.clear();
+
+      // External Coding CLI — cancel any live sessions before tearing
+      // down workers. Sessions own subprocesses + chokidar watchers;
+      // letting them outlive the orchestrator leaks fds and stdout
+      // pipes that hold the loop alive.
+      if (codingCliController) {
+        try {
+          await raceTimeout(codingCliController.dispose(), 5_000);
+        } catch {
+          /* best-effort */
+        }
+      }
 
       // Kill warm worker subprocesses FIRST — without this, their stdin
       // pipes hold file descriptors that keep the parent event loop

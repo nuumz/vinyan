@@ -63,7 +63,7 @@ Output ONLY valid JSON matching this schema:
       "id": "step1",
       "description": "what this step does (human-readable)",
       "command": "OPTIONAL — required when strategy='direct-tool'; the exact shell command to execute (e.g. 'ls -la ~/Desktop'). Omit for non-direct-tool steps.",
-      "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input",
+      "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input | external-coding-cli",
       "agentId": "OPTIONAL — required when strategy='delegate-sub-agent' AND the goal asks for a specific persona / multi-agent diversity; the exact agent id from the [AVAILABLE AGENTS] roster (e.g. 'developer', 'architect'). Omit for non-delegate steps or when any persona will do.",
       "dependencies": ["step IDs this depends on"],
       "inputs": { "key": "$stepN.result — reference to a prior step's output" },
@@ -81,6 +81,9 @@ Strategy selection rules:
 - "llm-reasoning": analysis, summarization, decision-making (no side effects). Do NOT use this when the user asked for filesystem/shell data — the LLM cannot see the user's machine; pair it with a \`direct-tool\` step first.
 - "delegate-sub-agent": complex sub-tasks that need their own planning cycle
 - "human-input": when you genuinely cannot proceed without user clarification
+- "external-coding-cli": delegate the *whole* coding task to an external coding-CLI agent (Claude Code, GitHub Copilot CLI). Use this when the user explicitly asks Vinyan to drive an external CLI ("สั่งงาน claude code", "ask Claude Code to ...", "use copilot cli to ...") OR when prior turns established that Vinyan is operating on behalf of an external CLI delegation and the current step continues that delegation. The executor spawns the CLI, captures hook events, and runs Vinyan's verifier on the CLI's claim — you do NOT need to write the CLI invocation yourself; just produce ONE step with strategy='external-coding-cli' and put the CLI's task in \`description\`. Inputs MAY include \`{ "providerId": "claude-code" | "github-copilot", "mode": "headless" | "interactive" }\` to override the controller's default routing.
+
+When the goal is structurally a CLI delegation, do NOT decompose it into 5+ \`llm-reasoning\` steps that *describe* running CLI commands — that produces a plan the LLM hallucinates through. Emit ONE \`external-coding-cli\` step (with an optional preceding \`direct-tool\` ls/cat to validate input paths, and an optional trailing \`llm-reasoning\` step to summarize the CLI's verification report).
 
 Worked examples for filesystem / shell goals:
 - Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='List files in ~/Desktop', command='ls -la ~/Desktop'; step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
@@ -88,6 +91,12 @@ Worked examples for filesystem / shell goals:
 - Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='Run npm test', command='npm test'.
 - For \`direct-tool\` steps the \`command\` field MUST be a runnable shell command, never a natural-language sentence. \`description\` may be human-readable.
 - Never invent the contents of a file/directory in \`llm-reasoning\`; always read it first via \`direct-tool\`.
+
+Worked examples for external coding-CLI delegation:
+- Goal: "สั่งงาน claude code cli ช่วยรัน verify flow ใน /path/to/spec" → step1 strategy='direct-tool', command='ls -la /path/to/spec' (sanity check the path); step2 strategy='external-coding-cli', description='Verify the open-account flow against the design spec at /path/to/spec', inputs={"providerId": "claude-code", "mode": "headless"}; step3 strategy='llm-reasoning' depending on step2, description='Summarize the CLI verification report'.
+- Goal: "ask claude code to refactor src/foo.ts" → ONE step with strategy='external-coding-cli', description='Refactor src/foo.ts (pass clear acceptance criteria from the goal)', inputs={"providerId": "claude-code"}.
+- Goal: "use github copilot cli to scaffold a TypeScript project" → ONE step with strategy='external-coding-cli', description='Scaffold a TypeScript project per the user request', inputs={"providerId": "github-copilot"}.
+- ANTI-PATTERN — do NOT do this: "Generate and execute claude-code CLI commands to verify X" / "Generate and execute claude-code CLI commands to verify Y" / "Generate and execute claude-code CLI commands to verify Z" / ... as four \`llm-reasoning\` steps. The LLM cannot run the CLI from inside an llm-reasoning step. Use ONE \`external-coding-cli\` step and let the controller drive the CLI.
 
 Creative writing rules:
 - For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.
@@ -108,6 +117,13 @@ Multi-agent rules (when the user asks for "N agents" / "have agents debate/compe
   - Bad:  "Craft a creative narrative emphasizing storytelling and engagement"
   - Bad:  "Provide a guided answer focusing on the 'how' and 'why'"
 - Add a final \`llm-reasoning\` synthesis step (depends on all delegate steps) that combines the distinct agent outputs into the comparison/debate the user asked for.
+- For COMPETITION goals (the user explicitly asked to pick a winner / rank / compete: "แข่ง", "winner", "best of", "vote", "compete"), the synthesisPrompt MUST end with this exact instruction so the executor can extract a structured verdict:
+  > After your free-text answer, end the response with a fenced JSON block matching:
+  > \`\`\`json
+  > { "winner": "<agentId from the participating set, or null for a deliberate tie>", "reasoning": "one-sentence rationale", "scores": { "<agentId>": 0-10 integer, ... } }
+  > \`\`\`
+  > Do NOT replace the free-text answer with the JSON; both must be present, free-text first.
+  Use the integer 0-10 scale for scores (higher = better) and only include agentIds that actually participated. The JSON block is REQUIRED for COMPETITION goals; non-competition multi-agent (debate / comparison / parallel work) does NOT need it.
 
 Guidelines:
 - Start with a knowledge-query step to gather context when the goal is broad

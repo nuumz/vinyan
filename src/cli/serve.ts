@@ -325,6 +325,11 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       federationBudgetPool: orchestrator.federationBudgetPool,
       marketScheduler: orchestrator.marketScheduler,
       capabilityModel: orchestrator.capabilityModel,
+      // External Coding CLI — surfaces /api/v1/coding-cli/* (sessions,
+      // approvals, follow-up messages, event replay) when the controller
+      // is constructed by the factory.
+      codingCliController: orchestrator.codingCliController,
+      codingCliStore: orchestrator.codingCliStore,
       workspace,
       defaultProfile: resolvedProfile.name,
     },

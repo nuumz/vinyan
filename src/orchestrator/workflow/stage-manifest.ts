@@ -355,6 +355,129 @@ export interface WorkflowSubtasksPlannedEvent {
   subtasks: MultiAgentSubtask[];
 }
 
+/**
+ * Structured verdict shape produced by the synthesis step on COMPETITION
+ * turns. The synthesizer is asked to end its free-text answer with a
+ * fenced ```json block matching this shape so the UI can render a winner
+ * badge + reasoning chip without parsing prose. Validation happens with
+ * a tolerant runtime check (no zod dep here — keep stage-manifest.ts
+ * dep-free); see {@link parseWinnerVerdict}.
+ *
+ * Constraints applied at parse time:
+ *   - `winner` MUST be either null (deliberate tie) or a string id that
+ *     appears in the participating-delegate `agentId` set; hallucinated
+ *     ids are rejected.
+ *   - `reasoning` MUST be a non-empty string.
+ *   - `scores` if present MUST map every participating agentId to an
+ *     integer in [0,10]; bad shape ⇒ scores dropped, verdict still emits.
+ */
+export interface WinnerVerdict {
+  /** Winning agentId, or null for an explicit "no clear winner" verdict. */
+  winner: string | null;
+  /** Optional second-place agentId (same id-validation rules). */
+  runnerUp?: string | null;
+  /** Free-text rationale shown under the winning row. */
+  reasoning: string;
+  /** Optional per-agent scores. Pinned scale: integer 0–10, higher = better. */
+  scores?: Record<string, number>;
+}
+
+/** Bus payload for `workflow:winner_determined`. */
+export interface WorkflowWinnerDeterminedEvent {
+  taskId: string;
+  sessionId?: string;
+  winnerAgentId: string | null;
+  runnerUpAgentId?: string | null;
+  reasoning: string;
+  scores?: Record<string, number>;
+  /** Planner version at decision time, for replay-time backfills. */
+  plannerVersion?: string;
+}
+
+/**
+ * Extract the WinnerVerdict from a synthesis-step output. Looks for the
+ * LAST fenced ```json block in the text (the synthesizer is instructed to
+ * place it at the end), parses, and validates against {@link WinnerVerdict}
+ * + the participating agent set.
+ *
+ * Returns `undefined` when the block is absent, malformed, or when the
+ * winner id is hallucinated (not in the candidate set). Callers must treat
+ * undefined as "no event to emit" — never as a tie.
+ *
+ * `winner === null` IS a valid verdict (deliberate tie); only the absence
+ * of any structured block returns undefined.
+ */
+export function parseWinnerVerdict(
+  synthesisOutput: string,
+  participatingAgentIds: ReadonlyArray<string>,
+): WinnerVerdict | undefined {
+  // Match the LAST fenced json block; greedy/global regex with backref.
+  // The synthesizer prompt asks for the verdict block at the end of the
+  // answer, but we tolerate explanatory text after it.
+  const fence = /```json\s*([\s\S]*?)\s*```/gi;
+  let lastMatch: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(synthesisOutput)) !== null) lastMatch = m;
+  if (!lastMatch) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(lastMatch[1] ?? '');
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const obj = parsed as Record<string, unknown>;
+
+  // `winner` may be null (deliberate tie) or a string id. Anything else is
+  // a parse failure — refuse to emit rather than guess.
+  const rawWinner = obj.winner;
+  let winner: string | null;
+  if (rawWinner === null) {
+    winner = null;
+  } else if (typeof rawWinner === 'string' && rawWinner.trim().length > 0) {
+    if (!participatingAgentIds.includes(rawWinner)) return undefined; // hallucinated id
+    winner = rawWinner;
+  } else {
+    return undefined;
+  }
+
+  if (typeof obj.reasoning !== 'string' || obj.reasoning.trim().length === 0) {
+    return undefined;
+  }
+  const reasoning = obj.reasoning;
+
+  let runnerUp: string | null | undefined;
+  if (obj.runnerUp === null) {
+    runnerUp = null;
+  } else if (typeof obj.runnerUp === 'string' && obj.runnerUp.trim().length > 0) {
+    runnerUp = participatingAgentIds.includes(obj.runnerUp) ? obj.runnerUp : undefined;
+  }
+
+  let scores: Record<string, number> | undefined;
+  if (obj.scores && typeof obj.scores === 'object') {
+    const candidate: Record<string, number> = {};
+    for (const [k, v] of Object.entries(obj.scores as Record<string, unknown>)) {
+      if (
+        participatingAgentIds.includes(k) &&
+        typeof v === 'number' &&
+        Number.isInteger(v) &&
+        v >= 0 &&
+        v <= 10
+      ) {
+        candidate[k] = v;
+      }
+    }
+    if (Object.keys(candidate).length > 0) scores = candidate;
+  }
+
+  return {
+    winner,
+    ...(runnerUp !== undefined ? { runnerUp } : {}),
+    reasoning,
+    ...(scores ? { scores } : {}),
+  };
+}
+
 /** Bus payload for `workflow:subtask_updated`. */
 export interface WorkflowSubtaskUpdatedEvent {
   taskId: string;

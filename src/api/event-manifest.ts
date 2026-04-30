@@ -129,6 +129,11 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'workflow:todo_updated', sse: true, record: true, scope: 'task' },
   { event: 'workflow:subtasks_planned', sse: true, record: true, scope: 'task' },
   { event: 'workflow:subtask_updated', sse: true, record: true, scope: 'task' },
+  // Competition synthesizer's structured verdict — emitted only after the
+  // synthesis step's fenced JSON block validated and the winner id passed
+  // the participating-set check. Recorded so process replay reconstructs
+  // the trophy badge from event log alone.
+  { event: 'workflow:winner_determined', sse: true, record: true, scope: 'task' },
 
   // ── Workflow: approval gate + step transitions + delegation ─────────
   { event: 'workflow:plan_ready', sse: true, record: true, scope: 'task' },

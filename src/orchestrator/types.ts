@@ -236,6 +236,24 @@ export interface IntentResolution {
   syntheticAgentId?: string;
   /** Local-first knowledge contexts when the research branch surfaced evidence. */
   knowledgeUsed?: KnowledgeContext[];
+  /**
+   * External Coding CLI delegation request — set by the deterministic
+   * external-coding-cli pre-classifier when the user asks Vinyan to delegate
+   * work to Claude Code / GitHub Copilot CLI. The core-loop dispatches
+   * directly through `deps.codingCliStrategy` (or surfaces an honest
+   * unsupported-capability outcome when the strategy is not wired) instead
+   * of routing through `direct-tool` `shell_exec`. A6: external CLI is a
+   * worker, never an authority.
+   */
+  externalCodingCli?: {
+    providerId: 'claude-code' | 'github-copilot' | 'auto';
+    mode: 'headless' | 'interactive' | 'auto';
+    taskText: string;
+    cwd?: string;
+    targetPaths?: string[];
+    requiresVerification?: boolean;
+    reason: string;
+  };
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */

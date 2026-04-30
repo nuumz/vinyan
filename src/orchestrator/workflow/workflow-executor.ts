@@ -25,6 +25,7 @@ import { buildResearchStep, detectResearchCues, prependResearchStep } from './re
 import { formatSessionTranscript } from './session-transcript.ts';
 import {
   buildStageManifest,
+  parseWinnerVerdict,
   type MultiAgentSubtask,
   type MultiAgentSubtaskErrorKind,
   type WorkflowStageManifest,
@@ -139,6 +140,47 @@ function emitTodoUpdate(
     todoId,
     status,
     ...(failureReason ? { failureReason } : {}),
+  });
+}
+
+/**
+ * COMPETITION-mode winner emission. Parses the synthesizer's free-text
+ * answer for a fenced ```json block matching {@link WinnerVerdict}. Emits
+ * `workflow:winner_determined` only when ALL of the following hold:
+ *   - the stage manifest's groupMode is 'competition' (not debate /
+ *     comparison / pipeline / parallel — those don't pick a winner)
+ *   - the JSON parses + validates
+ *   - the winner agentId is in the participating delegate set (or null
+ *     for a deliberate "no clear winner" verdict — null is a legitimate
+ *     value, NOT the same as "absence of event")
+ *
+ * Failure to emit is silent. The synthesis answer itself is unaffected
+ * either way; this function is purely additive observability.
+ */
+function tryEmitWinnerVerdict(
+  deps: WorkflowExecutorDeps,
+  input: TaskInput,
+  plan: WorkflowPlan,
+  synthesisOutput: string,
+): void {
+  if (!deps.bus || !deps.stageRuntime) return;
+  if (deps.stageRuntime.manifest.groupMode !== 'competition') return;
+  // Build the participating-agent set from the manifest's delegate
+  // subtasks — this is the same set the planner authorized, so a
+  // hallucinated "winner: foo" never sneaks through.
+  const participating = deps.stageRuntime.manifest.multiAgentSubtasks
+    .map((s) => s.agentId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  if (participating.length === 0) return;
+  const verdict = parseWinnerVerdict(synthesisOutput, participating);
+  if (!verdict) return;
+  deps.bus.emit('workflow:winner_determined', {
+    taskId: input.id,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    winnerAgentId: verdict.winner,
+    ...(verdict.runnerUp !== undefined ? { runnerUpAgentId: verdict.runnerUp } : {}),
+    reasoning: verdict.reasoning,
+    ...(verdict.scores ? { scores: verdict.scores } : {}),
   });
 }
 
@@ -591,13 +633,13 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       });
       return buildResult(
         plan,
-        input.id,
+        input,
         input.budget.maxDurationMs,
         stepResults,
         'failed',
         performance.now() - startTime,
         totalTokens,
-        deps,
+        depsWithStage,
       );
     }
 
@@ -781,13 +823,13 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
   return buildResult(
     plan,
-    input.id,
+    input,
     input.budget.maxDurationMs,
     stepResults,
     status,
     performance.now() - startTime,
     totalTokens,
-    deps,
+    depsWithStage,
   );
 }
 
@@ -1517,7 +1559,7 @@ function interpolateInputs(inputs: Record<string, string>, priorResults: Map<str
 
 async function buildResult(
   plan: WorkflowPlan,
-  taskId: string,
+  input: TaskInput,
   taskTimeoutMs: number,
   stepResults: Map<string, WorkflowStepResult>,
   status: WorkflowResult['status'],
@@ -1525,6 +1567,7 @@ async function buildResult(
   totalTokens: number,
   deps: WorkflowExecutorDeps,
 ): Promise<WorkflowResult> {
+  const taskId = input.id;
   const allResults = [...stepResults.values()];
   const failedSteps = allResults.filter((r) => r.status === 'failed');
   const skippedSteps = allResults.filter((r) => r.status === 'skipped');
@@ -1640,10 +1683,16 @@ async function buildResult(
     const isSynthesisStep = lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
     const hasUsableOutput = !!lastResult && lastResult.status === 'completed' && lastResult.output.trim().length > 0;
     if (isLastSink && isSynthesisStep && hasUsableOutput) {
+      // COMPETITION-mode synthesizer's structured verdict — fenced JSON
+      // block at the end of the synthesis answer (see WinnerVerdict).
+      // Emit only when the verdict parses + the winner id is in the
+      // participating delegate set; absence ⇒ no event (UI must NEVER
+      // infer winners from order). The free-text answer is unchanged.
+      tryEmitWinnerVerdict(deps, input, plan, lastResult!.output);
       return {
         status,
         stepResults: allResults,
-        synthesizedOutput: lastResult.output,
+        synthesizedOutput: lastResult!.output,
         totalTokensConsumed: totalTokens,
         totalDurationMs: Math.round(durationMs),
       };

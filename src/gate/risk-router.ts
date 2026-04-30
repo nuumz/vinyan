@@ -162,7 +162,28 @@ export function routeByRisk(
   };
 }
 
-/** R3: Canonical model/budget config for a routing level. Exported for adjustment layers. */
+/**
+ * R3: Canonical budget config + tier-label hint for a routing level.
+ *
+ * IMPORTANT: `model` here is a TIER-LABEL HINT, not a real provider id.
+ * The strings `'claude-haiku'` / `'claude-sonnet'` / `'claude-opus'` are
+ * chosen for human readability in early-stage logs (before the executable
+ * engine is resolved) — they do NOT necessarily match anything registered
+ * in the live `LLMProviderRegistry`. Under an OpenRouter setup, for
+ * example, the registered provider id for L1 is something like
+ * `openrouter/fast/google/gemma-4-26b-a4b-it:free`.
+ *
+ * The phase-predict step refreshes `routing.model` to the actual provider
+ * id resolvable in the registry (preferring engineSelector's pick when
+ * trust-weighted routing is wired, otherwise falling back to the tier
+ * default returned by `selectForRoutingLevel`). All downstream consumers
+ * (`modelUsed` traces, `cli-progress-listener` display, `phase-learn`'s
+ * `providerTrustStore.recordOutcome`, `worker-pool`'s engine lookup) read
+ * the refreshed value and therefore see the truth.
+ *
+ * Exported for adjustment layers (`withLevel`, `applyPredictionEscalation`)
+ * that re-seed budgets when the routing level changes.
+ */
 export const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
   0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
   1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },

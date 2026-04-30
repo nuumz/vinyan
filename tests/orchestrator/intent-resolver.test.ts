@@ -1014,3 +1014,68 @@ describe('fallbackStrategy', () => {
     expect(fallbackStrategy('general-reasoning', 'execute', 'none')).toBe('agentic-workflow');
   });
 });
+
+// ---------------------------------------------------------------------------
+// External Coding CLI pre-classifier — must run BEFORE direct-tool
+// shell_exec so NL "ask Claude Code CLI" requests don't fall through to
+// the shell metacharacter parser.
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent — external-coding-cli pre-classifier', () => {
+  test('Thai delegation with backticked path routes to agentic-workflow + externalCodingCli', async () => {
+    // The original failure case. No LLM provider needed — the classifier is
+    // purely deterministic and runs before any LLM call.
+    const result = await resolveIntent(
+      makeInput('สั่งงาน claude code cli ช่วยรัน verify flow เปิดบัญชีกองทุน `/Users/phumin.k/appl/Docs/s1_design_spec`'),
+      makeDeps(),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.externalCodingCli).toBeDefined();
+    expect(result.externalCodingCli?.providerId).toBe('claude-code');
+    expect(result.externalCodingCli?.targetPaths).toContain(
+      '/Users/phumin.k/appl/Docs/s1_design_spec',
+    );
+    // Crucially — NOT direct-tool / shell_exec.
+    expect(result.strategy).not.toBe('direct-tool');
+    expect(result.directToolCall).toBeUndefined();
+    expect(result.reasoningSource).toBe('deterministic');
+  });
+
+  test('English "ask claude code to ..." routes to externalCodingCli', async () => {
+    const result = await resolveIntent(
+      makeInput('ask claude code cli to refactor src/foo.ts'),
+      makeDeps(),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.externalCodingCli?.providerId).toBe('claude-code');
+  });
+
+  test('"use gh copilot to ..." routes to externalCodingCli with copilot provider', async () => {
+    const result = await resolveIntent(
+      makeInput('use gh copilot to suggest a fix'),
+      makeDeps(),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.externalCodingCli?.providerId).toBe('github-copilot');
+  });
+
+  test('does NOT trigger on "what is claude code?" inquiry', async () => {
+    // Without an LLM provider, the resolver throws on the LLM tier — but
+    // the pre-classifier should fall through cleanly first. We verify by
+    // checking that no externalCodingCli payload is set when the LLM tier
+    // does run.
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'conversational',
+        refinedGoal: 'User asking about Claude Code',
+        reasoning: 'inquiry',
+        confidence: 0.9,
+      }),
+    );
+    const result = await resolveIntent(
+      makeInput('what is claude code?'),
+      makeDeps(provider),
+    );
+    expect(result.externalCodingCli).toBeUndefined();
+  });
+});

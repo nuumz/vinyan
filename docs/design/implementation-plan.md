@@ -1,7 +1,9 @@
 # Vinyan Implementation Plan
 
+> ⚠️ **Frozen 2026-04-03.** Phase 6 implementation landed 2026-04-27; A8/A9/A10 MVPs landed 2026-04-29+. For current phase status see [CLAUDE.md](../../CLAUDE.md) "Phase Status" table. This file remains as the historical phased roadmap.
+>
 > Generated: 2026-03-29 | Updated: 2026-04-03 | Branch: `feature/main`
-> **Current state:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next: EHD Phase 5 (ECP wire format) or new capability.
+> **State as of freeze:** Phases 0-6 complete (1298+ tests, 0 type errors). EHD Phases 0-4 complete (SL fusion wired). EO Reconception implemented (8 concepts + DAG Integration). Next at the time: EHD Phase 5 (ECP wire format) or new capability.
 > Source of truth: [concept.md](../foundation/concept.md) §12, [tdd.md](../spec/tdd.md) §4–§19, [decisions.md](../architecture/decisions.md), [w1-contracts.md](../spec/w1-contracts.md) (frozen cross-track contract surface for W1–W5 parallel work)
 
 ---

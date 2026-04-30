@@ -6,8 +6,8 @@
 > For vision and axiom mapping → [vinyan-os-architecture.md](../architecture/vinyan-os-architecture.md).
 > For ECP full protocol → [ecp-system-design.md](ecp-system-design.md).
 
-**Date:** 2026-04-08
-**Status:** v4 — clean rewrite. All code verified against staging. K1.5 done. K1.0-K1.4 code exists, wiring pending. K2 code exists, wiring pending.
+**Date:** 2026-04-08 (last revalidated 2026-04-30 — see status banner above)
+**Status:** v4 — clean rewrite. K1.0–K1.5 are now wired and ✅ Active (see CLAUDE.md). K2 still 🔧 Built, awaiting provider trust data. Per-section "wiring pending" notes below are historical; refer to CLAUDE.md for live status.
 **Audience:** Implementors (human or agent)
 
 ---
@@ -24,18 +24,20 @@ K1 hardens the kernel for multi-agent safety. K2 enables concurrent dispatch + t
 
 ### Current Status at a Glance
 
+> Snapshot below is the original 2026-04-08 audit. As of 2026-04-30 all K1.0–K1.5 items are wired and ✅ Active in the default `vinyan run` (per CLAUDE.md Phase Status). K2 remains 🔧 Built, gated on provider trust data. The matrix is preserved for historical traceability.
+
 ```
-✅ Done:
+✅ Done (original snapshot):
   K1.5 Guardrails block-not-strip — validateInput() wired at executeTask() entry
 
-🔧 Code exists, wiring pending:
+🔧 Code exists, wiring pending (now wired — see CLAUDE.md):
   K1.2 Agent Contract    — agent-contract.ts (110 LOC)
   K1.3 Tool Authorization — tool-authorization.ts (93 LOC)
   K1.4 ECP Validation    — ecp-validation.ts (staged)
   K2.1 Priority Router   — priority-router.ts (59 LOC) + provider-trust-store.ts (89 LOC)
   K2.2 Task Queue        — task-queue.ts (66 LOC)
 
-⚠️ Needs new code:
+⚠️ Needs new code (now landed — see CLAUDE.md):
   K1.0 confidence_source enforcement — ~20 LOC in gate.ts (A5 violation fix)
   K1.1 Contradiction escalation      — ~20 LOC in core-loop.ts
 ```

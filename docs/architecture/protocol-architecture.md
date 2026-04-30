@@ -205,7 +205,7 @@ Network latency makes `temporal_context` operationally critical:
 
 ### 4.1 Expanded MCP Server
 
-Current: 4 tools. Target: 8 tools.
+**4 tools shipped. 4 additional tools designed (PH5.5) — not on the active roadmap.** The "New" rows below describe the design target for the PH5.5 expansion; they are not currently implemented in `src/mcp/server.ts`.
 
 | Tool | Status | ECP Operation | Description |
 |:-----|:-------|:-------------|:-----------|
@@ -213,10 +213,10 @@ Current: 4 tools. Target: 8 tools.
 | `vinyan_type_check` | ✅ Exists | `ecp/verify` → type oracle | Type checking |
 | `vinyan_blast_radius` | ✅ Exists | `ecp/verify` → dep oracle | Dependency blast radius |
 | `vinyan_query_facts` | ✅ Exists | World Graph query | Query verified facts |
-| `vinyan_run_gate` | **New** | Full gate pipeline | Risk route → multi-oracle → aggregate |
-| `vinyan_risk_assess` | **New** | Risk scoring | Compute risk score for a change |
-| `vinyan_query_evidence` | **New** | Evidence retrieval | Get evidence chain for a fact |
-| `vinyan_list_oracles` | **New** | Registry query | Discover available engines + capabilities |
+| `vinyan_run_gate` | 📋 Designed (PH5.5) | Full gate pipeline | Risk route → multi-oracle → aggregate |
+| `vinyan_risk_assess` | 📋 Designed (PH5.5) | Risk scoring | Compute risk score for a change |
+| `vinyan_query_evidence` | 📋 Designed (PH5.5) | Evidence retrieval | Get evidence chain for a fact |
+| `vinyan_list_oracles` | 📋 Designed (PH5.5) | Registry query | Discover available engines + capabilities |
 
 **New tool schemas:**
 

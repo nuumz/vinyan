@@ -1,6 +1,6 @@
 # Agentic Worker Protocol (AWP) — System Design
 
-> Status: **DRAFT v6 — implementation-ready after deep codebase cross-reference**
+> Status: **IMPLEMENTED v6** — Phase 6 is ✅ Active per CLAUDE.md (2026-04-30). This document is now reference-only; runtime contract lives in `src/orchestrator/agent/agent-loop.ts` + `src/orchestrator/worker/worker-pool.ts`.
 > Author: design session 2026-04-02
 > Scope: Phase 6 — Agentic Tool Use & Worker Delegation
 > Changelog:

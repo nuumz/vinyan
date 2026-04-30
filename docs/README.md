@@ -94,9 +94,7 @@ defined, partial / stub implementation.
 - [`design/semantic-task-understanding-system-design.md`](design/semantic-task-understanding-system-design.md) — STU phases. **Phase A–B + comprehension live; D in ACR; E+ pending.**
 - [`design/tui-redesign.md`](design/tui-redesign.md) — TUI redesign spec. **To-Be — designed, awaiting dev resource.**
 - [`design/vinyan-os-ecosystem-plan.md`](design/vinyan-os-ecosystem-plan.md) — O1–O5 ecosystem activation recipe. **O1 wired by default; O2–O5 require config flag.**
-- [`design/autonomous-orchestrator-v1.md`](design/autonomous-orchestrator-v1.md) — Wave 1–6 outer-loop upgrade design. **Shipped behind feature flags (W3/W5b/W6 default ON; W1/W2/W4/W5a default OFF).**
-- [`design/book-integration-implementation-plan.md`](design/book-integration-implementation-plan.md) — Book-integration impl plan (multiple waves landed in code).
-- [`design/ecp-system-design.md`](design/ecp-system-design.md) — **To-Be — describes a hypothetical ECP v2. ECP v2 has NOT been released. Read for ideas, do not implement from this doc.**
+- [`design/book-integration-implementation-plan.md`](design/book-integration-implementation-plan.md) — Book-integration impl plan (multiple waves landed in code). Supersedes the archived `autonomous-orchestrator-v1.md`.
 - [`design/commonsense-substrate-system-design.md`](design/commonsense-substrate-system-design.md) — **To-Be (📋 Designed).** Defeasible-prior knowledge layer + Common Sense Oracle. Phase 2.5; extends A1/A3/A5; reuses sleep-cycle promotion path.
 
 ### Research (background, not active planning)

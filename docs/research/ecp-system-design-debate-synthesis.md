@@ -2,7 +2,7 @@
 
 > **Document boundary**: This document owns the system design review verdict for ECP evolution.
 > For strategic debate (should we? what's missing?), see [ecp-debate-synthesis.md](ecp-debate-synthesis.md).
-> For the design doc itself, see [../design/ecp-system-design.md](../design/ecp-system-design.md).
+> For the design doc itself, see [../archive/ecp-system-design.md](../archive/ecp-system-design.md). (Archived: ECP v2 brainstorm; not implemented. Authority for ECP wire protocol is `spec/ecp-spec.md`.)
 
 ---
 

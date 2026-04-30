@@ -65,15 +65,15 @@ For sub-module detail, read directories directly.
 
 ## Phase Status
 
-> Verify against code before relying on this — drifts over time. Last reviewed: 2026-04-25.
+> Verify against code before relying on this — drifts over time. Last reviewed: 2026-04-30.
 
 Legend: **✅ Active** = wired in default `vinyan run` | **🔧 Built** = code+tests exist, needs config/data | **📋 Designed** = partial/stub
 
 | Phase | Scope | Status | Activation Condition |
 |-------|-------|--------|---------------------|
 | 0 | Oracle Gate | ✅ Active | Always |
-| 1 | Autonomous Agent | ✅ Active | `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` |
-| 6 | Agentic Worker Protocol | ✅ Active | Always (agent-loop.ts) |
+| 1 | Autonomous Agent | ✅ Active | Wired always; LLM dispatch requires `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` (no key → empty provider registry, L0 no-op) |
+| 6 | Agentic Worker Protocol | ✅ Active | Deps wired by default (`factory.ts:setAgentLoopDeps`); invoked at L2+ (`phase-generate.ts`). L0/L1 use single-shot dispatch. |
 | K1 | Kernel Hardening | ✅ Active | Always |
 | 2 | Evolution Engine | 🔧 Built | DB + ≥100 traces |
 | 3 | Self-Model | 🔧 Built | DB; SelfModelStub fallback |
@@ -140,7 +140,12 @@ grep -rn "TODO\|FIXME\|HACK" src/ --include="*.ts"
 
 Architectural gaps: `docs/architecture/decisions.md` and `docs/spec/tdd.md` §15 (Open Questions).
 
-Currently open: L3 container isolation, active task resumption (auto-abandons), Biome lint cleanup.
+Currently open:
+- L3 container isolation (Phase 3 target)
+- Synchronous four-phase commit for L2/L3 — shadow execution currently runs async post-return (`shadow-runner.ts:enqueue`); concept §7 specifies blocking Shadow → Commit. Acceptable for Phase 0/1; must become blocking before Phase 2 container hardening.
+- Active task resumption (auto-abandons on restart)
+- Biome lint cleanup
+- A8/A9/A10 broader enforcement coverage (MVPs landed; see §1.1.1 in concept.md for promotion gates)
 
 ## Concurrent Sessions
 

@@ -4,7 +4,7 @@
 
 > **Document boundary**: Concrete implementation design for K1 (kernel hardening) and K2 (multi-agent dispatch).
 > For vision and axiom mapping → [vinyan-os-architecture.md](../architecture/vinyan-os-architecture.md).
-> For ECP full protocol → [ecp-system-design.md](ecp-system-design.md).
+> For ECP full protocol → [ecp-spec.md](../spec/ecp-spec.md).
 
 **Date:** 2026-04-08 (last revalidated 2026-04-30 — see status banner above)
 **Status:** v4 — clean rewrite. K1.0–K1.5 are now wired and ✅ Active (see CLAUDE.md). K2 still 🔧 Built, awaiting provider trust data. Per-section "wiring pending" notes below are historical; refer to CLAUDE.md for live status.

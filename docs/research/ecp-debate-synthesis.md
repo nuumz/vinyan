@@ -1,7 +1,7 @@
 # ECP Debate Synthesis: Transform Vinyan into a Truly Autonomous Orchestrator
 
 > **Document boundary**: This document owns the strategic analysis and consensus roadmap for ECP evolution.
-> For v2 schema/behavioral design, see [ecp-system-design.md](../design/ecp-system-design.md).
+> For v2 schema/behavioral design, see [../archive/ecp-system-design.md](../archive/ecp-system-design.md). (Archived: ECP v2 brainstorm; not implemented. Authority for ECP wire protocol is `spec/ecp-spec.md`.)
 > For original brainstorm, see [ecp-migration-brainstorm.md](ecp-migration-brainstorm.md).
 
 ## Method

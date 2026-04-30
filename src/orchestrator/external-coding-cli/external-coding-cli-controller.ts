@@ -271,12 +271,37 @@ export class ExternalCodingCliController {
       return { session, claim: null, verification: { passed: false, oracleVerdicts: [], predictionError: false, reason: 'provider unsupported' } as never };
     }
     const headless = await session.runHeadless();
-    const claim = headless.result;
     const verifier = this.options.buildVerifier
       ? this.options.buildVerifier(session.task)
       : new CodingCliVerifier({ cwd: session.task.cwd });
+    // Fallback chain for the final claim:
+    //   1. headless.result        → parsed CODING_CLI_RESULT (literal or
+    //                                inside stream-json result envelope)
+    //   2. synthesizedClaim(...)  → when the CLI exited cleanly but did
+    //                                NOT emit the envelope at all (most
+    //                                Claude Code interactions). A9 graceful
+    //                                degradation; Vinyan's verifier still
+    //                                runs and has final say (A1).
+    //   3. fail-with-reason       → process crashed, killed, or produced
+    //                                no usable output.
+    let claim = headless.result;
     if (!claim) {
-      session.finalize('failed', 'no result envelope emitted');
+      const synthesized = synthesizeClaimFromSession(session, headless);
+      if (synthesized) {
+        claim = synthesized;
+        this.options.bus.emit('coding-cli:result_reported', {
+          taskId: session.task.taskId,
+          sessionId: session.task.sessionId,
+          codingCliSessionId: session.id,
+          providerId: session.adapterId as CodingCliProviderId,
+          state: session.state(),
+          ts: Date.now(),
+          claim,
+        });
+      }
+    }
+    if (!claim) {
+      session.finalize('failed', 'no result envelope emitted and no usable session output to synthesize from');
       return { session, claim, verification: { passed: false, oracleVerdicts: [], predictionError: false, reason: 'no result' } as never };
     }
     const baseEvent = {
@@ -405,4 +430,121 @@ export class ExternalCodingCliController {
       rawMeta: { providerSessionId: session.providerSessionIdOrNull() },
     };
   }
+}
+
+// ── Claim synthesis ─────────────────────────────────────────────────────
+
+/**
+ * Synthesize a partial CodingCliResult from session state when the CLI
+ * exits cleanly but does not emit a structured CODING_CLI_RESULT envelope.
+ *
+ * This is a graceful-degradation path (A9). Most Claude Code interactions
+ * do not naturally end with a fenced "<CODING_CLI_RESULT>{...}</...>"
+ * block — the model is trained to be conversational, not to emit
+ * machine-readable envelopes on demand. Failing every such session as
+ * "no result envelope emitted" makes the system unusable in practice.
+ *
+ * Synthesis rules:
+ *   - status: 'partial' (NEVER 'completed' — only Vinyan's verifier can
+ *     promote to completed via A1).
+ *   - claimedPassed: false (we cannot infer pass/fail without the
+ *     envelope; let the verifier decide).
+ *   - changedFiles: from session.changedFiles() — populated by Edit/Write
+ *     tool events + workspace watcher.
+ *   - commandsRun: from session.commands() — populated by Bash/shell tool
+ *     events.
+ *   - summary: extracted from the last stream-json `result` line's
+ *     `.result` text (truncated). Falls back to a generic message.
+ *
+ * Returns null when there is genuinely nothing to synthesize from
+ * (process crashed before producing any output / non-zero exit code).
+ */
+function synthesizeClaimFromSession(
+  session: CodingCliSession,
+  headless: { stdout: string; stderr: string; exitCode: number | null },
+): CodingCliResult | null {
+  // Crashed / killed / non-zero exit → no synthesis. The runner already
+  // surfaced the failure honestly; we should not invent a partial claim.
+  if (headless.exitCode !== 0 && headless.exitCode !== null) return null;
+
+  const summary = extractFinalAssistantText(headless.stdout);
+  const changedFiles = session.changedFiles();
+  const commandsRun = session.commands();
+
+  // If we have absolutely no signal — no summary text, no file changes,
+  // no commands — there is nothing to verify against. Don't synthesize a
+  // ghost claim; let the controller's "no result" path fire.
+  if (!summary && changedFiles.length === 0 && commandsRun.length === 0) {
+    return null;
+  }
+
+  return {
+    status: 'partial',
+    providerId: session.adapterId as CodingCliProviderId,
+    summary: summary || '(CLI did not emit a structured result envelope; synthesized claim from observed activity)',
+    changedFiles,
+    commandsRun,
+    testsRun: [],
+    decisions: [],
+    verification: { claimedPassed: false, details: 'synthesized — CLI did not self-report verification status' },
+    blockers: [],
+    requiresHumanReview: true,
+  };
+}
+
+/**
+ * Best-effort extraction of the last assistant text from a stream-json
+ * stdout buffer. Walks newest-to-oldest looking for the SDK's final
+ * `{"type":"result","result":"<text>",...}` envelope; falls back to
+ * concatenating all `assistant` message text deltas if no result line
+ * was emitted (rare — the SDK always emits one on clean exit).
+ *
+ * Truncates to 4 KiB so a synthesized summary doesn't blow up the
+ * verifier or the UI's result card.
+ */
+function extractFinalAssistantText(stdout: string): string {
+  const MAX = 4 * 1024;
+  const lines = stdout.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    let parsed: { type?: string; result?: unknown } | null = null;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || parsed.type !== 'result') continue;
+    const text = typeof parsed.result === 'string' ? parsed.result : '';
+    if (text) return text.length > MAX ? `${text.slice(0, MAX)}…` : text;
+  }
+  // Fallback: concatenate assistant text deltas. Emit empty if no
+  // assistant content was found at all.
+  const collected: string[] = [];
+  let total = 0;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    let parsed: { type?: string; message?: { content?: unknown[] } } | null = null;
+    try {
+      parsed = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (!parsed || parsed.type !== 'assistant') continue;
+    const content = parsed.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (item && typeof item === 'object' && (item as { type?: string }).type === 'text') {
+        const text = String((item as { text?: unknown }).text ?? '');
+        if (!text) continue;
+        collected.push(text);
+        total += text.length;
+        if (total >= MAX) break;
+      }
+    }
+    if (total >= MAX) break;
+  }
+  const joined = collected.join('');
+  return joined.length > MAX ? `${joined.slice(0, MAX)}…` : joined;
 }

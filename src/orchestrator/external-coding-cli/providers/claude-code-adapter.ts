@@ -180,7 +180,40 @@ export class ClaudeCodeAdapter implements CodingCliProviderAdapter {
   }
 
   parseFinalResult(output: string): CodingCliResult | null {
-    return parseFinalResult(output, { expectedProviderId: this.id });
+    // First pass: literal-marker scan — works when Claude emitted the
+    // CODING_CLI_RESULT block as plain text (rare in --output-format
+    // stream-json because the assistant text is wrapped in a JSON
+    // envelope, escaping newlines and quotes inside the block).
+    const direct = parseFinalResult(output, { expectedProviderId: this.id });
+    if (direct) return direct;
+
+    // Second pass: stream-json envelope. Claude Code's `--output-format
+    // stream-json` emits a final `{"type":"result","result":"<assistant
+    // text>","is_error":false,...}` line where `parsed.result` is the
+    // de-escaped assistant text. Apply the literal-marker scan there —
+    // newlines and quotes are real characters at this level, so JSON.parse
+    // on the inner block succeeds.
+    //
+    // Iterate newest-to-oldest so the LAST result line wins when the SDK
+    // emits a draft + revision pair (rare but observed during streaming
+    // resumption).
+    const lines = output.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      let envelope: { type?: string; result?: unknown } | null = null;
+      try {
+        envelope = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!envelope || envelope.type !== 'result') continue;
+      const innerText = typeof envelope.result === 'string' ? envelope.result : '';
+      if (!innerText) continue;
+      const parsed = parseFinalResult(innerText, { expectedProviderId: this.id });
+      if (parsed) return parsed;
+    }
+    return null;
   }
 
   detectApprovalRequest(_output: string, hookEvent?: HookEvent): CodingCliApprovalRequest | null {

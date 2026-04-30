@@ -143,37 +143,48 @@ function emitTodoUpdate(
   });
 }
 
+/** Strip the trailing fenced ```json verdict block from a competition
+ *  synthesizer answer so the user-facing final answer doesn't display the
+ *  same reasoning twice (once as free-text, once as JSON). The block is
+ *  ALWAYS at the end per the planner system prompt — we anchor the regex
+ *  to the tail with `$` and trim trailing whitespace. */
+function stripTrailingVerdictBlock(output: string): string {
+  return output.replace(/```json\s*[\s\S]*?\s*```\s*$/i, '').trimEnd();
+}
+
 /**
- * COMPETITION-mode winner emission. Parses the synthesizer's free-text
- * answer for a fenced ```json block matching {@link WinnerVerdict}. Emits
- * `workflow:winner_determined` only when ALL of the following hold:
- *   - the stage manifest's groupMode is 'competition' (not debate /
- *     comparison / pipeline / parallel — those don't pick a winner)
- *   - the JSON parses + validates
- *   - the winner agentId is in the participating delegate set (or null
- *     for a deliberate "no clear winner" verdict — null is a legitimate
- *     value, NOT the same as "absence of event")
+ * COMPETITION-mode winner emission + final-answer cleanup. When the stage
+ * manifest's groupMode is 'competition' AND the synthesizer's answer ends
+ * with a fenced ```json block matching {@link WinnerVerdict} AND the
+ * winner agentId is in the participating delegate set, emit
+ * `workflow:winner_determined` and return a `cleanedOutput` with the
+ * JSON block stripped (so the user-facing final answer stays prose-only,
+ * no duplicate reasoning).
  *
- * Failure to emit is silent. The synthesis answer itself is unaffected
- * either way; this function is purely additive observability.
+ * When any check fails the function is a no-op: returns the raw output
+ * unchanged and emits no event. UI must NEVER infer winners.
+ *
+ * `winner: null` IS a valid verdict (deliberate tie) — we still emit and
+ * still strip the block.
  */
-function tryEmitWinnerVerdict(
+function processCompetitionVerdict(
   deps: WorkflowExecutorDeps,
   input: TaskInput,
-  plan: WorkflowPlan,
-  synthesisOutput: string,
-): void {
-  if (!deps.bus || !deps.stageRuntime) return;
-  if (deps.stageRuntime.manifest.groupMode !== 'competition') return;
+  rawOutput: string,
+): { cleanedOutput: string } {
+  if (!deps.bus || !deps.stageRuntime) return { cleanedOutput: rawOutput };
+  if (deps.stageRuntime.manifest.groupMode !== 'competition') {
+    return { cleanedOutput: rawOutput };
+  }
   // Build the participating-agent set from the manifest's delegate
   // subtasks — this is the same set the planner authorized, so a
   // hallucinated "winner: foo" never sneaks through.
   const participating = deps.stageRuntime.manifest.multiAgentSubtasks
     .map((s) => s.agentId)
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
-  if (participating.length === 0) return;
-  const verdict = parseWinnerVerdict(synthesisOutput, participating);
-  if (!verdict) return;
+  if (participating.length === 0) return { cleanedOutput: rawOutput };
+  const verdict = parseWinnerVerdict(rawOutput, participating);
+  if (!verdict) return { cleanedOutput: rawOutput };
   deps.bus.emit('workflow:winner_determined', {
     taskId: input.id,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -182,6 +193,7 @@ function tryEmitWinnerVerdict(
     reasoning: verdict.reasoning,
     ...(verdict.scores ? { scores: verdict.scores } : {}),
   });
+  return { cleanedOutput: stripTrailingVerdictBlock(rawOutput) };
 }
 
 function emitSubtaskUpdate(
@@ -1390,8 +1402,23 @@ async function dispatchStrategy(
           if (ceilingTimer) clearTimeout(ceilingTimer);
           for (const off of unsubActivity) off();
         }
-        const finalStatus = taskResult.status === 'completed' ? 'completed' : 'failed';
         const stepOutput = taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
+        // A2 honesty: a delegate that returned status='completed' but
+        // with no usable output (empty/whitespace-only `answer` AND no
+        // mutations to fall back on) is silently failing. Mark it as
+        // failed with errorKind='empty_response' so the UI surfaces the
+        // gap explicitly instead of rendering DONE on top of "[no
+        // activity captured]". The trace + duration are still preserved.
+        // We also treat the deterministic mutations-fallback "[]" string
+        // as empty — it's the JSON.stringify of an empty mutation list,
+        // not a real answer.
+        const trimmedOutput = stepOutput.trim();
+        const isEmptyResponse =
+          trimmedOutput.length === 0 ||
+          trimmedOutput === '[]' ||
+          trimmedOutput === '""';
+        const finalStatus =
+          taskResult.status === 'completed' && !isEmptyResponse ? 'completed' : 'failed';
         // Preview cap: 2000 chars is enough for the user to read the
         // sub-agent's reasoning + answer in the chat UI's expandable plan
         // step. Earlier 300-char cap chopped mid-word ("**Auth" instead of
@@ -1435,6 +1462,25 @@ async function dispatchStrategy(
             completedAt: Date.now(),
             outputPreview,
             partialOutputAvailable: outputPreview.length > 0,
+          });
+        } else if (isEmptyResponse && taskResult.status === 'completed') {
+          // Provider/persona returned cleanly but with no answer —
+          // distinguish from real failures (timeout, contract violation)
+          // so operators can spot stuck personas separately from infra
+          // failures. The duration is still real (the LLM ran, just
+          // produced nothing useful), so we keep it as-is.
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview: undefined,
+            errorKind: 'empty_response',
+            errorMessage:
+              `Sub-agent ${resolvedAgentId ?? 'delegate'} completed without producing an answer ` +
+              `(empty response from provider/persona). Duration ${Math.round(
+                (taskResult.trace?.durationMs ?? 0) / 1000,
+              )}s; tokens ${taskResult.trace?.tokensConsumed ?? 0}.`,
+            partialOutputAvailable: false,
           });
         } else {
           const failExplanation = stepOutput?.trim() || 'Sub-agent reported failure with no explanation.';
@@ -1683,16 +1729,20 @@ async function buildResult(
     const isSynthesisStep = lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
     const hasUsableOutput = !!lastResult && lastResult.status === 'completed' && lastResult.output.trim().length > 0;
     if (isLastSink && isSynthesisStep && hasUsableOutput) {
-      // COMPETITION-mode synthesizer's structured verdict — fenced JSON
-      // block at the end of the synthesis answer (see WinnerVerdict).
-      // Emit only when the verdict parses + the winner id is in the
-      // participating delegate set; absence ⇒ no event (UI must NEVER
-      // infer winners from order). The free-text answer is unchanged.
-      tryEmitWinnerVerdict(deps, input, plan, lastResult!.output);
+      // COMPETITION-mode: parse fenced JSON block, emit winner event,
+      // and STRIP the JSON block from the user-facing answer so the
+      // verdict reasoning isn't duplicated (free-text + JSON had the
+      // same content shown twice). For non-competition turns this is
+      // a no-op and `cleanedOutput === rawOutput`.
+      const { cleanedOutput } = processCompetitionVerdict(
+        deps,
+        input,
+        lastResult!.output,
+      );
       return {
         status,
         stepResults: allResults,
-        synthesizedOutput: lastResult!.output,
+        synthesizedOutput: cleanedOutput,
         totalTokensConsumed: totalTokens,
         totalDurationMs: Math.round(durationMs),
       };
@@ -1945,14 +1995,19 @@ function buildDeterministicDelegateAggregation(
       );
       continue;
     }
-    if (result.status === 'completed' && result.output.trim().length > 0) {
-      sections.push(`${headerPrefix}${truncate(result.output.trim())}`);
+    const trimmedOutput = result.output.trim();
+    if (result.status === 'completed' && trimmedOutput.length > 0) {
+      sections.push(`${headerPrefix}${truncate(trimmedOutput)}`);
       continue;
     }
-    // Empty-output edge case: status is 'completed' but the agent
-    // produced only whitespace. Treat this honestly as "no response"
-    // rather than rendering an empty section under the persona header.
-    if (result.status === 'completed') {
+    // Empty-output edge case. The executor's empty-response classifier
+    // now reclassifies these as `status: 'failed'` (errorKind=empty_response)
+    // so the UI surfaces the gap explicitly — but the deterministic
+    // aggregator still renders them as "[no response — empty output]"
+    // regardless of the reclassified status, so the user-facing summary
+    // stays specific (vs the generic "step failed" the failed-reason
+    // fallback would otherwise emit).
+    if (trimmedOutput.length === 0) {
       sections.push(
         isSingleDelegate
           ? `[no response from ${agentLabel} — empty output]`
@@ -1963,7 +2018,7 @@ function buildDeterministicDelegateAggregation(
     // Honest acknowledgement of missing/failed delegates. Output text
     // (e.g. "step timed out after 120s") is preserved as the reason but
     // wrapped in brackets so it cannot be mistaken for a real answer.
-    const reason = result.output.trim() || `step ${result.status}`;
+    const reason = trimmedOutput || `step ${result.status}`;
     sections.push(
       isSingleDelegate ? `[no response from ${agentLabel} — ${reason}]` : `${headerLine}\n\n[no response — ${reason}]`,
     );

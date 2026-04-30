@@ -2624,4 +2624,91 @@ describe('executeWorkflow', () => {
     // Sentinel never emitted by any mock — proves no fabrication path.
     expect(result.synthesizedOutput).not.toContain('FABRICATED_CONTENT');
   });
+
+  test('A2 honesty: delegate that returns status=completed with empty answer is reclassified as failed (errorKind=empty_response)', async () => {
+    // The provider/persona returns cleanly but with no text — UI must
+    // surface this as a failure with explicit explanation, not silently
+    // render DONE on top of [no activity captured].
+    const plan = JSON.stringify({
+      goal: 'compete',
+      steps: [
+        { id: 'step1', description: 'q', strategy: 'llm-reasoning', budgetFraction: 0.2 },
+        {
+          id: 'step2',
+          description: 'Answer the question',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          dependencies: ['step1'],
+          inputs: { q: '$step1.result' },
+          budgetFraction: 0.4,
+        },
+        {
+          id: 'step3',
+          description: 'Answer the question',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          dependencies: ['step1'],
+          inputs: { q: '$step1.result' },
+          budgetFraction: 0.4,
+        },
+      ],
+      synthesisPrompt: 'Compare and pick a winner.',
+    });
+    const mockProvider = {
+      id: 'mock',
+      generate: async () => ({ content: plan, tokensUsed: { input: 10, output: 10 } }),
+      generateStream: async (
+        _req: { systemPrompt: string },
+        onDelta: (d: { text: string }) => void,
+      ) => {
+        onDelta({ text: plan });
+        return { content: plan, tokensUsed: { input: 5, output: 5 } };
+      },
+    };
+    const events: Array<{ event: string; payload: any }> = [];
+    const bus = {
+      emit: (event: string, payload: any) => events.push({ event, payload }),
+    };
+    await executeWorkflow(makeInput('compete'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      bus: bus as any,
+      executeTask: async (subInput: any) => {
+        // Researcher returns empty answer; author returns real text.
+        const isResearcher = subInput.agentId === 'researcher';
+        return {
+          id: subInput.id,
+          status: 'completed',
+          mutations: [],
+          answer: isResearcher ? '' : 'AUTHOR_REAL_ANSWER',
+          // biome-ignore lint/suspicious/noExplicitAny: test mock
+          trace: { tokensConsumed: 50, durationMs: 35000 } as any,
+        };
+      },
+    });
+    // Researcher's delegate_completed event MUST report status=failed.
+    const researcherDelegateCompleted = events.find(
+      (e) =>
+        e.event === 'workflow:delegate_completed' && e.payload.agentId === 'researcher',
+    );
+    expect(researcherDelegateCompleted).toBeDefined();
+    expect(researcherDelegateCompleted!.payload.status).toBe('failed');
+    // Subtask manifest mirror MUST carry errorKind='empty_response'.
+    const researcherSubtaskUpdate = events
+      .filter(
+        (e) =>
+          e.event === 'workflow:subtask_updated' && e.payload.agentId === 'researcher',
+      )
+      .pop();
+    expect(researcherSubtaskUpdate).toBeDefined();
+    expect(researcherSubtaskUpdate!.payload.status).toBe('failed');
+    expect(researcherSubtaskUpdate!.payload.errorKind).toBe('empty_response');
+    expect(researcherSubtaskUpdate!.payload.errorMessage).toContain('empty response');
+    // Author with real answer stays completed.
+    const authorSubtaskUpdate = events
+      .filter(
+        (e) => e.event === 'workflow:subtask_updated' && e.payload.agentId === 'author',
+      )
+      .pop();
+    expect(authorSubtaskUpdate!.payload.status).toBe('done');
+  });
 });

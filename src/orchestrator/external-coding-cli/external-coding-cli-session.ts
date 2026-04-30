@@ -149,8 +149,15 @@ export class CodingCliSession {
         claim: outcome.result,
       });
     }
+    // Fallback chain: when the runner's post-exit parser doesn't find a
+    // valid CODING_CLI_RESULT block, the streaming parser may have already
+    // captured one via the stream-json `result` line — this.finalResult is
+    // updated by handleParsedEvent in that case. Surface whichever is set,
+    // preferring the post-exit parse (it sees the full output) over the
+    // streaming snapshot (it sees only what was streamed before exit).
+    const effectiveResult = outcome.result ?? this.finalResult;
     this.timings.endedAt = Date.now();
-    return { result: outcome.result, stdout: outcome.stdout, stderr: outcome.stderr, exitCode: outcome.exitCode };
+    return { result: effectiveResult, stdout: outcome.stdout, stderr: outcome.stderr, exitCode: outcome.exitCode };
   }
 
   startInteractive(): InteractiveSessionHandle {
